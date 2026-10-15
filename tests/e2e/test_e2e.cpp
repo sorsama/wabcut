@@ -1922,7 +1922,7 @@ void gradedStackPlayback(bool perf) {
 
 } // namespace
 
-TEST_CASE("e2e: playback of three graded 1080p60 layers, with and without scopes", "[e2e][color]") {
+TEST_CASE("e2e: playback of three graded 1080p60 layers, with and without scopes", "[e2e][color][gpu]") { // GPU compositing
     gradedStackPlayback(false);
 }
 

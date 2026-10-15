@@ -149,7 +149,7 @@ TEST_CASE("1x playback presents consecutive frames on the transport clock", "[pl
     CHECK(std::abs(clockFrame - lastFrame) <= 6);
 }
 
-TEST_CASE("J/K/L shuttle speeds step by n frames", "[playback][scheduler]") {
+TEST_CASE("J/K/L shuttle speeds step by n frames", "[playback][scheduler][perf]") { // real-time decode
     if (skipWithoutMedia()) {
         SKIP("test media missing");
     }
@@ -183,7 +183,7 @@ TEST_CASE("J/K/L shuttle speeds step by n frames", "[playback][scheduler]") {
     }
 }
 
-TEST_CASE("Reverse playback presents frames backwards (bounded decode windows)", "[playback][scheduler]") {
+TEST_CASE("Reverse playback presents frames backwards (bounded decode windows)", "[playback][scheduler][perf]") { // real-time decode
     if (skipWithoutMedia()) {
         SKIP("test media missing");
     }
@@ -521,7 +521,7 @@ TEST_CASE("Burned-in captions: the paused picture is evaluated again after audio
 }
 
 TEST_CASE("Edits ahead of the playhead refresh the lookahead while playing",
-          "[playback][scheduler][changes]") {
+          "[playback][scheduler][changes][perf]") { // real-time decode
     if (skipWithoutMedia()) {
         SKIP("test media missing");
     }

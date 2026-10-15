@@ -61,7 +61,8 @@ if(WIN32)
         BASE spike
         FILES spike/nv12_array.vert spike/nv12_array.frag)
     add_test(NAME render.zero_copy_spike COMMAND wabcut_zero_copy_spike)
+    # Label gpu: D3D11 video decoding needs a real GPU (a GPU-less runner's software device has none).
     set_tests_properties(render.zero_copy_spike PROPERTIES
-        FIXTURES_REQUIRED wabcut_test_media SKIP_RETURN_CODE 77 TIMEOUT 120 LABELS render
+        FIXTURES_REQUIRED wabcut_test_media SKIP_RETURN_CODE 77 TIMEOUT 120 LABELS gpu
         ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${WABCUT_QT_BIN_DIR}")
 endif()
