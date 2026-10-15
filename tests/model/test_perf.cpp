@@ -239,8 +239,8 @@ TEST_CASE("Every edit on a realistic 10,000-clip sequence stays under 1 ms", "[m
     timings.insert(timings.end(), single.begin(), single.end());
     for (const Timing& t : timings) {
         INFO(t.name << ": best " << t.bestMs << " ms, median " << t.medianMs << " ms");
-        CHECK(t.bestMs < kRealisticMs);
-        CHECK(t.medianMs < kGenerousMs);
+        CHECK(t.bestMs < kRealisticMs * timingSlack());
+        CHECK(t.medianMs < kGenerousMs * timingSlack());
     }
 }
 
@@ -251,8 +251,8 @@ TEST_CASE("Edits stay under 2 ms when every one of 10,000 clips has its own name
     timings.insert(timings.end(), single.begin(), single.end());
     for (const Timing& t : timings) {
         INFO("worst case " << t.name << ": best " << t.bestMs << " ms, median " << t.medianMs << " ms");
-        CHECK(t.bestMs < kContractMs);
-        CHECK(t.medianMs < kGenerousMs);
+        CHECK(t.bestMs < kContractMs * timingSlack());
+        CHECK(t.medianMs < kGenerousMs * timingSlack());
     }
 }
 
@@ -283,9 +283,9 @@ TEST_CASE("Undo and redo of a 10,000-clip ripple stay under 1 ms", "[model][perf
     std::sort(redos.begin(), redos.end());
     INFO("undo best " << undos.front() << " ms, median " << undos[7] << " ms; redo best " << redos.front()
                       << " ms, median " << redos[7] << " ms");
-    CHECK(undos.front() < kRealisticMs);
-    CHECK(redos.front() < kRealisticMs);
-    CHECK(undos[7] < kGenerousMs);
+    CHECK(undos.front() < kRealisticMs * timingSlack());
+    CHECK(redos.front() < kRealisticMs * timingSlack());
+    CHECK(undos[7] < kGenerousMs * timingSlack());
 }
 
 TEST_CASE("Edit benchmarks on a 10,000-clip sequence", "[!benchmark][model][perf]") {

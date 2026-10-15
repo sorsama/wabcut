@@ -24,6 +24,8 @@ struct DuckingOptions {
     Ticks release{kTicksPerSecond * 3 / 4};
     Ticks hold{kTicksPerSecond / 4};
     Ticks minSpeech{kTicksPerSecond * 12 / 100};
+
+    bool operator==(const DuckingOptions&) const = default;
 };
 
 /// A.10, "Game under voice" (audio.autoDuck "preset": "gameUnderVoice"; the tracks: GameAudio.h): game audio under a

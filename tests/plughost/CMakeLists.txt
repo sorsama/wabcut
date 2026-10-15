@@ -10,8 +10,11 @@ set(_plugin_dir ${CMAKE_BINARY_DIR}/test-plugins)
 # A CLAP effect (gain, latency, crash, stall), and two that crash or hang while they are scanned.
 function(_wabcut_test_clap target name folder)
     add_library(${target} MODULE plugins/clap/TestGainClap.cpp)
+    # Each plugin's import library (.lib/.exp, MSVC) in a folder of its own: the CLAP and the VST3 gain plugins share
+    # the name WabcutTestGain, and in one folder their parallel links collide (LNK1104).
     set_target_properties(${target} PROPERTIES PREFIX "" SUFFIX ".clap" OUTPUT_NAME ${name}
-                                               LIBRARY_OUTPUT_DIRECTORY ${_plugin_dir}/${folder})
+                                               LIBRARY_OUTPUT_DIRECTORY ${_plugin_dir}/${folder}
+                                               ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/implib/${target})
     target_link_libraries(${target} PRIVATE clap)
     wabcut_target_defaults(${target})
     target_compile_definitions(${target} PRIVATE ${ARGN})
@@ -23,7 +26,8 @@ _wabcut_test_clap(wabcut_test_clap_hang WabcutTestHangOnScan blocked WABCUT_TEST
 # A VST3 effect built like the SDK's AGain example (gain, latency, crash).
 add_library(wabcut_test_vst3_gain MODULE plugins/vst3/TestGainVst3.cpp)
 set_target_properties(wabcut_test_vst3_gain PROPERTIES PREFIX "" SUFFIX ".vst3" OUTPUT_NAME WabcutTestGain
-                                                       LIBRARY_OUTPUT_DIRECTORY ${_plugin_dir}/vst3)
+                                                       LIBRARY_OUTPUT_DIRECTORY ${_plugin_dir}/vst3
+                                                       ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/implib/wabcut_test_vst3_gain)
 target_link_libraries(wabcut_test_vst3_gain PRIVATE wabcut_vst3sdk)
 wabcut_target_defaults(wabcut_test_vst3_gain)
 

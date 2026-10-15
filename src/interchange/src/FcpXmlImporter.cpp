@@ -708,15 +708,15 @@ void FcpXmlParser::addMediaClip(const pugi::xml_node& node, const Asset& asset, 
             // One element carries the picture's and the sound's adjustments: each clip takes its own.
             ClipProperties own = *properties;
             const ClipProperties defaults;
-            const bool video = kind == StreamKind::Video;
+            const bool picture = kind == StreamKind::Video;
             for (const ParamId id : {ParamId::PositionX, ParamId::PositionY, ParamId::Scale, ParamId::Rotation, ParamId::AnchorX,
                                      ParamId::AnchorY, ParamId::Opacity}) {
-                if (!video) {
+                if (!picture) {
                     own[id] = defaults[id];
                 }
             }
             for (const ParamId id : {ParamId::VolumeDb, ParamId::Pan}) {
-                if (video) {
+                if (picture) {
                     own[id] = defaults[id];
                 }
             }

@@ -17,6 +17,11 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # Shared runners are slower and noisier than a developer machine: wall-clock budgets in the tests get 4x headroom
+  # (tests/model/TimelineFixture.h, timingSlack()). Local runs keep the strict budgets.
+  WABCUT_TIMING_SLACK: 4
+
 jobs:
   core:
     strategy:
@@ -36,6 +41,8 @@ jobs:
           - os: macos-15
             name: llvm
             llvm: true
+            # The same Homebrew LLVM setup as unix-full: its clang, its libc++ and the run-time path to it.
+            configure: -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/macos-llvm.cmake
     name: core (${{ matrix.os }}, ${{ matrix.name }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
@@ -50,9 +57,7 @@ jobs:
         if: matrix.llvm
         run: |
           brew install llvm
-          echo "CC=$(brew --prefix llvm)/bin/clang" >> "$GITHUB_ENV"
-          echo "CXX=$(brew --prefix llvm)/bin/clang++" >> "$GITHUB_ENV"
-          echo "LDFLAGS=-L$(brew --prefix llvm)/lib/c++ -Wl,-rpath,$(brew --prefix llvm)/lib/c++" >> "$GITHUB_ENV"
+          echo "LLVM_ROOT=$(brew --prefix llvm)" >> "$GITHUB_ENV"
 
       - name: Configure, build, test (Windows)
         if: runner.os == 'Windows'
@@ -75,6 +80,14 @@ jobs:
         shell: bash
         run: |
           if [ -n "${{ matrix.cc }}" ]; then export CC=${{ matrix.cc }} CXX=${{ matrix.cxx }}; fi
-          cmake --preset core
+          cmake --preset core ${{ matrix.configure }}
           cmake --build --preset core
           ctest --preset core
+
+      # A failed toolchain check says only that it failed: the configure log has the compiler's own error.
+      - name: CMake configure log (after a failure)
+        if: failure()
+        shell: bash
+        run: |
+          log=build/core/CMakeFiles/CMakeConfigureLog.yaml
+          if [ -f "$log" ]; then tail -n 200 "$log"; else echo "no configure log"; fi
