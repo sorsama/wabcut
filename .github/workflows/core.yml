@@ -70,7 +70,8 @@ jobs:
           . ./tools/dev-env.ps1 -Core
           cmake --preset core
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          cmake --build --preset core
+          # -k 0: a failed build still compiles everything else, so one run shows every error.
+          cmake --build --preset core -- -k 0
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           ctest --preset core
           exit $LASTEXITCODE
@@ -81,7 +82,7 @@ jobs:
         run: |
           if [ -n "${{ matrix.cc }}" ]; then export CC=${{ matrix.cc }} CXX=${{ matrix.cxx }}; fi
           cmake --preset core ${{ matrix.configure }}
-          cmake --build --preset core
+          cmake --build --preset core -- -k 0
           ctest --preset core
 
       # A failed toolchain check says only that it failed: the configure log has the compiler's own error.

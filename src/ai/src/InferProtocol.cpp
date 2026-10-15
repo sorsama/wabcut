@@ -258,7 +258,9 @@ std::expected<Response, Error> decodeResponse(std::string_view line) {
             r.id = j.at("id").get<std::string>();
             r.language = j.value("language", std::string{});
             r.segments = j.value("segments", 0);
-            for (const auto& [k, v] : j.value("stats", json::object()).items()) {
+            // A named copy: items() refers to the object, and a temporary in the loop header would be gone (GCC 14).
+            const json stats = j.value("stats", json::object());
+            for (const auto& [k, v] : stats.items()) {
                 if (v.is_number()) {
                     r.stats[k] = v.get<double>();
                 }

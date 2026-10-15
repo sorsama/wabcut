@@ -19,6 +19,7 @@
 #include <wabcut/model/ChangeSet.h>
 #include <wabcut/model/Error.h>
 #include <wabcut/model/ProjectState.h>
+#include <wabcut/platform/AtomicSharedPtr.h>
 
 #include <atomic>
 #include <cstddef>
@@ -186,7 +187,7 @@ private:
     void retire(ProjectSnapshot snapshot);
     void raiseIdHighWater(const ProjectState& state) noexcept;
 
-    std::atomic<ProjectSnapshot> m_current;
+    platform::AtomicSharedPtr<const ProjectState> m_current;
     std::atomic<std::uint64_t> m_revision{0};
     EditSessionOptions m_options;
     std::deque<Step> m_undo;

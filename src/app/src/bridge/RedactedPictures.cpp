@@ -1,6 +1,7 @@
 #include "RedactedPictures.h"
 
 #include <wabcut/model/RedactionMedia.h>
+#include <wabcut/platform/AtomicSharedPtr.h>
 #include <wabcut/playback/video/Evaluate.h>
 #include <wabcut/render/Mask.h>
 
@@ -16,8 +17,8 @@ namespace wabcut::app::redacted {
 
 namespace {
 
-std::atomic<std::shared_ptr<const ProjectState>>& slot() {
-    static std::atomic<std::shared_ptr<const ProjectState>> project;
+wabcut::platform::AtomicSharedPtr<const ProjectState>& slot() {
+    static wabcut::platform::AtomicSharedPtr<const ProjectState> project;
     return project;
 }
 

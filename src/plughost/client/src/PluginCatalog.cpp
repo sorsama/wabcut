@@ -464,7 +464,9 @@ bool PluginCatalog::load() {
         if (!j.is_object() || j.value("version", 0) != 1) {
             return false;
         }
-        for (const auto& [path, entry] : j.value("files", json::object()).items()) {
+        // Named copies: items() refers to the object, and a temporary in the loop header would be gone by then.
+        const json fileEntries = j.value("files", json::object());
+        for (const auto& [path, entry] : fileEntries.items()) {
             FileEntry f;
             f.fingerprint = {entry.value("size", std::uintmax_t{0}), entry.value("modified", std::int64_t{0})};
             f.error = entry.value("error", "");
@@ -473,7 +475,8 @@ bool PluginCatalog::load() {
             }
             files[path] = std::move(f);
         }
-        for (const auto& [path, entry] : j.value("blocked", json::object()).items()) {
+        const json blockedEntries = j.value("blocked", json::object());
+        for (const auto& [path, entry] : blockedEntries.items()) {
             blocked[path] = BlockedEntry{{entry.value("size", std::uintmax_t{0}), entry.value("modified", std::int64_t{0})},
                                          entry.value("reason", "")};
         }
