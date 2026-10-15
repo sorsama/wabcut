@@ -1,0 +1,130 @@
+# EXPERIMENTAL full builds on Linux and macOS (linux-gcc / macos-clang presets): the app, the CLI, every test suite but
+# the GPU and audio-device ones, and the install tree. Windows is the verified platform; these jobs show how far the
+# other two are and never block (docs/release.md, "Platform status": CI-ready, unverified locally). Run weekly and on
+# demand: the first build of FFmpeg, x264 and x265 from source takes hours (the vcpkg binary cache keeps them).
+#
+# Dependency set: the same vcpkg manifest as Windows, with local AI off (whisper.cpp / ggml are not measured on these
+# platforms yet: WABCUT_WITH_LOCAL_AI=OFF) and smart search on Microsoft's prebuilt ONNX Runtime for the platform
+# (Linux x64 and macOS arm64 archives, overlay port cmake/ports/onnxruntime-prebuilt). Provider keys use the OS keychain
+# (libsecret on Linux, the Keychain on macOS). No secrets are used: cloud AI tests run against recorded fixtures.
+#
+# macOS builds with Homebrew's LLVM (libc++ 20+): Apple Clang's libc++ lacks std::jthread and floating-point
+# std::from_chars. cmake/toolchains/macos-llvm.cmake and the arm64-osx-llvm triplet use it for Wabcut and every port.
+name: unix-full (experimental)
+
+on:
+  schedule:
+    - cron: "0 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  QT_VERSION: 6.11.3
+  # aqtinstall 3.3.0, the latest release, cannot read the per-arch repository layout Qt uses since 6.11 (fixed by
+  # miurahr/aqtinstall#1000 on master only), so install aqtinstall from a pinned master commit.
+  AQT_SOURCE: git+https://github.com/miurahr/aqtinstall.git@076e1659807d0b362a3ed684d54c2e9c775eb9c7
+  VCPKG_DISABLE_METRICS: 1
+
+jobs:
+  build:
+    name: ${{ matrix.preset }} (experimental)
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            preset: linux-gcc
+            # GCC 14 (the image's default is 13; both pass the toolchain check, 14 is what docs/building.md lists).
+            configure: -DCMAKE_C_COMPILER=gcc-14 -DCMAKE_CXX_COMPILER=g++-14
+          - os: macos-15
+            preset: macos-clang
+            configure: -DVCPKG_TARGET_TRIPLET=arm64-osx-llvm -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE=cmake/toolchains/macos-llvm.cmake
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: lukka/get-cmake@v4.4.2
+
+      - name: System packages (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-14 g++-14 nasm autoconf automake autoconf-archive libtool pkg-config \
+            libva-dev libdrm-dev libgl1-mesa-dev libegl1-mesa-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libasound2-dev libpulse-dev libsecret-1-dev libfontconfig1-dev libvulkan-dev
+
+      - name: System packages (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install nasm autoconf automake autoconf-archive libtool pkg-config llvm
+          echo "LLVM_ROOT=$(brew --prefix llvm)" >> "$GITHUB_ENV"
+
+      - name: vcpkg at the manifest baseline
+        id: vcpkg
+        run: |
+          baseline=$(python3 -c "import json; print(json.load(open('vcpkg.json'))['builtin-baseline'])")
+          root="$RUNNER_TEMP/vcpkg"
+          cache="$RUNNER_TEMP/vcpkg-cache"
+          git clone --quiet https://github.com/microsoft/vcpkg "$root"
+          git -C "$root" checkout --quiet "$baseline"
+          "$root/bootstrap-vcpkg.sh" -disableMetrics
+          mkdir -p "$cache"
+          echo "VCPKG_ROOT=$root" >> "$GITHUB_ENV"
+          echo "VCPKG_DEFAULT_BINARY_CACHE=$cache" >> "$GITHUB_ENV"
+          echo "cache=$cache" >> "$GITHUB_OUTPUT"
+          echo "key=vcpkg-$ImageOS-$ImageVersion-${{ matrix.preset }}-${{ hashFiles('vcpkg.json', 'cmake/ports/**', 'cmake/triplets/**', 'cmake/toolchains/**', 'CMakeLists.txt') }}" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the vcpkg binary cache
+        id: vcpkg-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ steps.vcpkg.outputs.cache }}
+          key: ${{ steps.vcpkg.outputs.key }}
+          restore-keys: vcpkg-${{ runner.os }}-
+
+      - name: Qt ${{ env.QT_VERSION }}
+        uses: jurplel/install-qt-action@v4.4.1
+        with:
+          version: ${{ env.QT_VERSION }}
+          modules: qtshadertools
+          install-deps: true
+          cache: true
+          aqtsource: ${{ env.AQT_SOURCE }}
+
+      - name: Configure and build
+        run: |
+          # The QtKeychain overlay port builds against this Qt (cmake/ports/qtkeychain).
+          export WABCUT_QT_DIR="$QT_ROOT_DIR"
+          export VCPKG_KEEP_ENV_VARS="WABCUT_QT_DIR;LLVM_ROOT"
+          cmake --preset ${{ matrix.preset }} ${{ matrix.configure }} \
+            -DWABCUT_WITH_LOCAL_AI=OFF -DWABCUT_WITH_ONNX=ON -DWABCUT_BUILD_NUMBER=${{ github.run_number }}
+          cmake --build --preset ${{ matrix.preset }}
+
+      - name: Save the vcpkg binary cache
+        if: always() && steps.vcpkg.outcome == 'success' && steps.vcpkg-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ steps.vcpkg.outputs.cache }}
+          key: ${{ steps.vcpkg.outputs.key }}
+
+      - name: Test (without gpu and audio-device tests)
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: ctest --preset ${{ matrix.preset }}
+
+      - name: Install tree and archive
+        if: always()
+        run: |
+          cmake --install build/${{ matrix.preset }} --prefix "$RUNNER_TEMP/wabcut"
+          cpack --config build/${{ matrix.preset }}/CPackConfig.cmake -G TGZ -B build/${{ matrix.preset }}/package
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: wabcut-${{ matrix.preset }}-unverified
+          path: build/${{ matrix.preset }}/package/*.tar.gz
+          if-no-files-found: warn

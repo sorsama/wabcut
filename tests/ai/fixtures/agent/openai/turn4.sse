@@ -1,0 +1,24 @@
+event: response.created
+data: {"type":"response.created","response":{"id":"resp_agent_4","status":"in_progress","model":"gpt-6.1-sol","output":[]},"sequence_number":0}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","output_index":0,"item":{"id":"msg_4","type":"message","status":"in_progress","role":"assistant","content":[]},"sequence_number":1}
+
+event: response.content_part.added
+data: {"type":"response.content_part.added","item_id":"msg_4","output_index":0,"content_index":0,"part":{"type":"output_text","text":""},"sequence_number":2}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","item_id":"msg_4","output_index":0,"content_index":0,"delta":"Added the marker “In","logprobs":[],"sequence_number":3}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","item_id":"msg_4","output_index":0,"content_index":0,"delta":"tro” at 00:00:00:05.","logprobs":[],"sequence_number":4}
+
+event: response.output_text.done
+data: {"type":"response.output_text.done","item_id":"msg_4","output_index":0,"content_index":0,"text":"Added the marker “Intro” at 00:00:00:05.","sequence_number":5}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","output_index":0,"item":{"id":"msg_4","type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":"Added the marker “Intro” at 00:00:00:05."}]},"sequence_number":6}
+
+event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_agent_4","status":"completed","model":"gpt-6.1-sol","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Added the marker “Intro” at 00:00:00:05."}]}],"usage":{"input_tokens":10100,"input_tokens_details":{"cached_tokens":9920},"output_tokens":22,"output_tokens_details":{"reasoning_tokens":8},"total_tokens":10122}},"sequence_number":7}
+

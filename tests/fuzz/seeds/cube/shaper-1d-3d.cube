@@ -1,0 +1,15 @@
+# Resolve shaper form
+LUT_1D_INPUT_RANGE 0 4
+LUT_3D_INPUT_RANGE 0 1
+LUT_1D_SIZE 2
+LUT_3D_SIZE 2
+0 0 0
+1 1 1
+0 0 0
+1 0 0
+0 1 0
+1 1 0
+0 0 1
+1 0 1
+0 1 1
+1 1 1

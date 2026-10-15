@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- Wabcut application icon, 64 px and up: the echo mark (wabcut-mark.svg geometry x5.4, its 120-unit box at 63%
+       of the tile) on a raised-black tile, corner radius 22%. 32-48 px use wabcut-app-icon-medium.svg, 16-24 px
+       wabcut-app-icon-small.svg (tests/app/test_brand_icons.cpp picks the source per size). -->
+  <rect width="1024" height="1024" rx="225" fill="#1D1D20"/>
+  <g transform="translate(512 512) scale(5.4) translate(-59 -60)">
+    <g opacity="0.18">
+      <rect x="6" y="18" width="28" height="12" rx="6" fill="#9B6CFF"/>
+      <rect x="6" y="36" width="52" height="12" rx="6" fill="#9B6CFF"/>
+      <rect x="6" y="54" width="78" height="12" rx="6" fill="#D6F54C"/>
+      <rect x="6" y="72" width="52" height="12" rx="6" fill="#9B6CFF"/>
+      <rect x="6" y="90" width="28" height="12" rx="6" fill="#9B6CFF"/>
+    </g>
+    <g opacity="0.45">
+      <rect x="20" y="18" width="28" height="12" rx="6" fill="#9B6CFF"/>
+      <rect x="20" y="36" width="52" height="12" rx="6" fill="#9B6CFF"/>
+      <rect x="20" y="54" width="78" height="12" rx="6" fill="#D6F54C"/>
+      <rect x="20" y="72" width="52" height="12" rx="6" fill="#9B6CFF"/>
+      <rect x="20" y="90" width="28" height="12" rx="6" fill="#9B6CFF"/>
+    </g>
+    <rect x="34" y="18" width="28" height="12" rx="6" fill="#9B6CFF"/>
+    <rect x="34" y="36" width="52" height="12" rx="6" fill="#9B6CFF"/>
+    <rect x="34" y="54" width="78" height="12" rx="6" fill="#D6F54C"/>
+    <rect x="34" y="72" width="52" height="12" rx="6" fill="#9B6CFF"/>
+    <rect x="34" y="90" width="28" height="12" rx="6" fill="#9B6CFF"/>
+  </g>
+</svg>

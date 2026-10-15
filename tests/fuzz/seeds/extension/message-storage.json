@@ -1,0 +1,11 @@
+{
+ "type": "storageSet",
+ "key": "every",
+ "value": {
+  "n": [
+   1,
+   2,
+   3
+  ]
+ }
+}

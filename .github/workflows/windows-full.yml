@@ -1,0 +1,119 @@
+# Full Windows build (win-msvc preset): app, CLI, AI helpers and every test suite except those needing a GPU or an audio
+# device (ctest preset win-msvc-ci), including the install tests (install.smoke; install.package builds the MSI and the
+# portable ZIP and installs, runs and uninstalls the MSI for the runner's user). The MSI and the ZIP are the artifacts.
+# See docs/building.md and docs/release.md.
+name: windows-full
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  QT_VERSION: 6.11.3
+  # aqtinstall 3.3.0, the latest release, cannot read the per-arch repository layout Qt uses since 6.11. The fix
+  # (miurahr/aqtinstall#1000) is only on master, so install aqtinstall from a pinned master commit.
+  AQT_SOURCE: git+https://github.com/miurahr/aqtinstall.git@076e1659807d0b362a3ed684d54c2e9c775eb9c7
+  VCPKG_DISABLE_METRICS: 1
+
+jobs:
+  build:
+    name: win-msvc
+    runs-on: windows-2025
+    # The first run builds FFmpeg, x264 and x265 from source; later runs restore them from the binary cache.
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: vcpkg at the manifest baseline
+        id: vcpkg
+        shell: pwsh
+        run: |
+          $baseline = (Get-Content vcpkg.json -Raw | ConvertFrom-Json).'builtin-baseline'
+          $root = Join-Path $env:RUNNER_TEMP vcpkg
+          $cache = Join-Path $env:RUNNER_TEMP vcpkg-cache
+          git clone --quiet https://github.com/microsoft/vcpkg $root
+          git -C $root checkout --quiet $baseline
+          & "$root\bootstrap-vcpkg.bat" -disableMetrics
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Force $cache | Out-Null
+          "VCPKG_ROOT=$root" >> $env:GITHUB_ENV
+          "VCPKG_DEFAULT_BINARY_CACHE=$cache" >> $env:GITHUB_ENV
+          "cache=$cache" >> $env:GITHUB_OUTPUT
+          # Package ABIs include the compiler version, so key the cache on the runner image too. The root CMakeLists.txt
+          # selects the vcpkg features (local AI, ONNX, keychain), so it is part of the key.
+          "key=vcpkg-$env:ImageOS-$env:ImageVersion-${{ hashFiles('vcpkg.json', 'cmake/triplets/**', 'cmake/ports/**', 'CMakeLists.txt') }}" >> $env:GITHUB_OUTPUT
+
+      - name: Restore the vcpkg binary cache
+        id: vcpkg-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ steps.vcpkg.outputs.cache }}
+          key: ${{ steps.vcpkg.outputs.key }}
+          restore-keys: vcpkg-${{ runner.os }}-
+
+      - name: Qt ${{ env.QT_VERSION }}
+        uses: jurplel/install-qt-action@v4.4.1
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: windows
+          target: desktop
+          arch: win64_msvc2022_64
+          modules: qtshadertools
+          cache: true
+          aqtsource: ${{ env.AQT_SOURCE }}
+
+      # The MSI: WiX 5.0.2 as a per-user .NET tool (docs/release.md, "Why WiX, and which WiX").
+      - name: WiX Toolset
+        shell: pwsh
+        run: ./cmake/packaging/Install-WixToolset.ps1
+
+      - name: Configure and build
+        shell: pwsh
+        run: |
+          $env:WABCUT_QT_DIR = $env:QT_ROOT_DIR
+          . ./tools/dev-env.ps1
+          cmake --preset win-msvc -DWABCUT_BUILD_NUMBER=${{ github.run_number }}
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cmake --build --preset win-msvc
+          exit $LASTEXITCODE
+
+      # Saved even when a later step fails, so the next run does not rebuild FFmpeg.
+      - name: Save the vcpkg binary cache
+        if: always() && steps.vcpkg.outcome == 'success' && steps.vcpkg-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ steps.vcpkg.outputs.cache }}
+          key: ${{ steps.vcpkg.outputs.key }}
+
+      - name: Test (without gpu and audio-device tests)
+        shell: pwsh
+        run: |
+          $env:WABCUT_QT_DIR = $env:QT_ROOT_DIR
+          . ./tools/dev-env.ps1
+          ctest --preset win-msvc-ci
+          exit $LASTEXITCODE
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $env:WABCUT_QT_DIR = $env:QT_ROOT_DIR
+          . ./tools/dev-env.ps1
+          cpack --config build/win-msvc/CPackConfig.cmake
+          exit $LASTEXITCODE
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wabcut-windows-x64
+          path: |
+            build/win-msvc/package/*.msi
+            build/win-msvc/package/*-portable.zip
+          if-no-files-found: error

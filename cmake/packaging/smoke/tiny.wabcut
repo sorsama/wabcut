@@ -1,0 +1,55 @@
+{
+  "bins": [],
+  "format": "wabcut-project",
+  "media": [],
+  "nextId": 4,
+  "schemaVersion": 8,
+  "sequences": [
+    {
+      "audioRate": { "den": 1, "num": 48000 },
+      "audioTracks": [
+        {
+          "clips": [],
+          "enabled": true,
+          "id": 3,
+          "locked": false,
+          "muted": false,
+          "name": "",
+          "solo": false,
+          "syncLocked": true,
+          "targeted": true,
+          "transitions": []
+        }
+      ],
+      "beatGrid": null,
+      "bin": 0,
+      "captionTracks": [],
+      "dropFrame": false,
+      "duration": 0,
+      "effects": [],
+      "frameRate": { "den": 1, "num": 25 },
+      "height": 180,
+      "id": 1,
+      "markIn": null,
+      "markOut": null,
+      "markers": [],
+      "name": "Install smoke test",
+      "videoTracks": [
+        {
+          "clips": [],
+          "enabled": true,
+          "id": 2,
+          "locked": false,
+          "muted": false,
+          "name": "",
+          "solo": false,
+          "syncLocked": true,
+          "targeted": true,
+          "transitions": []
+        }
+      ],
+      "width": 320,
+      "workArea": null
+    }
+  ]
+}

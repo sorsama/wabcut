@@ -1,0 +1,202 @@
+Wabcut @WABCUT_VERSION@ - third-party notices
+==============================================
+
+Wabcut is free software, licensed under the GNU General Public License version 3 or later (LICENSE.txt).
+This distribution contains or links the third-party components below. Their full license texts are in the
+licenses/ directory next to this file. Versions are the ones this package was built with.
+
+Qt @WABCUT_QT_VERSION@ (The Qt Company Ltd. and other contributors)
+    License: GNU Lesser General Public License version 3 (licenses/qt-LGPL-3.0.txt, which supplements the
+    GNU GPL version 3 in LICENSE.txt). Qt is linked dynamically; its libraries, plugins and QML modules are
+    the separate files deployed by windeployqt/macdeployqt (Qt6*.dll, plugins, qml/). Qt sources:
+    https://download.qt.io/official_releases/qt/
+    Modules used: Qt Core, Gui, Quick, Quick Controls 2, Svg, Shader Tools; QRhi through Qt Gui private API.
+
+FFmpeg @V_ffmpeg@ (the FFmpeg developers)
+    License: @FFMPEG_LICENSE@ (licenses/ffmpeg.txt). This is a GPL build of FFmpeg.
+    Libraries built: libavcodec, libavformat, libavfilter, libavutil, libswresample, libswscale (the runtime
+    list at the end shows the ones this distribution ships).
+    Source: https://ffmpeg.org/download.html (vcpkg port "ffmpeg").
+    Configuration:
+@FFMPEG_CONFIGURATION@
+
+x264 @V_x264@ (VideoLAN)
+    License: GNU General Public License version 2 or later (licenses/x264.txt). Linked by FFmpeg.
+
+x265 @V_x265@ (MulticoreWare)
+    License: GNU General Public License version 2 or later (licenses/x265.txt). Linked by FFmpeg.
+
+dav1d @V_dav1d@ (VideoLAN and dav1d authors)
+    License: BSD 2-Clause (licenses/dav1d.txt). AV1 decoder, linked by FFmpeg.
+
+Intel VPL (libvpl) @V_libvpl@ (Intel Corporation)
+    License: MIT (licenses/libvpl.txt). Quick Sync Video dispatcher, linked by FFmpeg.
+
+SVT-AV1 @V_svt_av1@ (Alliance for Open Media, Intel Corporation, Netflix, Inc. and contributors)
+    License: BSD 3-Clause Clear License, with the Alliance for Open Media Patent License 1.0 (both in
+    licenses/svt-av1.txt). The AV1 software encoder (libSvtAv1Enc), linked by FFmpeg; AV1 exports use it when no
+    hardware AV1 encoder (NVENC, Quick Sync, AMF) is present.
+
+FAST corner detectors (fastfeat) @V_fastfeat@ (Edward Rosten)
+    License: BSD 3-Clause (licenses/fastfeat.txt). Linked by SVT-AV1.
+
+libvpx @V_libvpx@ (The WebM Project authors)
+    License: BSD 3-Clause, with Google's additional IP rights grant (patents) and ISC parts (licenses/libvpx.txt).
+    The VP9 encoder of WebM exports, linked by FFmpeg.
+
+Opus @V_opus@ (Xiph.Org Foundation, Skype Limited, Octasic, Jean-Marc Valin, Timothy B. Terriberry, CSIRO, Gregory
+Maxwell, Mark Borgerding, Erik de Castro Lopo, Mozilla, Amazon)
+    License: BSD 3-Clause (licenses/opus.txt). The audio encoder of WebM exports, linked by FFmpeg.
+
+AMD AMF headers @V_amd_amf@ and NVIDIA codec headers (nv-codec-headers) @V_ffnvcodec@
+    Licenses: licenses/amd-amf.txt and licenses/ffnvcodec.txt (MIT). Header-only; the drivers are loaded at
+    run time from the operating system and are not part of this distribution.
+
+miniaudio @V_miniaudio@ (David Reid)
+    License: public domain (Unlicense) or MIT No Attribution, at your choice (licenses/miniaudio.txt).
+    Compiled into Wabcut.
+
+libebur128 @V_libebur128@ (Jan Kokemüller)
+    License: MIT (licenses/libebur128.txt). EBU R128 / ITU-R BS.1770 loudness measurement, compiled into Wabcut.
+
+RNNoise @V_rnnoise@ (Jean-Marc Valin, Xiph.Org Foundation, Mozilla, Amazon)
+    License: BSD 3-Clause (licenses/rnnoise.txt), including its trained model. The Reduce Noise audio effect,
+    compiled into Wabcut.
+
+JSON for Modern C++ (nlohmann_json) @V_nlohmann_json@ (Niels Lohmann)
+    License: MIT (licenses/nlohmann-json.txt). Header-only, compiled into Wabcut.
+
+pugixml @V_pugixml@ (Arseny Kapoulkine)
+    License: MIT (licenses/pugixml.txt).
+
+zlib @V_zlib@ (Jean-loup Gailly and Mark Adler)
+    License: zlib License (licenses/zlib.txt).
+
+spdlog @V_spdlog@ (Gabi Melman) and {fmt} @V_fmt@ (Victor Zverovich)
+    Licenses: MIT (licenses/spdlog.txt, licenses/fmt.txt). Declared dependencies; included here when linked.
+
+QtKeychain @V_qtkeychain@ (Frank Osterfeld and contributors)
+    License: BSD 3-Clause (licenses/qtkeychain.txt). Keeps AI provider keys in the OS keychain; included in builds
+    with WABCUT_WITH_CLOUD_AI (the default).
+
+SQLite @V_sqlite3@ (D. Richard Hipp and the SQLite developers)
+    License: public domain (the SQLite "blessing", licenses/sqlite3.txt). Smart search's index: transcript
+    full-text search (FTS5, trigram tokenizer).
+
+hnswlib @V_hnswlib@ (Yury Malkov, Leonid Boytsov and contributors)
+    License: Apache License 2.0 (licenses/hnswlib.txt). Header-only; smart search's vector index.
+
+CLAP @V_clap_cleveraudio@ (Alexandre Bique and the free-audio contributors) - builds with WABCUT_WITH_AUDIO_PLUGINS
+    License: MIT (licenses/clap-cleveraudio.txt). The CLAP plugin ABI headers, compiled into the wabcut-plughost
+    helper that hosts CLAP audio plugins.
+
+VST 3 SDK @V_vst3sdk@ (Steinberg Media Technologies GmbH) - builds with WABCUT_WITH_AUDIO_PLUGINS
+    License: MIT (licenses/vst3sdk.txt; Steinberg relicensed the SDK under MIT with version 3.8). Its interfaces and
+    hosting classes are compiled into the wabcut-plughost helper that hosts VST3 audio plugins. VST is a registered
+    trademark of Steinberg Media Technologies GmbH.
+
+ONNX Runtime @V_onnxruntime_prebuilt@ (Microsoft Corporation) - builds with WABCUT_WITH_ONNX
+    License: MIT (licenses/onnxruntime-prebuilt.txt, which includes Microsoft's notices for the code ONNX Runtime
+    contains). Microsoft's official release binaries (onnxruntime.dll / libonnxruntime, unmodified), used by the
+    wabcut-embed helper with its telemetry disabled. On Windows, DirectML comes from the operating system
+    (System32\DirectML.dll) and is not part of this distribution.
+
+whisper.cpp @V_whisper_cpp@ and ggml @V_ggml@ (the ggml authors) - builds with WABCUT_WITH_LOCAL_AI
+    License: MIT (licenses/whisper-cpp.txt, licenses/ggml.txt; details in licenses/ai-local-helper.md). Local
+    transcription in the wabcut-infer helper: whisper.dll, ggml.dll, ggml-base.dll and the compute backends ggml loads
+    at run time (ggml-cpu-*.dll, one per CPU instruction-set level, and ggml-vulkan.dll).
+
+Vulkan Loader @V_vulkan_loader@ (The Khronos Group Inc., Valve Corporation, LunarG, Inc.) - builds with
+WABCUT_WITH_LOCAL_AI
+    License: Apache License 2.0 (licenses/vulkan-loader.txt). vulkan-1.dll, loaded by ggml's Vulkan backend; the GPU
+    drivers themselves come from the operating system.
+
+llama.cpp llama-server, build b11429 (the ggml authors) - downloaded on request, not part of this distribution
+    License: MIT. The local assistant (Preferences > AI > Local assistant) downloads the official release archives
+    from https://github.com/ggml-org/llama.cpp/releases/tag/b11429 only when you press Download, and verifies them
+    by SHA-256. Its model weights (Qwen3, Apache License 2.0; Phi-4 mini, MIT) are downloaded the same way
+    after their license cards are shown. The optional NVIDIA CUDA runtime archive is under the NVIDIA CUDA Toolkit
+    EULA and is never downloaded without your explicit acceptance.
+
+SigLIP 2 base, patch 16, 224 px (Google) - downloaded on first use, not part of this distribution
+    License: Apache License 2.0, with its Gemma tokenizer vocabulary; ONNX export and 8-bit quantization by
+    onnx-community. Smart search downloads it from Hugging Face into the model store (verified by SHA-256) after
+    showing its license: https://huggingface.co/google/siglip2-base-patch16-224
+
+YuNet face detector, face_detection_yunet_2023mar (Shiqi Yu, OpenCV Model Zoo) - downloaded on first use, not part of
+this distribution
+    License: MIT (Copyright (c) 2020 Shiqi Yu). Auto reframe and the shorts finder run it in wabcut-embed on this
+    computer; downloaded from Hugging Face (opencv/face_detection_yunet, pinned revision) into the model store,
+    verified by SHA-256, after showing its license: https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet
+
+YOLOX-Tiny object detector, release 0.1.1rc0 (Megvii Inc.) - downloaded on first use, not part of this distribution
+    License: Apache License 2.0 (Copyright (c) 2021-2022 Megvii Inc.), trained on COCO. Auto reframe uses its person
+    class, the AI Object Mask its 80 classes, in wabcut-embed on this computer; downloaded from the release's GitHub assets into the model store, verified
+    by SHA-256, after showing its license: https://github.com/Megvii-BaseDetection/YOLOX
+
+DeepFilterNet3 (Hendrik Schroeter) - downloaded on first use, not part of this distribution
+    License: MIT OR Apache-2.0 for the code and the weights, used under MIT (Copyright (c) 2021 Hendrik Schroeter).
+    Enhance Speech runs it in wabcut-embed on this computer; the ONNX archive of the repository at commit 84d57ec is
+    downloaded into the model store, verified by SHA-256 (archive and each graph), after showing its license:
+    https://github.com/Rikorose/DeepFilterNet
+    Wabcut's DeepFilterNet signal processing (src/ai/audio/src/DeepFilter.cpp) is a port of libDF from that
+    repository, under the same MIT License and copyright (THIRD-PARTY-NOTICES.md has the license text).
+
+HTDemucs (Simon Rouard, Francisco Massa, Alexandre Defossez; Meta) - downloaded on first use, not part of this
+distribution
+    License: MIT (Copyright (c) Meta Platforms, Inc. and affiliates), the weights as released with Demucs v4; ONNX
+    export by StemSplit, MIT (Copyright (c) 2026 StemSplit). Separate Stems runs it in wabcut-embed on this computer;
+    downloaded from Hugging Face (StemSplitio/htdemucs-onnx, pinned revision) into the model store, verified by
+    SHA-256, after showing its license: https://github.com/facebookresearch/demucs
+
+OPUS-MT caption translation models (Joerg Tiedemann, Santhosh Thottingal; Language Technology Research Group,
+University of Helsinki) - downloaded on first use, not part of this distribution
+    License: Apache License 2.0, except opus-mt-en-de and opus-mt-zh-en under Creative Commons Attribution 4.0
+    (c) Language Technology Research Group, University of Helsinki, https://creativecommons.org/licenses/by/4.0/;
+    converted to ONNX and 8-bit quantized by Xenova, otherwise unmodified. Captions are translated in wabcut-embed on
+    this computer; each pair's files are downloaded from Hugging Face (Xenova/opus-mt-<pair>, pinned revisions) into the
+    model store, verified by SHA-256, after showing the model card: https://github.com/Helsinki-NLP/Opus-MT
+    Pairs: en-mul, th-en, en-es, en-fr, en-de, en-zh, ja-en, ko-en, zh-en, es-en, fr-en, de-en
+
+SAM 2.1 Hiera-Tiny (Segment Anything Model 2.1; Nikhila Ravi et al., Meta FAIR) - downloaded on first use, not part
+of this distribution
+    License: Apache License 2.0 (Copyright (c) Meta Platforms, Inc. and affiliates), the code and the model weights
+    (facebook/sam2.1-hiera-tiny); ONNX export of its video tracker by square-zero-labs, Apache License 2.0, revision
+    3b2984dd865f6e9d2cc6aed0be6a5a5c2eb352ce. The AI Object Mask runs it in wabcut-embed on this computer; downloaded
+    from Hugging Face (square-zero-labs/sam2.1-tiny-video-onnx, pinned revision) into the model store, every file
+    verified by SHA-256, after showing its license: https://github.com/facebookresearch/sam2
+
+Boxicons 3 (@boxicons/core 1.0.6, Copyright (c) 2026 Boxicons)
+    License: MIT (licenses/boxicons.txt). The icon set used by the user interface. The monitor-button glyphs, the
+    drag grip and text glyphs, the logo and the empty-state illustrations are Wabcut's own drawings.
+
+Manrope 4.504 (Copyright 2019 The Manrope Project Authors)
+    License: SIL Open Font License 1.1 (licenses/OFL-Manrope.txt). The user-interface and display font, bundled in
+    the application's resources.
+
+JetBrains Mono 2.304 (Copyright 2020 The JetBrains Mono Project Authors)
+    License: SIL Open Font License 1.1 (licenses/OFL-JetBrains-Mono.txt). The timecode and numbers font, bundled in
+    the application's resources.
+
+IBM Plex Sans 1.1.0, IBM Plex Sans Thai 1.1.0 and IBM Plex Mono 2.5.0 (Copyright 2017 IBM Corp., Reserved Font
+Name "Plex")
+    License: SIL Open Font License 1.1 (licenses/OFL-IBM-Plex.txt). The Thai user-interface font, and fonts for
+    titles and captions, bundled in the application's resources.
+
+Bai Jamjuree 1.000 (Copyright 2018 Cadson Demak)
+    License: SIL Open Font License 1.1 (licenses/OFL-Bai-Jamjuree.txt). A font for titles and captions, bundled in
+    the application's resources.
+
+
+Catch2 @V_catch2@ (Catch2 authors) - test only
+    License: Boost Software License 1.0 (licenses/catch2.txt). Used by the test suites only; not part of the
+    Wabcut executables.
+
+Microsoft runtime files (Windows only)
+    The Visual C++ runtime (vcruntime140*.dll, msvcp140*.dll, concrt140.dll), the D3D shader compiler
+    (d3dcompiler_47.dll) and the DirectX Shader Compiler (dxcompiler.dll, dxil.dll, used by Qt's Direct3D 12
+    backend) are redistributable files of Microsoft Visual Studio and the Windows SDK, distributed under
+    Microsoft's license terms for those products.
+
+Corresponding source for the GPL components, and for Wabcut itself, is available from the Wabcut source
+repository together with the vcpkg manifest (vcpkg.json) and baseline that pin every version above.

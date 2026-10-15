@@ -1,0 +1,348 @@
+{
+ "format": "wabcut-graphic-template",
+ "version": 1,
+ "template": {
+  "id": "gaming-countdown",
+  "name": "Countdown 3-2-1",
+  "description": "3, 2, 1, GO! - each number punches in for a second.",
+  "version": 1,
+  "duration": 965260800000,
+  "graphic": {
+   "name": "Countdown 3-2-1",
+   "width": 1920,
+   "height": 1080,
+   "layers": [
+    {
+     "id": 1,
+     "kind": "text",
+     "name": "Three",
+     "transform": {
+      "x": 960,
+      "y": 540,
+      "anchorY": 192,
+      "scaleX": [
+       {
+        "t": 0,
+        "v": 160.0
+       },
+       {
+        "t": 63504000000,
+        "v": 100.0,
+        "i": "easeIn"
+       }
+      ],
+      "scaleY": [
+       {
+        "t": 0,
+        "v": 160.0
+       },
+       {
+        "t": 63504000000,
+        "v": 100.0,
+        "i": "easeIn"
+       }
+      ],
+      "opacity": [
+       {
+        "t": 0,
+        "v": 0.0
+       },
+       {
+        "t": 38102400000,
+        "v": 100.0,
+        "i": "easeIn"
+       },
+       {
+        "t": 203212800000,
+        "v": 100.0,
+        "i": "easeOut"
+       },
+       {
+        "t": 254016000000,
+        "v": 0.0
+       }
+      ]
+     },
+     "text": {
+      "runs": [
+       {
+        "text": "3",
+        "font": "Bai Jamjuree",
+        "weight": 600,
+        "size": 320,
+        "fill": "#FFFFFF"
+       }
+      ],
+      "align": "center"
+     },
+     "shadow": {
+      "enabled": true,
+      "color": "#000000",
+      "opacity": 0.5,
+      "angle": 90,
+      "distance": 12,
+      "softness": 24
+     },
+     "in": 0,
+     "out": 254016000000
+    },
+    {
+     "id": 2,
+     "kind": "text",
+     "name": "Two",
+     "transform": {
+      "x": 960,
+      "y": 540,
+      "anchorY": 192,
+      "scaleX": [
+       {
+        "t": 254016000000,
+        "v": 160.0
+       },
+       {
+        "t": 317520000000,
+        "v": 100.0,
+        "i": "easeIn"
+       }
+      ],
+      "scaleY": [
+       {
+        "t": 254016000000,
+        "v": 160.0
+       },
+       {
+        "t": 317520000000,
+        "v": 100.0,
+        "i": "easeIn"
+       }
+      ],
+      "opacity": [
+       {
+        "t": 254016000000,
+        "v": 0.0
+       },
+       {
+        "t": 292118400000,
+        "v": 100.0,
+        "i": "easeIn"
+       },
+       {
+        "t": 457228800000,
+        "v": 100.0,
+        "i": "easeOut"
+       },
+       {
+        "t": 508032000000,
+        "v": 0.0
+       }
+      ]
+     },
+     "text": {
+      "runs": [
+       {
+        "text": "2",
+        "font": "Bai Jamjuree",
+        "weight": 600,
+        "size": 320,
+        "fill": "#FFFFFF"
+       }
+      ],
+      "align": "center"
+     },
+     "shadow": {
+      "enabled": true,
+      "color": "#000000",
+      "opacity": 0.5,
+      "angle": 90,
+      "distance": 12,
+      "softness": 24
+     },
+     "in": 254016000000,
+     "out": 508032000000
+    },
+    {
+     "id": 3,
+     "kind": "text",
+     "name": "One",
+     "transform": {
+      "x": 960,
+      "y": 540,
+      "anchorY": 192,
+      "scaleX": [
+       {
+        "t": 508032000000,
+        "v": 160.0
+       },
+       {
+        "t": 571536000000,
+        "v": 100.0,
+        "i": "easeIn"
+       }
+      ],
+      "scaleY": [
+       {
+        "t": 508032000000,
+        "v": 160.0
+       },
+       {
+        "t": 571536000000,
+        "v": 100.0,
+        "i": "easeIn"
+       }
+      ],
+      "opacity": [
+       {
+        "t": 508032000000,
+        "v": 0.0
+       },
+       {
+        "t": 546134400000,
+        "v": 100.0,
+        "i": "easeIn"
+       },
+       {
+        "t": 711244800000,
+        "v": 100.0,
+        "i": "easeOut"
+       },
+       {
+        "t": 762048000000,
+        "v": 0.0
+       }
+      ]
+     },
+     "text": {
+      "runs": [
+       {
+        "text": "1",
+        "font": "Bai Jamjuree",
+        "weight": 600,
+        "size": 320,
+        "fill": "#FFFFFF"
+       }
+      ],
+      "align": "center"
+     },
+     "shadow": {
+      "enabled": true,
+      "color": "#000000",
+      "opacity": 0.5,
+      "angle": 90,
+      "distance": 12,
+      "softness": 24
+     },
+     "in": 508032000000,
+     "out": 762048000000
+    },
+    {
+     "id": 4,
+     "kind": "text",
+     "name": "Go",
+     "transform": {
+      "x": 960,
+      "y": 540,
+      "anchorY": 192,
+      "scaleX": [
+       {
+        "t": 762048000000,
+        "v": 40.0
+       },
+       {
+        "t": 807770880000,
+        "v": 118.0,
+        "i": "easeInOut"
+       },
+       {
+        "t": 838252800000,
+        "v": 100.0,
+        "i": "easeIn"
+       }
+      ],
+      "scaleY": [
+       {
+        "t": 762048000000,
+        "v": 40.0
+       },
+       {
+        "t": 807770880000,
+        "v": 118.0,
+        "i": "easeInOut"
+       },
+       {
+        "t": 838252800000,
+        "v": 100.0,
+        "i": "easeIn"
+       }
+      ],
+      "opacity": [
+       {
+        "t": 762048000000,
+        "v": 0.0
+       },
+       {
+        "t": 787449600000,
+        "v": 100.0,
+        "i": "easeIn"
+       },
+       {
+        "t": 914457600000,
+        "v": 100.0,
+        "i": "easeOut"
+       },
+       {
+        "t": 965260800000,
+        "v": 0.0
+       }
+      ]
+     },
+     "text": {
+      "runs": [
+       {
+        "text": "GO!",
+        "font": "Bai Jamjuree",
+        "weight": 600,
+        "size": 320,
+        "fill": "#22C55E",
+        "tracking": 40
+       }
+      ],
+      "align": "center"
+     },
+     "shadow": {
+      "enabled": true,
+      "color": "#000000",
+      "opacity": 0.5,
+      "angle": 90,
+      "distance": 12,
+      "softness": 24
+     },
+     "in": 762048000000,
+     "out": 965260800000
+    }
+   ]
+  },
+  "fields": [
+   {
+    "id": "goText",
+    "label": "Last word",
+    "kind": "text",
+    "layer": 4,
+    "property": "text"
+   },
+   {
+    "id": "goColor",
+    "label": "Last word colour",
+    "kind": "color",
+    "layer": 4,
+    "property": "fill"
+   },
+   {
+    "id": "threeColor",
+    "label": "Number colour",
+    "kind": "color",
+    "layer": 1,
+    "property": "fill"
+   }
+  ]
+ }
+}

@@ -1,0 +1,69 @@
+{
+  "name": "19_timecode.prproj",
+  "rootItem": {
+    "name": "19_timecode.prproj",
+    "type": 3,
+    "nodeId": "000f4240",
+    "children": [
+      {
+        "name": "bars_64x36_2997tc.mov",
+        "type": 1,
+        "nodeId": "000f4241",
+        "children": [
+          
+        ],
+        "treePath": "\\19_timecode.prproj\\bars_64x36_2997tc.mov",
+        "colorLabel": 0,
+        "isOffline": false,
+        "startTime": {
+          "ticks": "915372057600000",
+          "seconds": 3603.6
+        },
+        "hasProxy": false,
+        "proxyPath": "",
+        "inPoint": {
+          "ticks": "0",
+          "seconds": 0
+        },
+        "outPoint": {
+          "ticks": "508540032000",
+          "seconds": 2.002
+        },
+        "mediaPath": "C:\\Users\\del-m\\git\\py-premiere\\samples\\models\\assets\\bars_64x36_2997tc.mov",
+        "interpretation": {
+          "frameRate": 29.97002997003,
+          "pixelAspectRatio": 1,
+          "alphaUsage": 0,
+          "ignoreAlpha": true,
+          "invertAlpha": false,
+          "fieldType": -1,
+          "removePulldown": false
+        },
+        "markers": [
+          
+        ]
+      }
+    ],
+    "treePath": "\\19_timecode.prproj",
+    "colorLabel": 0,
+    "isOffline": false,
+    "hasProxy": false,
+    "proxyPath": "",
+    "inPoint": {
+      "ticks": "-101606400000000000",
+      "seconds": -400000
+    },
+    "outPoint": {
+      "ticks": "-101606400000000000",
+      "seconds": -400000
+    },
+    "markers": [
+      
+    ]
+  },
+  "sequences": [
+    
+  ],
+  "documentID": "98a3a0b5-e89c-49d4-b568-9c9b104e7887",
+  "activeSequence": null
+}

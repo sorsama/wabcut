@@ -1,0 +1,17 @@
+# CPACK_PROJECT_CONFIG_FILE (generated from cmake/packaging/CPackProjectConfig.cmake.in): cpack reads it once per
+# generator, before packaging.
+
+if(CPACK_GENERATOR STREQUAL "ZIP")
+    # The portable build: the install tree in one folder, run from anywhere without installing.
+    set(CPACK_PACKAGE_FILE_NAME "@WABCUT_PACKAGE_BASENAME@-portable")
+    set(CPACK_INCLUDE_TOPLEVEL_DIRECTORY ON)
+elseif(CPACK_GENERATOR STREQUAL "WIX")
+    set(CPACK_PACKAGE_FILE_NAME "@WABCUT_PACKAGE_BASENAME@")
+    # Off for the MSI: with it on, the WiX generator harvests its own working folder (the .wxs sources, License.rtf)
+    # and installs the program one folder down.
+    set(CPACK_INCLUDE_TOPLEVEL_DIRECTORY OFF)
+    # CPack runs `wix build` from PATH; WiX lives in a per-user tool folder (cmake/packaging/Install-WixToolset.ps1).
+    if(NOT "@WABCUT_WIX_DIR@" STREQUAL "")
+        set(ENV{PATH} "@WABCUT_WIX_DIR@;$ENV{PATH}")
+    endif()
+endif()

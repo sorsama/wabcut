@@ -1,0 +1,87 @@
+#version 440
+
+// Video scopes on the GPU (I.5): bins the composited canvas (linear, premultiplied RGBA16F) after the output
+// transform - exactly what the monitor shows - into waveform, parade, vectorscope and histogram counts. The binning
+// is the contract of wabcut::color::computeScopes (src/render/color/include/wabcut/color/Scopes.h); the CPU path
+// gives the same counts within float rounding at bin edges (tests/render/test_scopes_gpu.cpp).
+// Mode 1 clears the bins (one invocation per bin), mode 0 accumulates (one invocation per sampled pixel).
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(std140, binding = 0) uniform ScopeParams {
+    ivec4 size;    // x, y = canvas pixels; z = step; w = output transform (0 Rec.709, 1 sRGB, 2 linear)
+    ivec4 dims;    // x = columns, y = levels, z = vector size, w = mode (0 accumulate, 1 clear)
+    vec4 zoom;     // x = vectorscope zoom; y = total bins (clear mode); z = 1 when the texture is stored bottom-up;
+                   // w = invocations per row (clear mode)
+    ivec4 waves;   // offsets of the luma, R, G, B waveforms
+    ivec4 waves2;  // offsets of the Cb, Cr waveforms, the vectorscope, the histograms (R, G, B, Y)
+} p;
+
+layout(binding = 1) uniform sampler2D canvas;
+
+layout(std430, binding = 2) buffer Bins {
+    uint bins[];
+};
+
+float encode(float l, int t)
+{
+    l = clamp(l, 0.0, 1.0);
+    if (t == 1)
+        return l <= 0.0031308 ? 12.92 * l : 1.055 * pow(l, 1.0 / 2.4) - 0.055;
+    if (t == 0) {
+        const float a = 1.09929682680944;
+        const float b = 0.018053968510807;
+        return l < b ? 4.5 * l : a * pow(l, 0.45) - (a - 1.0);
+    }
+    return l;
+}
+
+int level(float v, int levels)
+{
+    return min(levels - 1, int(floor(clamp(v, 0.0, 1.0) * float(levels))));
+}
+
+int vbin(float c, int size)
+{
+    return int(clamp(floor(float(size) * (0.5 + c) + 0.5), 0.0, float(size - 1)));
+}
+
+void main()
+{
+    if (p.dims.w == 1) {
+        uint i = gl_GlobalInvocationID.y * uint(p.zoom.w) + gl_GlobalInvocationID.x; // zoom.w = invocations per row
+        if (i < uint(p.zoom.y))
+            bins[i] = 0u;
+        return;
+    }
+    int x = int(gl_GlobalInvocationID.x) * p.size.z;
+    int y = int(gl_GlobalInvocationID.y) * p.size.z;
+    if (x >= p.size.x || y >= p.size.y)
+        return;
+    int ty = p.zoom.z > 0.5 ? p.size.y - 1 - y : y;
+    vec4 c = texelFetch(canvas, ivec2(x, ty), 0); // premultiplied linear: over black, as the monitor shows it
+    int t = p.size.w;
+    float r = encode(c.r, t);
+    float g = encode(c.g, t);
+    float b = encode(c.b, t);
+    int columns = p.dims.x;
+    int levels = p.dims.y;
+    int vsize = p.dims.z;
+    int column = min(columns - 1, (x * columns) / p.size.x);
+    float yl = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    float cb = (b - yl) / 1.8556;
+    float cr = (r - yl) / 1.5748;
+    atomicAdd(bins[p.waves.x + level(yl, levels) * columns + column], 1u);
+    atomicAdd(bins[p.waves.y + level(r, levels) * columns + column], 1u);
+    atomicAdd(bins[p.waves.z + level(g, levels) * columns + column], 1u);
+    atomicAdd(bins[p.waves.w + level(b, levels) * columns + column], 1u);
+    atomicAdd(bins[p.waves2.x + level(cb + 0.5, levels) * columns + column], 1u);
+    atomicAdd(bins[p.waves2.y + level(cr + 0.5, levels) * columns + column], 1u);
+    int vx = vbin(cb * p.zoom.x, vsize);
+    int vy = vbin(-cr * p.zoom.x, vsize);
+    atomicAdd(bins[p.waves2.z + vy * vsize + vx], 1u);
+    atomicAdd(bins[p.waves2.w + level(r, levels)], 1u);
+    atomicAdd(bins[p.waves2.w + levels + level(g, levels)], 1u);
+    atomicAdd(bins[p.waves2.w + 2 * levels + level(b, levels)], 1u);
+    atomicAdd(bins[p.waves2.w + 3 * levels + level(yl, levels)], 1u);
+}

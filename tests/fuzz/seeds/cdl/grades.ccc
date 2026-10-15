@@ -1,0 +1,4 @@
+<ColorCorrectionCollection xmlns="urn:ASC:CDL:v1.01">
+  <ColorCorrection id="a"><SOPNode><Slope>2 2 2</Slope><Offset>0 0 0</Offset><Power>1 1 1</Power></SOPNode></ColorCorrection>
+  <ColorCorrection id="b"><SatNode><Saturation>0</Saturation></SatNode></ColorCorrection>
+</ColorCorrectionCollection>

@@ -1,0 +1,7 @@
+onnxruntime-prebuilt provides CMake targets (official Microsoft ONNX Runtime binaries):
+
+    find_package(onnxruntime-prebuilt CONFIG REQUIRED)
+    target_link_libraries(main PRIVATE onnxruntime-prebuilt::onnxruntime)
+
+Copy ${ONNXRUNTIME_PREBUILT_RUNTIME_FILES} next to the executable (onnxruntime.dll and
+onnxruntime_providers_shared.dll on Windows). Disable ORT telemetry with Ort::Env::DisableTelemetryEvents().

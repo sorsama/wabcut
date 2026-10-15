@@ -1,0 +1,577 @@
+{
+  "format": "wabcut-graphic-template",
+  "template": {
+    "description": "Countdown 3, 2, 1 in a ring, one second each, then GO!",
+    "duration": 1143072000000,
+    "fields": [
+      {
+        "id": "count3",
+        "kind": "text",
+        "label": "3",
+        "layer": 4,
+        "property": "text",
+        "value": "3"
+      },
+      {
+        "id": "count2",
+        "kind": "text",
+        "label": "2",
+        "layer": 5,
+        "property": "text",
+        "value": "2"
+      },
+      {
+        "id": "count1",
+        "kind": "text",
+        "label": "1",
+        "layer": 6,
+        "property": "text",
+        "value": "1"
+      },
+      {
+        "id": "go",
+        "kind": "text",
+        "label": "Go",
+        "layer": 7,
+        "property": "text",
+        "value": "GO!"
+      },
+      {
+        "id": "accent",
+        "kind": "color",
+        "label": "Ring colour",
+        "layer": 3,
+        "property": "stroke",
+        "value": [
+          0.482,
+          0.231,
+          1.0,
+          1.0
+        ]
+      }
+    ],
+    "graphic": {
+      "height": 1080,
+      "layers": [
+        {
+          "children": [
+            {
+              "id": 2,
+              "kind": "shape",
+              "name": "Disc",
+              "shape": {
+                "fill": {
+                  "color": [
+                    0.047,
+                    0.039,
+                    0.071,
+                    0.85
+                  ],
+                  "type": "solid"
+                },
+                "height": 300.0,
+                "type": "ellipse",
+                "width": 300.0
+              }
+            },
+            {
+              "id": 3,
+              "kind": "shape",
+              "name": "Ring",
+              "shape": {
+                "fill": {
+                  "type": "none"
+                },
+                "height": 300.0,
+                "stroke": {
+                  "cap": "round",
+                  "color": [
+                    0.482,
+                    0.231,
+                    1.0,
+                    1.0
+                  ],
+                  "enabled": true,
+                  "join": "round",
+                  "width": 14.0
+                },
+                "trimEnd": {
+                  "keys": [
+                    {
+                      "i": "easeInOut",
+                      "t": 25401600000,
+                      "v": 0.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 152409600000,
+                      "v": 100.0
+                    }
+                  ]
+                },
+                "type": "ellipse",
+                "width": 300.0
+              }
+            }
+          ],
+          "id": 1,
+          "kind": "group",
+          "name": "Ring",
+          "transform": {
+            "scaleX": {
+              "keys": [
+                {
+                  "t": 0,
+                  "v": 0.0
+                },
+                {
+                  "i": "easeInOut",
+                  "t": 53343360000,
+                  "v": 112.00000000000001
+                },
+                {
+                  "i": "easeIn",
+                  "t": 76204800000,
+                  "v": 100.0
+                },
+                {
+                  "i": "easeOut",
+                  "t": 1041465600000,
+                  "v": 100.0
+                },
+                {
+                  "i": "easeInOut",
+                  "t": 1071947520000,
+                  "v": 110.00000000000001
+                },
+                {
+                  "t": 1143072000000,
+                  "v": 0.0
+                }
+              ]
+            },
+            "scaleY": {
+              "keys": [
+                {
+                  "t": 0,
+                  "v": 0.0
+                },
+                {
+                  "i": "easeInOut",
+                  "t": 53343360000,
+                  "v": 112.00000000000001
+                },
+                {
+                  "i": "easeIn",
+                  "t": 76204800000,
+                  "v": 100.0
+                },
+                {
+                  "i": "easeOut",
+                  "t": 1041465600000,
+                  "v": 100.0
+                },
+                {
+                  "i": "easeInOut",
+                  "t": 1071947520000,
+                  "v": 110.00000000000001
+                },
+                {
+                  "t": 1143072000000,
+                  "v": 0.0
+                }
+              ]
+            },
+            "x": 960.0,
+            "y": 540.0
+          }
+        },
+        {
+          "id": 4,
+          "kind": "text",
+          "name": "Three",
+          "out": 254016000000,
+          "shadow": {
+            "angle": 90.0,
+            "color": [
+              0.047,
+              0.039,
+              0.071,
+              1.0
+            ],
+            "enabled": true,
+            "opacity": 0.55,
+            "softness": 14.0
+          },
+          "text": {
+            "align": "center",
+            "runs": [
+              {
+                "fill": [
+                  0.953,
+                  0.941,
+                  0.98,
+                  1.0
+                ],
+                "font": "Bai Jamjuree",
+                "size": 200.0,
+                "text": "3",
+                "weight": 600
+              }
+            ]
+          },
+          "transform": {
+            "anchorY": 120.0,
+            "opacity": {
+              "keys": [
+                {
+                  "t": 203212800000,
+                  "v": 100.0
+                },
+                {
+                  "i": "easeIn",
+                  "t": 254016000000,
+                  "v": 0.0
+                }
+              ]
+            },
+            "scaleX": {
+              "keys": [
+                {
+                  "t": 0,
+                  "v": 0.0
+                },
+                {
+                  "i": "easeInOut",
+                  "t": 53343360000,
+                  "v": 120.0
+                },
+                {
+                  "i": "easeIn",
+                  "t": 76204800000,
+                  "v": 100.0
+                }
+              ]
+            },
+            "scaleY": {
+              "keys": [
+                {
+                  "t": 0,
+                  "v": 0.0
+                },
+                {
+                  "i": "easeInOut",
+                  "t": 53343360000,
+                  "v": 120.0
+                },
+                {
+                  "i": "easeIn",
+                  "t": 76204800000,
+                  "v": 100.0
+                }
+              ]
+            },
+            "x": 960.0,
+            "y": 540.0
+          }
+        },
+        {
+          "id": 5,
+          "in": 254016000000,
+          "kind": "text",
+          "name": "Two",
+          "out": 508032000000,
+          "shadow": {
+            "angle": 90.0,
+            "color": [
+              0.047,
+              0.039,
+              0.071,
+              1.0
+            ],
+            "enabled": true,
+            "opacity": 0.55,
+            "softness": 14.0
+          },
+          "text": {
+            "align": "center",
+            "runs": [
+              {
+                "fill": [
+                  0.953,
+                  0.941,
+                  0.98,
+                  1.0
+                ],
+                "font": "Bai Jamjuree",
+                "size": 200.0,
+                "text": "2",
+                "weight": 600
+              }
+            ]
+          },
+          "transform": {
+            "anchorY": 120.0,
+            "opacity": {
+              "keys": [
+                {
+                  "t": 457228800000,
+                  "v": 100.0
+                },
+                {
+                  "i": "easeIn",
+                  "t": 508032000000,
+                  "v": 0.0
+                }
+              ]
+            },
+            "scaleX": {
+              "keys": [
+                {
+                  "t": 254016000000,
+                  "v": 0.0
+                },
+                {
+                  "i": "easeInOut",
+                  "t": 307359360000,
+                  "v": 120.0
+                },
+                {
+                  "i": "easeIn",
+                  "t": 330220800000,
+                  "v": 100.0
+                }
+              ]
+            },
+            "scaleY": {
+              "keys": [
+                {
+                  "t": 254016000000,
+                  "v": 0.0
+                },
+                {
+                  "i": "easeInOut",
+                  "t": 307359360000,
+                  "v": 120.0
+                },
+                {
+                  "i": "easeIn",
+                  "t": 330220800000,
+                  "v": 100.0
+                }
+              ]
+            },
+            "x": 960.0,
+            "y": 540.0
+          }
+        },
+        {
+          "id": 6,
+          "in": 508032000000,
+          "kind": "text",
+          "name": "One",
+          "out": 762048000000,
+          "shadow": {
+            "angle": 90.0,
+            "color": [
+              0.047,
+              0.039,
+              0.071,
+              1.0
+            ],
+            "enabled": true,
+            "opacity": 0.55,
+            "softness": 14.0
+          },
+          "text": {
+            "align": "center",
+            "runs": [
+              {
+                "fill": [
+                  0.953,
+                  0.941,
+                  0.98,
+                  1.0
+                ],
+                "font": "Bai Jamjuree",
+                "size": 200.0,
+                "text": "1",
+                "weight": 600
+              }
+            ]
+          },
+          "transform": {
+            "anchorY": 120.0,
+            "opacity": {
+              "keys": [
+                {
+                  "t": 711244800000,
+                  "v": 100.0
+                },
+                {
+                  "i": "easeIn",
+                  "t": 762048000000,
+                  "v": 0.0
+                }
+              ]
+            },
+            "scaleX": {
+              "keys": [
+                {
+                  "t": 508032000000,
+                  "v": 0.0
+                },
+                {
+                  "i": "easeInOut",
+                  "t": 561375360000,
+                  "v": 120.0
+                },
+                {
+                  "i": "easeIn",
+                  "t": 584236800000,
+                  "v": 100.0
+                }
+              ]
+            },
+            "scaleY": {
+              "keys": [
+                {
+                  "t": 508032000000,
+                  "v": 0.0
+                },
+                {
+                  "i": "easeInOut",
+                  "t": 561375360000,
+                  "v": 120.0
+                },
+                {
+                  "i": "easeIn",
+                  "t": 584236800000,
+                  "v": 100.0
+                }
+              ]
+            },
+            "x": 960.0,
+            "y": 540.0
+          }
+        },
+        {
+          "id": 7,
+          "in": 762048000000,
+          "kind": "text",
+          "name": "Go",
+          "shadow": {
+            "angle": 90.0,
+            "color": [
+              0.047,
+              0.039,
+              0.071,
+              1.0
+            ],
+            "enabled": true,
+            "opacity": 0.55,
+            "softness": 14.0
+          },
+          "text": {
+            "align": "center",
+            "runs": [
+              {
+                "fill": [
+                  0.953,
+                  0.941,
+                  0.98,
+                  1.0
+                ],
+                "font": "Bai Jamjuree",
+                "size": 150.0,
+                "text": "GO!",
+                "tracking": 20.0,
+                "weight": 600
+              }
+            ]
+          },
+          "transform": {
+            "anchorY": 90.0,
+            "scaleX": {
+              "keys": [
+                {
+                  "t": 762048000000,
+                  "v": 0.0
+                },
+                {
+                  "i": "easeInOut",
+                  "t": 833172480000,
+                  "v": 125.0
+                },
+                {
+                  "i": "easeIn",
+                  "t": 863654400000,
+                  "v": 100.0
+                },
+                {
+                  "i": "easeOut",
+                  "t": 1041465600000,
+                  "v": 100.0
+                },
+                {
+                  "i": "easeInOut",
+                  "t": 1071947520000,
+                  "v": 110.00000000000001
+                },
+                {
+                  "t": 1143072000000,
+                  "v": 0.0
+                }
+              ]
+            },
+            "scaleY": {
+              "keys": [
+                {
+                  "t": 762048000000,
+                  "v": 0.0
+                },
+                {
+                  "i": "easeInOut",
+                  "t": 833172480000,
+                  "v": 125.0
+                },
+                {
+                  "i": "easeIn",
+                  "t": 863654400000,
+                  "v": 100.0
+                },
+                {
+                  "i": "easeOut",
+                  "t": 1041465600000,
+                  "v": 100.0
+                },
+                {
+                  "i": "easeInOut",
+                  "t": 1071947520000,
+                  "v": 110.00000000000001
+                },
+                {
+                  "t": 1143072000000,
+                  "v": 0.0
+                }
+              ]
+            },
+            "x": 960.0,
+            "y": 540.0
+          }
+        }
+      ],
+      "name": "Countdown 3-2-1",
+      "responsive": {
+        "duration": 1143072000000,
+        "intro": 889056000000,
+        "outro": 127008000000
+      },
+      "width": 1920
+    },
+    "id": "wabcut.gaming.countdown",
+    "name": "Countdown 3-2-1",
+    "version": 1
+  },
+  "version": 1
+}

@@ -1,0 +1,3 @@
+<cdl:ColorDecisionList xmlns:cdl="urn:ASC:CDL:v1.2"><cdl:ColorDecision>
+  <cdl:ColorCorrection id="x"><cdl:SOPNode><cdl:Slope>1 1 1</cdl:Slope><cdl:Offset>0.1 0.1 0.1</cdl:Offset><cdl:Power>1 1 1</cdl:Power></cdl:SOPNode></cdl:ColorCorrection>
+</cdl:ColorDecision></cdl:ColorDecisionList>

@@ -1,0 +1,5 @@
+{
+ "type": "registerCommand",
+ "id": "addBeatMarkers",
+ "title": "Add Markers at Every Beat"
+}

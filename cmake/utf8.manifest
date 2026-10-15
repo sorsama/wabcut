@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!-- UTF-8 as the process code page of every Wabcut executable on Windows (wabcut_utf8_code_page() in
+     cmake/WabcutCompilerOptions.cmake, docs/building.md "UTF-8 code page"). The linker's own manifest (the UAC
+     execution level) is merged with this one by mt.exe. -->
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <activeCodePage xmlns="http://schemas.microsoft.com/SMI/2019/WindowsSettings">UTF-8</activeCodePage>
+    </windowsSettings>
+  </application>
+</assembly>

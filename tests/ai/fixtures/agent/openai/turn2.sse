@@ -1,0 +1,27 @@
+event: response.created
+data: {"type":"response.created","response":{"id":"resp_agent_2","status":"in_progress","model":"gpt-6.1-sol","output":[]},"sequence_number":0}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","output_index":0,"item":{"id":"rs_2","type":"reasoning","summary":[]},"sequence_number":1}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","output_index":0,"item":{"id":"rs_2","type":"reasoning","summary":[],"encrypted_content":"gAAAAABagentTurn2Encrypted=="},"sequence_number":2}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","output_index":1,"item":{"type":"function_call","id":"fc_2","call_id":"call_add_1","name":"marker_add","arguments":""},"sequence_number":3}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","item_id":"fc_2","output_index":1,"delta":"{\"colorIndex\":null,\"comment\":null,\"duration\":n","sequence_number":4}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","item_id":"fc_2","output_index":1,"delta":"ull,\"name\":\"Intro\",\"sequence\":null,\"time\":null}","sequence_number":5}
+
+event: response.function_call_arguments.done
+data: {"type":"response.function_call_arguments.done","item_id":"fc_2","output_index":1,"arguments":"{\"colorIndex\":null,\"comment\":null,\"duration\":null,\"name\":\"Intro\",\"sequence\":null,\"time\":null}","sequence_number":6}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","output_index":1,"item":{"type":"function_call","id":"fc_2","call_id":"call_add_1","name":"marker_add","arguments":"{\"colorIndex\":null,\"comment\":null,\"duration\":null,\"name\":\"Intro\",\"sequence\":null,\"time\":null}","status":"completed"},"sequence_number":7}
+
+event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_agent_2","status":"completed","usage":{"input_tokens":9750,"input_tokens_details":{"cached_tokens":9088},"output_tokens":36,"output_tokens_details":{"reasoning_tokens":8},"total_tokens":9786}},"sequence_number":8}
+

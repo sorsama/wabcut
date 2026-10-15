@@ -1,0 +1,652 @@
+{
+  "format": "wabcut-graphic-template",
+  "template": {
+    "description": "Intro title with a channel line over an accent band that wipes in and out.",
+    "duration": 1016064000000,
+    "fields": [
+      {
+        "id": "title",
+        "kind": "text",
+        "label": "Title",
+        "layer": 4,
+        "property": "text",
+        "value": "GAME ON"
+      },
+      {
+        "id": "subtitle",
+        "kind": "text",
+        "label": "Channel line",
+        "layer": 5,
+        "property": "text",
+        "value": "CHANNEL NAME"
+      },
+      {
+        "id": "accent",
+        "kind": "color",
+        "label": "Accent colour",
+        "layer": 2,
+        "property": "fill",
+        "value": [
+          0.482,
+          0.231,
+          1.0,
+          1.0
+        ]
+      },
+      {
+        "id": "length",
+        "kind": "duration",
+        "label": "Length",
+        "property": "clip",
+        "value": 1016064000000
+      }
+    ],
+    "graphic": {
+      "height": 1080,
+      "layers": [
+        {
+          "children": [
+            {
+              "id": 2,
+              "kind": "shape",
+              "masks": [
+                {
+                  "enabled": true,
+                  "id": 1,
+                  "inverted": false,
+                  "mode": "add",
+                  "name": "Wipe",
+                  "params": {
+                    "center.x": {
+                      "keys": [
+                        {
+                          "t": 0,
+                          "v": -0.375
+                        },
+                        {
+                          "i": "easeIn",
+                          "t": 88905600000,
+                          "v": 0.0
+                        }
+                      ]
+                    },
+                    "center.y": {
+                      "value": 0.0
+                    },
+                    "size.x": {
+                      "keys": [
+                        {
+                          "t": 0,
+                          "v": 0.0
+                        },
+                        {
+                          "i": "easeIn",
+                          "t": 88905600000,
+                          "v": 0.75
+                        }
+                      ]
+                    },
+                    "size.y": {
+                      "value": 0.2777777777777778
+                    }
+                  },
+                  "shape": "rectangle"
+                }
+              ],
+              "name": "Band",
+              "shape": {
+                "fill": {
+                  "color": [
+                    0.482,
+                    0.231,
+                    1.0,
+                    1.0
+                  ],
+                  "type": "solid"
+                },
+                "path": [
+                  {
+                    "i": "linear",
+                    "t": 0,
+                    "v": [
+                      [
+                        -640.0,
+                        -150.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0
+                      ],
+                      [
+                        720.0,
+                        -150.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0
+                      ],
+                      [
+                        640.0,
+                        150.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0
+                      ],
+                      [
+                        -720.0,
+                        150.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0
+                      ]
+                    ]
+                  }
+                ],
+                "type": "path"
+              }
+            },
+            {
+              "id": 3,
+              "kind": "shape",
+              "masks": [
+                {
+                  "enabled": true,
+                  "id": 1,
+                  "inverted": false,
+                  "mode": "add",
+                  "name": "Wipe",
+                  "params": {
+                    "center.x": {
+                      "keys": [
+                        {
+                          "t": 30481920000,
+                          "v": -0.2947916666666667
+                        },
+                        {
+                          "i": "easeIn",
+                          "t": 106686720000,
+                          "v": 0.008854166666666663
+                        }
+                      ]
+                    },
+                    "center.y": {
+                      "value": 0.16296296296296298
+                    },
+                    "size.x": {
+                      "keys": [
+                        {
+                          "t": 30481920000,
+                          "v": 0.0
+                        },
+                        {
+                          "i": "easeIn",
+                          "t": 106686720000,
+                          "v": 0.6072916666666667
+                        }
+                      ]
+                    },
+                    "size.y": {
+                      "value": 0.014814814814814815
+                    }
+                  },
+                  "shape": "rectangle"
+                }
+              ],
+              "name": "Stripe",
+              "shape": {
+                "fill": {
+                  "color": [
+                    0.953,
+                    0.941,
+                    0.98,
+                    0.85
+                  ],
+                  "type": "solid"
+                },
+                "path": [
+                  {
+                    "i": "linear",
+                    "t": 0,
+                    "v": [
+                      [
+                        -560.0,
+                        168.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0
+                      ],
+                      [
+                        600.0,
+                        168.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0
+                      ],
+                      [
+                        594.0,
+                        184.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0
+                      ],
+                      [
+                        -566.0,
+                        184.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0
+                      ]
+                    ]
+                  }
+                ],
+                "type": "path"
+              }
+            }
+          ],
+          "id": 1,
+          "kind": "group",
+          "masks": [
+            {
+              "enabled": true,
+              "id": 1,
+              "inverted": false,
+              "mode": "add",
+              "name": "Wipe",
+              "params": {
+                "center.x": {
+                  "keys": [
+                    {
+                      "i": "easeOut",
+                      "t": 914457600000,
+                      "v": 0.0
+                    },
+                    {
+                      "t": 1016064000000,
+                      "v": 0.375
+                    }
+                  ]
+                },
+                "center.y": {
+                  "value": 0.015740740740740722
+                },
+                "size.x": {
+                  "keys": [
+                    {
+                      "i": "easeOut",
+                      "t": 914457600000,
+                      "v": 0.75
+                    },
+                    {
+                      "t": 1016064000000,
+                      "v": 0.0
+                    }
+                  ]
+                },
+                "size.y": {
+                  "value": 0.30925925925925923
+                }
+              },
+              "shape": "rectangle"
+            }
+          ],
+          "name": "Slash",
+          "transform": {
+            "x": 960.0,
+            "y": 500.0
+          }
+        },
+        {
+          "id": 4,
+          "kind": "text",
+          "name": "Title",
+          "shadow": {
+            "angle": 90.0,
+            "color": [
+              0.047,
+              0.039,
+              0.071,
+              1.0
+            ],
+            "enabled": true,
+            "opacity": 0.6,
+            "softness": 14.0
+          },
+          "text": {
+            "align": "center",
+            "runs": [
+              {
+                "fill": [
+                  0.953,
+                  0.941,
+                  0.98,
+                  1.0
+                ],
+                "font": "Bai Jamjuree",
+                "size": 180.0,
+                "text": "GAME ON",
+                "tracking": 60.0,
+                "weight": 600
+              }
+            ]
+          },
+          "transform": {
+            "anchorY": 108.0,
+            "opacity": {
+              "keys": [
+                {
+                  "t": 38102400000,
+                  "v": 0.0
+                },
+                {
+                  "i": "easeIn",
+                  "t": 88905600000,
+                  "v": 100.0
+                },
+                {
+                  "i": "easeOut",
+                  "t": 939859200000,
+                  "v": 100.0
+                },
+                {
+                  "t": 1016064000000,
+                  "v": 0.0
+                }
+              ]
+            },
+            "x": 960.0,
+            "y": {
+              "keys": [
+                {
+                  "t": 38102400000,
+                  "v": 570.0
+                },
+                {
+                  "i": "easeInOut",
+                  "t": 109226880000,
+                  "v": 474.6
+                },
+                {
+                  "i": "easeIn",
+                  "t": 139708800000,
+                  "v": 480.0
+                },
+                {
+                  "i": "easeOut",
+                  "t": 914457600000,
+                  "v": 480.0
+                },
+                {
+                  "t": 1016064000000,
+                  "v": 390.0
+                }
+              ]
+            }
+          }
+        },
+        {
+          "id": 5,
+          "kind": "text",
+          "name": "Subtitle",
+          "text": {
+            "align": "center",
+            "animators": [
+              {
+                "name": "Words In",
+                "offsetY": 21.6,
+                "opacity": 0.0,
+                "shape": "ramp",
+                "start": {
+                  "keys": [
+                    {
+                      "t": 101606400000,
+                      "v": 0.0
+                    },
+                    {
+                      "t": 215913600000,
+                      "v": 100.0
+                    }
+                  ]
+                },
+                "unit": "word"
+              }
+            ],
+            "runs": [
+              {
+                "fill": [
+                  0.953,
+                  0.941,
+                  0.98,
+                  1.0
+                ],
+                "font": "IBM Plex Sans Thai",
+                "size": 44.0,
+                "text": "CHANNEL NAME",
+                "tracking": 300.0,
+                "weight": 600
+              }
+            ]
+          },
+          "transform": {
+            "anchorY": 26.4,
+            "opacity": {
+              "keys": [
+                {
+                  "i": "easeOut",
+                  "t": 939859200000,
+                  "v": 100.0
+                },
+                {
+                  "t": 1016064000000,
+                  "v": 0.0
+                }
+              ]
+            },
+            "x": 960.0,
+            "y": 724.0
+          }
+        },
+        {
+          "id": 6,
+          "kind": "shape",
+          "masks": [
+            {
+              "enabled": true,
+              "id": 1,
+              "inverted": false,
+              "mode": "add",
+              "name": "Wipe",
+              "params": {
+                "center.x": {
+                  "keys": [
+                    {
+                      "t": 114307200000,
+                      "v": 0.036458333333333336
+                    },
+                    {
+                      "i": "easeIn",
+                      "t": 190512000000,
+                      "v": 0.0
+                    }
+                  ]
+                },
+                "center.y": {
+                  "value": 0.0
+                },
+                "size.x": {
+                  "keys": [
+                    {
+                      "t": 114307200000,
+                      "v": 0.0
+                    },
+                    {
+                      "i": "easeIn",
+                      "t": 190512000000,
+                      "v": 0.07291666666666667
+                    }
+                  ]
+                },
+                "size.y": {
+                  "value": 0.005555555555555556
+                }
+              },
+              "shape": "rectangle"
+            }
+          ],
+          "name": "Line left",
+          "pin": {
+            "edges": [
+              "left"
+            ],
+            "offsets": [
+              -180.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "to": 5
+          },
+          "shape": {
+            "fill": {
+              "color": [
+                0.953,
+                0.941,
+                0.98,
+                1.0
+              ],
+              "type": "solid"
+            },
+            "height": 6.0,
+            "type": "rectangle",
+            "width": 140.0
+          },
+          "transform": {
+            "opacity": {
+              "keys": [
+                {
+                  "i": "easeOut",
+                  "t": 939859200000,
+                  "v": 100.0
+                },
+                {
+                  "t": 1016064000000,
+                  "v": 0.0
+                }
+              ]
+            },
+            "x": 625.6,
+            "y": 724.0
+          }
+        },
+        {
+          "id": 7,
+          "kind": "shape",
+          "masks": [
+            {
+              "enabled": true,
+              "id": 1,
+              "inverted": false,
+              "mode": "add",
+              "name": "Wipe",
+              "params": {
+                "center.x": {
+                  "keys": [
+                    {
+                      "t": 114307200000,
+                      "v": -0.036458333333333336
+                    },
+                    {
+                      "i": "easeIn",
+                      "t": 190512000000,
+                      "v": 0.0
+                    }
+                  ]
+                },
+                "center.y": {
+                  "value": 0.0
+                },
+                "size.x": {
+                  "keys": [
+                    {
+                      "t": 114307200000,
+                      "v": 0.0
+                    },
+                    {
+                      "i": "easeIn",
+                      "t": 190512000000,
+                      "v": 0.07291666666666667
+                    }
+                  ]
+                },
+                "size.y": {
+                  "value": 0.005555555555555556
+                }
+              },
+              "shape": "rectangle"
+            }
+          ],
+          "name": "Line right",
+          "pin": {
+            "edges": [
+              "right"
+            ],
+            "offsets": [
+              0.0,
+              0.0,
+              180.0,
+              0.0
+            ],
+            "to": 5
+          },
+          "shape": {
+            "fill": {
+              "color": [
+                0.953,
+                0.941,
+                0.98,
+                1.0
+              ],
+              "type": "solid"
+            },
+            "height": 6.0,
+            "type": "rectangle",
+            "width": 140.0
+          },
+          "transform": {
+            "opacity": {
+              "keys": [
+                {
+                  "i": "easeOut",
+                  "t": 939859200000,
+                  "v": 100.0
+                },
+                {
+                  "t": 1016064000000,
+                  "v": 0.0
+                }
+              ]
+            },
+            "x": 1294.4,
+            "y": 724.0
+          }
+        }
+      ],
+      "name": "Gaming intro",
+      "responsive": {
+        "duration": 1016064000000,
+        "intro": 228614400000,
+        "outro": 101606400000
+      },
+      "width": 1920
+    },
+    "id": "wabcut.gaming.intro",
+    "name": "Gaming intro",
+    "version": 1
+  },
+  "version": 1
+}

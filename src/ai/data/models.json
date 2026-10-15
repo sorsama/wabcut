@@ -1,0 +1,747 @@
+{
+  "schemaVersion": 1,
+  "updated": "2026-10-12",
+  "comment": "Wabcut model registry (docs/ai.md). Prices are USD per 1M tokens / per audio minute. 'verified' means id, endpoint and prices were checked against the vendor documentation in 'source' on the 'updated' date. Cache prices are omitted on purpose: estimates then bill cached tokens at the input rate, which errs on the safe side for spend caps.",
+  "providers": [
+    {
+      "id": "local-llm",
+      "name": "Local assistant",
+      "api": "managed-llama",
+      "baseUrl": "http://127.0.0.1:1/v1",
+      "auth": "bearer",
+      "keyRequired": false,
+      "local": true,
+      "verified": true,
+      "source": "https://github.com/ggml-org/llama.cpp/blob/b11429/tools/server/README.md",
+      "dataPolicy": "Runs on this computer. No prompts, media or tool calls leave it."
+    },
+    {
+      "id": "runway",
+      "name": "Runway",
+      "api": "runway-generation",
+      "baseUrl": "https://api.dev.runwayml.com",
+      "auth": "bearer",
+      "envVar": "WABCUT_RUNWAY_API_KEY",
+      "headers": {
+        "X-Runway-Version": "2024-11-06"
+      },
+      "keyCheck": {
+        "method": "GET",
+        "path": "/v1/organization"
+      },
+      "consoleUrl": "https://dev.runwayml.com",
+      "termsUrl": "https://runwayml.com/terms-of-use",
+      "dataPolicy": "Prompts and conditioning images are sent to Runway; review its terms before consenting.",
+      "verified": true,
+      "source": "https://docs.dev.runwayml.com/api/"
+    },
+    {
+      "id": "anthropic",
+      "name": "Anthropic",
+      "api": "anthropic-messages",
+      "baseUrl": "https://api.anthropic.com",
+      "auth": "x-api-key",
+      "envVar": "WABCUT_ANTHROPIC_API_KEY",
+      "keyCheck": { "method": "GET", "path": "/v1/models?limit=1" },
+      "headers": { "anthropic-version": "2023-06-01" },
+      "consoleUrl": "https://platform.claude.com/settings/keys",
+      "termsUrl": "https://privacy.claude.com/en/articles/7996868-is-my-data-used-for-model-training",
+      "dataPolicy": "API inputs and outputs are not used for training by default and are deleted within 30 days.",
+      "verified": true,
+      "source": "https://platform.claude.com/docs/en/api/messages/create"
+    },
+    {
+      "id": "openai",
+      "name": "OpenAI",
+      "api": "openai-responses",
+      "baseUrl": "https://api.openai.com/v1",
+      "auth": "bearer",
+      "envVar": "WABCUT_OPENAI_API_KEY",
+      "keyCheck": { "method": "GET", "path": "/models" },
+      "consoleUrl": "https://platform.openai.com/api-keys",
+      "termsUrl": "https://openai.com/enterprise-privacy/",
+      "dataPolicy": "API data is not used for training unless you opt in; inputs and outputs are kept up to 30 days for abuse monitoring.",
+      "verified": true,
+      "source": "https://developers.openai.com/api/docs/guides/latest-model"
+    },
+    {
+      "id": "gemini",
+      "name": "Google Gemini",
+      "api": "gemini-interactions",
+      "baseUrl": "https://generativelanguage.googleapis.com",
+      "auth": "x-goog-api-key",
+      "envVar": "WABCUT_GEMINI_API_KEY",
+      "keyCheck": { "method": "GET", "path": "/v1beta/models?pageSize=1" },
+      "consoleUrl": "https://aistudio.google.com/apikey",
+      "termsUrl": "https://ai.google.dev/gemini-api/terms",
+      "dataPolicy": "Free tier: prompts may be used to improve Google products and read by reviewers. Paid tier: not used for that; kept up to 55 days for abuse monitoring.",
+      "verified": true,
+      "source": "https://ai.google.dev/gemini-api/docs/interactions",
+      "notes": "Validating a key with models.list is our choice; no Google page recommends a specific call."
+    },
+    {
+      "id": "deepgram",
+      "name": "Deepgram",
+      "api": "deepgram-listen",
+      "baseUrl": "https://api.deepgram.com",
+      "auth": "token",
+      "envVar": "WABCUT_DEEPGRAM_API_KEY",
+      "keyCheck": { "method": "GET", "path": "/v1/auth/token" },
+      "consoleUrl": "https://console.deepgram.com/",
+      "termsUrl": "https://developers.deepgram.com/docs/the-deepgram-model-improvement-partnership-program",
+      "dataPolicy": "Deepgram may keep parts of requests to train its models; Wabcut opts every request out (mip_opt_out=true).",
+      "verified": true,
+      "source": "https://developers.deepgram.com/reference/speech-to-text/listen-pre-recorded"
+    },
+    {
+      "id": "elevenlabs",
+      "name": "ElevenLabs",
+      "api": "elevenlabs-stt",
+      "baseUrl": "https://api.elevenlabs.io",
+      "auth": "xi-api-key",
+      "envVar": "WABCUT_ELEVENLABS_API_KEY",
+      "keyCheck": { "method": "GET", "path": "/v1/user" },
+      "consoleUrl": "https://elevenlabs.io/app/developers/api-keys",
+      "termsUrl": "https://elevenlabs.io/docs/help-center/legal/is-my-data-used-to-improve-eleven-labs-ai-models",
+      "dataPolicy": "Inputs and outputs are used to train ElevenLabs models unless you opt out in your account (Terms and privacy > Data use).",
+      "verified": true,
+      "source": "https://elevenlabs.io/docs/api-reference/speech-to-text/convert",
+      "notes": "Which API-key permission /v1/user needs is not documented."
+    },
+    {
+      "id": "assemblyai",
+      "name": "AssemblyAI",
+      "api": "assemblyai",
+      "baseUrl": "https://api.assemblyai.com",
+      "auth": "raw",
+      "envVar": "WABCUT_ASSEMBLYAI_API_KEY",
+      "keyCheck": { "method": "GET", "path": "/v2/transcript?limit=1" },
+      "consoleUrl": "https://www.assemblyai.com/dashboard/home",
+      "termsUrl": "https://www.assemblyai.com/docs/data-retention-and-model-training",
+      "dataPolicy": "Some files (personal data redacted) may be used for training unless you opt out, which free accounts cannot; audio is deleted within 48 hours.",
+      "verified": true,
+      "source": "https://www.assemblyai.com/docs/api-reference/transcripts/submit"
+    },
+    {
+      "id": "mistral",
+      "name": "Mistral AI",
+      "api": "chat-completions",
+      "baseUrl": "https://api.mistral.ai/v1",
+      "auth": "bearer",
+      "envVar": "WABCUT_MISTRAL_API_KEY",
+      "keyCheck": { "method": "GET", "path": "/models" },
+      "consoleUrl": "https://console.mistral.ai",
+      "termsUrl": "https://help.mistral.ai/en/articles/455207-can-i-opt-out-of-my-input-or-output-data-being-used-for-training",
+      "dataPolicy": "API inputs and outputs are kept 30 days for abuse monitoring; free-plan data may be used for training unless you opt out.",
+      "verified": true,
+      "source": "https://docs.mistral.ai/api/endpoint/audio/transcriptions"
+    },
+    {
+      "id": "openrouter",
+      "name": "OpenRouter",
+      "api": "chat-completions",
+      "baseUrl": "https://openrouter.ai/api/v1",
+      "auth": "bearer",
+      "envVar": "WABCUT_OPENROUTER_API_KEY",
+      "keyCheck": { "method": "GET", "path": "/key" },
+      "headers": { "X-OpenRouter-Title": "Wabcut" },
+      "consoleUrl": "https://openrouter.ai/settings/keys",
+      "termsUrl": "https://openrouter.ai/docs/guides/privacy/data-collection",
+      "dataPolicy": "OpenRouter stores no prompts unless you opt in; the terms of the model's own provider also apply.",
+      "verified": true,
+      "source": "https://openrouter.ai/docs/api/reference/limits"
+    },
+    {
+      "id": "groq",
+      "name": "Groq",
+      "api": "chat-completions",
+      "baseUrl": "https://api.groq.com/openai/v1",
+      "auth": "bearer",
+      "envVar": "WABCUT_GROQ_API_KEY",
+      "keyCheck": { "method": "GET", "path": "/models" },
+      "consoleUrl": "https://console.groq.com/keys",
+      "termsUrl": "https://console.groq.com/docs/your-data",
+      "dataPolicy": "Not retained by default; may be logged up to 30 days for reliability and abuse checks; no training without permission.",
+      "verified": true,
+      "source": "https://console.groq.com/docs/openai"
+    },
+    {
+      "id": "ollama",
+      "name": "Ollama (this computer)",
+      "api": "chat-completions",
+      "baseUrl": "http://localhost:11434/v1",
+      "auth": "bearer",
+      "keyRequired": false,
+      "envVar": "WABCUT_OLLAMA_API_KEY",
+      "keyCheck": { "method": "GET", "path": "/models" },
+      "local": true,
+      "configurableBaseUrl": true,
+      "dataPolicy": "Runs on this computer; nothing is uploaded.",
+      "verified": true,
+      "source": "https://docs.ollama.com/api/openai-compatibility",
+      "notes": "tool_choice is not supported; add the model tags you pulled (e.g. qwen3.5:9b)."
+    },
+    {
+      "id": "lmstudio",
+      "name": "LM Studio (this computer)",
+      "api": "chat-completions",
+      "baseUrl": "http://localhost:1234/v1",
+      "auth": "bearer",
+      "keyRequired": false,
+      "envVar": "WABCUT_LMSTUDIO_API_KEY",
+      "keyCheck": { "method": "GET", "path": "/models" },
+      "local": true,
+      "configurableBaseUrl": true,
+      "dataPolicy": "Runs on this computer; nothing is uploaded.",
+      "verified": true,
+      "source": "https://lmstudio.ai/docs/developer/openai-compat",
+      "notes": "The docs use port 1234 throughout but never call it the default."
+    },
+    {
+      "id": "llama-server",
+      "name": "llama.cpp server (this computer)",
+      "api": "chat-completions",
+      "baseUrl": "http://127.0.0.1:9931/v1",
+      "auth": "bearer",
+      "keyRequired": false,
+      "envVar": "WABCUT_LLAMA_SERVER_API_KEY",
+      "keyCheck": { "method": "GET", "path": "/models" },
+      "local": true,
+      "configurableBaseUrl": true,
+      "dataPolicy": "Runs on this computer; nothing is uploaded.",
+      "verified": true,
+      "source": "https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md",
+      "notes": "Default port 9931 since build b11521 (2026-10-09); older builds listen on 8080."
+    }
+  ],
+  "models": [
+    {
+      "id": "qwen3-1.7b",
+      "provider": "local-llm",
+      "name": "Qwen3 1.7B (local, small)",
+      "api": "managed-llama",
+      "endpoint": "/chat/completions",
+      "capabilities": {
+        "chat": true,
+        "toolsOnChat": true,
+        "structuredOutput": true,
+        "constrainedTools": true
+      },
+      "contextTokens": 6144,
+      "maxOutputTokens": 1024,
+      "prices": [
+        {
+          "inputPerMTok": 0,
+          "outputPerMTok": 0
+        }
+      ],
+      "license": "Apache-2.0",
+      "verified": true,
+      "source": "https://github.com/ggml-org/llama.cpp/blob/b11429/tools/server/README.md"
+    },
+    {
+      "id": "qwen3-4b-instruct-2507",
+      "provider": "local-llm",
+      "name": "Qwen3 4B Instruct (local)",
+      "api": "managed-llama",
+      "endpoint": "/chat/completions",
+      "capabilities": {
+        "chat": true,
+        "toolsOnChat": true,
+        "structuredOutput": true,
+        "constrainedTools": true
+      },
+      "contextTokens": 8192,
+      "maxOutputTokens": 2048,
+      "prices": [
+        {
+          "inputPerMTok": 0,
+          "outputPerMTok": 0
+        }
+      ],
+      "license": "Apache-2.0",
+      "verified": true,
+      "source": "https://github.com/ggml-org/llama.cpp/blob/b11429/docs/function-calling.md"
+    },
+    {
+      "id": "qwen3-8b",
+      "provider": "local-llm",
+      "name": "Qwen3 8B (local)",
+      "api": "managed-llama",
+      "endpoint": "/chat/completions",
+      "capabilities": {
+        "chat": true,
+        "toolsOnChat": true,
+        "structuredOutput": true,
+        "constrainedTools": true
+      },
+      "contextTokens": 8192,
+      "maxOutputTokens": 2048,
+      "prices": [
+        {
+          "inputPerMTok": 0,
+          "outputPerMTok": 0
+        }
+      ],
+      "license": "Apache-2.0",
+      "verified": true,
+      "source": "https://github.com/ggml-org/llama.cpp/blob/b11429/docs/function-calling.md"
+    },
+    {
+      "id": "phi-4-mini-instruct",
+      "provider": "local-llm",
+      "name": "Phi-4 Mini (local chat)",
+      "api": "managed-llama",
+      "endpoint": "/chat/completions",
+      "capabilities": {
+        "chat": true,
+        "toolsOnChat": false,
+        "structuredOutput": true
+      },
+      "contextTokens": 8192,
+      "maxOutputTokens": 2048,
+      "prices": [
+        {
+          "inputPerMTok": 0,
+          "outputPerMTok": 0
+        }
+      ],
+      "license": "MIT",
+      "verified": true,
+      "source": "https://github.com/ggml-org/llama.cpp/blob/b11429/docs/function-calling.md"
+    },
+    {
+      "id": "veo-3.1-fast-generate-preview",
+      "provider": "gemini",
+      "name": "Veo 3.1 Fast",
+      "api": "gemini-veo",
+      "capabilities": {
+        "generateMedia": true
+      },
+      "generation": {
+        "video": true,
+        "firstFrame": true,
+        "audio": true,
+        "durations": [
+          4,
+          6,
+          8
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16"
+        ],
+        "resolutions": [
+          "720p"
+        ],
+        "fps": 24
+      },
+      "prices": [
+        {
+          "tier": "720p",
+          "perVideoSecond": 0.1
+        },
+        {
+          "tier": "720p+audio",
+          "perVideoSecond": 0.1
+        }
+      ],
+      "license": "proprietary",
+      "verified": true,
+      "source": "https://ai.google.dev/gemini-api/docs/veo",
+      "notes": "Pricing checked 2026-10-11. Always generates audio; Wabcut may discard it on import."
+    },
+    {
+      "id": "gen4.5",
+      "provider": "runway",
+      "name": "Runway Gen-4.5",
+      "api": "runway-generation",
+      "capabilities": {
+        "generateMedia": true
+      },
+      "generation": {
+        "video": true,
+        "firstFrame": true,
+        "cancel": true,
+        "durations": [
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16"
+        ],
+        "resolutions": [
+          "720p"
+        ]
+      },
+      "prices": [
+        {
+          "tier": "720p",
+          "perVideoSecond": 0.12
+        }
+      ],
+      "license": "proprietary",
+      "verified": true,
+      "source": "https://docs.dev.runwayml.com/guides/pricing/",
+      "notes": "Pricing checked 2026-10-11. MP4 only."
+    },
+    {
+      "id": "gen4_image",
+      "provider": "runway",
+      "name": "Runway Gen-4 Image",
+      "api": "runway-generation",
+      "capabilities": {
+        "generateMedia": true
+      },
+      "generation": {
+        "image": true,
+        "firstFrame": true,
+        "cancel": true,
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "resolutions": [
+          "720p"
+        ]
+      },
+      "prices": [
+        {
+          "tier": "720p",
+          "perImage": 0.05
+        }
+      ],
+      "license": "proprietary",
+      "verified": true,
+      "source": "https://docs.dev.runwayml.com/guides/pricing/",
+      "notes": "Pricing checked 2026-10-11. One image per run."
+    },
+    {
+      "id": "claude-sonnet-5-5",
+      "provider": "anthropic",
+      "name": "Claude Sonnet 5.5",
+      "endpoint": "/v1/messages",
+      "capabilities": {
+        "chat": true, "translate": true, "vision": true, "toolsOnChat": true, "strictSchema": true,
+        "structuredOutput": true, "forcedToolChoice": false, "temperature": false, "videoInput": "frames"
+      },
+      "contextTokens": 1000000,
+      "maxOutputTokens": 128000,
+      "prices": [ { "inputPerMTok": 2.0, "outputPerMTok": 10.0 } ],
+      "retirement": "2027-09-28",
+      "license": "proprietary",
+      "verified": true,
+      "source": "https://platform.claude.com/docs/en/about-claude/models/overview",
+      "notes": "Default cloud model. Forced tool_choice (any/tool) returns 400: use auto with strict tools. Only temperature 1.0 is accepted."
+    },
+    {
+      "id": "claude-opus-5-5",
+      "provider": "anthropic",
+      "name": "Claude Opus 5.5",
+      "endpoint": "/v1/messages",
+      "capabilities": {
+        "chat": true, "translate": true, "vision": true, "toolsOnChat": true, "strictSchema": true,
+        "structuredOutput": true, "forcedToolChoice": false, "temperature": false, "videoInput": "frames"
+      },
+      "contextTokens": 1000000,
+      "maxOutputTokens": 128000,
+      "prices": [ { "inputPerMTok": 4.0, "outputPerMTok": 20.0 } ],
+      "retirement": "2027-09-22",
+      "license": "proprietary",
+      "verified": true,
+      "source": "https://platform.claude.com/docs/en/about-claude/models/overview",
+      "notes": "'Deep' tasks. Always thinks; forced tool_choice returns 400."
+    },
+    {
+      "id": "claude-haiku-5-5",
+      "provider": "anthropic",
+      "name": "Claude Haiku 5.5",
+      "endpoint": "/v1/messages",
+      "capabilities": {
+        "chat": true, "translate": true, "vision": true, "toolsOnChat": true, "strictSchema": true,
+        "structuredOutput": true, "forcedToolChoice": true, "temperature": false, "videoInput": "frames"
+      },
+      "contextTokens": 1000000,
+      "maxOutputTokens": 128000,
+      "prices": [
+        { "inputPerMTok": 0.10, "outputPerMTok": 0.50 },
+        { "aboveInputTokens": 100000, "inputPerMTok": 0.50, "outputPerMTok": 2.50 }
+      ],
+      "retirement": "2027-10-07",
+      "license": "proprietary",
+      "verified": true,
+      "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "notes": "Prompts over 100K tokens (cache reads and writes included) use the higher rate. Forced tool_choice is not on the 400 list for Haiku 5.5 (inferred to work)."
+    },
+    {
+      "id": "claude-fable-5-1",
+      "provider": "anthropic",
+      "name": "Claude Fable 5.1",
+      "endpoint": "/v1/messages",
+      "capabilities": {
+        "chat": true, "translate": true, "vision": true, "toolsOnChat": true, "strictSchema": true,
+        "structuredOutput": true, "forcedToolChoice": false, "temperature": false, "videoInput": "frames"
+      },
+      "contextTokens": 1000000,
+      "maxOutputTokens": 128000,
+      "prices": [ { "inputPerMTok": 10.0, "outputPerMTok": 50.0 } ],
+      "retirement": "2027-09-01",
+      "license": "proprietary",
+      "verified": true,
+      "source": "https://platform.claude.com/docs/en/about-claude/models/overview",
+      "notes": "Top tier. Always thinks; forced tool_choice returns 400."
+    },
+    {
+      "id": "gpt-6.1-sol",
+      "provider": "openai",
+      "name": "GPT-6.1 Sol",
+      "endpoint": "/responses",
+      "capabilities": {
+        "chat": true, "translate": true, "vision": true, "toolsOnChat": false, "toolsOnResponses": true,
+        "strictSchema": true, "structuredOutput": true, "temperature": false, "videoInput": "frames"
+      },
+      "contextTokens": 1050000,
+      "maxOutputTokens": 128000,
+      "prices": [
+        { "inputPerMTok": 2.0, "outputPerMTok": 10.0 },
+        { "aboveInputTokens": 272000, "inputPerMTok": 4.0, "outputPerMTok": 15.0 }
+      ],
+      "license": "proprietary",
+      "verified": true,
+      "source": "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
+      "notes": "Tool calling requires the Responses API. Prompts over 272K tokens: input x2, output x1.5 for the whole request."
+    },
+    {
+      "id": "gpt-6-astra",
+      "provider": "openai",
+      "name": "GPT-6 Astra",
+      "endpoint": "/responses",
+      "capabilities": {
+        "chat": true, "translate": true, "vision": true, "toolsOnChat": false, "toolsOnResponses": true,
+        "strictSchema": true, "structuredOutput": true, "temperature": false, "videoInput": "frames"
+      },
+      "contextTokens": 1050000,
+      "maxOutputTokens": 128000,
+      "prices": [
+        { "inputPerMTok": 10.0, "outputPerMTok": 50.0 },
+        { "aboveInputTokens": 272000, "inputPerMTok": 20.0, "outputPerMTok": 75.0 }
+      ],
+      "license": "proprietary",
+      "verified": true,
+      "source": "https://developers.openai.com/api/docs/models/gpt-6-astra",
+      "notes": "Flagship. Tool calling requires the Responses API."
+    },
+    {
+      "id": "gpt-6-luna",
+      "provider": "openai",
+      "name": "GPT-6 Luna",
+      "endpoint": "/responses",
+      "capabilities": {
+        "chat": true, "translate": true, "vision": true, "toolsOnChat": false, "toolsOnResponses": true,
+        "strictSchema": true, "structuredOutput": true, "temperature": false, "videoInput": "frames"
+      },
+      "contextTokens": 1050000,
+      "maxOutputTokens": 128000,
+      "prices": [
+        { "inputPerMTok": 0.10, "outputPerMTok": 0.50 },
+        { "aboveInputTokens": 272000, "inputPerMTok": 0.20, "outputPerMTok": 0.75 }
+      ],
+      "license": "proprietary",
+      "verified": true,
+      "source": "https://developers.openai.com/api/docs/models/gpt-6-luna",
+      "notes": "Function calling on Chat Completions only with reasoning effort none, so Wabcut uses Responses."
+    },
+    {
+      "id": "gemini-3.8-flash",
+      "provider": "gemini",
+      "name": "Gemini 3.8 Flash",
+      "endpoint": "/v1beta/interactions",
+      "capabilities": {
+        "chat": true, "translate": true, "vision": true, "toolsOnChat": true, "strictSchema": false,
+        "structuredOutput": true, "temperature": false, "videoInput": "native"
+      },
+      "contextTokens": 1048576,
+      "maxOutputTokens": 65536,
+      "maxUploadBytes": 2147483648,
+      "prices": [
+        { "inputPerMTok": 0.75, "outputPerMTok": 3.75 },
+        { "from": "2027-01-01", "inputPerMTok": 1.50, "outputPerMTok": 7.50 }
+      ],
+      "license": "proprietary",
+      "verified": true,
+      "source": "https://ai.google.dev/gemini-api/docs/pricing",
+      "notes": "Stable since 2026-09-02. Native video through the Files API (2 GB per file, kept 48 hours). Prices double on 2027-01-01."
+    },
+    {
+      "id": "gemini-3.1-pro-preview",
+      "provider": "gemini",
+      "name": "Gemini 3.1 Pro (preview)",
+      "endpoint": "/v1beta/interactions",
+      "capabilities": {
+        "chat": true, "translate": true, "vision": true, "toolsOnChat": true, "strictSchema": false,
+        "structuredOutput": true, "temperature": false, "videoInput": "native"
+      },
+      "contextTokens": 1048576,
+      "maxOutputTokens": 65536,
+      "maxUploadBytes": 2147483648,
+      "prices": [
+        { "inputPerMTok": 2.0, "outputPerMTok": 12.0 },
+        { "aboveInputTokens": 200000, "inputPerMTok": 4.0, "outputPerMTok": 18.0 }
+      ],
+      "license": "proprietary",
+      "verified": true,
+      "source": "https://ai.google.dev/gemini-api/docs/pricing",
+      "notes": "Preview model: no free tier, may change without notice."
+    },
+    {
+      "id": "gemini-3.5-flash-lite",
+      "provider": "gemini",
+      "name": "Gemini 3.5 Flash-Lite",
+      "endpoint": "/v1beta/interactions",
+      "capabilities": {
+        "chat": true, "translate": true, "vision": true, "toolsOnChat": true, "strictSchema": false,
+        "structuredOutput": true, "temperature": false, "videoInput": "native"
+      },
+      "contextTokens": 1048576,
+      "maxOutputTokens": 65536,
+      "maxUploadBytes": 2147483648,
+      "prices": [ { "inputPerMTok": 0.30, "outputPerMTok": 2.50 } ],
+      "license": "proprietary",
+      "verified": true,
+      "source": "https://ai.google.dev/gemini-api/docs/pricing"
+    },
+    {
+      "id": "nova-3",
+      "provider": "deepgram",
+      "name": "Deepgram Nova-3",
+      "endpoint": "/v1/listen",
+      "capabilities": { "transcribe": true, "wordTimestamps": true, "diarization": true, "streaming": false },
+      "maxUploadBytes": 2147483648,
+      "prices": [ { "perAudioMinute": 0.0043 } ],
+      "license": "proprietary",
+      "verified": true,
+      "source": "https://deepgram.com/pricing",
+      "notes": "Monolingual price; multilingual audio is $0.0052/min. Diarization is included."
+    },
+    {
+      "id": "scribe_v2",
+      "provider": "elevenlabs",
+      "name": "ElevenLabs Scribe v2",
+      "endpoint": "/v1/speech-to-text",
+      "capabilities": { "transcribe": true, "wordTimestamps": true, "diarization": true, "streaming": false },
+      "maxUploadBytes": 3000000000,
+      "maxAudioSeconds": 36000,
+      "prices": [ { "perAudioMinute": 0.0036667 } ],
+      "license": "proprietary",
+      "verified": true,
+      "source": "https://elevenlabs.io/docs/api-reference/speech-to-text/convert",
+      "notes": "$0.22 per hour. Files up to 3 GB (one page says 5 GB) and 10 hours."
+    },
+    {
+      "id": "universal-3-5-pro",
+      "provider": "assemblyai",
+      "name": "AssemblyAI Universal-3.5 Pro",
+      "endpoint": "/v2/transcript",
+      "capabilities": { "transcribe": true, "wordTimestamps": true, "diarization": true, "streaming": false },
+      "maxUploadBytes": 2200000000,
+      "maxAudioSeconds": 36000,
+      "prices": [ { "perAudioMinute": 0.0038334 } ],
+      "license": "proprietary",
+      "verified": true,
+      "source": "https://www.assemblyai.com/docs/api-reference/transcripts/submit",
+      "notes": "$0.21/h plus $0.02/h for speaker labels. Falls back to universal-2 for languages it does not cover."
+    },
+    {
+      "id": "voxtral-mini-latest",
+      "provider": "mistral",
+      "name": "Mistral Voxtral Mini Transcribe 2",
+      "api": "openai-transcriptions",
+      "endpoint": "/audio/transcriptions",
+      "capabilities": { "transcribe": true, "wordTimestamps": false, "diarization": true, "streaming": false },
+      "maxAudioSeconds": 10800,
+      "prices": [ { "perAudioMinute": 0.003 } ],
+      "license": "proprietary",
+      "verified": false,
+      "source": "https://docs.mistral.ai/models/voxtral-mini-transcribe-26-02",
+      "notes": "Id, endpoint and price are documented, but the word-timestamp response shape is not and the docs disagree on the auth header (Bearer vs x-api-key); no adapter until both are confirmed."
+    },
+    {
+      "id": "eleven_v4",
+      "provider": "elevenlabs",
+      "name": "ElevenLabs v4",
+      "api": "elevenlabs-tts",
+      "endpoint": "/v1/text-to-speech",
+      "capabilities": { "speak": true },
+      "prices": [ { "perThousandChars": 0.08 } ],
+      "license": "proprietary",
+      "verified": true,
+      "source": "https://elevenlabs.io/pricing/api",
+      "notes": "Checked 2026-10-12: $0.08 per 1K characters (an introductory discount until Oct 12 is ignored), 90+ languages, 10,000 characters per request. Voice cloning is opt-in only in Wabcut."
+    },
+    {
+      "id": "eleven_v3",
+      "provider": "elevenlabs",
+      "name": "ElevenLabs v3",
+      "api": "elevenlabs-tts",
+      "endpoint": "/v1/text-to-speech",
+      "capabilities": { "speak": true },
+      "prices": [ { "perThousandChars": 0.08 } ],
+      "license": "proprietary",
+      "verified": true,
+      "source": "https://elevenlabs.io/docs/help-center/other/what-languages-do-you-support",
+      "notes": "Checked 2026-10-12: 74 languages including Thai, 5,000 characters per request, $0.08 per 1K characters (elevenlabs.io/pricing/api)."
+    },
+    {
+      "id": "eleven_flash_v2_5",
+      "provider": "elevenlabs",
+      "name": "ElevenLabs Flash v2.5",
+      "api": "elevenlabs-tts",
+      "endpoint": "/v1/text-to-speech",
+      "capabilities": { "speak": true },
+      "prices": [ { "perThousandChars": 0.04 } ],
+      "license": "proprietary",
+      "verified": true,
+      "source": "https://elevenlabs.io/pricing/api",
+      "notes": "Checked 2026-10-12: $0.04 per 1K characters, 32 languages (no Thai), 40,000 characters per request."
+    },
+    {
+      "id": "gpt-4o-mini-tts",
+      "provider": "openai",
+      "name": "OpenAI GPT-4o mini TTS",
+      "api": "openai-speech",
+      "endpoint": "/audio/speech",
+      "capabilities": { "speak": true },
+      "prices": [ { "inputPerMTok": 0.60, "perAudioMinute": 0.015 } ],
+      "deprecation": "2027-01-06",
+      "retirement": "2027-01-06",
+      "license": "proprietary",
+      "verified": true,
+      "source": "https://developers.openai.com/api/docs/models/gpt-4o-mini-tts",
+      "notes": "Checked 2026-10-12: $0.60 per 1M text tokens and $12 per 1M audio tokens, which OpenAI estimates at about $0.015 per minute (the audio is priced at that estimate). 4,096 characters per request. The /audio/speech models are retired on 2027-01-06."
+    },
+    {
+      "id": "gemini-3.8-flash-tts",
+      "provider": "gemini",
+      "name": "Gemini 3.8 Flash TTS",
+      "api": "gemini-tts",
+      "capabilities": { "speak": true },
+      "prices": [
+        { "inputPerMTok": 0.50, "perAudioMinute": 0.0135 },
+        { "from": "2027-01-01", "inputPerMTok": 1.00, "perAudioMinute": 0.027 }
+      ],
+      "license": "proprietary",
+      "verified": true,
+      "source": "https://ai.google.dev/gemini-api/docs/pricing",
+      "notes": "Checked 2026-10-12: $0.50 per 1M text tokens and $9.00 per 1M audio tokens at 25 tokens a second (= $0.0135 per minute) through 2026-12-31, double from 2027-01-01. GA 2026-09-22."
+    }
+  ]
+}

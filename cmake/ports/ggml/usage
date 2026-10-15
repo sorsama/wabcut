@@ -1,0 +1,7 @@
+ggml (Wabcut overlay) provides CMake targets:
+
+    find_package(ggml CONFIG REQUIRED)
+    target_link_libraries(main PRIVATE ggml::ggml ggml::ggml-base)
+
+Backends are run-time modules (GGML_BACKEND_DL): ship bin/ggml-*.dll next to the executable and call
+ggml_backend_load_all_from_path(<that directory>) before creating a context.

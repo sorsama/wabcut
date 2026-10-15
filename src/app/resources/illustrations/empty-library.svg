@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="160" height="120" viewBox="0 0 160 120"
+     fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <!-- Empty Library: a stack of clips with an import arrow coming down into it. -->
+  <!-- Import arrow -->
+  <path d="M80 19V37"/>
+  <path d="M74 31L80 37L86 31"/>
+  <!-- Two clips stacked behind (only their visible edges) -->
+  <path d="M58 51V49Q58 45 62 45H110Q114 45 114 49V83Q114 87 110 87H108"/>
+  <path d="M52 57V55Q52 51 56 51H104Q108 51 108 55V89Q108 93 104 93H102"/>
+  <!-- Front clip: a name row and a play glyph -->
+  <rect x="46" y="57" width="56" height="42" rx="4"/>
+  <path d="M61 66.5H84"/>
+  <path d="M70 79V91L80 85Z"/>
+  <!-- Accent: a violet dot before the clip name -->
+  <circle cx="54.7" cy="66.5" r="3.5" fill="#9B6CFF" stroke="none"/>
+</svg>

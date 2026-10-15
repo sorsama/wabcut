@@ -1,0 +1,32 @@
+{
+  "name": "whisper-cpp",
+  "version": "1.9.5",
+  "description": "Port of OpenAI's Whisper model in C/C++. Wabcut overlay: v1.9.5 (built-in Silero VAD with timestamps on the original timeline) on the ggml overlay.",
+  "homepage": "https://github.com/ggml-org/whisper.cpp",
+  "license": "MIT",
+  "supports": "!uwp & !(windows & arm64)",
+  "dependencies": [
+    "ggml",
+    {
+      "name": "vcpkg-cmake",
+      "host": true
+    },
+    {
+      "name": "vcpkg-cmake-config",
+      "host": true
+    }
+  ],
+  "features": {
+    "vulkan": {
+      "description": "Vulkan GPU acceleration (the ggml Vulkan backend)",
+      "dependencies": [
+        {
+          "name": "ggml",
+          "features": [
+            "vulkan"
+          ]
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,79 @@
+{
+  "max_tokens": 1024,
+  "messages": [
+    {
+      "content": [
+        {
+          "text": "Remove the silence on A1 after 00:00:12.",
+          "type": "text"
+        },
+        {
+          "source": {
+            "data": "iVBORw==",
+            "media_type": "image/png",
+            "type": "base64"
+          },
+          "type": "image"
+        }
+      ],
+      "role": "user"
+    },
+    {
+      "content": [
+        {
+          "text": "Let me look at the sequence.",
+          "type": "text"
+        },
+        {
+          "id": "call_1",
+          "input": {
+            "track": "A1"
+          },
+          "name": "sequence_summary",
+          "type": "tool_use"
+        }
+      ],
+      "role": "assistant"
+    },
+    {
+      "content": [
+        {
+          "content": "{\"clips\":3}",
+          "tool_use_id": "call_1",
+          "type": "tool_result"
+        }
+      ],
+      "role": "user"
+    }
+  ],
+  "model": "claude-sonnet-5-5",
+  "stream": true,
+  "system": "You edit video timelines. Use the tools.",
+  "tool_choice": {
+    "type": "auto"
+  },
+  "tools": [
+    {
+      "description": "Ripple-delete a range on a track.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "frames": {
+            "description": "Length. Minimum: 1.",
+            "type": "integer"
+          },
+          "track": {
+            "description": "Track id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "track"
+        ],
+        "type": "object"
+      },
+      "name": "timeline_rippleDelete",
+      "strict": true
+    }
+  ]
+}

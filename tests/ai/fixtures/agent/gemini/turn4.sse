@@ -1,0 +1,21 @@
+event: interaction.created
+data: {"interaction":{"id":"v1_agent_4","status":"in_progress","object":"interaction","model":"gemini-3.8-flash"},"event_type":"interaction.created"}
+
+event: step.start
+data: {"index":0,"step":{"type":"model_output"},"event_type":"step.start"}
+
+event: step.delta
+data: {"index":0,"delta":{"text":"Added the marker “In","type":"text"},"event_type":"step.delta"}
+
+event: step.delta
+data: {"index":0,"delta":{"text":"tro” at 00:00:00:05.","type":"text"},"event_type":"step.delta"}
+
+event: step.stop
+data: {"index":0,"event_type":"step.stop"}
+
+event: interaction.completed
+data: {"interaction":{"id":"v1_agent_4","status":"completed","usage":{"total_input_tokens":10020,"total_output_tokens":18,"total_thought_tokens":4,"total_cached_tokens":9800,"total_tool_use_tokens":0,"total_tokens":10042}},"event_type":"interaction.completed"}
+
+event: done
+data: [DONE]
+

@@ -1,0 +1,274 @@
+{
+  "format": "wabcut-graphic-template",
+  "template": {
+    "description": "Circle callout that draws itself around something, with a label.",
+    "duration": 1016064000000,
+    "fields": [
+      {
+        "id": "label",
+        "kind": "text",
+        "label": "Label",
+        "layer": 3,
+        "property": "text",
+        "value": "CHECK THIS OUT"
+      },
+      {
+        "id": "accent",
+        "kind": "color",
+        "label": "Circle colour",
+        "layer": 1,
+        "property": "stroke",
+        "value": [
+          0.482,
+          0.231,
+          1.0,
+          1.0
+        ]
+      },
+      {
+        "id": "length",
+        "kind": "duration",
+        "label": "Length",
+        "property": "clip",
+        "value": 1016064000000
+      }
+    ],
+    "graphic": {
+      "height": 1080,
+      "layers": [
+        {
+          "id": 1,
+          "kind": "shape",
+          "name": "Circle",
+          "shadow": {
+            "angle": 90.0,
+            "color": [
+              0.047,
+              0.039,
+              0.071,
+              1.0
+            ],
+            "distance": 4.0,
+            "enabled": true,
+            "opacity": 0.5,
+            "softness": 10.0
+          },
+          "shape": {
+            "fill": {
+              "type": "none"
+            },
+            "height": 300.0,
+            "stroke": {
+              "cap": "round",
+              "color": [
+                0.482,
+                0.231,
+                1.0,
+                1.0
+              ],
+              "enabled": true,
+              "join": "round",
+              "width": 10.0
+            },
+            "trimEnd": {
+              "keys": [
+                {
+                  "i": "easeInOut",
+                  "t": 0,
+                  "v": 0.0
+                },
+                {
+                  "i": "easeInOut",
+                  "t": 139708800000,
+                  "v": 100.0
+                }
+              ]
+            },
+            "trimStart": {
+              "keys": [
+                {
+                  "i": "easeInOut",
+                  "t": 914457600000,
+                  "v": 0.0
+                },
+                {
+                  "i": "easeInOut",
+                  "t": 1016064000000,
+                  "v": 100.0
+                }
+              ]
+            },
+            "type": "ellipse",
+            "width": 440.0
+          },
+          "transform": {
+            "rotation": -8.0,
+            "x": 900.0,
+            "y": 500.0
+          }
+        },
+        {
+          "id": 2,
+          "kind": "shape",
+          "name": "Leader",
+          "shape": {
+            "closed": false,
+            "fill": {
+              "type": "none"
+            },
+            "path": [
+              {
+                "i": "linear",
+                "t": 0,
+                "v": [
+                  [
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  [
+                    92.0,
+                    70.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0
+                  ]
+                ]
+              }
+            ],
+            "stroke": {
+              "cap": "round",
+              "color": [
+                0.953,
+                0.941,
+                0.98,
+                1.0
+              ],
+              "enabled": true,
+              "join": "round",
+              "width": 5.0
+            },
+            "trimEnd": {
+              "keys": [
+                {
+                  "i": "easeInOut",
+                  "t": 114307200000,
+                  "v": 0.0
+                },
+                {
+                  "i": "easeInOut",
+                  "t": 165110400000,
+                  "v": 100.0
+                }
+              ]
+            },
+            "type": "path"
+          },
+          "transform": {
+            "opacity": {
+              "keys": [
+                {
+                  "i": "easeOut",
+                  "t": 939859200000,
+                  "v": 100.0
+                },
+                {
+                  "t": 1016064000000,
+                  "v": 0.0
+                }
+              ]
+            },
+            "x": 1088.0,
+            "y": 578.0
+          }
+        },
+        {
+          "id": 3,
+          "kind": "text",
+          "name": "Label",
+          "text": {
+            "background": {
+              "color": [
+                0.047,
+                0.039,
+                0.071,
+                0.92
+              ],
+              "enabled": true,
+              "padding": 16.0,
+              "radius": 8.0
+            },
+            "runs": [
+              {
+                "fill": [
+                  0.953,
+                  0.941,
+                  0.98,
+                  1.0
+                ],
+                "font": "Bai Jamjuree",
+                "size": 52.0,
+                "text": "CHECK THIS OUT",
+                "tracking": 40.0,
+                "weight": 600
+              }
+            ]
+          },
+          "transform": {
+            "opacity": {
+              "keys": [
+                {
+                  "t": 127008000000,
+                  "v": 0.0
+                },
+                {
+                  "i": "easeIn",
+                  "t": 177811200000,
+                  "v": 100.0
+                },
+                {
+                  "i": "easeOut",
+                  "t": 939859200000,
+                  "v": 100.0
+                },
+                {
+                  "t": 1016064000000,
+                  "v": 0.0
+                }
+              ]
+            },
+            "x": 1200.0,
+            "y": {
+              "keys": [
+                {
+                  "t": 127008000000,
+                  "v": 652.0
+                },
+                {
+                  "i": "easeIn",
+                  "t": 190512000000,
+                  "v": 628.0
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "name": "Circle callout",
+      "responsive": {
+        "duration": 1016064000000,
+        "intro": 190512000000,
+        "outro": 101606400000
+      },
+      "width": 1920
+    },
+    "id": "wabcut.gaming.circleCallout",
+    "name": "Circle callout",
+    "version": 1
+  },
+  "version": 1
+}

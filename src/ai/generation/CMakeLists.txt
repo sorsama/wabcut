@@ -1,0 +1,12 @@
+add_library(wabcut_ai_generation STATIC src/GenerationCommands.cpp)
+target_include_directories(wabcut_ai_generation PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(wabcut_ai_generation PUBLIC wabcut_ai wabcut_command wabcut_ai_llm) # llm: the tiers of llm.local.models
+wabcut_target_defaults(wabcut_ai_generation)
+if(NOT WABCUT_CORE_ONLY)
+    find_package(FFMPEG REQUIRED)
+    add_library(wabcut_ai_generation_media STATIC src/Conform.cpp)
+    target_include_directories(wabcut_ai_generation_media SYSTEM PRIVATE ${FFMPEG_INCLUDE_DIRS})
+    target_link_directories(wabcut_ai_generation_media PRIVATE ${FFMPEG_LIBRARY_DIRS})
+    target_link_libraries(wabcut_ai_generation_media PUBLIC wabcut_ai_generation wabcut_media wabcut_export PRIVATE ${FFMPEG_LIBRARIES})
+    wabcut_target_defaults(wabcut_ai_generation_media)
+endif()

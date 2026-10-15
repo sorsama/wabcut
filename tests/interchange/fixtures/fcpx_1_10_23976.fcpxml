@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE fcpxml>
+<!-- Hand-authored after Apple's FCPXML 1.10 reference: a library/event/project at 23.976 fps whose
+     interview asset starts at timecode 01:00:00:00, a connected B-roll clip, a title (dropped), a centred
+     Cross Dissolve, a disabled clip, a gap carrying connected music below the primary storyline, a 50%
+     retime (timeMap) and a sequence duration that leaves a 48-frame trailing gap. -->
+<fcpxml version="1.10">
+    <resources>
+        <format id="r1" name="FFVideoFormat1080p2398" frameDuration="1001/24000s" width="1920" height="1080" colorSpace="1-1-1 (Rec. 709)"/>
+        <asset id="r2" name="Interview_A" uid="5F1C0A0E1D7F4B4A9F0E6B4E5B8A1C01" start="86486400/24000s" duration="360360/24000s" hasVideo="1" format="r1" hasAudio="1" videoSources="1" audioSources="1" audioChannels="2" audioRate="48000">
+            <media-rep kind="original-media" sig="5F1C0A0E1D7F4B4A9F0E6B4E5B8A1C01" src="file:///Users/editor/Movies/Short%20Film/Interview_A.mov"/>
+        </asset>
+        <asset id="r3" name="Broll_City" uid="C7D2B6A1F0E94B7E8D1C2B3A4F5E6D70" start="0s" duration="240240/24000s" hasVideo="1" format="r1" videoSources="1">
+            <media-rep kind="original-media" src="file:///Users/editor/Movies/Short%20Film/Broll_City.mov"/>
+            <media-rep kind="proxy-media" src="file:///Users/editor/Movies/Short%20Film/Proxies/Broll_City.mov"/>
+        </asset>
+        <asset id="r4" name="Music" uid="0A9B8C7D6E5F40312A3B4C5D6E7F8091" start="0s" duration="2402400/24000s" hasAudio="1" audioSources="1" audioChannels="2" audioRate="48000">
+            <media-rep kind="original-media" src="file:///Users/editor/Music/Score%20v2/Music.m4a"/>
+        </asset>
+        <effect id="r5" name="Cross Dissolve" uid="FxPlug:4731E73A-8DAC-4113-9A30-AE85B1761265"/>
+        <effect id="r6" name="Basic Title" uid=".../Titles.localized/Bumper:Opener.localized/Basic Title.localized/Basic Title.moti"/>
+    </resources>
+    <library location="file:///Users/editor/Movies/Short%20Film.fcpbundle/">
+        <event name="Day 3" uid="9E3B8D21-2C4F-4A7B-8E1D-55C0A4E7F001">
+            <project name="Short Film v3" uid="1B2C3D4E-5F60-4718-92A3-B4C5D6E7F809" modDate="2026-10-02 18:04:11 +0200">
+                <sequence format="r1" duration="456456/24000s" tcStart="0s" tcFormat="NDF" audioLayout="stereo" audioRate="48k">
+                    <spine>
+                        <asset-clip ref="r2" offset="0s" name="Interview_A" start="86534448/24000s" duration="120120/24000s" format="r1" tcFormat="NDF" audioRole="dialogue">
+                            <asset-clip ref="r3" lane="1" offset="86558472/24000s" name="Broll_City" start="24024/24000s" duration="48048/24000s" format="r1" tcFormat="NDF"/>
+                            <title ref="r6" lane="2" offset="86544458/24000s" name="Lower Third" start="86486400/24000s" duration="72072/24000s">
+                                <text>
+                                    <text-style ref="ts1">Dana Okafor</text-style>
+                                </text>
+                            </title>
+                            <marker start="86594508/24000s" duration="1001/24000s" value="Check sync" note="lips vs. audio"/>
+                        </asset-clip>
+                        <transition name="Cross Dissolve" offset="108108/24000s" duration="24024/24000s">
+                            <filter-video ref="r5" name="Cross Dissolve"/>
+                            <filter-audio ref="r5" name="Audio Crossfade"/>
+                        </transition>
+                        <asset-clip ref="r3" offset="120120/24000s" name="Broll_City" start="72072/24000s" duration="96096/24000s" format="r1" tcFormat="NDF" enabled="0"/>
+                        <gap name="Gap" offset="216216/24000s" start="3600s" duration="48048/24000s">
+                            <asset-clip ref="r4" lane="-1" offset="86412012/24000s" name="Music" start="0s" duration="180180/24000s" audioRole="music">
+                                <adjust-volume amount="-9dB"/>
+                            </asset-clip>
+                        </gap>
+                        <asset-clip ref="r3" offset="264264/24000s" name="Broll_City" start="0s" duration="96096/24000s" format="r1" tcFormat="NDF">
+                            <timeMap>
+                                <timept time="0s" value="0s" interp="linear"/>
+                                <timept time="480480/24000s" value="240240/24000s" interp="linear"/>
+                            </timeMap>
+                        </asset-clip>
+                        <asset-clip ref="r2" offset="360360/24000s" name="Interview_A" start="86686600/24000s" duration="48048/24000s" format="r1" tcFormat="NDF" audioRole="dialogue"/>
+                    </spine>
+                </sequence>
+            </project>
+        </event>
+    </library>
+</fcpxml>

@@ -1,0 +1,345 @@
+{
+  "format": "wabcut-graphic-template",
+  "template": {
+    "description": "Arrow callout with a label; the arrow slides in and keeps pointing.",
+    "duration": 1016064000000,
+    "fields": [
+      {
+        "id": "label",
+        "kind": "text",
+        "label": "Label",
+        "layer": 3,
+        "property": "text",
+        "value": "LOOK HERE!"
+      },
+      {
+        "id": "accent",
+        "kind": "color",
+        "label": "Arrow colour",
+        "layer": 2,
+        "property": "fill",
+        "value": [
+          0.482,
+          0.231,
+          1.0,
+          1.0
+        ]
+      },
+      {
+        "id": "length",
+        "kind": "duration",
+        "label": "Length",
+        "property": "clip",
+        "value": 1016064000000
+      }
+    ],
+    "graphic": {
+      "height": 1080,
+      "layers": [
+        {
+          "children": [
+            {
+              "id": 2,
+              "kind": "shape",
+              "name": "Arrow shape",
+              "shadow": {
+                "angle": 90.0,
+                "color": [
+                  0.047,
+                  0.039,
+                  0.071,
+                  1.0
+                ],
+                "enabled": true,
+                "opacity": 0.55,
+                "softness": 14.0
+              },
+              "shape": {
+                "fill": {
+                  "color": [
+                    0.482,
+                    0.231,
+                    1.0,
+                    1.0
+                  ],
+                  "type": "solid"
+                },
+                "path": [
+                  {
+                    "i": "linear",
+                    "t": 0,
+                    "v": [
+                      [
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0
+                      ],
+                      [
+                        -70.0,
+                        -52.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0
+                      ],
+                      [
+                        -70.0,
+                        -18.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0
+                      ],
+                      [
+                        -300.0,
+                        -18.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0
+                      ],
+                      [
+                        -300.0,
+                        18.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0
+                      ],
+                      [
+                        -70.0,
+                        18.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0
+                      ],
+                      [
+                        -70.0,
+                        52.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0
+                      ]
+                    ]
+                  }
+                ],
+                "stroke": {
+                  "cap": "round",
+                  "color": [
+                    0.953,
+                    0.941,
+                    0.98,
+                    1.0
+                  ],
+                  "enabled": true,
+                  "join": "round",
+                  "width": 5.0
+                },
+                "type": "path"
+              },
+              "transform": {
+                "opacity": {
+                  "keys": [
+                    {
+                      "t": 0,
+                      "v": 0.0
+                    },
+                    {
+                      "i": "easeIn",
+                      "t": 45722880000,
+                      "v": 100.0
+                    },
+                    {
+                      "i": "easeOut",
+                      "t": 939859200000,
+                      "v": 100.0
+                    },
+                    {
+                      "t": 1016064000000,
+                      "v": 0.0
+                    }
+                  ]
+                },
+                "x": {
+                  "keys": [
+                    {
+                      "t": 0,
+                      "v": -220.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 74680704000,
+                      "v": 17.6
+                    },
+                    {
+                      "i": "easeIn",
+                      "t": 106686720000,
+                      "v": 0.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 152409600000,
+                      "v": 0.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 241315200000,
+                      "v": -26.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 330220800000,
+                      "v": 0.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 419126400000,
+                      "v": -26.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 508032000000,
+                      "v": 0.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 596937600000,
+                      "v": -26.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 685843200000,
+                      "v": 0.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 774748800000,
+                      "v": -26.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 863654400000,
+                      "v": 0.0
+                    }
+                  ]
+                }
+              }
+            }
+          ],
+          "id": 1,
+          "kind": "group",
+          "name": "Arrow",
+          "transform": {
+            "rotation": 145.0,
+            "x": 760.0,
+            "y": 640.0
+          }
+        },
+        {
+          "id": 3,
+          "kind": "text",
+          "name": "Label",
+          "text": {
+            "align": "center",
+            "background": {
+              "color": [
+                0.047,
+                0.039,
+                0.071,
+                0.92
+              ],
+              "enabled": true,
+              "padding": 18.0,
+              "radius": 10.0
+            },
+            "runs": [
+              {
+                "fill": [
+                  0.953,
+                  0.941,
+                  0.98,
+                  1.0
+                ],
+                "font": "Bai Jamjuree",
+                "size": 60.0,
+                "text": "LOOK HERE!",
+                "tracking": 30.0,
+                "weight": 600
+              }
+            ]
+          },
+          "transform": {
+            "anchorY": 36.0,
+            "opacity": {
+              "keys": [
+                {
+                  "i": "easeOut",
+                  "t": 939859200000,
+                  "v": 100.0
+                },
+                {
+                  "t": 1016064000000,
+                  "v": 0.0
+                }
+              ]
+            },
+            "scaleX": {
+              "keys": [
+                {
+                  "t": 45722880000,
+                  "v": 0.0
+                },
+                {
+                  "i": "easeInOut",
+                  "t": 99066240000,
+                  "v": 114.99999999999999
+                },
+                {
+                  "i": "easeIn",
+                  "t": 121927680000,
+                  "v": 100.0
+                }
+              ]
+            },
+            "scaleY": {
+              "keys": [
+                {
+                  "t": 45722880000,
+                  "v": 0.0
+                },
+                {
+                  "i": "easeInOut",
+                  "t": 99066240000,
+                  "v": 114.99999999999999
+                },
+                {
+                  "i": "easeIn",
+                  "t": 121927680000,
+                  "v": 100.0
+                }
+              ]
+            },
+            "x": 1150.0,
+            "y": 395.0
+          }
+        }
+      ],
+      "name": "Arrow callout",
+      "responsive": {
+        "duration": 1016064000000,
+        "intro": 152409600000,
+        "outro": 76204800000
+      },
+      "width": 1920
+    },
+    "id": "wabcut.gaming.arrowCallout",
+    "name": "Arrow callout",
+    "version": 1
+  },
+  "version": 1
+}

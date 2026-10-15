@@ -1,0 +1,560 @@
+{
+  "format": "wabcut-graphic-template",
+  "template": {
+    "description": "REPLAY stinger that becomes a corner tag with a blinking dot for a replay of any length.",
+    "duration": 2159136000000,
+    "fields": [
+      {
+        "id": "label",
+        "kind": "text",
+        "label": "Text",
+        "layer": 7,
+        "property": "text",
+        "value": "REPLAY"
+      },
+      {
+        "id": "accent",
+        "kind": "color",
+        "label": "Tag colour",
+        "layer": 5,
+        "property": "fill",
+        "value": [
+          0.482,
+          0.231,
+          1.0,
+          1.0
+        ]
+      },
+      {
+        "id": "stingerColor",
+        "kind": "color",
+        "label": "Stinger colour",
+        "layer": 3,
+        "property": "fill",
+        "value": [
+          0.878,
+          0.251,
+          0.984,
+          1.0
+        ]
+      }
+    ],
+    "graphic": {
+      "height": 1080,
+      "layers": [
+        {
+          "id": 1,
+          "kind": "shape",
+          "name": "Flash",
+          "out": 101606400000,
+          "shape": {
+            "fill": {
+              "color": [
+                0.953,
+                0.941,
+                0.98,
+                1.0
+              ],
+              "type": "solid"
+            },
+            "height": 1080.0,
+            "type": "rectangle",
+            "width": 1920.0
+          },
+          "transform": {
+            "opacity": {
+              "keys": [
+                {
+                  "t": 0,
+                  "v": 0.0
+                },
+                {
+                  "t": 15240960000,
+                  "v": 45.0
+                },
+                {
+                  "t": 38102400000,
+                  "v": 45.0
+                },
+                {
+                  "i": "easeIn",
+                  "t": 96526080000,
+                  "v": 0.0
+                }
+              ]
+            },
+            "x": 960.0,
+            "y": 540.0
+          }
+        },
+        {
+          "children": [
+            {
+              "id": 3,
+              "kind": "shape",
+              "masks": [
+                {
+                  "enabled": true,
+                  "id": 1,
+                  "inverted": false,
+                  "mode": "add",
+                  "name": "Wipe",
+                  "params": {
+                    "center.x": {
+                      "keys": [
+                        {
+                          "t": 0,
+                          "v": -0.5520833333333334
+                        },
+                        {
+                          "i": "easeIn",
+                          "t": 55883520000,
+                          "v": 0.0
+                        }
+                      ]
+                    },
+                    "center.y": {
+                      "value": 0.0
+                    },
+                    "size.x": {
+                      "keys": [
+                        {
+                          "t": 0,
+                          "v": 0.0
+                        },
+                        {
+                          "i": "easeIn",
+                          "t": 55883520000,
+                          "v": 1.1041666666666667
+                        }
+                      ]
+                    },
+                    "size.y": {
+                      "value": 0.23148148148148148
+                    }
+                  },
+                  "shape": "rectangle"
+                }
+              ],
+              "name": "Band",
+              "shape": {
+                "fill": {
+                  "color": [
+                    0.878,
+                    0.251,
+                    0.984,
+                    1.0
+                  ],
+                  "type": "solid"
+                },
+                "path": [
+                  {
+                    "i": "linear",
+                    "t": 0,
+                    "v": [
+                      [
+                        -1000.0,
+                        -125.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0
+                      ],
+                      [
+                        1060.0,
+                        -125.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0
+                      ],
+                      [
+                        1000.0,
+                        125.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0
+                      ],
+                      [
+                        -1060.0,
+                        125.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0
+                      ]
+                    ]
+                  }
+                ],
+                "type": "path"
+              }
+            }
+          ],
+          "id": 2,
+          "kind": "group",
+          "name": "Stinger",
+          "out": 165110400000,
+          "transform": {
+            "x": {
+              "keys": [
+                {
+                  "i": "easeOut",
+                  "t": 109226880000,
+                  "v": 960.0
+                },
+                {
+                  "t": 165110400000,
+                  "v": -1340.0
+                }
+              ]
+            },
+            "y": 540.0
+          }
+        },
+        {
+          "children": [
+            {
+              "id": 5,
+              "kind": "shape",
+              "name": "Tag box",
+              "pin": {
+                "edges": [
+                  "left",
+                  "top",
+                  "right",
+                  "bottom"
+                ],
+                "offsets": [
+                  -64.0,
+                  -12.0,
+                  26.0,
+                  12.0
+                ],
+                "to": 7
+              },
+              "shadow": {
+                "angle": 90.0,
+                "color": [
+                  0.047,
+                  0.039,
+                  0.071,
+                  1.0
+                ],
+                "distance": 4.0,
+                "enabled": true,
+                "opacity": 0.45,
+                "softness": 10.0
+              },
+              "shape": {
+                "cornerRadius": 8.0,
+                "fill": {
+                  "color": [
+                    0.482,
+                    0.231,
+                    1.0,
+                    1.0
+                  ],
+                  "type": "solid"
+                },
+                "height": 76.8,
+                "type": "rectangle",
+                "width": 266.88
+              },
+              "transform": {
+                "x": 69.44,
+                "y": 26.4
+              }
+            },
+            {
+              "id": 6,
+              "kind": "shape",
+              "name": "Dot",
+              "shape": {
+                "fill": {
+                  "color": [
+                    1.0,
+                    0.231,
+                    0.361,
+                    1.0
+                  ],
+                  "type": "solid"
+                },
+                "height": 20.0,
+                "type": "ellipse",
+                "width": 20.0
+              },
+              "transform": {
+                "opacity": {
+                  "keys": [
+                    {
+                      "i": "easeInOut",
+                      "t": 190512000000,
+                      "v": 100.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 292118400000,
+                      "v": 25.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 393724800000,
+                      "v": 100.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 495331200000,
+                      "v": 25.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 596937600000,
+                      "v": 100.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 698544000000,
+                      "v": 25.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 800150400000,
+                      "v": 100.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 901756800000,
+                      "v": 25.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 1003363200000,
+                      "v": 100.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 1104969600000,
+                      "v": 25.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 1206576000000,
+                      "v": 100.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 1308182400000,
+                      "v": 25.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 1409788800000,
+                      "v": 100.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 1511395200000,
+                      "v": 25.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 1613001600000,
+                      "v": 100.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 1714608000000,
+                      "v": 25.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 1816214400000,
+                      "v": 100.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 1917820800000,
+                      "v": 25.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 2019427200000,
+                      "v": 100.0
+                    }
+                  ]
+                },
+                "x": -34.0,
+                "y": 26.4
+              }
+            },
+            {
+              "id": 7,
+              "kind": "text",
+              "name": "Tag label",
+              "text": {
+                "runs": [
+                  {
+                    "fill": [
+                      0.953,
+                      0.941,
+                      0.98,
+                      1.0
+                    ],
+                    "font": "Bai Jamjuree",
+                    "size": 44.0,
+                    "text": "REPLAY",
+                    "tracking": 120.0,
+                    "weight": 600
+                  }
+                ]
+              }
+            }
+          ],
+          "id": 4,
+          "kind": "group",
+          "name": "Tag",
+          "transform": {
+            "anchorX": 69.44,
+            "anchorY": 26.4,
+            "opacity": {
+              "keys": [
+                {
+                  "t": 0,
+                  "v": 0.0
+                },
+                {
+                  "t": 25401600000,
+                  "v": 100.0
+                },
+                {
+                  "i": "easeOut",
+                  "t": 2082931200000,
+                  "v": 100.0
+                },
+                {
+                  "t": 2159136000000,
+                  "v": 0.0
+                }
+              ]
+            },
+            "scaleX": {
+              "keys": [
+                {
+                  "t": 0,
+                  "v": 0.0
+                },
+                {
+                  "i": "easeInOut",
+                  "t": 38102400000,
+                  "v": 330.0
+                },
+                {
+                  "i": "easeInOut",
+                  "t": 58423680000,
+                  "v": 300.0
+                },
+                {
+                  "i": "easeInOut",
+                  "t": 106686720000,
+                  "v": 300.0
+                },
+                {
+                  "i": "easeInOut",
+                  "t": 182891520000,
+                  "v": 100.0
+                }
+              ]
+            },
+            "scaleY": {
+              "keys": [
+                {
+                  "t": 0,
+                  "v": 0.0
+                },
+                {
+                  "i": "easeInOut",
+                  "t": 38102400000,
+                  "v": 330.0
+                },
+                {
+                  "i": "easeInOut",
+                  "t": 58423680000,
+                  "v": 300.0
+                },
+                {
+                  "i": "easeInOut",
+                  "t": 106686720000,
+                  "v": 300.0
+                },
+                {
+                  "i": "easeInOut",
+                  "t": 182891520000,
+                  "v": 100.0
+                }
+              ]
+            },
+            "x": {
+              "keys": [
+                {
+                  "i": "easeInOut",
+                  "t": 0,
+                  "v": 960.0
+                },
+                {
+                  "i": "easeInOut",
+                  "t": 106686720000,
+                  "v": 960.0
+                },
+                {
+                  "i": "easeInOut",
+                  "t": 182891520000,
+                  "v": 229.44
+                },
+                {
+                  "i": "easeOut",
+                  "t": 2044828800000,
+                  "v": 229.44
+                },
+                {
+                  "t": 2159136000000,
+                  "v": -190.56
+                }
+              ]
+            },
+            "y": {
+              "keys": [
+                {
+                  "i": "easeInOut",
+                  "t": 0,
+                  "v": 540.0
+                },
+                {
+                  "i": "easeInOut",
+                  "t": 106686720000,
+                  "v": 540.0
+                },
+                {
+                  "i": "easeInOut",
+                  "t": 182891520000,
+                  "v": 90.4
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "name": "Replay stinger",
+      "responsive": {
+        "duration": 2159136000000,
+        "intro": 190512000000,
+        "outro": 114307200000
+      },
+      "width": 1920
+    },
+    "id": "wabcut.gaming.replay",
+    "name": "Replay stinger",
+    "version": 1
+  },
+  "version": 1
+}

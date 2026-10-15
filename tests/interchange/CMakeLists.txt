@@ -1,0 +1,31 @@
+# Interchange tests: format fixtures (tests/interchange/fixtures), robustness (truncated/mutated/garbage
+# input), relinking and the import report. The fixtures folder is passed as WABCUT_INTERCHANGE_FIXTURES.
+find_package(nlohmann_json CONFIG REQUIRED)
+
+wabcut_add_test_suite(interchange
+    SOURCES
+        ../model/ScaleProject.cpp
+        ../model/ScaleProject.h
+        ../model/TimelineFixture.cpp
+        ../model/TimelineFixture.h
+        InterchangeTestSupport.cpp
+        InterchangeTestSupport.h
+        test_detect.cpp
+        test_edl.cpp
+        test_export.cpp
+        test_fcp7.cpp
+        test_fcpxml.cpp
+        test_file_url.cpp
+        test_lottie.cpp
+        test_otio.cpp
+        test_prproj.cpp
+        test_relinker.cpp
+        test_robustness.cpp
+        test_summary.cpp
+        test_time_math.cpp
+    LIBS wabcut_interchange nlohmann_json::nlohmann_json)
+# White-box tests of the private time math and parsers' helpers.
+target_include_directories(wabcut_interchange_tests PRIVATE ${CMAKE_SOURCE_DIR}/src/interchange/src
+    ${CMAKE_SOURCE_DIR}/tests/model)
+target_compile_definitions(wabcut_interchange_tests PRIVATE
+    WABCUT_INTERCHANGE_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/fixtures")

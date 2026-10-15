@@ -1,0 +1,86 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "wabcut",
+  "version-semver": "0.1.0",
+  "description": "Wabcut - open-source cross-platform non-linear video editor",
+  "license": "GPL-3.0-or-later",
+  "builtin-baseline": "e456309491fd875487bf02b8a0dca76c1b1b00cc",
+  "dependencies": [
+    {
+      "name": "ffmpeg",
+      "default-features": false,
+      "features": [
+        "avcodec",
+        "avformat",
+        "avfilter",
+        "swresample",
+        "swscale",
+        "ffmpeg",
+        "ffprobe",
+        "gpl",
+        "x264",
+        "x265",
+        "dav1d",
+        { "name": "svt-av1", "platform": "!x86 & !arm32 & !uwp" },
+        "vpx",
+        "opus",
+        "zlib",
+        { "name": "nvcodec", "platform": "(windows | linux) & x64" },
+        { "name": "amf", "platform": "windows | linux" },
+        { "name": "qsv", "platform": "windows | linux" },
+        { "name": "vaapi", "platform": "linux" }
+      ]
+    },
+    "libebur128",
+    "hnswlib",
+    "miniaudio",
+    "nlohmann-json",
+    "spdlog",
+    "pugixml",
+    "rnnoise",
+    {
+      "name": "sqlite3",
+      "features": [
+        "fts5"
+      ]
+    },
+    "zlib",
+    "catch2"
+  ],
+  "features": {
+    "audio-plugins": {
+      "description": "Audio plugin hosting (A.6, docs/plugins.md): the CLAP headers (free-audio/clap, MIT) and the Steinberg VST3 SDK (MIT since 3.8) for the out-of-process helper wabcut-plughost, pinned by the baseline (clap 1.2.10, VST3 SDK 3.8.1 build 84). Enabled by WABCUT_WITH_AUDIO_PLUGINS.",
+      "dependencies": [
+        "clap-cleveraudio",
+        "vst3sdk"
+      ]
+    },
+    "ai-onnx": {
+      "description": "Smart search: ONNX Runtime 1.24.4 from Microsoft's official release binaries (overlay port onnxruntime-prebuilt in cmake/ports; DirectML + CPU on Windows, CPU on Linux, CPU + Core ML on macOS) for the wabcut-embed helper. Enabled by WABCUT_WITH_ONNX.",
+      "dependencies": [
+        "onnxruntime-prebuilt"
+      ]
+    },
+    "ai-cloud": {
+      "description": "Cloud AI keys in the OS keychain: QtKeychain 0.17 (overlay port in cmake/ports, built against the app's external Qt via WABCUT_QT_DIR). Enabled by WABCUT_WITH_CLOUD_AI.",
+      "dependencies": [
+        "qtkeychain"
+      ]
+    },
+    "ai-local": {
+      "description": "Local AI: whisper.cpp transcription in the wabcut-infer helper (ggml with run-time CPU variants and the Vulkan backend). Enabled by WABCUT_WITH_LOCAL_AI; uses the overlay ports in cmake/ports.",
+      "dependencies": [
+        {
+          "name": "whisper-cpp",
+          "default-features": false,
+          "features": [
+            {
+              "name": "vulkan",
+              "platform": "windows | linux"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

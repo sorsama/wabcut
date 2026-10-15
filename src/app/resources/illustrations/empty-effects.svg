@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="160" height="120" viewBox="0 0 160 120"
+     fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <!-- Empty Effects: a clip with its effect stack, and two sparkles above it. -->
+  <!-- The clip and its effect rows -->
+  <rect x="32" y="48" width="76" height="44" rx="4"/>
+  <path d="M48 62H88"/>
+  <path d="M48 74H76"/>
+  <path d="M48 84H68"/>
+  <!-- Sparkles -->
+  <path d="M116 22L119 33L130 36L119 39L116 50L113 39L102 36L113 33Z"/>
+  <path d="M132 54L133.5 58.5L138 60L133.5 61.5L132 66L130.5 61.5L126 60L130.5 58.5Z"/>
+  <!-- Accent: a violet dot before the first effect -->
+  <circle cx="40.7" cy="62" r="3.5" fill="#9B6CFF" stroke="none"/>
+</svg>

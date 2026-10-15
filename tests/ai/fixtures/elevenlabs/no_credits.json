@@ -1,0 +1,1 @@
+{"detail":{"type":"payment_required","code":"insufficient_credits","message":"This request exceeds your quota.","status":"quota_exceeded","request_id":"r_1"}}

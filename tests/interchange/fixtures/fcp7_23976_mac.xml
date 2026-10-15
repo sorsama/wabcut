@@ -1,0 +1,415 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE xmeml>
+<!-- Hand-authored in the shape of a Final Cut Pro 7 "Export > XML" (xmeml v5) from macOS: a project with a
+     bin holding a 23.976 fps non-drop sequence, macOS file URLs (one with a percent-encoded UTF-8 name),
+     an FCP7 stereo pair (channels 1 and 2 on A1 and A2, linked), a centred Cross Dissolve without
+     Premiere's cutPointTicks, Basic Motion values, clip and sequence markers with RGB colours. -->
+<xmeml version="5">
+	<project>
+		<name>Reel 2</name>
+		<children>
+			<bin>
+				<name>Edits</name>
+				<children>
+					<sequence id="Reel 2 Assembly">
+						<name>Reel 2 Assembly</name>
+						<duration>240</duration>
+						<rate>
+							<ntsc>TRUE</ntsc>
+							<timebase>24</timebase>
+						</rate>
+						<timecode>
+							<rate>
+								<ntsc>TRUE</ntsc>
+								<timebase>24</timebase>
+							</rate>
+							<string>00:59:58:00</string>
+							<frame>86352</frame>
+							<displayformat>NDF</displayformat>
+						</timecode>
+						<in>-1</in>
+						<out>-1</out>
+						<media>
+							<video>
+								<format>
+									<samplecharacteristics>
+										<width>1920</width>
+										<height>1080</height>
+										<anamorphic>FALSE</anamorphic>
+										<pixelaspectratio>square</pixelaspectratio>
+										<fielddominance>none</fielddominance>
+										<rate>
+											<ntsc>TRUE</ntsc>
+											<timebase>24</timebase>
+										</rate>
+									</samplecharacteristics>
+								</format>
+								<track>
+									<clipitem id="Cafe Interview">
+										<name>Café Interview</name>
+										<duration>1000</duration>
+										<rate>
+											<ntsc>TRUE</ntsc>
+											<timebase>24</timebase>
+										</rate>
+										<in>240</in>
+										<out>336</out>
+										<start>0</start>
+										<end>96</end>
+										<enabled>TRUE</enabled>
+										<file id="Cafe_Interview">
+											<name>Café_Interview.mov</name>
+											<pathurl>file://localhost/Volumes/RAID/Reel%202/Caf%C3%A9_Interview.mov</pathurl>
+											<rate>
+												<timebase>24</timebase>
+												<ntsc>TRUE</ntsc>
+											</rate>
+											<duration>1000</duration>
+											<timecode>
+												<rate>
+													<timebase>24</timebase>
+													<ntsc>TRUE</ntsc>
+												</rate>
+												<string>10:12:00:00</string>
+												<frame>881568</frame>
+												<displayformat>NDF</displayformat>
+												<reel>
+													<name>A007</name>
+												</reel>
+											</timecode>
+											<media>
+												<video>
+													<duration>1000</duration>
+													<samplecharacteristics>
+														<width>1920</width>
+														<height>1080</height>
+													</samplecharacteristics>
+												</video>
+												<audio>
+													<samplecharacteristics>
+														<depth>24</depth>
+														<samplerate>48000</samplerate>
+													</samplecharacteristics>
+													<channelcount>2</channelcount>
+													<layout>stereo</layout>
+													<audiochannel>
+														<sourcechannel>1</sourcechannel>
+														<channellabel>left</channellabel>
+													</audiochannel>
+													<audiochannel>
+														<sourcechannel>2</sourcechannel>
+														<channellabel>right</channellabel>
+													</audiochannel>
+												</audio>
+											</media>
+										</file>
+										<sourcetrack>
+											<mediatype>video</mediatype>
+										</sourcetrack>
+										<link>
+											<linkclipref>Cafe Interview</linkclipref>
+											<mediatype>video</mediatype>
+											<trackindex>1</trackindex>
+											<clipindex>1</clipindex>
+										</link>
+										<link>
+											<linkclipref>Cafe Interview1</linkclipref>
+											<mediatype>audio</mediatype>
+											<trackindex>1</trackindex>
+											<clipindex>1</clipindex>
+											<groupindex>1</groupindex>
+										</link>
+										<link>
+											<linkclipref>Cafe Interview2</linkclipref>
+											<mediatype>audio</mediatype>
+											<trackindex>2</trackindex>
+											<clipindex>1</clipindex>
+											<groupindex>1</groupindex>
+										</link>
+										<fielddominance>none</fielddominance>
+									</clipitem>
+									<clipitem id="Broll_01">
+										<name>Broll_01.mov</name>
+										<duration>300</duration>
+										<rate>
+											<ntsc>TRUE</ntsc>
+											<timebase>24</timebase>
+										</rate>
+										<in>0</in>
+										<out>84</out>
+										<start>96</start>
+										<end>-1</end>
+										<enabled>TRUE</enabled>
+										<file id="Broll_01_file">
+											<name>Broll_01.mov</name>
+											<pathurl>file://localhost/Volumes/RAID/Reel%202/B-Roll/Broll_01.mov</pathurl>
+											<rate>
+												<timebase>24</timebase>
+												<ntsc>TRUE</ntsc>
+											</rate>
+											<duration>300</duration>
+											<media>
+												<video>
+													<samplecharacteristics>
+														<width>1920</width>
+														<height>1080</height>
+													</samplecharacteristics>
+												</video>
+											</media>
+										</file>
+										<sourcetrack>
+											<mediatype>video</mediatype>
+										</sourcetrack>
+									</clipitem>
+									<transitionitem>
+										<rate>
+											<ntsc>TRUE</ntsc>
+											<timebase>24</timebase>
+										</rate>
+										<start>156</start>
+										<end>180</end>
+										<alignment>center</alignment>
+										<effect>
+											<name>Cross Dissolve</name>
+											<effectid>Cross Dissolve</effectid>
+											<effectcategory>Dissolve</effectcategory>
+											<effecttype>transition</effecttype>
+											<mediatype>video</mediatype>
+										</effect>
+									</transitionitem>
+									<clipitem id="Broll_02">
+										<name>Broll_02.mov</name>
+										<duration>200</duration>
+										<rate>
+											<ntsc>TRUE</ntsc>
+											<timebase>24</timebase>
+										</rate>
+										<in>36</in>
+										<out>120</out>
+										<start>-1</start>
+										<end>240</end>
+										<enabled>TRUE</enabled>
+										<file id="Broll_02_file">
+											<name>Broll_02.mov</name>
+											<pathurl>file:///Volumes/RAID/Reel%202/B-Roll/Broll_02.mov</pathurl>
+											<rate>
+												<timebase>24</timebase>
+												<ntsc>TRUE</ntsc>
+											</rate>
+											<duration>200</duration>
+											<media>
+												<video>
+													<samplecharacteristics>
+														<width>1920</width>
+														<height>1080</height>
+													</samplecharacteristics>
+												</video>
+											</media>
+										</file>
+										<sourcetrack>
+											<mediatype>video</mediatype>
+										</sourcetrack>
+									</clipitem>
+									<enabled>TRUE</enabled>
+									<locked>FALSE</locked>
+								</track>
+								<track>
+									<clipitem id="Broll_01 copy">
+										<name>Broll_01.mov</name>
+										<duration>300</duration>
+										<rate>
+											<ntsc>TRUE</ntsc>
+											<timebase>24</timebase>
+										</rate>
+										<in>100</in>
+										<out>130</out>
+										<start>200</start>
+										<end>230</end>
+										<enabled>TRUE</enabled>
+										<file id="Broll_01_file"/>
+										<sourcetrack>
+											<mediatype>video</mediatype>
+										</sourcetrack>
+										<filter>
+											<enabled>TRUE</enabled>
+											<start>-1</start>
+											<end>-1</end>
+											<effect>
+												<name>Basic Motion</name>
+												<effectid>basic</effectid>
+												<effectcategory>motion</effectcategory>
+												<effecttype>motion</effecttype>
+												<mediatype>video</mediatype>
+												<parameter>
+													<parameterid>scale</parameterid>
+													<name>Scale</name>
+													<valuemin>0</valuemin>
+													<valuemax>1000</valuemax>
+													<value>120</value>
+												</parameter>
+												<parameter>
+													<parameterid>rotation</parameterid>
+													<name>Rotation</name>
+													<valuemin>-8640</valuemin>
+													<valuemax>8640</valuemax>
+													<value>15</value>
+												</parameter>
+												<parameter>
+													<parameterid>center</parameterid>
+													<name>Center</name>
+													<value>
+														<horiz>0</horiz>
+														<vert>0</vert>
+													</value>
+												</parameter>
+											</effect>
+										</filter>
+										<marker>
+											<name>Flash frame</name>
+											<comment>check with grade</comment>
+											<in>110</in>
+											<out>-1</out>
+										</marker>
+									</clipitem>
+									<enabled>TRUE</enabled>
+									<locked>FALSE</locked>
+								</track>
+							</video>
+							<audio>
+								<format>
+									<samplecharacteristics>
+										<depth>16</depth>
+										<samplerate>48000</samplerate>
+									</samplecharacteristics>
+								</format>
+								<track>
+									<clipitem id="Cafe Interview1">
+										<name>Café Interview</name>
+										<duration>1000</duration>
+										<rate>
+											<ntsc>TRUE</ntsc>
+											<timebase>24</timebase>
+										</rate>
+										<in>240</in>
+										<out>336</out>
+										<start>0</start>
+										<end>96</end>
+										<enabled>TRUE</enabled>
+										<file id="Cafe_Interview"/>
+										<sourcetrack>
+											<mediatype>audio</mediatype>
+											<trackindex>1</trackindex>
+										</sourcetrack>
+										<link>
+											<linkclipref>Cafe Interview</linkclipref>
+											<mediatype>video</mediatype>
+										</link>
+										<link>
+											<linkclipref>Cafe Interview1</linkclipref>
+											<mediatype>audio</mediatype>
+											<groupindex>1</groupindex>
+										</link>
+										<link>
+											<linkclipref>Cafe Interview2</linkclipref>
+											<mediatype>audio</mediatype>
+											<groupindex>1</groupindex>
+										</link>
+									</clipitem>
+									<enabled>TRUE</enabled>
+									<locked>FALSE</locked>
+								</track>
+								<track>
+									<clipitem id="Cafe Interview2">
+										<name>Café Interview</name>
+										<duration>1000</duration>
+										<rate>
+											<ntsc>TRUE</ntsc>
+											<timebase>24</timebase>
+										</rate>
+										<in>240</in>
+										<out>336</out>
+										<start>0</start>
+										<end>96</end>
+										<enabled>TRUE</enabled>
+										<file id="Cafe_Interview"/>
+										<sourcetrack>
+											<mediatype>audio</mediatype>
+											<trackindex>2</trackindex>
+										</sourcetrack>
+										<link>
+											<linkclipref>Cafe Interview</linkclipref>
+											<mediatype>video</mediatype>
+										</link>
+										<link>
+											<linkclipref>Cafe Interview1</linkclipref>
+											<mediatype>audio</mediatype>
+											<groupindex>1</groupindex>
+										</link>
+										<link>
+											<linkclipref>Cafe Interview2</linkclipref>
+											<mediatype>audio</mediatype>
+											<groupindex>1</groupindex>
+										</link>
+									</clipitem>
+									<enabled>TRUE</enabled>
+									<locked>FALSE</locked>
+								</track>
+								<track>
+									<clipitem id="Room_Tone">
+										<name>Room_Tone.aif</name>
+										<duration>2400</duration>
+										<rate>
+											<ntsc>TRUE</ntsc>
+											<timebase>24</timebase>
+										</rate>
+										<in>0</in>
+										<out>240</out>
+										<start>0</start>
+										<end>240</end>
+										<enabled>TRUE</enabled>
+										<file id="Room_Tone_file">
+											<name>Room_Tone.aif</name>
+											<pathurl>file://localhost/Volumes/RAID/Reel%202/Audio/Room_Tone.aif</pathurl>
+											<rate>
+												<timebase>24</timebase>
+												<ntsc>TRUE</ntsc>
+											</rate>
+											<duration>2400</duration>
+											<media>
+												<audio>
+													<samplecharacteristics>
+														<depth>24</depth>
+														<samplerate>48000</samplerate>
+													</samplecharacteristics>
+													<channelcount>1</channelcount>
+												</audio>
+											</media>
+										</file>
+										<sourcetrack>
+											<mediatype>audio</mediatype>
+											<trackindex>1</trackindex>
+										</sourcetrack>
+									</clipitem>
+									<enabled>TRUE</enabled>
+									<locked>FALSE</locked>
+								</track>
+							</audio>
+						</media>
+						<marker>
+							<name>Scene 2</name>
+							<comment></comment>
+							<in>96</in>
+							<out>-1</out>
+							<color>
+								<alpha>0</alpha>
+								<red>255</red>
+								<green>0</green>
+								<blue>0</blue>
+							</color>
+						</marker>
+					</sequence>
+				</children>
+			</bin>
+		</children>
+	</project>
+</xmeml>

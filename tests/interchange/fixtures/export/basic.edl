@@ -1,0 +1,19 @@
+TITLE: Fixture
+FCM: NON-DROP FRAME
+
+001  A        B     C        00:00:00:00 00:00:00:04 01:00:00:00 01:00:00:04
+* FROM CLIP NAME: A
+* FROM FILE: D:/footage/A.mov
+* LOC: 01:00:00:02 BLUE    Intro
+002  B        B     C        00:00:00:10 00:00:00:18 01:00:00:04 01:00:00:12
+* FROM CLIP NAME: B
+* FROM FILE: D:/footage/B.mov
+003  E        A2    C        00:00:00:00 00:00:00:04 01:00:00:10 01:00:00:14
+* FROM CLIP NAME: E
+* FROM FILE: D:/footage/E.mov
+* LOC: 01:00:00:10 ORANGE  Chapter 2
+004  BL       V     C        00:00:00:00 00:00:00:02 01:00:00:12 01:00:00:14
+005  D        B     C        00:00:00:00 00:00:00:04 01:00:00:14 01:00:00:18
+* FROM CLIP NAME: D
+* FROM FILE: D:/footage/D.mov
+006  BL       V     C        00:00:00:00 00:00:00:04 01:00:00:18 01:00:00:22

@@ -1,0 +1,263 @@
+{
+ "format": "wabcut-graphic-template",
+ "version": 1,
+ "template": {
+  "id": "gaming-kill-streak",
+  "name": "Kill streak",
+  "description": "A big banner with the streak count in a badge: scale-pops in.",
+  "version": 1,
+  "duration": 1016064000000,
+  "graphic": {
+   "name": "Kill streak",
+   "width": 1920,
+   "height": 1080,
+   "layers": [
+    {
+     "id": 10,
+     "kind": "group",
+     "name": "Kill streak",
+     "transform": {
+      "x": 960,
+      "y": 250,
+      "rotation": -3,
+      "scaleX": [
+       {
+        "t": 0,
+        "v": 0.0
+       },
+       {
+        "t": 80015040000,
+        "v": 120.0,
+        "i": "easeInOut"
+       },
+       {
+        "t": 114307200000,
+        "v": 100.0,
+        "i": "easeIn"
+       },
+       {
+        "t": 927158400000,
+        "v": 100.0,
+        "i": "easeOut"
+       },
+       {
+        "t": 953830080000,
+        "v": 114.99999999999999,
+        "i": "easeInOut"
+       },
+       {
+        "t": 1016064000000,
+        "v": 0.0
+       }
+      ],
+      "scaleY": [
+       {
+        "t": 0,
+        "v": 0.0
+       },
+       {
+        "t": 80015040000,
+        "v": 120.0,
+        "i": "easeInOut"
+       },
+       {
+        "t": 114307200000,
+        "v": 100.0,
+        "i": "easeIn"
+       },
+       {
+        "t": 927158400000,
+        "v": 100.0,
+        "i": "easeOut"
+       },
+       {
+        "t": 953830080000,
+        "v": 114.99999999999999,
+        "i": "easeInOut"
+       },
+       {
+        "t": 1016064000000,
+        "v": 0.0
+       }
+      ]
+     },
+     "children": [
+      {
+       "id": 1,
+       "kind": "shape",
+       "name": "Banner",
+       "transform": {
+        "x": 0,
+        "y": 0
+       },
+       "shape": {
+        "type": "rectangle",
+        "width": 920,
+        "height": 180,
+        "cornerRadius": 24,
+        "fill": {
+         "type": "solid",
+         "color": "#7C3AED"
+        }
+       },
+       "shadow": {
+        "enabled": true,
+        "color": "#000000",
+        "opacity": 0.5,
+        "angle": 90,
+        "distance": 10,
+        "softness": 20
+       }
+      },
+      {
+       "id": 2,
+       "kind": "text",
+       "name": "Title",
+       "transform": {
+        "x": -90,
+        "y": 0,
+        "anchorY": 55
+       },
+       "text": {
+        "runs": [
+         {
+          "text": "KILL STREAK",
+          "font": "Bai Jamjuree",
+          "weight": 600,
+          "size": 92,
+          "fill": "#FFFFFF",
+          "tracking": 60
+         }
+        ],
+        "align": "center"
+       }
+      },
+      {
+       "id": 6,
+       "kind": "group",
+       "name": "Badge",
+       "transform": {
+        "x": 400,
+        "y": 0,
+        "scaleX": [
+         {
+          "t": 63504000000,
+          "v": 0.0
+         },
+         {
+          "t": 125737920000,
+          "v": 125.0,
+          "i": "easeInOut"
+         },
+         {
+          "t": 152409600000,
+          "v": 100.0,
+          "i": "easeIn"
+         }
+        ],
+        "scaleY": [
+         {
+          "t": 63504000000,
+          "v": 0.0
+         },
+         {
+          "t": 125737920000,
+          "v": 125.0,
+          "i": "easeInOut"
+         },
+         {
+          "t": 152409600000,
+          "v": 100.0,
+          "i": "easeIn"
+         }
+        ]
+       },
+       "children": [
+        {
+         "id": 4,
+         "kind": "shape",
+         "name": "Badge",
+         "transform": {
+          "x": 0,
+          "y": 0
+         },
+         "shape": {
+          "type": "ellipse",
+          "width": 200,
+          "height": 200,
+          "fill": {
+           "type": "solid",
+           "color": "#FACC15"
+          },
+          "stroke": {
+           "enabled": true,
+           "color": "#FFFFFF",
+           "width": 10
+          }
+         }
+        },
+        {
+         "id": 3,
+         "kind": "text",
+         "name": "Count",
+         "transform": {
+          "x": 0,
+          "y": 0,
+          "anchorY": 60
+         },
+         "text": {
+          "runs": [
+           {
+            "text": "x5",
+            "font": "Bai Jamjuree",
+            "weight": 600,
+            "size": 100,
+            "fill": "#111111"
+           }
+          ],
+          "align": "center"
+         }
+        }
+       ]
+      }
+     ]
+    }
+   ],
+   "responsive": {
+    "duration": 1016064000000,
+    "intro": 152409600000,
+    "outro": 88905600000
+   }
+  },
+  "fields": [
+   {
+    "id": "title",
+    "label": "Title",
+    "kind": "text",
+    "layer": 2,
+    "property": "text"
+   },
+   {
+    "id": "count",
+    "label": "Count",
+    "kind": "text",
+    "layer": 3,
+    "property": "text"
+   },
+   {
+    "id": "bannerColor",
+    "label": "Banner colour",
+    "kind": "color",
+    "layer": 1,
+    "property": "fill"
+   },
+   {
+    "id": "badgeColor",
+    "label": "Badge colour",
+    "kind": "color",
+    "layer": 4,
+    "property": "fill"
+   }
+  ]
+ }
+}

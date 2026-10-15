@@ -1,0 +1,572 @@
+{
+  "format": "wabcut-graphic-template",
+  "template": {
+    "description": "Kill streak banner with a big title and a subtitle; punches in, slides away.",
+    "duration": 762048000000,
+    "fields": [
+      {
+        "id": "title",
+        "kind": "text",
+        "label": "Title",
+        "layer": 5,
+        "property": "text",
+        "value": "DOUBLE KILL"
+      },
+      {
+        "id": "subtitle",
+        "kind": "text",
+        "label": "Subtitle",
+        "layer": 7,
+        "property": "text",
+        "value": "KILL STREAK x2"
+      },
+      {
+        "id": "accent",
+        "kind": "color",
+        "label": "Accent colour",
+        "layer": 3,
+        "property": "fill",
+        "value": [
+          0.482,
+          0.231,
+          1.0,
+          1.0
+        ]
+      }
+    ],
+    "graphic": {
+      "height": 1080,
+      "layers": [
+        {
+          "children": [
+            {
+              "id": 2,
+              "kind": "shape",
+              "name": "Plate",
+              "pin": {
+                "edges": [
+                  "left",
+                  "top",
+                  "right",
+                  "bottom"
+                ],
+                "offsets": [
+                  -70.0,
+                  -16.0,
+                  70.0,
+                  16.0
+                ],
+                "to": 5
+              },
+              "shape": {
+                "fill": {
+                  "color": [
+                    0.047,
+                    0.039,
+                    0.071,
+                    0.92
+                  ],
+                  "type": "solid"
+                },
+                "height": 171.2,
+                "type": "rectangle",
+                "width": 880.08
+              }
+            },
+            {
+              "id": 3,
+              "kind": "shape",
+              "name": "Accent bar",
+              "pin": {
+                "edges": [
+                  "left",
+                  "right",
+                  "bottom"
+                ],
+                "offsets": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  12.0
+                ],
+                "to": 2
+              },
+              "shape": {
+                "fill": {
+                  "color": [
+                    0.482,
+                    0.231,
+                    1.0,
+                    1.0
+                  ],
+                  "type": "solid"
+                },
+                "height": 12.0,
+                "type": "rectangle",
+                "width": 880.08
+              },
+              "transform": {
+                "scaleX": {
+                  "keys": [
+                    {
+                      "t": 45722880000,
+                      "v": 0.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 99066240000,
+                      "v": 110.00000000000001
+                    },
+                    {
+                      "i": "easeIn",
+                      "t": 121927680000,
+                      "v": 100.0
+                    }
+                  ]
+                },
+                "scaleY": {
+                  "keys": [
+                    {
+                      "t": 45722880000,
+                      "v": 0.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 99066240000,
+                      "v": 110.00000000000001
+                    },
+                    {
+                      "i": "easeIn",
+                      "t": 121927680000,
+                      "v": 100.0
+                    }
+                  ]
+                },
+                "y": 91.6
+              }
+            },
+            {
+              "id": 4,
+              "kind": "shape",
+              "masks": [
+                {
+                  "enabled": true,
+                  "id": 1,
+                  "inverted": false,
+                  "mode": "add",
+                  "name": "Wipe",
+                  "params": {
+                    "center.x": {
+                      "keys": [
+                        {
+                          "t": 30481920000,
+                          "v": 0.010416666666666666
+                        },
+                        {
+                          "i": "easeIn",
+                          "t": 96526080000,
+                          "v": 0.0
+                        }
+                      ]
+                    },
+                    "center.y": {
+                      "value": 0.0
+                    },
+                    "size.x": {
+                      "keys": [
+                        {
+                          "t": 30481920000,
+                          "v": 0.0
+                        },
+                        {
+                          "i": "easeIn",
+                          "t": 96526080000,
+                          "v": 0.020833333333333332
+                        }
+                      ]
+                    },
+                    "size.y": {
+                      "value": 0.1585185185185185
+                    }
+                  },
+                  "shape": "rectangle"
+                }
+              ],
+              "name": "Left slash",
+              "pin": {
+                "edges": [
+                  "left"
+                ],
+                "offsets": [
+                  -58.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "to": 2
+              },
+              "shape": {
+                "fill": {
+                  "color": [
+                    0.953,
+                    0.941,
+                    0.98,
+                    1.0
+                  ],
+                  "type": "solid"
+                },
+                "path": [
+                  {
+                    "i": "linear",
+                    "t": 0,
+                    "v": [
+                      [
+                        -8.0,
+                        -85.6,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0
+                      ],
+                      [
+                        20.0,
+                        -85.6,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0
+                      ],
+                      [
+                        8.0,
+                        85.6,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0
+                      ],
+                      [
+                        -20.0,
+                        85.6,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0
+                      ]
+                    ]
+                  }
+                ],
+                "type": "path"
+              },
+              "transform": {
+                "x": -478.04
+              }
+            },
+            {
+              "id": 5,
+              "kind": "text",
+              "name": "Title",
+              "text": {
+                "align": "center",
+                "runs": [
+                  {
+                    "fill": [
+                      0.953,
+                      0.941,
+                      0.98,
+                      1.0
+                    ],
+                    "font": "Bai Jamjuree",
+                    "size": 116.0,
+                    "text": "DOUBLE KILL",
+                    "tracking": 30.0,
+                    "weight": 600
+                  }
+                ]
+              },
+              "transform": {
+                "y": -69.6
+              }
+            },
+            {
+              "id": 6,
+              "kind": "shape",
+              "masks": [
+                {
+                  "enabled": true,
+                  "id": 1,
+                  "inverted": false,
+                  "mode": "add",
+                  "name": "Wipe",
+                  "params": {
+                    "center.x": {
+                      "keys": [
+                        {
+                          "t": 30481920000,
+                          "v": -0.010416666666666666
+                        },
+                        {
+                          "i": "easeIn",
+                          "t": 96526080000,
+                          "v": 0.0
+                        }
+                      ]
+                    },
+                    "center.y": {
+                      "value": 0.0
+                    },
+                    "size.x": {
+                      "keys": [
+                        {
+                          "t": 30481920000,
+                          "v": 0.0
+                        },
+                        {
+                          "i": "easeIn",
+                          "t": 96526080000,
+                          "v": 0.020833333333333332
+                        }
+                      ]
+                    },
+                    "size.y": {
+                      "value": 0.1585185185185185
+                    }
+                  },
+                  "shape": "rectangle"
+                }
+              ],
+              "name": "Right slash",
+              "pin": {
+                "edges": [
+                  "right"
+                ],
+                "offsets": [
+                  0.0,
+                  0.0,
+                  58.0,
+                  0.0
+                ],
+                "to": 2
+              },
+              "shape": {
+                "fill": {
+                  "color": [
+                    0.953,
+                    0.941,
+                    0.98,
+                    1.0
+                  ],
+                  "type": "solid"
+                },
+                "path": [
+                  {
+                    "i": "linear",
+                    "t": 0,
+                    "v": [
+                      [
+                        -8.0,
+                        -85.6,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0
+                      ],
+                      [
+                        20.0,
+                        -85.6,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0
+                      ],
+                      [
+                        8.0,
+                        85.6,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0
+                      ],
+                      [
+                        -20.0,
+                        85.6,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0
+                      ]
+                    ]
+                  }
+                ],
+                "type": "path"
+              },
+              "transform": {
+                "x": 478.04
+              }
+            },
+            {
+              "id": 7,
+              "kind": "text",
+              "name": "Subline",
+              "pin": {
+                "edges": [
+                  "top"
+                ],
+                "offsets": [
+                  0.0,
+                  205.2,
+                  0.0,
+                  0.0
+                ],
+                "to": 2
+              },
+              "text": {
+                "align": "center",
+                "animators": [
+                  {
+                    "name": "Typewriter In",
+                    "opacity": 0.0,
+                    "softness": 0.0,
+                    "start": {
+                      "keys": [
+                        {
+                          "t": 63504000000,
+                          "v": 0.0
+                        },
+                        {
+                          "t": 165110400000,
+                          "v": 100.0
+                        }
+                      ]
+                    },
+                    "unit": "character"
+                  }
+                ],
+                "background": {
+                  "color": [
+                    0.047,
+                    0.039,
+                    0.071,
+                    0.92
+                  ],
+                  "enabled": true,
+                  "radius": 4.0
+                },
+                "runs": [
+                  {
+                    "fill": [
+                      0.953,
+                      0.941,
+                      0.98,
+                      1.0
+                    ],
+                    "font": "IBM Plex Sans Thai",
+                    "size": 36.0,
+                    "text": "KILL STREAK x2",
+                    "tracking": 150.0,
+                    "weight": 600
+                  }
+                ]
+              },
+              "transform": {
+                "opacity": {
+                  "keys": [
+                    {
+                      "t": 63504000000,
+                      "v": 0.0
+                    },
+                    {
+                      "i": "easeIn",
+                      "t": 101606400000,
+                      "v": 100.0
+                    }
+                  ]
+                },
+                "y": 119.6
+              }
+            }
+          ],
+          "id": 1,
+          "kind": "group",
+          "name": "Banner",
+          "transform": {
+            "opacity": {
+              "keys": [
+                {
+                  "i": "easeOut",
+                  "t": 685843200000,
+                  "v": 100.0
+                },
+                {
+                  "t": 762048000000,
+                  "v": 0.0
+                }
+              ]
+            },
+            "rotation": -3.0,
+            "scaleX": {
+              "keys": [
+                {
+                  "t": 0,
+                  "v": 0.0
+                },
+                {
+                  "i": "easeInOut",
+                  "t": 49787136000,
+                  "v": 130.0
+                },
+                {
+                  "i": "easeIn",
+                  "t": 71124480000,
+                  "v": 100.0
+                }
+              ]
+            },
+            "scaleY": {
+              "keys": [
+                {
+                  "t": 0,
+                  "v": 0.0
+                },
+                {
+                  "i": "easeInOut",
+                  "t": 49787136000,
+                  "v": 130.0
+                },
+                {
+                  "i": "easeIn",
+                  "t": 71124480000,
+                  "v": 100.0
+                }
+              ]
+            },
+            "x": {
+              "keys": [
+                {
+                  "i": "easeOut",
+                  "t": 660441600000,
+                  "v": 960.0
+                },
+                {
+                  "t": 762048000000,
+                  "v": 1560.0
+                }
+              ]
+            },
+            "y": 300.0
+          }
+        }
+      ],
+      "name": "Kill streak banner",
+      "responsive": {
+        "duration": 762048000000,
+        "intro": 177811200000,
+        "outro": 101606400000
+      },
+      "width": 1920
+    },
+    "id": "wabcut.gaming.killStreak",
+    "name": "Kill streak banner",
+    "version": 1
+  },
+  "version": 1
+}

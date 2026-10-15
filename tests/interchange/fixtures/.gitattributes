@@ -1,0 +1,3 @@
+*.prproj binary
+# X.1 golden exports: byte-exact (EDLs end lines with CR LF)
+export/* -text -whitespace

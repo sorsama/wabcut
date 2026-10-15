@@ -1,0 +1,3 @@
+// Windows resources of wabcut.exe: the app icon (design language v2), generated from
+// resources/brand/wabcut-app-icon.svg by tests/app/test_brand_icons.cpp ("[.icongen]").
+IDI_ICON1 ICON "resources/brand/icons/wabcut.ico"

@@ -1,0 +1,111 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Wabcut's MSI options (CPACK_WIX_EXTRA_SOURCES; wired into the package by wabcut-patch.xml):
+
+  * One extra page in the standard WixUI_InstallDir flow, after the folder page: an opt-in checkbox that associates
+    .wabcut project files with Wabcut, and what the installer does and does not touch.
+  * The "FileAssociation" feature behind that checkbox: per-user registrations under HKCU\Software\Classes, removed
+    again by the uninstaller. Off unless chosen. Silent installs opt in with WABCUT_ASSOCIATE=1:
+        msiexec /i wabcut-<version>-windows-x64.msi /qn WABCUT_ASSOCIATE=1
+  * The install folder, remembered for repair and uninstall (HKCU\Software\Wabcut\Installer).
+
+  The page is spliced in by publishing NewDialog events with a higher Order than WixUI_InstallDir's own (the last
+  NewDialog event whose condition holds wins), so the stock dialog set is used unmodified.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+    <Fragment>
+        <Property Id="WABCUT_ASSOCIATE" Secure="yes" />
+
+        <UI Id="WabcutOptionsUI">
+            <Dialog Id="WabcutOptionsDlg" Width="370" Height="270" Title="!(loc.InstallDirDlg_Title)">
+                <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="no"
+                         Text="!(loc.InstallDirDlgBannerBitmap)" />
+                <Control Id="Title" Type="Text" X="15" Y="6" Width="200" Height="15" Transparent="yes" NoPrefix="yes"
+                         Text="{\WixUI_Font_Title}Options" />
+                <Control Id="Description" Type="Text" X="25" Y="23" Width="280" Height="15" Transparent="yes"
+                         NoPrefix="yes" Text="Choose how Windows works with Wabcut." />
+                <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
+
+                <Control Id="AssociateCheckBox" Type="CheckBox" X="20" Y="58" Width="330" Height="17"
+                         Property="WABCUT_ASSOCIATE" CheckBoxValue="1"
+                         Text="&amp;Open .wabcut project files with Wabcut" />
+                <Control Id="AssociateHint" Type="Text" X="37" Y="77" Width="313" Height="36" NoPrefix="yes"
+                         Text="Double-clicking a project in File Explorer opens it in Wabcut. Leave this off to keep how Windows opens them today. Windows Settings &gt; Apps &gt; Default apps can change it later." />
+
+                <Control Id="ScopeHeading" Type="Text" X="20" Y="124" Width="330" Height="13" NoPrefix="yes"
+                         Text="What this installer touches" />
+                <Control Id="ScopeText" Type="Text" X="20" Y="139" Width="330" Height="84" NoPrefix="yes"
+                         Text="Wabcut installs for your Windows account only and needs no administrator rights. It adds a Start menu entry and an entry in Settings &gt; Apps. Uninstalling removes the program files only: your projects, autosaves, proxies, caches, downloaded AI models, crash reports and the AI keys in Windows Credential Manager stay where they are." />
+
+                <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
+                <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="!(loc.WixUIBack)" />
+                <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes"
+                         Text="!(loc.WixUINext)" />
+                <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes"
+                         Text="!(loc.WixUICancel)">
+                    <Publish Event="SpawnDialog" Value="CancelDlg" />
+                </Control>
+            </Dialog>
+
+            <!-- InstallDirDlg -> WabcutOptionsDlg -> VerifyReadyDlg (fresh installs; maintenance is unchanged). -->
+            <Publish Dialog="InstallDirDlg" Control="Next" Event="NewDialog" Value="WabcutOptionsDlg" Order="10"
+                     Condition="WIXUI_DONTVALIDATEPATH OR WIXUI_INSTALLDIR_VALID=&quot;1&quot;" />
+            <Publish Dialog="WabcutOptionsDlg" Control="Back" Event="NewDialog" Value="InstallDirDlg" Order="1" />
+            <Publish Dialog="WabcutOptionsDlg" Control="Next" Event="AddLocal" Value="FileAssociation" Order="1"
+                     Condition="WABCUT_ASSOCIATE=&quot;1&quot;" />
+            <Publish Dialog="WabcutOptionsDlg" Control="Next" Event="Remove" Value="FileAssociation" Order="2"
+                     Condition="NOT (WABCUT_ASSOCIATE=&quot;1&quot;)" />
+            <Publish Dialog="WabcutOptionsDlg" Control="Next" Event="NewDialog" Value="VerifyReadyDlg" Order="3" />
+            <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="WabcutOptionsDlg" Order="10"
+                     Condition="NOT Installed" />
+        </UI>
+    </Fragment>
+
+    <Fragment>
+        <!-- Level 1000 is above the default INSTALLLEVEL (1): absent unless the page (AddLocal) or WABCUT_ASSOCIATE=1
+             on the command line selects it. -->
+        <Feature Id="FileAssociation" Title="Open .wabcut files with Wabcut" Level="1000" AllowAbsent="yes"
+                 AllowAdvertise="no">
+            <Level Value="1" Condition="WABCUT_ASSOCIATE=&quot;1&quot;" />
+            <ComponentRef Id="WabcutFileAssociation" />
+        </Feature>
+
+        <!-- Per-user ProgID (HKCU\Software\Classes is the current user's part of HKEY_CLASSES_ROOT). The component owns
+             every value it writes, so the uninstaller removes exactly these and nothing a user or another app set. -->
+        <Component Id="WabcutFileAssociation" Directory="INSTALL_ROOT" Guid="FCBA00B8-E5B4-4B92-8EA1-E9558579B8F5">
+            <RegistryValue Root="HKCU" Key="Software\Classes\.wabcut" Type="string" Value="Wabcut.Project"
+                           KeyPath="yes" />
+            <RegistryValue Root="HKCU" Key="Software\Classes\.wabcut" Name="Content Type" Type="string"
+                           Value="application/x-wabcut-project" />
+            <RegistryValue Root="HKCU" Key="Software\Classes\.wabcut\OpenWithProgids" Name="Wabcut.Project"
+                           Type="string" Value="" />
+            <RegistryValue Root="HKCU" Key="Software\Classes\Wabcut.Project" Type="string" Value="Wabcut project" />
+            <RegistryValue Root="HKCU" Key="Software\Classes\Wabcut.Project\DefaultIcon" Type="string"
+                           Value="&quot;[INSTALL_ROOT]bin\wabcut.exe&quot;,0" />
+            <RegistryValue Root="HKCU" Key="Software\Classes\Wabcut.Project\shell\open\command" Type="string"
+                           Value="&quot;[INSTALL_ROOT]bin\wabcut.exe&quot; &quot;%1&quot;" />
+        </Component>
+    </Fragment>
+
+    <Fragment>
+        <!-- The install folder, remembered. Windows Installer does not keep a folder chosen on the folder page (or with
+             INSTALL_ROOT=...): repair and uninstall would look for the files in the default folder and leave them
+             behind. The folder goes into HKCU\Software\Wabcut\Installer (the app's own settings are in
+             HKCU\Software\Wabcut\Wabcut and are never touched), and maintenance of the installed product reads it
+             back before the folders are resolved. -->
+        <Property Id="WABCUT_INSTALLED_ROOT" Secure="yes">
+            <RegistrySearch Id="WabcutInstalledRoot" Root="HKCU" Key="Software\Wabcut\Installer" Name="InstallRoot"
+                            Type="raw" />
+        </Property>
+        <SetDirectory Id="INSTALL_ROOT" Value="[WABCUT_INSTALLED_ROOT]" Sequence="both"
+                      Condition="Installed AND WABCUT_INSTALLED_ROOT" />
+        <Feature Id="InstallFolder" Title="Install folder" Level="1" Display="hidden" AllowAbsent="no"
+                 AllowAdvertise="no">
+            <ComponentRef Id="WabcutInstallFolder" />
+        </Feature>
+        <Component Id="WabcutInstallFolder" Directory="INSTALL_ROOT" Guid="6E60BC69-3480-4896-9A3A-C1FA16B94222">
+            <RegistryValue Root="HKCU" Key="Software\Wabcut\Installer" Name="InstallRoot" Type="string"
+                           Value="[INSTALL_ROOT]" KeyPath="yes" />
+        </Component>
+    </Fragment>
+</Wix>

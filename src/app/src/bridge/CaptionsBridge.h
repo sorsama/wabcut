@@ -1,0 +1,194 @@
+#pragma once
+
+// CaptionsBridge (M5e, the C.7 caption workshop in M5m; QML singleton `Captions`): caption tracks of the current
+// sequence (Sequence::captionTracks) and their style, which lives in the model (CaptionStyle, docs/internal/c7-caption-handoff.md).
+//
+//   tracks / track         the caption tracks; the one shown, edited and drawn on the program monitor
+//   style / setStyle()     the shown track's CaptionStyle as a map; a change is edit::setCaptionStyle, and a slider
+//                          drag merges into one undo step until endStyleEdit()
+//   presets                built in (Clean, Bold Box, Podcast, Shorts, Thai-friendly) and the project's; apply, save
+//                          the track's style as a project preset, delete one
+//   cues / cue edits       text and timing (typing merges until endEdit()), nudge by frames, split at the playhead,
+//                          merge with the next, add at the playhead, delete, the speaker (name and colour)
+//   generate() / update    captions.generateFromTranscript; captions.updateFromTranscript after transcript corrections
+//                          (`updateSuggested` after a fix on the Transcript tab)
+//   exportFile()           SRT / WebVTT through wabcut_ai_edit's writers
+//   activeCue              the cue under the playhead (the list highlights it)
+//
+// The compositor draws the shown track in the picture (I.4: the program monitor and burned-in exports alike) with
+// `style` (CaptionStyleMapping.h maps it to the renderer's style), so every edit previews live.
+
+#include <QObject>
+#include <QPointer>
+#include <QString>
+#include <QUrl>
+#include <QVariantList>
+#include <QVariantMap>
+#include <QtQml/qqmlregistration.h>
+
+#include <wabcut/model/CaptionStyle.h>
+#include <wabcut/model/Ids.h>
+
+#include <string>
+
+class QJSEngine;
+class QQmlEngine;
+
+namespace wabcut {
+struct CaptionTrack;
+}
+
+namespace wabcut::app {
+
+class ProjectController;
+class TranscriptBridge;
+
+/// The style as QML sees it: colours "#RRGGBB", enums as strings, sizes as fractions (fontSize of the frame height,
+/// em-relative outline/shadow/box sizes), plus fontSizePx (on a 1080-line frame) and positionAnimated.
+QVariantMap captionStyleMap(const CaptionStyle& style, Ticks at = {});
+/// Applies one field of captionStyleMap to `style` (clamped to the command's ranges). False for an unknown key or a
+/// value of the wrong kind.
+bool setCaptionStyleField(CaptionStyle& style, const QString& key, const QVariant& value);
+
+class CaptionsBridge : public QObject {
+    Q_OBJECT
+
+    /// [{ id: "k…", name, language, cueCount, enabled }]
+    Q_PROPERTY(QVariantList tracks READ tracks NOTIFY tracksChanged FINAL)
+    /// The track shown and edited ("" when there is none).
+    Q_PROPERTY(QString track READ track WRITE setTrack NOTIFY tracksChanged FINAL)
+    /// The shown track's name, language and visibility: { name, language, enabled } (empty without a track).
+    Q_PROPERTY(QVariantMap trackInfo READ trackInfo NOTIFY tracksChanged FINAL)
+    /// Cues of `track`: [{ index, text, startText, endText, durationText, start, end (seconds), speaker ("v…" or ""),
+    /// speakerName, speakerColor, cps (characters a second), fast (above the language's reading speed) }]
+    Q_PROPERTY(QVariantList cues READ cues NOTIFY cuesChanged FINAL)
+    /// The cue under the playhead (-1), highlighted in the list.
+    Q_PROPERTY(int activeCue READ activeCue NOTIFY activeChanged FINAL)
+    /// The transcript has words to make captions from.
+    Q_PROPERTY(bool canGenerate READ canGenerate NOTIFY canGenerateChanged FINAL)
+    /// The shown track's style (captionStyleMap); the default look without a track.
+    Q_PROPERTY(QVariantMap style READ style NOTIFY styleChanged FINAL)
+    /// [{ name, builtin, current (the shown track looks like it), fill, box, boxColor, outlineWidth, fontWeight }]
+    Q_PROPERTY(QVariantList presets READ presets NOTIFY styleChanged FINAL)
+    /// The project's speakers: [{ key: "v…", name, color: "#RRGGBB" }]
+    Q_PROPERTY(QVariantList speakers READ speakers NOTIFY tracksChanged FINAL)
+    /// The transcript was corrected since the cues were made or updated: "Update from transcript" is worth a click.
+    Q_PROPERTY(bool updateSuggested READ updateSuggested NOTIFY updateSuggestedChanged FINAL)
+    /// Show the captions on the program monitor (the compositor draws them; Playback follows this).
+    Q_PROPERTY(bool overlay READ overlay WRITE setOverlay NOTIFY styleChanged FINAL)
+    Q_PROPERTY(QString message READ message NOTIFY messageChanged FINAL)
+
+public:
+    explicit CaptionsBridge(QObject* parent = nullptr);
+    static CaptionsBridge* create(QQmlEngine* qmlEngine, QJSEngine* jsEngine);
+
+    void setController(ProjectController* controller);
+    void setTranscript(TranscriptBridge* transcript);
+
+    QVariantList tracks() const;
+    QString track() const;
+    void setTrack(const QString& id);
+    QVariantMap trackInfo() const;
+    QVariantList cues() const;
+    int activeCue() const { return m_activeCue; }
+    bool canGenerate() const;
+    QVariantMap style() const;
+    QVariantList presets() const;
+    QVariantList speakers() const;
+    bool updateSuggested() const { return m_updateSuggested; }
+    bool overlay() const { return m_overlay; }
+    void setOverlay(bool on);
+    QString message() const { return m_message; }
+
+    // ---- Tracks ----
+    /// Makes captions from the transcript (captions.generateFromTranscript with its speakers), replacing the shown
+    /// track. "" or why not.
+    Q_INVOKABLE QString generate(int maxCharsPerLine = 42, int maxLines = 2);
+    /// Rewrites the cues' text from the corrected transcript, keeping their timing (captions.updateFromTranscript).
+    Q_INVOKABLE QString updateFromTranscript();
+    /// A new empty caption track styled by `preset` ("" = the default look); it becomes the shown track.
+    Q_INVOKABLE QString addTrack(const QString& name, const QString& preset = {});
+    Q_INVOKABLE QString setTrackName(const QString& name);
+    Q_INVOKABLE QString setTrackLanguage(const QString& language);
+    Q_INVOKABLE QString setTrackEnabled(bool enabled);
+    Q_INVOKABLE QString removeTrack();
+
+    // ---- Style and presets ----
+    /// One field of the shown track's style (keys of `style`); a drag of the same field merges until endStyleEdit().
+    Q_INVOKABLE QString setStyle(const QString& key, const QVariant& value);
+    Q_INVOKABLE void endStyleEdit();
+    /// The style of a preset, built in or the project's (captions.applyPreset).
+    Q_INVOKABLE QString applyPreset(const QString& name);
+    /// Saves the shown track's style as a project preset (replacing one of that name; built-in names are refused).
+    Q_INVOKABLE QString savePreset(const QString& name);
+    Q_INVOKABLE QString removePreset(const QString& name);
+
+    // ---- Cues ----
+    Q_INVOKABLE QString setCueText(int index, const QString& text);
+    /// New start and end (timecode); kept between the neighbouring cues unless the style allows overlaps.
+    Q_INVOKABLE QString setCueTiming(int index, const QString& start, const QString& end);
+    /// Moves a cue's "start", "end" or "both" by whole frames (negative: earlier), kept between its neighbours.
+    Q_INVOKABLE QString nudgeCue(int index, const QString& edge, int frames);
+    /// Cuts the cue in two at the playhead (it must be strictly inside the cue).
+    Q_INVOKABLE QString splitCueAtPlayhead(int index);
+    /// Joins the cue with the next one.
+    Q_INVOKABLE QString mergeWithNext(int index);
+    /// A new cue at the playhead (two seconds, or up to the next cue) with `text`.
+    Q_INVOKABLE QString addCueAtPlayhead(const QString& text);
+    Q_INVOKABLE QString removeCue(int index);
+    /// The cue's speaker ("v…"), or "" for none.
+    Q_INVOKABLE QString setCueSpeaker(int index, const QString& speaker);
+    /// A new project speaker; returns its key ("" when refused, the reason in `message`).
+    Q_INVOKABLE QString addSpeaker(const QString& name);
+    /// Renames a speaker and/or changes its colour ("#RRGGBB"; "" keeps it).
+    Q_INVOKABLE QString renameSpeaker(const QString& speaker, const QString& name, const QString& color = {});
+    /// Closes a typing undo step.
+    Q_INVOKABLE void endEdit();
+    Q_INVOKABLE void seekToCue(int index);
+
+    // ---- Export ----
+    /// "srt" or "vtt" text of the shown track.
+    Q_INVOKABLE QString exportText(const QString& format) const;
+    /// Writes the shown track to `file` (UTF-8). "" or the error.
+    Q_INVOKABLE QString exportFile(const QUrl& file, const QString& format);
+
+signals:
+    void tracksChanged();
+    void cuesChanged();
+    void activeChanged();
+    void canGenerateChanged();
+    void styleChanged();
+    void messageChanged();
+    void updateSuggestedChanged();
+
+private:
+    const CaptionTrack* shownTrack() const;
+    void refresh();
+    void updateActive();
+    void setMessage(const QString& message);
+    void setUpdateSuggested(bool suggested);
+    /// Runs a caption command on the shown track's sequence (one undo step). "" or the reason.
+    QString runCommand(const std::string& name, const QVariantMap& params);
+    /// Applies a model edit to the shown track (one undo step, merged by `mergeKey`). "" or the reason.
+    template <class Fn>
+    QString editTrack(const char* label, Fn&& fn, const std::string& mergeKey = {});
+
+    QPointer<ProjectController> m_controller;
+    QPointer<TranscriptBridge> m_transcript;
+    CaptionTrackId m_track;
+    int m_activeCue = -1;
+    bool m_overlay = true;
+    bool m_updateSuggested = false;
+    QString m_message;
+};
+
+struct CaptionsBridgeSingleton {
+    Q_GADGET
+    QML_FOREIGN(wabcut::app::CaptionsBridge)
+    QML_NAMED_ELEMENT(Captions)
+    QML_SINGLETON
+public:
+    static CaptionsBridge* create(QQmlEngine* qmlEngine, QJSEngine* jsEngine) { return CaptionsBridge::create(qmlEngine, jsEngine); }
+};
+
+} // namespace wabcut::app

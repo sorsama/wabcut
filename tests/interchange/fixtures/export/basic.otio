@@ -1,0 +1,1080 @@
+{
+    "OTIO_SCHEMA": "Timeline.1",
+    "metadata": {
+        "wabcut": {
+            "version": 1,
+            "sequence": {
+                "key": "sequence-1",
+                "name": "Fixture",
+                "frameRate": {
+                    "num": 25,
+                    "den": 1
+                },
+                "dropFrame": false,
+                "width": 1920,
+                "height": 1080,
+                "audioRate": {
+                    "num": 48000,
+                    "den": 1
+                },
+                "duration": 223534080000,
+                "markIn": 10160640000,
+                "markOut": 162570240000
+            }
+        }
+    },
+    "name": "Fixture",
+    "global_start_time": {
+        "OTIO_SCHEMA": "RationalTime.1",
+        "rate": 25,
+        "value": 90000
+    },
+    "tracks": {
+        "OTIO_SCHEMA": "Stack.1",
+        "metadata": {},
+        "name": "tracks",
+        "source_range": null,
+        "effects": [],
+        "markers": [
+            {
+                "OTIO_SCHEMA": "Marker.2",
+                "metadata": {
+                    "wabcut": {
+                        "version": 1,
+                        "marker": {
+                            "name": "Intro",
+                            "comment": "music in",
+                            "start": 20321280000,
+                            "duration": 0,
+                            "colorIndex": 6
+                        }
+                    }
+                },
+                "name": "Intro",
+                "color": "BLUE",
+                "marked_range": {
+                    "OTIO_SCHEMA": "TimeRange.1",
+                    "duration": {
+                        "OTIO_SCHEMA": "RationalTime.1",
+                        "rate": 25,
+                        "value": 0
+                    },
+                    "start_time": {
+                        "OTIO_SCHEMA": "RationalTime.1",
+                        "rate": 25,
+                        "value": 2
+                    }
+                },
+                "comment": "music in"
+            },
+            {
+                "OTIO_SCHEMA": "Marker.2",
+                "metadata": {
+                    "wabcut": {
+                        "version": 1,
+                        "marker": {
+                            "name": "Chapter 2",
+                            "comment": "",
+                            "start": 101606400000,
+                            "duration": 30481920000,
+                            "colorIndex": 3
+                        }
+                    }
+                },
+                "name": "Chapter 2",
+                "color": "ORANGE",
+                "marked_range": {
+                    "OTIO_SCHEMA": "TimeRange.1",
+                    "duration": {
+                        "OTIO_SCHEMA": "RationalTime.1",
+                        "rate": 25,
+                        "value": 3
+                    },
+                    "start_time": {
+                        "OTIO_SCHEMA": "RationalTime.1",
+                        "rate": 25,
+                        "value": 10
+                    }
+                },
+                "comment": ""
+            }
+        ],
+        "enabled": true,
+        "children": [
+            {
+                "OTIO_SCHEMA": "Track.1",
+                "metadata": {
+                    "wabcut": {
+                        "version": 1,
+                        "track": {
+                            "name": "",
+                            "enabled": true,
+                            "locked": false,
+                            "targeted": true,
+                            "muted": false,
+                            "role": "none"
+                        }
+                    }
+                },
+                "name": "",
+                "source_range": null,
+                "effects": [],
+                "markers": [],
+                "enabled": true,
+                "children": [
+                    {
+                        "OTIO_SCHEMA": "Clip.2",
+                        "metadata": {
+                            "wabcut": {
+                                "version": 1,
+                                "clip": {
+                                    "name": "A",
+                                    "start": 0,
+                                    "duration": 40642560000,
+                                    "sourceIn": 0,
+                                    "stream": {
+                                        "kind": "video",
+                                        "index": 0
+                                    },
+                                    "enabled": true,
+                                    "linkGroup": 0
+                                }
+                            }
+                        },
+                        "name": "A",
+                        "source_range": {
+                            "OTIO_SCHEMA": "TimeRange.1",
+                            "duration": {
+                                "OTIO_SCHEMA": "RationalTime.1",
+                                "rate": 25,
+                                "value": 4
+                            },
+                            "start_time": {
+                                "OTIO_SCHEMA": "RationalTime.1",
+                                "rate": 25,
+                                "value": 0
+                            }
+                        },
+                        "effects": [],
+                        "markers": [],
+                        "enabled": true,
+                        "media_references": {
+                            "DEFAULT_MEDIA": {
+                                "OTIO_SCHEMA": "ExternalReference.1",
+                                "metadata": {
+                                    "wabcut": {
+                                        "version": 1,
+                                        "media": {
+                                            "key": "media-1",
+                                            "name": "A",
+                                            "hasVideo": true,
+                                            "stillImage": false,
+                                            "width": 1920,
+                                            "height": 1080,
+                                            "frameRate": {
+                                                "num": 25,
+                                                "den": 1
+                                            },
+                                            "sampleRate": {
+                                                "num": 48000,
+                                                "den": 1
+                                            },
+                                            "audioChannels": [
+                                                2,
+                                                2
+                                            ],
+                                            "duration": 10160640000000,
+                                            "markers": [
+                                                {
+                                                    "name": "Slate",
+                                                    "comment": "take 3",
+                                                    "start": 10160640000,
+                                                    "duration": 0,
+                                                    "colorIndex": 4
+                                                },
+                                                {
+                                                    "name": "Clap",
+                                                    "comment": "",
+                                                    "start": 30481920000,
+                                                    "duration": 10160640000,
+                                                    "colorIndex": 0
+                                                }
+                                            ]
+                                        }
+                                    }
+                                },
+                                "name": "A",
+                                "available_range": {
+                                    "OTIO_SCHEMA": "TimeRange.1",
+                                    "duration": {
+                                        "OTIO_SCHEMA": "RationalTime.1",
+                                        "rate": 25,
+                                        "value": 1000
+                                    },
+                                    "start_time": {
+                                        "OTIO_SCHEMA": "RationalTime.1",
+                                        "rate": 25,
+                                        "value": 0
+                                    }
+                                },
+                                "available_image_bounds": null,
+                                "target_url": "file:///D:/footage/A.mov"
+                            }
+                        },
+                        "active_media_reference_key": "DEFAULT_MEDIA"
+                    },
+                    {
+                        "OTIO_SCHEMA": "Clip.2",
+                        "metadata": {
+                            "wabcut": {
+                                "version": 1,
+                                "clip": {
+                                    "name": "Interview",
+                                    "start": 40642560000,
+                                    "duration": 81285120000,
+                                    "sourceIn": 101606400000,
+                                    "stream": {
+                                        "kind": "video",
+                                        "index": 0
+                                    },
+                                    "enabled": true,
+                                    "linkGroup": 1
+                                }
+                            }
+                        },
+                        "name": "Interview",
+                        "source_range": {
+                            "OTIO_SCHEMA": "TimeRange.1",
+                            "duration": {
+                                "OTIO_SCHEMA": "RationalTime.1",
+                                "rate": 25,
+                                "value": 8
+                            },
+                            "start_time": {
+                                "OTIO_SCHEMA": "RationalTime.1",
+                                "rate": 25,
+                                "value": 10
+                            }
+                        },
+                        "effects": [],
+                        "markers": [],
+                        "enabled": true,
+                        "media_references": {
+                            "DEFAULT_MEDIA": {
+                                "OTIO_SCHEMA": "ExternalReference.1",
+                                "metadata": {
+                                    "wabcut": {
+                                        "version": 1,
+                                        "media": {
+                                            "key": "media-2",
+                                            "name": "B",
+                                            "hasVideo": true,
+                                            "stillImage": false,
+                                            "width": 1920,
+                                            "height": 1080,
+                                            "frameRate": {
+                                                "num": 25,
+                                                "den": 1
+                                            },
+                                            "sampleRate": {
+                                                "num": 48000,
+                                                "den": 1
+                                            },
+                                            "audioChannels": [
+                                                2,
+                                                2
+                                            ],
+                                            "duration": 10160640000000
+                                        }
+                                    }
+                                },
+                                "name": "B",
+                                "available_range": {
+                                    "OTIO_SCHEMA": "TimeRange.1",
+                                    "duration": {
+                                        "OTIO_SCHEMA": "RationalTime.1",
+                                        "rate": 25,
+                                        "value": 1000
+                                    },
+                                    "start_time": {
+                                        "OTIO_SCHEMA": "RationalTime.1",
+                                        "rate": 25,
+                                        "value": 0
+                                    }
+                                },
+                                "available_image_bounds": null,
+                                "target_url": "file:///D:/footage/B.mov"
+                            }
+                        },
+                        "active_media_reference_key": "DEFAULT_MEDIA"
+                    },
+                    {
+                        "OTIO_SCHEMA": "Gap.1",
+                        "metadata": {},
+                        "name": "",
+                        "source_range": {
+                            "OTIO_SCHEMA": "TimeRange.1",
+                            "duration": {
+                                "OTIO_SCHEMA": "RationalTime.1",
+                                "rate": 25,
+                                "value": 2
+                            },
+                            "start_time": {
+                                "OTIO_SCHEMA": "RationalTime.1",
+                                "rate": 25,
+                                "value": 0
+                            }
+                        },
+                        "effects": [],
+                        "markers": [],
+                        "enabled": true
+                    },
+                    {
+                        "OTIO_SCHEMA": "Clip.2",
+                        "metadata": {
+                            "wabcut": {
+                                "version": 1,
+                                "clip": {
+                                    "name": "D",
+                                    "start": 142248960000,
+                                    "duration": 40642560000,
+                                    "sourceIn": 0,
+                                    "stream": {
+                                        "kind": "video",
+                                        "index": 0
+                                    },
+                                    "enabled": false,
+                                    "linkGroup": 2
+                                }
+                            }
+                        },
+                        "name": "D",
+                        "source_range": {
+                            "OTIO_SCHEMA": "TimeRange.1",
+                            "duration": {
+                                "OTIO_SCHEMA": "RationalTime.1",
+                                "rate": 25,
+                                "value": 4
+                            },
+                            "start_time": {
+                                "OTIO_SCHEMA": "RationalTime.1",
+                                "rate": 25,
+                                "value": 0
+                            }
+                        },
+                        "effects": [],
+                        "markers": [],
+                        "enabled": false,
+                        "media_references": {
+                            "DEFAULT_MEDIA": {
+                                "OTIO_SCHEMA": "ExternalReference.1",
+                                "metadata": {
+                                    "wabcut": {
+                                        "version": 1,
+                                        "media": {
+                                            "key": "media-4",
+                                            "name": "D",
+                                            "hasVideo": true,
+                                            "stillImage": false,
+                                            "width": 1920,
+                                            "height": 1080,
+                                            "frameRate": {
+                                                "num": 25,
+                                                "den": 1
+                                            },
+                                            "sampleRate": {
+                                                "num": 48000,
+                                                "den": 1
+                                            },
+                                            "audioChannels": [
+                                                2,
+                                                2
+                                            ],
+                                            "duration": 10160640000000
+                                        }
+                                    }
+                                },
+                                "name": "D",
+                                "available_range": {
+                                    "OTIO_SCHEMA": "TimeRange.1",
+                                    "duration": {
+                                        "OTIO_SCHEMA": "RationalTime.1",
+                                        "rate": 25,
+                                        "value": 1000
+                                    },
+                                    "start_time": {
+                                        "OTIO_SCHEMA": "RationalTime.1",
+                                        "rate": 25,
+                                        "value": 0
+                                    }
+                                },
+                                "available_image_bounds": null,
+                                "target_url": "file:///D:/footage/D.mov"
+                            }
+                        },
+                        "active_media_reference_key": "DEFAULT_MEDIA"
+                    },
+                    {
+                        "OTIO_SCHEMA": "Gap.1",
+                        "metadata": {},
+                        "name": "",
+                        "source_range": {
+                            "OTIO_SCHEMA": "TimeRange.1",
+                            "duration": {
+                                "OTIO_SCHEMA": "RationalTime.1",
+                                "rate": 25,
+                                "value": 4
+                            },
+                            "start_time": {
+                                "OTIO_SCHEMA": "RationalTime.1",
+                                "rate": 25,
+                                "value": 0
+                            }
+                        },
+                        "effects": [],
+                        "markers": [],
+                        "enabled": true
+                    }
+                ],
+                "kind": "Video"
+            },
+            {
+                "OTIO_SCHEMA": "Track.1",
+                "metadata": {
+                    "wabcut": {
+                        "version": 1,
+                        "track": {
+                            "name": "Titles",
+                            "enabled": true,
+                            "locked": false,
+                            "targeted": false,
+                            "muted": false,
+                            "role": "none"
+                        }
+                    }
+                },
+                "name": "Titles",
+                "source_range": null,
+                "effects": [],
+                "markers": [],
+                "enabled": true,
+                "children": [
+                    {
+                        "OTIO_SCHEMA": "Gap.1",
+                        "metadata": {},
+                        "name": "",
+                        "source_range": {
+                            "OTIO_SCHEMA": "TimeRange.1",
+                            "duration": {
+                                "OTIO_SCHEMA": "RationalTime.1",
+                                "rate": 25,
+                                "value": 4
+                            },
+                            "start_time": {
+                                "OTIO_SCHEMA": "RationalTime.1",
+                                "rate": 25,
+                                "value": 0
+                            }
+                        },
+                        "effects": [],
+                        "markers": [],
+                        "enabled": true
+                    },
+                    {
+                        "OTIO_SCHEMA": "Clip.2",
+                        "metadata": {
+                            "wabcut": {
+                                "version": 1,
+                                "clip": {
+                                    "name": "C",
+                                    "start": 40642560000,
+                                    "duration": 40642560000,
+                                    "sourceIn": 0,
+                                    "stream": {
+                                        "kind": "video",
+                                        "index": 0
+                                    },
+                                    "enabled": true
+                                }
+                            }
+                        },
+                        "name": "C",
+                        "source_range": {
+                            "OTIO_SCHEMA": "TimeRange.1",
+                            "duration": {
+                                "OTIO_SCHEMA": "RationalTime.1",
+                                "rate": 25,
+                                "value": 4
+                            },
+                            "start_time": {
+                                "OTIO_SCHEMA": "RationalTime.1",
+                                "rate": 25,
+                                "value": 0
+                            }
+                        },
+                        "effects": [],
+                        "markers": [],
+                        "enabled": true,
+                        "media_references": {
+                            "DEFAULT_MEDIA": {
+                                "OTIO_SCHEMA": "ExternalReference.1",
+                                "metadata": {
+                                    "wabcut": {
+                                        "version": 1,
+                                        "media": {
+                                            "key": "media-3",
+                                            "name": "C",
+                                            "hasVideo": true,
+                                            "stillImage": false,
+                                            "width": 1920,
+                                            "height": 1080,
+                                            "frameRate": {
+                                                "num": 25,
+                                                "den": 1
+                                            },
+                                            "sampleRate": {
+                                                "num": 48000,
+                                                "den": 1
+                                            },
+                                            "audioChannels": [
+                                                2,
+                                                2
+                                            ],
+                                            "duration": 10160640000000
+                                        }
+                                    }
+                                },
+                                "name": "C",
+                                "available_range": {
+                                    "OTIO_SCHEMA": "TimeRange.1",
+                                    "duration": {
+                                        "OTIO_SCHEMA": "RationalTime.1",
+                                        "rate": 25,
+                                        "value": 1000
+                                    },
+                                    "start_time": {
+                                        "OTIO_SCHEMA": "RationalTime.1",
+                                        "rate": 25,
+                                        "value": 0
+                                    }
+                                },
+                                "available_image_bounds": null,
+                                "target_url": "file:///D:/footage/C.mov"
+                            }
+                        },
+                        "active_media_reference_key": "DEFAULT_MEDIA"
+                    },
+                    {
+                        "OTIO_SCHEMA": "Gap.1",
+                        "metadata": {},
+                        "name": "",
+                        "source_range": {
+                            "OTIO_SCHEMA": "TimeRange.1",
+                            "duration": {
+                                "OTIO_SCHEMA": "RationalTime.1",
+                                "rate": 25,
+                                "value": 14
+                            },
+                            "start_time": {
+                                "OTIO_SCHEMA": "RationalTime.1",
+                                "rate": 25,
+                                "value": 0
+                            }
+                        },
+                        "effects": [],
+                        "markers": [],
+                        "enabled": true
+                    }
+                ],
+                "kind": "Video"
+            },
+            {
+                "OTIO_SCHEMA": "Track.1",
+                "metadata": {
+                    "wabcut": {
+                        "version": 1,
+                        "track": {
+                            "name": "Dialogue",
+                            "enabled": true,
+                            "locked": false,
+                            "targeted": true,
+                            "muted": false,
+                            "role": "none"
+                        }
+                    }
+                },
+                "name": "Dialogue",
+                "source_range": null,
+                "effects": [],
+                "markers": [],
+                "enabled": true,
+                "children": [
+                    {
+                        "OTIO_SCHEMA": "Clip.2",
+                        "metadata": {
+                            "wabcut": {
+                                "version": 1,
+                                "clip": {
+                                    "name": "A",
+                                    "start": 0,
+                                    "duration": 40642560000,
+                                    "sourceIn": 0,
+                                    "stream": {
+                                        "kind": "audio",
+                                        "index": 0
+                                    },
+                                    "enabled": true,
+                                    "linkGroup": 0
+                                }
+                            }
+                        },
+                        "name": "A",
+                        "source_range": {
+                            "OTIO_SCHEMA": "TimeRange.1",
+                            "duration": {
+                                "OTIO_SCHEMA": "RationalTime.1",
+                                "rate": 25,
+                                "value": 4
+                            },
+                            "start_time": {
+                                "OTIO_SCHEMA": "RationalTime.1",
+                                "rate": 25,
+                                "value": 0
+                            }
+                        },
+                        "effects": [],
+                        "markers": [],
+                        "enabled": true,
+                        "media_references": {
+                            "DEFAULT_MEDIA": {
+                                "OTIO_SCHEMA": "ExternalReference.1",
+                                "metadata": {
+                                    "wabcut": {
+                                        "version": 1,
+                                        "media": {
+                                            "key": "media-1",
+                                            "name": "A",
+                                            "hasVideo": true,
+                                            "stillImage": false,
+                                            "width": 1920,
+                                            "height": 1080,
+                                            "frameRate": {
+                                                "num": 25,
+                                                "den": 1
+                                            },
+                                            "sampleRate": {
+                                                "num": 48000,
+                                                "den": 1
+                                            },
+                                            "audioChannels": [
+                                                2,
+                                                2
+                                            ],
+                                            "duration": 10160640000000,
+                                            "markers": [
+                                                {
+                                                    "name": "Slate",
+                                                    "comment": "take 3",
+                                                    "start": 10160640000,
+                                                    "duration": 0,
+                                                    "colorIndex": 4
+                                                },
+                                                {
+                                                    "name": "Clap",
+                                                    "comment": "",
+                                                    "start": 30481920000,
+                                                    "duration": 10160640000,
+                                                    "colorIndex": 0
+                                                }
+                                            ]
+                                        }
+                                    }
+                                },
+                                "name": "A",
+                                "available_range": {
+                                    "OTIO_SCHEMA": "TimeRange.1",
+                                    "duration": {
+                                        "OTIO_SCHEMA": "RationalTime.1",
+                                        "rate": 25,
+                                        "value": 1000
+                                    },
+                                    "start_time": {
+                                        "OTIO_SCHEMA": "RationalTime.1",
+                                        "rate": 25,
+                                        "value": 0
+                                    }
+                                },
+                                "available_image_bounds": null,
+                                "target_url": "file:///D:/footage/A.mov"
+                            }
+                        },
+                        "active_media_reference_key": "DEFAULT_MEDIA"
+                    },
+                    {
+                        "OTIO_SCHEMA": "Clip.2",
+                        "metadata": {
+                            "wabcut": {
+                                "version": 1,
+                                "clip": {
+                                    "name": "Interview",
+                                    "start": 40642560000,
+                                    "duration": 81285120000,
+                                    "sourceIn": 101606400000,
+                                    "stream": {
+                                        "kind": "audio",
+                                        "index": 0
+                                    },
+                                    "enabled": true,
+                                    "linkGroup": 1
+                                }
+                            }
+                        },
+                        "name": "Interview",
+                        "source_range": {
+                            "OTIO_SCHEMA": "TimeRange.1",
+                            "duration": {
+                                "OTIO_SCHEMA": "RationalTime.1",
+                                "rate": 25,
+                                "value": 8
+                            },
+                            "start_time": {
+                                "OTIO_SCHEMA": "RationalTime.1",
+                                "rate": 25,
+                                "value": 10
+                            }
+                        },
+                        "effects": [],
+                        "markers": [],
+                        "enabled": true,
+                        "media_references": {
+                            "DEFAULT_MEDIA": {
+                                "OTIO_SCHEMA": "ExternalReference.1",
+                                "metadata": {
+                                    "wabcut": {
+                                        "version": 1,
+                                        "media": {
+                                            "key": "media-2",
+                                            "name": "B",
+                                            "hasVideo": true,
+                                            "stillImage": false,
+                                            "width": 1920,
+                                            "height": 1080,
+                                            "frameRate": {
+                                                "num": 25,
+                                                "den": 1
+                                            },
+                                            "sampleRate": {
+                                                "num": 48000,
+                                                "den": 1
+                                            },
+                                            "audioChannels": [
+                                                2,
+                                                2
+                                            ],
+                                            "duration": 10160640000000
+                                        }
+                                    }
+                                },
+                                "name": "B",
+                                "available_range": {
+                                    "OTIO_SCHEMA": "TimeRange.1",
+                                    "duration": {
+                                        "OTIO_SCHEMA": "RationalTime.1",
+                                        "rate": 25,
+                                        "value": 1000
+                                    },
+                                    "start_time": {
+                                        "OTIO_SCHEMA": "RationalTime.1",
+                                        "rate": 25,
+                                        "value": 0
+                                    }
+                                },
+                                "available_image_bounds": null,
+                                "target_url": "file:///D:/footage/B.mov"
+                            }
+                        },
+                        "active_media_reference_key": "DEFAULT_MEDIA"
+                    },
+                    {
+                        "OTIO_SCHEMA": "Gap.1",
+                        "metadata": {},
+                        "name": "",
+                        "source_range": {
+                            "OTIO_SCHEMA": "TimeRange.1",
+                            "duration": {
+                                "OTIO_SCHEMA": "RationalTime.1",
+                                "rate": 25,
+                                "value": 2
+                            },
+                            "start_time": {
+                                "OTIO_SCHEMA": "RationalTime.1",
+                                "rate": 25,
+                                "value": 0
+                            }
+                        },
+                        "effects": [],
+                        "markers": [],
+                        "enabled": true
+                    },
+                    {
+                        "OTIO_SCHEMA": "Clip.2",
+                        "metadata": {
+                            "wabcut": {
+                                "version": 1,
+                                "clip": {
+                                    "name": "D",
+                                    "start": 142248960000,
+                                    "duration": 40642560000,
+                                    "sourceIn": 0,
+                                    "stream": {
+                                        "kind": "audio",
+                                        "index": 0
+                                    },
+                                    "enabled": false,
+                                    "linkGroup": 2
+                                }
+                            }
+                        },
+                        "name": "D",
+                        "source_range": {
+                            "OTIO_SCHEMA": "TimeRange.1",
+                            "duration": {
+                                "OTIO_SCHEMA": "RationalTime.1",
+                                "rate": 25,
+                                "value": 4
+                            },
+                            "start_time": {
+                                "OTIO_SCHEMA": "RationalTime.1",
+                                "rate": 25,
+                                "value": 0
+                            }
+                        },
+                        "effects": [],
+                        "markers": [],
+                        "enabled": false,
+                        "media_references": {
+                            "DEFAULT_MEDIA": {
+                                "OTIO_SCHEMA": "ExternalReference.1",
+                                "metadata": {
+                                    "wabcut": {
+                                        "version": 1,
+                                        "media": {
+                                            "key": "media-4",
+                                            "name": "D",
+                                            "hasVideo": true,
+                                            "stillImage": false,
+                                            "width": 1920,
+                                            "height": 1080,
+                                            "frameRate": {
+                                                "num": 25,
+                                                "den": 1
+                                            },
+                                            "sampleRate": {
+                                                "num": 48000,
+                                                "den": 1
+                                            },
+                                            "audioChannels": [
+                                                2,
+                                                2
+                                            ],
+                                            "duration": 10160640000000
+                                        }
+                                    }
+                                },
+                                "name": "D",
+                                "available_range": {
+                                    "OTIO_SCHEMA": "TimeRange.1",
+                                    "duration": {
+                                        "OTIO_SCHEMA": "RationalTime.1",
+                                        "rate": 25,
+                                        "value": 1000
+                                    },
+                                    "start_time": {
+                                        "OTIO_SCHEMA": "RationalTime.1",
+                                        "rate": 25,
+                                        "value": 0
+                                    }
+                                },
+                                "available_image_bounds": null,
+                                "target_url": "file:///D:/footage/D.mov"
+                            }
+                        },
+                        "active_media_reference_key": "DEFAULT_MEDIA"
+                    },
+                    {
+                        "OTIO_SCHEMA": "Gap.1",
+                        "metadata": {},
+                        "name": "",
+                        "source_range": {
+                            "OTIO_SCHEMA": "TimeRange.1",
+                            "duration": {
+                                "OTIO_SCHEMA": "RationalTime.1",
+                                "rate": 25,
+                                "value": 4
+                            },
+                            "start_time": {
+                                "OTIO_SCHEMA": "RationalTime.1",
+                                "rate": 25,
+                                "value": 0
+                            }
+                        },
+                        "effects": [],
+                        "markers": [],
+                        "enabled": true
+                    }
+                ],
+                "kind": "Audio"
+            },
+            {
+                "OTIO_SCHEMA": "Track.1",
+                "metadata": {
+                    "wabcut": {
+                        "version": 1,
+                        "track": {
+                            "name": "",
+                            "enabled": true,
+                            "locked": true,
+                            "targeted": false,
+                            "muted": false,
+                            "role": "none"
+                        }
+                    }
+                },
+                "name": "",
+                "source_range": null,
+                "effects": [],
+                "markers": [],
+                "enabled": true,
+                "children": [
+                    {
+                        "OTIO_SCHEMA": "Gap.1",
+                        "metadata": {},
+                        "name": "",
+                        "source_range": {
+                            "OTIO_SCHEMA": "TimeRange.1",
+                            "duration": {
+                                "OTIO_SCHEMA": "RationalTime.1",
+                                "rate": 25,
+                                "value": 10
+                            },
+                            "start_time": {
+                                "OTIO_SCHEMA": "RationalTime.1",
+                                "rate": 25,
+                                "value": 0
+                            }
+                        },
+                        "effects": [],
+                        "markers": [],
+                        "enabled": true
+                    },
+                    {
+                        "OTIO_SCHEMA": "Clip.2",
+                        "metadata": {
+                            "wabcut": {
+                                "version": 1,
+                                "clip": {
+                                    "name": "E",
+                                    "start": 101606400000,
+                                    "duration": 40642560000,
+                                    "sourceIn": 0,
+                                    "stream": {
+                                        "kind": "audio",
+                                        "index": 0
+                                    },
+                                    "enabled": true
+                                }
+                            }
+                        },
+                        "name": "E",
+                        "source_range": {
+                            "OTIO_SCHEMA": "TimeRange.1",
+                            "duration": {
+                                "OTIO_SCHEMA": "RationalTime.1",
+                                "rate": 25,
+                                "value": 4
+                            },
+                            "start_time": {
+                                "OTIO_SCHEMA": "RationalTime.1",
+                                "rate": 25,
+                                "value": 0
+                            }
+                        },
+                        "effects": [],
+                        "markers": [],
+                        "enabled": true,
+                        "media_references": {
+                            "DEFAULT_MEDIA": {
+                                "OTIO_SCHEMA": "ExternalReference.1",
+                                "metadata": {
+                                    "wabcut": {
+                                        "version": 1,
+                                        "media": {
+                                            "key": "media-5",
+                                            "name": "E",
+                                            "hasVideo": true,
+                                            "stillImage": false,
+                                            "width": 1920,
+                                            "height": 1080,
+                                            "frameRate": {
+                                                "num": 25,
+                                                "den": 1
+                                            },
+                                            "sampleRate": {
+                                                "num": 48000,
+                                                "den": 1
+                                            },
+                                            "audioChannels": [
+                                                2,
+                                                2
+                                            ],
+                                            "duration": 10160640000000
+                                        }
+                                    }
+                                },
+                                "name": "E",
+                                "available_range": {
+                                    "OTIO_SCHEMA": "TimeRange.1",
+                                    "duration": {
+                                        "OTIO_SCHEMA": "RationalTime.1",
+                                        "rate": 25,
+                                        "value": 1000
+                                    },
+                                    "start_time": {
+                                        "OTIO_SCHEMA": "RationalTime.1",
+                                        "rate": 25,
+                                        "value": 0
+                                    }
+                                },
+                                "available_image_bounds": null,
+                                "target_url": "file:///D:/footage/E.mov"
+                            }
+                        },
+                        "active_media_reference_key": "DEFAULT_MEDIA"
+                    },
+                    {
+                        "OTIO_SCHEMA": "Gap.1",
+                        "metadata": {},
+                        "name": "",
+                        "source_range": {
+                            "OTIO_SCHEMA": "TimeRange.1",
+                            "duration": {
+                                "OTIO_SCHEMA": "RationalTime.1",
+                                "rate": 25,
+                                "value": 8
+                            },
+                            "start_time": {
+                                "OTIO_SCHEMA": "RationalTime.1",
+                                "rate": 25,
+                                "value": 0
+                            }
+                        },
+                        "effects": [],
+                        "markers": [],
+                        "enabled": true
+                    }
+                ],
+                "kind": "Audio"
+            }
+        ]
+    }
+}

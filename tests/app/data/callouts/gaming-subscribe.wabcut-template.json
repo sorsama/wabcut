@@ -1,0 +1,307 @@
+{
+ "format": "wabcut-graphic-template",
+ "version": 1,
+ "template": {
+  "id": "gaming-subscribe",
+  "name": "Subscribe",
+  "description": "A subscribe button with a ringing bell: pops in, pops away.",
+  "version": 1,
+  "duration": 1016064000000,
+  "graphic": {
+   "name": "Subscribe",
+   "width": 1920,
+   "height": 1080,
+   "layers": [
+    {
+     "id": 10,
+     "kind": "group",
+     "name": "Subscribe",
+     "transform": {
+      "x": 960,
+      "y": 880,
+      "scaleX": [
+       {
+        "t": 0,
+        "v": 0.0
+       },
+       {
+        "t": 88905600000,
+        "v": 114.99999999999999,
+        "i": "easeInOut"
+       },
+       {
+        "t": 127008000000,
+        "v": 100.0,
+        "i": "easeIn"
+       },
+       {
+        "t": 914457600000,
+        "v": 100.0,
+        "i": "easeOut"
+       },
+       {
+        "t": 944939520000,
+        "v": 114.99999999999999,
+        "i": "easeInOut"
+       },
+       {
+        "t": 1016064000000,
+        "v": 0.0
+       }
+      ],
+      "scaleY": [
+       {
+        "t": 0,
+        "v": 0.0
+       },
+       {
+        "t": 88905600000,
+        "v": 114.99999999999999,
+        "i": "easeInOut"
+       },
+       {
+        "t": 127008000000,
+        "v": 100.0,
+        "i": "easeIn"
+       },
+       {
+        "t": 914457600000,
+        "v": 100.0,
+        "i": "easeOut"
+       },
+       {
+        "t": 944939520000,
+        "v": 114.99999999999999,
+        "i": "easeInOut"
+       },
+       {
+        "t": 1016064000000,
+        "v": 0.0
+       }
+      ]
+     },
+     "children": [
+      {
+       "id": 1,
+       "kind": "shape",
+       "name": "Button",
+       "transform": {
+        "x": 0,
+        "y": 0
+       },
+       "shape": {
+        "type": "rectangle",
+        "width": 480,
+        "height": 120,
+        "cornerRadius": 60,
+        "fill": {
+         "type": "solid",
+         "color": "#E5252A"
+        }
+       },
+       "shadow": {
+        "enabled": true,
+        "color": "#000000",
+        "opacity": 0.45,
+        "angle": 90,
+        "distance": 8,
+        "softness": 16
+       }
+      },
+      {
+       "id": 6,
+       "kind": "group",
+       "name": "Bell",
+       "transform": {
+        "x": -172,
+        "y": -26,
+        "anchorY": -26,
+        "rotation": [
+         {
+          "t": 152409600000,
+          "v": 0.0,
+          "i": "easeInOut"
+         },
+         {
+          "t": 190512000000,
+          "v": -18.0,
+          "i": "easeInOut"
+         },
+         {
+          "t": 228614400000,
+          "v": 14.0,
+          "i": "easeInOut"
+         },
+         {
+          "t": 266716800000,
+          "v": -8.0,
+          "i": "easeInOut"
+         },
+         {
+          "t": 304819200000,
+          "v": 0.0,
+          "i": "easeInOut"
+         }
+        ]
+       },
+       "children": [
+        {
+         "id": 3,
+         "kind": "shape",
+         "name": "Bell body",
+         "transform": {
+          "x": 0,
+          "y": 0
+         },
+         "shape": {
+          "type": "path",
+          "closed": true,
+          "path": [
+           {
+            "t": 0,
+            "i": "linear",
+            "v": [
+             [
+              -30,
+              20,
+              0,
+              0,
+              6,
+              -4
+             ],
+             [
+              -20,
+              2,
+              -2,
+              8,
+              0,
+              -16
+             ],
+             [
+              0,
+              -26,
+              -14,
+              0,
+              14,
+              0
+             ],
+             [
+              20,
+              2,
+              0,
+              -16,
+              2,
+              8
+             ],
+             [
+              30,
+              20,
+              -6,
+              -4,
+              0,
+              0
+             ]
+            ]
+           }
+          ],
+          "fill": {
+           "type": "solid",
+           "color": "#FFFFFF"
+          }
+         }
+        },
+        {
+         "id": 4,
+         "kind": "shape",
+         "name": "Clapper",
+         "transform": {
+          "x": 0,
+          "y": 26
+         },
+         "shape": {
+          "type": "ellipse",
+          "width": 16,
+          "height": 12,
+          "fill": {
+           "type": "solid",
+           "color": "#FFFFFF"
+          }
+         }
+        },
+        {
+         "id": 5,
+         "kind": "shape",
+         "name": "Knob",
+         "transform": {
+          "x": 0,
+          "y": -28
+         },
+         "shape": {
+          "type": "ellipse",
+          "width": 12,
+          "height": 12,
+          "fill": {
+           "type": "solid",
+           "color": "#FFFFFF"
+          }
+         }
+        }
+       ]
+      },
+      {
+       "id": 2,
+       "kind": "text",
+       "name": "Label",
+       "transform": {
+        "x": 44,
+        "y": 0,
+        "anchorY": 32
+       },
+       "text": {
+        "runs": [
+         {
+          "text": "SUBSCRIBE",
+          "font": "Bai Jamjuree",
+          "weight": 600,
+          "size": 54,
+          "fill": "#FFFFFF",
+          "tracking": 40
+         }
+        ],
+        "align": "center"
+       }
+      }
+     ]
+    }
+   ],
+   "responsive": {
+    "duration": 1016064000000,
+    "intro": 152409600000,
+    "outro": 101606400000
+   }
+  },
+  "fields": [
+   {
+    "id": "label",
+    "label": "Button text",
+    "kind": "text",
+    "layer": 2,
+    "property": "text"
+   },
+   {
+    "id": "buttonColor",
+    "label": "Button colour",
+    "kind": "color",
+    "layer": 1,
+    "property": "fill"
+   },
+   {
+    "id": "textColor",
+    "label": "Text colour",
+    "kind": "color",
+    "layer": 2,
+    "property": "fill"
+   }
+  ]
+ }
+}

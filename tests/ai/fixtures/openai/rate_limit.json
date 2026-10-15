@@ -1,0 +1,1 @@
+{"error":{"message":"Rate limit reached for gpt-6.1-sol on requests per min. Please try again in 1s.","type":"requests","param":null,"code":"rate_limit_exceeded"}}

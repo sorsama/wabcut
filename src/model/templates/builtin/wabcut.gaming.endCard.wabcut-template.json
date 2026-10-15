@@ -1,0 +1,928 @@
+{
+  "format": "wabcut-graphic-template",
+  "template": {
+    "description": "20-second end card with a follow title, your handle and two video slots.",
+    "duration": 5080320000000,
+    "fields": [
+      {
+        "id": "title",
+        "kind": "text",
+        "label": "Title",
+        "layer": 3,
+        "property": "text",
+        "value": "FOLLOW ME"
+      },
+      {
+        "id": "handle",
+        "kind": "text",
+        "label": "Handle",
+        "layer": 5,
+        "property": "text",
+        "value": "@yourchannel"
+      },
+      {
+        "id": "accent",
+        "kind": "color",
+        "label": "Accent colour",
+        "layer": 4,
+        "property": "fill",
+        "value": [
+          0.482,
+          0.231,
+          1.0,
+          1.0
+        ]
+      },
+      {
+        "id": "video1Thumb",
+        "kind": "image",
+        "label": "Video 1 thumbnail",
+        "layer": 12,
+        "property": "media",
+        "value": 0
+      },
+      {
+        "id": "video2Thumb",
+        "kind": "image",
+        "label": "Video 2 thumbnail",
+        "layer": 17,
+        "property": "media",
+        "value": 0
+      },
+      {
+        "id": "showChannel",
+        "kind": "checkbox",
+        "label": "Show channel circle",
+        "layer": 6,
+        "property": "visible",
+        "value": true
+      },
+      {
+        "id": "length",
+        "kind": "duration",
+        "label": "Length",
+        "property": "clip",
+        "value": 5080320000000
+      }
+    ],
+    "graphic": {
+      "height": 1080,
+      "layers": [
+        {
+          "id": 1,
+          "kind": "shape",
+          "name": "Backdrop",
+          "shape": {
+            "fill": {
+              "color": [
+                0.047,
+                0.039,
+                0.071,
+                0.72
+              ],
+              "type": "solid"
+            },
+            "height": 1080.0,
+            "type": "rectangle",
+            "width": 1920.0
+          },
+          "transform": {
+            "opacity": {
+              "keys": [
+                {
+                  "t": 0,
+                  "v": 0.0
+                },
+                {
+                  "i": "easeIn",
+                  "t": 101606400000,
+                  "v": 100.0
+                },
+                {
+                  "i": "easeOut",
+                  "t": 4927910400000,
+                  "v": 100.0
+                },
+                {
+                  "t": 5080320000000,
+                  "v": 0.0
+                }
+              ]
+            },
+            "x": 960.0,
+            "y": 540.0
+          }
+        },
+        {
+          "children": [
+            {
+              "id": 3,
+              "kind": "text",
+              "name": "Headline",
+              "shadow": {
+                "angle": 90.0,
+                "color": [
+                  0.047,
+                  0.039,
+                  0.071,
+                  1.0
+                ],
+                "enabled": true,
+                "opacity": 0.55,
+                "softness": 14.0
+              },
+              "text": {
+                "runs": [
+                  {
+                    "fill": [
+                      0.953,
+                      0.941,
+                      0.98,
+                      1.0
+                    ],
+                    "font": "Bai Jamjuree",
+                    "size": 150.0,
+                    "text": "FOLLOW ME",
+                    "tracking": 20.0,
+                    "weight": 600
+                  }
+                ]
+              },
+              "transform": {
+                "opacity": {
+                  "keys": [
+                    {
+                      "t": 25401600000,
+                      "v": 0.0
+                    },
+                    {
+                      "i": "easeIn",
+                      "t": 76204800000,
+                      "v": 100.0
+                    }
+                  ]
+                },
+                "x": {
+                  "keys": [
+                    {
+                      "t": 25401600000,
+                      "v": -20.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 105416640000,
+                      "v": 149.6
+                    },
+                    {
+                      "i": "easeIn",
+                      "t": 139708800000,
+                      "v": 140.0
+                    }
+                  ]
+                },
+                "y": 250.0
+              }
+            },
+            {
+              "id": 4,
+              "kind": "shape",
+              "name": "Accent bar",
+              "shape": {
+                "fill": {
+                  "color": [
+                    0.482,
+                    0.231,
+                    1.0,
+                    1.0
+                  ],
+                  "type": "solid"
+                },
+                "height": 14.0,
+                "type": "rectangle",
+                "width": 220.0
+              },
+              "transform": {
+                "anchorX": -110.0,
+                "scaleX": {
+                  "keys": [
+                    {
+                      "t": 88905600000,
+                      "v": 0.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 142248960000,
+                      "v": 110.00000000000001
+                    },
+                    {
+                      "i": "easeIn",
+                      "t": 165110400000,
+                      "v": 100.0
+                    }
+                  ]
+                },
+                "scaleY": {
+                  "keys": [
+                    {
+                      "t": 88905600000,
+                      "v": 0.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 142248960000,
+                      "v": 110.00000000000001
+                    },
+                    {
+                      "i": "easeIn",
+                      "t": 165110400000,
+                      "v": 100.0
+                    }
+                  ]
+                },
+                "x": 146.0,
+                "y": 456.0
+              }
+            },
+            {
+              "id": 5,
+              "kind": "text",
+              "name": "Handle",
+              "text": {
+                "runs": [
+                  {
+                    "fill": [
+                      0.953,
+                      0.941,
+                      0.98,
+                      0.9
+                    ],
+                    "font": "IBM Plex Sans Thai",
+                    "size": 52.0,
+                    "text": "@yourchannel",
+                    "tracking": 20.0,
+                    "weight": 500
+                  }
+                ]
+              },
+              "transform": {
+                "opacity": {
+                  "keys": [
+                    {
+                      "t": 114307200000,
+                      "v": 0.0
+                    },
+                    {
+                      "i": "easeIn",
+                      "t": 177811200000,
+                      "v": 100.0
+                    }
+                  ]
+                },
+                "x": 146.0,
+                "y": {
+                  "keys": [
+                    {
+                      "t": 114307200000,
+                      "v": 520.0
+                    },
+                    {
+                      "i": "easeIn",
+                      "t": 190512000000,
+                      "v": 490.0
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "children": [
+                {
+                  "id": 7,
+                  "kind": "shape",
+                  "name": "Channel ring",
+                  "shape": {
+                    "fill": {
+                      "type": "none"
+                    },
+                    "height": 220.0,
+                    "stroke": {
+                      "cap": "round",
+                      "color": [
+                        0.953,
+                        0.941,
+                        0.98,
+                        0.85
+                      ],
+                      "dashes": [
+                        18.0,
+                        12.0
+                      ],
+                      "enabled": true,
+                      "join": "round",
+                      "width": 6.0
+                    },
+                    "trimEnd": {
+                      "keys": [
+                        {
+                          "i": "easeInOut",
+                          "t": 127008000000,
+                          "v": 0.0
+                        },
+                        {
+                          "i": "easeInOut",
+                          "t": 254016000000,
+                          "v": 100.0
+                        }
+                      ]
+                    },
+                    "type": "ellipse",
+                    "width": 220.0
+                  }
+                },
+                {
+                  "id": 8,
+                  "kind": "shape",
+                  "name": "Channel plus",
+                  "shape": {
+                    "fill": {
+                      "color": [
+                        0.953,
+                        0.941,
+                        0.98,
+                        0.6
+                      ],
+                      "type": "solid"
+                    },
+                    "path": [
+                      {
+                        "i": "linear",
+                        "t": 0,
+                        "v": [
+                          [
+                            -6.0,
+                            -26.0,
+                            0.0,
+                            0.0,
+                            0.0,
+                            0.0
+                          ],
+                          [
+                            6.0,
+                            -26.0,
+                            0.0,
+                            0.0,
+                            0.0,
+                            0.0
+                          ],
+                          [
+                            6.0,
+                            -6.0,
+                            0.0,
+                            0.0,
+                            0.0,
+                            0.0
+                          ],
+                          [
+                            26.0,
+                            -6.0,
+                            0.0,
+                            0.0,
+                            0.0,
+                            0.0
+                          ],
+                          [
+                            26.0,
+                            6.0,
+                            0.0,
+                            0.0,
+                            0.0,
+                            0.0
+                          ],
+                          [
+                            6.0,
+                            6.0,
+                            0.0,
+                            0.0,
+                            0.0,
+                            0.0
+                          ],
+                          [
+                            6.0,
+                            26.0,
+                            0.0,
+                            0.0,
+                            0.0,
+                            0.0
+                          ],
+                          [
+                            -6.0,
+                            26.0,
+                            0.0,
+                            0.0,
+                            0.0,
+                            0.0
+                          ],
+                          [
+                            -6.0,
+                            6.0,
+                            0.0,
+                            0.0,
+                            0.0,
+                            0.0
+                          ],
+                          [
+                            -26.0,
+                            6.0,
+                            0.0,
+                            0.0,
+                            0.0,
+                            0.0
+                          ],
+                          [
+                            -26.0,
+                            -6.0,
+                            0.0,
+                            0.0,
+                            0.0,
+                            0.0
+                          ],
+                          [
+                            -6.0,
+                            -6.0,
+                            0.0,
+                            0.0,
+                            0.0,
+                            0.0
+                          ]
+                        ]
+                      }
+                    ],
+                    "type": "path"
+                  },
+                  "transform": {
+                    "scaleX": {
+                      "keys": [
+                        {
+                          "t": 177811200000,
+                          "v": 0.0
+                        },
+                        {
+                          "i": "easeInOut",
+                          "t": 222264000000,
+                          "v": 120.0
+                        },
+                        {
+                          "i": "easeIn",
+                          "t": 241315200000,
+                          "v": 100.0
+                        }
+                      ]
+                    },
+                    "scaleY": {
+                      "keys": [
+                        {
+                          "t": 177811200000,
+                          "v": 0.0
+                        },
+                        {
+                          "i": "easeInOut",
+                          "t": 222264000000,
+                          "v": 120.0
+                        },
+                        {
+                          "i": "easeIn",
+                          "t": 241315200000,
+                          "v": 100.0
+                        }
+                      ]
+                    }
+                  }
+                }
+              ],
+              "id": 6,
+              "kind": "group",
+              "name": "Channel",
+              "transform": {
+                "x": 256.0,
+                "y": 790.0
+              }
+            },
+            {
+              "children": [
+                {
+                  "id": 10,
+                  "kind": "shape",
+                  "name": "Slot 1 back",
+                  "shadow": {
+                    "angle": 90.0,
+                    "color": [
+                      0.047,
+                      0.039,
+                      0.071,
+                      1.0
+                    ],
+                    "distance": 8.0,
+                    "enabled": true,
+                    "opacity": 0.6,
+                    "softness": 24.0
+                  },
+                  "shape": {
+                    "cornerRadius": 20.0,
+                    "fill": {
+                      "color": [
+                        0.114,
+                        0.098,
+                        0.157,
+                        0.95
+                      ],
+                      "type": "solid"
+                    },
+                    "height": 360.0,
+                    "type": "rectangle",
+                    "width": 640.0
+                  }
+                },
+                {
+                  "id": 11,
+                  "kind": "shape",
+                  "name": "Slot 1 play",
+                  "shape": {
+                    "fill": {
+                      "color": [
+                        0.953,
+                        0.941,
+                        0.98,
+                        0.5
+                      ],
+                      "type": "solid"
+                    },
+                    "path": [
+                      {
+                        "i": "linear",
+                        "t": 0,
+                        "v": [
+                          [
+                            -24.0,
+                            -30.0,
+                            0.0,
+                            0.0,
+                            0.0,
+                            0.0
+                          ],
+                          [
+                            36.0,
+                            0.0,
+                            0.0,
+                            0.0,
+                            0.0,
+                            0.0
+                          ],
+                          [
+                            -24.0,
+                            30.0,
+                            0.0,
+                            0.0,
+                            0.0,
+                            0.0
+                          ]
+                        ]
+                      }
+                    ],
+                    "type": "path"
+                  }
+                },
+                {
+                  "id": 12,
+                  "image": {
+                    "fit": "cover",
+                    "height": 360.0,
+                    "width": 640.0
+                  },
+                  "kind": "image",
+                  "masks": [
+                    {
+                      "enabled": true,
+                      "id": 1,
+                      "inverted": false,
+                      "mode": "add",
+                      "name": "Rounded corners",
+                      "params": {
+                        "center.x": {
+                          "value": 0.0
+                        },
+                        "center.y": {
+                          "value": 0.0
+                        },
+                        "roundness": {
+                          "value": 0.1111111111111111
+                        },
+                        "size.x": {
+                          "value": 0.3333333333333333
+                        },
+                        "size.y": {
+                          "value": 0.3333333333333333
+                        }
+                      },
+                      "shape": "rectangle"
+                    }
+                  ],
+                  "name": "Video 1 thumbnail"
+                },
+                {
+                  "id": 13,
+                  "kind": "shape",
+                  "name": "Slot 1 frame",
+                  "shape": {
+                    "cornerRadius": 20.0,
+                    "fill": {
+                      "type": "none"
+                    },
+                    "height": 360.0,
+                    "stroke": {
+                      "cap": "round",
+                      "color": [
+                        0.953,
+                        0.941,
+                        0.98,
+                        1.0
+                      ],
+                      "enabled": true,
+                      "join": "round",
+                      "width": 5.0
+                    },
+                    "type": "rectangle",
+                    "width": 640.0
+                  }
+                }
+              ],
+              "id": 9,
+              "kind": "group",
+              "name": "Video slot 1",
+              "transform": {
+                "scaleX": {
+                  "keys": [
+                    {
+                      "t": 76204800000,
+                      "v": 0.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 138438720000,
+                      "v": 106.0
+                    },
+                    {
+                      "i": "easeIn",
+                      "t": 165110400000,
+                      "v": 100.0
+                    }
+                  ]
+                },
+                "scaleY": {
+                  "keys": [
+                    {
+                      "t": 76204800000,
+                      "v": 0.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 138438720000,
+                      "v": 106.0
+                    },
+                    {
+                      "i": "easeIn",
+                      "t": 165110400000,
+                      "v": 100.0
+                    }
+                  ]
+                },
+                "x": 1400.0,
+                "y": 300.0
+              }
+            },
+            {
+              "children": [
+                {
+                  "id": 15,
+                  "kind": "shape",
+                  "name": "Slot 2 back",
+                  "shadow": {
+                    "angle": 90.0,
+                    "color": [
+                      0.047,
+                      0.039,
+                      0.071,
+                      1.0
+                    ],
+                    "distance": 8.0,
+                    "enabled": true,
+                    "opacity": 0.6,
+                    "softness": 24.0
+                  },
+                  "shape": {
+                    "cornerRadius": 20.0,
+                    "fill": {
+                      "color": [
+                        0.114,
+                        0.098,
+                        0.157,
+                        0.95
+                      ],
+                      "type": "solid"
+                    },
+                    "height": 360.0,
+                    "type": "rectangle",
+                    "width": 640.0
+                  }
+                },
+                {
+                  "id": 16,
+                  "kind": "shape",
+                  "name": "Slot 2 play",
+                  "shape": {
+                    "fill": {
+                      "color": [
+                        0.953,
+                        0.941,
+                        0.98,
+                        0.5
+                      ],
+                      "type": "solid"
+                    },
+                    "path": [
+                      {
+                        "i": "linear",
+                        "t": 0,
+                        "v": [
+                          [
+                            -24.0,
+                            -30.0,
+                            0.0,
+                            0.0,
+                            0.0,
+                            0.0
+                          ],
+                          [
+                            36.0,
+                            0.0,
+                            0.0,
+                            0.0,
+                            0.0,
+                            0.0
+                          ],
+                          [
+                            -24.0,
+                            30.0,
+                            0.0,
+                            0.0,
+                            0.0,
+                            0.0
+                          ]
+                        ]
+                      }
+                    ],
+                    "type": "path"
+                  }
+                },
+                {
+                  "id": 17,
+                  "image": {
+                    "fit": "cover",
+                    "height": 360.0,
+                    "width": 640.0
+                  },
+                  "kind": "image",
+                  "masks": [
+                    {
+                      "enabled": true,
+                      "id": 1,
+                      "inverted": false,
+                      "mode": "add",
+                      "name": "Rounded corners",
+                      "params": {
+                        "center.x": {
+                          "value": 0.0
+                        },
+                        "center.y": {
+                          "value": 0.0
+                        },
+                        "roundness": {
+                          "value": 0.1111111111111111
+                        },
+                        "size.x": {
+                          "value": 0.3333333333333333
+                        },
+                        "size.y": {
+                          "value": 0.3333333333333333
+                        }
+                      },
+                      "shape": "rectangle"
+                    }
+                  ],
+                  "name": "Video 2 thumbnail"
+                },
+                {
+                  "id": 18,
+                  "kind": "shape",
+                  "name": "Slot 2 frame",
+                  "shape": {
+                    "cornerRadius": 20.0,
+                    "fill": {
+                      "type": "none"
+                    },
+                    "height": 360.0,
+                    "stroke": {
+                      "cap": "round",
+                      "color": [
+                        0.953,
+                        0.941,
+                        0.98,
+                        1.0
+                      ],
+                      "enabled": true,
+                      "join": "round",
+                      "width": 5.0
+                    },
+                    "type": "rectangle",
+                    "width": 640.0
+                  }
+                }
+              ],
+              "id": 14,
+              "kind": "group",
+              "name": "Video slot 2",
+              "transform": {
+                "scaleX": {
+                  "keys": [
+                    {
+                      "t": 114307200000,
+                      "v": 0.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 176541120000,
+                      "v": 106.0
+                    },
+                    {
+                      "i": "easeIn",
+                      "t": 203212800000,
+                      "v": 100.0
+                    }
+                  ]
+                },
+                "scaleY": {
+                  "keys": [
+                    {
+                      "t": 114307200000,
+                      "v": 0.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 176541120000,
+                      "v": 106.0
+                    },
+                    {
+                      "i": "easeIn",
+                      "t": 203212800000,
+                      "v": 100.0
+                    }
+                  ]
+                },
+                "x": 1400.0,
+                "y": 760.0
+              }
+            }
+          ],
+          "id": 2,
+          "kind": "group",
+          "name": "Content",
+          "transform": {
+            "opacity": {
+              "keys": [
+                {
+                  "i": "easeOut",
+                  "t": 4953312000000,
+                  "v": 100.0
+                },
+                {
+                  "t": 5080320000000,
+                  "v": 0.0
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "name": "End card",
+      "responsive": {
+        "duration": 5080320000000,
+        "intro": 254016000000,
+        "outro": 152409600000
+      },
+      "width": 1920
+    },
+    "id": "wabcut.gaming.endCard",
+    "name": "End card",
+    "version": 1
+  },
+  "version": 1
+}

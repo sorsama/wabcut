@@ -1,0 +1,13 @@
+{
+  "manifestVersion": 1,
+  "id": "com.wabcut.samples.beat-markers",
+  "name": "Beat Markers",
+  "version": "1.0.0",
+  "author": "Wabcut samples",
+  "licence": "MIT",
+  "description": "Adds a marker at every beat (or every downbeat) of the sequence's beat grid, in one undo step. Without a beat grid it asks for the tempo first.",
+  "minWabcutVersion": "0.1.0",
+  "capabilities": ["Read", "EditSequence"],
+  "main": "main.js",
+  "commands": [{"id": "addBeatMarkers", "title": "Add Markers at Every Beat"}]
+}

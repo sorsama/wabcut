@@ -1,0 +1,78 @@
+{
+  "include": [
+    "reasoning.encrypted_content"
+  ],
+  "input": [
+    {
+      "content": [
+        {
+          "text": "Remove the silence on A1 after 00:00:12.",
+          "type": "input_text"
+        },
+        {
+          "detail": "auto",
+          "image_url": "data:image/png;base64,iVBORw==",
+          "type": "input_image"
+        }
+      ],
+      "role": "user"
+    },
+    {
+      "content": [
+        {
+          "text": "Let me look at the sequence.",
+          "type": "output_text"
+        }
+      ],
+      "role": "assistant"
+    },
+    {
+      "arguments": "{\"track\":\"A1\"}",
+      "call_id": "call_1",
+      "name": "sequence_summary",
+      "type": "function_call"
+    },
+    {
+      "call_id": "call_1",
+      "output": "{\"clips\":3}",
+      "type": "function_call_output"
+    }
+  ],
+  "instructions": "You edit video timelines. Use the tools.",
+  "max_output_tokens": 1024,
+  "model": "gpt-6.1-sol",
+  "parallel_tool_calls": true,
+  "store": false,
+  "stream": true,
+  "tool_choice": "required",
+  "tools": [
+    {
+      "description": "Ripple-delete a range on a track.",
+      "name": "timeline_rippleDelete",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "frames": {
+            "description": "Length",
+            "minimum": 1,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "track": {
+            "description": "Track id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "frames",
+          "track"
+        ],
+        "type": "object"
+      },
+      "strict": true,
+      "type": "function"
+    }
+  ]
+}

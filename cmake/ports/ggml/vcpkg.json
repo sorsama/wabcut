@@ -1,0 +1,28 @@
+{
+  "name": "ggml",
+  "version": "0.26.0",
+  "description": "Tensor library for machine learning. Wabcut overlay: the ggml that whisper.cpp v1.9.5 ships (so whisper-cpp and ggml always match), with SIMD on, CPU variants picked at run time (GGML_BACKEND_DL + GGML_CPU_ALL_VARIANTS) and an optional Vulkan backend.",
+  "homepage": "https://github.com/ggml-org/ggml",
+  "license": "MIT",
+  "supports": "!uwp & !(windows & arm64)",
+  "dependencies": [
+    {
+      "name": "vcpkg-cmake",
+      "host": true
+    },
+    {
+      "name": "vcpkg-cmake-config",
+      "host": true
+    }
+  ],
+  "features": {
+    "vulkan": {
+      "description": "Vulkan backend (headers, loader, SPIR-V headers and glslc all from vcpkg, no Vulkan SDK)",
+      "dependencies": [
+        "shaderc",
+        "spirv-headers",
+        "vulkan"
+      ]
+    }
+  }
+}

@@ -1,0 +1,477 @@
+{
+  "format": "wabcut-graphic-template",
+  "template": {
+    "description": "Chat message bubble with a username and an optional avatar; grows with the message.",
+    "duration": 1270080000000,
+    "fields": [
+      {
+        "id": "username",
+        "kind": "text",
+        "label": "Username",
+        "layer": 8,
+        "property": "text",
+        "value": "PlayerOne"
+      },
+      {
+        "id": "message",
+        "kind": "text",
+        "label": "Message",
+        "layer": 9,
+        "property": "text",
+        "value": "GG! That clutch was insane"
+      },
+      {
+        "id": "accent",
+        "kind": "color",
+        "label": "Name colour",
+        "layer": 8,
+        "property": "background",
+        "value": [
+          0.482,
+          0.231,
+          1.0,
+          1.0
+        ]
+      },
+      {
+        "id": "avatarColor",
+        "kind": "color",
+        "label": "Avatar colour",
+        "layer": 3,
+        "property": "fill",
+        "value": [
+          0.878,
+          0.251,
+          0.984,
+          1.0
+        ]
+      },
+      {
+        "id": "showAvatar",
+        "kind": "checkbox",
+        "label": "Show avatar",
+        "layer": 2,
+        "property": "visible",
+        "value": true
+      },
+      {
+        "id": "length",
+        "kind": "duration",
+        "label": "Length",
+        "property": "clip",
+        "value": 1270080000000
+      }
+    ],
+    "graphic": {
+      "height": 1080,
+      "layers": [
+        {
+          "children": [
+            {
+              "children": [
+                {
+                  "id": 3,
+                  "kind": "shape",
+                  "name": "Avatar circle",
+                  "shape": {
+                    "fill": {
+                      "color": [
+                        0.878,
+                        0.251,
+                        0.984,
+                        1.0
+                      ],
+                      "type": "solid"
+                    },
+                    "height": 88.0,
+                    "type": "ellipse",
+                    "width": 88.0
+                  }
+                },
+                {
+                  "id": 4,
+                  "kind": "shape",
+                  "name": "Avatar head",
+                  "shape": {
+                    "fill": {
+                      "color": [
+                        0.953,
+                        0.941,
+                        0.98,
+                        1.0
+                      ],
+                      "type": "solid"
+                    },
+                    "height": 30.0,
+                    "type": "ellipse",
+                    "width": 30.0
+                  },
+                  "transform": {
+                    "y": -10.0
+                  }
+                },
+                {
+                  "id": 5,
+                  "kind": "shape",
+                  "name": "Avatar shoulders",
+                  "shape": {
+                    "fill": {
+                      "color": [
+                        0.953,
+                        0.941,
+                        0.98,
+                        1.0
+                      ],
+                      "type": "solid"
+                    },
+                    "path": [
+                      {
+                        "i": "linear",
+                        "t": 0,
+                        "v": [
+                          [
+                            -22.0,
+                            30.0,
+                            0.0,
+                            0.0,
+                            0.0,
+                            -12.0
+                          ],
+                          [
+                            0.0,
+                            11.0,
+                            -14.0,
+                            0.0,
+                            14.0,
+                            0.0
+                          ],
+                          [
+                            22.0,
+                            30.0,
+                            0.0,
+                            -12.0,
+                            0.0,
+                            0.0
+                          ]
+                        ]
+                      }
+                    ],
+                    "type": "path"
+                  }
+                }
+              ],
+              "id": 2,
+              "kind": "group",
+              "name": "Avatar"
+            },
+            {
+              "id": 6,
+              "kind": "shape",
+              "name": "Bubble",
+              "pin": {
+                "edges": [
+                  "left",
+                  "top",
+                  "right",
+                  "bottom"
+                ],
+                "offsets": [
+                  -30.0,
+                  -26.0,
+                  30.0,
+                  24.0
+                ],
+                "to": 9
+              },
+              "shadow": {
+                "angle": 90.0,
+                "color": [
+                  0.047,
+                  0.039,
+                  0.071,
+                  1.0
+                ],
+                "enabled": true,
+                "opacity": 0.45,
+                "softness": 16.0
+              },
+              "shape": {
+                "cornerRadius": 26.0,
+                "fill": {
+                  "color": [
+                    0.953,
+                    0.941,
+                    0.98,
+                    1.0
+                  ],
+                  "type": "solid"
+                },
+                "height": 98.0,
+                "type": "rectangle",
+                "width": 632.0
+              },
+              "transform": {
+                "x": 374.0,
+                "y": -5.0
+              }
+            },
+            {
+              "id": 7,
+              "kind": "shape",
+              "name": "Tail",
+              "pin": {
+                "edges": [
+                  "left",
+                  "bottom"
+                ],
+                "offsets": [
+                  -18.0,
+                  0.0,
+                  0.0,
+                  -10.0
+                ],
+                "to": 6
+              },
+              "shape": {
+                "fill": {
+                  "color": [
+                    0.953,
+                    0.941,
+                    0.98,
+                    1.0
+                  ],
+                  "type": "solid"
+                },
+                "path": [
+                  {
+                    "i": "linear",
+                    "t": 0,
+                    "v": [
+                      [
+                        30.0,
+                        -40.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0
+                      ],
+                      [
+                        30.0,
+                        -8.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0
+                      ],
+                      [
+                        -16.0,
+                        4.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0
+                      ]
+                    ]
+                  }
+                ],
+                "type": "path"
+              },
+              "transform": {
+                "x": 56.0,
+                "y": 30.0
+              }
+            },
+            {
+              "id": 8,
+              "kind": "text",
+              "name": "Username",
+              "pin": {
+                "edges": [
+                  "left",
+                  "top"
+                ],
+                "offsets": [
+                  26.0,
+                  -22.0,
+                  0.0,
+                  0.0
+                ],
+                "to": 6
+              },
+              "text": {
+                "background": {
+                  "color": [
+                    0.482,
+                    0.231,
+                    1.0,
+                    1.0
+                  ],
+                  "enabled": true,
+                  "padding": 8.0,
+                  "radius": 6.0
+                },
+                "runs": [
+                  {
+                    "fill": [
+                      0.953,
+                      0.941,
+                      0.98,
+                      1.0
+                    ],
+                    "font": "Bai Jamjuree",
+                    "size": 30.0,
+                    "text": "PlayerOne",
+                    "tracking": 20.0,
+                    "weight": 600
+                  }
+                ]
+              },
+              "transform": {
+                "opacity": {
+                  "keys": [
+                    {
+                      "t": 38102400000,
+                      "v": 0.0
+                    },
+                    {
+                      "i": "easeIn",
+                      "t": 88905600000,
+                      "v": 100.0
+                    }
+                  ]
+                },
+                "x": 84.0,
+                "y": -76.0
+              }
+            },
+            {
+              "id": 9,
+              "kind": "text",
+              "name": "Message",
+              "text": {
+                "animators": [
+                  {
+                    "name": "Words In",
+                    "offsetY": 21.6,
+                    "opacity": 0.0,
+                    "shape": "ramp",
+                    "start": {
+                      "keys": [
+                        {
+                          "t": 50803200000,
+                          "v": 0.0
+                        },
+                        {
+                          "t": 165110400000,
+                          "v": 100.0
+                        }
+                      ]
+                    },
+                    "unit": "word"
+                  }
+                ],
+                "runs": [
+                  {
+                    "fill": [
+                      0.047,
+                      0.039,
+                      0.071,
+                      1.0
+                    ],
+                    "font": "IBM Plex Sans Thai",
+                    "size": 40.0,
+                    "text": "GG! That clutch was insane",
+                    "weight": 500
+                  }
+                ]
+              },
+              "transform": {
+                "x": 88.0,
+                "y": -28.0
+              }
+            }
+          ],
+          "id": 1,
+          "kind": "group",
+          "name": "Chat",
+          "transform": {
+            "opacity": {
+              "keys": [
+                {
+                  "i": "easeOut",
+                  "t": 1193875200000,
+                  "v": 100.0
+                },
+                {
+                  "t": 1270080000000,
+                  "v": 0.0
+                }
+              ]
+            },
+            "scaleX": {
+              "keys": [
+                {
+                  "t": 0,
+                  "v": 0.0
+                },
+                {
+                  "i": "easeInOut",
+                  "t": 62233920000,
+                  "v": 112.00000000000001
+                },
+                {
+                  "i": "easeIn",
+                  "t": 88905600000,
+                  "v": 100.0
+                }
+              ]
+            },
+            "scaleY": {
+              "keys": [
+                {
+                  "t": 0,
+                  "v": 0.0
+                },
+                {
+                  "i": "easeInOut",
+                  "t": 62233920000,
+                  "v": 112.00000000000001
+                },
+                {
+                  "i": "easeIn",
+                  "t": 88905600000,
+                  "v": 100.0
+                }
+              ]
+            },
+            "x": 190.0,
+            "y": {
+              "keys": [
+                {
+                  "i": "easeOut",
+                  "t": 1193875200000,
+                  "v": 760.0
+                },
+                {
+                  "t": 1270080000000,
+                  "v": 680.0
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "name": "Chat bubble",
+      "responsive": {
+        "duration": 1270080000000,
+        "intro": 165110400000,
+        "outro": 76204800000
+      },
+      "width": 1920
+    },
+    "id": "wabcut.gaming.chatBubble",
+    "name": "Chat bubble",
+    "version": 1
+  },
+  "version": 1
+}

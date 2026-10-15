@@ -1,0 +1,33 @@
+event: interaction.created
+data: {"interaction":{"id":"v1_tool_example","status":"in_progress","object":"interaction","model":"gemini-3.8-flash"},"event_type":"interaction.created"}
+
+event: step.start
+data: {"index":0,"step":{"type":"thought"},"event_type":"step.start"}
+
+event: step.delta
+data: {"index":0,"delta":{"type":"thought_summary","content":{"type":"text","text":"Find the gap first."}},"event_type":"step.delta"}
+
+event: step.delta
+data: {"index":0,"delta":{"type":"thought_signature","signature":"CiQBVKhc7mQ3exampleSignature"},"event_type":"step.delta"}
+
+event: step.stop
+data: {"index":0,"event_type":"step.stop"}
+
+event: step.start
+data: {"index":1,"step":{"type":"function_call","id":"un6k8t18","name":"timeline_rippleDelete","arguments":{}},"event_type":"step.start"}
+
+event: step.delta
+data: {"index":1,"delta":{"type":"arguments_delta","arguments":"{\"track\": \"A1\","},"event_type":"step.delta"}
+
+event: step.delta
+data: {"index":1,"delta":{"type":"arguments","partial_arguments":" \"frames\": 24}"},"event_type":"step.delta"}
+
+event: step.stop
+data: {"index":1,"event_type":"step.stop"}
+
+event: interaction.completed
+data: {"interaction":{"id":"v1_tool_example","status":"requires_action","usage":{"total_input_tokens":210,"total_output_tokens":20,"total_thought_tokens":12,"total_cached_tokens":0,"total_tokens":242}},"event_type":"interaction.completed"}
+
+event: done
+data: [DONE]
+

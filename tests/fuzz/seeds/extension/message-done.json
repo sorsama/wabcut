@@ -1,0 +1,8 @@
+{
+ "type": "done",
+ "call": 7,
+ "error": {
+  "kind": "exception",
+  "message": "TypeError: x is undefined\n@main.js:3"
+ }
+}

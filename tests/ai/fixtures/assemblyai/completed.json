@@ -1,0 +1,22 @@
+{
+  "id": "5551722-f677-48a6-9287-39c0aafd9ac1",
+  "status": "completed",
+  "language_code": "en_us",
+  "language_confidence": 0.99,
+  "speech_model_used": "universal-3-5-pro",
+  "audio_duration": 5,
+  "text": "Smoke from hundreds of fires. Yes, indeed.",
+  "words": [
+    {"text": "Smoke", "start": 250, "end": 650, "confidence": 0.97465, "speaker": "A"},
+    {"text": "from", "start": 730, "end": 1022, "confidence": 0.99999, "speaker": "A"},
+    {"text": "hundreds", "start": 1088, "end": 1490, "confidence": 0.99, "speaker": "A"},
+    {"text": "of", "start": 1490, "end": 1600, "confidence": 0.99, "speaker": "A"},
+    {"text": "fires.", "start": 1600, "end": 2100, "confidence": 0.98, "speaker": "A"},
+    {"text": "Yes,", "start": 2900, "end": 3200, "confidence": 0.9, "speaker": "B"},
+    {"text": "indeed.", "start": 3200, "end": 3800, "confidence": 0.92, "speaker": null}
+  ],
+  "utterances": [
+    {"text": "Smoke from hundreds of fires.", "start": 250, "end": 2100, "confidence": 0.98, "speaker": "A", "words": []},
+    {"text": "Yes, indeed.", "start": 2900, "end": 3800, "confidence": 0.91, "speaker": "B", "words": []}
+  ]
+}

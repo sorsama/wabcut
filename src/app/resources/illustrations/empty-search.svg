@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="160" height="120" viewBox="0 0 160 120"
+     fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <!-- Empty Search: a magnifier over a strip of clip frames. -->
+  <!-- Clip frames -->
+  <rect x="25" y="32" width="30" height="22" rx="3"/>
+  <rect x="61" y="32" width="30" height="22" rx="3"/>
+  <!-- Third frame, its bottom edge hidden behind the lens (circle meets y=54 at x=101.42 and 122.58) -->
+  <path d="M101.42 54H100Q97 54 97 51V35Q97 32 100 32H124Q127 32 127 35V51Q127 54 124 54H122.58"/>
+  <!-- Magnifier -->
+  <circle cx="112" cy="66" r="16"/>
+  <path d="M123.31 77.31L134 88"/>
+  <!-- Accent: a lime glint in the lens -->
+  <circle cx="107" cy="61" r="3.5" fill="#D6F54C" stroke="none"/>
+</svg>

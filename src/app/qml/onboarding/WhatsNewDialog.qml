@@ -1,0 +1,125 @@
+pragma ComponentBehavior: Bound
+import QtQuick
+import QtQuick.Controls.Basic
+import QtQuick.Layouts
+
+// What's new (M5j onboarding; refreshed in M5n): the highlights of this build, from docs/roadmap.md and the milestones
+// merged since the last refresh. Static and offline: nothing is fetched. Opened from Help and the palette.
+WabcutDialog {
+    id: dialog
+    objectName: "whatsNewDialog"
+
+    // Keep in step with docs/roadmap.md when a milestone lands. This build: the gaming wave (M5o) first, then M5k-M5n,
+    // C.7-C.12, A.3-A.9, AI-9-AI-13.
+    readonly property var highlights: [
+        { key: "gamingStart", icon: "gamepad-2", title: qsTr("Made for gaming videos"),
+          text: qsTr("Drop an OBS or ShadowPlay recording on Home: its frame rate is kept, each audio track gets its own named track, and long or high-fps files get proxies.") },
+        { key: "highlights", icon: "zap", title: qsTr("Find the highlights"),
+          text: qsTr("Wabcut ranks the loudest, busiest moments of a VOD on this computer, then builds a highlight reel or a Short from the ones you keep.") },
+        { key: "layouts", icon: "layout-grid", title: qsTr("Facecam layouts"),
+          text: qsTr("Corner facecam, vertical split or blurred fill for Shorts, in one click from the clip menu.") },
+        { key: "callouts", icon: "sparkles", title: qsTr("Callouts and stickers"),
+          text: qsTr("Subscribe buttons, kill-streak banners, arrows and lower thirds you type on right in the monitor, plus Lottie stickers.") },
+        { key: "moments", icon: "timer", title: qsTr("Slow-mo and punch-ins"),
+          text: qsTr("Slow down the moment under the playhead or punch in on it with one click; the keys stay editable.") },
+        { key: "gamingExport", icon: "upload", title: qsTr("Export for every platform"),
+          text: qsTr("YouTube 60 fps, Shorts and TikTok, Twitch and Discord size targets, with the file size and export time before you start.") },
+        { key: "multicam", icon: "layers", title: qsTr("Multi-camera and nested sequences"),
+          text: qsTr("Cut between angles live with the number keys, nest clips into their own sequence, and let Wabcut switch to whoever is speaking.") },
+        { key: "library", icon: "library", title: qsTr("A pro Library"),
+          text: qsTr("Bins, a sortable list view with metadata columns, subclips, find and filters, and unused or duplicate media at a glance.") },
+        { key: "captions", icon: "captions", title: qsTr("The caption workshop"),
+          text: qsTr("Styles and presets, speakers, fixes from the transcript, and translation into other languages on this computer.") },
+        { key: "essentialSound", icon: "audio-lines", title: qsTr("Essential Sound and Remix"),
+          text: qsTr("Tag a clip as dialogue, music, effects or ambience for one-click repair, and remix music to any length on its own bars.") },
+        { key: "mixer", icon: "sliders-horizontal", title: qsTr("Mixer automation and plugins"),
+          text: qsTr("Track faders with Read, Touch, Latch and Write, and your CLAP and VST3 plugins in their own process, so a crash never takes the edit down.") },
+        { key: "voiceOver", icon: "mic", title: qsTr("Voice-over recording"),
+          text: qsTr("Arm a track, count in and record over the program; every pass is a take you can switch back to.") },
+        { key: "channels", icon: "volume-2", title: qsTr("Audio channels and 5.1"),
+          text: qsTr("Split two microphones recorded on one file, fill or swap channels, and mix and export in 5.1.") },
+        { key: "history", icon: "clock", title: qsTr("Version history and review notes"),
+          text: qsTr("Go back to any saved version or compare two, and gather frame-accurate notes into a review package a client opens in a browser.") },
+        { key: "paste", icon: "clipboard-paste", title: qsTr("Paste that keeps everything"),
+          text: qsTr("Copy and paste keeps speed, effects and keyframes; Paste Attributes chooses what carries over.") },
+        { key: "extensions", icon: "puzzle", title: qsTr("Extensions"),
+          text: qsTr("Add your own commands with sandboxed scripts that ask before they get a permission.") },
+        { key: "ai", icon: "sparkles", title: qsTr("More AI, still your call"),
+          text: qsTr("Enhance Speech, stem separation, search, Auto Reframe and object masks that follow a person through the shot run on this computer; cloud features use your own key and ask first.") }
+    ]
+
+    title: qsTr("What's new in Wabcut")
+
+    ListView {
+        id: list
+        objectName: "whatsNewList"
+        Layout.fillWidth: true
+        Layout.preferredHeight: Math.min(contentHeight, Theme.space(110))
+        clip: true
+        spacing: Theme.space(3)
+        model: dialog.highlights
+        boundsBehavior: Flickable.StopAtBounds
+        Accessible.role: Accessible.List
+        Accessible.name: dialog.title
+        ScrollBar.vertical: ThinScrollBar {}
+
+        delegate: RowLayout {
+            id: row
+            required property var modelData
+            width: ListView.view.width
+            spacing: Theme.space(3)
+            objectName: "whatsNew_" + modelData.key
+            Accessible.role: Accessible.ListItem
+            Accessible.name: modelData.title + ". " + modelData.text
+
+            // The feature's icon on a round accent tint (design language v3: the kit's soft icon button).
+            Rectangle {
+                Layout.alignment: Qt.AlignTop
+                implicitWidth: Theme.space(10)
+                implicitHeight: Theme.space(10)
+                radius: width / 2
+                color: Theme.accentWash
+
+                Icon {
+                    anchors.centerIn: parent
+                    name: row.modelData.icon
+                    size: Theme.iconMd
+                    color: Theme.accentStroke
+                }
+            }
+            ColumnLayout {
+                Layout.fillWidth: true
+                spacing: Theme.space(0.5)
+                Text {
+                    Layout.fillWidth: true
+                    text: row.modelData.title
+                    color: Theme.textPrimary
+                    font.family: Theme.fontSans
+                    font.pixelSize: Theme.textLg
+                    font.weight: Theme.weightLabel
+
+                    wrapMode: Text.Wrap
+                }
+                Text {
+                    Layout.fillWidth: true
+                    text: row.modelData.text
+                    color: Theme.textSecondary
+                    font.family: Theme.fontSans
+                    font.pixelSize: Theme.textMd
+                    wrapMode: Text.Wrap
+                }
+            }
+        }
+    }
+
+    footerData: [
+        PillButton {
+            objectName: "whatsNewCloseButton"
+            variant: "primary"
+            text: qsTr("Got it")
+            onClicked: dialog.close()
+        }
+    ]
+
+    onAboutToShow: list.positionViewAtBeginning()
+}

@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE fcpxml>
+<!-- Hand-authored after Apple's FCPXML 1.11 reference, as the Info.fcpxml of an .fcpxmld bundle: 29.97 fps
+     drop-frame starting at timecode 01:00:00;00, a <clip> with a video and an attached audio component, a
+     secondary storyline (spine lane 1) with a transition, a compound clip, a multicam clip, an audition, and a
+     media URL relative to the bundle. -->
+<fcpxml version="1.11">
+    <resources>
+        <format id="r1" name="FFVideoFormat1080p2997" frameDuration="1001/30000s" width="1920" height="1080" colorSpace="1-1-1 (Rec. 709)"/>
+        <asset id="r2" name="Interview_B" uid="AB12" start="0s" duration="900900/30000s" hasVideo="1" format="r1" hasAudio="1" audioSources="1" audioChannels="2" audioRate="48000">
+            <media-rep kind="original-media" src="Media/Interview_B.mov"/>
+        </asset>
+        <asset id="r3" name="Insert" uid="CD34" start="0s" duration="600600/30000s" hasVideo="1" format="r1">
+            <media-rep kind="original-media" src="file:///Volumes/Shoot/Day%201/Insert.mov"/>
+        </asset>
+        <media id="r5" name="Compound 1">
+            <sequence format="r1" duration="60060/30000s" tcStart="0s" tcFormat="DF" audioLayout="stereo" audioRate="48k">
+                <spine>
+                    <asset-clip ref="r3" offset="0s" name="Insert" duration="60060/30000s"/>
+                </spine>
+            </sequence>
+        </media>
+        <media id="r6" name="Multicam 1">
+            <multicam format="r1" tcStart="0s" tcFormat="DF">
+                <mc-angle name="Cam A" angleID="a1">
+                    <asset-clip ref="r2" offset="0s" duration="900900/30000s"/>
+                </mc-angle>
+            </multicam>
+        </media>
+    </resources>
+    <library>
+        <event name="Wedding">
+            <project name="Wedding Teaser">
+                <sequence format="r1" duration="390390/30000s" tcStart="107999892/30000s" tcFormat="DF" audioLayout="stereo" audioRate="48k">
+                    <spine>
+                        <clip name="Clip A" offset="107999892/30000s" duration="150150/30000s" start="0s" format="r1" tcFormat="DF">
+                            <video ref="r2" offset="0s" duration="150150/30000s" start="30030/30000s"/>
+                            <audio ref="r2" lane="-1" offset="0s" duration="150150/30000s" start="30030/30000s" role="dialogue"/>
+                            <spine lane="1" offset="30030/30000s" format="r1">
+                                <asset-clip ref="r3" offset="0s" name="Insert 1" duration="60060/30000s" format="r1" tcFormat="DF"/>
+                                <transition name="Cross Dissolve" offset="45045/30000s" duration="30030/30000s">
+                                    <filter-video ref="r7" name="Cross Dissolve"/>
+                                </transition>
+                                <asset-clip ref="r3" offset="60060/30000s" name="Insert 2" start="120120/30000s" duration="60060/30000s" format="r1" tcFormat="DF"/>
+                            </spine>
+                        </clip>
+                        <ref-clip ref="r5" offset="108150042/30000s" name="Compound 1" duration="90090/30000s"/>
+                        <mc-clip ref="r6" offset="108240132/30000s" name="Multicam 1" duration="60060/30000s">
+                            <mc-source angleID="a1" srcEnable="all"/>
+                        </mc-clip>
+                        <audition>
+                            <asset-clip ref="r2" offset="108300192/30000s" name="Take 1" duration="90090/30000s" format="r1" tcFormat="DF"/>
+                            <asset-clip ref="r2" offset="108300192/30000s" name="Take 2" start="300300/30000s" duration="90090/30000s" format="r1" tcFormat="DF"/>
+                        </audition>
+                    </spine>
+                </sequence>
+            </project>
+        </event>
+    </library>
+</fcpxml>

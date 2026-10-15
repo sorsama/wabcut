@@ -1,0 +1,30 @@
+# Build output
+/build/
+/out/
+/vcpkg_installed/
+CMakeUserPresets.json
+compile_commands.json
+
+# IDEs
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+
+# Generated test media / artifacts
+/tests/media/generated/
+*.wabcut.autosave
+*.log
+
+# Local files, not part of the public repo:
+# built release packages and reports, research notes, and internal team docs (handoffs, reviews, status logs)
+/release/
+/reports/
+/research_notes/
+/docs/internal/
+/dev.bat
+
+# OS
+Thumbs.db
+.DS_Store

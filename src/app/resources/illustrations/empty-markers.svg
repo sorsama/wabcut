@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="160" height="120" viewBox="0 0 160 120"
+     fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <!-- Empty Markers: a time ruler over a clip, with two markers pinned to it. -->
+  <!-- Ruler and ticks -->
+  <path d="M24 56H136"/>
+  <path d="M36 56V51M60 56V48M84 56V51M108 56V48M132 56V51"/>
+  <!-- The clip under the ruler -->
+  <rect x="24" y="68" width="112" height="24" rx="3"/>
+  <path d="M34 80H62"/>
+  <!-- Markers: one pinned to the clip, one on the ruler -->
+  <path d="M64 28H80V38L72 44L64 38Z"/>
+  <path d="M72 44V68"/>
+  <path d="M110 30H122V38L116 42.5L110 38Z"/>
+  <!-- Accent: a lime dot in the first marker -->
+  <circle cx="72.7" cy="36.5" r="3.5" fill="#D6F54C" stroke="none"/>
+</svg>

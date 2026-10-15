@@ -1,0 +1,75 @@
+{
+  "max_tokens": 1024,
+  "messages": [
+    {
+      "content": "You edit video timelines. Use the tools.",
+      "role": "system"
+    },
+    {
+      "content": [
+        {
+          "text": "Remove the silence on A1 after 00:00:12.",
+          "type": "text"
+        },
+        {
+          "image_url": {
+            "url": "data:image/png;base64,iVBORw=="
+          },
+          "type": "image_url"
+        }
+      ],
+      "role": "user"
+    },
+    {
+      "content": "Let me look at the sequence.",
+      "role": "assistant",
+      "tool_calls": [
+        {
+          "function": {
+            "arguments": "{\"track\":\"A1\"}",
+            "name": "sequence_summary"
+          },
+          "id": "call_1",
+          "type": "function"
+        }
+      ]
+    },
+    {
+      "content": "{\"clips\":3}",
+      "role": "tool",
+      "tool_call_id": "call_1"
+    }
+  ],
+  "model": "qwen3.5:9b",
+  "stream": true,
+  "stream_options": {
+    "include_usage": true
+  },
+  "tools": [
+    {
+      "function": {
+        "description": "Ripple-delete a range on a track.",
+        "name": "timeline_rippleDelete",
+        "parameters": {
+          "additionalProperties": false,
+          "properties": {
+            "frames": {
+              "description": "Length",
+              "minimum": 1,
+              "type": "integer"
+            },
+            "track": {
+              "description": "Track id",
+              "type": "string"
+            }
+          },
+          "required": [
+            "track"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    }
+  ]
+}

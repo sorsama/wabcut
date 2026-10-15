@@ -1,0 +1,6 @@
+data: {"id":"gen-1","object":"chat.completion.chunk","model":"anthropic/claude-sonnet-5-5","choices":[{"index":0,"delta":{"content":"Partial"},"finish_reason":null}]}
+
+data: {"id":"gen-1","object":"chat.completion.chunk","model":"anthropic/claude-sonnet-5-5","error":{"code":"server_error","message":"Provider returned error"},"choices":[{"index":0,"delta":{"content":""},"finish_reason":"error"}]}
+
+data: [DONE]
+

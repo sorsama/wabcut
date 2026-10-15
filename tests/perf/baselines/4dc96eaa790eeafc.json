@@ -1,0 +1,1633 @@
+{
+  "machine": {
+    "cpu": "12th Gen Intel(R) Core(TM) i5-12600K",
+    "gpu": "NVIDIA GeForce RTX 3060",
+    "id": "4dc96eaa790eeafc",
+    "logicalCores": 16,
+    "memoryGb": 32.0,
+    "os": "Windows 10.0.26200"
+  },
+  "recorded": "2026-10-13, the third P.1 quiet window (02:12-02:26): three passes of every benchmark on the final P.1 tree (the nine fixes, the wave-5 fixes, master 724ad5a merged); each gated metric's value is its worst pass, median the representative number; the first window's baseline (before the fixes) is in git at 1d82e0d and in docs/performance.md",
+  "metrics": {
+    "analysis/search_index_shots_per_s": {
+      "value": 421.8905684211787,
+      "median": 470.1820422620308,
+      "unit": "shots/s",
+      "better": "higher",
+      "passes": [
+        421.8905684211787,
+        532.6740958722818,
+        470.1820422620308
+      ],
+      "spread": 0.26258830071903017
+    },
+    "analysis/search_query_p50_ms": {
+      "value": 6.0825,
+      "median": 5.4587,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        6.0825,
+        4.6667,
+        5.4587
+      ],
+      "spread": 0.30338354726037675
+    },
+    "analysis/search_query_p95_ms": {
+      "value": 8.5894,
+      "median": 8.5588,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        8.5894,
+        4.9492,
+        8.5588
+      ],
+      "spread": 0.7355128101511352
+    },
+    "analysis/shots_fps": {
+      "value": 591.6894261648023,
+      "median": 591.7968085384443,
+      "unit": "fps",
+      "better": "higher",
+      "passes": [
+        602.7162411936459,
+        591.7968085384443,
+        591.6894261648023
+      ],
+      "spread": 0.018636153598885485
+    },
+    "analysis/shots_x_realtime": {
+      "value": 19.722980872160075,
+      "median": 19.72656028461481,
+      "unit": "x realtime",
+      "better": "higher",
+      "passes": [
+        20.090541373121532,
+        19.72656028461481,
+        19.722980872160075
+      ],
+      "spread": 0.018636153598885485
+    },
+    "analysis/transcribe_fake_x_realtime": {
+      "value": 85.30082045172472,
+      "median": 97.54662118826417,
+      "unit": "x realtime",
+      "better": "higher",
+      "passes": [
+        97.54662118826417,
+        103.4706647731535,
+        85.30082045172472
+      ],
+      "spread": 0.21300902177971248
+    },
+    "export/h264_1080p_nvenc_fps": {
+      "value": 78.25340487085711,
+      "median": 79.87175258925917,
+      "unit": "fps",
+      "better": "higher",
+      "passes": [
+        78.25340487085711,
+        79.87175258925917,
+        86.1778424845704
+      ],
+      "spread": 0.10126636185085003
+    },
+    "export/h264_1080p_nvenc_x_realtime": {
+      "value": 2.60844682902857,
+      "median": 2.662391752975306,
+      "unit": "x realtime",
+      "better": "higher",
+      "passes": [
+        2.60844682902857,
+        2.662391752975306,
+        2.87259474948568
+      ],
+      "spread": 0.10126636185085025
+    },
+    "export/h264_1080p_x264_fps": {
+      "value": 39.48742427546006,
+      "median": 42.53590411357994,
+      "unit": "fps",
+      "better": "higher",
+      "passes": [
+        45.98340336350203,
+        42.53590411357994,
+        39.48742427546006
+      ],
+      "spread": 0.1645075415080688
+    },
+    "export/h264_1080p_x264_x_realtime": {
+      "value": 1.3162474758486686,
+      "median": 1.4178634704526647,
+      "unit": "x realtime",
+      "better": "higher",
+      "passes": [
+        1.5327801121167342,
+        1.4178634704526647,
+        1.3162474758486686
+      ],
+      "spread": 0.1645075415080688
+    },
+    "export/h264_2160p_nvenc_fps": {
+      "value": 24.94029293870474,
+      "median": 25.14738463008616,
+      "unit": "fps",
+      "better": "higher",
+      "passes": [
+        26.51613164110327,
+        25.14738463008616,
+        24.94029293870474
+      ],
+      "spread": 0.06318445041008292
+    },
+    "export/h264_2160p_nvenc_x_realtime": {
+      "value": 0.8313430979568247,
+      "median": 0.8382461543362054,
+      "unit": "x realtime",
+      "better": "higher",
+      "passes": [
+        0.8838710547034424,
+        0.8382461543362054,
+        0.8313430979568247
+      ],
+      "spread": 0.06318445041008292
+    },
+    "export/h264_2160p_x264_fps": {
+      "value": 10.937456107760775,
+      "median": 11.977294642546125,
+      "unit": "fps",
+      "better": "higher",
+      "passes": [
+        11.977294642546125,
+        10.937456107760775,
+        12.523418793143177
+      ],
+      "spread": 0.14500288456079535
+    },
+    "export/h264_2160p_x264_x_realtime": {
+      "value": 0.36458187025869254,
+      "median": 0.3992431547515375,
+      "unit": "x realtime",
+      "better": "higher",
+      "passes": [
+        0.3992431547515375,
+        0.36458187025869254,
+        0.4174472931047726
+      ],
+      "spread": 0.14500288456079535
+    },
+    "export/hevc_1080p_nvenc_fps": {
+      "value": 74.60077859589275,
+      "median": 88.96670510028326,
+      "unit": "fps",
+      "better": "higher",
+      "passes": [
+        88.96670510028326,
+        74.60077859589275,
+        89.23984606721486
+      ],
+      "spread": 0.19623210034604233
+    },
+    "export/hevc_1080p_nvenc_x_realtime": {
+      "value": 2.486692619863091,
+      "median": 2.9655568366761087,
+      "unit": "x realtime",
+      "better": "higher",
+      "passes": [
+        2.9655568366761087,
+        2.486692619863091,
+        2.9746615355738286
+      ],
+      "spread": 0.19623210034604255
+    },
+    "export/hevc_1080p_x265_fps": {
+      "value": 17.142415603209535,
+      "median": 18.625817888766335,
+      "unit": "fps",
+      "better": "higher",
+      "passes": [
+        18.625817888766335,
+        17.142415603209535,
+        19.42002798490766
+      ],
+      "spread": 0.1328641443783274
+    },
+    "export/hevc_1080p_x265_x_realtime": {
+      "value": 0.5714138534403178,
+      "median": 0.6208605962922112,
+      "unit": "x realtime",
+      "better": "higher",
+      "passes": [
+        0.6208605962922112,
+        0.5714138534403178,
+        0.6473342661635887
+      ],
+      "spread": 0.1328641443783276
+    },
+    "export/hevc_2160p_nvenc_fps": {
+      "value": 23.23997473969679,
+      "median": 24.11477475273112,
+      "unit": "fps",
+      "better": "higher",
+      "passes": [
+        24.84765077057535,
+        24.11477475273112,
+        23.23997473969679
+      ],
+      "spread": 0.06917718495332292
+    },
+    "export/hevc_2160p_nvenc_x_realtime": {
+      "value": 0.7746658246565596,
+      "median": 0.8038258250910373,
+      "unit": "x realtime",
+      "better": "higher",
+      "passes": [
+        0.8282550256858449,
+        0.8038258250910373,
+        0.7746658246565596
+      ],
+      "spread": 0.06917718495332292
+    },
+    "export/hevc_2160p_x265_fps": {
+      "value": 5.793893703410697,
+      "median": 6.430779252891359,
+      "unit": "fps",
+      "better": "higher",
+      "passes": [
+        5.793893703410697,
+        6.430779252891359,
+        6.492032436790867
+      ],
+      "spread": 0.12049560608424614
+    },
+    "export/hevc_2160p_x265_x_realtime": {
+      "value": 0.19312979011368991,
+      "median": 0.21435930842971196,
+      "unit": "x realtime",
+      "better": "higher",
+      "passes": [
+        0.19312979011368991,
+        0.21435930842971196,
+        0.21640108122636223
+      ],
+      "spread": 0.12049560608424614
+    },
+    "memory/edited_private_mb": {
+      "value": 624.33203125,
+      "median": 611.1953125,
+      "unit": "MB",
+      "better": "lower",
+      "passes": [
+        624.33203125,
+        441.16796875,
+        611.1953125
+      ],
+      "spread": 0.4151798758621912
+    },
+    "memory/editing_growth_mb": {
+      "value": 103.40625,
+      "median": 92.56640625,
+      "unit": "MB",
+      "better": "lower",
+      "passes": [
+        87.64453125,
+        92.56640625,
+        103.40625
+      ],
+      "spread": 0.17983687658777914
+    },
+    "memory/open_cost_mb": {
+      "value": 20.625,
+      "median": 20.3828125,
+      "unit": "MB",
+      "better": "lower",
+      "passes": [
+        20.625,
+        20.3828125,
+        13.60546875
+      ],
+      "spread": 0.5159345391903531
+    },
+    "memory/opened_gpu_mb": {
+      "value": 362.25,
+      "median": 361.6796875,
+      "unit": "MB",
+      "better": "lower",
+      "passes": [
+        362.25,
+        50.4140625,
+        361.6796875
+      ],
+      "spread": 6.185495118549512
+    },
+    "memory/opened_private_mb": {
+      "value": 536.6875,
+      "median": 507.7890625,
+      "unit": "MB",
+      "better": "lower",
+      "passes": [
+        536.6875,
+        348.6015625,
+        507.7890625
+      ],
+      "spread": 0.539544160821138
+    },
+    "memory/retained_after_close_mb": {
+      "value": 111.90625,
+      "median": 81.05078125,
+      "unit": "MB",
+      "better": "lower",
+      "passes": [
+        81.05078125,
+        111.90625,
+        52.23046875
+      ],
+      "spread": 1.1425473038665768
+    },
+    "memory/shell_private_mb": {
+      "value": 516.0625,
+      "median": 494.18359375,
+      "unit": "MB",
+      "better": "lower",
+      "passes": [
+        516.0625,
+        328.21875,
+        494.18359375
+      ],
+      "spread": 0.572312672569742
+    },
+    "playback/first_frame_cold_p50_ms_h264_1080p": {
+      "value": 54.2295,
+      "median": 53.5504,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        53.5504,
+        49.9662,
+        54.2295
+      ],
+      "spread": 0.08532367880687342
+    },
+    "playback/first_frame_cold_p50_ms_hevc_2160p": {
+      "value": 50.4096,
+      "median": 24.1094,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        50.4096,
+        23.6492,
+        24.1094
+      ],
+      "spread": 1.1315562471457805
+    },
+    "playback/first_frame_cold_p50_ms_prores_1080p": {
+      "value": 34.09,
+      "median": 34.0737,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        34.0737,
+        33.3235,
+        34.09
+      ],
+      "spread": 0.02300178552673038
+    },
+    "playback/first_frame_cold_p50_ms_proxy_1080p": {
+      "value": 18.1281,
+      "median": 15.9642,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        18.1281,
+        15.9642,
+        15.1438
+      ],
+      "spread": 0.19706414506266579
+    },
+    "playback/first_frame_warm_p50_ms_h264_1080p": {
+      "value": 0.3127,
+      "median": 0.3101,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        0.2622,
+        0.3127,
+        0.3101
+      ],
+      "spread": 0.19260106788710907
+    },
+    "playback/first_frame_warm_p50_ms_hevc_2160p": {
+      "value": 0.4037,
+      "median": 0.3507,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        0.4037,
+        0.3507,
+        0.3008
+      ],
+      "spread": 0.34208776595744683
+    },
+    "playback/first_frame_warm_p50_ms_prores_1080p": {
+      "value": 0.3962,
+      "median": 0.3501,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        0.3962,
+        0.3501,
+        0.3116
+      ],
+      "spread": 0.2715019255455713
+    },
+    "playback/first_frame_warm_p50_ms_proxy_1080p": {
+      "value": 0.3577,
+      "median": 0.3446,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        0.3446,
+        0.3134,
+        0.3577
+      ],
+      "spread": 0.14135290363752384
+    },
+    "playback/first_sound_cold_p50_ms_h264_1080p": {
+      "value": 56.211366,
+      "median": 52.419666,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        56.211366,
+        52.419666,
+        51.886266
+      ],
+      "spread": 0.08335731848578187
+    },
+    "playback/first_sound_cold_p50_ms_hevc_2160p": {
+      "value": 16.339566,
+      "median": 15.724766,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        11.620666,
+        16.339566,
+        15.724766
+      ],
+      "spread": 0.40607827468752666
+    },
+    "playback/first_sound_cold_p50_ms_prores_1080p": {
+      "value": 12.0013,
+      "median": 11.9309,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        11.9309,
+        11.8833,
+        12.0013
+      ],
+      "spread": 0.009929901626652526
+    },
+    "playback/first_sound_cold_p50_ms_proxy_1080p": {
+      "value": 16.232466,
+      "median": 15.708166,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        16.232466,
+        12.112766,
+        15.708166
+      ],
+      "spread": 0.34011224191072453
+    },
+    "playback/frame_step_p50_ms_h264_1080p": {
+      "value": 0.6193,
+      "median": 0.5734,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        0.6193,
+        0.5734,
+        0.5236
+      ],
+      "spread": 0.1827731092436975
+    },
+    "playback/frame_step_p50_ms_hevc_2160p": {
+      "value": 0.7982,
+      "median": 0.7475,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        0.6392,
+        0.7982,
+        0.7475
+      ],
+      "spread": 0.2487484355444305
+    },
+    "playback/frame_step_p50_ms_prores_1080p": {
+      "value": 14.9998,
+      "median": 14.7913,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        14.7913,
+        14.7641,
+        14.9998
+      ],
+      "spread": 0.015964400132754575
+    },
+    "playback/frame_step_p50_ms_proxy_1080p": {
+      "value": 6.2041,
+      "median": 5.8156,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        5.8156,
+        5.7995,
+        6.2041
+      ],
+      "spread": 0.06976463488231754
+    },
+    "playback/frame_step_p95_ms_h264_1080p": {
+      "value": 0.9569,
+      "median": 0.9366,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        0.9569,
+        0.9366,
+        0.7768
+      ],
+      "spread": 0.2318486096807415
+    },
+    "playback/frame_step_p95_ms_hevc_2160p": {
+      "value": 2.7592,
+      "median": 2.7053,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        2.7592,
+        2.6427,
+        2.7053
+      ],
+      "spread": 0.04408370227418912
+    },
+    "playback/frame_step_p95_ms_prores_1080p": {
+      "value": 17.2812,
+      "median": 16.6559,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        17.2812,
+        16.6559,
+        16.5593
+      ],
+      "spread": 0.04359483794604824
+    },
+    "playback/frame_step_p95_ms_proxy_1080p": {
+      "value": 10.7015,
+      "median": 10.5862,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        10.5862,
+        10.7015,
+        10.4565
+      ],
+      "spread": 0.02343040214220804
+    },
+    "playback/scrub_follow_p50_ms_h264_1080p": {
+      "value": 2.1039,
+      "median": 1.7076,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        2.1039,
+        1.7076,
+        1.4924
+      ],
+      "spread": 0.40974269632806215
+    },
+    "playback/scrub_follow_p50_ms_hevc_2160p": {
+      "value": 8.5641,
+      "median": 6.6785,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        6.6785,
+        8.5641,
+        2.5178
+      ],
+      "spread": 2.401421876241163
+    },
+    "playback/scrub_follow_p50_ms_prores_1080p": {
+      "value": 217.8221,
+      "median": 216.3124,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        216.3124,
+        217.8221,
+        150.2284
+      ],
+      "spread": 0.4499395586986217
+    },
+    "playback/scrub_follow_p50_ms_proxy_1080p": {
+      "value": 32.5614,
+      "median": 31.1618,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        16.927,
+        31.1618,
+        32.5614
+      ],
+      "spread": 0.9236367932888285
+    },
+    "playback/scrub_follow_p95_ms_h264_1080p": {
+      "value": 102.3502,
+      "median": 99.0922,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        99.0922,
+        102.3502,
+        68.4136
+      ],
+      "spread": 0.4960504928844556
+    },
+    "playback/scrub_follow_p95_ms_hevc_2160p": {
+      "value": 125.3596,
+      "median": 124.0153,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        125.3596,
+        119.8274,
+        124.0153
+      ],
+      "spread": 0.04616807174319071
+    },
+    "playback/scrub_follow_p95_ms_prores_1080p": {
+      "value": 643.638,
+      "median": 634.235,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        634.235,
+        643.638,
+        383.6165
+      ],
+      "spread": 0.6778162566000161
+    },
+    "playback/scrub_follow_p95_ms_proxy_1080p": {
+      "value": 184.7832,
+      "median": 135.4323,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        83.6526,
+        135.4323,
+        184.7832
+      ],
+      "spread": 1.2089355262119765
+    },
+    "playback/scrub_p50_ms_h264_1080p": {
+      "value": 1.7796,
+      "median": 1.602,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        1.7796,
+        1.602,
+        1.4356
+      ],
+      "spread": 0.23962106436333253
+    },
+    "playback/scrub_p50_ms_hevc_2160p": {
+      "value": 3.0255,
+      "median": 2.691,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        2.691,
+        3.0255,
+        2.3579
+      ],
+      "spread": 0.2831332965774631
+    },
+    "playback/scrub_p50_ms_prores_1080p": {
+      "value": 1.0121,
+      "median": 0.9457,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        0.9457,
+        1.0121,
+        0.8699
+      ],
+      "spread": 0.16346706517990572
+    },
+    "playback/scrub_p50_ms_proxy_1080p": {
+      "value": 11.9516,
+      "median": 11.2244,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        11.2244,
+        10.9582,
+        11.9516
+      ],
+      "spread": 0.09065357449216105
+    },
+    "playback/scrub_p95_ms_h264_1080p": {
+      "value": 3.0305,
+      "median": 2.957,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        3.0305,
+        2.888,
+        2.957
+      ],
+      "spread": 0.049342105263157965
+    },
+    "playback/scrub_p95_ms_hevc_2160p": {
+      "value": 15.0261,
+      "median": 14.2651,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        15.0261,
+        14.2651,
+        3.8848
+      ],
+      "spread": 2.8679211285008237
+    },
+    "playback/scrub_p95_ms_prores_1080p": {
+      "value": 42.4249,
+      "median": 36.3844,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        34.7043,
+        42.4249,
+        36.3844
+      ],
+      "spread": 0.2224681091392131
+    },
+    "playback/scrub_p95_ms_proxy_1080p": {
+      "value": 15.6701,
+      "median": 15.6276,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        15.6701,
+        15.6276,
+        13.8988
+      ],
+      "spread": 0.127442656920022
+    },
+    "playback/shuttle_2x_p50_ms_h264_1080p": {
+      "value": 131.8745,
+      "median": 119.8007,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        119.8007,
+        131.8745,
+        119.6029
+      ],
+      "spread": 0.10260286330849833
+    },
+    "playback/shuttle_2x_p50_ms_hevc_2160p": {
+      "value": 120.8067,
+      "median": 120.5438,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        119.0726,
+        120.8067,
+        120.5438
+      ],
+      "spread": 0.014563384019497416
+    },
+    "playback/shuttle_2x_p50_ms_prores_1080p": {
+      "value": 120.196,
+      "median": 118.5665,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        120.196,
+        118.5665,
+        118.0597
+      ],
+      "spread": 0.01809508240322466
+    },
+    "playback/shuttle_2x_p50_ms_proxy_1080p": {
+      "value": 119.5148,
+      "median": 118.5654,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        117.2773,
+        118.5654,
+        119.5148
+      ],
+      "spread": 0.01907871344241374
+    },
+    "playback/shuttle_play_p50_ms_h264_1080p": {
+      "value": 34.6478,
+      "median": 34.6153,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        34.0648,
+        34.6153,
+        34.6478
+      ],
+      "spread": 0.01711444071299395
+    },
+    "playback/shuttle_play_p50_ms_hevc_2160p": {
+      "value": 36.1041,
+      "median": 33.9946,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        33.9946,
+        33.1365,
+        36.1041
+      ],
+      "spread": 0.0895568330994525
+    },
+    "playback/shuttle_play_p50_ms_prores_1080p": {
+      "value": 34.8614,
+      "median": 34.644,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        34.2299,
+        34.8614,
+        34.644
+      ],
+      "spread": 0.018448783081458142
+    },
+    "playback/shuttle_play_p50_ms_proxy_1080p": {
+      "value": 36.6158,
+      "median": 34.6397,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        36.6158,
+        34.069,
+        34.6397
+      ],
+      "spread": 0.07475417535002493
+    },
+    "playback/shuttle_reverse_p50_ms_h264_1080p": {
+      "value": 8.3179,
+      "median": 7.9724,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        7.6351,
+        7.9724,
+        8.3179
+      ],
+      "spread": 0.08942908409843997
+    },
+    "playback/shuttle_reverse_p50_ms_hevc_2160p": {
+      "value": 28.304,
+      "median": 19.8828,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        19.8828,
+        18.6033,
+        28.304
+      ],
+      "spread": 0.5214504953422241
+    },
+    "playback/shuttle_reverse_p50_ms_prores_1080p": {
+      "value": 193.2773,
+      "median": 185.5734,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        175.0625,
+        193.2773,
+        185.5734
+      ],
+      "spread": 0.10404741163870046
+    },
+    "playback/shuttle_reverse_p50_ms_proxy_1080p": {
+      "value": 73.7671,
+      "median": 67.6778,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        67.6778,
+        73.7671,
+        67.4831
+      ],
+      "spread": 0.09311961068771302
+    },
+    "project/command_move_p50_ms": {
+      "value": 4.8334,
+      "median": 3.8818,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        3.8818,
+        3.6578,
+        4.8334
+      ],
+      "spread": 0.32139537426868614
+    },
+    "project/command_move_p95_ms": {
+      "value": 7.1006,
+      "median": 4.3184,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        4.3184,
+        3.9636,
+        7.1006
+      ],
+      "spread": 0.7914522151579373
+    },
+    "project/command_ripple_trim_p50_ms": {
+      "value": 4.3538,
+      "median": 4.3014,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        4.3538,
+        3.9767,
+        4.3014
+      ],
+      "spread": 0.09482736942691172
+    },
+    "project/command_ripple_trim_p95_ms": {
+      "value": 5.5581,
+      "median": 4.9704,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        5.5581,
+        4.2807,
+        4.9704
+      ],
+      "spread": 0.2984091386922698
+    },
+    "project/command_trim_p50_ms": {
+      "value": 3.9255,
+      "median": 3.8535,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        3.9255,
+        3.499,
+        3.8535
+      ],
+      "spread": 0.12189196913403832
+    },
+    "project/command_trim_p95_ms": {
+      "value": 4.8751,
+      "median": 4.8296,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        4.8751,
+        3.8873,
+        4.8296
+      ],
+      "spread": 0.25410953618192567
+    },
+    "project/document_autosave_gui_ms": {
+      "value": 0.013,
+      "median": 0.009000000000000001,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        0.0089,
+        0.013,
+        0.009000000000000001
+      ],
+      "spread": 0.4606741573033708
+    },
+    "project/document_autosave_ms": {
+      "value": 265.1043,
+      "median": 221.7144,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        221.1218,
+        265.1043,
+        221.7144
+      ],
+      "spread": 0.19890621367951966
+    },
+    "project/document_open_ms": {
+      "value": 167.2345,
+      "median": 127.9219,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        127.9219,
+        167.2345,
+        125.1547
+      ],
+      "spread": 0.3362222912922965
+    },
+    "project/document_save_ms": {
+      "value": 225.7157,
+      "median": 179.6834,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        179.6834,
+        225.7157,
+        179.2989
+      ],
+      "spread": 0.2588794465554445
+    },
+    "project/history_first_checkpoint_ms": {
+      "value": 1033.0926,
+      "median": 1029.8955,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        1033.0926,
+        980.9897,
+        1029.8955
+      ],
+      "spread": 0.053112586197388234
+    },
+    "project/history_next_checkpoint_ms": {
+      "value": 622.3425,
+      "median": 580.6059,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        562.4598,
+        622.3425,
+        580.6059
+      ],
+      "spread": 0.10646574208503434
+    },
+    "project/one_hour_load_ms": {
+      "value": 127.9752,
+      "median": 127.4347,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        127.9752,
+        127.4347,
+        126.3076
+      ],
+      "spread": 0.013202689307690196
+    },
+    "project/one_hour_parse_ms": {
+      "value": 110.7832,
+      "median": 108.1034,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        101.1935,
+        110.7832,
+        108.1034
+      ],
+      "spread": 0.09476596816989225
+    },
+    "project/one_hour_save_ms": {
+      "value": 199.2761,
+      "median": 191.6621,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        191.6621,
+        188.2068,
+        199.2761
+      ],
+      "spread": 0.05881455930391488
+    },
+    "project/one_hour_serialize_ms": {
+      "value": 73.6319,
+      "median": 70.1744,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        66.2579,
+        70.1744,
+        73.6319
+      ],
+      "spread": 0.11129238928490026
+    },
+    "project/proxy_attach_ms": {
+      "value": 0.0601,
+      "median": 0.0577,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        0.0557,
+        0.0577,
+        0.0601
+      ],
+      "spread": 0.07899461400359065
+    },
+    "project/proxy_refresh_ms": {
+      "value": 315.1536,
+      "median": 312.8979,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        277.4018,
+        312.8979,
+        315.1536
+      ],
+      "spread": 0.1360906814591687
+    },
+    "project/scale_load_ms": {
+      "value": 262.1733,
+      "median": 171.6471,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        171.6471,
+        262.1733,
+        161.0118
+      ],
+      "spread": 0.6282862498276522
+    },
+    "project/scale_parse_ms": {
+      "value": 138.7551,
+      "median": 133.4526,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        133.1123,
+        138.7551,
+        133.4526
+      ],
+      "spread": 0.04239127413469679
+    },
+    "project/scale_save_ms": {
+      "value": 313.203,
+      "median": 254.9107,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        254.9107,
+        313.203,
+        232.1028
+      ],
+      "spread": 0.349415000594564
+    },
+    "project/scale_serialize_ms": {
+      "value": 89.978,
+      "median": 87.4709,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        89.978,
+        87.4709,
+        85.5675
+      ],
+      "spread": 0.05154410260905129
+    },
+    "project/undo_move_p50_ms": {
+      "value": 0.0273,
+      "median": 0.0252,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        0.0252,
+        0.0251,
+        0.0273
+      ],
+      "spread": 0.08764940239043817
+    },
+    "project/undo_ripple_p50_ms": {
+      "value": 0.0959,
+      "median": 0.092,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        0.092,
+        0.0785,
+        0.0959
+      ],
+      "spread": 0.22165605095541396
+    },
+    "startup/cold_ms": {
+      "value": 997.236,
+      "median": 993.7023,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        993.7023,
+        997.236,
+        993.5131
+      ],
+      "spread": 0.0037472077620315236
+    },
+    "startup/open_project_ms": {
+      "value": 1279.4249,
+      "median": 1245.6747,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        1279.4249,
+        1245.6747,
+        1203.7694
+      ],
+      "spread": 0.06284883134593722
+    },
+    "startup/recent_project_ms": {
+      "value": 1146.4732,
+      "median": 1025.7216,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        1146.4732,
+        984.975,
+        1025.7216
+      ],
+      "spread": 0.16396172491687588
+    },
+    "startup/warm_ms": {
+      "value": 1070.6262,
+      "median": 1042.7259,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        1042.7259,
+        974.902,
+        1070.6262
+      ],
+      "spread": 0.09818853587334919
+    },
+    "timeline/drag_commit_ms": {
+      "value": 7.1779,
+      "median": 6.9816,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        7.1779,
+        6.47,
+        6.9816
+      ],
+      "spread": 0.10941267387944364
+    },
+    "timeline/drag_commit_p95_ms": {
+      "value": 11.4148,
+      "median": 9.8647,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        11.4148,
+        7.5455,
+        9.8647
+      ],
+      "spread": 0.5127957060499635
+    },
+    "timeline/drag_commit_paint_ms": {
+      "value": 0.7303,
+      "median": 0.722,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        0.722,
+        0.6986,
+        0.7303
+      ],
+      "spread": 0.045376467220154426
+    },
+    "timeline/drag_commit_paint_p95_ms": {
+      "value": 1.3579,
+      "median": 1.1187,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        1.1187,
+        0.7385,
+        1.3579
+      ],
+      "spread": 0.8387271496276236
+    },
+    "timeline/drag_preview_ms": {
+      "value": 0.255,
+      "median": 0.2492,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        0.255,
+        0.2377,
+        0.2492
+      ],
+      "spread": 0.07278081615481713
+    },
+    "timeline/drag_preview_p95_ms": {
+      "value": 0.519,
+      "median": 0.4808,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        0.519,
+        0.3235,
+        0.4808
+      ],
+      "spread": 0.6043276661514683
+    },
+    "timeline/drag_preview_paint_p95_ms": {
+      "value": 1.3666,
+      "median": 1.2513,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        1.2513,
+        0.7743,
+        1.3666
+      ],
+      "spread": 0.7649489861810668
+    },
+    "timeline/drag_start_ms": {
+      "value": 0.9574,
+      "median": 0.9362,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        0.9362,
+        0.909,
+        0.9574
+      ],
+      "spread": 0.05324532453245334
+    },
+    "timeline/drag_undo_ms": {
+      "value": 6.4655,
+      "median": 6.4547,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        6.4655,
+        5.8959,
+        6.4547
+      ],
+      "spread": 0.09660950830237947
+    },
+    "timeline/drag_undo_p95_ms": {
+      "value": 9.3586,
+      "median": 9.169,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        9.3586,
+        7.3449,
+        9.169
+      ],
+      "spread": 0.27416302468379405
+    },
+    "timeline/ripple_commit_ms": {
+      "value": 10.6132,
+      "median": 8.8765,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        8.8765,
+        8.2781,
+        10.6132
+      ],
+      "spread": 0.2820816370906367
+    },
+    "timeline/ripple_commit_p95_ms": {
+      "value": 16.1021,
+      "median": 14.6409,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        13.995,
+        14.6409,
+        16.1021
+      ],
+      "spread": 0.15056091461236165
+    },
+    "timeline/ripple_commit_paint_ms": {
+      "value": 1.4467,
+      "median": 1.3643,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        1.3643,
+        1.3128,
+        1.4467
+      ],
+      "spread": 0.10199573430834863
+    },
+    "timeline/ripple_commit_paint_p95_ms": {
+      "value": 2.1439,
+      "median": 2.0587,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        2.0587,
+        1.4603,
+        2.1439
+      ],
+      "spread": 0.4681229884270355
+    },
+    "timeline/ripple_preview_ms": {
+      "value": 0.631,
+      "median": 0.511,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        0.511,
+        0.4712,
+        0.631
+      ],
+      "spread": 0.3391341256366722
+    },
+    "timeline/ripple_preview_p95_ms": {
+      "value": 1.0932,
+      "median": 0.9495,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        0.9495,
+        0.6094,
+        1.0932
+      ],
+      "spread": 0.7938956350508695
+    },
+    "timeline/ripple_preview_paint_p95_ms": {
+      "value": 2.7956,
+      "median": 2.119,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        2.119,
+        1.5078,
+        2.7956
+      ],
+      "spread": 0.8540920546491575
+    },
+    "timeline/ripple_start_ms": {
+      "value": 1.3853,
+      "median": 1.2052,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        1.2052,
+        1.159,
+        1.3853
+      ],
+      "spread": 0.1952545297670405
+    },
+    "timeline/ripple_undo_ms": {
+      "value": 9.2624,
+      "median": 8.4796,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        8.4796,
+        7.6962,
+        9.2624
+      ],
+      "spread": 0.20350302746810112
+    },
+    "timeline/ripple_undo_p95_ms": {
+      "value": 14.1095,
+      "median": 13.9578,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        13.9578,
+        8.7883,
+        14.1095
+      ],
+      "spread": 0.6054868404583369
+    },
+    "timeline/trim_commit_ms": {
+      "value": 7.9679,
+      "median": 6.6263,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        7.9679,
+        6.0264,
+        6.6263
+      ],
+      "spread": 0.3221658037966282
+    },
+    "timeline/trim_commit_p95_ms": {
+      "value": 12.186,
+      "median": 10.3662,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        12.186,
+        7.5554,
+        10.3662
+      ],
+      "spread": 0.6128861476559813
+    },
+    "timeline/trim_commit_paint_ms": {
+      "value": 0.759,
+      "median": 0.6994,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        0.759,
+        0.6811,
+        0.6994
+      ],
+      "spread": 0.11437380707678746
+    },
+    "timeline/trim_commit_paint_p95_ms": {
+      "value": 1.222,
+      "median": 0.8182,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        1.222,
+        0.7636,
+        0.8182
+      ],
+      "spread": 0.6003143006809848
+    },
+    "timeline/trim_preview_ms": {
+      "value": 0.1117,
+      "median": 0.0863,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        0.1117,
+        0.058,
+        0.0863
+      ],
+      "spread": 0.925862068965517
+    },
+    "timeline/trim_preview_p95_ms": {
+      "value": 0.2356,
+      "median": 0.1638,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        0.2356,
+        0.1004,
+        0.1638
+      ],
+      "spread": 1.3466135458167332
+    },
+    "timeline/trim_preview_paint_p95_ms": {
+      "value": 1.5578,
+      "median": 1.1466,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        1.5578,
+        0.7423,
+        1.1466
+      ],
+      "spread": 1.0986124208541024
+    },
+    "timeline/trim_start_ms": {
+      "value": 0.8635,
+      "median": 0.7925,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        0.8635,
+        0.74,
+        0.7925
+      ],
+      "spread": 0.16689189189189202
+    },
+    "timeline/trim_undo_ms": {
+      "value": 7.5919,
+      "median": 6.2177,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        7.5919,
+        5.9065,
+        6.2177
+      ],
+      "spread": 0.28534665199356635
+    },
+    "timeline/trim_undo_p95_ms": {
+      "value": 13.0609,
+      "median": 8.9262,
+      "unit": "ms",
+      "better": "lower",
+      "passes": [
+        13.0609,
+        6.7526,
+        8.9262
+      ],
+      "spread": 0.9342031217605071
+    }
+  }
+}

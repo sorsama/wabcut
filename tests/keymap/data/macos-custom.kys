@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Synthetic test key set in the layout of a real Premiere Pro macOS .kys (see docs/keymap.md). -->
+<PremiereData Version="3">
+	<shortcuts Version="5">
+		<context.global Version="1">
+			<itemcount>4</itemcount>
+			<!-- Undo on Cmd+Z: Command is modifier.command on macOS. -->
+			<item.0 Version="1">
+				<virtualkey>2147483738</virtualkey>
+				<modifier.command>true</modifier.command>
+				<modifier.opt>false</modifier.opt>
+				<modifier.shift>false</modifier.shift>
+				<modifier.ctrl>false</modifier.ctrl>
+				<commandname>cmd.edit.undo</commandname>
+			</item.0>
+			<!-- Clear In moved from Opt+I to Ctrl+Opt+I (modifier.ctrl is the physical Control key). -->
+			<item.1 Version="1">
+				<virtualkey>2147483721</virtualkey>
+				<modifier.command>false</modifier.command>
+				<modifier.opt>true</modifier.opt>
+				<modifier.shift>false</modifier.shift>
+				<modifier.ctrl>true</modifier.ctrl>
+				<commandname>cmd.clear.in</commandname>
+			</item.1>
+			<!-- Edit > Ripple Delete on Shift + Forward Delete (35). -->
+			<item.2 Version="1">
+				<virtualkey>35</virtualkey>
+				<modifier.command>false</modifier.command>
+				<modifier.opt>false</modifier.opt>
+				<modifier.shift>true</modifier.shift>
+				<modifier.ctrl>false</modifier.ctrl>
+				<commandname>cmd.edit.rippledelete</commandname>
+			</item.2>
+			<!-- A Windows modifier element in a macOS key set: skipped with a warning. -->
+			<item.3 Version="1">
+				<virtualkey>2147483731</virtualkey>
+				<modifier.alt>true</modifier.alt>
+				<commandname>cmd.sequence.snap</commandname>
+			</item.3>
+		</context.global>
+		<context.timeline Version="1">
+			<itemcount>1</itemcount>
+			<!-- Timeline Ripple Delete on Opt + Delete (2 is the macOS Delete key). -->
+			<item.0 Version="1">
+				<virtualkey>2</virtualkey>
+				<modifier.command>false</modifier.command>
+				<modifier.opt>true</modifier.opt>
+				<modifier.shift>false</modifier.shift>
+				<modifier.ctrl>false</modifier.ctrl>
+				<commandname>cmd.timeline.ripple.delete</commandname>
+			</item.0>
+		</context.timeline>
+		<platform>macintosh</platform>
+	</shortcuts>
+</PremiereData>

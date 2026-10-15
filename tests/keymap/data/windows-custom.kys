@@ -1,0 +1,110 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Synthetic test key set in the layout of a real Premiere Pro 26 Windows .kys (see docs/keymap.md). -->
+<PremiereData Version="3">
+	<shortcuts Version="5">
+		<platform>windows</platform>
+		<context.global Version="1">
+			<itemcount>9</itemcount>
+			<!-- Razor rebound from C to X. -->
+			<item.0 Version="1">
+				<virtualkey>2147483736</virtualkey>
+				<modifier.ctrl>false</modifier.ctrl>
+				<modifier.alt>false</modifier.alt>
+				<modifier.shift>false</modifier.shift>
+				<commandname>cmd.tools.06razor</commandname>
+			</item.0>
+			<!-- Mark Clip left without a shortcut. -->
+			<item.1 Version="1">
+				<commandname>cmd.marker.setsequenceinoutmarkeraroundtargetclip</commandname>
+			</item.1>
+			<!-- Two shortcuts for Undo; commandname first, as older Premiere versions write it. -->
+			<item.2 Version="1">
+				<commandname>cmd.edit.undo</commandname>
+				<virtualkey>2147483738</virtualkey>
+				<modifier.ctrl>true</modifier.ctrl>
+				<modifier.alt>false</modifier.alt>
+				<modifier.shift>false</modifier.shift>
+			</item.2>
+			<item.3 Version="1">
+				<virtualkey>2</virtualkey>
+				<modifier.ctrl>false</modifier.ctrl>
+				<modifier.alt>true</modifier.alt>
+				<modifier.shift>false</modifier.shift>
+				<commandname>cmd.edit.undo</commandname>
+			</item.3>
+			<!-- Shuttle Stop on K and on keypad 5. -->
+			<item.4 Version="1">
+				<virtualkey>2147483723</virtualkey>
+				<modifier.ctrl>false</modifier.ctrl>
+				<modifier.alt>false</modifier.alt>
+				<modifier.shift>false</modifier.shift>
+				<commandname>cmd.transport.shuttle.stop</commandname>
+			</item.4>
+			<item.5 Version="1">
+				<virtualkey>3221225525</virtualkey>
+				<modifier.ctrl>false</modifier.ctrl>
+				<modifier.alt>false</modifier.alt>
+				<modifier.shift>false</modifier.shift>
+				<commandname>cmd.transport.shuttle.stop</commandname>
+			</item.5>
+			<!-- Render In to Out moved to F12 (virtual key 18). -->
+			<item.6 Version="1">
+				<virtualkey>18</virtualkey>
+				<modifier.ctrl>false</modifier.ctrl>
+				<modifier.alt>false</modifier.alt>
+				<modifier.shift>false</modifier.shift>
+				<commandname>cmd.sequence.preview</commandname>
+			</item.6>
+			<!-- A Premiere command Wabcut does not have. -->
+			<item.7 Version="1">
+				<virtualkey>2147483717</virtualkey>
+				<modifier.ctrl>true</modifier.ctrl>
+				<modifier.alt>false</modifier.alt>
+				<modifier.shift>true</modifier.shift>
+				<commandname>cmd.export.frame</commandname>
+			</item.7>
+			<!-- Unverified virtual key code: skipped with a warning; Play/Stop keeps Space from the next item. -->
+			<item.8 Version="1">
+				<virtualkey>19</virtualkey>
+				<modifier.ctrl>false</modifier.ctrl>
+				<modifier.alt>false</modifier.alt>
+				<modifier.shift>false</modifier.shift>
+				<commandname>cmd.transport.toggleplay</commandname>
+			</item.8>
+			<item.9 Version="1">
+				<virtualkey>1</virtualkey>
+				<modifier.ctrl>false</modifier.ctrl>
+				<modifier.alt>false</modifier.alt>
+				<modifier.shift>false</modifier.shift>
+				<commandname>cmd.transport.toggleplay</commandname>
+			</item.9>
+			<!-- Virtual key 0 means "no key". -->
+			<item.10 Version="1">
+				<virtualkey>0</virtualkey>
+				<modifier.ctrl>false</modifier.ctrl>
+				<modifier.alt>false</modifier.alt>
+				<modifier.shift>false</modifier.shift>
+				<commandname>uif.window.Timelines</commandname>
+			</item.10>
+		</context.global>
+		<context.timeline Version="1">
+			<itemcount>2</itemcount>
+			<!-- Timeline-panel Ripple Delete on Ctrl+Backspace instead of Alt+Backspace. -->
+			<item.0 Version="1">
+				<virtualkey>2</virtualkey>
+				<modifier.ctrl>true</modifier.ctrl>
+				<modifier.alt>false</modifier.alt>
+				<modifier.shift>false</modifier.shift>
+				<commandname>cmd.timeline.ripple.delete</commandname>
+			</item.0>
+			<!-- Same internal name as the global Clear, but the Timeline's Clear Selection. Unchanged. -->
+			<item.1 Version="1">
+				<virtualkey>2</virtualkey>
+				<modifier.ctrl>false</modifier.ctrl>
+				<modifier.alt>false</modifier.alt>
+				<modifier.shift>false</modifier.shift>
+				<commandname>cmd.edit.clear</commandname>
+			</item.1>
+		</context.timeline>
+	</shortcuts>
+</PremiereData>

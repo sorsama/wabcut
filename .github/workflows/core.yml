@@ -1,0 +1,80 @@
+# Core gate: model, command, keymap, interchange and ai (no Qt, FFmpeg or vcpkg) on Windows (MSVC and clang-cl), Linux
+# (GCC 14) and macOS (Homebrew LLVM: Apple Clang's libc++ lacks std::jthread and floating-point from_chars). Same commands
+# as a local core build (docs/building.md): cmake --preset core, build, ctest. clang-cl catches what MSVC accepts and other
+# compilers do not.
+name: core
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  core:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2025
+            name: msvc
+          - os: windows-2025
+            name: clang-cl
+            cc: clang-cl
+            cxx: clang-cl
+          - os: ubuntu-24.04
+            name: gcc-14
+            cc: gcc-14
+            cxx: g++-14
+          - os: macos-15
+            name: llvm
+            llvm: true
+    name: core (${{ matrix.os }}, ${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: CMake and Ninja
+        if: runner.os != 'Windows'
+        uses: lukka/get-cmake@v4.4.2
+
+      - name: Homebrew LLVM (macOS)
+        if: matrix.llvm
+        run: |
+          brew install llvm
+          echo "CC=$(brew --prefix llvm)/bin/clang" >> "$GITHUB_ENV"
+          echo "CXX=$(brew --prefix llvm)/bin/clang++" >> "$GITHUB_ENV"
+          echo "LDFLAGS=-L$(brew --prefix llvm)/lib/c++ -Wl,-rpath,$(brew --prefix llvm)/lib/c++" >> "$GITHUB_ENV"
+
+      - name: Configure, build, test (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          # The runner has MinGW on PATH; make CMake pick MSVC (or clang-cl, from the image's LLVM, with MSVC's library).
+          CC: ${{ matrix.cc || 'cl' }}
+          CXX: ${{ matrix.cxx || 'cl' }}
+        run: |
+          . ./tools/dev-env.ps1 -Core
+          cmake --preset core
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cmake --build --preset core
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          ctest --preset core
+          exit $LASTEXITCODE
+
+      - name: Configure, build, test (Linux, macOS)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          if [ -n "${{ matrix.cc }}" ]; then export CC=${{ matrix.cc }} CXX=${{ matrix.cxx }}; fi
+          cmake --preset core
+          cmake --build --preset core
+          ctest --preset core

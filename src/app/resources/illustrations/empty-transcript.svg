@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="160" height="120" viewBox="0 0 160 120"
+     fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <!-- Empty Transcript: a speech waveform passes through one lime pill and comes out as text lines. -->
+  <!-- Waveform (speech), fading out toward the pill -->
+  <path d="M28 55V65M34 49V71M40 43V77M46 51V69M52 46V74M58 53V67M64 57V63"/>
+  <!-- Text lines -->
+  <path d="M88 48H130M88 56H124M88 64H132M88 72H112"/>
+  <!-- Accent: a lime pill where sound turns into text -->
+  <rect x="74.5" y="48" width="4" height="24" rx="2" fill="#D6F54C" stroke="none"/>
+</svg>

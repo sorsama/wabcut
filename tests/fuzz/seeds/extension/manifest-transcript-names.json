@@ -1,0 +1,14 @@
+{
+  "manifestVersion": 1,
+  "id": "com.wabcut.samples.transcript-names",
+  "name": "Transcript Clip Names",
+  "version": "1.0.0",
+  "author": "Wabcut samples",
+  "licence": "MIT",
+  "description": "Renames the sequence's clips after the first words spoken in them (from the transcript), video clips after their linked audio, in one undo step.",
+  "minWabcutVersion": "0.1.0",
+  "capabilities": ["Read", "EditSequence"],
+  "main": "main.js",
+  "scripts": ["lib/words.js"],
+  "commands": [{"id": "renameFromTranscript", "title": "Rename Clips from Transcript"}]
+}

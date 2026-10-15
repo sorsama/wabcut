@@ -1,0 +1,56 @@
+{
+ "type": "prompt",
+ "prompt": 1,
+ "form": {
+  "title": "Add Markers",
+  "message": "Pick",
+  "submitLabel": "Add",
+  "fields": [
+   {
+    "id": "every",
+    "type": "choice",
+    "label": "Mark",
+    "options": [
+     {
+      "value": "beat",
+      "label": "Every beat"
+     },
+     {
+      "value": "bar",
+      "label": "Every bar"
+     }
+    ]
+   },
+   {
+    "id": "bpm",
+    "type": "number",
+    "label": "Tempo",
+    "value": 120,
+    "min": 20,
+    "max": 300,
+    "step": 1
+   },
+   {
+    "id": "name",
+    "type": "text",
+    "label": "Name",
+    "maxLength": 40,
+    "placeholder": "Beat"
+   },
+   {
+    "id": "out",
+    "type": "text",
+    "label": "Result",
+    "value": "0:00 Intro\n0:12 Gear",
+    "readOnly": true,
+    "multiline": true
+   },
+   {
+    "id": "all",
+    "type": "checkbox",
+    "label": "All sequences",
+    "value": true
+   }
+  ]
+ }
+}

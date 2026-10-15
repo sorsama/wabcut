@@ -1,0 +1,12 @@
+data: {"id":"chatcmpl-agent-4","object":"chat.completion.chunk","created":1760140800,"model":"qwen3.5:9b","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}
+
+: keep-alive
+
+data: {"id":"chatcmpl-agent-4","object":"chat.completion.chunk","created":1760140800,"model":"qwen3.5:9b","choices":[{"index":0,"delta":{"content":"Added the marker “In"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-agent-4","object":"chat.completion.chunk","created":1760140800,"model":"qwen3.5:9b","choices":[{"index":0,"delta":{"content":"tro” at 00:00:00:05."},"finish_reason":"stop"}]}
+
+data: {"id":"chatcmpl-agent-4","object":"chat.completion.chunk","created":1760140800,"model":"qwen3.5:9b","choices":[],"usage":{"prompt_tokens":9800,"completion_tokens":18,"total_tokens":9818}}
+
+data: [DONE]
+

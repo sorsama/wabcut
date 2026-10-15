@@ -1,0 +1,140 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 28, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "common",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "WABCUT_WARNINGS_AS_ERRORS": "ON"
+      }
+    },
+    {
+      "name": "base",
+      "hidden": true,
+      "inherits": "common",
+      "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+      "cacheVariables": {
+        "CMAKE_PREFIX_PATH": "$env{WABCUT_QT_DIR}",
+        "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/cmake/triplets"
+      }
+    },
+    {
+      "name": "core",
+      "displayName": "Core only · any OS · model, command, keymap, interchange, ai without Qt, FFmpeg or vcpkg",
+      "description": "The cross-platform CI gate: needs only a C++23 compiler, CMake and Ninja. Missing pure-C++ dependencies are downloaded at pinned versions.",
+      "inherits": "common",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "WABCUT_CORE_ONLY": "ON",
+        "WABCUT_FETCH_DEPENDENCIES": "ON"
+      }
+    },
+    {
+      "name": "win-msvc",
+      "displayName": "Windows · MSVC · RelWithDebInfo",
+      "inherits": "base",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_C_COMPILER": "cl",
+        "CMAKE_CXX_COMPILER": "cl",
+        "CMAKE_MSVC_DEBUG_INFORMATION_FORMAT": "Embedded",
+        "VCPKG_TARGET_TRIPLET": "x64-windows-release"
+      }
+    },
+    {
+      "name": "win-msvc-debug",
+      "displayName": "Windows · MSVC · Debug (opt-in: builds every dependency in Debug too)",
+      "description": "Uses the stock x64-windows triplet so dependencies get debug and release builds with matching CRTs. The first configure rebuilds FFmpeg, x264 and x265 in two configurations (hours).",
+      "inherits": "base",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_C_COMPILER": "cl",
+        "CMAKE_CXX_COMPILER": "cl",
+        "VCPKG_TARGET_TRIPLET": "x64-windows"
+      }
+    },
+    {
+      "name": "win-msvc-asan",
+      "displayName": "Windows · MSVC · AddressSanitizer + libFuzzer (core only)",
+      "description": "The core (model, command, interchange, keymap, ai, colour, masks) and its tests built with /fsanitize=address, dependencies fetched and built from source with the same flags, and the parser fuzzers in tests/fuzz as libFuzzer executables. docs/building.md, \"Sanitizers and fuzzing\".",
+      "inherits": "common",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_C_COMPILER": "cl",
+        "CMAKE_CXX_COMPILER": "cl",
+        "WABCUT_CORE_ONLY": "ON",
+        "WABCUT_FETCH_DEPENDENCIES": "ON",
+        "WABCUT_SANITIZE": "address",
+        "WABCUT_FUZZ": "ON",
+        "WABCUT_CORE_COMMAND_TESTS": "ON"
+      }
+    },
+    {
+      "name": "linux-gcc",
+      "displayName": "Linux · GCC · RelWithDebInfo (experimental)",
+      "inherits": "base",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_C_COMPILER": "gcc",
+        "CMAKE_CXX_COMPILER": "g++"
+      }
+    },
+    {
+      "name": "macos-clang",
+      "displayName": "macOS · Apple Clang · RelWithDebInfo (experimental)",
+      "inherits": "base",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_OSX_DEPLOYMENT_TARGET": "13.0"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "core", "configurePreset": "core" },
+    { "name": "win-msvc", "configurePreset": "win-msvc" },
+    { "name": "win-msvc-debug", "configurePreset": "win-msvc-debug" },
+    { "name": "win-msvc-asan", "configurePreset": "win-msvc-asan", "jobs": 1 },
+    { "name": "linux-gcc", "configurePreset": "linux-gcc" },
+    { "name": "macos-clang", "configurePreset": "macos-clang" }
+  ],
+  "testPresets": [
+    { "name": "core", "configurePreset": "core", "output": { "outputOnFailure": true } },
+    { "name": "win-msvc", "configurePreset": "win-msvc", "output": { "outputOnFailure": true } },
+    {
+      "name": "win-msvc-ci",
+      "description": "win-msvc without the tests that need a GPU or an audio device (CI runners).",
+      "inherits": "win-msvc",
+      "filter": { "exclude": { "label": "gpu|audio-device" } }
+    },
+    { "name": "win-msvc-debug", "configurePreset": "win-msvc-debug", "output": { "outputOnFailure": true } },
+    {
+      "name": "win-msvc-asan",
+      "description": "The core suites and the fuzz regression runs under AddressSanitizer, one at a time (ASan needs several times the memory); [perf] tests are left out (sanitizer timings mean nothing).",
+      "configurePreset": "win-msvc-asan",
+      "output": { "outputOnFailure": true },
+      "execution": { "jobs": 1 },
+      "filter": { "exclude": { "label": "perf|gpu|audio-device" } }
+    },
+    {
+      "name": "linux-gcc",
+      "configurePreset": "linux-gcc",
+      "output": { "outputOnFailure": true },
+      "filter": { "exclude": { "label": "gpu|audio-device" } }
+    },
+    {
+      "name": "macos-clang",
+      "configurePreset": "macos-clang",
+      "output": { "outputOnFailure": true },
+      "filter": { "exclude": { "label": "gpu|audio-device" } }
+    }
+  ]
+}

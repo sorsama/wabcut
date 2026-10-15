@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="160" height="120" viewBox="0 0 160 120"
+     fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <!-- Empty Timeline: three empty track lanes, the playhead with its round knob, and one violet clip edge. -->
+  <!-- Ruler ticks (none under the playhead cap) -->
+  <path d="M24 25V29M40 26.5V29M72 26.5V29M88 25V29M104 26.5V29M120 26.5V29M136 25V29"/>
+  <!-- Track lanes -->
+  <rect x="24" y="38" width="112" height="16" rx="3"/>
+  <rect x="24" y="60" width="112" height="16" rx="3"/>
+  <rect x="24" y="82" width="112" height="16" rx="3"/>
+  <!-- Playhead: a round knob and its line -->
+  <circle cx="56" cy="22" r="4"/>
+  <path d="M56 26V104"/>
+  <!-- Accent: a violet clip edge across the middle lane -->
+  <rect x="104.5" y="56" width="4" height="24" rx="2" fill="#9B6CFF" stroke="none"/>
+</svg>

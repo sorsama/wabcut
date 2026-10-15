@@ -1,0 +1,6 @@
+event: interaction.created
+data: {"interaction":{"id":"v1_err","status":"in_progress","object":"interaction","model":"gemini-3.8-flash"},"event_type":"interaction.created"}
+
+event: error
+data: {"error":{"message":"The service is currently unavailable.","code":"gateway_timeout"},"event_type":"error"}
+

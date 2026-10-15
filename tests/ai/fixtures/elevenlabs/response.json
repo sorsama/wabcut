@@ -1,0 +1,16 @@
+{
+  "language_code": "tha",
+  "language_probability": 0.97,
+  "text": "สวัสดี ครับ (laughs) Thank you.",
+  "words": [
+    {"text": "สวัสดี", "start": 0.12, "end": 0.71, "type": "word", "speaker_id": "speaker_1", "logprob": -0.05},
+    {"text": " ", "start": 0.71, "end": 0.75, "type": "spacing", "speaker_id": "speaker_1", "logprob": 0.0},
+    {"text": "ครับ", "start": 0.75, "end": 1.1, "type": "word", "speaker_id": "speaker_1", "logprob": -0.2},
+    {"text": " ", "start": 1.1, "end": 1.2, "type": "spacing", "speaker_id": "speaker_1", "logprob": 0.0},
+    {"text": "(laughs)", "start": 1.2, "end": 2.0, "type": "audio_event", "speaker_id": "speaker_1", "logprob": 0.0},
+    {"text": "Thank", "start": 2.1, "end": 2.4, "type": "word", "speaker_id": "speaker_0", "logprob": -0.01},
+    {"text": "you.", "start": 2.4, "end": 2.7, "type": "word", "speaker_id": "speaker_0", "logprob": -0.02}
+  ],
+  "audio_duration_secs": 3.0,
+  "transcription_id": "tr_0123456789abcdef"
+}

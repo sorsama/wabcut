@@ -1,0 +1,15 @@
+# คำเติม (filler words) for the transcript review, language "th". Same format as fillers.en.txt.
+# Thai is written without spaces: an entry matches consecutive words whose text joins to it.
+อืม
+อืมม
+อือ
+เอ่อ
+เออ
+อ่า
+อ่ะ | context
+อะ | context
+แบบ | context
+แบบว่า | context
+คือ | context
+ก็คือ | context
+ประมาณว่า | context

@@ -1,0 +1,8 @@
+{
+  "name": "onnxruntime-prebuilt",
+  "version": "1.24.4",
+  "description": "ONNX Runtime from Microsoft's official release binaries, never built from source. Windows: the Microsoft.ML.OnnxRuntime.DirectML NuGet package (DirectML and CPU execution providers). Linux and macOS: the CPU release archives from GitHub (macOS adds Core ML). Wabcut overlay for smart search (wabcut-embed).",
+  "homepage": "https://github.com/microsoft/onnxruntime",
+  "license": "MIT",
+  "supports": "(windows & (x64 | arm64) & !uwp) | (linux & (x64 | arm64)) | (osx & arm64)"
+}

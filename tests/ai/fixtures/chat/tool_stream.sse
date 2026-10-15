@@ -1,0 +1,16 @@
+data: {"id":"chatcmpl-2","object":"chat.completion.chunk","model":"openai/gpt-oss-120b","choices":[{"index":0,"delta":{"role":"assistant","content":null,"tool_calls":[{"index":0,"id":"call_a","type":"function","function":{"name":"timeline_rippleDelete","arguments":""}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-2","object":"chat.completion.chunk","model":"openai/gpt-oss-120b","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"track\":"}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-2","object":"chat.completion.chunk","model":"openai/gpt-oss-120b","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"id":"call_b","type":"function","function":{"name":"sequence_summary","arguments":"{}"}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-2","object":"chat.completion.chunk","model":"openai/gpt-oss-120b","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"A2\"}"}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-2","object":"chat.completion.chunk","model":"openai/gpt-oss-120b","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}
+
+: OPENROUTER PROCESSING
+
+data: {"id":"chatcmpl-2","object":"chat.completion.chunk","model":"openai/gpt-oss-120b","choices":[],"usage":{"prompt_tokens":300,"completion_tokens":40,"total_tokens":340,"completion_tokens_details":{"reasoning_tokens":10}}}
+
+data: [DONE]
+

@@ -1,0 +1,13 @@
+{
+  "manifestVersion": 1,
+  "id": "com.wabcut.samples.youtube-chapters",
+  "name": "YouTube Chapters",
+  "version": "1.0.0",
+  "author": "Wabcut samples",
+  "licence": "MIT",
+  "description": "Turns the chapter markers of every sequence into YouTube description text (0:00 Intro ...), ready to copy. It only reads the project.",
+  "minWabcutVersion": "0.1.0",
+  "capabilities": ["Read"],
+  "main": "main.js",
+  "commands": [{"id": "chaptersToDescription", "title": "YouTube Description from Chapters"}]
+}

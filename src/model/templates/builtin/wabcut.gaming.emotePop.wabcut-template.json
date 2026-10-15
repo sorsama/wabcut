@@ -1,0 +1,585 @@
+{
+  "format": "wabcut-graphic-template",
+  "template": {
+    "description": "Emote pop: your image bounces in on a pulsing burst, with a caption.",
+    "duration": 762048000000,
+    "fields": [
+      {
+        "id": "emote",
+        "kind": "image",
+        "label": "Emote image",
+        "layer": 4,
+        "property": "media",
+        "value": 0
+      },
+      {
+        "id": "caption",
+        "kind": "text",
+        "label": "Caption",
+        "layer": 8,
+        "property": "text",
+        "value": "NICE!"
+      },
+      {
+        "id": "accent",
+        "kind": "color",
+        "label": "Burst colour",
+        "layer": 2,
+        "property": "fill",
+        "value": [
+          0.482,
+          0.231,
+          1.0,
+          1.0
+        ]
+      },
+      {
+        "id": "showCaption",
+        "kind": "checkbox",
+        "label": "Show caption",
+        "layer": 8,
+        "property": "visible",
+        "value": true
+      }
+    ],
+    "graphic": {
+      "height": 1080,
+      "layers": [
+        {
+          "children": [
+            {
+              "id": 2,
+              "kind": "shape",
+              "name": "Burst",
+              "shape": {
+                "fill": {
+                  "color": [
+                    0.482,
+                    0.231,
+                    1.0,
+                    1.0
+                  ],
+                  "type": "solid"
+                },
+                "innerRadius": 175.0,
+                "outerRadius": 230.0,
+                "points": 12,
+                "type": "star"
+              },
+              "transform": {
+                "scaleX": {
+                  "keys": [
+                    {
+                      "t": 0,
+                      "v": 0.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 62233920000,
+                      "v": 114.99999999999999
+                    },
+                    {
+                      "i": "easeIn",
+                      "t": 88905600000,
+                      "v": 100.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 190512000000,
+                      "v": 100.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 311169600000,
+                      "v": 105.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 431827200000,
+                      "v": 100.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 552484800000,
+                      "v": 105.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 673142400000,
+                      "v": 100.0
+                    }
+                  ]
+                },
+                "scaleY": {
+                  "keys": [
+                    {
+                      "t": 0,
+                      "v": 0.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 62233920000,
+                      "v": 114.99999999999999
+                    },
+                    {
+                      "i": "easeIn",
+                      "t": 88905600000,
+                      "v": 100.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 190512000000,
+                      "v": 100.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 311169600000,
+                      "v": 105.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 431827200000,
+                      "v": 100.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 552484800000,
+                      "v": 105.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 673142400000,
+                      "v": 100.0
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "id": 3,
+              "kind": "shape",
+              "name": "Glow",
+              "shape": {
+                "fill": {
+                  "color": [
+                    0.953,
+                    0.941,
+                    0.98,
+                    0.18
+                  ],
+                  "type": "solid"
+                },
+                "height": 340.0,
+                "type": "ellipse",
+                "width": 340.0
+              },
+              "transform": {
+                "scaleX": {
+                  "keys": [
+                    {
+                      "t": 15240960000,
+                      "v": 0.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 75696768000,
+                      "v": 110.00000000000001
+                    },
+                    {
+                      "i": "easeIn",
+                      "t": 101606400000,
+                      "v": 100.0
+                    }
+                  ]
+                },
+                "scaleY": {
+                  "keys": [
+                    {
+                      "t": 15240960000,
+                      "v": 0.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 75696768000,
+                      "v": 110.00000000000001
+                    },
+                    {
+                      "i": "easeIn",
+                      "t": 101606400000,
+                      "v": 100.0
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "id": 4,
+              "image": {
+                "width": 300.0
+              },
+              "kind": "image",
+              "name": "Emote",
+              "transform": {
+                "opacity": {
+                  "keys": [
+                    {
+                      "t": 0,
+                      "v": 0.0
+                    },
+                    {
+                      "i": "easeIn",
+                      "t": 38102400000,
+                      "v": 100.0
+                    }
+                  ]
+                },
+                "y": {
+                  "keys": [
+                    {
+                      "i": "easeOut",
+                      "t": 0,
+                      "v": -220.0
+                    },
+                    {
+                      "t": 90810720000,
+                      "v": 0.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 123832800000,
+                      "v": -55.0
+                    },
+                    {
+                      "t": 148599360000,
+                      "v": 0.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 158505984000,
+                      "v": -13.2
+                    },
+                    {
+                      "i": "easeIn",
+                      "t": 165110400000,
+                      "v": 0.0
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "id": 5,
+              "kind": "shape",
+              "name": "Sparkle 1",
+              "shape": {
+                "fill": {
+                  "color": [
+                    0.953,
+                    0.941,
+                    0.98,
+                    1.0
+                  ],
+                  "type": "solid"
+                },
+                "innerRadius": 8.0,
+                "outerRadius": 30.0,
+                "points": 4,
+                "type": "star"
+              },
+              "transform": {
+                "scaleX": {
+                  "keys": [
+                    {
+                      "t": 76204800000,
+                      "v": 0.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 120657600000,
+                      "v": 130.0
+                    },
+                    {
+                      "i": "easeIn",
+                      "t": 139708800000,
+                      "v": 100.0
+                    }
+                  ]
+                },
+                "scaleY": {
+                  "keys": [
+                    {
+                      "t": 76204800000,
+                      "v": 0.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 120657600000,
+                      "v": 130.0
+                    },
+                    {
+                      "i": "easeIn",
+                      "t": 139708800000,
+                      "v": 100.0
+                    }
+                  ]
+                },
+                "x": -215.0,
+                "y": -150.0
+              }
+            },
+            {
+              "id": 6,
+              "kind": "shape",
+              "name": "Sparkle 2",
+              "shape": {
+                "fill": {
+                  "color": [
+                    0.953,
+                    0.941,
+                    0.98,
+                    1.0
+                  ],
+                  "type": "solid"
+                },
+                "innerRadius": 6.0,
+                "outerRadius": 22.0,
+                "points": 4,
+                "type": "star"
+              },
+              "transform": {
+                "scaleX": {
+                  "keys": [
+                    {
+                      "t": 96526080000,
+                      "v": 0.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 140978880000,
+                      "v": 130.0
+                    },
+                    {
+                      "i": "easeIn",
+                      "t": 160030080000,
+                      "v": 100.0
+                    }
+                  ]
+                },
+                "scaleY": {
+                  "keys": [
+                    {
+                      "t": 96526080000,
+                      "v": 0.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 140978880000,
+                      "v": 130.0
+                    },
+                    {
+                      "i": "easeIn",
+                      "t": 160030080000,
+                      "v": 100.0
+                    }
+                  ]
+                },
+                "x": 225.0,
+                "y": -115.0
+              }
+            },
+            {
+              "id": 7,
+              "kind": "shape",
+              "name": "Sparkle 3",
+              "shape": {
+                "fill": {
+                  "color": [
+                    0.953,
+                    0.941,
+                    0.98,
+                    1.0
+                  ],
+                  "type": "solid"
+                },
+                "innerRadius": 7.0,
+                "outerRadius": 26.0,
+                "points": 4,
+                "type": "star"
+              },
+              "transform": {
+                "scaleX": {
+                  "keys": [
+                    {
+                      "t": 116847360000,
+                      "v": 0.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 161300160000,
+                      "v": 130.0
+                    },
+                    {
+                      "i": "easeIn",
+                      "t": 180351360000,
+                      "v": 100.0
+                    }
+                  ]
+                },
+                "scaleY": {
+                  "keys": [
+                    {
+                      "t": 116847360000,
+                      "v": 0.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 161300160000,
+                      "v": 130.0
+                    },
+                    {
+                      "i": "easeIn",
+                      "t": 180351360000,
+                      "v": 100.0
+                    }
+                  ]
+                },
+                "x": 195.0,
+                "y": 175.0
+              }
+            },
+            {
+              "id": 8,
+              "kind": "text",
+              "name": "Caption",
+              "shadow": {
+                "angle": 90.0,
+                "color": [
+                  0.047,
+                  0.039,
+                  0.071,
+                  1.0
+                ],
+                "distance": 4.0,
+                "enabled": true,
+                "opacity": 0.8,
+                "softness": 10.0
+              },
+              "text": {
+                "align": "center",
+                "runs": [
+                  {
+                    "fill": [
+                      0.953,
+                      0.941,
+                      0.98,
+                      1.0
+                    ],
+                    "font": "Bai Jamjuree",
+                    "size": 84.0,
+                    "text": "NICE!",
+                    "tracking": 40.0,
+                    "weight": 600
+                  }
+                ]
+              },
+              "transform": {
+                "anchorY": 50.4,
+                "scaleX": {
+                  "keys": [
+                    {
+                      "t": 106686720000,
+                      "v": 0.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 160030080000,
+                      "v": 120.0
+                    },
+                    {
+                      "i": "easeIn",
+                      "t": 182891520000,
+                      "v": 100.0
+                    }
+                  ]
+                },
+                "scaleY": {
+                  "keys": [
+                    {
+                      "t": 106686720000,
+                      "v": 0.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 160030080000,
+                      "v": 120.0
+                    },
+                    {
+                      "i": "easeIn",
+                      "t": 182891520000,
+                      "v": 100.0
+                    }
+                  ]
+                },
+                "y": 300.0
+              }
+            }
+          ],
+          "id": 1,
+          "kind": "group",
+          "name": "Emote pop",
+          "transform": {
+            "scaleX": {
+              "keys": [
+                {
+                  "i": "easeOut",
+                  "t": 673142400000,
+                  "v": 100.0
+                },
+                {
+                  "i": "easeInOut",
+                  "t": 699814080000,
+                  "v": 110.00000000000001
+                },
+                {
+                  "t": 762048000000,
+                  "v": 0.0
+                }
+              ]
+            },
+            "scaleY": {
+              "keys": [
+                {
+                  "i": "easeOut",
+                  "t": 673142400000,
+                  "v": 100.0
+                },
+                {
+                  "i": "easeInOut",
+                  "t": 699814080000,
+                  "v": 110.00000000000001
+                },
+                {
+                  "t": 762048000000,
+                  "v": 0.0
+                }
+              ]
+            },
+            "x": 960.0,
+            "y": 470.0
+          }
+        }
+      ],
+      "name": "Emote pop",
+      "responsive": {
+        "duration": 762048000000,
+        "intro": 190512000000,
+        "outro": 88905600000
+      },
+      "width": 1920
+    },
+    "id": "wabcut.gaming.emotePop",
+    "name": "Emote pop",
+    "version": 1
+  },
+  "version": 1
+}

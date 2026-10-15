@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120" viewBox="0 0 120 120">
+  <!-- Wabcut's echo mark (design language v3): five rounded clips stacked like timeline tracks, trimmed short-long-
+       longest-long-short, the longest in lime; two fainter echoes of the stack trail behind it (opacity .18 and .45,
+       14 units apart). components/EchoMark.qml draws the same geometry in QML. -->
+  <g opacity="0.18">
+    <rect x="6" y="18" width="28" height="12" rx="6" fill="#9B6CFF"/>
+    <rect x="6" y="36" width="52" height="12" rx="6" fill="#9B6CFF"/>
+    <rect x="6" y="54" width="78" height="12" rx="6" fill="#D6F54C"/>
+    <rect x="6" y="72" width="52" height="12" rx="6" fill="#9B6CFF"/>
+    <rect x="6" y="90" width="28" height="12" rx="6" fill="#9B6CFF"/>
+  </g>
+  <g opacity="0.45">
+    <rect x="20" y="18" width="28" height="12" rx="6" fill="#9B6CFF"/>
+    <rect x="20" y="36" width="52" height="12" rx="6" fill="#9B6CFF"/>
+    <rect x="20" y="54" width="78" height="12" rx="6" fill="#D6F54C"/>
+    <rect x="20" y="72" width="52" height="12" rx="6" fill="#9B6CFF"/>
+    <rect x="20" y="90" width="28" height="12" rx="6" fill="#9B6CFF"/>
+  </g>
+  <rect x="34" y="18" width="28" height="12" rx="6" fill="#9B6CFF"/>
+  <rect x="34" y="36" width="52" height="12" rx="6" fill="#9B6CFF"/>
+  <rect x="34" y="54" width="78" height="12" rx="6" fill="#D6F54C"/>
+  <rect x="34" y="72" width="52" height="12" rx="6" fill="#9B6CFF"/>
+  <rect x="34" y="90" width="28" height="12" rx="6" fill="#9B6CFF"/>
+</svg>

@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE fcpxml>
+<fcpxml version="1.10">
+    <resources>
+        <format id="r1" name="FFVideoFormat1080p25" frameDuration="1/25s" width="1920" height="1080" />
+        <asset id="r2" name="A" start="0s" duration="40s" hasVideo="1" format="r1" hasAudio="1" audioSources="2" audioChannels="4" audioRate="48000">
+            <media-rep kind="original-media" src="file:///D:/footage/A.mov" />
+        </asset>
+        <asset id="r3" name="B" start="0s" duration="40s" hasVideo="1" format="r1" hasAudio="1" audioSources="2" audioChannels="4" audioRate="48000">
+            <media-rep kind="original-media" src="file:///D:/footage/B.mov" />
+        </asset>
+        <asset id="r4" name="D" start="0s" duration="40s" hasVideo="1" format="r1" hasAudio="1" audioSources="2" audioChannels="4" audioRate="48000">
+            <media-rep kind="original-media" src="file:///D:/footage/D.mov" />
+        </asset>
+        <asset id="r5" name="C" start="0s" duration="40s" hasVideo="1" format="r1" hasAudio="1" audioSources="2" audioChannels="4" audioRate="48000">
+            <media-rep kind="original-media" src="file:///D:/footage/C.mov" />
+        </asset>
+        <asset id="r6" name="E" start="0s" duration="40s" hasVideo="1" format="r1" hasAudio="1" audioSources="2" audioChannels="4" audioRate="48000">
+            <media-rep kind="original-media" src="file:///D:/footage/E.mov" />
+        </asset>
+    </resources>
+    <library>
+        <event name="Wabcut">
+            <project name="Fixture">
+                <sequence format="r1" duration="22/25s" tcStart="3600s" tcFormat="NDF" audioLayout="stereo" audioRate="48k">
+                    <spine>
+                        <asset-clip ref="r2" offset="3600s" name="A" start="0s" duration="4/25s">
+                            <marker start="2/25s" duration="0s" value="Intro" note="music in" />
+                        </asset-clip>
+                        <asset-clip ref="r3" offset="90004/25s" name="Interview" start="2/5s" duration="8/25s">
+                            <asset-clip ref="r5" lane="1" offset="2/5s" name="C" start="0s" duration="4/25s" srcEnable="video" />
+                            <asset-clip ref="r6" lane="-1" offset="16/25s" name="E" start="0s" duration="4/25s" srcEnable="audio" />
+                            <chapter-marker start="16/25s" duration="3/25s" value="Chapter 2" posterOffset="0s" />
+                        </asset-clip>
+                        <gap name="Gap" offset="90012/25s" duration="2/25s" />
+                        <asset-clip ref="r4" offset="90014/25s" name="D" start="0s" duration="4/25s" enabled="0" />
+                        <gap name="Gap" offset="90018/25s" duration="4/25s" />
+                    </spine>
+                </sequence>
+            </project>
+        </event>
+    </library>
+</fcpxml>

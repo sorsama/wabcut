@@ -1,0 +1,2 @@
+# Fuzz seeds are byte-exact inputs (some deliberately not UTF-8, some with CR LF): never convert them.
+* -text

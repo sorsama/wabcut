@@ -1,0 +1,484 @@
+{
+  "format": "wabcut-graphic-template",
+  "template": {
+    "description": "Facecam frame for the bottom-left corner with a name tag; webcam on the track below.",
+    "duration": 1524096000000,
+    "fields": [
+      {
+        "id": "name",
+        "kind": "text",
+        "label": "Name",
+        "layer": 6,
+        "property": "text",
+        "value": "PlayerOne"
+      },
+      {
+        "id": "accent",
+        "kind": "color",
+        "label": "Frame colour",
+        "layer": 3,
+        "property": "stroke",
+        "value": [
+          0.482,
+          0.231,
+          1.0,
+          1.0
+        ]
+      },
+      {
+        "id": "tagColor",
+        "kind": "color",
+        "label": "Tag colour",
+        "layer": 6,
+        "property": "background",
+        "value": [
+          0.482,
+          0.231,
+          1.0,
+          1.0
+        ]
+      },
+      {
+        "id": "length",
+        "kind": "duration",
+        "label": "Length",
+        "property": "clip",
+        "value": 1524096000000
+      }
+    ],
+    "graphic": {
+      "height": 1080,
+      "layers": [
+        {
+          "children": [
+            {
+              "id": 2,
+              "kind": "shape",
+              "name": "Glow",
+              "shape": {
+                "cornerRadius": 22.0,
+                "fill": {
+                  "type": "none"
+                },
+                "height": 270.0,
+                "stroke": {
+                  "cap": "round",
+                  "color": [
+                    0.953,
+                    0.941,
+                    0.98,
+                    0.14
+                  ],
+                  "enabled": true,
+                  "join": "round",
+                  "width": 20.0
+                },
+                "type": "rectangle",
+                "width": 480.0
+              },
+              "transform": {
+                "opacity": {
+                  "keys": [
+                    {
+                      "t": 63504000000,
+                      "v": 0.0
+                    },
+                    {
+                      "i": "easeIn",
+                      "t": 152409600000,
+                      "v": 100.0
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "id": 3,
+              "kind": "shape",
+              "name": "Border",
+              "shape": {
+                "cornerRadius": 22.0,
+                "fill": {
+                  "type": "none"
+                },
+                "height": 270.0,
+                "stroke": {
+                  "cap": "round",
+                  "color": [
+                    0.482,
+                    0.231,
+                    1.0,
+                    1.0
+                  ],
+                  "enabled": true,
+                  "join": "round",
+                  "width": 8.0
+                },
+                "trimEnd": {
+                  "keys": [
+                    {
+                      "i": "easeInOut",
+                      "t": 0,
+                      "v": 0.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 139708800000,
+                      "v": 100.0
+                    }
+                  ]
+                },
+                "trimStart": {
+                  "keys": [
+                    {
+                      "i": "easeInOut",
+                      "t": 1435190400000,
+                      "v": 0.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 1524096000000,
+                      "v": 100.0
+                    }
+                  ]
+                },
+                "type": "rectangle",
+                "width": 480.0
+              }
+            },
+            {
+              "id": 4,
+              "kind": "shape",
+              "name": "Corner top right",
+              "pin": {
+                "edges": [
+                  "top",
+                  "right"
+                ],
+                "offsets": [
+                  0.0,
+                  -14.0,
+                  14.0,
+                  0.0
+                ],
+                "to": 3
+              },
+              "shape": {
+                "closed": false,
+                "fill": {
+                  "type": "none"
+                },
+                "path": [
+                  {
+                    "i": "linear",
+                    "t": 0,
+                    "v": [
+                      [
+                        -34.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0
+                      ],
+                      [
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0
+                      ],
+                      [
+                        0.0,
+                        34.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0
+                      ]
+                    ]
+                  }
+                ],
+                "stroke": {
+                  "cap": "square",
+                  "color": [
+                    0.953,
+                    0.941,
+                    0.98,
+                    1.0
+                  ],
+                  "enabled": true,
+                  "width": 6.0
+                },
+                "type": "path"
+              },
+              "transform": {
+                "scaleX": {
+                  "keys": [
+                    {
+                      "t": 76204800000,
+                      "v": 0.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 120657600000,
+                      "v": 120.0
+                    },
+                    {
+                      "i": "easeIn",
+                      "t": 139708800000,
+                      "v": 100.0
+                    }
+                  ]
+                },
+                "scaleY": {
+                  "keys": [
+                    {
+                      "t": 76204800000,
+                      "v": 0.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 120657600000,
+                      "v": 120.0
+                    },
+                    {
+                      "i": "easeIn",
+                      "t": 139708800000,
+                      "v": 100.0
+                    }
+                  ]
+                },
+                "x": 254.0,
+                "y": -149.0
+              }
+            },
+            {
+              "id": 5,
+              "kind": "shape",
+              "name": "Corner bottom left",
+              "pin": {
+                "edges": [
+                  "left",
+                  "bottom"
+                ],
+                "offsets": [
+                  -14.0,
+                  0.0,
+                  0.0,
+                  14.0
+                ],
+                "to": 3
+              },
+              "shape": {
+                "closed": false,
+                "fill": {
+                  "type": "none"
+                },
+                "path": [
+                  {
+                    "i": "linear",
+                    "t": 0,
+                    "v": [
+                      [
+                        0.0,
+                        -34.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0
+                      ],
+                      [
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0
+                      ],
+                      [
+                        34.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0
+                      ]
+                    ]
+                  }
+                ],
+                "stroke": {
+                  "cap": "square",
+                  "color": [
+                    0.953,
+                    0.941,
+                    0.98,
+                    1.0
+                  ],
+                  "enabled": true,
+                  "width": 6.0
+                },
+                "type": "path"
+              },
+              "transform": {
+                "scaleX": {
+                  "keys": [
+                    {
+                      "t": 96526080000,
+                      "v": 0.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 140978880000,
+                      "v": 120.0
+                    },
+                    {
+                      "i": "easeIn",
+                      "t": 160030080000,
+                      "v": 100.0
+                    }
+                  ]
+                },
+                "scaleY": {
+                  "keys": [
+                    {
+                      "t": 96526080000,
+                      "v": 0.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 140978880000,
+                      "v": 120.0
+                    },
+                    {
+                      "i": "easeIn",
+                      "t": 160030080000,
+                      "v": 100.0
+                    }
+                  ]
+                },
+                "x": -254.0,
+                "y": 149.0
+              }
+            },
+            {
+              "id": 6,
+              "kind": "text",
+              "name": "Name tag",
+              "pin": {
+                "edges": [
+                  "left",
+                  "top"
+                ],
+                "offsets": [
+                  30.0,
+                  -18.0,
+                  0.0,
+                  0.0
+                ],
+                "to": 3
+              },
+              "text": {
+                "animators": [
+                  {
+                    "name": "Typewriter In",
+                    "opacity": 0.0,
+                    "softness": 0.0,
+                    "start": {
+                      "keys": [
+                        {
+                          "t": 88905600000,
+                          "v": 0.0
+                        },
+                        {
+                          "t": 177811200000,
+                          "v": 100.0
+                        }
+                      ]
+                    },
+                    "unit": "character"
+                  }
+                ],
+                "background": {
+                  "color": [
+                    0.482,
+                    0.231,
+                    1.0,
+                    1.0
+                  ],
+                  "enabled": true,
+                  "padding": 10.0,
+                  "radius": 6.0
+                },
+                "runs": [
+                  {
+                    "fill": [
+                      0.953,
+                      0.941,
+                      0.98,
+                      1.0
+                    ],
+                    "font": "Bai Jamjuree",
+                    "size": 30.0,
+                    "text": "PlayerOne",
+                    "tracking": 40.0,
+                    "weight": 600
+                  }
+                ]
+              },
+              "transform": {
+                "opacity": {
+                  "keys": [
+                    {
+                      "t": 88905600000,
+                      "v": 0.0
+                    },
+                    {
+                      "i": "easeIn",
+                      "t": 139708800000,
+                      "v": 100.0
+                    }
+                  ]
+                },
+                "x": -210.0,
+                "y": -153.0
+              }
+            }
+          ],
+          "id": 1,
+          "kind": "group",
+          "name": "Webcam",
+          "transform": {
+            "opacity": {
+              "keys": [
+                {
+                  "i": "easeOut",
+                  "t": 1435190400000,
+                  "v": 100.0
+                },
+                {
+                  "t": 1524096000000,
+                  "v": 0.0
+                }
+              ]
+            },
+            "x": 280.0,
+            "y": 900.0
+          }
+        }
+      ],
+      "name": "Webcam frame",
+      "responsive": {
+        "duration": 1524096000000,
+        "intro": 177811200000,
+        "outro": 88905600000
+      },
+      "width": 1920
+    },
+    "id": "wabcut.gaming.webcamFrame",
+    "name": "Webcam frame",
+    "version": 1
+  },
+  "version": 1
+}

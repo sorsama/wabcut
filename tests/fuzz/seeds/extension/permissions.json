@@ -1,0 +1,23 @@
+{
+ "format": "wabcut-extension-permissions",
+ "version": 1,
+ "extensions": {
+  "com.example.beats": {
+   "enabled": true,
+   "granted": [
+    "Read",
+    "EditSequence"
+   ],
+   "reviewedVersion": "1.0.0",
+   "crashes": 1,
+   "disabledReason": ""
+  }
+ },
+ "trustedProjectExtensions": [
+  {
+   "project": "C:/films/a",
+   "extension": "com.example.shared",
+   "contentHash": "abababababababababababababababababababababababababababababababab"
+  }
+ ]
+}

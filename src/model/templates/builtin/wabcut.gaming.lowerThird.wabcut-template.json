@@ -1,0 +1,334 @@
+{
+  "format": "wabcut-graphic-template",
+  "template": {
+    "description": "Lower third with a name, a handle and an accent bar; grows with the name.",
+    "duration": 1270080000000,
+    "fields": [
+      {
+        "id": "name",
+        "kind": "text",
+        "label": "Name",
+        "layer": 4,
+        "property": "text",
+        "value": "Player Name"
+      },
+      {
+        "id": "handle",
+        "kind": "text",
+        "label": "Handle",
+        "layer": 5,
+        "property": "text",
+        "value": "@handle"
+      },
+      {
+        "id": "accent",
+        "kind": "color",
+        "label": "Accent colour",
+        "layer": 3,
+        "property": "fill",
+        "value": [
+          0.482,
+          0.231,
+          1.0,
+          1.0
+        ]
+      },
+      {
+        "id": "length",
+        "kind": "duration",
+        "label": "Length",
+        "property": "clip",
+        "value": 1270080000000
+      }
+    ],
+    "graphic": {
+      "height": 1080,
+      "layers": [
+        {
+          "children": [
+            {
+              "id": 2,
+              "kind": "shape",
+              "name": "Name box",
+              "pin": {
+                "edges": [
+                  "left",
+                  "top",
+                  "right",
+                  "bottom"
+                ],
+                "offsets": [
+                  -28.0,
+                  -14.0,
+                  36.0,
+                  14.0
+                ],
+                "to": 4
+              },
+              "shape": {
+                "fill": {
+                  "color": [
+                    0.047,
+                    0.039,
+                    0.071,
+                    0.92
+                  ],
+                  "type": "solid"
+                },
+                "height": 104.8,
+                "type": "rectangle",
+                "width": 451.2
+              },
+              "transform": {
+                "x": 197.6,
+                "y": 38.4
+              }
+            },
+            {
+              "id": 3,
+              "kind": "shape",
+              "name": "Accent bar",
+              "pin": {
+                "edges": [
+                  "left",
+                  "top",
+                  "bottom"
+                ],
+                "offsets": [
+                  -12.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "to": 2
+              },
+              "shape": {
+                "fill": {
+                  "color": [
+                    0.482,
+                    0.231,
+                    1.0,
+                    1.0
+                  ],
+                  "type": "solid"
+                },
+                "height": 104.8,
+                "type": "rectangle",
+                "width": 12.0
+              },
+              "transform": {
+                "scaleX": {
+                  "keys": [
+                    {
+                      "t": 63504000000,
+                      "v": 0.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 116847360000,
+                      "v": 110.00000000000001
+                    },
+                    {
+                      "i": "easeIn",
+                      "t": 139708800000,
+                      "v": 100.0
+                    }
+                  ]
+                },
+                "scaleY": {
+                  "keys": [
+                    {
+                      "t": 63504000000,
+                      "v": 0.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 116847360000,
+                      "v": 110.00000000000001
+                    },
+                    {
+                      "i": "easeIn",
+                      "t": 139708800000,
+                      "v": 100.0
+                    }
+                  ]
+                },
+                "x": -34.0,
+                "y": 38.4
+              }
+            },
+            {
+              "id": 4,
+              "kind": "text",
+              "name": "Name",
+              "text": {
+                "animators": [
+                  {
+                    "name": "Typewriter In",
+                    "opacity": 0.0,
+                    "softness": 0.0,
+                    "start": {
+                      "keys": [
+                        {
+                          "t": 50803200000,
+                          "v": 0.0
+                        },
+                        {
+                          "t": 152409600000,
+                          "v": 100.0
+                        }
+                      ]
+                    },
+                    "unit": "character"
+                  }
+                ],
+                "runs": [
+                  {
+                    "fill": [
+                      0.953,
+                      0.941,
+                      0.98,
+                      1.0
+                    ],
+                    "font": "Bai Jamjuree",
+                    "size": 64.0,
+                    "text": "Player Name",
+                    "weight": 600
+                  }
+                ]
+              }
+            },
+            {
+              "id": 5,
+              "kind": "text",
+              "name": "Handle",
+              "text": {
+                "background": {
+                  "color": [
+                    0.953,
+                    0.941,
+                    0.98,
+                    1.0
+                  ],
+                  "enabled": true,
+                  "padding": 10.0,
+                  "radius": 4.0
+                },
+                "runs": [
+                  {
+                    "fill": [
+                      0.047,
+                      0.039,
+                      0.071,
+                      1.0
+                    ],
+                    "font": "IBM Plex Sans Thai",
+                    "size": 34.0,
+                    "text": "@handle",
+                    "tracking": 20.0,
+                    "weight": 500
+                  }
+                ]
+              },
+              "transform": {
+                "opacity": {
+                  "keys": [
+                    {
+                      "t": 88905600000,
+                      "v": 0.0
+                    },
+                    {
+                      "i": "easeIn",
+                      "t": 139708800000,
+                      "v": 100.0
+                    }
+                  ]
+                },
+                "x": -18.0,
+                "y": {
+                  "keys": [
+                    {
+                      "t": 88905600000,
+                      "v": 136.8
+                    },
+                    {
+                      "i": "easeIn",
+                      "t": 165110400000,
+                      "v": 112.8
+                    }
+                  ]
+                }
+              }
+            }
+          ],
+          "id": 1,
+          "kind": "group",
+          "name": "Lower third",
+          "transform": {
+            "opacity": {
+              "keys": [
+                {
+                  "t": 0,
+                  "v": 0.0
+                },
+                {
+                  "i": "easeIn",
+                  "t": 50803200000,
+                  "v": 100.0
+                },
+                {
+                  "i": "easeOut",
+                  "t": 1193875200000,
+                  "v": 100.0
+                },
+                {
+                  "t": 1270080000000,
+                  "v": 0.0
+                }
+              ]
+            },
+            "x": {
+              "keys": [
+                {
+                  "t": 0,
+                  "v": -504.0
+                },
+                {
+                  "i": "easeInOut",
+                  "t": 80015040000,
+                  "v": 161.6
+                },
+                {
+                  "i": "easeIn",
+                  "t": 114307200000,
+                  "v": 136.0
+                },
+                {
+                  "i": "easeOut",
+                  "t": 1168473600000,
+                  "v": 136.0
+                },
+                {
+                  "t": 1270080000000,
+                  "v": -504.0
+                }
+              ]
+            },
+            "y": 810.0
+          }
+        }
+      ],
+      "name": "Gamer lower third",
+      "responsive": {
+        "duration": 1270080000000,
+        "intro": 177811200000,
+        "outro": 101606400000
+      },
+      "width": 1920
+    },
+    "id": "wabcut.gaming.lowerThird",
+    "name": "Gamer lower third",
+    "version": 1
+  },
+  "version": 1
+}

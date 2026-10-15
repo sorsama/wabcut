@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- Wabcut application icon at 32-48 px: one echo instead of two and thicker clips (the brand sheet's 32 px mark),
+       larger on the tile so the stack still reads. -->
+  <rect width="1024" height="1024" rx="225" fill="#1D1D20"/>
+  <g transform="translate(512 512) scale(6.4) translate(-64 -60)">
+    <g opacity="0.4">
+      <rect x="16" y="18" width="28" height="14" rx="7" fill="#9B6CFF"/>
+      <rect x="16" y="36" width="52" height="14" rx="7" fill="#9B6CFF"/>
+      <rect x="16" y="53" width="78" height="14" rx="7" fill="#D6F54C"/>
+      <rect x="16" y="70" width="52" height="14" rx="7" fill="#9B6CFF"/>
+      <rect x="16" y="88" width="28" height="14" rx="7" fill="#9B6CFF"/>
+    </g>
+    <rect x="34" y="18" width="28" height="14" rx="7" fill="#9B6CFF"/>
+    <rect x="34" y="36" width="52" height="14" rx="7" fill="#9B6CFF"/>
+    <rect x="34" y="53" width="78" height="14" rx="7" fill="#D6F54C"/>
+    <rect x="34" y="70" width="52" height="14" rx="7" fill="#9B6CFF"/>
+    <rect x="34" y="88" width="28" height="14" rx="7" fill="#9B6CFF"/>
+  </g>
+</svg>

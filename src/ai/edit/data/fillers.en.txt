@@ -1,0 +1,25 @@
+# Filler words for the transcript review, language "en". One entry per line:
+#   <words>              always a filler
+#   <words> | context    a filler only in disfluent context: a pause next to it, a comma after it, or said twice
+# Matching ignores case and punctuation around the words; an entry of several words matches consecutive words.
+# Add languages as fillers.<code>.txt next to this file (embedded at build time) or load your own at run time.
+um
+umm
+ummm
+uh
+uhh
+uhm
+er
+erm
+ah
+ahh
+hmm
+hm
+mm
+mhm
+like | context
+you know | context
+i mean | context
+sort of | context
+kind of | context
+basically | context

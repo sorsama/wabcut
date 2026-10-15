@@ -1,0 +1,24 @@
+event: interaction.created
+data: {"interaction":{"id":"v1_agent_1","status":"in_progress","object":"interaction","model":"gemini-3.8-flash"},"event_type":"interaction.created"}
+
+event: step.start
+data: {"index":0,"step":{"type":"thought"},"event_type":"step.start"}
+
+event: step.delta
+data: {"index":0,"delta":{"type":"thought_signature","signature":"CiQBagentTurn1Signature"},"event_type":"step.delta"}
+
+event: step.stop
+data: {"index":0,"event_type":"step.stop"}
+
+event: step.start
+data: {"index":1,"step":{"type":"function_call","id":"fc_read_1","name":"sequence_summary","arguments":{}},"event_type":"step.start"}
+
+event: step.stop
+data: {"index":1,"event_type":"step.stop"}
+
+event: interaction.completed
+data: {"interaction":{"id":"v1_agent_1","status":"requires_action","usage":{"total_input_tokens":9050,"total_output_tokens":24,"total_thought_tokens":10,"total_cached_tokens":0,"total_tokens":9084}},"event_type":"interaction.completed"}
+
+event: done
+data: [DONE]
+

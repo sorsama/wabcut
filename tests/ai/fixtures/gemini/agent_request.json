@@ -1,0 +1,73 @@
+{
+  "generation_config": {
+    "max_output_tokens": 1024,
+    "tool_choice": "any"
+  },
+  "input": [
+    {
+      "content": [
+        {
+          "text": "Remove the silence on A1 after 00:00:12.",
+          "type": "text"
+        },
+        {
+          "data": "iVBORw==",
+          "mime_type": "image/png",
+          "type": "image"
+        }
+      ],
+      "type": "user_input"
+    },
+    {
+      "content": [
+        {
+          "text": "Let me look at the sequence.",
+          "type": "text"
+        }
+      ],
+      "type": "model_output"
+    },
+    {
+      "arguments": {
+        "track": "A1"
+      },
+      "id": "call_1",
+      "name": "sequence_summary",
+      "type": "function_call"
+    },
+    {
+      "call_id": "call_1",
+      "name": "sequence_summary",
+      "result": "{\"clips\":3}",
+      "type": "function_result"
+    }
+  ],
+  "model": "gemini-3.8-flash",
+  "store": false,
+  "stream": true,
+  "system_instruction": "You edit video timelines. Use the tools.",
+  "tools": [
+    {
+      "description": "Ripple-delete a range on a track.",
+      "name": "timeline_rippleDelete",
+      "parameters": {
+        "properties": {
+          "frames": {
+            "description": "Length",
+            "minimum": 1,
+            "type": "integer"
+          },
+          "track": {
+            "description": "Track id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "track"
+        ],
+        "type": "object"
+      },
+      "type": "function"
+    }
+  ]
+}

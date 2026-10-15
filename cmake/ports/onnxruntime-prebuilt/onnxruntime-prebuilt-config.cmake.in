@@ -1,0 +1,25 @@
+# onnxruntime-prebuilt @ORT_VERSION@: Microsoft's official ONNX Runtime binaries as one imported target,
+#   onnxruntime-prebuilt::onnxruntime   (#include <onnxruntime_cxx_api.h>)
+# and ONNXRUNTIME_PREBUILT_RUNTIME_FILES, the shared libraries an executable needs next to it. Microsoft ships release
+# binaries only, so every configuration uses them (ORT's API is C: no CRT objects cross the library boundary).
+get_filename_component(_ortp_root "${CMAKE_CURRENT_LIST_DIR}/../.." ABSOLUTE)
+set(onnxruntime-prebuilt_VERSION "@ORT_VERSION@")
+
+if(NOT TARGET onnxruntime-prebuilt::onnxruntime)
+    add_library(onnxruntime-prebuilt::onnxruntime SHARED IMPORTED)
+    set_target_properties(onnxruntime-prebuilt::onnxruntime PROPERTIES
+        INTERFACE_INCLUDE_DIRECTORIES "${_ortp_root}/include/onnxruntime"
+        IMPORTED_LOCATION "${_ortp_root}/@ORT_IMPORTED_LOCATION@")
+    if(NOT "@ORT_IMPORTED_IMPLIB@" STREQUAL "")
+        set_target_properties(onnxruntime-prebuilt::onnxruntime PROPERTIES
+            IMPORTED_IMPLIB "${_ortp_root}/@ORT_IMPORTED_IMPLIB@")
+    endif()
+endif()
+
+set(ONNXRUNTIME_PREBUILT_RUNTIME_FILES "")
+foreach(_ortp_file IN ITEMS @ORT_RUNTIME_FILES@)
+    list(APPEND ONNXRUNTIME_PREBUILT_RUNTIME_FILES "${_ortp_root}/${_ortp_file}")
+endforeach()
+unset(_ortp_file)
+unset(_ortp_root)
+set(onnxruntime-prebuilt_FOUND TRUE)

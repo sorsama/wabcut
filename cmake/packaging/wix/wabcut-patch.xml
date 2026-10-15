@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- CPACK_WIX_PATCH_FILE: adds Wabcut's options page, the opt-in file association and the remembered install folder
+     (WabcutOptions.wxs) to the package CPack generates. -->
+<CPackWiXPatch>
+    <CPackWiXFragment Id="#PRODUCT">
+        <UIRef Id="WabcutOptionsUI" />
+        <FeatureRef Id="FileAssociation" />
+        <FeatureRef Id="InstallFolder" />
+    </CPackWiXFragment>
+</CPackWiXPatch>
