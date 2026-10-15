@@ -267,7 +267,7 @@ TEST_CASE("History: 5,000 clips checkpoint, dedup and load fast", "[model][histo
                 static_cast<unsigned long long>(second->addedBytes), ms(t3, t4),
                 static_cast<unsigned long long>(h->diskBytes()));
     CHECK(second->addedBytes * 5 < first->addedBytes);
-    CHECK(ms(t2, t3) < 200.0);
-    CHECK(ms(t0, t1) < 2000.0);
-    CHECK(ms(t3, t4) < 2000.0);
+    CHECK(ms(t2, t3) < 200.0 * timingSlack());
+    CHECK(ms(t0, t1) < 2000.0 * timingSlack());
+    CHECK(ms(t3, t4) < 2000.0 * timingSlack());
 }

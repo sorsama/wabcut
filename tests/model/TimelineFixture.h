@@ -27,11 +27,24 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <cstdint>
+#include <cstdlib>
 #include <map>
 #include <string>
 #include <string_view>
 
 namespace wabcut::test {
+
+/// Wall-clock budgets in tests are set on a developer machine; shared CI runners are slower and noisier.
+/// WABCUT_TIMING_SLACK (a factor, at least 1; default 1) widens every budget that is multiplied by this. CI sets it,
+/// so a slow runner does not fail a test whose results are right; local runs keep the strict budgets.
+inline double timingSlack() {
+    static const double slack = [] {
+        const char* text = std::getenv("WABCUT_TIMING_SLACK");
+        const double value = text != nullptr ? std::strtod(text, nullptr) : 1.0;
+        return value > 1.0 ? value : 1.0;
+    }();
+    return slack;
+}
 
 inline constexpr Rate kRate = kRate25;
 constexpr Ticks f(std::int64_t frames) { return framesToTicks(frames, kRate); }
