@@ -32,6 +32,17 @@ elseif(NOT CMAKE_OSX_DEPLOYMENT_TARGET)
     set(CMAKE_OSX_DEPLOYMENT_TARGET 13.0 CACHE STRING "")
 endif()
 
+# One SDK for the compiler and for CMake. CMake 4 no longer picks one by default, and Homebrew's clang then assumes the
+# Command Line Tools' SDK (a CI runner has only Xcode's); a library CMake finds in Xcode's SDK (zlib) would add that
+# SDK's usr/include as an -isystem ahead of libc++'s own C headers, which breaks <cstring> and friends.
+if(NOT CMAKE_OSX_SYSROOT)
+    execute_process(COMMAND xcrun --sdk macosx --show-sdk-path OUTPUT_VARIABLE _wabcut_sdk
+                    OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+    if(_wabcut_sdk)
+        set(CMAKE_OSX_SYSROOT "${_wabcut_sdk}" CACHE PATH "")
+    endif()
+endif()
+
 set(CMAKE_C_COMPILER "${_wabcut_llvm}/bin/clang" CACHE FILEPATH "" FORCE)
 set(CMAKE_CXX_COMPILER "${_wabcut_llvm}/bin/clang++" CACHE FILEPATH "" FORCE)
 set(CMAKE_AR "${_wabcut_llvm}/bin/llvm-ar" CACHE FILEPATH "" FORCE)
