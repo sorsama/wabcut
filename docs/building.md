@@ -145,7 +145,7 @@ To cap build parallelism on a shared machine, set `$env:CMAKE_BUILD_PARALLEL_LEV
 | `win-msvc-debug` | Windows | Debug | opt-in, see [Debug builds](#debug-builds) |
 | `win-msvc-asan` | Windows | RelWithDebInfo | core only, AddressSanitizer + libFuzzer, see [Sanitizers and fuzzing](#sanitizers-and-fuzzing) |
 | `linux-gcc` | Linux | RelWithDebInfo | experimental |
-| `macos-clang` | macOS | RelWithDebInfo | experimental, deployment target 13.0 |
+| `macos-clang` | macOS | RelWithDebInfo | experimental, deployment target 13.3 |
 
 Every preset builds with Ninja into `build/<preset>` and turns on `WABCUT_WARNINGS_AS_ERRORS`.
 
