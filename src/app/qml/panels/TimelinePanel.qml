@@ -100,18 +100,89 @@ Panel {
     // the timeline: where it would land (TimelineView.dropPoint: the frame under the pointer, snapped to the clip in
     // front, the playhead, marks and markers when snapping is on), shown as an insertion line in the lanes. (x, y) are
     // in `item`'s coordinates; null off the lanes. Main's drop areas call it on every move and on the drop.
+    //
+    // 2026-10-15: held still over the ruler (above the top video track) or below the last track for newTrackHoldMs,
+    // the drag adds a track there (V3 above V2, A3 below A2; a band fills while it waits) and lands on it while the
+    // pointer stays there. One such track per drag: holding at the other end moves it there. If the drag then drops
+    // elsewhere or leaves the timeline, the track goes again (TimelineView.releaseDropTrack).
     function trackDrop(item, x, y) {
         const v = lanes.view
         const p = item.mapToItem(v, x, y)
+        root.dragPoint = { item: item, x: x, y: y }
+        const zone = root.newTrackZoneAt(p)
+        root.holdIn(zone)
+        if (zone !== "" && root.heldTrack && root.heldTrack.kind === zone)
+            return v.showDropIndicatorOnTrack(p.x, root.heldTrack.key)
         if (p.x < 0 || p.y < 0 || p.x > v.width || p.y > v.height) {
             v.clearDropIndicator()
             return null
         }
         return v.showDropIndicator(p.x, p.y)
     }
-    /// The drag left the timeline or was dropped: the insertion line goes.
-    function endDrop() {
+    /// The drag left the timeline (`at` undefined) or was dropped where trackDrop said (`at`): the insertion line goes,
+    /// and so does a track its hold added that the drop does not land on.
+    function endDrop(at) {
+        holdTimer.stop()
+        holdFill.stop()
+        root.holdZone = ""
+        root.dragPoint = null
+        if (root.heldTrack && !(at && at.track === root.heldTrack.key))
+            lanes.view.releaseDropTrack(root.heldTrack.key)
+        root.heldTrack = null
         lanes.view.clearDropIndicator()
+    }
+
+    /// How long a drag waits over the ruler or below the tracks before it adds a track there.
+    property int newTrackHoldMs: 2000
+    /// Where the drag is waiting for a new track: "video" (over the ruler, above the top video track), "audio" (below
+    /// the last track: the empty lanes under it, or the footer) or "".
+    property string holdZone: ""
+    /// The track this drag's hold added: { key, kind }, until the drag ends.
+    property var heldTrack: null
+    /// trackDrop's last arguments: the insertion line moves onto a new track without waiting for the pointer.
+    property var dragPoint: null
+
+    /// The new-track zone at `p` (the lanes' coordinates): "video", "audio" or "".
+    function newTrackZoneAt(p) {
+        const v = lanes.view
+        if (v.contentHeight <= 0 || p.x < 0 || p.x > v.width)
+            return ""
+        if (p.y < 0)
+            return p.y >= v.mapFromItem(ruler, 0, 0).y ? "video" : ""
+        return p.y > v.height || p.y >= v.contentHeight - v.scrollY ? "audio" : ""
+    }
+    function holdIn(zone) {
+        if (zone === root.holdZone)
+            return
+        root.holdZone = zone
+        holdTimer.stop()
+        holdFill.stop()
+        if (zone !== "" && !(root.heldTrack && root.heldTrack.kind === zone)) {
+            holdTimer.start()
+            holdFill.restart()
+        }
+    }
+    function addHeldTrack() {
+        const zone = root.holdZone
+        if (zone === "")
+            return
+        const v = lanes.view
+        if (root.heldTrack) {
+            v.releaseDropTrack(root.heldTrack.key)
+            root.heldTrack = null
+        }
+        const key = v.addDropTrack(zone)
+        if (key !== "")
+            root.heldTrack = { key: key, kind: zone }
+        // The pointer may not move again before the drop: the insertion line goes on the new track now.
+        const at = root.dragPoint
+        if (at)
+            root.trackDrop(at.item, at.x, at.y)
+    }
+    Timer {
+        id: holdTimer
+        interval: root.newTrackHoldMs
+        onTriggered: root.addHeldTrack()
     }
     readonly property TimelineView view: lanes.view
     /// The Timeline list (M5j): the tracks and clips as an accessible list instead of the lanes.
@@ -161,12 +232,17 @@ Panel {
         return Trim.runCommand(commandId)
     }
 
-    /// Keyboard focus to the lanes (or the Timeline list when it is shown).
-    function focusLanes() {
-        if (root.listMode)
+    /// Keyboard focus to the lanes (or the Timeline list when it is shown). `quiet`: focus the app moved here by itself
+    /// (Main.keepFocus at startup or after a panel closes), so no focus ring - the ring marks where the user went.
+    function focusLanes(quiet = false) {
+        if (root.listMode) {
             timelineList.focusList()
-        else
+        } else if (quiet) {
+            lanesArea.pointerFocus = true
+            lanesArea.forceActiveFocus(Qt.OtherFocusReason)
+        } else {
             lanesArea.forceActiveFocus(Qt.TabFocusReason)
+        }
     }
 
     // Keeps the playhead in view after keyboard navigation.
@@ -484,21 +560,26 @@ Panel {
         height: Theme.rulerHeight
 
         Text {
+            id: cornerTimecode
+            objectName: "timelineTimecode"
             anchors.left: parent.left
             anchors.leftMargin: Theme.space(2)
             anchors.verticalCenter: parent.verticalCenter
             text: ProjectController.playheadText
             color: Theme.accentStroke
             font.family: Theme.fontMono
-            font.pixelSize: Theme.textLg + Theme.space(1)
+            font.pixelSize: Theme.textLg + Theme.space(0.5)
             font.weight: Font.Bold
         }
-        // The sequence's frame rate (0.1.3: moved here from the header, which now holds the tools).
+        // The sequence's frame rate (0.1.3: moved here from the header, which now holds the tools), only where it
+        // fits beside the timecode (the title bar shows it too).
         Text {
             objectName: "timelineFrameRate"
             anchors.right: parent.right
             anchors.rightMargin: Theme.space(2)
             anchors.verticalCenter: parent.verticalCenter
+            visible: cornerTimecode.x + cornerTimecode.implicitWidth + Theme.space(2)
+                     <= corner.width - Theme.space(2) - implicitWidth
             text: ProjectController.frameRateText
             color: Theme.textTertiary
             font.family: Theme.fontMono
@@ -974,6 +1055,53 @@ Panel {
                 if (pressed)
                     lanes.view.scrollY = position * lanes.view.contentHeight
             }
+        }
+    }
+
+    // A drag waiting for a new track (trackDrop): over the ruler for a video track, below the tracks for an audio
+    // track, a band names the track and fills until the hold adds it.
+    Rectangle {
+        id: holdBand
+        objectName: "newTrackHoldBand"
+        readonly property bool audio: root.holdZone === "audio"
+        readonly property real bandHeight: Math.min(Theme.trackHeightAudio, tracksArea.height)
+        property real progress: 0
+        z: 20
+        visible: holdTimer.running
+        x: lanesArea.x
+        y: audio ? tracksArea.y + Math.max(0, Math.min(lanes.view.contentHeight - lanes.view.scrollY + Theme.trackGap,
+                                                       tracksArea.height - bandHeight))
+                 : ruler.y
+        width: lanesArea.width
+        height: audio ? bandHeight : tracksArea.y - ruler.y
+        radius: Theme.radiusClip
+        color: Theme.accentWash
+        border.width: Theme.hairline
+        border.color: Theme.accentStroke
+        clip: true
+
+        NumberAnimation {
+            id: holdFill
+            target: holdBand
+            property: "progress"
+            from: 0
+            to: 1
+            duration: root.newTrackHoldMs
+        }
+        Rectangle {
+            width: holdBand.width * holdBand.progress
+            height: holdBand.height
+            radius: holdBand.radius
+            color: Theme.accentWash
+        }
+        Text {
+            objectName: "newTrackHoldLabel"
+            anchors.centerIn: parent
+            text: root.holdZone === "" ? "" : qsTr("Hold to add track %1").arg(lanes.view.nextTrackLabel(root.holdZone))
+            color: Theme.textPrimary
+            font.family: Theme.fontSans
+            font.pixelSize: Theme.textSm
+            font.weight: Font.DemiBold
         }
     }
 

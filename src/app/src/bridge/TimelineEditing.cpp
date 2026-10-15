@@ -10,7 +10,9 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <unordered_set>
 #include <utility>
+#include <vector>
 
 namespace wabcut::app {
 
@@ -29,6 +31,98 @@ constexpr std::array<std::pair<TimelineTool, const char*>, 11> kToolKeys{{
     {TimelineTool::RateStretch, "rateStretch"},
     {TimelineTool::Pen, "pen"},
 }};
+
+/// Calls `fn` for every clip of `track` that lies (partly) in `range`.
+template <typename Fn>
+void forClipsIn(const Track& track, TimeRange range, Fn&& fn) {
+    const std::size_t first = track.firstClipAtOrAfter(range.start);
+    for (std::size_t i = first > 0 ? first - 1 : 0; i < track.clips.size(); ++i) {
+        const Clip& clip = track.clips[i];
+        if (clip.start() >= range.end())
+            break;
+        if (clip.timelineRange.overlaps(range))
+            fn(clip);
+    }
+}
+
+/// The track shift a move applies (2026-10-15): the grabbed clip's kind crosses `spec.tracks` as dragged; the other
+/// kind (its linked partners) goes along only when each of its clips lands on a free stretch of an unlocked track,
+/// else it keeps its tracks. Dragging linked audio from A2 to A1 used to move the picture from V3 onto the clip on V2;
+/// now the picture stays on V3, and goes to V1 when the drag crosses two tracks and V1 is free there. A clip the
+/// grabbed kind lands on is replaced, so its own link partners count as free: an A/V clip's sound dragged onto another
+/// one's replaces both halves, as a drop does.
+edit::TrackShift movedTracks(const ProjectState& state, SequenceId sequence, const GestureSpec& spec) {
+    edit::TrackShift tracks = spec.tracks;
+    const Sequence* seq = state.findSequence(sequence);
+    const auto grabbed = seq ? seq->findClip(spec.clips.front()) : std::nullopt;
+    if (!grabbed)
+        return tracks;
+    const TrackKind grabbedKind = grabbed->track->kind;
+    int& follow = grabbedKind == TrackKind::Video ? tracks.audio : tracks.video;
+    const int lead = grabbedKind == TrackKind::Video ? tracks.video : tracks.audio;
+    if (follow == 0)
+        return tracks;
+
+    const std::vector<ClipId> ids = spec.links == edit::LinkMode::FollowLinks ? edit::withLinkedClips(*seq, spec.clips)
+                                                                               : spec.clips;
+    std::unordered_set<std::uint64_t> moving;
+    for (const ClipId id : ids)
+        moving.insert(id.value);
+    // Where the moving clips are, and the delta moveClips applies (no clip starts before 0).
+    struct Moving {
+        TrackKind kind;
+        std::size_t index;
+        TimeRange range;
+    };
+    std::vector<Moving> leads;
+    std::vector<Moving> partners;
+    Ticks delta = spec.delta;
+    for (const TrackKind kind : {TrackKind::Video, TrackKind::Audio}) {
+        const std::vector<TrackPtr>& list = seq->tracks(kind);
+        for (std::size_t i = 0; i < list.size(); ++i) {
+            for (const Clip& clip : list[i]->clips) {
+                if (!moving.contains(clip.id.value))
+                    continue;
+                (kind == grabbedKind ? leads : partners).push_back({kind, i, clip.timelineRange});
+                delta = std::max(delta, -clip.start());
+            }
+        }
+    }
+    const auto landing = [&](const Moving& m, int shift) -> const Track* {
+        const std::vector<TrackPtr>& list = seq->tracks(m.kind);
+        const std::int64_t to = static_cast<std::int64_t>(m.index) + shift;
+        if (to < 0 || to >= static_cast<std::int64_t>(list.size()))
+            return nullptr;
+        return list[static_cast<std::size_t>(to)].get();
+    };
+    const auto at = [&](const Moving& m) { return TimeRange{m.range.start + delta, m.range.duration}; };
+
+    std::vector<LinkGroupId> replaced;
+    for (const Moving& m : leads) {
+        if (const Track* to = landing(m, lead)) {
+            forClipsIn(*to, at(m), [&](const Clip& clip) {
+                if (!moving.contains(clip.id.value) && clip.linkGroup)
+                    replaced.push_back(clip.linkGroup);
+            });
+        }
+    }
+    for (const Moving& m : partners) {
+        const Track* to = landing(m, follow);
+        bool free = to && !to->locked;
+        if (free) {
+            forClipsIn(*to, at(m), [&](const Clip& clip) {
+                if (!moving.contains(clip.id.value)
+                    && (!clip.linkGroup || std::ranges::find(replaced, clip.linkGroup) == replaced.end()))
+                    free = false;
+            });
+        }
+        if (!free) {
+            follow = 0;
+            break;
+        }
+    }
+    return tracks;
+}
 
 /// Rate Stretch (R, Premiere): the clip keeps its source In and plays the same material over the new length - the
 /// Speed/Duration edit at the speed that fills it (linked clips follow, keeping their pitch setting). From the head the
@@ -89,8 +183,9 @@ edit::EditOutcome applyGesture(const ProjectState& state, SequenceId sequence, c
     const ClipId clip = spec.clips.front();
     switch (spec.kind) {
     case GestureKind::Move: {
+        const edit::TrackShift tracks = movedTracks(state, sequence, spec);
         if (spec.newAudioTracks <= 0)
-            return edit::moveClips(state, sequence, spec.clips, spec.delta, spec.tracks, spec.moveMode, spec.links);
+            return edit::moveClips(state, sequence, spec.clips, spec.delta, tracks, spec.moveMode, spec.links);
         // Dropping below the last track: add the tracks, then move onto them (one edit, one undo step).
         ProjectState next = state;
         for (int i = 0; i < spec.newAudioTracks; ++i) {
@@ -99,7 +194,7 @@ edit::EditOutcome applyGesture(const ProjectState& state, SequenceId sequence, c
                 return std::unexpected(added.error());
             next = std::move(added->state);
         }
-        return edit::moveClips(next, sequence, spec.clips, spec.delta, spec.tracks, spec.moveMode, spec.links);
+        return edit::moveClips(next, sequence, spec.clips, spec.delta, tracks, spec.moveMode, spec.links);
     }
     case GestureKind::Trim:
         return edit::trimEdge(state, sequence, clip, spec.edge, spec.delta, spec.links);

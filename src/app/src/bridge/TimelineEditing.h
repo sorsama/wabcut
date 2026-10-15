@@ -43,7 +43,8 @@ struct GestureSpec {
     edit::LinkMode links = edit::LinkMode::FollowLinks;
     /// Timeline delta of the drag (for Slip the source delta: dragging left shows later source frames).
     Ticks delta;
-    /// Move only: tracks crossed, counted outward from the video/audio divider.
+    /// Move only: tracks crossed, counted outward from the video/audio divider. The kind of the grabbed clip
+    /// (clips.front()) crosses them as dragged; the other kind only onto tracks free where it lands (applyGesture).
     edit::TrackShift tracks;
     /// Move only: audio tracks to add below the last one first (dropping below the last track creates one).
     int newAudioTracks = 0;

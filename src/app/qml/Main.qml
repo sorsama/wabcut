@@ -90,7 +90,7 @@ Window {
         if (f && f.visible && f.enabled && f !== window.contentItem)
             return
         if (window.timelineShown && timeline.visible)
-            timeline.focusLanes()
+            timeline.focusLanes(true)
         else
             topBar.focusWorkspaceTabs()
     }
@@ -1595,6 +1595,9 @@ Window {
                     // goes to the matching track, or a free one, never cutting the clips under it (editor::dropMedia).
                     // 0.1.3: with snapping on, the frame snaps to the clip in front (and the playhead, marks, markers), and
                     // an insertion line shows where it lands while the drag is over the lanes (TimelinePanel.trackDrop).
+                    // Held over the ruler or below the tracks, a drag adds a track there and lands on it (endDrop(at)
+                    // takes that track away again when the drop lands elsewhere). A sequence from the Project panel comes
+                    // as application/x-wabcut-media with its own key and is nested where it lands (C.8).
                     DropArea {
                         id: timelineMediaDrop
                         objectName: "timelineDropArea"
@@ -1605,7 +1608,7 @@ Window {
                         onExited: timeline.endDrop()
                         onDropped: drop => {
                             const at = timeline.trackDrop(timelineMediaDrop, drop.x, drop.y)
-                            timeline.endDrop()
+                            timeline.endDrop(at)
                             if (!at)
                                 return
                             // M5o (C.13): a graphics template from Essential Graphics, on the track and frame under the pointer.
@@ -1644,7 +1647,7 @@ Window {
                         onExited: timeline.endDrop()
                         onDropped: drop => {
                             const at = timeline.trackDrop(timelineFileDrop, drop.x, drop.y)
-                            timeline.endDrop()
+                            timeline.endDrop(at)
                             if (!drop.hasUrls)
                                 return
                             drop.accept(Qt.CopyAction)
@@ -1678,7 +1681,7 @@ Window {
                         onExited: timeline.endDrop()
                         onDropped: drop => {
                             const at = timeline.trackDrop(timelineSourceDrop, drop.x, drop.y)
-                            timeline.endDrop()
+                            timeline.endDrop(at)
                             if (!at)
                                 return
                             if (SourceMonitor.dropAt(at.time, at.track, !ProjectFile.insertModifierHeld(),

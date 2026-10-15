@@ -461,6 +461,18 @@ public:
     /// snaps, and returns dropPoint(x, y).
     Q_INVOKABLE QVariantMap showDropIndicator(double x, double y);
     Q_INVOKABLE void clearDropIndicator();
+    /// showDropIndicator() at x on `track`'s row, wherever the pointer is: a drag held over the ruler or below the
+    /// tracks drops on the track that hold added. An empty map when the sequence has no such track.
+    Q_INVOKABLE QVariantMap showDropIndicatorOnTrack(double x, const QString& track);
+    /// A drag held above the top video track ("video") or below the last audio track ("audio") adds a track there:
+    /// Vn+1 on top or An+1 at the bottom, as one undo step ("Add Track"), scrolled into view. Returns its key, or ""
+    /// when it could not be added.
+    Q_INVOKABLE QString addDropTrack(const QString& kind);
+    /// The drag that added `track` (addDropTrack) ended without dropping on it: the track goes again, undone so the
+    /// history keeps no step for it, while it is still empty and nothing else was edited since. Returns whether it went.
+    Q_INVOKABLE bool releaseDropTrack(const QString& track);
+    /// The label of the track addDropTrack(kind) would add: "V3" over V1 and V2, "A3" below A1 and A2.
+    Q_INVOKABLE QString nextTrackLabel(const QString& kind) const;
 
     // ---- C++ ----
     const TimelineStats& stats() const { return m_stats; }
@@ -786,6 +798,11 @@ private:
         bool snapped = false;
         QVariantMap point; ///< dropPoint() at the last position
     } m_dropIndicator;
+    // The track a held drag added (addDropTrack) and the session revision right after, until the drag ends
+    struct DropTrack {
+        TrackId track;
+        std::uint64_t revision = 0;
+    } m_dropTrack;
     bool m_hoverAllTracks = false;
     bool m_hoverInside = false;
     // Auto-scroll during drags

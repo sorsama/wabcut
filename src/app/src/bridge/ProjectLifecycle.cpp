@@ -1158,8 +1158,10 @@ int ProjectLifecycle::relinkAll(const QList<QUrl>& folders) {
 bool ProjectLifecycle::dropMedia(const QString& mediaId, const QString& timecode, const QString& trackId,
                                  bool overwrite) {
     const auto media = parseMediaKey(mediaId);
+    // A sequence from the Project panel: nested where it is dropped (C.8).
+    const auto nested = media ? std::nullopt : parseSequenceKey(mediaId);
     const SequencePtr sequence = m_controller ? m_controller->currentSequence() : nullptr;
-    if (!m_document || !media || !sequence) {
+    if (!m_document || (!media && !nested) || !sequence) {
         return false;
     }
     const auto at = parseTimecode(timecode.toStdString(), sequence->frameRate, sequence->dropFrame);
@@ -1168,7 +1170,8 @@ bool ProjectLifecycle::dropMedia(const QString& mediaId, const QString& timecode
         return false;
     }
     editor::MediaDrop drop;
-    drop.media = *media;
+    drop.media = media.value_or(MediaId{});
+    drop.sourceSequence = nested.value_or(SequenceId{});
     drop.sequence = sequence->id;
     drop.at = *at;
     drop.track = parseTrackKey(trackId).value_or(TrackId{});

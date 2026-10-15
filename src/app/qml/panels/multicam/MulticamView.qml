@@ -47,13 +47,17 @@ Item {
                 font.pixelSize: Theme.textSm
                 font.weight: Font.Medium
             }
-            // What a switch changes: a compact pill and its menu (fits a narrow monitor).
+            // What a switch changes: a compact pill and its menu (fits a narrow monitor: there "Both" for picture and
+            // sound, and the pill never widens the view - its width would push the grid into the program picture).
             PillButton {
                 id: targetButton
                 objectName: "multicamTarget"
+                Layout.minimumWidth: 0
+                Layout.maximumWidth: root.width
                 compact: true
                 iconName: "chevron-down"
-                text: Multicam.target === "video" ? qsTr("Picture") : Multicam.target === "audio" ? qsTr("Sound") : qsTr("Picture and sound")
+                text: Multicam.target === "video" ? qsTr("Picture") : Multicam.target === "audio" ? qsTr("Sound")
+                    : root.width < Theme.space(44) ? qsTr("Both") : qsTr("Picture and sound")
                 tooltip: qsTr("What a switch changes")
                 onClicked: targetMenu.popup(targetButton, 0, targetButton.height + Theme.space(1))
                 OptionsMenu {

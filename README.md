@@ -108,23 +108,6 @@ tested on a small number of machines and projects. Known gaps in this version:
 
 The full list is in the [release notes](docs/release-notes-0.1.md#known-issues).
 
-## Roadmap
-
-Wabcut is built Windows-first for gaming videos, video essays and documentaries. This is a plan, not a promise: the
-order will change as people use it. Details are in the [full roadmap](docs/roadmap.md).
-
-- [x] **0.1 "First Cut"** (October 2026): the first alpha. Premiere-style editing, import and export with Premiere,
-  Resolve and Final Cut, gaming tools, transcripts and captions, colour, and local or bring-your-own-key AI.
-- [ ] **Toward a beta:** fixes from real projects, code-signed installers and automatic updates, measured AI quality,
-  and screen-reader checks.
-- [ ] **Started, parked for after 0.1:** Content Credentials (C2PA) on export, ACES/OCIO colour management with HDR
-  grading, and a warp stabilizer.
-- [ ] **Wanted, not scheduled:** macOS and Linux builds, Optical Flow slow motion, OpenFX video plug-ins, AAF/OMF
-  export, and caption file import.
-
-**Not planned for now:** live co-editing, a plug-in marketplace, an After Effects-class compositor, and publishing
-straight to social platforms.
-
 Need something that isn't here? [Open an issue](../../issues) and say what you're trying to make.
 
 ## Install
@@ -191,6 +174,7 @@ Wabcut is early, so feedback is the most useful contribution right now.
 
 - **Bugs and ideas:** open an [issue](../../issues). Include the Wabcut version (shown in the title bar), your Windows
   version and GPU, and the steps that reproduce the problem.
+- **Security problems:** please report them privately, not as an issue; see [SECURITY.md](SECURITY.md).
 - **Other platforms:** reports from building or running Wabcut on macOS or Linux are welcome, since the solo developer
   can only test on Windows.
 - **Code:** read [building](docs/building.md) and [architecture](docs/architecture.md) first. Keep each pull request

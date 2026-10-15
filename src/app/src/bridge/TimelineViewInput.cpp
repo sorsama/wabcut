@@ -7,11 +7,13 @@
 
 #include "TimelineView.h"
 
+#include "BridgeIds.h"
 #include "EditCursors.h"
 #include "EffectControls.h"
 
 #include <wabcut/model/Effects.h>
 #include <wabcut/model/FinishingOps.h>
+#include <wabcut/model/ProjectOps.h>
 #include <wabcut/model/Snap.h>
 #include <wabcut/model/Timecode.h>
 
@@ -184,6 +186,61 @@ void TimelineView::clearDropIndicator() {
     m_dropIndicator = {};
     emit dropIndicatorChanged();
     update();
+}
+
+QVariantMap TimelineView::showDropIndicatorOnTrack(double x, const QString& track) {
+    const auto id = parseTrackKey(track);
+    if (!id)
+        return {};
+    for (const Row& row : m_rows) {
+        if (row.track->id == *id)
+            return showDropIndicator(x, row.y - m_scrollY + row.height / 2);
+    }
+    return {};
+}
+
+// ---- Tracks a held drag adds (2026-10-15) ---------------------------------------------------------------------------
+// TimelinePanel times the hold; these add the track and take it away again when the drag drops elsewhere.
+
+QString TimelineView::addDropTrack(const QString& kind) {
+    if (!m_controller || !m_sequence)
+        return {};
+    const TrackKind trackKind = kind == QLatin1String("audio") ? TrackKind::Audio : TrackKind::Video;
+    const SequenceId sequence = m_sequence->id;
+    EditSession& session = m_controller->session();
+    const char* label = QT_TRANSLATE_NOOP("wabcut::app::ProjectController", "Add Track");
+    auto created = session.apply(label, [&](const ProjectState& state) {
+        return edit::addTrack(state, sequence, trackKind);
+    });
+    if (!created)
+        return {};
+    m_dropTrack = {created->id, session.revision()};
+    // The session told the controller, which relaid the rows: the new track is the top or the bottom row.
+    setScrollY(trackKind == TrackKind::Video ? 0.0 : m_contentHeight);
+    return trackKey(created->id);
+}
+
+bool TimelineView::releaseDropTrack(const QString& track) {
+    const DropTrack added = std::exchange(m_dropTrack, {});
+    const auto id = parseTrackKey(track);
+    if (!m_controller || !id || !added.track || *id != added.track)
+        return false;
+    // Anything edited since (the drop itself comes after this) keeps the track: undo would take that edit instead.
+    EditSession& session = m_controller->session();
+    if (session.revision() != added.revision)
+        return false;
+    const ProjectSnapshot now = session.snapshot();
+    for (const SequencePtr& sequence : now->sequences) {
+        if (const Track* t = sequence->findTrack(added.track); t && !t->clips.empty())
+            return false;
+    }
+    return m_controller->undo();
+}
+
+QString TimelineView::nextTrackLabel(const QString& kind) const {
+    const bool audio = kind == QLatin1String("audio");
+    const std::size_t count = !m_sequence ? 0 : m_sequence->tracks(audio ? TrackKind::Audio : TrackKind::Video).size();
+    return QStringLiteral("%1%2").arg(audio ? QLatin1Char('A') : QLatin1Char('V')).arg(count + 1);
 }
 
 int TimelineView::nearestRow(double y) const {

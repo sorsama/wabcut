@@ -327,7 +327,15 @@ The sections below record what each milestone built. Their behaviour still holds
 - **Drops (0.1.3):** a Library card, the Source Monitor's picture, a search hit or a graphics template dragged over the
   lanes lands where `TimelineView.dropPoint` says: the frame under the pointer, snapped to the same targets (so it
   butts against the clip in front instead of leaving a gap). An insertion line shows where it will land and turns the
-  snap colour, with the snap tick, when it snaps.
+  snap colour, with the snap tick, when it snaps. A sequence dragged from the Project panel lands the same way, as a
+  nested clip (its picture and its mix, linked); into itself, or into a sequence it plays, it is refused.
+- **Hold for a new track (2026-10-15):** such a drag held still over the ruler (above the top video track) or below
+  the last track (the empty lanes under it, or the footer) shows a band, "Hold to add track V3" / "A3", in
+  `accentWash` with an `accentStroke` hairline, filling for two seconds (`TimelinePanel.newTrackHoldMs`). Then the
+  track is added (`TimelineView.addDropTrack`: one "Add Track" undo step, scrolled into view) and the insertion line
+  moves onto it, where the drop lands while the pointer stays in that zone. One such track per drag; holding at the
+  other end moves it there. If the drag drops on another track or leaves the timeline, the track is undone again
+  (`releaseDropTrack`) while it is still empty and nothing else was edited.
 
 ### Motion (Vfinity rules; all in the TimelineView scene graph, never per-clip QML)
 | What | How | Token |
@@ -434,6 +442,11 @@ unlocked sync-locked track.
   works the same way when the tracks are taller than the view.
 - **New track:** dropping an audio clip below the last track creates a new audio track (`edit::addTrack` plus the
   move, one undo step). The preview shows the new lane, and the headers show a ghost "+ New track A4" header.
+- **Linked partners across tracks (2026-10-15):** the dragged clip's kind crosses the tracks it is dragged over; its
+  linked partners of the other kind cross as many tracks outward only where they land on a free stretch of an unlocked
+  track, else they stay on their tracks (linked audio dragged from A2 to A1 leaves its picture on V3 when V2 holds a
+  clip there; dragged two tracks, the picture goes to V1 if V1 is free). A clip the dragged kind replaces frees its own
+  link partners, so dragging onto another A/V clip replaces both its halves (`movedTracks` in TimelineEditing.cpp).
 
 
 ## M5d: finishing (effects, keyframes, transitions, speed, titles)

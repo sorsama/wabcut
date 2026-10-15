@@ -35,7 +35,10 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QQmlComponent>
+#include <QQmlContext>
 #include <QQmlEngine>
+#include <QQmlProperty>
+#include <QPointer>
 
 #include <algorithm>
 #include <numeric>
@@ -239,6 +242,85 @@ TEST_CASE("Library bins: dropping cards on a bin card moves them", "[app][librar
     QCoreApplication::sendEvent(shell.window.get(), &drop);
     spin(30);
     CHECK(controller->snapshot()->findMedia(first->id)->bin == *parseBinKey(bin));
+    CHECK(controller->session().undoCount() == undo + 1);
+    takeMessages();
+}
+
+TEST_CASE("Library bins: a sequence card drags into a bin card", "[app][library][qml]") {
+    // 2026-10-15 report: sequences (and nested ones) would not go into a bin. The drag carries the sequence (into a
+    // bin, and onto the timeline to nest it) and a bin card takes it.
+    resetSettings();
+    clearMessages();
+    Shell shell;
+    REQUIRE(shell.window != nullptr);
+    shell.resize(kShotWidth, kShotHeight);
+    shell.theme->setProperty("reduceMotion", true);
+    auto* library = shell.engine.singletonInstance<LibraryBridge*>("Wabcut", "Library");
+    auto* controller = shell.engine.singletonInstance<ProjectController*>("Wabcut", "ProjectController");
+    REQUIRE(library);
+    REQUIRE(controller);
+    library->setPersistent(false);
+    const QString bin = library->newBin(QStringLiteral("Selects"));
+    REQUIRE_FALSE(bin.isEmpty());
+    REQUIRE_FALSE(controller->snapshot()->sequences.empty());
+    const SequenceId sequence = controller->snapshot()->sequences.front()->id;
+    const QString sequenceCardKey = sequenceKey(sequence);
+    REQUIRE_FALSE(shell.grab().isNull());
+    QQuickItem* root = shell.window->contentItem();
+    QQuickItem* binCard = findNamed(root, QStringLiteral("libraryCard_") + bin);
+    QQuickItem* sequenceCard = findNamed(root, QStringLiteral("librarySequence_") + sequenceCardKey);
+    REQUIRE(binCard);
+    REQUIRE(sequenceCard);
+
+    // A press and drag on the sequence card: its drag goes active with the sequence's data. The system drag
+    // (Drag.Automatic) would wait for the real mouse, so the test makes it a plain one (Drag.None).
+    QPointer<QQuickItem> binCardAlive(binCard);
+    QQuickItem* proxy = findNamed(sequenceCard, QStringLiteral("libraryCardDrag"));
+    REQUIRE(proxy);
+    QQmlContext* context = qmlContext(proxy);
+    REQUIRE(QQmlProperty(proxy, QStringLiteral("Drag.dragType"), context).write(0));
+    const QPointF from = sequenceCard->mapToScene(QPointF(sequenceCard->width() / 2, sequenceCard->height() / 3));
+    const auto mouse = [&](QEvent::Type type, QPointF pos, Qt::MouseButton button, Qt::MouseButtons buttons) {
+        QMouseEvent event(type, pos, pos, button, buttons, Qt::NoModifier);
+        QCoreApplication::sendEvent(shell.window.get(), &event);
+    };
+    mouse(QEvent::MouseButtonPress, from, Qt::LeftButton, Qt::LeftButton);
+    for (int i = 1; i <= 8; ++i) {
+        mouse(QEvent::MouseMove, from + QPointF(6.0 * i, 0), Qt::NoButton, Qt::LeftButton);
+        spin(5);
+    }
+    REQUIRE(QQmlProperty(proxy, QStringLiteral("Drag.active"), context).read().toBool());
+    const QVariantMap data = QQmlProperty(proxy, QStringLiteral("Drag.mimeData"), context).read().toMap();
+    CHECK(data.value(QStringLiteral("application/x-wabcut-library")).toString() == sequenceCardKey);
+    CHECK(data.value(QStringLiteral("application/x-wabcut-media")).toString() == sequenceCardKey);
+
+    // While the drag holds (the card selected, its picture rendering), the bin card stays and lights up under it.
+    spin(1500);
+    REQUIRE(binCardAlive);
+    CHECK(findNamed(root, QStringLiteral("libraryCard_") + bin) == binCard);
+    QQuickItem* binDrop = nullptr;
+    for (QQuickItem* child : binCard->childItems()) {
+        if (QByteArray(child->metaObject()->className()).contains("DropArea"))
+            binDrop = child;
+    }
+    REQUIRE(binDrop);
+    const auto undo = controller->session().undoCount();
+    QMimeData mime;
+    for (auto it = data.cbegin(); it != data.cend(); ++it)
+        mime.setData(it.key(), it.value().toString().toUtf8());
+    const QPointF at = binCard->mapToScene(QPointF(binCard->width() / 2, binCard->height() / 3));
+    QDragEnterEvent enter(at.toPoint(), Qt::MoveAction, &mime, Qt::LeftButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(shell.window.get(), &enter);
+    QDragMoveEvent move(at.toPoint(), Qt::MoveAction, &mime, Qt::LeftButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(shell.window.get(), &move);
+    spin(5);
+    CHECK(binDrop->property("containsDrag").toBool());
+    QDropEvent drop(at, Qt::MoveAction, &mime, Qt::LeftButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(shell.window.get(), &drop);
+    spin(30);
+    mouse(QEvent::MouseButtonRelease, from + QPointF(48, 0), Qt::LeftButton, Qt::NoButton);
+    spin(30);
+    CHECK(controller->snapshot()->findSequence(sequence)->bin == *parseBinKey(bin));
     CHECK(controller->session().undoCount() == undo + 1);
     takeMessages();
 }

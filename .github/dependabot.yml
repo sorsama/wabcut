@@ -1,0 +1,19 @@
+# Dependabot version updates (security updates are on in the repository settings and need no entry here).
+# Monthly, so a solo maintainer gets a few grouped pull requests rather than a stream of them.
+version: 2
+updates:
+  # The actions the CI workflows use.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # vcpkg.json's builtin-baseline (moves every port at once: FFmpeg, Qt dependencies, codecs). Review these pull
+  # requests with a full Windows build before merging.
+  - package-ecosystem: "vcpkg"
+    directory: "/"
+    schedule:
+      interval: "monthly"

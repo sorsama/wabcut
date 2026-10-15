@@ -355,9 +355,12 @@ AbstractButton {
             card.menuRequested(eventPoint.position)
         }
     }
-    // Drag: into a bin, or (media) onto the timeline.
+    // Drag: into a bin, or (media, and a sequence to nest it) onto the timeline. 2026-10-15: in a real Windows drag a
+    // sequence carrying application/x-wabcut-library alone never lit a bin up; with its key as timeline data too (like
+    // media) it goes into bins. (Bins dragged into bins still do not, with either data: an open issue.)
     Item {
         id: dragProxy
+        objectName: "libraryCardDrag"
         anchors.fill: parent
         Drag.dragType: Drag.Automatic
         Drag.supportedActions: Qt.MoveAction | Qt.CopyAction
@@ -372,7 +375,7 @@ AbstractButton {
                     if (!card.selected)
                         Library.select(card.key, Library.Replace)
                     const keys = Library.selection.join(",")
-                    dragProxy.Drag.mimeData = card.isBin || card.isSequence
+                    dragProxy.Drag.mimeData = card.isBin
                                               ? { "application/x-wabcut-library": keys }
                                               : { "application/x-wabcut-library": keys, "application/x-wabcut-media": card.key }
                 }

@@ -1,5 +1,7 @@
 #include <wabcut/editor/SourceEdit.h>
 
+#include <wabcut/model/Nesting.h>
+
 #include <algorithm>
 #include <cstddef>
 #include <string>
@@ -130,28 +132,33 @@ std::vector<TrackId> followingTracks(const std::vector<TrackPtr>& tracks, std::s
     return out;
 }
 
-} // namespace
+/// What a drop brings: a picture or not, how many audio streams, and (A.10) the recording whose audio goes by name.
+struct DropStreams {
+    bool video = false;
+    std::size_t audio = 0;
+    const MediaInfo* byName = nullptr;
+};
 
-std::vector<edit::SourcePatch> patchesForDrop(const Sequence& sequence, const MediaItem& media, TrackId track,
-                                              std::optional<TimeRange> landing) {
+std::vector<edit::SourcePatch> patchesFor(const Sequence& sequence, const DropStreams& streams, TrackId track,
+                                          std::optional<TimeRange> landing) {
     std::vector<edit::SourcePatch> patches;
     const std::optional<PointerTrack> pointer = pointerTrack(sequence, track);
     if (!pointer) {
         // Outside the tracks: the targeted tracks (else V1 and A1, A2, ...), Premiere's default patching.
-        if (media.info.hasVideo()) {
+        if (streams.video) {
             const auto video = destinations(sequence.videoTracks, firstTrack(sequence.videoTracks, track), 1);
             if (!video.empty()) {
                 patches.push_back({{StreamKind::Video, 0}, video.front()});
             }
         }
         const std::size_t firstAudio = firstTrack(sequence.audioTracks, track);
-        if (edit::routesAudioByName(media.info)) {
-            for (edit::SourcePatch& p : edit::audioPatchesByName(sequence, media.info, firstAudio)) {
+        if (streams.byName) {
+            for (edit::SourcePatch& p : edit::audioPatchesByName(sequence, *streams.byName, firstAudio)) {
                 patches.push_back(std::move(p));
             }
             return patches;
         }
-        const auto audio = destinations(sequence.audioTracks, firstAudio, media.info.audio.size());
+        const auto audio = destinations(sequence.audioTracks, firstAudio, streams.audio);
         for (std::size_t i = 0; i < audio.size(); ++i) {
             patches.push_back({{StreamKind::Audio, static_cast<std::int32_t>(i)}, audio[i]});
         }
@@ -160,7 +167,7 @@ std::vector<edit::SourcePatch> patchesForDrop(const Sequence& sequence, const Me
 
     const bool onVideo = pointer->kind == StreamKind::Video;
     const Track& under = onVideo ? *sequence.videoTracks[pointer->index] : *sequence.audioTracks[pointer->index];
-    if (media.info.hasVideo()) {
+    if (streams.video) {
         // The track under the pointer (the next unlocked one up when it is locked), else the matching video track.
         const auto video = onVideo ? destinations(sequence.videoTracks, pointer->index, 1)
                                    : followingTracks(sequence.videoTracks, pointer->index, 1, landing, &under);
@@ -168,24 +175,24 @@ std::vector<edit::SourcePatch> patchesForDrop(const Sequence& sequence, const Me
             patches.push_back({{StreamKind::Video, 0}, video.front()});
         }
     }
-    if (edit::routesAudioByName(media.info)) {
+    if (streams.byName) {
         // A.10: by name; the untitled streams from the track under the pointer, or the matching audio track.
         const std::size_t first = std::min(pointer->index, sequence.audioTracks.size());
-        for (edit::SourcePatch& p : edit::audioPatchesByName(sequence, media.info, first)) {
+        for (edit::SourcePatch& p : edit::audioPatchesByName(sequence, *streams.byName, first)) {
             patches.push_back(std::move(p));
         }
         return patches;
     }
-    const std::size_t streams = media.info.audio.size();
+    const std::size_t count = streams.audio;
     std::vector<TrackId> audio;
-    if (streams > 0 && !onVideo) {
+    if (count > 0 && !onVideo) {
         // The first stream on the track under the pointer, the others where they cut nothing.
         audio = destinations(sequence.audioTracks, pointer->index, 1);
-        const auto rest = followingTracks(sequence.audioTracks, pointer->index + 1, streams - audio.size(), landing,
+        const auto rest = followingTracks(sequence.audioTracks, pointer->index + 1, count - audio.size(), landing,
                                           &under, audio);
         audio.insert(audio.end(), rest.begin(), rest.end());
-    } else if (streams > 0) {
-        audio = followingTracks(sequence.audioTracks, pointer->index, streams, landing, &under);
+    } else if (count > 0) {
+        audio = followingTracks(sequence.audioTracks, pointer->index, count, landing, &under);
     }
     for (std::size_t i = 0; i < audio.size(); ++i) {
         patches.push_back({{StreamKind::Audio, static_cast<std::int32_t>(i)}, audio[i]});
@@ -193,10 +200,60 @@ std::vector<edit::SourcePatch> patchesForDrop(const Sequence& sequence, const Me
     return patches;
 }
 
+/// C.8: a sequence dropped as a source: a nested clip of it, or a multicam clip of a multicam source.
+edit::EditOutcome dropSequence(const ProjectState& state, const Sequence& sequence, const MediaDrop& drop) {
+    const Sequence* source = state.findSequence(drop.sourceSequence);
+    if (!source) {
+        return std::unexpected(Error{ErrorCode::NotFound, "no such sequence"});
+    }
+    if (source->id == sequence.id) {
+        return std::unexpected(invalid("a sequence cannot be nested in itself"));
+    }
+    if (sequenceContains(state, source->id, sequence.id)) {
+        return std::unexpected(invalid("\"" + source->name + "\" already plays this sequence, so it cannot go in it"));
+    }
+    edit::SourceClip clip;
+    clip.sequence = source->id;
+    clip.patches = patchesForDrop(sequence, *source, drop.track);
+    if (clip.patches.empty()) {
+        return std::unexpected(invalid("the sequence has no picture or sound that fits an unlocked track"));
+    }
+    clip.sourceRange = drop.sourceRange.value_or(TimeRange{Ticks{}, source->duration});
+    if (clip.sourceRange.isEmpty()) {
+        return std::unexpected(invalid("the sequence is empty"));
+    }
+    const Ticks at = snapToFrame(Ticks{std::max<std::int64_t>(0, drop.at.value)}, sequence.frameRate);
+    // As for media: once it is known where the clips land, the streams that follow the pointer's track avoid tracks
+    // with other clips there.
+    clip.patches = patchesForDrop(sequence, *source, drop.track, TimeRange{at, clip.sourceRange.duration});
+    return drop.mode == DropMode::Overwrite ? edit::overwriteEdit(state, sequence.id, clip, at)
+                                            : edit::insertEdit(state, sequence.id, clip, at);
+}
+
+} // namespace
+
+std::vector<edit::SourcePatch> patchesForDrop(const Sequence& sequence, const MediaItem& media, TrackId track,
+                                              std::optional<TimeRange> landing) {
+    const DropStreams streams{.video = media.info.hasVideo(),
+                              .audio = media.info.audio.size(),
+                              .byName = edit::routesAudioByName(media.info) ? &media.info : nullptr};
+    return patchesFor(sequence, streams, track, landing);
+}
+
+std::vector<edit::SourcePatch> patchesForDrop(const Sequence& sequence, const Sequence& source, TrackId track,
+                                              std::optional<TimeRange> landing) {
+    const DropStreams streams{.video = sequenceHasStream(source, {StreamKind::Video, 0}),
+                              .audio = sequenceHasStream(source, {StreamKind::Audio, 0}) ? std::size_t{1} : 0};
+    return patchesFor(sequence, streams, track, landing);
+}
+
 edit::EditOutcome dropMedia(EditSession& session, const MediaDrop& drop) {
     const char* label = drop.mode == DropMode::Overwrite ? "Overwrite" : "Insert";
     return session.apply(label, [&](const ProjectState& state) -> edit::EditOutcome {
         const Sequence* sequence = state.findSequence(drop.sequence);
+        if (sequence && drop.sourceSequence) {
+            return dropSequence(state, *sequence, drop);
+        }
         const MediaItem* media = state.findMedia(drop.media);
         if (!sequence || !media) {
             return std::unexpected(Error{ErrorCode::NotFound, "no such sequence or media item"});

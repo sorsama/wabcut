@@ -147,6 +147,97 @@ TEST_CASE("Move variants: overwrite, Ctrl insert, Alt ignores links, across trac
     }
 }
 
+TEST_CASE("Linked clips cross tracks with the dragged one only onto tracks free where they land",
+          "[app][timeline][edit]") {
+    // 2026-10-15: dragging linked audio from A2 to A1 moved its picture from V3 onto the picture on V2.
+    SECTION("the partner's track is taken: the picture stays on V3") {
+        Rig rig(R"(
+            V3 |Bbbb....|
+            V2 |Cccc....|
+            V1 |........|
+            A1 |........|
+            A2 |Bbbb....|
+        )");
+        rig.drag({rig.x(1.5), rig.y("A2")}, {rig.x(1.5), rig.y("A1")});
+        CHECK(rig.picture() == normalize(R"(
+            V3 |Bbbb....|
+            V2 |Cccc....|
+            V1 |........|
+            A1 |Bbbb....|
+            A2 |........|
+        )"));
+        CHECK(rig.undoSteps() == 1);
+    }
+    SECTION("two tracks over, the free one: the picture goes to V1") {
+        Rig rig(R"(
+            V3 |Bbbb....|
+            V2 |Cccc....|
+            V1 |........|
+            A1 |........|
+            A2 |........|
+            A3 |Bbbb....|
+        )");
+        rig.view->minimizeAllTracks(); // six tracks fit the view: no vertical auto-scroll during the drag
+        rig.harness.frame();
+        rig.drag({rig.x(1.5), rig.y("A3")}, {rig.x(1.5), rig.y("A1")});
+        CHECK(rig.picture() == normalize(R"(
+            V3 |........|
+            V2 |Cccc....|
+            V1 |Bbbb....|
+            A1 |Bbbb....|
+            A2 |........|
+            A3 |........|
+        )"));
+    }
+    SECTION("free where it lands later on: the picture goes along") {
+        Rig rig(R"(
+            V3 |Bbbb........|
+            V2 |Cccc........|
+            V1 |............|
+            A1 |............|
+            A2 |Bbbb........|
+        )");
+        rig.drag({rig.x(1.5), rig.y("A2")}, {rig.x(7.5), rig.y("A1")});
+        CHECK(rig.picture() == normalize(R"(
+            V3 |............|
+            V2 |Cccc..Bbbb..|
+            V1 |............|
+            A1 |......Bbbb..|
+            A2 |............|
+        )"));
+    }
+    SECTION("onto another A/V clip's sound: both its halves are replaced, as a drop does") {
+        Rig rig(R"(
+            V2 |Bbbb....|
+            V1 |Dddd....|
+            A1 |Dddd....|
+            A2 |Bbbb....|
+        )");
+        rig.drag({rig.x(1.5), rig.y("A2")}, {rig.x(1.5), rig.y("A1")});
+        CHECK(rig.picture() == normalize(R"(
+            V2 |........|
+            V1 |Bbbb....|
+            A1 |Bbbb....|
+            A2 |........|
+        )"));
+    }
+    SECTION("the dragged picture still overwrites where it is dropped") {
+        Rig rig(R"(
+            V2 |Cccc....|
+            V1 |Bbbb....|
+            A1 |Bbbb....|
+            A2 |Eeee....|
+        )");
+        rig.drag({rig.x(1.5), rig.y("V1")}, {rig.x(1.5), rig.y("V2")});
+        CHECK(rig.picture() == normalize(R"(
+            V2 |Bbbb....|
+            V1 |........|
+            A1 |Bbbb....|
+            A2 |Eeee....|
+        )"));
+    }
+}
+
 // ---- Trims, ripple, roll, slip, slide -------------------------------------------------------------------------------
 
 TEST_CASE("Edge drags trim; Ctrl and the B tool ripple-trim; N rolls", "[app][timeline][edit]") {

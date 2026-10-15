@@ -395,7 +395,8 @@ FocusScope {
                             if (!cell.selected)
                                 Library.select(cell.key, Library.Replace)
                             const keys = Library.selection.join(",")
-                            dragProxy.Drag.mimeData = cell.kind === "bin" || cell.kind === "sequence"
+                            // A sequence goes onto the timeline too, nested there (ProjectFile.dropMedia).
+                            dragProxy.Drag.mimeData = cell.kind === "bin"
                                                       ? { "application/x-wabcut-library": keys }
                                                       : { "application/x-wabcut-library": keys,
                                                           "application/x-wabcut-media": cell.key }

@@ -31,7 +31,7 @@ Five things make a screenshot recognisably Wabcut:
 - IBM Plex / Bai Jamjuree UI type → Manrope and JetBrains Mono (Plex Sans Thai still sets Thai).
 - The W logo → the echo mark. The name stays Wabcut.
 - Docked panel headers → tab strips; the slice-mark section header → a dot and a bold title.
-v2's ban on pills and lime (the "Lyrica tells") is lifted: the user chose this direction on 2026-10-15.
+v2's ban on pills and lime is lifted: the user chose this direction on 2026-10-15.
 Kept: the Premiere keymap, the frameless window, the workspaces and docking, typed undoable actions, and every
 accessibility and reduce-motion rule.
 

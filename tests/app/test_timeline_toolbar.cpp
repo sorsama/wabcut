@@ -15,6 +15,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <wabcut/editor/SourceEdit.h>
+#include <wabcut/model/ProjectOps.h>
 #include <wabcut/model/Timecode.h>
 
 #include <QCoreApplication>
@@ -579,7 +580,7 @@ TEST_CASE("Tracks toolbar: tool groups with flyouts, modes apart from the tools,
     CHECK(at.value(QStringLiteral("time")).toString() == controller->formatTimecode(end));
     CHECK(at.value(QStringLiteral("track")).toString() == trackKey(track->id));
     CHECK_FALSE(view->dropIndicator().isEmpty());
-    REQUIRE(QMetaObject::invokeMethod(panel, "endDrop"));
+    REQUIRE(QMetaObject::invokeMethod(panel, "endDrop", Q_ARG(QVariant, QVariant()))); // the drag left
     CHECK(view->dropIndicator().isEmpty());
 
     const QStringList messages = takeMessages();
@@ -681,6 +682,259 @@ TEST_CASE("Files dragged from File Explorer onto a track are imported and edited
 
     // The Library cards of the stills cannot show their thumbnails here (QQuickImage reports "No decoder for png" for
     // still thumbnails in this test run); that is the Library's, not the drop's.
+    QStringList messages = takeMessages();
+    messages.removeIf([](const QString& m) { return m.contains(QStringLiteral("No decoder for png")); });
+    INFO(join(messages));
+    CHECK(messages.isEmpty());
+}
+
+TEST_CASE("A drag held over the ruler or below the tracks adds a track there and lands on it",
+          "[app][timeline][drop][qml]") {
+    // 2026-10-15 request: a picture held above V2 for two seconds adds V3 for the drop (below the last audio track, an
+    // audio track). A track the drop does not use goes again; a drag passing by adds nothing.
+    resetSettings();
+    clearMessages();
+    QTemporaryDir dir;
+    REQUIRE(dir.isValid());
+    const QString still = dir.filePath(QStringLiteral("Portrait.png"));
+    {
+        QImage picture(64, 36, QImage::Format_RGB32);
+        picture.fill(Qt::darkCyan);
+        REQUIRE(picture.save(still));
+    }
+    Shell shell;
+    REQUIRE(shell.window != nullptr);
+    shell.resize(kShotWidth, kShotHeight);
+    auto* file = shell.engine.singletonInstance<ProjectLifecycle*>("Wabcut", "ProjectFile");
+    auto* controller = shell.engine.singletonInstance<ProjectController*>("Wabcut", "ProjectController");
+    REQUIRE(file);
+    REQUIRE(controller);
+    REQUIRE(file->importFiles({QUrl::fromLocalFile(still)}).value(QStringLiteral("added")).toInt() == 1);
+    MediaId stillId;
+    for (const MediaPtr& m : controller->snapshot()->media) {
+        if (m->name == "Portrait.png")
+            stillId = m->id;
+    }
+    REQUIRE(stillId);
+    REQUIRE_FALSE(shell.grab().isNull());
+
+    QQuickItem* panel = shell.item("timelinePanel");
+    auto* view = qobject_cast<TimelineView*>(shell.item("timelineView"));
+    REQUIRE(panel);
+    REQUIRE(view);
+    QQuickItem* band = findNamed(shell.window->contentItem(), QStringLiteral("newTrackHoldBand"));
+    QQuickItem* bandLabel = findNamed(shell.window->contentItem(), QStringLiteral("newTrackHoldLabel"));
+    REQUIRE(band);
+    REQUIRE(bandLabel);
+    panel->setProperty("newTrackHoldMs", 150);
+    view->setSnapping(false);
+
+    SequencePtr seq = controller->currentSequence();
+    REQUIRE(seq);
+    const std::size_t videoTracks = seq->videoTracks.size();
+    const std::size_t audioTracks = seq->audioTracks.size();
+    REQUIRE(videoTracks >= 1);
+    std::vector<std::size_t> clipsBefore;
+    seq->forEachTrack([&](const Track& t) { clipsBefore.push_back(t.clips.size()); });
+    const std::size_t undoBefore = controller->session().undoCount();
+
+    QMimeData mime;
+    mime.setData(QStringLiteral("application/x-wabcut-media"), mediaKey(stillId).toUtf8());
+    const auto drag = [&](QEvent::Type type, QPointF local) {
+        const QPoint p = view->mapToScene(local).toPoint();
+        if (type == QEvent::DragEnter) {
+            QDragEnterEvent event(p, Qt::CopyAction, &mime, Qt::LeftButton, {});
+            QCoreApplication::sendEvent(shell.window.get(), &event);
+        } else if (type == QEvent::DragMove) {
+            QDragMoveEvent event(p, Qt::CopyAction, &mime, Qt::LeftButton, {});
+            QCoreApplication::sendEvent(shell.window.get(), &event);
+        } else {
+            QDropEvent event(p, Qt::CopyAction, &mime, Qt::LeftButton, {});
+            QCoreApplication::sendEvent(shell.window.get(), &event);
+        }
+        spin(5);
+    };
+    const auto leave = [&] {
+        QDragLeaveEvent event;
+        QCoreApplication::sendEvent(shell.window.get(), &event);
+        spin(5);
+    };
+    const double atX = 2.0 * view->pixelsPerSecond() - view->scrollX() + 1;
+    // Over the ruler, just above the lanes (the ruler sits a small gap above them).
+    const QPointF overRuler(atX, -12);
+
+    // Held over the ruler: the band names the track it will add, then V(n+1) is there and the drop lands on it.
+    drag(QEvent::DragEnter, overRuler);
+    CHECK(band->isVisible());
+    CHECK(bandLabel->property("text").toString() == QStringLiteral("Hold to add track V%1").arg(videoTracks + 1));
+    CHECK(controller->currentSequence()->videoTracks.size() == videoTracks);
+    CHECK(view->dropIndicator().isEmpty()); // nothing to land on yet
+    REQUIRE(waitFor([&] { return controller->currentSequence()->videoTracks.size() == videoTracks + 1; }, 5000));
+    seq = controller->currentSequence();
+    const TrackId added = seq->videoTracks.back()->id; // the top one
+    CHECK_FALSE(band->isVisible());
+    const QVariantMap landing = view->dropIndicator();
+    CHECK(landing.value(QStringLiteral("track")).toString() == trackKey(added));
+    const auto landsAt = parseTimecode(landing.value(QStringLiteral("time")).toString().toStdString(), seq->frameRate,
+                                       seq->dropFrame);
+    REQUIRE(landsAt);
+    CHECK(std::abs(landsAt->toSeconds() - 2.0) < 0.1);
+    CHECK(view->scrollY() == 0.0);
+    drag(QEvent::Drop, overRuler);
+    spin(20);
+    seq = controller->currentSequence();
+    REQUIRE(seq->videoTracks.size() == videoTracks + 1);
+    const Track* top = seq->findTrack(added);
+    REQUIRE(top);
+    REQUIRE(top->clips.size() == 1);
+    CHECK(top->clips[0].media == stillId);
+    CHECK(top->clips[0].start() == *landsAt);
+    // Nothing else moved: the other tracks keep their clips (the picture has no sound).
+    std::vector<std::size_t> clipsAfter;
+    seq->forEachTrack([&](const Track& t) {
+        if (t.id != added)
+            clipsAfter.push_back(t.clips.size());
+    });
+    CHECK(clipsAfter == clipsBefore);
+    CHECK(controller->session().undoCount() == undoBefore + 2); // Add Track, then the drop
+    CHECK(view->dropIndicator().isEmpty());
+
+    // Held below the last track: A(m+1) appears for the drop; the drag leaves instead, and the track goes again, its
+    // step undone.
+    const double contentBottom = view->contentHeight() - view->scrollY();
+    const QPointF belowTracks(atX, contentBottom + 6 < view->height() ? contentBottom + 6 : view->height() + 4);
+    drag(QEvent::DragEnter, belowTracks);
+    CHECK(band->isVisible());
+    CHECK(bandLabel->property("text").toString() == QStringLiteral("Hold to add track A%1").arg(audioTracks + 1));
+    REQUIRE(waitFor([&] { return controller->currentSequence()->audioTracks.size() == audioTracks + 1; }, 5000));
+    seq = controller->currentSequence();
+    CHECK(view->dropIndicator().value(QStringLiteral("track")).toString() == trackKey(seq->audioTracks.back()->id));
+    leave();
+    seq = controller->currentSequence();
+    CHECK(seq->audioTracks.size() == audioTracks);
+    CHECK(seq->videoTracks.size() == videoTracks + 1);
+    CHECK(controller->session().undoCount() == undoBefore + 2);
+    CHECK_FALSE(band->isVisible());
+
+    // A drag that only passes over the ruler and drops on a track adds nothing.
+    panel->setProperty("newTrackHoldMs", 60000);
+    drag(QEvent::DragEnter, overRuler);
+    CHECK(band->isVisible());
+    const auto row = std::ranges::find_if(view->rows(), [](const TimelineView::Row& r) { return !r.audio; });
+    REQUIRE(row != view->rows().end());
+    const QPointF onTrack(4.0 * view->pixelsPerSecond() - view->scrollX() + 1, row->y - view->scrollY() + row->height / 2);
+    drag(QEvent::DragMove, onTrack);
+    CHECK_FALSE(band->isVisible());
+    drag(QEvent::Drop, onTrack);
+    spin(20);
+    seq = controller->currentSequence();
+    CHECK(seq->videoTracks.size() == videoTracks + 1);
+    CHECK(seq->audioTracks.size() == audioTracks);
+    CHECK(controller->session().undoCount() == undoBefore + 3); // just the drop
+
+    QStringList messages = takeMessages();
+    messages.removeIf([](const QString& m) { return m.contains(QStringLiteral("No decoder for png")); });
+    INFO(join(messages));
+    CHECK(messages.isEmpty());
+}
+
+TEST_CASE("A sequence dragged from the Project panel onto a track is nested there", "[app][timeline][drop][nested][qml]") {
+    // 2026-10-15 bug: Project panel sequences carried no timeline data, so the lanes refused them.
+    resetSettings();
+    clearMessages();
+    QTemporaryDir dir;
+    REQUIRE(dir.isValid());
+    const QString still = dir.filePath(QStringLiteral("Card.png"));
+    {
+        QImage picture(64, 36, QImage::Format_RGB32);
+        picture.fill(Qt::darkMagenta);
+        REQUIRE(picture.save(still));
+    }
+    Shell shell;
+    REQUIRE(shell.window != nullptr);
+    shell.resize(kShotWidth, kShotHeight);
+    auto* file = shell.engine.singletonInstance<ProjectLifecycle*>("Wabcut", "ProjectFile");
+    auto* controller = shell.engine.singletonInstance<ProjectController*>("Wabcut", "ProjectController");
+    REQUIRE(file);
+    REQUIRE(controller);
+    REQUIRE(file->importFiles({QUrl::fromLocalFile(still)}).value(QStringLiteral("added")).toInt() == 1);
+    MediaId stillId;
+    for (const MediaPtr& m : controller->snapshot()->media) {
+        if (m->name == "Card.png")
+            stillId = m->id;
+    }
+    REQUIRE(stillId);
+    SequencePtr seq = controller->currentSequence();
+    REQUIRE(seq);
+    REQUIRE(seq->videoTracks.size() >= 2);
+    const TrackId v2 = seq->videoTracks[1]->id;
+
+    // A second sequence holding the picture: the one to nest. The timeline keeps showing the first.
+    EditSession& session = controller->session();
+    SequenceId nestedId;
+    REQUIRE(session.apply("New Sequence", [&](const ProjectState& state) {
+        auto created = edit::addSequence(state, edit::SequenceSettings{});
+        if (created)
+            nestedId = created->id;
+        return created;
+    }));
+    REQUIRE(editor::dropMedia(session, {.media = stillId, .sequence = nestedId, .at = Ticks{}}));
+    const Ticks length = controller->snapshot()->findSequence(nestedId)->duration;
+    REQUIRE(length > Ticks{});
+    REQUIRE(controller->currentSequence()->id == seq->id);
+    REQUIRE_FALSE(shell.grab().isNull());
+
+    auto* view = qobject_cast<TimelineView*>(shell.item("timelineView"));
+    REQUIRE(view);
+    view->setSnapping(false);
+    const auto row = std::ranges::find_if(view->rows(), [&](const TimelineView::Row& r) { return r.track->id == v2; });
+    REQUIRE(row != view->rows().end());
+    const QPointF local(1.0 * view->pixelsPerSecond() - view->scrollX() + 1, row->y - view->scrollY() + row->height / 2);
+    const QString landing = view->dropPoint(local.x(), local.y()).value(QStringLiteral("time")).toString();
+    const auto at = parseTimecode(landing.toStdString(), seq->frameRate, seq->dropFrame);
+    REQUIRE(at);
+
+    // What a Project panel sequence carries: its key as the timeline's media data.
+    QMimeData mime;
+    mime.setData(QStringLiteral("application/x-wabcut-library"), sequenceKey(nestedId).toUtf8());
+    mime.setData(QStringLiteral("application/x-wabcut-media"), sequenceKey(nestedId).toUtf8());
+    const QPoint p = view->mapToScene(local).toPoint();
+    QDragEnterEvent enter(p, Qt::CopyAction, &mime, Qt::LeftButton, {});
+    QCoreApplication::sendEvent(shell.window.get(), &enter);
+    CHECK(enter.isAccepted());
+    QDragMoveEvent move(p, Qt::CopyAction, &mime, Qt::LeftButton, {});
+    QCoreApplication::sendEvent(shell.window.get(), &move);
+    CHECK(view->dropIndicator().value(QStringLiteral("track")).toString() == trackKey(v2));
+    QDropEvent drop(p, Qt::CopyAction, &mime, Qt::LeftButton, {});
+    QCoreApplication::sendEvent(shell.window.get(), &drop);
+    spin(20);
+
+    // A nested clip on V2 from the drop, the whole sequence long, its mix linked on an audio track.
+    seq = controller->currentSequence();
+    const Track* onV2 = seq->findTrack(v2);
+    REQUIRE(onV2);
+    REQUIRE(onV2->clips.size() == 1);
+    const Clip& picture = onV2->clips[0];
+    CHECK(picture.sequence == nestedId);
+    CHECK(picture.start() == *at);
+    CHECK(picture.end() == *at + length);
+    int mixes = 0;
+    for (const TrackPtr& t : seq->audioTracks) {
+        for (const Clip& c : t->clips) {
+            if (c.sequence == nestedId) {
+                ++mixes;
+                CHECK(c.linkGroup == picture.linkGroup);
+            }
+        }
+    }
+    CHECK(mixes == 1);
+
+    // The sequence itself cannot go into its own timeline: refused with a reason, nothing changes.
+    const std::size_t steps = session.undoCount();
+    CHECK_FALSE(file->dropMedia(sequenceKey(seq->id), QStringLiteral("00:00:00:00"), trackKey(v2), true));
+    CHECK_FALSE(file->lastError().isEmpty());
+    CHECK(session.undoCount() == steps);
+
     QStringList messages = takeMessages();
     messages.removeIf([](const QString& m) { return m.contains(QStringLiteral("No decoder for png")); });
     INFO(join(messages));

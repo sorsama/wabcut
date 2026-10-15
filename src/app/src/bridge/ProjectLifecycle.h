@@ -198,7 +198,9 @@ public:
     Q_INVOKABLE int relinkAll(const QList<QUrl>& folders);
 
     // ---- Library -> timeline ----
-    /// Edits `mediaId` into the current sequence at `timecode` on the track `trackId` ("" = targeted tracks).
+    /// Edits `mediaId` into the current sequence at `timecode` on the track `trackId` ("" = targeted tracks). A
+    /// sequence's key instead of a media item's nests that sequence there (refused for the sequence itself, or one
+    /// that plays it).
     Q_INVOKABLE bool dropMedia(const QString& mediaId, const QString& timecode, const QString& trackId,
                                bool overwrite);
     /// Files dragged from the desktop (Explorer, Finder) onto the timeline: imported as importFiles does, then the

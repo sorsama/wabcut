@@ -407,6 +407,51 @@ TEST_CASE("Drop: a multi-track recording routes named streams by name and untitl
     CHECK(session.snapshot()->findSequence(seqId)->audioTracks.size() == 3);
 }
 
+TEST_CASE("Drop: a sequence lands as a nested clip on the tracks under the pointer, never into itself",
+          "[editor][drop][nested]") {
+    SequenceId mainId;
+    ProjectState state = projectWithSequence(&mainId); // V1-V3, A1-A3
+    const MediaId recording = addRecording(state, "Rec", {""});
+    auto second = edit::addSequence(state, edit::SequenceSettings{});
+    REQUIRE(second);
+    const SequenceId nestedId = second->id;
+    EditSession session(second->state);
+    // The sequence to nest holds the recording (picture and sound) on V1 and A1.
+    REQUIRE(dropMedia(session, {.media = recording, .sequence = nestedId, .at = Ticks{}}));
+    const Ticks length = session.snapshot()->findSequence(nestedId)->duration;
+    REQUIRE(length > Ticks{});
+    const Sequence& outer = *session.snapshot()->findSequence(mainId);
+    const TrackId v2 = outer.videoTracks[1]->id;
+    const TrackId a2 = outer.audioTracks[1]->id;
+
+    // Dropped on V2 at 3 s: its picture on V2 and its mix on A2 (the matching track), linked, the whole sequence long.
+    auto nested = dropMedia(session, {.sequence = mainId, .at = Ticks::fromSeconds(3), .track = v2,
+                                      .mode = DropMode::Overwrite, .sourceSequence = nestedId});
+    REQUIRE(nested);
+    REQUIRE(nested->placed.size() == 2);
+    const SequencePtr after = session.snapshot()->sequencePtr(mainId);
+    const auto picture = after->findClip(nested->placed[0]);
+    const auto sound = after->findClip(nested->placed[1]);
+    REQUIRE(picture);
+    REQUIRE(sound);
+    CHECK(picture->track->id == v2);
+    CHECK(sound->track->id == a2);
+    CHECK(picture->clip().sequence == nestedId);
+    CHECK(sound->clip().sequence == nestedId);
+    CHECK(picture->clip().linkGroup);
+    CHECK(picture->clip().linkGroup == sound->clip().linkGroup);
+    CHECK(picture->clip().start() == Ticks::fromSeconds(3));
+    CHECK(picture->clip().end() == Ticks::fromSeconds(3) + length);
+    CHECK(session.undoLabel() == "Overwrite");
+
+    // Never into itself, nor into a sequence it plays (that would loop): nothing changes.
+    const std::size_t steps = session.undoCount();
+    CHECK_FALSE(dropMedia(session, {.sequence = mainId, .at = Ticks{}, .track = v2, .sourceSequence = mainId}));
+    CHECK_FALSE(dropMedia(session, {.sequence = nestedId, .at = Ticks{}, .sourceSequence = mainId}));
+    CHECK_FALSE(dropMedia(session, {.sequence = mainId, .at = Ticks{}, .sourceSequence = SequenceId{999999}}));
+    CHECK(session.undoCount() == steps);
+}
+
 TEST_CASE("Document: save, open, dirty state and Save As", "[editor][document]") {
     if (!haveMedia()) {
         SKIP("test media missing");
