@@ -4,7 +4,7 @@
   "version-semver": "0.1.0",
   "description": "Wabcut - open-source cross-platform non-linear video editor",
   "license": "GPL-3.0-or-later",
-  "builtin-baseline": "e456309491fd875487bf02b8a0dca76c1b1b00cc",
+  "builtin-baseline": "9e593bb18ea69cc5095e012465dcd675a822ed0d",
   "dependencies": [
     {
       "name": "ffmpeg",
@@ -21,14 +21,29 @@
         "x264",
         "x265",
         "dav1d",
-        { "name": "svt-av1", "platform": "!x86 & !arm32 & !uwp" },
+        {
+          "name": "svt-av1",
+          "platform": "!x86 & !arm32 & !uwp"
+        },
         "vpx",
         "opus",
         "zlib",
-        { "name": "nvcodec", "platform": "(windows | linux) & x64" },
-        { "name": "amf", "platform": "windows | linux" },
-        { "name": "qsv", "platform": "windows | linux" },
-        { "name": "vaapi", "platform": "linux" }
+        {
+          "name": "nvcodec",
+          "platform": "(windows | linux) & x64"
+        },
+        {
+          "name": "amf",
+          "platform": "windows | linux"
+        },
+        {
+          "name": "qsv",
+          "platform": "windows | linux"
+        },
+        {
+          "name": "vaapi",
+          "platform": "linux"
+        }
       ]
     },
     "libebur128",
