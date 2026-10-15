@@ -267,7 +267,9 @@ TEST_CASE("graphicProblem accepts a full graphic and names what is wrong with a 
     Graphic tooDeep;
     tooDeep.layers.push_back(deep);
     CHECK(graphicProblem(tooDeep));
-    tooDeep.layers[0] = std::move(tooDeep.layers[0].children[0]);
+    // Out of the layer first: assigning layers[0] from its own child would destroy the child list it reads from.
+    GraphicLayer child = std::move(tooDeep.layers[0].children[0]);
+    tooDeep.layers[0] = std::move(child);
     CHECK_FALSE(graphicProblem(tooDeep));
 }
 
