@@ -308,7 +308,7 @@ RoughCutPlan planRoughCut(const SpeechCorpus& corpus, const Script& script, cons
         }
         const std::size_t seedCount = std::min(seeds.size(), std::max<std::size_t>(64, 4 * options.candidatesPerBeat));
         std::ranges::partial_sort(seeds, seeds.begin() + static_cast<std::ptrdiff_t>(seedCount),
-                                  [](const auto& a, const auto& b) { return a.first != b.first ? a.first > b.first : a.second < b.second; });
+                                  [](const auto& lhs, const auto& rhs) { return lhs.first != rhs.first ? lhs.first > rhs.first : lhs.second < rhs.second; });
         seeds.resize(seedCount);
         for (const auto& [alone, i] : seeds) {
             Window best{i, i, 0.0};
@@ -358,11 +358,11 @@ RoughCutPlan planRoughCut(const SpeechCorpus& corpus, const Script& script, cons
             accumulated[i] = 0.0;
         }
         touched.clear();
-        std::ranges::sort(windows, [](const Window& a, const Window& b) {
-            return a.score != b.score ? a.score > b.score : std::pair{a.first, a.last} < std::pair{b.first, b.last};
+        std::ranges::sort(windows, [](const Window& lhs, const Window& rhs) {
+            return lhs.score != rhs.score ? lhs.score > rhs.score : std::pair{lhs.first, lhs.last} < std::pair{rhs.first, rhs.last};
         });
         windows.erase(std::unique(windows.begin(), windows.end(),
-                                  [](const Window& a, const Window& b) { return a.first == b.first && a.last == b.last; }),
+                                  [](const Window& lhs, const Window& rhs) { return lhs.first == rhs.first && lhs.last == rhs.last; }),
                       windows.end());
         // Non-maximum suppression: a window overlapping better ones keeps only its sentences they do not hold (another
         // take said right after the first may be there), or nothing.
@@ -404,7 +404,7 @@ RoughCutPlan planRoughCut(const SpeechCorpus& corpus, const Script& script, cons
                     nearest.emplace_back(dotf(**beatVector, *v), i);
                 }
             }
-            std::ranges::sort(nearest, [](const auto& a, const auto& b) { return a.first != b.first ? a.first > b.first : a.second < b.second; });
+            std::ranges::sort(nearest, [](const auto& lhs, const auto& rhs) { return lhs.first != rhs.first ? lhs.first > rhs.first : lhs.second < rhs.second; });
             for (const auto& [cosine, i] : nearest) {
                 if (kept.size() >= options.candidatesPerBeat) {
                     break;

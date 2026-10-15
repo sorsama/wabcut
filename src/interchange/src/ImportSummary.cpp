@@ -197,7 +197,6 @@ std::string formatReport(const ImportReport& report, bool listCarried) {
 }
 
 std::string toJson(const ImportResult& result) {
-    using Json = nlohmann::ordered_json;
     const ProjectState& project = result.project;
     Json root;
     root["format"] = std::string(toString(result.format));

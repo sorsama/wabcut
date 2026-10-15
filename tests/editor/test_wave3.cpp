@@ -471,7 +471,7 @@ TEST_CASE("Untitled autosaves (wave-3 P2-7): a failed write keeps the current co
     fs::path older = current;
     older += "2";
     CHECK(sequencesIn(older) == 2); // the previous copy rotated once the new one was safe
-    CHECK(fs::last_write_time(older) <= fs::last_write_time(current)); // and it does not look newer than it is
+    CHECK((fs::last_write_time(older) <= fs::last_write_time(current))); // and it does not look newer than it is
     CHECK(ProjectDocument::untitledRecoveryFiles(dir / "Autosave").front().file == current);
 }
 

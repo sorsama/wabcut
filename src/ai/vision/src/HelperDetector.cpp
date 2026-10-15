@@ -234,8 +234,8 @@ std::expected<std::vector<FrameDetections>, Error> HelperDetector::detect(std::s
         // Within the protocol's bounds: a larger picture is shrunk and its detections scaled back.
         const int side = std::max(frame.width, frame.height);
         const float scale = side > search::embed::kMaxImageSide ? static_cast<float>(side) / search::embed::kMaxImageSide : 1.0f;
-        const int width = std::max(1, static_cast<int>(std::lround(frame.width / scale)));
-        const int height = std::max(1, static_cast<int>(std::lround(frame.height / scale)));
+        const int width = std::max(1, static_cast<int>(std::lround(static_cast<float>(frame.width) / scale)));
+        const int height = std::max(1, static_cast<int>(std::lround(static_cast<float>(frame.height) / scale)));
         if (!batch.empty() && (width != batchWidth || height != batchHeight || static_cast<int>(batch.size()) >= d.options.batchSize)) {
             if (auto ok = flush(); !ok) {
                 return std::unexpected(ok.error());

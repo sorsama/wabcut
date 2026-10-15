@@ -35,9 +35,11 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
     WABCUT_FUZZ_CHECK(*again == result->project, *saved);
     // X.1: the exporter's inverse. Exported back to the same format (the .prproj reader's timelines as FCP7 XML), the
     // file imports again.
+    // Through a variable: with WABCUT_FUZZ_FORMAT = PremiereProject the comparison would compare an enumerator with
+    // itself, which clang rejects (-Wtautological-compare).
+    constexpr interchange::Format kFormat = interchange::Format::WABCUT_FUZZ_FORMAT;
     constexpr interchange::Format kBack =
-        interchange::Format::WABCUT_FUZZ_FORMAT == interchange::Format::PremiereProject ? interchange::Format::Fcp7Xml
-                                                                                       : interchange::Format::WABCUT_FUZZ_FORMAT;
+        kFormat == interchange::Format::PremiereProject ? interchange::Format::Fcp7Xml : kFormat;
     for (const SequenceId seq : result->sequences) {
         const auto written = interchange::exportSequence(result->project, seq, kBack);
         WABCUT_FUZZ_CHECK(written, written ? std::string() : written.error().message);

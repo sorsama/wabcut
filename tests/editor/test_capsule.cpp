@@ -219,7 +219,7 @@ TEST_CASE("Recovery: every version is listed with its summary; a version opens a
     CHECK(doc.isUntitled());
     CHECK(doc.isDirty());
     CHECK(summarizeState(*session.snapshot()).clips == savedClips);
-    CHECK(fs::last_write_time(p.file) == before);
+    CHECK((fs::last_write_time(p.file) == before)); // a bool: libc++'s file times (__int128) do not print
     CHECK(summarizeProjectFile(p.file).clips == versions[0].summary.clips);
 
     // An unreadable version is listed with why.

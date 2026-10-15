@@ -146,7 +146,7 @@ TEST_CASE("interchange: relink: the index stops at its limit and never touches f
     CHECK(relinker.indexTruncated());
     (void)relinker.resolve(referenceTo("/x/f3.mov"));
     CHECK(fs::file_size(dir / "f3.mov") == 4);
-    CHECK(fs::last_write_time(dir / "f3.mov") == before);
+    CHECK((fs::last_write_time(dir / "f3.mov") == before)); // a bool: libc++'s file times (__int128) do not print
 }
 
 TEST_CASE("interchange: relink: a network share is looked up like a local folder, by the existence check only (C.10)",
