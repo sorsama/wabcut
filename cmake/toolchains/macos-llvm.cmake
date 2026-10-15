@@ -29,14 +29,16 @@ endif()
 if(DEFINED VCPKG_OSX_DEPLOYMENT_TARGET AND VCPKG_OSX_DEPLOYMENT_TARGET)
     set(CMAKE_OSX_DEPLOYMENT_TARGET "${VCPKG_OSX_DEPLOYMENT_TARGET}" CACHE STRING "")
 elseif(NOT CMAKE_OSX_DEPLOYMENT_TARGET)
-    # 13.3: LLVM's libc++ marks floating-point std::to_chars (std::format's) as introduced in macOS 13.3.
-    set(CMAKE_OSX_DEPLOYMENT_TARGET 13.3 CACHE STRING "")
+    set(CMAKE_OSX_DEPLOYMENT_TARGET 13.0 CACHE STRING "")
 endif()
 
 set(CMAKE_C_COMPILER "${_wabcut_llvm}/bin/clang" CACHE FILEPATH "" FORCE)
 set(CMAKE_CXX_COMPILER "${_wabcut_llvm}/bin/clang++" CACHE FILEPATH "" FORCE)
 set(CMAKE_AR "${_wabcut_llvm}/bin/llvm-ar" CACHE FILEPATH "" FORCE)
 set(CMAKE_RANLIB "${_wabcut_llvm}/bin/llvm-ranlib" CACHE FILEPATH "" FORCE)
+# Wabcut links LLVM's own libc++ (below), not the system's: libc++'s availability markup, which describes the system
+# library (floating-point std::from_chars "introduced in macOS 26.0", std::to_chars in 13.3), does not apply.
+set(CMAKE_CXX_FLAGS_INIT "${CMAKE_CXX_FLAGS_INIT} -D_LIBCPP_DISABLE_AVAILABILITY")
 # Link LLVM's libc++ (not the SDK's older one) and find it at run time.
 set(_wabcut_libcxx "-L${_wabcut_llvm}/lib/c++ -L${_wabcut_llvm}/lib -Wl,-rpath,${_wabcut_llvm}/lib/c++")
 set(CMAKE_EXE_LINKER_FLAGS_INIT "${_wabcut_libcxx}")
