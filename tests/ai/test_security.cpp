@@ -22,6 +22,7 @@
 #include <atomic>
 #include <filesystem>
 #include <stdexcept>
+#include <thread>
 
 using namespace wabcut;
 using namespace wabcut::ai;

@@ -92,7 +92,7 @@ inline std::vector<float> gameAudio(const Script& s, int rate = ai::highlights::
         const auto count = static_cast<std::size_t>(length * rate);
         const double gain = std::pow(10.0, db / 20.0);
         for (std::size_t k = 0; k < count && from + k < n; ++k) {
-            const double env = std::exp(-3.0 * static_cast<double>(k) / static_cast<double>(count)) * std::min(1.0, k / (0.01 * rate));
+            const double env = std::exp(-3.0 * static_cast<double>(k) / static_cast<double>(count)) * std::min(1.0, static_cast<double>(k) / (0.01 * rate));
             out[from + k] += static_cast<float>(bed * gain * env * noise(rng) * 0.7);
         }
     };

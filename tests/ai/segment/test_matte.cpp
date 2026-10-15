@@ -54,7 +54,7 @@ MatteTrack sampleTrack() {
         f.rle = encodeRle(m);
         f.box = boxOf(m);
         f.present = i != 2;
-        f.confidence = 0.5f + 0.1f * i;
+        f.confidence = 0.5f + 0.1f * static_cast<float>(i);
         t.frames.push_back(std::move(f));
     }
     t.cuts = {frameTicks(5)};
