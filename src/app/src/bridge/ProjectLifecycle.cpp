@@ -312,7 +312,9 @@ void ProjectLifecycle::scanRecoveryVersions() {
                                QImage::Format_RGBA8888);
             const std::filesystem::path file =
                 posters / (std::to_string(std::hash<std::string>{}(pathToUtf8(e.file))) + "-" +
-                           std::to_string(e.summary.modified.time_since_epoch().count()) + ".png");
+                           // long long: libc++'s file clock counts in an __int128, which to_string does not take.
+                           std::to_string(static_cast<long long>(e.summary.modified.time_since_epoch().count())) +
+                           ".png");
             const QString path = QString::fromStdU16String(file.u16string());
             if (image.save(path)) {
                 QVariantMap m = list[i].toMap();
