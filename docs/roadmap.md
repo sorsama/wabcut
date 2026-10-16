@@ -8,6 +8,17 @@ will change as people use the editor and tell us what matters to them.
 
 ## Shipped
 
+### 0.1.3 (16 October 2026)
+- A new look ("Echo") and a new logo: rounded panels, pill controls, browser-style panel tabs, violet and lime.
+- Workspaces you make yourself, and panels you dock as tabs, side by side, along an edge or in their own windows.
+- One Settings window: custom colours and theme files, the AI switch and your own model names, a left rail you can
+  reorder and trim.
+- The Program Monitor works like Premiere's: click to select, double-click to edit text, double-click again for what
+  is behind.
+- Drag files from File Explorer straight onto the timeline; drops overwrite (Ctrl inserts) and never cut other tracks.
+- A redesigned Export page, a time bar under the Program Monitor and a Tracks toolbar with Premiere's tool groups.
+- Preview builds for Linux (AppImage) and macOS on Apple silicon.
+
 ### 0.1.2 (13 October 2026)
 - All 27 clip blend modes and the Track Matte Key render on the GPU, so preview matches export.
 - Every Premiere default tool key works: Rate Stretch (R), Pen (P) on audio volume bands, Type (T) and Audio Gain (G).
@@ -31,17 +42,6 @@ The first release meant for real projects:
 
 The full list is in the [release notes](release-notes-0.1.md).
 
-## In progress: 0.1.3 (the workbench is yours)
-- Workspaces you make yourself: new, rename, duplicate, reorder, hide or delete; any panel in either column (for
-  example the Audio Track Mixer beside Effects), and the monitors or the timeline on or off.
-- Dock panels where you want them, or in windows of their own.
-- One Settings window: appearance with custom colours and theme files, the AI switch and your own model names, a
-  left rail you can reorder and trim, and a quieter title bar.
-- A time bar under the Program Monitor; drops onto the timeline snap to the clip in front.
-- A Tracks toolbar with Premiere's tool groups and labelled Snap / Linked switches; cursors that show what a press
-  will do.
-- Smoother panel resizing, and a new icon set (Boxicons).
-
 ## Next: toward a beta
 
 Make Wabcut safe to trust with real projects:
@@ -61,7 +61,8 @@ Work begun on side branches and held back from 0.1 to keep the release focused:
 
 ## Wanted, not scheduled
 
-- macOS and Linux builds. Windows comes first; the Qt-free core's CI is already set up for all three.
+- macOS and Linux beyond the preview builds: local transcription, audio plug-ins and the managed local assistant
+  there, testing on real machines, and Intel Macs. Windows comes first.
 - Optical Flow / frame-blended slow motion (today slow motion uses the nearest frame).
 - OpenFX video plug-ins (CLAP and VST3 audio plug-ins already work).
 - AAF and OMF export; caption file import and broadcast caption formats.

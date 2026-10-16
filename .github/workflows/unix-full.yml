@@ -43,7 +43,8 @@ jobs:
             configure: -DCMAKE_C_COMPILER=gcc-14 -DCMAKE_CXX_COMPILER=g++-14
           - os: macos-15
             preset: macos-clang
-            configure: -DVCPKG_TARGET_TRIPLET=arm64-osx-llvm -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE=cmake/toolchains/macos-llvm.cmake
+            # An absolute path: CMake's compiler checks include the toolchain from their own scratch projects.
+            configure: -DVCPKG_TARGET_TRIPLET=arm64-osx-llvm -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE=$GITHUB_WORKSPACE/cmake/toolchains/macos-llvm.cmake
     runs-on: ${{ matrix.os }}
     timeout-minutes: 360
     steps:

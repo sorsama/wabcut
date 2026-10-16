@@ -1,10 +1,34 @@
-# Wabcut 0.1 "First Cut": release notes (0.1.2)
+# Wabcut 0.1 "First Cut": release notes (0.1.3)
 
-Windows 10/11 x64. Free and open source (GPL-3.0-or-later). No account, no subscription.
+Windows 10/11 x64, with preview builds for Linux x64 and macOS on Apple silicon. Free and open source
+(GPL-3.0-or-later). No account, no subscription.
 
 Wabcut 0.1 is the first version meant for real projects: long-form and short-form **gaming videos**, **video essays**
 and **documentaries**, edited with Premiere Pro's keyboard and edit semantics, with AI that runs on your machine or
 with your own API keys.
+
+## 0.1.3 (16 October 2026)
+
+- **A new look, "Echo".** A black stage with rounded panels, pill-shaped controls, browser-style panel tabs with a
+  colour dot for each panel, Manrope and JetBrains Mono type, violet and lime accents, and a new logo with a short
+  launch animation (Settings > Appearance turns it off; Reduce motion skips it).
+- **Workspaces you make yourself.** New, rename, duplicate, reorder, hide or delete; any panel in either column, and
+  the monitors or the timeline on or off. Dock panels as tabs or side by side, along an edge, or in windows of their own.
+- **One Settings window:** appearance with custom colours and theme files, the AI switch and your own model names, a
+  left rail you can reorder and trim, and a quieter title bar.
+- **The Program Monitor works like Premiere's:** a click selects what is under the pointer, a double-click edits a
+  text or title in place, and each further double-click picks the object behind it.
+- **Drops onto the timeline:** drag files straight from File Explorer onto a track. A plain drop overwrites and
+  Ctrl+drop inserts; a drop never cuts clips on other tracks. Drops snap to the clip in front, holding a drag over the
+  ruler adds a video track (below the last track, an audio track), and sequences from the Project panel drop in as
+  nested clips.
+- **A time bar under the Program Monitor**, a Tracks toolbar with Premiere's tool groups and labelled Snap / Linked
+  switches, and cursors that show what a press will do.
+- **A redesigned Export page:** filter chips, a grid of preset tiles, and an Export bar that stays in view.
+- **Linux and macOS preview builds:** an AppImage and a tar.gz for Linux x64, and a disk image for macOS on Apple
+  silicon. Each is installed, started and made to render a project on GitHub's machines before a release is published;
+  what they do not have yet is under [Known issues](#known-issues).
+- Smoother panel resizing, and a new icon set (Boxicons).
 
 ## 0.1.2 (13 October 2026, evening)
 
@@ -88,16 +112,27 @@ with your own API keys.
   Intel Quick Sync); 16 GB RAM recommended (8 GB minimum; local AI models need more); 2 GB disk for the app, more for
   caches and proxies.
 - Developed and verified on Windows 11 with an NVIDIA RTX 3060 (32 GB RAM).
+- **Linux (preview):** x64, Ubuntu 24.04, Fedora 40 or another distribution of that age or newer; X11 or Wayland
+  (through XWayland); a GPU driver with Vulkan or OpenGL; PipeWire or PulseAudio.
+- **macOS (preview):** macOS 13 Ventura or newer on Apple silicon (M1 or later). Intel Macs are not supported.
 
 ## Install
 
-- **MSI** (per user, no administrator rights): `wabcut-0.1.0-windows-x64.msi`. Uninstalling removes program files
-  only; projects, autosaves and caches stay.
-- **Portable ZIP**: unzip anywhere and run `bin\wabcut.exe`.
-- The packages are not code-signed yet, so Windows SmartScreen may warn on first run ("More info" > "Run anyway").
+- **Windows MSI** (per user, no administrator rights): `wabcut-0.1.3-windows-x64.msi`. Uninstalling removes program
+  files only; projects, autosaves and caches stay.
+- **Windows portable ZIP**: unzip anywhere and run `bin\wabcut.exe`.
+- The Windows packages are not code-signed yet, so SmartScreen may warn on first run ("More info" > "Run anyway").
+- **Linux AppImage**: `chmod +x wabcut-0.1.3-linux-x64.AppImage`, then run it. Or unpack
+  `wabcut-0.1.3-linux-x64.tar.gz` anywhere and run `bin/wabcut`.
+- **macOS disk image**: open `wabcut-0.1.3-macos-arm64.dmg` and drag Wabcut to Applications. It is not notarized yet,
+  so macOS refuses the first start: open System Settings > Privacy & Security and choose "Open Anyway".
 
 ## Known issues
-- Windows only in this release; Linux and macOS builds come later.
+- Linux and macOS are preview builds. They are built and checked automatically (installed, started, a project
+  rendered), but the developer works on Windows and nobody has edited real projects with them yet. Not on Linux and
+  macOS yet: local transcription (whisper.cpp; cloud transcription with your own key works), CLAP/VST3 audio plug-ins,
+  the managed local assistant, and zero-copy GPU decoding. The macOS build is for Apple silicon only and is not
+  notarized.
 - Not code-signed; no auto-update.
 - Real local-AI quality and live cloud-provider runs are not benchmarked in this release.
 - No OpenFX video plug-ins or AU audio plug-ins; no cloud collaboration (versions, review notes and merge are local).

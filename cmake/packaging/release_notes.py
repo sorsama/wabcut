@@ -32,6 +32,8 @@ def main():
         sys.exit(__doc__)
     version, linux, macos = sys.argv[1:]
     notes, notes_path = section(version)
+    # Links to headings of the notes file point into the file at this release's tag.
+    notes = notes.replace("](#", f"]({URL}/blob/v{version}/{notes_path}#")
     base = f"wabcut-{version}"
 
     rows = [

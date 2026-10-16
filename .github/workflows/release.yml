@@ -37,9 +37,11 @@ on:
 permissions:
   contents: read
 
+# A tag or a manual run queues behind a running one for the same ref. Each pull request commit builds on its own: a
+# fix pushed while the packages of the previous commit are still building does not throw that build away.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.sha || github.ref }}
+  cancel-in-progress: false
 
 env:
   QT_VERSION: 6.11.3
@@ -127,13 +129,15 @@ jobs:
         shell: pwsh
         run: ./cmake/packaging/Install-WixToolset.ps1
 
-      # The test suites run in windows-full for every commit on main; the release builds the shipped programs only.
+      # The test suites run in windows-full for every commit on main, and the CI jobs hold the code to zero warnings;
+      # the release builds the shipped programs only, and a new compiler warning does not stop it.
       - name: Configure and build
         shell: pwsh
         run: |
           $env:WABCUT_QT_DIR = $env:QT_ROOT_DIR
           . ./tools/dev-env.ps1
-          cmake --preset win-msvc -DWABCUT_BUILD_TESTS=OFF -DWABCUT_BUILD_NUMBER=${{ github.run_number }}
+          cmake --preset win-msvc -DWABCUT_BUILD_TESTS=OFF -DWABCUT_WARNINGS_AS_ERRORS=OFF `
+            -DWABCUT_BUILD_NUMBER=${{ github.run_number }}
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           cmake --build --preset win-msvc
           exit $LASTEXITCODE
@@ -233,9 +237,18 @@ jobs:
           export WABCUT_QT_DIR="$QT_ROOT_DIR"
           export VCPKG_KEEP_ENV_VARS="WABCUT_QT_DIR"
           cmake --preset $PRESET -DCMAKE_C_COMPILER=gcc-14 -DCMAKE_CXX_COMPILER=g++-14 \
-            -DWABCUT_WITH_LOCAL_AI=OFF -DWABCUT_WITH_ONNX=ON -DWABCUT_BUILD_TESTS=OFF \
+            -DWABCUT_WITH_LOCAL_AI=OFF -DWABCUT_WITH_ONNX=ON -DWABCUT_BUILD_TESTS=OFF -DWABCUT_WARNINGS_AS_ERRORS=OFF \
             -DWABCUT_BUILD_NUMBER=${{ github.run_number }}
           cmake --build --preset $PRESET -- -k 0
+
+      # A failed port build says only which port failed: its logs are in vcpkg's buildtrees.
+      - name: Configure and vcpkg logs (after a failure)
+        if: failure()
+        run: |
+          log=build/$PRESET/CMakeFiles/CMakeConfigureLog.yaml
+          if [ -f "$log" ]; then tail -n 100 "$log"; fi
+          find "$VCPKG_ROOT/buildtrees" -maxdepth 2 \( -name '*-err.log' -o -name 'config-*-out.log' \) -size +0 2>/dev/null |
+            while read -r f; do echo "::group::$f"; tail -n 80 "$f"; echo "::endgroup::"; done
 
       - name: Save the vcpkg binary cache
         if: always() && steps.vcpkg.outcome == 'success' && steps.vcpkg-cache.outputs.cache-hit != 'true'
@@ -357,10 +370,19 @@ jobs:
           export WABCUT_QT_DIR="$QT_ROOT_DIR"
           export VCPKG_KEEP_ENV_VARS="WABCUT_QT_DIR;LLVM_ROOT"
           cmake --preset $PRESET -DVCPKG_TARGET_TRIPLET=arm64-osx-llvm \
-            -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE=cmake/toolchains/macos-llvm.cmake \
-            -DWABCUT_WITH_LOCAL_AI=OFF -DWABCUT_WITH_ONNX=ON -DWABCUT_BUILD_TESTS=OFF \
+            -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE="$GITHUB_WORKSPACE/cmake/toolchains/macos-llvm.cmake" \
+            -DWABCUT_WITH_LOCAL_AI=OFF -DWABCUT_WITH_ONNX=ON -DWABCUT_BUILD_TESTS=OFF -DWABCUT_WARNINGS_AS_ERRORS=OFF \
             -DWABCUT_BUILD_NUMBER=${{ github.run_number }}
           cmake --build --preset $PRESET -- -k 0
+
+      # A failed port build says only which port failed: its logs are in vcpkg's buildtrees.
+      - name: Configure and vcpkg logs (after a failure)
+        if: failure()
+        run: |
+          log=build/$PRESET/CMakeFiles/CMakeConfigureLog.yaml
+          if [ -f "$log" ]; then tail -n 100 "$log"; fi
+          find "$VCPKG_ROOT/buildtrees" -maxdepth 2 \( -name '*-err.log' -o -name 'config-*-out.log' \) -size +0 2>/dev/null |
+            while read -r f; do echo "::group::$f"; tail -n 80 "$f"; echo "::endgroup::"; done
 
       - name: Save the vcpkg binary cache
         if: always() && steps.vcpkg.outcome == 'success' && steps.vcpkg-cache.outputs.cache-hit != 'true'
