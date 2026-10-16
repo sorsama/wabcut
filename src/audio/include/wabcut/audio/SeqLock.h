@@ -70,7 +70,9 @@ public:
         if (m_seq.load(std::memory_order_relaxed) != s1) {
             return false;
         }
-        std::memcpy(&out, words.data(), sizeof(T));
+        // To void*: T is trivially copyable, but GCC's -Wclass-memaccess also flags types whose default constructor is
+        // not trivial (default member initializers).
+        std::memcpy(static_cast<void*>(&out), words.data(), sizeof(T));
         return true;
     }
 

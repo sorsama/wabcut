@@ -237,7 +237,8 @@ std::size_t buildReport(State& s, std::int64_t now, const char* what, unsigned l
     return o.used;
 }
 
-/// "C0000005" names for the usual exception codes.
+#ifdef _WIN32
+/// "C0000005" names for the usual exception codes (the Windows handler's).
 const char* describe(unsigned long code) {
     switch (code) {
     case 0xC0000005: return "access violation";
@@ -251,6 +252,7 @@ const char* describe(unsigned long code) {
     default: return "crash";
     }
 }
+#endif
 
 // ---- Redaction (normal context: log() and tests) -------------------------------------------------------------------
 

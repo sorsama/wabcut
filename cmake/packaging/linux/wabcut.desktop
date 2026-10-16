@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Wabcut
+GenericName=Video Editor
+Comment=Open-source non-linear video editor
+Exec=wabcut %f
+Icon=wabcut
+Terminal=false
+Categories=AudioVideo;Video;AudioVideoEditing;
+Keywords=video;editor;edit;cut;premiere;gaming;
+StartupWMClass=wabcut

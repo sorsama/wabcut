@@ -778,19 +778,20 @@ struct McpServer::Impl {
                 return std::nullopt;
             }
             if (!r.ok()) {
-                return toolError(*r.error);
+                return std::make_optional(toolError(*r.error));
             }
-            return toolResult(Json{{"ok", true}, {"revision", r.revision}, {"data", r.data}});
+            return std::make_optional(
+                toolResult(Json{{"ok", true}, {"revision", r.revision}, {"data", r.data}}));
         }
         CommandRequest request;
         request.command = spec.name;
         request.version = spec.version;
         if (auto bad = takeEnvelope(args, request.dryRun, request.expectedRevision, request.idempotencyKey)) {
-            return toolError(*bad);
+            return std::make_optional(toolError(*bad));
         }
         bool assumed = false;
         if (auto bad = baseRevision(request.dryRun, request.expectedRevision, assumed)) {
-            return toolError(*bad);
+            return std::make_optional(toolError(*bad));
         }
         request.params = std::move(args);
         const ProjectSnapshot before = session.snapshot();
@@ -799,18 +800,19 @@ struct McpServer::Impl {
         if (call.cancelled) {
             return std::nullopt;
         }
-        return editResult(r, *before, beforeRevision, assumed);
+        return std::make_optional(editResult(r, *before, beforeRevision, assumed));
     }
 
     std::optional<Json> callBatch(const Json& input, Call& call) {
         Json args = input;
         CommandBatch batch;
         if (auto bad = takeEnvelope(args, batch.dryRun, batch.expectedRevision, batch.idempotencyKey)) {
-            return toolError(*bad);
+            return std::make_optional(toolError(*bad));
         }
         if (auto issues = validateAgainstSchema(batchInputSchema(), input); !issues.empty()) {
-            return toolError(CommandError{ErrorCode::InvalidParams, issues.front().path + " " + issues.front().message,
-                                          Json{{"path", issues.front().path}}});
+            return std::make_optional(
+                toolError(CommandError{ErrorCode::InvalidParams, issues.front().path + " " + issues.front().message,
+                                       Json{{"path", issues.front().path}}}));
         }
         for (const Json& item : args["commands"]) {
             CommandRequest request;
@@ -821,7 +823,7 @@ struct McpServer::Impl {
         batch.label = args.value("label", std::string());
         bool assumed = false;
         if (auto bad = baseRevision(batch.dryRun, batch.expectedRevision, assumed)) {
-            return toolError(*bad);
+            return std::make_optional(toolError(*bad));
         }
         const ProjectSnapshot before = session.snapshot();
         const std::uint64_t beforeRevision = session.revision();
@@ -829,7 +831,7 @@ struct McpServer::Impl {
         if (call.cancelled) {
             return std::nullopt;
         }
-        return editResult(r, *before, beforeRevision, assumed);
+        return std::make_optional(editResult(r, *before, beforeRevision, assumed));
     }
 
     Json editResult(const CommandResult& r, const ProjectState& before, std::uint64_t beforeRevision, bool assumed) {

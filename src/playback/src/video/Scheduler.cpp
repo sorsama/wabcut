@@ -349,7 +349,9 @@ void Scheduler::Impl::evaluate(const ProjectState& snapshot, const Sequence& seq
         PreviewFileState state;
         state.valid = renderContentHash(snapshot, seq.id, entry->range) == entry->hash && std::filesystem::is_regular_file(path, ec);
         const auto written = std::filesystem::last_write_time(path, ec);
-        state.key = entry->file + "#" + entry->hash + "#" + std::to_string(ec ? 0 : written.time_since_epoch().count());
+        // long long: libc++'s file clock counts in an __int128, which std::to_string does not take.
+        const auto ticks = ec ? 0LL : static_cast<long long>(written.time_since_epoch().count());
+        state.key = entry->file + "#" + entry->hash + "#" + std::to_string(ticks);
         known = previewValid.emplace(entry->file, std::move(state)).first;
     }
     if (!known->second.valid) {

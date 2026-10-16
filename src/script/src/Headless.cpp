@@ -108,7 +108,7 @@ std::expected<HeadlessReport, Error> runHeadless(HeadlessRun run) {
             Json record{{"form", p.form}, {"answer", answer}};
             if (answer.is_null()) {
                 (*host)->answerPrompt(p.prompt, std::nullopt);
-            } else if (!(*host)->answerPrompt(p.prompt, answer)) {
+            } else if (!(*host)->answerPrompt(p.prompt, std::make_optional(answer))) {
                 record["error"] = "the answer does not fit the form; the prompt was cancelled";
                 (*host)->answerPrompt(p.prompt, std::nullopt);
             }

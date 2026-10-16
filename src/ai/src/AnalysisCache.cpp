@@ -91,7 +91,7 @@ std::optional<json> readEntry(const std::filesystem::path& p) {
         jsonIntOr(doc, "version", 0) != AnalysisCache::kFormatVersion || !doc.contains("key") || !doc.contains("payload")) {
         return std::nullopt;
     }
-    return doc;
+    return std::make_optional(std::move(doc));
 }
 
 std::string uniqueSuffix() {

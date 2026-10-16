@@ -160,7 +160,7 @@ TEST_CASE("GPU scopes at 1080p: the step grid and the cost of a pass", "[render]
             QElapsedTimer t;
             t.start();
             (void)scopesOf(*renderer, canvas, false);
-            ms.push_back(t.nsecsElapsed() / 1e6);
+            ms.push_back(static_cast<double>(t.nsecsElapsed()) / 1e6);
         }
         std::sort(ms.begin(), ms.end());
         return ms;

@@ -9,8 +9,8 @@
 Premiere Pro's shortcuts and edit rules · round trips with Premiere, Resolve and Final Cut · AI that runs on your own machine
 
 [![Status: alpha](https://img.shields.io/badge/status-alpha-D6F54C)](#project-status)
-[![Version 0.1.2](https://img.shields.io/badge/version-0.1.2-9B6CFF)](docs/release-notes-0.1.md)
-[![Platform: Windows 10 | 11](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-1D1D20)](#install)
+[![Version 0.1.3](https://img.shields.io/badge/version-0.1.3-9B6CFF)](docs/release-notes-0.1.md)
+[![Platforms: Windows, with Linux and macOS previews](https://img.shields.io/badge/platforms-Windows%20%7C%20Linux%20%7C%20macOS%20%28preview%29-1D1D20)](#install)
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue)](LICENSE)
 [![C++23](https://img.shields.io/badge/C%2B%2B-23-00599C?logo=cplusplus&logoColor=white)](docs/building.md)
 [![Qt 6.11](https://img.shields.io/badge/Qt-6.11-41CD52?logo=qt&logoColor=white)](docs/building.md)
@@ -21,7 +21,7 @@ Premiere Pro's shortcuts and edit rules · round trips with Premiere, Resolve an
 </div>
 
 > [!WARNING]
-> **Wabcut is in development. This is an alpha version (0.1.2).**
+> **Wabcut is in development. This is an alpha version (0.1.3).**
 > Expect bugs, missing features and changes between versions, including to shortcuts, settings and the project format.
 > Keep backups of your projects and media, and don't rely on it yet for deadline work or sensitive material.
 
@@ -76,7 +76,7 @@ Premiere Pro's shortcuts and edit rules · round trips with Premiere, Resolve an
   </tr>
 </table>
 
-<sub>Screenshots: Wabcut 0.1.2 with its built-in demo project, captured by the automated UI tests.</sub>
+<sub>Screenshots: Wabcut 0.1.3 with its built-in demo project, captured by the automated UI tests.</sub>
 
 ### Who it is for
 
@@ -94,13 +94,15 @@ Premiere Pro's shortcuts and edit rules · round trips with Premiere, Resolve an
 
 ## Project status
 
-Wabcut is an **alpha**. The current release is **0.1.2 "First Cut"**. Most of the editor works, but it has only been
-tested on a small number of machines and projects. Known gaps in this version:
+Wabcut is an **alpha**. The current release is **0.1.3** (the 0.1 "First Cut" series). Most of the editor works, but it
+has only been tested on a small number of machines and projects. Known gaps in this version:
 
-- **Windows only, tested on Windows only.** Wabcut is built by a solo developer who works only on Windows 10 and 11,
-  so macOS and Linux are untested. There are no builds for them yet; the repository's Linux and macOS CI jobs are
-  experimental and nothing they report has been checked on a real machine.
-- **Not code-signed and no auto-update.** Windows SmartScreen may warn on first run.
+- **Made and tested on Windows.** Wabcut is built by a solo developer who works only on Windows 10 and 11. The Linux
+  and macOS (Apple silicon) downloads are **previews**: GitHub's machines build, install, start and smoke-test them
+  for every release, but nobody has edited real projects with them yet. Local transcription and audio plug-ins are
+  Windows-only for now.
+- **Not code-signed and no auto-update.** Windows SmartScreen may warn on first run, and macOS asks you to allow the
+  first start.
 - **AI quality is not benchmarked yet.** Local models and live cloud providers have not been measured on real projects.
 - **Not built yet:** HDR grading (game captures in HDR are tone-mapped to SDR), Optical Flow slow motion, OpenFX
   video plug-ins and cloud collaboration.
@@ -112,14 +114,17 @@ Need something that isn't here? [Open an issue](../../issues) and say what you'r
 
 ## Install
 
-**Requirements:** Windows 10 (22H2) or 11, x64, a DirectX 11 GPU and 16 GB of RAM (8 GB minimum).
+Download the latest release from the [Releases page](../../releases/latest):
 
-1. Download the latest release from the [Releases page](../../releases/latest): a per-user **MSI** (no administrator
-   rights needed) or a **portable ZIP**.
-2. Run it. The packages are not code-signed yet, so SmartScreen may block the first run: choose **More info**, then
-   **Run anyway**.
-3. Follow **[Getting started](docs/getting-started.md)**. It walks through four example projects: a gaming video, a
-   Short, a video essay and a documentary.
+| Platform | Download | First start |
+|---|---|---|
+| **Windows** 10 (22H2) or 11, x64 | per-user **MSI** (no administrator rights) or **portable ZIP** | Not code-signed yet: if SmartScreen stops it, choose **More info**, then **Run anyway**. |
+| **Linux** x64, preview (Ubuntu 24.04 or as new) | **AppImage** or **tar.gz** | `chmod +x` the AppImage and run it, or unpack the tar.gz and run `bin/wabcut`. |
+| **macOS** 13 or newer, Apple silicon, preview | **DMG** | Drag Wabcut to Applications. Not notarized yet: allow it once in **System Settings > Privacy & Security > Open Anyway**. |
+
+You need a GPU with current drivers and 16 GB of RAM (8 GB minimum). Then follow
+**[Getting started](docs/getting-started.md)**. It walks through four example projects: a gaming video, a Short, a
+video essay and a documentary.
 
 ## Privacy and AI
 
@@ -127,7 +132,8 @@ Nothing leaves your computer unless you turn on a cloud feature with your own ke
 
 - every cloud call shows its cost first;
 - a project can be locked to "no cloud";
-- keys are kept in the Windows credential store.
+- keys are kept in the system's credential store (Windows Credential Manager, the macOS Keychain, or the Secret
+  Service on Linux).
 
 Local models (transcription, speech enhancement, stem separation, smart search, object masks) run on your GPU or CPU
 after a one-time download. See [AI with your own key](docs/getting-started.md#ai-with-your-own-key) and [AI](docs/ai.md).

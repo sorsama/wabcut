@@ -8,13 +8,14 @@ in [building.md](building.md); this page starts where a green `win-msvc` build e
 | Platform | Build | Tests | Packages | Status |
 |---|---|---|---|---|
 | **Windows 10/11 x64** | `win-msvc` (MSVC 19.36+) | full suite, GPU and audio-device tests included | per-user MSI, portable ZIP | **Verified** on the development machine for every release candidate |
-| **Linux x64** (Ubuntu 24.04, GCC 14) | `linux-gcc` | `ctest --preset linux-gcc` (no GPU / audio-device tests) | install tree, TGZ | **CI-ready, unverified**: `.github/workflows/unix-full.yml` builds and tests it; nobody has run the result locally |
-| **macOS 15 arm64** (Homebrew LLVM 20) | `macos-clang` | `ctest --preset macos-clang` (no GPU / audio-device tests) | install tree, app bundle, TGZ | **CI-ready, unverified**: as Linux |
+| **Linux x64** (Ubuntu 24.04, GCC 14) | `linux-gcc` | `ctest --preset linux-gcc` (no GPU / audio-device tests) | AppImage, tar.gz | **Preview**: `unix-full.yml` builds and tests it, `release.yml` packages, installs and starts it; nobody has used it on a real machine |
+| **macOS 13+ arm64** (Homebrew LLVM 20) | `macos-clang` | `ctest --preset macos-clang` (no GPU / audio-device tests) | DMG (`Wabcut.app`) | **Preview**: as Linux |
 | Core (any OS, no Qt/FFmpeg) | `core` | `ctest --preset core` | — | Verified on Windows with MSVC and with clang-cl 21.1.8 (`/W4 /WX`, 678 tests); CI on all three |
 
 "Verified" means built, the whole test suite run and the packages installed and smoke-tested on that platform for the
-release. "CI-ready" means the workflow exists and is expected to pass, but no result has been seen yet; the
-[portability notes](#portability) list what is known to differ.
+release. "Preview" means the CI workflows build, test, package and smoke-test it on GitHub's runners (no GPU, no
+audio device), but nobody has edited with it on a real machine; the [portability notes](#portability) list what is
+known to differ.
 
 ## Versioning
 
@@ -82,6 +83,59 @@ Installer gives per-user installs, rollback, exact uninstall and IT deployment n
 WiX 6 added the Open Source Maintenance Fee to its EULA and WiX 7 refuses to run until every build account accepts it
 (`wix eula accept wix7`). Moving past 5.x is a project decision, not a build-script one. Without WiX, cpack still writes
 the portable ZIP and the `install.package` test reports the MSI part as skipped.
+
+## Making a release
+
+`.github/workflows/release.yml` builds every package from one commit, checks it, and publishes the GitHub release:
+
+1. Bump `project(Wabcut VERSION ...)`, add a `## x.y.z (date)` section to `docs/release-notes-<x.y>.md` (the release
+   text quotes it, `cmake/packaging/release_notes.py`) and move the version to "Shipped" in `docs/roadmap.md`. Merge to
+   `main`.
+2. Tag the commit: `git tag vX.Y.Z && git push origin vX.Y.Z`, or **Actions > release > Run workflow** with the tag,
+   which creates it on the chosen branch. A tag that does not match the version stops the run.
+3. The workflow builds the shipped programs without the test suites (windows-full and unix-full run those for every
+   commit), from the same vcpkg binary caches as those jobs, and checks each package before anything is published:
+
+   | Platform | Build | Packages | Checked by |
+   |---|---|---|---|
+   | Windows x64 | `win-msvc` | MSI, portable ZIP | `PackageSmokeTest.ps1` (the `install.package` test): the ZIP unpacked and run, the MSI installed per user, run and uninstalled |
+   | Linux x64 | `linux-gcc` (local AI off) | AppImage, tar.gz | `InstallSmokeTest.cmake` (the `install.smoke` test); the AppImage started under Xvfb until it draws its first frame |
+   | macOS arm64 | `macos-clang` (local AI off) | DMG | `InstallSmokeTest.cmake`; `finish_bundle.py`'s check; the finished bundle run with Homebrew's LLVM moved away (CLI render; the app's start is best effort without a GPU) |
+
+4. The publish job creates the release "Wabcut x.y.z" (a pre-release while the version is 0.x) with the packages and
+   `SHA256SUMS.txt`. Windows is required. A Linux or macOS package that failed its checks is left out, and the release
+   text says so. Running the workflow again for the same tag replaces the files.
+
+Without a tag (Run workflow with an empty tag, or a pull request that changes the packaging) the packages are built,
+checked and kept as workflow artifacts, and nothing is published; the `platforms` choice builds one platform only.
+
+### Linux packages
+
+- **AppImage** (`wabcut-<version>-linux-x64.AppImage`): the install tree under `usr/`, `AppRun` starting
+  `usr/bin/wabcut`, and the launcher entry and icon (`cmake/packaging/linux/make-appdir.sh`). Built with appimagetool
+  1.9.1 and the type 2 runtime 20251108, both pinned by SHA-256 in the workflow; the runtime needs no FUSE library.
+- **tar.gz** (`wabcut-<version>-linux-x64.tar.gz`): the same tree in a `wabcut-<version>-linux-x64/` folder: `bin/`
+  (the app, `wabcut-cli`, the helpers, ONNX Runtime, `qt.conf`, the in-app docs), `lib/` (Qt and ICU), `plugins/`,
+  `qml/`, `share/applications/wabcut.desktop`, `share/icons/hicolor/*/apps/wabcut.png` and `share/doc/Wabcut/`
+  (license, notices, licenses).
+- Qt is deployed by `qt_deploy_qml_imports` and `qt_deploy_runtime_dependencies` (cmake/WabcutInstall.cmake). The
+  distribution provides the rest: glibc 2.39 or newer (built on Ubuntu 24.04), X11/xcb, the GL and Vulkan loaders,
+  libva, PulseAudio or ALSA, libsecret and fontconfig.
+- The executables are stripped (the AppImage, the tar.gz and the macOS bundle): their RelWithDebInfo debug
+  information would make the Linux tree about 2.4 GB. A crash report's backtrace then shows addresses, not names.
+
+### macOS package
+
+- **DMG** (`wabcut-<version>-macos-arm64.dmg`): `Wabcut.app` and a link to Applications. In the bundle:
+  `Contents/MacOS` (the app, `wabcut-cli` and the helpers, which the app starts from its own folder),
+  `Contents/Frameworks` (Qt, LLVM's libc++, libc++abi and libunwind, ONNX Runtime), `Contents/PlugIns`, and
+  `Contents/Resources` (QML modules, the in-app docs, the icon, `LICENSE.txt`, `THIRD-PARTY-NOTICES.txt`, `licenses/`).
+  `Info.plist` (`cmake/packaging/macos/Info.plist.in`) has the bundle id `io.github.sorsama.wabcut` and the
+  microphone reason for voice-over recording.
+- **Signed ad hoc, not notarized.** Apple silicon runs only signed code, so `finish_bundle.py` signs every file ad hoc.
+  Without a Developer ID signature and Apple's notarization, Gatekeeper refuses the first start of a downloaded copy
+  until the user allows it (System Settings > Privacy & Security > Open Anyway). Notarizing needs a paid Apple
+  Developer account; it is an open item of the [release checklist](#release-checklist).
 
 ## Third-party notices
 
@@ -171,7 +225,7 @@ Code is written for all three platforms; only Windows is run. What is known (aud
 - Toolchains: GCC 14 and LLVM 20 (libc++ 20) are what CI uses. Apple Clang from Xcode 16 lacks parts of C++20/23 the code
   uses (`std::jthread`, floating-point `std::from_chars`), so the macOS jobs use Homebrew LLVM; the configure step stops
   with a clear message on an older standard library. The macOS build finds LLVM's `libc++` through an rpath into the
-  Homebrew prefix: a bundle for other Macs must carry it (not done; no macOS package is produced yet).
+  Homebrew prefix; for the DMG, `cmake/packaging/macos/finish_bundle.py` copies it into the bundle.
 - Clang front end: the core builds with clang-cl 21 under `/W4 /WX` (building.md, "clang-cl"), which found a 128-bit
   division that needs compiler-rt and a few unused functions and fields. Off Windows the presets add `-Wshadow
   -Wconversion -Wpedantic`, which clang-cl's `/W4` does not enable: those builds are still unverified.
@@ -190,6 +244,7 @@ Code is written for all three platforms; only Windows is run. What is known (aud
 6. Read the generated `THIRD-PARTY-NOTICES.txt`: new components, versions, the runtime library list.
 7. On a clean Windows account (or VM): install the MSI without admin rights, open a project by double-click (with the
    association ticked), export, uninstall, and confirm the projects and settings are still there.
-8. Sign the MSI and the executables (not yet available: needs a code-signing certificate).
-9. Tag `vX.Y.Z`, attach the MSI, the portable ZIP and the source archive; CI's `unix-full` results for that commit go
-   into the release notes as "unverified" builds.
+8. Sign the MSI and the executables (not yet available: needs a code-signing certificate), and sign and notarize the
+   macOS bundle with a Developer ID (not yet available: needs an Apple Developer account).
+9. Tag `vX.Y.Z` and push the tag: the release workflow builds, checks and publishes every package
+   ([Making a release](#making-a-release)).

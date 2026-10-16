@@ -559,7 +559,8 @@ TEST_CASE("C.13: a typewriter preset reveals the clusters in order; Thai cluster
             int lastWidth = -1;
             std::size_t lastShown = 0;
             for (const double s : {0.0, 0.3, 0.6, 1.0, 2.0}) {
-                const DrawList list = resolveGraphic(graphic, Ticks::fromSeconds(s), realText());
+                const Ticks at{std::llround(s * static_cast<double>(kTicksPerSecond))};
+                const DrawList list = resolveGraphic(graphic, at, realText());
                 REQUIRE(list.items.size() == 1);
                 const DrawText& drawn = list.items[0].text;
                 std::size_t shown = 0;

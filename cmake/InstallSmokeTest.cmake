@@ -47,7 +47,13 @@ foreach(var QT_PLUGIN_PATH QML_IMPORT_PATH QML2_IMPORT_PATH QT_QPA_PLATFORM_PLUG
     unset(ENV{${var}})
 endforeach()
 
-set(cli "${PREFIX}/bin/wabcut-cli${exe_suffix}")
+# macOS with the app: everything is inside the bundle (cmake/WabcutInstall.cmake, WABCUT_MACOS_BUNDLE).
+if(CMAKE_HOST_APPLE AND EXPECT_APP)
+    set(bin_dir "${PREFIX}/wabcut.app/Contents/MacOS")
+else()
+    set(bin_dir "${PREFIX}/bin")
+endif()
+set(cli "${bin_dir}/wabcut-cli${exe_suffix}")
 if(NOT EXISTS "${cli}")
     message(FATAL_ERROR "missing ${cli}")
 endif()
@@ -66,7 +72,7 @@ set(scratch "${PREFIX}-scratch")
 file(REMOVE_RECURSE "${scratch}")
 file(MAKE_DIRECTORY "${scratch}")
 if("wabcut-infer" IN_LIST EXPECT_HELPERS)
-    set(infer "${PREFIX}/bin/wabcut-infer${exe_suffix}")
+    set(infer "${bin_dir}/wabcut-infer${exe_suffix}")
     execute_process(COMMAND "${infer}" --version RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE err)
     if(NOT rc EQUAL 0 OR NOT out MATCHES "^wabcut-infer \\(whisper\\.cpp")
         message(FATAL_ERROR "wabcut-infer --version failed (${rc}):\n${out}\n${err}")
@@ -81,7 +87,7 @@ if("wabcut-infer" IN_LIST EXPECT_HELPERS)
 endif()
 if("wabcut-embed" IN_LIST EXPECT_HELPERS)
     file(WRITE "${scratch}/embed-hello.ndjson" "{\"type\":\"hello\",\"protocol\":1}\n{\"type\":\"shutdown\"}\n")
-    execute_process(COMMAND "${PREFIX}/bin/wabcut-embed${exe_suffix}"
+    execute_process(COMMAND "${bin_dir}/wabcut-embed${exe_suffix}"
         INPUT_FILE "${scratch}/embed-hello.ndjson"
         RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE err TIMEOUT 120)
     if(NOT rc EQUAL 0 OR NOT out MATCHES "\"engine\":\"onnxruntime\"")
@@ -168,6 +174,26 @@ if(CMAKE_HOST_WIN32)
     if(NOT EXISTS "${PREFIX}/bin/docs/roadmap.md")
         message(FATAL_ERROR "the install tree lacks the Home screen's docs (bin/docs/)")
     endif()
+elseif(EXPECT_APP)
+    # Qt's deployment layout (cmake/WabcutInstall.cmake): the libraries, the platform plugin and the QML modules the
+    # app imports. The CLI run above already loaded the Qt libraries from the tree.
+    if(CMAKE_HOST_APPLE)
+        set(contents "wabcut.app/Contents")
+        set(required ${contents}/MacOS/wabcut ${contents}/Frameworks/QtCore.framework
+                     ${contents}/Frameworks/QtQuick.framework ${contents}/PlugIns/platforms/libqcocoa.dylib
+                     ${contents}/Resources/qml/QtQuick/Controls ${contents}/Resources/qt.conf
+                     ${contents}/Resources/docs/roadmap.md ${contents}/Info.plist)
+    else()
+        set(required bin/wabcut bin/qt.conf lib/libQt6Core.so.6 lib/libQt6Quick.so.6
+                     plugins/platforms/libqxcb.so plugins/platforms/libqoffscreen.so qml/QtQuick/Controls
+                     bin/docs/roadmap.md
+                     share/applications/wabcut.desktop share/icons/hicolor/256x256/apps/wabcut.png)
+    endif()
+    foreach(path IN LISTS required)
+        if(NOT EXISTS "${PREFIX}/${path}")
+            message(FATAL_ERROR "the install tree lacks ${path}")
+        endif()
+    endforeach()
 endif()
 
 # ---- 3. A headless render with the installed CLI -------------------------------------------------------------
@@ -205,6 +231,8 @@ endif()
 # ---- 4. Licenses, notices and size --------------------------------------------------------------------------
 if(CMAKE_HOST_WIN32)
     set(doc_dir "${PREFIX}")
+elseif(CMAKE_HOST_APPLE AND EXPECT_APP)
+    set(doc_dir "${PREFIX}/wabcut.app/Contents/Resources")
 else()
     set(doc_dir "${PREFIX}/share/doc/Wabcut")
 endif()
@@ -236,6 +264,15 @@ endif()
 
 file(REMOVE_RECURSE "${scratch}")
 file(GLOB_RECURSE files LIST_DIRECTORIES false "${PREFIX}/*")
+# Symbolic links (a macOS framework's Versions/Current, Linux's libQt6Core.so.6) are not counted twice, and a link
+# to a folder has no size.
+set(regular "")
+foreach(f IN LISTS files)
+    if(NOT IS_SYMLINK "${f}" AND NOT IS_DIRECTORY "${f}")
+        list(APPEND regular "${f}")
+    endif()
+endforeach()
+set(files ${regular})
 list(LENGTH files file_count)
 set(total 0)
 foreach(f IN LISTS files)

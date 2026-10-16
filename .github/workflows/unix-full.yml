@@ -43,7 +43,8 @@ jobs:
             configure: -DCMAKE_C_COMPILER=gcc-14 -DCMAKE_CXX_COMPILER=g++-14
           - os: macos-15
             preset: macos-clang
-            configure: -DVCPKG_TARGET_TRIPLET=arm64-osx-llvm -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE=cmake/toolchains/macos-llvm.cmake
+            # An absolute path: CMake's compiler checks include the toolchain from their own scratch projects.
+            configure: -DVCPKG_TARGET_TRIPLET=arm64-osx-llvm -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE=$GITHUB_WORKSPACE/cmake/toolchains/macos-llvm.cmake
     runs-on: ${{ matrix.os }}
     timeout-minutes: 360
     steps:
@@ -106,7 +107,8 @@ jobs:
           export WABCUT_QT_DIR="$QT_ROOT_DIR"
           export VCPKG_KEEP_ENV_VARS="WABCUT_QT_DIR;LLVM_ROOT"
           cmake --preset ${{ matrix.preset }} ${{ matrix.configure }} \
-            -DWABCUT_WITH_LOCAL_AI=OFF -DWABCUT_WITH_ONNX=ON -DWABCUT_BUILD_NUMBER=${{ github.run_number }}
+            -DWABCUT_WITH_LOCAL_AI=OFF -DWABCUT_WITH_ONNX=ON -DWABCUT_BUILD_NUMBER=${{ github.run_number }} \
+            -DCMAKE_OPTIMIZE_DEPENDENCIES=ON
           # -k 0: a failed build still compiles everything else, so one run shows every error.
           cmake --build --preset ${{ matrix.preset }} -- -k 0
 

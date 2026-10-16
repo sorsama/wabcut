@@ -472,7 +472,7 @@ QPainter::CompositionMode compositionOf(::wabcut::BlendMode mode) {
     case ::wabcut::BlendMode::Darken: return QPainter::CompositionMode_Darken;
     case ::wabcut::BlendMode::Lighten: return QPainter::CompositionMode_Lighten;
     case ::wabcut::BlendMode::Difference: return QPainter::CompositionMode_Difference;
-    case ::wabcut::BlendMode::Normal: break;
+    default: break; // Normal, and the modes QPainter has no operator for
     }
     return QPainter::CompositionMode_SourceOver;
 }

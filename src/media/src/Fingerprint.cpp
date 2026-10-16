@@ -2,6 +2,7 @@
 #include "FfmpegUtil.h"
 
 #include <wabcut/media/Fingerprint.h>
+#include <wabcut/platform/FileTime.h>
 
 #include <array>
 #include <chrono>
@@ -74,7 +75,7 @@ std::expected<std::uint64_t, Error> sourceFingerprint(const std::string& utf8Pat
     // Nanoseconds since 1970 (file_clock's own epoch is 1601 on Windows, whose nanoseconds overflow int64).
     const std::int64_t mtimeNs =
         std::chrono::duration_cast<std::chrono::nanoseconds>(
-            std::chrono::clock_cast<std::chrono::system_clock>(mtime).time_since_epoch())
+            platform::toSystemClock(mtime).time_since_epoch())
             .count();
     MemoKey key{utf8Path, static_cast<std::int64_t>(size), mtimeNs};
     if (const auto known = memo().find(key)) {

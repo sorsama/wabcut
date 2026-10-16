@@ -20,6 +20,10 @@ file(COPY "${SOURCE_PATH}/modeldata/src/rnnoise_data.c" "${SOURCE_PATH}/modeldat
      DESTINATION "${SOURCE_PATH}/src")
 file(REMOVE_RECURSE "${SOURCE_PATH}/modeldata")
 file(COPY "${CMAKE_CURRENT_LIST_DIR}/CMakeLists.txt" DESTINATION "${SOURCE_PATH}")
+# The ARM and plain-C vector code needs os_support.h, which the 0.2 release lacks (see the file).
+if(NOT EXISTS "${SOURCE_PATH}/src/os_support.h")
+    file(COPY "${CMAKE_CURRENT_LIST_DIR}/os_support.h" DESTINATION "${SOURCE_PATH}/src")
+endif()
 
 vcpkg_cmake_configure(SOURCE_PATH "${SOURCE_PATH}")
 vcpkg_cmake_install()

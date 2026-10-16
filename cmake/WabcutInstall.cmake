@@ -67,10 +67,21 @@ wabcut_add_version_resource(wabcut-cli "Wabcut command-line tool")
 wabcut_add_version_resource(wabcut-infer "Wabcut local transcription helper (whisper.cpp)")
 wabcut_add_version_resource(wabcut-embed "Wabcut smart search and subject detection helper (ONNX Runtime)")
 
+# macOS with the app: the bundle is the whole distribution (the DMG holds wabcut.app and nothing else), so every
+# executable, the in-app docs, the notices and the licenses go inside it. Without the app (a CLI-only build) the tree
+# follows GNUInstallDirs as on Linux.
+set(WABCUT_MACOS_BUNDLE OFF)
+if(APPLE AND TARGET wabcut)
+    set(WABCUT_MACOS_BUNDLE ON)
+endif()
+
 # Already normalized (no "./"), so CMake 3.31+ (policy CMP0177) installs them unchanged.
 if(WIN32)
     set(WABCUT_INSTALL_DOCDIR ".")
     set(WABCUT_INSTALL_LICENSEDIR "licenses")
+elseif(WABCUT_MACOS_BUNDLE)
+    set(WABCUT_INSTALL_DOCDIR "wabcut.app/Contents/Resources")
+    set(WABCUT_INSTALL_LICENSEDIR "wabcut.app/Contents/Resources/licenses")
 else()
     set(WABCUT_INSTALL_DOCDIR "${CMAKE_INSTALL_DOCDIR}")
     set(WABCUT_INSTALL_LICENSEDIR "${CMAKE_INSTALL_DOCDIR}/licenses")
@@ -124,9 +135,20 @@ if(WIN32)
     set(CMAKE_INSTALL_SYSTEM_RUNTIME_DESTINATION ${CMAKE_INSTALL_BINDIR})
     set(CMAKE_INSTALL_UCRT_LIBRARIES OFF)
     include(InstallRequiredSystemLibraries)
+elseif(WABCUT_MACOS_BUNDLE)
+    # macOS (preview builds from CI, docs/release.md "Platform status"): the app starts its helpers from its own folder
+    # (currentExecutableDir()), so the CLI and the helpers sit next to it in wabcut.app/Contents/MacOS; macdeployqt
+    # (below) puts the Qt frameworks and the other shared libraries in Contents/Frameworks.
+    foreach(target IN LISTS wabcut_install_targets)
+        set_target_properties(${target} PROPERTIES INSTALL_RPATH "@executable_path/../Frameworks")
+    endforeach()
+    set(wabcut_bundle_tools ${wabcut_install_targets})
+    list(REMOVE_ITEM wabcut_bundle_tools wabcut)
+    install(TARGETS wabcut BUNDLE DESTINATION .)
+    install(TARGETS ${wabcut_bundle_tools} RUNTIME DESTINATION "wabcut.app/Contents/MacOS")
 else()
-    # macOS / Linux (CI-ready, unverified locally; docs/release.md "Platform status"): shared libraries next to the
-    # executables or in ../lib.
+    # Linux and a CLI-only macOS build (preview builds from CI, docs/release.md "Platform status"): shared libraries
+    # next to the executables or in ../lib.
     foreach(target IN LISTS wabcut_install_targets)
         if(APPLE)
             set_target_properties(${target} PROPERTIES INSTALL_RPATH "@executable_path;@executable_path/../lib")
@@ -134,20 +156,16 @@ else()
             set_target_properties(${target} PROPERTIES INSTALL_RPATH "$ORIGIN;$ORIGIN/../lib")
         endif()
     endforeach()
-    install(TARGETS ${wabcut_install_targets}
-        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-        BUNDLE DESTINATION .)
+    install(TARGETS ${wabcut_install_targets} RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif()
-# The app starts the helpers from its own folder (currentExecutableDir()): in a macOS bundle that is
-# wabcut.app/Contents/MacOS, so the helpers (and the modules they load, below) go there too; bin/ keeps them for the CLI.
-set(wabcut_helper_dirs ${CMAKE_INSTALL_BINDIR})
-if(APPLE AND TARGET wabcut)
-    list(APPEND wabcut_helper_dirs "wabcut.app/Contents/MacOS")
-    foreach(helper wabcut-infer wabcut-embed)
-        if(TARGET ${helper})
-            install(TARGETS ${helper} RUNTIME DESTINATION "wabcut.app/Contents/MacOS")
-        endif()
-    endforeach()
+# Where the executables are: the app starts the helpers from its own folder, and the helpers load their modules (below)
+# from theirs.
+if(WABCUT_MACOS_BUNDLE)
+    set(wabcut_helper_dirs "wabcut.app/Contents/MacOS")
+    set(wabcut_library_dir "wabcut.app/Contents/Frameworks")
+else()
+    set(wabcut_helper_dirs ${CMAKE_INSTALL_BINDIR})
+    set(wabcut_library_dir ${CMAKE_INSTALL_BINDIR})
 endif()
 
 # Modules the helpers load at run time (nothing imports them, so the dependency set above cannot see them). The same
@@ -178,33 +196,79 @@ if(TARGET wabcut-embed)
         file(GLOB wabcut_ort_libraries "${wabcut_vcpkg_prefix}/lib/libonnxruntime.so*" "${wabcut_vcpkg_prefix}/lib/libonnxruntime*.dylib")
         list(APPEND wabcut_ort_modules ${wabcut_ort_libraries})
     endif()
-    foreach(dir IN LISTS wabcut_helper_dirs)
-        if(wabcut_ort_modules)
-            install(FILES ${wabcut_ort_modules} DESTINATION ${dir})
-        endif()
-    endforeach()
+    if(wabcut_ort_modules)
+        install(FILES ${wabcut_ort_modules} DESTINATION ${wabcut_library_dir})
+    endif()
 endif()
 
-# The documents the Home screen links ("Learn", "What's new"): HomeBridge looks for docs/ next to the executable.
+# The documents the Home screen links ("Learn", "What's new"): HomeBridge looks for docs/ next to the executable, and
+# in a macOS bundle in Contents/Resources/docs.
+if(WABCUT_MACOS_BUNDLE)
+    set(wabcut_docs_dir "wabcut.app/Contents/Resources/docs")
+else()
+    set(wabcut_docs_dir "${CMAKE_INSTALL_BINDIR}/docs")
+endif()
 install(FILES "${CMAKE_SOURCE_DIR}/docs/interchange.md" "${CMAKE_SOURCE_DIR}/docs/keymap.md"
               "${CMAKE_SOURCE_DIR}/docs/roadmap.md" "${CMAKE_SOURCE_DIR}/docs/release.md"
               "${CMAKE_SOURCE_DIR}/docs/getting-started.md" "${CMAKE_SOURCE_DIR}/docs/release-notes-0.1.md"
-    DESTINATION ${CMAKE_INSTALL_BINDIR}/docs)
+    DESTINATION ${wabcut_docs_dir})
+
+# Linux desktop integration: a launcher entry and the app icon in the hicolor theme (the AppImage uses them too).
+if(UNIX AND NOT APPLE AND TARGET wabcut)
+    install(FILES "${CMAKE_CURRENT_LIST_DIR}/packaging/linux/wabcut.desktop"
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
+    foreach(size 16 24 32 48 64 128 256 512)
+        install(FILES "${CMAKE_SOURCE_DIR}/src/app/resources/brand/icons/wabcut-${size}.png"
+            DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/${size}x${size}/apps RENAME wabcut.png)
+    endforeach()
+endif()
 
 # ---- Qt runtime (libraries, plugins, QML modules) -----------------------------------------------------------
-if(TARGET wabcut)
-    set(wabcut_deploy_options "")
-    if(WIN32)
-        # Same options as the build-tree POST_BUILD windeployqt in src/app; --qmldir lets it find the QML imports
-        # of the statically linked Wabcut module. The compiler runtime comes from InstallRequiredSystemLibraries.
-        set(wabcut_deploy_options --qmldir "${CMAKE_SOURCE_DIR}/src/app/qml" --no-compiler-runtime)
-    endif()
+if(TARGET wabcut AND WIN32)
+    # Same options as the build-tree POST_BUILD windeployqt in src/app; --qmldir lets it find the QML imports of the
+    # statically linked Wabcut module. The compiler runtime comes from InstallRequiredSystemLibraries.
     qt_generate_deploy_app_script(
         TARGET wabcut
         OUTPUT_SCRIPT wabcut_deploy_script
         NO_TRANSLATIONS
         NO_UNSUPPORTED_PLATFORM_ERROR
-        DEPLOY_TOOL_OPTIONS ${wabcut_deploy_options})
+        DEPLOY_TOOL_OPTIONS --qmldir "${CMAKE_SOURCE_DIR}/src/app/qml" --no-compiler-runtime)
+elseif(TARGET wabcut)
+    # Linux and macOS: the QML modules the app imports (Qt's qmlimportscanner over src/app, the scan Qt already runs
+    # for the wabcut target), then the Qt libraries and plugins the app, those QML plugins, the CLI and the helpers
+    # need. Linux: lib/, plugins/, qml/ and bin/qt.conf (file(GET_RUNTIME_DEPENDENCIES); the OS's own libraries stay
+    # out). macOS: macdeployqt fills Contents/Frameworks, PlugIns and Resources/qml and points every executable in
+    # Contents/MacOS at them. ONNX Runtime is installed above, next to the helper that loads it. Linux deploys only the
+    # default platform plugin (xcb; Wayland sessions run it through XWayland), so the offscreen and minimal ones the
+    # CLI's headless renders use are named (macdeployqt ships its own set).
+    # A string of quoted paths, not a list: a ";" would split the CONTENT argument below.
+    set(wabcut_deploy_tools "")
+    foreach(target IN LISTS wabcut_install_targets)
+        if(NOT target STREQUAL "wabcut")
+            string(APPEND wabcut_deploy_tools " \"${wabcut_helper_dirs}/$<TARGET_FILE_NAME:${target}>\"")
+        endif()
+    endforeach()
+    if(WABCUT_MACOS_BUNDLE)
+        set(wabcut_deploy_app "$<TARGET_FILE_NAME:wabcut>.app")
+    else()
+        set(wabcut_deploy_app "$<TARGET_FILE:wabcut>")
+    endif()
+    qt_generate_deploy_script(
+        TARGET wabcut
+        OUTPUT_SCRIPT wabcut_deploy_script
+        CONTENT "
+qt_deploy_qml_imports(TARGET wabcut PLUGINS_FOUND plugins_found)
+qt_deploy_runtime_dependencies(
+    EXECUTABLE \"${wabcut_deploy_app}\"
+    ADDITIONAL_EXECUTABLES${wabcut_deploy_tools}
+    ADDITIONAL_MODULES \${plugins_found}
+    INCLUDE_PLUGINS qoffscreen qminimal
+    PRE_EXCLUDE_REGEXES onnxruntime
+    GENERATE_QT_CONF
+    NO_TRANSLATIONS)
+")
+endif()
+if(TARGET wabcut)
     if(WIN32)
         # windeployqt copies the D3D and DirectX shader compilers (d3dcompiler_47.dll, dxcompiler.dll, dxil.dll)
         # from %WindowsSdkDir%\Redist\D3D, and silently skips them when that variable is not set. Record the SDK of

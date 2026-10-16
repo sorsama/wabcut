@@ -25,6 +25,20 @@ struct StreamCounters {
     std::uint64_t waitFrames = 0;     ///< silence while queued data starts later (after an anchor)
 };
 
+/// TrackStream's chunk header and flush marker. At namespace scope, not nested: SpscQueue and SeqLock check that
+/// their element is default constructible inside TrackStream, and GCC does not see a nested class's default member
+/// initializers until the enclosing class is complete.
+struct TrackStreamChunk {
+    std::uint64_t epoch = 0;
+    std::int64_t timeline = 0;
+    std::uint32_t frames = 0;
+    std::uint32_t consumed = 0;
+};
+struct TrackStreamMarker {
+    std::uint64_t epoch = 0;
+    std::int64_t cutover = std::numeric_limits<std::int64_t>::min(); ///< TrackStream::kImmediate
+};
+
 /// Flush protocol. The producer bumps the epoch and publishes {epoch, cutover}:
 ///   * cutover = kImmediate (seek, resync): every older chunk is dropped at once;
 ///   * otherwise (an edit): older chunks keep playing up to the cutover time, then the new epoch's data takes
@@ -59,16 +73,9 @@ public:
               StreamCounters& counters) noexcept;
 
 private:
-    struct Chunk {
-        std::uint64_t epoch = 0;
-        std::int64_t timeline = 0;
-        std::uint32_t frames = 0;
-        std::uint32_t consumed = 0;
-    };
-    struct Marker {
-        std::uint64_t epoch = 0;
-        std::int64_t cutover = kImmediate;
-    };
+    using Chunk = TrackStreamChunk;
+    using Marker = TrackStreamMarker;
+    static_assert(Marker{}.cutover == kImmediate);
 
     void dropRest(Chunk& chunk) noexcept;
     /// De-click one run of output frames that came from data (`data`) or is silence.
