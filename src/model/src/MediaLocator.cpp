@@ -84,7 +84,12 @@ std::expected<SourceFingerprint, Error> fingerprintFile(const std::filesystem::p
 
     SourceFingerprint fp;
     fp.size = static_cast<std::int64_t>(size);
+#if defined(_LIBCPP_VERSION)
+    // libc++ has no std::chrono::clock_cast yet; its file clock converts to the system clock itself.
+    const auto system = std::chrono::file_clock::to_sys(written);
+#else
     const auto system = std::chrono::clock_cast<std::chrono::system_clock>(written);
+#endif
     fp.mtimeNs = std::chrono::duration_cast<std::chrono::nanoseconds>(system.time_since_epoch()).count();
     fp.sampleHash = toHex(hash);
     return fp;

@@ -76,10 +76,10 @@ float regionActivity(const Image& now, const Image& before, const Box& box) {
     if (!now.valid() || !before.valid() || now.width != before.width || now.height != before.height) {
         return 0.0f;
     }
-    const int x0 = std::clamp(static_cast<int>(box.x * now.width), 0, now.width - 1);
-    const int x1 = std::clamp(static_cast<int>((box.x + box.w) * now.width), x0 + 1, now.width);
-    const int y0 = std::clamp(static_cast<int>((box.y + box.h * 0.5f) * now.height), 0, now.height - 1);
-    const int y1 = std::clamp(static_cast<int>((box.y + box.h) * now.height), y0 + 1, now.height);
+    const int x0 = std::clamp(static_cast<int>(box.x * static_cast<float>(now.width)), 0, now.width - 1);
+    const int x1 = std::clamp(static_cast<int>((box.x + box.w) * static_cast<float>(now.width)), x0 + 1, now.width);
+    const int y0 = std::clamp(static_cast<int>((box.y + box.h * 0.5f) * static_cast<float>(now.height)), 0, now.height - 1);
+    const int y1 = std::clamp(static_cast<int>((box.y + box.h) * static_cast<float>(now.height)), y0 + 1, now.height);
     double sum = 0.0;
     std::size_t n = 0;
     for (int y = y0; y < y1; y += 2) {

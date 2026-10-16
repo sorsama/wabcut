@@ -114,7 +114,7 @@ Onsets onsetStrength(std::span<const float> x, int sampleRate) {
     for (const double v : o.strength) {
         var += v * v;
     }
-    const double sd = std::sqrt(var / std::max<std::size_t>(frames, 1));
+    const double sd = std::sqrt(var / static_cast<double>(std::max<std::size_t>(frames, 1)));
     if (sd > 1e-12) {
         for (double& v : o.strength) {
             v /= sd;

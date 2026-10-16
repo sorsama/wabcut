@@ -29,7 +29,6 @@ using namespace wabcut::ai::segment::test;
 using wabcut::test::CommandHarness;
 using wabcut::test::Timeline;
 using Catch::Approx;
-using Json = nlohmann::json;
 
 namespace {
 
@@ -156,7 +155,8 @@ TEST_CASE("mask.objectSelect: a click makes a matte mask that follows the object
     CHECK(applied.data["segmented"] == 0);
     CHECK(s.seg.opened == 1);
     CHECK(h.session.undoCount() == 1);
-    const Clip& c = clipIn(h.state(), h.tl.seq, clip);
+    const ProjectSnapshot held = h.state(); // c refers into it: held, not a temporary
+    const Clip& c = clipIn(held, h.tl.seq, clip);
     const EffectInstance* opacity = effectNamed(c, "wabcut.mask");
     REQUIRE(opacity);
     REQUIRE(opacity->masks.size() == 1);
@@ -217,7 +217,8 @@ TEST_CASE("mask.objectSelect on an effect: blur the background (inverted), acros
     CHECK(r.data["effect"] == effect);
     CHECK(r.data["frames"] == 80);
     CHECK(r.data["stoppedAtCutAfter"].is_null());
-    const Clip& c = clipIn(h.state(), h.tl.seq, clip);
+    const ProjectSnapshot held = h.state(); // c refers into it: held, not a temporary
+    const Clip& c = clipIn(held, h.tl.seq, clip);
     CHECK(effectNamed(c, "wabcut.mask") == nullptr);
     const EffectInstance* e = effectNamed(c, "wabcut.blur.gaussian");
     REQUIRE(e);
@@ -505,7 +506,8 @@ TEST_CASE("The assistant blurs the background behind the speaker and brightens t
     const ApplyResult applied = applyStaged(session, out, apply);
     INFO(applied.message);
     REQUIRE(applied.status == ApplyResult::Status::Applied);
-    const Clip& c = clipIn(session.snapshot(), s.tl.seq, clip);
+    const ProjectSnapshot held = session.snapshot(); // c refers into it: held, not a temporary
+    const Clip& c = clipIn(held, s.tl.seq, clip);
     const EffectInstance* blur = effectNamed(c, "wabcut.blur.gaussian");
     REQUIRE(blur);
     REQUIRE(blur->masks.size() == 1);

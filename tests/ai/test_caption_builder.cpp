@@ -6,6 +6,8 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
+
 using namespace wabcut;
 using namespace wabcut::ai::edit;
 using namespace wabcut::ai::edit::test;

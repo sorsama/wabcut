@@ -32,10 +32,10 @@ inline Image canvas(int width, int height, const std::vector<Block>& blocks, std
     image.height = height;
     image.rgb.assign(static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 3, grey);
     for (const Block& block : blocks) {
-        const int x0 = std::clamp(static_cast<int>(std::lround(block.box.x * width)), 0, width);
-        const int x1 = std::clamp(static_cast<int>(std::lround((block.box.x + block.box.w) * width)), 0, width);
-        const int y0 = std::clamp(static_cast<int>(std::lround(block.box.y * height)), 0, height);
-        const int y1 = std::clamp(static_cast<int>(std::lround((block.box.y + block.box.h) * height)), 0, height);
+        const int x0 = std::clamp(static_cast<int>(std::lround(block.box.x * static_cast<float>(width))), 0, width);
+        const int x1 = std::clamp(static_cast<int>(std::lround((block.box.x + block.box.w) * static_cast<float>(width))), 0, width);
+        const int y0 = std::clamp(static_cast<int>(std::lround(block.box.y * static_cast<float>(height))), 0, height);
+        const int y1 = std::clamp(static_cast<int>(std::lround((block.box.y + block.box.h) * static_cast<float>(height))), 0, height);
         for (int y = y0; y < y1; ++y) {
             for (int x = x0; x < x1; ++x) {
                 const std::size_t at = (static_cast<std::size_t>(y) * width + x) * 3;

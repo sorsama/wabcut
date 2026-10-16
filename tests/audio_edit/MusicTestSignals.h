@@ -47,7 +47,7 @@ inline SyntheticSong synthesizeSong(std::string sections = "IIIIAAAAAAAABBBBBBBB
     song.bpm = bpm;
     song.sections = std::move(sections);
     const double beat = 60.0 / bpm;
-    const std::size_t total = static_cast<std::size_t>(std::llround(song.sections.size() * 4 * beat * rate));
+    const std::size_t total = static_cast<std::size_t>(std::llround(static_cast<double>(song.sections.size()) * 4 * beat * rate));
     song.samples.assign(total, 0.0f);
     std::uint32_t seed = 12345;
     const auto rnd = [&seed] {

@@ -57,7 +57,7 @@ inline std::string tc(int frames) {
     const int ff = frames % 25;
     const int ss = (frames / 25) % 60;
     const int mm = frames / (25 * 60);
-    char text[16];
+    char text[48]; // room for any int in each field (GCC's -Wformat-truncation counts the worst case)
     std::snprintf(text, sizeof text, "00:%02d:%02d:%02d", mm, ss, ff);
     return text;
 }

@@ -187,7 +187,7 @@ std::map<std::string, std::string> snapshotDirectory(const fs::path& dir) {
     std::map<std::string, std::string> out;
     for (const auto& entry : fs::directory_iterator(dir)) {
         const auto time = entry.last_write_time().time_since_epoch().count();
-        out[pathToUtf8(entry.path().filename())] = std::to_string(entry.file_size()) + "@" + std::to_string(time) + ":" +
+        out[pathToUtf8(entry.path().filename())] = std::to_string(entry.file_size()) + "@" + std::to_string(static_cast<long long>(time)) + ":" +
                                                    readFile(entry.path());
     }
     return out;

@@ -146,9 +146,12 @@ TEST_CASE("interchange: relink: the index stops at its limit and never touches f
     CHECK(relinker.indexTruncated());
     (void)relinker.resolve(referenceTo("/x/f3.mov"));
     CHECK(fs::file_size(dir / "f3.mov") == 4);
-    CHECK(fs::last_write_time(dir / "f3.mov") == before);
+    CHECK((fs::last_write_time(dir / "f3.mov") == before)); // a bool: libc++'s file times (__int128) do not print
 }
 
+// UNC paths (//server/share) are a Windows form; on Linux and macOS a share is a mounted folder, so this case runs
+// on Windows only.
+#ifdef _WIN32
 TEST_CASE("interchange: relink: a network share is looked up like a local folder, by the existence check only (C.10)",
           "[interchange][relink][unc]") {
     // The policy (docs/interchange.md, "Network paths"): a share path takes the same plain existence check, in the
@@ -185,3 +188,4 @@ TEST_CASE("interchange: relink: a network share is looked up like a local folder
         CHECK(path.starts_with("//fileserver/"));
     }
 }
+#endif

@@ -16,8 +16,10 @@
 #include <QImageReader>
 #include <QtEndian>
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
+#include <cstdlib>
 #include <vector>
 
 using namespace wabcut::test;
@@ -59,6 +61,23 @@ QImage render(int size) {
     reader.setScaledSize(QSize(size, size));
     QImage image = reader.read();
     return image.convertToFormat(QImage::Format_ARGB32);
+}
+
+/// How many pixels differ by more than `levels` in any channel (every pixel when the sizes differ).
+int pixelsDiffering(const QImage& a, const QImage& b, int levels) {
+    if (a.size() != b.size())
+        return std::max(a.width() * a.height(), b.width() * b.height());
+    int count = 0;
+    for (int y = 0; y < a.height(); ++y) {
+        for (int x = 0; x < a.width(); ++x) {
+            const QRgb p = a.pixel(x, y);
+            const QRgb q = b.pixel(x, y);
+            const int most = std::max({std::abs(qRed(p) - qRed(q)), std::abs(qGreen(p) - qGreen(q)),
+                                       std::abs(qBlue(p) - qBlue(q)), std::abs(qAlpha(p) - qAlpha(q))});
+            count += most > levels ? 1 : 0;
+        }
+    }
+    return count;
 }
 
 QByteArray png(const QImage& image) {
@@ -148,7 +167,9 @@ TEST_CASE("The app icon set is rendered from the brand SVGs", "[app][design][ico
         const QImage committed = QImage(dir + QStringLiteral("/wabcut-%1.png").arg(s)).convertToFormat(QImage::Format_ARGB32);
         REQUIRE_FALSE(committed.isNull());
         CHECK(committed.size() == QSize(s, s));
-        CHECK(committed == render(s)); // regenerate with "[.icongen]" after changing the SVG
+        // Regenerate with "[.icongen]" after changing an SVG. Antialiasing may differ at a few edge pixels (Qt's
+        // raster engine takes other SIMD paths on other CPUs, e.g. a CI runner); a stale icon differs at many.
+        CHECK(pixelsDiffering(committed, render(s), 8) <= s * s / 50);
     }
     QFile icoFile(dir + QStringLiteral("/wabcut.ico"));
     REQUIRE(icoFile.open(QIODevice::ReadOnly));

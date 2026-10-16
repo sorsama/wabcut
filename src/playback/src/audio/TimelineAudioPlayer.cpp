@@ -16,6 +16,7 @@
 
 #include <wabcut/model/ChangeSet.h>
 #include <wabcut/model/Nesting.h>
+#include <wabcut/platform/AtomicSharedPtr.h>
 
 #include <algorithm>
 #include <atomic>
@@ -543,7 +544,7 @@ struct TimelineAudioPlayer::Impl {
     /// functions read `published` instead.
     std::shared_ptr<TimelineMixSource> source;
     /// Review A5-P2-3: `source` for any other thread (meters, live mix, stats), which holds it while it uses it.
-    std::atomic<std::shared_ptr<TimelineMixSource>> published;
+    wabcut::platform::AtomicSharedPtr<TimelineMixSource> published;
     bool installed = false; ///< start() has handed `source` to the engine
     std::int64_t tpf = Rate{48000, 1}.ticksPerUnit();
     const EditSession* session = nullptr;

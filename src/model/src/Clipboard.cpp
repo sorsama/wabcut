@@ -127,11 +127,12 @@ public:
         if (sameRate && (!m_scale || m_fromDuration == m_toDuration)) {
             return m_toStart + (t - m_fromStart); // exact
         }
-        long double u = static_cast<long double>((t - m_fromStart).value) * m_fromRate.second / m_fromRate.first;
+        long double u = static_cast<long double>((t - m_fromStart).value) * static_cast<long double>(m_fromRate.second) /
+                        static_cast<long double>(m_fromRate.first);
         if (m_scale && m_fromDuration.value > 0) {
             u = u * static_cast<long double>(m_toDuration.value) / static_cast<long double>(m_fromDuration.value);
         }
-        const long double v = u * m_toRate.first / m_toRate.second;
+        const long double v = u * static_cast<long double>(m_toRate.first) / static_cast<long double>(m_toRate.second);
         return m_toStart + Ticks{static_cast<std::int64_t>(std::llround(static_cast<double>(v)))};
     }
 

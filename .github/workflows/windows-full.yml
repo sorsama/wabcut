@@ -20,6 +20,9 @@ concurrency:
 env:
   # Shared runners are slower than a developer machine: wall-clock budgets in the tests get 4x headroom.
   WABCUT_TIMING_SLACK: 4
+  # The runner has no GPU (Microsoft Basic Render Driver): the media tests skip their hardware-decoder checks
+  # (tests/media/TestMedia.h, gpuExpected()); the tests that need a GPU are excluded by label (win-msvc-ci).
+  WABCUT_TEST_NO_GPU: 1
   QT_VERSION: 6.11.3
   # aqtinstall 3.3.0, the latest release, cannot read the per-arch repository layout Qt uses since 6.11. The fix
   # (miurahr/aqtinstall#1000) is only on master, so install aqtinstall from a pinned master commit.

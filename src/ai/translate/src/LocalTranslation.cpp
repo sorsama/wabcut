@@ -123,12 +123,12 @@ std::expected<TranslationResult, AiError> LocalTranslator::translate(const Trans
     }
     if (m_helper->session() != m_loadedSession) {
         const auto load = [&](const std::string& device) {
-            embed::Load request;
-            request.id = m_helper->nextId();
-            request.translation = m_options.modelDirectory;
-            request.device = device;
-            request.threads = m_options.threads;
-            return m_helper->call<embed::Loaded>(embed::Request{request}, request.id, "loading the translation model", m_options.loadTimeout, stop);
+            embed::Load loadRequest;
+            loadRequest.id = m_helper->nextId();
+            loadRequest.translation = m_options.modelDirectory;
+            loadRequest.device = device;
+            loadRequest.threads = m_options.threads;
+            return m_helper->call<embed::Loaded>(embed::Request{loadRequest}, loadRequest.id, "loading the translation model", m_options.loadTimeout, stop);
         };
         auto loaded = load(m_cpuOnly ? std::string("cpu") : m_options.device);
         if (!loaded && !m_cpuOnly && m_options.device != "cpu" && !m_helper->running() && !stop.stop_requested()) {

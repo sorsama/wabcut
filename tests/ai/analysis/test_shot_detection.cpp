@@ -81,11 +81,11 @@ TEST_CASE("A fade through black is one cut between the fades", "[ai][analysis][s
         if (n < 30) {
             frames.push_back(sceneFrame(6, n));
         } else if (n < 42) {
-            frames.push_back(scaled(sceneFrame(6, n), 1.0 - (n - 29) / 12.0)); // fade out
+            frames.push_back(scaled(sceneFrame(6, n), 1.0 - static_cast<double>(n - 29) / 12.0)); // fade out
         } else if (n < 50) {
             frames.push_back(flat(n, 0));
         } else if (n < 62) {
-            frames.push_back(scaled(sceneFrame(7, n), (n - 49) / 12.0)); // fade in
+            frames.push_back(scaled(sceneFrame(7, n), static_cast<double>(n - 49) / 12.0)); // fade in
         } else {
             frames.push_back(sceneFrame(7, n));
         }
@@ -102,7 +102,7 @@ TEST_CASE("A fade through black is one cut between the fades", "[ai][analysis][s
     // Starting from black is not a cut.
     std::vector<AnalysisFrame> opening;
     for (std::int64_t n = 0; n < 60; ++n) {
-        opening.push_back(n < 10 ? flat(n, 0) : n < 20 ? scaled(sceneFrame(8, n), (n - 9) / 10.0) : sceneFrame(8, n));
+        opening.push_back(n < 10 ? flat(n, 0) : n < 20 ? scaled(sceneFrame(8, n), static_cast<double>(n - 9) / 10.0) : sceneFrame(8, n));
     }
     CHECK(run(opening).cuts.empty());
 }
@@ -113,7 +113,7 @@ TEST_CASE("A dissolve is one cut half way through it", "[ai][analysis][shots]") 
         if (n < 40) {
             frames.push_back(sceneFrame(9, n));
         } else if (n < 65) {
-            frames.push_back(mixed(sceneFrame(9, n), sceneFrame(10, n), (n - 39) / 26.0));
+            frames.push_back(mixed(sceneFrame(9, n), sceneFrame(10, n), static_cast<double>(n - 39) / 26.0));
         } else {
             frames.push_back(sceneFrame(10, n));
         }

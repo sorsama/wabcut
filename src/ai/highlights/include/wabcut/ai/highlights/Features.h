@@ -66,7 +66,6 @@ private:
     std::deque<std::size_t> m_hopCounts;
     std::vector<float> m_window;      // the last 40 ms (pitch analysis window)
     std::vector<float> m_decimated;   // scratch
-    std::size_t m_frameFill = 0;
     double m_tenMsSum = 0.0;
     std::size_t m_tenMsCount = 0;
     double m_hopSum = 0.0;

@@ -111,9 +111,9 @@
     { "name": "win-msvc", "configurePreset": "win-msvc", "output": { "outputOnFailure": true } },
     {
       "name": "win-msvc-ci",
-      "description": "win-msvc without the tests that need a GPU or an audio device (CI runners).",
+      "description": "win-msvc without the tests that need a GPU or an audio device, or a quiet machine for strict timing (CI runners).",
       "inherits": "win-msvc",
-      "filter": { "exclude": { "label": "gpu|audio-device" } }
+      "filter": { "exclude": { "label": "gpu|audio-device|perf" } }
     },
     { "name": "win-msvc-debug", "configurePreset": "win-msvc-debug", "output": { "outputOnFailure": true } },
     {

@@ -40,7 +40,7 @@ std::string ffmpegPath() {
 
 } // namespace
 
-TEST_CASE("Gaming end to end: a recording's highlights become a reel and a Short that export to MP4", "[export][media][highlights][e2e]") {
+TEST_CASE("Gaming end to end: a recording's highlights become a reel and a Short that export to MP4", "[export][media][highlights][e2e][gpu]") { // the GPU renderer
     namespace gp = wabcut::test::gameplay;
     gp::Script script;
     script.seconds = 120.0;

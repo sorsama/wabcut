@@ -604,7 +604,7 @@ void explain(const MediaSignals& s, std::size_t p, Moment& m, const std::vector<
                 }
             }
             std::vector<std::pair<std::string, int>> top(counts.begin(), counts.end());
-            std::sort(top.begin(), top.end(), [](const auto& a, const auto& b) { return a.second != b.second ? a.second > b.second : a.first < b.first; });
+            std::sort(top.begin(), top.end(), [](const auto& lhs, const auto& rhs) { return lhs.second != rhs.second ? lhs.second > rhs.second : lhs.first < rhs.first; });
             std::string text;
             const double ratio = peakOf(s.chatRatio);
             if (ratio >= 2.0) {

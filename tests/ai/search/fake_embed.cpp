@@ -87,7 +87,7 @@ std::optional<std::array<float, 4>> colourBox(const Image& image, int r, int g, 
     for (int y = 0; y < image.height; ++y) {
         for (int x = 0; x < image.width; ++x) {
             const std::size_t at = (static_cast<std::size_t>(y) * image.width + x) * 3;
-            const auto near = [](int a, int b) { return std::abs(a - b) < 48; };
+            const auto near = [](int value, int target) { return std::abs(value - target) < 48; };
             if (near(image.rgb[at], r) && near(image.rgb[at + 1], g) && near(image.rgb[at + 2], b)) {
                 x0 = std::min(x0, x);
                 y0 = std::min(y0, y);

@@ -250,7 +250,7 @@ std::string toString(const Version& v) {
 }
 
 int compareVersions(const Version& a, const Version& b) {
-    for (const auto [x, y] : {std::pair{a.major, b.major}, std::pair{a.minor, b.minor}, std::pair{a.patch, b.patch}}) {
+    for (const auto& [x, y] : {std::pair{a.major, b.major}, std::pair{a.minor, b.minor}, std::pair{a.patch, b.patch}}) {
         if (x != y) {
             return x < y ? -1 : 1;
         }

@@ -59,6 +59,13 @@ function(wabcut_target_defaults target)
         # remaining members to their default member initializers, which the code base uses on purpose throughout.
         target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wno-sign-conversion
                                                  -Wno-missing-field-initializers)
+        if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+            # GCC's -Wshadow also flags a constructor parameter named like the member it initializes
+            # (`provider(std::move(provider))`), an idiom the code base uses on purpose; -Wshadow=local keeps what
+            # clang's -Wshadow checks (a local hiding another local or a parameter). GCC's maybe-uninitialized reports
+            # false positives through std::optional at -O2: still shown, not fatal.
+            target_compile_options(${target} PRIVATE -Wno-shadow -Wshadow=local -Wno-error=maybe-uninitialized)
+        endif()
         if(WABCUT_WARNINGS_AS_ERRORS)
             target_compile_options(${target} PRIVATE -Werror)
         endif()

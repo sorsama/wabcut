@@ -824,7 +824,7 @@ ShortsReport findShorts(const ProjectState& state, SequenceId sequence, const ed
         std::size_t best = c.a;
         double bestValue = -1.0;
         for (std::size_t k = c.a; k <= c.b && k < c.a + 6; ++k) {
-            const double v = hasQuery ? querySim[k] : tfidf.informativeness(texts[k]) * (isQuestion(texts[k]) ? 1.5 : 1.0) / (1.0 + 0.1 * (k - c.a));
+            const double v = hasQuery ? querySim[k] : tfidf.informativeness(texts[k]) * (isQuestion(texts[k]) ? 1.5 : 1.0) / (1.0 + 0.1 * static_cast<double>(k - c.a));
             if (v > bestValue) {
                 bestValue = v;
                 best = k;

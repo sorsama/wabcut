@@ -79,7 +79,7 @@ public:
         return img;
     }
 
-    int frameOf(Ticks t) const { return static_cast<int>(std::floor(static_cast<double>(t.value) / frameTicks(1).value)); }
+    int frameOf(Ticks t) const { return static_cast<int>(std::floor(static_cast<double>(t.value) / static_cast<double>(frameTicks(1).value))); }
 
     std::atomic<int> requests{0};
     std::optional<int> failAt;
