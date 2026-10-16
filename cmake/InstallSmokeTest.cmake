@@ -263,6 +263,15 @@ endif()
 
 file(REMOVE_RECURSE "${scratch}")
 file(GLOB_RECURSE files LIST_DIRECTORIES false "${PREFIX}/*")
+# Symbolic links (a macOS framework's Versions/Current, Linux's libQt6Core.so.6) are not counted twice, and a link
+# to a folder has no size.
+set(regular "")
+foreach(f IN LISTS files)
+    if(NOT IS_SYMLINK "${f}" AND NOT IS_DIRECTORY "${f}")
+        list(APPEND regular "${f}")
+    endif()
+endforeach()
+set(files ${regular})
 list(LENGTH files file_count)
 set(total 0)
 foreach(f IN LISTS files)
