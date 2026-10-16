@@ -79,6 +79,9 @@ jobs:
           echo "VCPKG_DEFAULT_BINARY_CACHE=$cache" >> "$GITHUB_ENV"
           echo "cache=$cache" >> "$GITHUB_OUTPUT"
           echo "key=vcpkg-$ImageOS-$ImageVersion-${{ matrix.preset }}-${{ hashFiles('vcpkg.json', 'cmake/ports/**', 'cmake/triplets/**', 'cmake/toolchains/**', 'CMakeLists.txt') }}" >> "$GITHUB_OUTPUT"
+          # Any older cache of this OS is a good start: vcpkg reuses the packages whose ABI still matches and builds
+          # the rest, so a version bump in CMakeLists.txt does not rebuild FFmpeg.
+          echo "prefix=vcpkg-$ImageOS-" >> "$GITHUB_OUTPUT"
 
       - name: Restore the vcpkg binary cache
         id: vcpkg-cache
@@ -86,7 +89,7 @@ jobs:
         with:
           path: ${{ steps.vcpkg.outputs.cache }}
           key: ${{ steps.vcpkg.outputs.key }}
-          restore-keys: vcpkg-${{ runner.os }}-
+          restore-keys: ${{ steps.vcpkg.outputs.prefix }}
 
       - name: Qt ${{ env.QT_VERSION }}
         uses: jurplel/install-qt-action@v4.4.1
@@ -104,7 +107,17 @@ jobs:
           export VCPKG_KEEP_ENV_VARS="WABCUT_QT_DIR;LLVM_ROOT"
           cmake --preset ${{ matrix.preset }} ${{ matrix.configure }} \
             -DWABCUT_WITH_LOCAL_AI=OFF -DWABCUT_WITH_ONNX=ON -DWABCUT_BUILD_NUMBER=${{ github.run_number }}
-          cmake --build --preset ${{ matrix.preset }}
+          # -k 0: a failed build still compiles everything else, so one run shows every error.
+          cmake --build --preset ${{ matrix.preset }} -- -k 0
+
+      # A failed port build says only which port failed: its logs are in vcpkg's buildtrees.
+      - name: Configure and vcpkg logs (after a failure)
+        if: failure()
+        run: |
+          log=build/${{ matrix.preset }}/CMakeFiles/CMakeConfigureLog.yaml
+          if [ -f "$log" ]; then tail -n 100 "$log"; fi
+          find "$VCPKG_ROOT/buildtrees" -maxdepth 2 \( -name '*-err.log' -o -name 'config-*-out.log' \) -size +0 2>/dev/null |
+            while read -r f; do echo "::group::$f"; tail -n 80 "$f"; echo "::endgroup::"; done
 
       - name: Save the vcpkg binary cache
         if: always() && steps.vcpkg.outcome == 'success' && steps.vcpkg-cache.outputs.cache-hit != 'true'

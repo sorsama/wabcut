@@ -56,6 +56,9 @@ jobs:
           # Package ABIs include the compiler version, so key the cache on the runner image too. The root CMakeLists.txt
           # selects the vcpkg features (local AI, ONNX, keychain), so it is part of the key.
           "key=vcpkg-$env:ImageOS-$env:ImageVersion-${{ hashFiles('vcpkg.json', 'cmake/triplets/**', 'cmake/ports/**', 'CMakeLists.txt') }}" >> $env:GITHUB_OUTPUT
+          # Any older cache of this image is a good start: vcpkg reuses the packages whose ABI still matches and builds
+          # the rest, so a version bump in CMakeLists.txt does not rebuild FFmpeg.
+          "prefix=vcpkg-$env:ImageOS-" >> $env:GITHUB_OUTPUT
 
       - name: Restore the vcpkg binary cache
         id: vcpkg-cache
@@ -63,7 +66,7 @@ jobs:
         with:
           path: ${{ steps.vcpkg.outputs.cache }}
           key: ${{ steps.vcpkg.outputs.key }}
-          restore-keys: vcpkg-${{ runner.os }}-
+          restore-keys: ${{ steps.vcpkg.outputs.prefix }}
 
       - name: Qt ${{ env.QT_VERSION }}
         uses: jurplel/install-qt-action@v4.4.1
