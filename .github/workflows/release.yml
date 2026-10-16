@@ -486,7 +486,9 @@ jobs:
           python3 cmake/packaging/release_notes.py "$VERSION" "$LINUX" "$MACOS" > "$RUNNER_TEMP/notes.md"
           cat "$RUNNER_TEMP/notes.md"
 
-      # 0.x releases are marked as pre-releases. A re-run replaces the files of an existing release.
+      # A full release marked latest, not a pre-release, even while the version is 0.x: the README's Download link
+      # is releases/latest, which skips pre-releases (the alpha status is in the release text). A re-run replaces the
+      # files of an existing release.
       - name: GitHub release
         run: |
           if gh release view "$TAG" > /dev/null 2>&1; then
@@ -494,6 +496,6 @@ jobs:
             gh release edit "$TAG" --notes-file "$RUNNER_TEMP/notes.md"
           else
             gh release create "$TAG" dist/* --title "Wabcut $VERSION" --notes-file "$RUNNER_TEMP/notes.md" \
-              --target "$GITHUB_SHA" $([ "${VERSION%%.*}" = 0 ] && echo --prerelease)
+              --target "$GITHUB_SHA" --latest
           fi
           echo "Published $(gh release view "$TAG" --json url --jq .url)" >> "$GITHUB_STEP_SUMMARY"

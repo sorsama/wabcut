@@ -102,8 +102,8 @@ the portable ZIP and the `install.package` test reports the MSI part as skipped.
    | Linux x64 | `linux-gcc` (local AI off) | AppImage, tar.gz | `InstallSmokeTest.cmake` (the `install.smoke` test); the AppImage started under Xvfb until it draws its first frame |
    | macOS arm64 | `macos-clang` (local AI off) | DMG | `InstallSmokeTest.cmake`; `finish_bundle.py`'s check; the finished bundle run with Homebrew's LLVM moved away (CLI render; the app's start is best effort without a GPU) |
 
-4. The publish job creates the release "Wabcut x.y.z" (a pre-release while the version is 0.x) with the packages and
-   `SHA256SUMS.txt`. Windows is required. A Linux or macOS package that failed its checks is left out, and the release
+4. The publish job creates the release "Wabcut x.y.z", marked latest (not a pre-release, even at 0.x: the README's
+   Download link is `releases/latest`, which skips pre-releases), with the packages and `SHA256SUMS.txt`. Windows is required. A Linux or macOS package that failed its checks is left out, and the release
    text says so. Running the workflow again for the same tag replaces the files.
 
 Without a tag (Run workflow with an empty tag, or a pull request that changes the packaging) the packages are built,
