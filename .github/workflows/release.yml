@@ -238,6 +238,7 @@ jobs:
           export VCPKG_KEEP_ENV_VARS="WABCUT_QT_DIR"
           cmake --preset $PRESET -DCMAKE_C_COMPILER=gcc-14 -DCMAKE_CXX_COMPILER=g++-14 \
             -DWABCUT_WITH_LOCAL_AI=OFF -DWABCUT_WITH_ONNX=ON -DWABCUT_BUILD_TESTS=OFF -DWABCUT_WARNINGS_AS_ERRORS=OFF \
+            -DCMAKE_OPTIMIZE_DEPENDENCIES=ON \
             -DWABCUT_BUILD_NUMBER=${{ github.run_number }}
           cmake --build --preset $PRESET -- -k 0
 
@@ -372,6 +373,7 @@ jobs:
           cmake --preset $PRESET -DVCPKG_TARGET_TRIPLET=arm64-osx-llvm \
             -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE="$GITHUB_WORKSPACE/cmake/toolchains/macos-llvm.cmake" \
             -DWABCUT_WITH_LOCAL_AI=OFF -DWABCUT_WITH_ONNX=ON -DWABCUT_BUILD_TESTS=OFF -DWABCUT_WARNINGS_AS_ERRORS=OFF \
+            -DCMAKE_OPTIMIZE_DEPENDENCIES=ON \
             -DWABCUT_BUILD_NUMBER=${{ github.run_number }}
           cmake --build --preset $PRESET -- -k 0
 

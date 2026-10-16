@@ -8,6 +8,7 @@
 #include <wabcut/media/Fingerprint.h>
 #include <wabcut/media/VideoDecoder.h>
 #include <wabcut/model/MediaLocator.h>
+#include <wabcut/platform/FileTime.h>
 
 #include <algorithm>
 #include <chrono>
@@ -299,7 +300,7 @@ std::string MediaSearchAccess::date(const MediaItem& media) {
     if (ec) {
         return {};
     }
-    const std::time_t t = std::chrono::system_clock::to_time_t(std::chrono::clock_cast<std::chrono::system_clock>(written));
+    const std::time_t t = std::chrono::system_clock::to_time_t(platform::toSystemClock(written));
     std::tm local{};
 #ifdef _WIN32
     if (localtime_s(&local, &t) != 0) {

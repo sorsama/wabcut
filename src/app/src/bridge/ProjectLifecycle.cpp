@@ -14,6 +14,7 @@
 #include <wabcut/model/ProjectIO.h>
 #include <wabcut/model/ProjectOps.h>
 #include <wabcut/model/Timecode.h>
+#include <wabcut/platform/FileTime.h>
 
 #include <QCoreApplication>
 #include <QDateTime>
@@ -178,7 +179,7 @@ namespace {
 
 QString whenText(std::filesystem::file_time_type t) {
     const auto when = QDateTime::fromStdTimePoint(
-        std::chrono::time_point_cast<std::chrono::milliseconds>(std::chrono::clock_cast<std::chrono::system_clock>(t)));
+        std::chrono::time_point_cast<std::chrono::milliseconds>(platform::toSystemClock(t)));
     return QLocale().toString(when, QLocale::ShortFormat);
 }
 
@@ -390,8 +391,8 @@ void ProjectLifecycle::collectRecovery(bool queuedNotify) const {
     const RecoveryScan scan = m_recoveryScan.get(); // waits only while the worker still runs
     QVariantList found;
     const auto describe = [](const editor::RecoveryFile& r, const QString& project) {
-        const auto when = QDateTime::fromStdTimePoint(std::chrono::time_point_cast<std::chrono::milliseconds>(
-            std::chrono::clock_cast<std::chrono::system_clock>(r.modified)));
+        const auto when = QDateTime::fromStdTimePoint(
+            std::chrono::time_point_cast<std::chrono::milliseconds>(platform::toSystemClock(r.modified)));
         return QVariantMap{
             {QStringLiteral("url"), toUrl(r.file)},
             {QStringLiteral("name"), project.isEmpty() ? tr("Untitled project") : QFileInfo(project).completeBaseName()},

@@ -1,6 +1,7 @@
 #include "FfmpegUtil.h"
 
 #include <wabcut/media/Probe.h>
+#include <wabcut/platform/FileTime.h>
 
 extern "C" {
 #include <libavutil/mathematics.h>
@@ -42,7 +43,7 @@ std::expected<MediaInfo, Error> probe(const std::string& path) {
         info.fileSize = static_cast<std::int64_t>(size);
     }
     if (const auto mtime = std::filesystem::last_write_time(fsPath, ec); !ec) {
-        const auto sys = std::chrono::clock_cast<std::chrono::system_clock>(mtime);
+        const auto sys = platform::toSystemClock(mtime);
         info.modifiedTime = std::chrono::duration_cast<std::chrono::seconds>(sys.time_since_epoch()).count();
     }
 
