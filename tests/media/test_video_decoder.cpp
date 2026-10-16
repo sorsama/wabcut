@@ -138,7 +138,7 @@ TEST_CASE("Video: preferred backend is tried first", "[media][video][hw]") {
 
 TEST_CASE("Video: backend order follows the GPU vendor policy and can be overridden", "[media][video][hw]") {
     const std::vector<std::string> vendors = gpuVendors();
-    const bool nvidia = std::find(vendors.begin(), vendors.end(), "NVIDIA") != vendors.end();
+    [[maybe_unused]] const bool nvidia = std::find(vendors.begin(), vendors.end(), "NVIDIA") != vendors.end();
     const std::vector<std::string> policy = hardwareBackendOrder();
 #if defined(_WIN32)
     // Measured readback throughput: cuda beats d3d11va on NVIDIA (see hardwareBackendOrder()).

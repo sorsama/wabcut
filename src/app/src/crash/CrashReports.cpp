@@ -49,7 +49,7 @@ std::optional<nlohmann::json> readJson(const fs::path& file) {
         return std::nullopt;
     }
     try {
-        return nlohmann::json::parse(in);
+        return std::make_optional(nlohmann::json::parse(in));
     } catch (const nlohmann::json::exception&) {
         return std::nullopt;
     }

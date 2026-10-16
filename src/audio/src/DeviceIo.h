@@ -47,6 +47,17 @@ struct DeviceStatus {
     bool isNull = false;
 };
 
+/// DeviceIo::RawStatus. At namespace scope, not nested: SeqLock<RawStatus> checks that it is default
+/// constructible inside DeviceIo, and GCC does not see a nested class's default member initializers until the
+/// enclosing class is complete.
+struct DeviceRawStatus {
+    std::uint64_t generation = 0; ///< increments with every capture; 0 = nothing captured yet
+    std::int32_t backend = 0;     ///< ma_backend
+    std::uint32_t isNull = 0;
+    char name[256]{};             ///< UTF-8, NUL-terminated
+    unsigned char id[256]{};      ///< the ma_device_id bytes
+};
+
 /// Owns one miniaudio context + playback device and connects its callback to a RenderCore.
 ///
 /// Threading: open()/close()/readStatus() are control-side and must all be called from one thread, the
@@ -80,13 +91,7 @@ public:
     bool readStatus(DeviceStatus& status) const;
 
     /// Identity of the device as captured on miniaudio's thread: fixed-size, trivially copyable.
-    struct RawStatus {
-        std::uint64_t generation = 0; ///< increments with every capture; 0 = nothing captured yet
-        std::int32_t backend = 0;     ///< ma_backend
-        std::uint32_t isNull = 0;
-        char name[256]{};             ///< UTF-8, NUL-terminated
-        unsigned char id[256]{};      ///< the ma_device_id bytes
-    };
+    using RawStatus = DeviceRawStatus;
     /// Publishes a status snapshot (single writer at a time; concurrent writers wait for each other). Called
     /// from the notification callback; public so tests can hammer it.
     void publishStatus(RawStatus status) noexcept;
