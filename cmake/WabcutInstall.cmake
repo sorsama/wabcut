@@ -239,10 +239,11 @@ elseif(TARGET wabcut)
     # need. Linux: lib/, plugins/, qml/ and bin/qt.conf (file(GET_RUNTIME_DEPENDENCIES); the OS's own libraries stay
     # out). macOS: macdeployqt fills Contents/Frameworks, PlugIns and Resources/qml and points every executable in
     # Contents/MacOS at them. ONNX Runtime is installed above, next to the helper that loads it.
+    # A string of quoted paths, not a list: a ";" would split the CONTENT argument below.
     set(wabcut_deploy_tools "")
     foreach(target IN LISTS wabcut_install_targets)
         if(NOT target STREQUAL "wabcut")
-            list(APPEND wabcut_deploy_tools "${wabcut_helper_dirs}/$<TARGET_FILE_NAME:${target}>")
+            string(APPEND wabcut_deploy_tools " \"${wabcut_helper_dirs}/$<TARGET_FILE_NAME:${target}>\"")
         endif()
     endforeach()
     if(WABCUT_MACOS_BUNDLE)
@@ -257,7 +258,7 @@ elseif(TARGET wabcut)
 qt_deploy_qml_imports(TARGET wabcut PLUGINS_FOUND plugins_found)
 qt_deploy_runtime_dependencies(
     EXECUTABLE \"${wabcut_deploy_app}\"
-    ADDITIONAL_EXECUTABLES ${wabcut_deploy_tools}
+    ADDITIONAL_EXECUTABLES${wabcut_deploy_tools}
     ADDITIONAL_MODULES \${plugins_found}
     PRE_EXCLUDE_REGEXES onnxruntime
     GENERATE_QT_CONF
