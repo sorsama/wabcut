@@ -185,7 +185,8 @@ elseif(EXPECT_APP)
                      ${contents}/Resources/docs/roadmap.md ${contents}/Info.plist)
     else()
         set(required bin/wabcut bin/qt.conf lib/libQt6Core.so.6 lib/libQt6Quick.so.6
-                     plugins/platforms/libqxcb.so qml/QtQuick/Controls bin/docs/roadmap.md
+                     plugins/platforms/libqxcb.so plugins/platforms/libqoffscreen.so qml/QtQuick/Controls
+                     bin/docs/roadmap.md
                      share/applications/wabcut.desktop share/icons/hicolor/256x256/apps/wabcut.png)
     endif()
     foreach(path IN LISTS required)
