@@ -403,7 +403,8 @@ jobs:
       # (cmake/packaging/macos/finish_bundle.py).
       - name: Make the app bundle self-contained
         run: |
-          cmake --install build/$PRESET --prefix "$RUNNER_TEMP/install"
+          # --strip: without their symbol tables the executables are much smaller (finish_bundle.py signs afterwards).
+          cmake --install build/$PRESET --prefix "$RUNNER_TEMP/install" --strip
           mkdir -p "$RUNNER_TEMP/dmg"
           ditto "$RUNNER_TEMP/install/wabcut.app" "$RUNNER_TEMP/dmg/Wabcut.app"
           python3 cmake/packaging/macos/finish_bundle.py "$RUNNER_TEMP/dmg/Wabcut.app"

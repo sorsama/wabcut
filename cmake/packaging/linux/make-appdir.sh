@@ -14,7 +14,8 @@ build="$1"
 appdir="$2"
 
 rm -rf "$appdir"
-cmake --install "$build" --prefix "$appdir/usr"
+# --strip: the executables' debug information would make the AppImage several times larger.
+cmake --install "$build" --prefix "$appdir/usr" --strip
 
 cp "$appdir/usr/share/applications/wabcut.desktop" "$appdir/wabcut.desktop"
 cp "$appdir/usr/share/icons/hicolor/256x256/apps/wabcut.png" "$appdir/wabcut.png"

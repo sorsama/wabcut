@@ -43,6 +43,11 @@ set(CPACK_PACKAGE_DIRECTORY "${CMAKE_BINARY_DIR}/package")
 # Start menu entry (WiX): bin/wabcut.exe as "Wabcut".
 set(CPACK_PACKAGE_EXECUTABLES wabcut Wabcut)
 set(CPACK_GENERATOR ZIP)
+# Linux and macOS executables carry their debug information (RelWithDebInfo; Windows keeps it in the PDBs, which
+# the packages leave out): packages strip it, which takes the Linux tree from about 2.4 GB to a few hundred MB.
+if(UNIX)
+    set(CPACK_STRIP_FILES ON)
+endif()
 
 # ---- WiX (Windows Installer) ------------------------------------------------------------------------------------
 set(WABCUT_WIX_TESTED_VERSION 5.0.2)

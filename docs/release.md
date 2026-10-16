@@ -121,6 +121,8 @@ checked and kept as workflow artifacts, and nothing is published; the `platforms
 - Qt is deployed by `qt_deploy_qml_imports` and `qt_deploy_runtime_dependencies` (cmake/WabcutInstall.cmake). The
   distribution provides the rest: glibc 2.39 or newer (built on Ubuntu 24.04), X11/xcb, the GL and Vulkan loaders,
   libva, PulseAudio or ALSA, libsecret and fontconfig.
+- The executables are stripped (the AppImage, the tar.gz and the macOS bundle): their RelWithDebInfo debug
+  information would make the Linux tree about 2.4 GB. A crash report's backtrace then shows addresses, not names.
 
 ### macOS package
 
