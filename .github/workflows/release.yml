@@ -183,7 +183,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: lukka/get-cmake@v4.4.2
+      - uses: lukka/get-cmake@v4.4.4
 
       # Build dependencies (as unix-full), plus what the smoke run needs: a virtual X server and the libraries Qt's
       # xcb platform plugin loads.
@@ -325,7 +325,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: lukka/get-cmake@v4.4.2
+      - uses: lukka/get-cmake@v4.4.4
 
       - name: System packages
         run: |
@@ -472,7 +472,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true

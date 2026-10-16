@@ -57,7 +57,7 @@ jobs:
 
       - name: CMake and Ninja
         if: runner.os != 'Windows'
-        uses: lukka/get-cmake@v4.4.2
+        uses: lukka/get-cmake@v4.4.4
 
       - name: Homebrew LLVM (macOS)
         if: matrix.llvm
