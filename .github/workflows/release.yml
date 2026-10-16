@@ -417,10 +417,14 @@ jobs:
           sudo mv "$keg" "$keg.hidden"
           trap 'sudo mv "$keg.hidden" "$keg"' EXIT
           app="$RUNNER_TEMP/dmg/Wabcut.app"
+          otool -L "$app/Contents/MacOS/wabcut" | grep -i "c++" || true
           "$app/Contents/MacOS/wabcut-cli" --version
           work="$RUNNER_TEMP/bundle-smoke"
           mkdir -p "$work"
           cp cmake/packaging/smoke/tiny.wabcut "$work/"
+          # The same render as cmake/InstallSmokeTest.cmake: a title on the empty project, then the movie.
+          "$app/Contents/MacOS/wabcut-cli" cmd "$work/tiny.wabcut" --save \
+            --json '{"command":"title.add","params":{"at":0,"duration":"00:00:01:00","text":"Wabcut"}}'
           "$app/Contents/MacOS/wabcut-cli" render "$work/tiny.wabcut" "$work/tiny.mp4" --encoder libx264 --test-pattern
           test -s "$work/tiny.mp4"
           report="$RUNNER_TEMP/startup.json"
