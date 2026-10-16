@@ -59,7 +59,7 @@ if(WABCUT_WITH_AUDIO_PLUGINS AND NOT WABCUT_CORE_ONLY)
 endif()
 
 project(Wabcut
-    VERSION 0.1.2
+    VERSION 0.1.3
     DESCRIPTION "Open-source cross-platform non-linear video editor"
     LANGUAGES C CXX)
 

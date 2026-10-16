@@ -1,0 +1,461 @@
+# Release packages for Windows, Linux and macOS, and the GitHub release that carries them (docs/release.md,
+# "Making a release").
+#
+#   git tag v0.1.3 && git push origin v0.1.3        build every package from that commit and publish the release
+#   Actions > release > Run workflow (tag v0.1.3)   the same from the GitHub page: creates the tag on the chosen branch
+#   Run workflow with no tag, or a pull request     build and check the packages without publishing anything
+#
+# Windows (MSI + portable ZIP) must pass for a release to be published. Linux (AppImage + tar.gz) and macOS (DMG, Apple
+# silicon) are preview builds: attached when they pass, left out with a note in the release text when they do not.
+# Every package is installed and run on the runner first: the CLI renders a tiny project from the installed files, and
+# on Linux and macOS the app starts and draws its first frame. Each job restores the same vcpkg binary cache as the CI
+# job of its platform (windows-full, unix-full), so FFmpeg and the other ports are built once, not per release.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to create and publish, vX.Y.Z (must match the version in CMakeLists.txt). Leave empty to build the packages only."
+        required: false
+        default: ""
+  pull_request:
+    paths:
+      - ".github/workflows/release.yml"
+      - "cmake/packaging/**"
+      - "cmake/WabcutInstall.cmake"
+      - "cmake/InstallSmokeTest.cmake"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  QT_VERSION: 6.11.3
+  # aqtinstall 3.3.0, the latest release, cannot read the per-arch repository layout Qt uses since 6.11 (fixed by
+  # miurahr/aqtinstall#1000 on master only), so install aqtinstall from a pinned master commit.
+  AQT_SOURCE: git+https://github.com/miurahr/aqtinstall.git@076e1659807d0b362a3ed684d54c2e9c775eb9c7
+  VCPKG_DISABLE_METRICS: 1
+
+jobs:
+  version:
+    name: Version
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Version from CMakeLists.txt, and the tag to publish
+        id: version
+        env:
+          PUSHED_TAG: ${{ github.event_name == 'push' && github.ref_name || '' }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          version=$(python3 -c "import re; print(re.search(r'project\(Wabcut\s+VERSION\s+([0-9.]+)', open('CMakeLists.txt').read()).group(1))")
+          tag="${PUSHED_TAG:-$INPUT_TAG}"
+          if [ -n "$tag" ] && [ "$tag" != "v$version" ]; then
+            echo "::error::The tag $tag does not match the version in CMakeLists.txt ($version): tag v$version, or bump the version first."
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Wabcut $version${tag:+, publishing $tag}" >> "$GITHUB_STEP_SUMMARY"
+
+  windows:
+    name: Windows x64
+    needs: version
+    runs-on: windows-2025
+    timeout-minutes: 300
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: vcpkg at the manifest baseline
+        id: vcpkg
+        shell: pwsh
+        run: |
+          $baseline = (Get-Content vcpkg.json -Raw | ConvertFrom-Json).'builtin-baseline'
+          $root = Join-Path $env:RUNNER_TEMP vcpkg
+          $cache = Join-Path $env:RUNNER_TEMP vcpkg-cache
+          git clone --quiet https://github.com/microsoft/vcpkg $root
+          git -C $root checkout --quiet $baseline
+          & "$root\bootstrap-vcpkg.bat" -disableMetrics
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Force $cache | Out-Null
+          "VCPKG_ROOT=$root" >> $env:GITHUB_ENV
+          "VCPKG_DEFAULT_BINARY_CACHE=$cache" >> $env:GITHUB_ENV
+          "cache=$cache" >> $env:GITHUB_OUTPUT
+          # The same key as windows-full, so either workflow's cache serves the other.
+          "key=vcpkg-$env:ImageOS-$env:ImageVersion-${{ hashFiles('vcpkg.json', 'cmake/triplets/**', 'cmake/ports/**', 'CMakeLists.txt') }}" >> $env:GITHUB_OUTPUT
+          "prefix=vcpkg-$env:ImageOS-" >> $env:GITHUB_OUTPUT
+
+      - name: Restore the vcpkg binary cache
+        id: vcpkg-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ steps.vcpkg.outputs.cache }}
+          key: ${{ steps.vcpkg.outputs.key }}
+          restore-keys: ${{ steps.vcpkg.outputs.prefix }}
+
+      - name: Qt ${{ env.QT_VERSION }}
+        uses: jurplel/install-qt-action@v4.4.1
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: windows
+          target: desktop
+          arch: win64_msvc2022_64
+          modules: qtshadertools
+          cache: true
+          aqtsource: ${{ env.AQT_SOURCE }}
+
+      # The MSI: WiX 5.0.2 as a per-user .NET tool (docs/release.md, "Why WiX, and which WiX").
+      - name: WiX Toolset
+        shell: pwsh
+        run: ./cmake/packaging/Install-WixToolset.ps1
+
+      # The test suites run in windows-full for every commit on main; the release builds the shipped programs only.
+      - name: Configure and build
+        shell: pwsh
+        run: |
+          $env:WABCUT_QT_DIR = $env:QT_ROOT_DIR
+          . ./tools/dev-env.ps1
+          cmake --preset win-msvc -DWABCUT_BUILD_TESTS=OFF -DWABCUT_BUILD_NUMBER=${{ github.run_number }}
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cmake --build --preset win-msvc
+          exit $LASTEXITCODE
+
+      - name: Save the vcpkg binary cache
+        if: always() && steps.vcpkg.outcome == 'success' && steps.vcpkg-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ steps.vcpkg.outputs.cache }}
+          key: ${{ steps.vcpkg.outputs.key }}
+
+      # cpack builds the MSI and the portable ZIP, then both are checked the way a user meets them: the ZIP unpacked
+      # and run, the MSI installed for this user, run, and uninstalled (cmake/packaging/PackageSmokeTest.ps1).
+      - name: Package, install and run
+        shell: pwsh
+        run: |
+          $env:WABCUT_QT_DIR = $env:QT_ROOT_DIR
+          . ./tools/dev-env.ps1
+          ./cmake/packaging/PackageSmokeTest.ps1 -BuildDir build/win-msvc -CPack (Get-Command cpack).Source `
+            -Version $env:VERSION -PackageBaseName "wabcut-$env:VERSION-windows-x64" `
+            -UpgradeCode '9D0324E6-4508-405F-B844-7C96EBEA28D6' -SmokeProject cmake/packaging/smoke/tiny.wabcut `
+            -Generators 'ZIP;WIX'
+          # 77 means the MSI part was skipped: a release needs it.
+          exit $LASTEXITCODE
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wabcut-windows-x64
+          path: |
+            build/win-msvc/package/wabcut-${{ env.VERSION }}-windows-x64.msi
+            build/win-msvc/package/wabcut-${{ env.VERSION }}-windows-x64-portable.zip
+          if-no-files-found: error
+
+  linux:
+    name: Linux x64 (preview)
+    needs: version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      PRESET: linux-gcc
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: lukka/get-cmake@v4.4.2
+
+      # Build dependencies (as unix-full), plus what the smoke run needs: a virtual X server and the libraries Qt's
+      # xcb platform plugin loads.
+      - name: System packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-14 g++-14 nasm autoconf automake autoconf-archive libtool pkg-config \
+            libva-dev libdrm-dev libgl1-mesa-dev libegl1-mesa-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libasound2-dev libpulse-dev libsecret-1-dev libfontconfig1-dev libvulkan-dev \
+            xvfb xauth libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 \
+            libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libxcb-xkb1 libxkbcommon-x11-0 mesa-vulkan-drivers \
+            desktop-file-utils
+
+      - name: vcpkg at the manifest baseline
+        id: vcpkg
+        run: |
+          baseline=$(python3 -c "import json; print(json.load(open('vcpkg.json'))['builtin-baseline'])")
+          root="$RUNNER_TEMP/vcpkg"
+          cache="$RUNNER_TEMP/vcpkg-cache"
+          git clone --quiet https://github.com/microsoft/vcpkg "$root"
+          git -C "$root" checkout --quiet "$baseline"
+          "$root/bootstrap-vcpkg.sh" -disableMetrics
+          mkdir -p "$cache"
+          echo "VCPKG_ROOT=$root" >> "$GITHUB_ENV"
+          echo "VCPKG_DEFAULT_BINARY_CACHE=$cache" >> "$GITHUB_ENV"
+          echo "cache=$cache" >> "$GITHUB_OUTPUT"
+          # The same key as unix-full, so either workflow's cache serves the other.
+          echo "key=vcpkg-$ImageOS-$ImageVersion-$PRESET-${{ hashFiles('vcpkg.json', 'cmake/ports/**', 'cmake/triplets/**', 'cmake/toolchains/**', 'CMakeLists.txt') }}" >> "$GITHUB_OUTPUT"
+          echo "prefix=vcpkg-$ImageOS-" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the vcpkg binary cache
+        id: vcpkg-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ steps.vcpkg.outputs.cache }}
+          key: ${{ steps.vcpkg.outputs.key }}
+          restore-keys: ${{ steps.vcpkg.outputs.prefix }}
+
+      - name: Qt ${{ env.QT_VERSION }}
+        uses: jurplel/install-qt-action@v4.4.1
+        with:
+          version: ${{ env.QT_VERSION }}
+          modules: qtshadertools
+          install-deps: true
+          cache: true
+          aqtsource: ${{ env.AQT_SOURCE }}
+
+      # The unix-full configuration (local AI off: whisper.cpp is not measured on Linux yet), without the tests.
+      - name: Configure and build
+        run: |
+          export WABCUT_QT_DIR="$QT_ROOT_DIR"
+          export VCPKG_KEEP_ENV_VARS="WABCUT_QT_DIR"
+          cmake --preset $PRESET -DCMAKE_C_COMPILER=gcc-14 -DCMAKE_CXX_COMPILER=g++-14 \
+            -DWABCUT_WITH_LOCAL_AI=OFF -DWABCUT_WITH_ONNX=ON -DWABCUT_BUILD_TESTS=OFF \
+            -DWABCUT_BUILD_NUMBER=${{ github.run_number }}
+          cmake --build --preset $PRESET -- -k 0
+
+      - name: Save the vcpkg binary cache
+        if: always() && steps.vcpkg.outcome == 'success' && steps.vcpkg-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ steps.vcpkg.outputs.cache }}
+          key: ${{ steps.vcpkg.outputs.key }}
+
+      # Install into a scratch folder and run from it with a minimal environment: the CLI's version, the smart-search
+      # helper, a headless render, Qt's deployment layout, the licenses (cmake/InstallSmokeTest.cmake).
+      - name: Install tree check
+        run: |
+          cmake -DBUILD_DIR=build/$PRESET -DPREFIX="$RUNNER_TEMP/smoke" -DVERSION=$VERSION -DEXPECT_APP=1 \
+            -DEXPECT_HELPERS=wabcut-embed -DSMOKE_PROJECT=cmake/packaging/smoke/tiny.wabcut \
+            -P cmake/InstallSmokeTest.cmake
+
+      - name: AppImage and tar.gz
+        env:
+          APPIMAGETOOL_URL: https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage
+          APPIMAGETOOL_SHA256: ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0
+          RUNTIME_URL: https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-x86_64
+          RUNTIME_SHA256: 2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d
+        run: |
+          out="$GITHUB_WORKSPACE/dist"
+          mkdir -p "$out"
+          cpack --config build/$PRESET/CPackConfig.cmake -G TGZ -B "$RUNNER_TEMP/cpack"
+          cp "$RUNNER_TEMP/cpack/wabcut-$VERSION-linux-x64.tar.gz" "$out/"
+
+          tools="$RUNNER_TEMP/appimage-tools"
+          mkdir -p "$tools"
+          curl -fsSL -o "$tools/appimagetool" "$APPIMAGETOOL_URL"
+          curl -fsSL -o "$tools/runtime-x86_64" "$RUNTIME_URL"
+          echo "$APPIMAGETOOL_SHA256  $tools/appimagetool" | sha256sum -c -
+          echo "$RUNTIME_SHA256  $tools/runtime-x86_64" | sha256sum -c -
+          chmod +x "$tools/appimagetool"
+          appdir="$RUNNER_TEMP/Wabcut.AppDir"
+          bash cmake/packaging/linux/make-appdir.sh build/$PRESET "$appdir"
+          ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 "$tools/appimagetool" --no-appstream \
+            --runtime-file "$tools/runtime-x86_64" "$appdir" "$out/wabcut-$VERSION-linux-x64.AppImage"
+          ls -l "$out"
+
+      # The app itself: start the AppImage on a virtual display with a fresh profile, wait for the first drawn frame,
+      # quit (src/app/src/StartupProbe.cpp). Fails when a Qt library, plugin or QML module is missing.
+      - name: Start the app from the AppImage
+        run: |
+          report="$RUNNER_TEMP/startup.json"
+          APPIMAGE_EXTRACT_AND_RUN=1 WABCUT_PERF_STARTUP="$report" WABCUT_PERF_STARTUP_QUIT=1 \
+            WABCUT_PERF_SETTINGS_DIR="$RUNNER_TEMP/profile" \
+            timeout 300 xvfb-run -a -s "-screen 0 1600x960x24" "dist/wabcut-$VERSION-linux-x64.AppImage"
+          cat "$report"
+          python3 - "$report" <<'EOF'
+          import json, sys
+          milestones = json.load(open(sys.argv[1]))["milestones"]
+          missing = [m for m in ("qmlLoaded", "firstFrame") if m not in milestones]
+          sys.exit(f"the app did not reach {missing}" if missing else 0)
+          EOF
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wabcut-linux-x64
+          path: dist/*
+          if-no-files-found: error
+
+  macos:
+    name: macOS Apple silicon (preview)
+    needs: version
+    runs-on: macos-15
+    timeout-minutes: 360
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      PRESET: macos-clang
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: lukka/get-cmake@v4.4.2
+
+      - name: System packages
+        run: |
+          brew install nasm autoconf automake autoconf-archive libtool pkg-config llvm
+          echo "LLVM_ROOT=$(brew --prefix llvm)" >> "$GITHUB_ENV"
+
+      - name: vcpkg at the manifest baseline
+        id: vcpkg
+        run: |
+          baseline=$(python3 -c "import json; print(json.load(open('vcpkg.json'))['builtin-baseline'])")
+          root="$RUNNER_TEMP/vcpkg"
+          cache="$RUNNER_TEMP/vcpkg-cache"
+          git clone --quiet https://github.com/microsoft/vcpkg "$root"
+          git -C "$root" checkout --quiet "$baseline"
+          "$root/bootstrap-vcpkg.sh" -disableMetrics
+          mkdir -p "$cache"
+          echo "VCPKG_ROOT=$root" >> "$GITHUB_ENV"
+          echo "VCPKG_DEFAULT_BINARY_CACHE=$cache" >> "$GITHUB_ENV"
+          echo "cache=$cache" >> "$GITHUB_OUTPUT"
+          # The same key as unix-full, so either workflow's cache serves the other.
+          echo "key=vcpkg-$ImageOS-$ImageVersion-$PRESET-${{ hashFiles('vcpkg.json', 'cmake/ports/**', 'cmake/triplets/**', 'cmake/toolchains/**', 'CMakeLists.txt') }}" >> "$GITHUB_OUTPUT"
+          echo "prefix=vcpkg-$ImageOS-" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the vcpkg binary cache
+        id: vcpkg-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ steps.vcpkg.outputs.cache }}
+          key: ${{ steps.vcpkg.outputs.key }}
+          restore-keys: ${{ steps.vcpkg.outputs.prefix }}
+
+      - name: Qt ${{ env.QT_VERSION }}
+        uses: jurplel/install-qt-action@v4.4.1
+        with:
+          version: ${{ env.QT_VERSION }}
+          modules: qtshadertools
+          cache: true
+          aqtsource: ${{ env.AQT_SOURCE }}
+
+      # The unix-full configuration (Homebrew's LLVM for Wabcut and every port; local AI off), without the tests.
+      - name: Configure and build
+        run: |
+          export WABCUT_QT_DIR="$QT_ROOT_DIR"
+          export VCPKG_KEEP_ENV_VARS="WABCUT_QT_DIR;LLVM_ROOT"
+          cmake --preset $PRESET -DVCPKG_TARGET_TRIPLET=arm64-osx-llvm \
+            -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE=cmake/toolchains/macos-llvm.cmake \
+            -DWABCUT_WITH_LOCAL_AI=OFF -DWABCUT_WITH_ONNX=ON -DWABCUT_BUILD_TESTS=OFF \
+            -DWABCUT_BUILD_NUMBER=${{ github.run_number }}
+          cmake --build --preset $PRESET -- -k 0
+
+      - name: Save the vcpkg binary cache
+        if: always() && steps.vcpkg.outcome == 'success' && steps.vcpkg-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ steps.vcpkg.outputs.cache }}
+          key: ${{ steps.vcpkg.outputs.key }}
+
+      - name: Install tree check
+        run: |
+          cmake -DBUILD_DIR=build/$PRESET -DPREFIX="$RUNNER_TEMP/smoke" -DVERSION=$VERSION -DEXPECT_APP=1 \
+            -DEXPECT_HELPERS=wabcut-embed -DSMOKE_PROJECT=cmake/packaging/smoke/tiny.wabcut \
+            -P cmake/InstallSmokeTest.cmake
+
+      # Wabcut.app: LLVM's libc++ into the bundle, every file signed ad hoc, nothing loaded from outside
+      # (cmake/packaging/macos/finish_bundle.py).
+      - name: Make the app bundle self-contained
+        run: |
+          cmake --install build/$PRESET --prefix "$RUNNER_TEMP/install"
+          mkdir -p "$RUNNER_TEMP/dmg"
+          ditto "$RUNNER_TEMP/install/wabcut.app" "$RUNNER_TEMP/dmg/Wabcut.app"
+          python3 cmake/packaging/macos/finish_bundle.py "$RUNNER_TEMP/dmg/Wabcut.app"
+
+      # Run the finished bundle with Homebrew's LLVM moved away, as on a Mac without it: the CLI's version and a
+      # headless render, then the app until its first frame (best effort: the runner has no display GPU, and a
+      # failure to draw is reported as a warning).
+      - name: Run the bundle without Homebrew's LLVM
+        run: |
+          keg=$(cd "$LLVM_ROOT" && pwd -P)
+          sudo mv "$keg" "$keg.hidden"
+          trap 'sudo mv "$keg.hidden" "$keg"' EXIT
+          app="$RUNNER_TEMP/dmg/Wabcut.app"
+          "$app/Contents/MacOS/wabcut-cli" --version
+          work="$RUNNER_TEMP/bundle-smoke"
+          mkdir -p "$work"
+          cp cmake/packaging/smoke/tiny.wabcut "$work/"
+          "$app/Contents/MacOS/wabcut-cli" render "$work/tiny.wabcut" "$work/tiny.mp4" --encoder libx264 --test-pattern
+          test -s "$work/tiny.mp4"
+          report="$RUNNER_TEMP/startup.json"
+          # macOS has no timeout(1): a watcher ends a start that hangs.
+          ( sleep 300; pkill -9 -f "$app/Contents/MacOS/wabcut\$" ) > /dev/null 2>&1 &
+          watcher=$!
+          if WABCUT_PERF_STARTUP="$report" WABCUT_PERF_STARTUP_QUIT=1 WABCUT_PERF_SETTINGS_DIR="$RUNNER_TEMP/profile" \
+               "$app/Contents/MacOS/wabcut" && grep -q firstFrame "$report"; then
+            cat "$report"
+          else
+            echo "::warning::Wabcut.app did not draw a first frame on the runner (no GPU display); the CLI checks passed."
+            cat "$report" 2>/dev/null || true
+          fi
+          pkill -P "$watcher" 2>/dev/null || true
+          kill "$watcher" 2>/dev/null || true
+
+      - name: Disk image
+        run: |
+          ln -s /Applications "$RUNNER_TEMP/dmg/Applications"
+          mkdir -p dist
+          hdiutil create -volname "Wabcut $VERSION" -srcfolder "$RUNNER_TEMP/dmg" -fs HFS+ -format UDZO -ov \
+            "dist/wabcut-$VERSION-macos-arm64.dmg"
+          ls -l dist
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wabcut-macos-arm64
+          path: dist/*.dmg
+          if-no-files-found: error
+
+  publish:
+    name: Publish the release
+    needs: [version, windows, linux, macos]
+    if: always() && needs.version.outputs.tag != '' && needs.windows.result == 'success'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      TAG: ${{ needs.version.outputs.tag }}
+      LINUX: ${{ needs.linux.result }}
+      MACOS: ${{ needs.macos.result }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v7
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums and release notes
+        run: |
+          cd dist
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          cd ..
+          python3 cmake/packaging/release_notes.py "$VERSION" "$LINUX" "$MACOS" > "$RUNNER_TEMP/notes.md"
+          cat "$RUNNER_TEMP/notes.md"
+
+      # 0.x releases are marked as pre-releases. A re-run replaces the files of an existing release.
+      - name: GitHub release
+        run: |
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+            gh release edit "$TAG" --notes-file "$RUNNER_TEMP/notes.md"
+          else
+            gh release create "$TAG" dist/* --title "Wabcut $VERSION" --notes-file "$RUNNER_TEMP/notes.md" \
+              --target "$GITHUB_SHA" $([ "${VERSION%%.*}" = 0 ] && echo --prerelease)
+          fi
+          echo "Published $(gh release view "$TAG" --json url --jq .url)" >> "$GITHUB_STEP_SUMMARY"

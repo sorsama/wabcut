@@ -453,7 +453,16 @@ elseif(APPLE)
     set(WABCUT_ICNS "${CMAKE_CURRENT_SOURCE_DIR}/resources/brand/icons/wabcut.icns")
     target_sources(wabcut PRIVATE "${WABCUT_ICNS}")
     set_source_files_properties("${WABCUT_ICNS}" PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
-    set_target_properties(wabcut PROPERTIES MACOSX_BUNDLE_ICON_FILE wabcut.icns)
+    # Info.plist: name, version, icon, and the reason macOS shows when voice-over recording first asks for the
+    # microphone (without NSMicrophoneUsageDescription macOS ends the app instead of asking).
+    set_target_properties(wabcut PROPERTIES
+        MACOSX_BUNDLE_INFO_PLIST "${PROJECT_SOURCE_DIR}/cmake/packaging/macos/Info.plist.in"
+        MACOSX_BUNDLE_ICON_FILE wabcut.icns
+        MACOSX_BUNDLE_BUNDLE_NAME Wabcut
+        MACOSX_BUNDLE_GUI_IDENTIFIER io.github.sorsama.wabcut
+        MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
+        MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
+        MACOSX_BUNDLE_COPYRIGHT "Wabcut contributors, GPL-3.0-or-later")
 endif()
 
 target_link_libraries(wabcut PRIVATE

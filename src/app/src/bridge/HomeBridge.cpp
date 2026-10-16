@@ -53,12 +53,19 @@ bool samePath(const QString& a, const QString& b) {
     return QDir::cleanPath(a).compare(QDir::cleanPath(b), sensitivity) == 0;
 }
 
-/// The documents folder: next to the app (installed builds), else the source tree's docs/.
+/// The documents folder: next to the app (installed builds; Contents/Resources/docs in a macOS bundle), else the
+/// source tree's docs/.
 QString docsFolder() {
     const QString beside = QCoreApplication::applicationDirPath() + QStringLiteral("/docs");
     if (QFileInfo(beside).isDir()) {
         return beside;
     }
+#ifdef Q_OS_MACOS
+    const QString resources = QCoreApplication::applicationDirPath() + QStringLiteral("/../Resources/docs");
+    if (QFileInfo(resources).isDir()) {
+        return QDir::cleanPath(resources);
+    }
+#endif
 #ifdef WABCUT_DOCS_DIR
     if (const QString source = QStringLiteral(WABCUT_DOCS_DIR); QFileInfo(source).isDir()) {
         return source;
