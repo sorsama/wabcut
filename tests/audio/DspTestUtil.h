@@ -20,7 +20,8 @@ inline std::vector<float> sine(double frequency, double amplitude, double second
     const auto frames = static_cast<std::size_t>(std::llround(seconds * rate));
     std::vector<float> out(frames * static_cast<std::size_t>(channels));
     for (std::size_t i = 0; i < frames; ++i) {
-        const auto v = static_cast<float>(amplitude * std::sin(2.0 * std::numbers::pi * frequency * i / rate + phase));
+        const double angle = 2.0 * std::numbers::pi * frequency * static_cast<double>(i);
+        const auto v = static_cast<float>(amplitude * std::sin(angle / rate + phase));
         for (int c = 0; c < channels; ++c) {
             out[i * static_cast<std::size_t>(channels) + static_cast<std::size_t>(c)] = v;
         }

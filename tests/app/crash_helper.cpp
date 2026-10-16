@@ -23,6 +23,9 @@ volatile int g_sink = 0;
 #if defined(_MSC_VER)
 #pragma warning(push)
 #pragma warning(disable : 4717) // recursive on all paths: the stack overflow is the point
+#elif defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Winfinite-recursion"
 #endif
 int recurse(int depth) {
     volatile char frame[4096];
@@ -32,6 +35,8 @@ int recurse(int depth) {
 }
 #if defined(_MSC_VER)
 #pragma warning(pop)
+#elif defined(__GNUC__)
+#pragma GCC diagnostic pop
 #endif
 
 } // namespace

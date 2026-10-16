@@ -46,6 +46,18 @@ TransportSpeed unpackSpeed(std::uint64_t v) {
 
 // ---- Free-run ----
 
+/// FreeRunTransport's published state. At namespace scope, not nested: SeqLock<State> checks that it is default
+/// constructible inside the class, and GCC does not see a nested class's default member initializers until the
+/// enclosing class is complete.
+struct FreeRunState {
+    std::int64_t anchorTicks = 0;
+    std::int64_t anchorNs = 0;
+    std::int32_t num = 1;
+    std::int32_t den = 1;
+    std::int32_t playing = 0;
+    std::int32_t reserved = 0;
+};
+
 class FreeRunTransport final : public TransportClock {
 public:
     explicit FreeRunTransport(Ticks position) {
@@ -94,14 +106,7 @@ public:
     std::string name() const override { return "free-run"; }
 
 private:
-    struct State {
-        std::int64_t anchorTicks = 0;
-        std::int64_t anchorNs = 0;
-        std::int32_t num = 1;
-        std::int32_t den = 1;
-        std::int32_t playing = 0;
-        std::int32_t reserved = 0;
-    };
+    using State = FreeRunState;
 
     /// Re-anchors at "now" so the change is continuous, then applies `change`.
     template <class Fn> void update(Fn change) {

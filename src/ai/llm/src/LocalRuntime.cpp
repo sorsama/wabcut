@@ -229,7 +229,7 @@ std::optional<Json> manifestOf(const std::filesystem::path& directory) {
     }
     if (ec) return std::nullopt;
     std::sort(files.begin(), files.end(), [](const Json& a, const Json& b) { return a["path"].get<std::string>() < b["path"].get<std::string>(); });
-    return files;
+    return std::make_optional(std::move(files));
 }
 
 /// Whether `directory` holds exactly what its manifest says, for these archives.

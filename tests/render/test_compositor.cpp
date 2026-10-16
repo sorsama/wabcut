@@ -125,8 +125,8 @@ TEST_CASE("RGBA8 frames are sRGB-encoded with straight alpha", "[render][gpu][fo
     for (int bar = 0; bar < 8; ++bar) {
         const int x = bar * kBarWidth + kBarWidth / 2;
         const Rgb c = barColor(bar);
-        const Rgb quantized{std::lround(c[0] * 255) / 255.0, std::lround(c[1] * 255) / 255.0,
-                            std::lround(c[2] * 255) / 255.0};
+        const auto level = [](double v) { return static_cast<double>(std::lround(v * 255)) / 255.0; };
+        const Rgb quantized{level(c[0]), level(c[1]), level(c[2])};
         checkPixel(same, x, 10, quantized, 1.01 / 255.0);
         checkPixel(rec709, x, 10, map(map(quantized, srgbDecode), bt709Encode));
     }
