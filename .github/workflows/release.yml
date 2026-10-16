@@ -4,6 +4,7 @@
 #   git tag v0.1.3 && git push origin v0.1.3        build every package from that commit and publish the release
 #   Actions > release > Run workflow (tag v0.1.3)   the same from the GitHub page: creates the tag on the chosen branch
 #   Run workflow with no tag, or a pull request     build and check the packages without publishing anything
+#                                                   ("platforms" picks one platform's packages)
 #
 # Windows (MSI + portable ZIP) must pass for a release to be published. Linux (AppImage + tar.gz) and macOS (DMG, Apple
 # silicon) are preview builds: attached when they pass, left out with a note in the release text when they do not.
@@ -21,6 +22,11 @@ on:
         description: "Tag to create and publish, vX.Y.Z (must match the version in CMakeLists.txt). Leave empty to build the packages only."
         required: false
         default: ""
+      platforms:
+        description: "Which packages to build (a release needs Windows; Linux and macOS are attached when built)."
+        type: choice
+        options: [all, windows, linux, macos]
+        default: all
   pull_request:
     paths:
       - ".github/workflows/release.yml"
@@ -70,6 +76,7 @@ jobs:
   windows:
     name: Windows x64
     needs: version
+    if: github.event_name != 'workflow_dispatch' || inputs.platforms == 'all' || inputs.platforms == 'windows'
     runs-on: windows-2025
     timeout-minutes: 300
     env:
@@ -163,6 +170,7 @@ jobs:
   linux:
     name: Linux x64 (preview)
     needs: version
+    if: github.event_name != 'workflow_dispatch' || inputs.platforms == 'all' || inputs.platforms == 'linux'
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     env:
@@ -294,6 +302,7 @@ jobs:
   macos:
     name: macOS Apple silicon (preview)
     needs: version
+    if: github.event_name != 'workflow_dispatch' || inputs.platforms == 'all' || inputs.platforms == 'macos'
     runs-on: macos-15
     timeout-minutes: 360
     env:
