@@ -641,17 +641,17 @@ void registerGraphicsCommands(CommandRegistry& registry) {
                              fail(ErrorCode::InvalidParams, "a custom path needs \"vertices\"", Json{{"path", "/vertices"}});
                          }
                          for (const Json& v : c.params()["vertices"]) {
-                             MaskVertex vertex{v[0].get<double>(), v[1].get<double>(), 0.0, 0.0, 0.0, 0.0};
+                             MaskVertex point{v[0].get<double>(), v[1].get<double>(), 0.0, 0.0, 0.0, 0.0};
                              if (v.size() == 6) {
-                                 vertex.inX = v[2].get<double>();
-                                 vertex.inY = v[3].get<double>();
-                                 vertex.outX = v[4].get<double>();
-                                 vertex.outY = v[5].get<double>();
+                                 point.inX = v[2].get<double>();
+                                 point.inY = v[3].get<double>();
+                                 point.outX = v[4].get<double>();
+                                 point.outY = v[5].get<double>();
                              } else if (v.size() != 2) {
                                  fail(ErrorCode::InvalidParams, "a vertex is [x, y] or [x, y, inX, inY, outX, outY]",
                                       Json{{"path", "/vertices"}});
                              }
-                             key.vertices.push_back(vertex);
+                             key.vertices.push_back(point);
                          }
                          path.closed = c.boolean("closed", false);
                      } else {

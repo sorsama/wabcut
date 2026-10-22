@@ -81,7 +81,7 @@ std::expected<FaceRedactionResult, Error> detectFaceRedactions(SegmentServices& 
         span = TimeRange::fromStartEnd(a, b);
     }
     const double perSecond = std::clamp(o.samplesPerSecond, 1.0, 30.0);
-    const std::int64_t step = std::max<std::int64_t>(1, std::llround(static_cast<double>(kTicksPerSecond) / perSecond / fd.value));
+    const std::int64_t step = std::max<std::int64_t>(1, std::llround(static_cast<double>(kTicksPerSecond) / perSecond / static_cast<double>(fd.value)));
     const Ticks interval{fd.value * step};
     std::vector<Ticks> times;
     for (Ticks t = all.start + Ticks{(span.start - all.start).value / fd.value * fd.value}; t < span.end(); t = t + interval) {
@@ -114,7 +114,7 @@ std::expected<FaceRedactionResult, Error> detectFaceRedactions(SegmentServices& 
     std::size_t next = 0;
     std::size_t cut = 0;
     while (next < times.size()) {
-        if (stop.stop_requested() || (checkpoint && !checkpoint(static_cast<double>(next) / times.size(), "Finding faces"))) {
+        if (stop.stop_requested() || (checkpoint && !checkpoint(static_cast<double>(next) / static_cast<double>(times.size()), "Finding faces"))) {
             return failure(ErrorCode::Cancelled, "cancelled");
         }
         std::vector<search::Image> batch;

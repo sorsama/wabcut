@@ -522,7 +522,7 @@ std::expected<std::string, Error> applyEdits(std::string_view existing, const st
             return it->second;
         }
         std::string prefix = wanted.empty() ? std::string("ns") : std::string(wanted);
-        const std::string base = prefix;
+        const std::string stem = prefix;
         for (int n = 1; n < 100; ++n) {
             const std::string bound = namespaceOf(target, prefix);
             if (bound == ns) {
@@ -532,7 +532,7 @@ std::expected<std::string, Error> applyEdits(std::string_view existing, const st
                 target.append_attribute(("xmlns:" + prefix).c_str()) = std::string(ns).c_str();
                 break;
             }
-            prefix = base + std::to_string(n);
+            prefix = stem + std::to_string(n);
         }
         prefixes.emplace(std::string(ns), prefix);
         return prefix;

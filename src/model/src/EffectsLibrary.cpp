@@ -86,7 +86,6 @@ constexpr auto kOrientationParams = join(kStartEnd, kOrientation, kEdge);
 constexpr auto kPushParams = join(kStartEnd, kDirection4, kReverseOnly);
 constexpr auto kSlideParams = join(kStartEnd, kDirection8, kEdge);
 constexpr auto kPageParams = join(kStartEnd, kCorner, kReverseOnly);
-constexpr auto kDirectionEdgeParams = join(kStartEnd, kDirection4, kEdge);
 constexpr auto kFromEdgeParams = join(kStartEnd, kFrom4, kEdge);
 /// Random Wipe sweeps from top to bottom by default.
 constexpr std::array<EffectParamInfo, 1> kDirection4Down{{{"direction", "Direction", U::Amount, 1.0, 0.0, 3.0, false, kFourWays}}};

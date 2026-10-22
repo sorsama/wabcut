@@ -823,7 +823,7 @@ std::expected<std::string, Error> writeStl(const std::vector<CaptionCue>& cues, 
     auto tcp = [&](Ticks t) {
         const std::int64_t f = ticksToFrames(t + options.startTimecode, rate, Rounding::Nearest).value_or(0);
         const std::int64_t base = timecodeBase(rate);
-        char buf[16];
+        char buf[96]; // room for any int64 the format could print (GCC's -Wformat-truncation)
         std::snprintf(buf, sizeof buf, "%02lld%02lld%02lld%02lld", static_cast<long long>(f / base / 3600 % 24),
                       static_cast<long long>(f / base / 60 % 60), static_cast<long long>(f / base % 60),
                       static_cast<long long>(f % base));

@@ -41,7 +41,7 @@ AiError failure(AiErrorCode code, std::string message) { return AiError(code, st
 constexpr const char* kEkus =
     "1.3.6.1.5.5.7.3.4\n1.3.6.1.5.5.7.3.36\n1.3.6.1.5.5.7.3.8\n1.3.6.1.5.5.7.3.9\n1.3.6.1.4.1.311.76.59.1.9\n1.3.6.1.4.1.62558.2.1";
 
-std::string settingsJson(bool signing, const std::string& anchors) {
+[[maybe_unused]] std::string settingsJson(bool signing, const std::string& anchors) {
     Json s{{"version", 1},
            {"verify",
             {{"verify_after_sign", true},

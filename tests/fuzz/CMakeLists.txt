@@ -100,7 +100,9 @@ target_include_directories(fuzz_audio_post PRIVATE ${CMAKE_SOURCE_DIR}/src/inter
 # user's effects library (seeds: seeds/mogrt, seeds/effect_presets - the first byte picks the input).
 wabcut_add_fuzzer(mogrt SOURCES fuzz_mogrt.cpp LIBS wabcut_interchange MAX_LEN 65536)
 wabcut_add_fuzzer(effect_presets SOURCES fuzz_effect_presets.cpp LIBS wabcut_model MAX_LEN 65536)
-wabcut_add_fuzzer(psd SOURCES fuzz_psd.cpp LIBS wabcut_media MAX_LEN 65536) # 0.2 layered Photoshop files
+if(TARGET wabcut_media) # not in the core build (no FFmpeg)
+    wabcut_add_fuzzer(psd SOURCES fuzz_psd.cpp LIBS wabcut_media MAX_LEN 65536) # 0.2 layered Photoshop files
+endif()
 file(GLOB fuzz_prproj_seeds ${fuzz_fixtures}/prproj/*.prproj)
 wabcut_add_fuzzer(prproj SOURCES fuzz_import.cpp LIBS wabcut_interchange DEFINITIONS WABCUT_FUZZ_FORMAT=PremiereProject
     MAX_LEN 65536 SEEDS ${fuzz_prproj_seeds})

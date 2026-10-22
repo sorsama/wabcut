@@ -1,6 +1,7 @@
 # Interchange tests: format fixtures (tests/interchange/fixtures), robustness (truncated/mutated/garbage
 # input), relinking and the import report. The fixtures folder is passed as WABCUT_INTERCHANGE_FIXTURES.
 find_package(nlohmann_json CONFIG REQUIRED)
+find_package(ZLIB REQUIRED) # test_mogrt deflates its own .mogrt archives
 
 wabcut_add_test_suite(interchange
     SOURCES
@@ -30,7 +31,7 @@ wabcut_add_test_suite(interchange
         test_summary.cpp
         test_time_math.cpp
         test_xmp.cpp
-    LIBS wabcut_interchange nlohmann_json::nlohmann_json)
+    LIBS wabcut_interchange nlohmann_json::nlohmann_json ZLIB::ZLIB)
 # White-box tests of the private time math and parsers' helpers.
 target_include_directories(wabcut_interchange_tests PRIVATE ${CMAKE_SOURCE_DIR}/src/interchange/src
     ${CMAKE_SOURCE_DIR}/tests/model)

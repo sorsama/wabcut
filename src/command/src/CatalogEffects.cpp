@@ -524,8 +524,8 @@ CommandOutput deleteCustomItem(ExecutionContext& c) {
     EffectsLibrary library = heldLibrary(c);
     Json removed = Json::array();
     if (c.has("preset")) {
-        const EffectPreset& p = userPreset(c, library, c.string("preset"), "preset");
-        const std::string name = p.name;
+        const std::string asked = c.string("preset");
+        const std::string name = userPreset(c, library, asked, "preset").name;
         std::erase_if(library.presets, [&](const EffectPreset& q) { return samePresetName(q.name, name); });
         retargetPresetItems(library, name, {});
         removed.push_back(std::string(kPresetItemPrefix) + name);

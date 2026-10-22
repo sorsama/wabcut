@@ -1,7 +1,8 @@
 cmake_minimum_required(VERSION 3.28)
 
 # Overlay ports (cmake/ports) for vcpkg, set before project(): rnnoise (a CMake build; the stock port does not support
-# Windows) and the optional AI ports below.
+# Windows), amd-amf 1.5.3#1 (vcpkg's fix of 2026-10-20: AMD replaced the release's header archive, so the baseline's
+# hash no longer matches; drop it with the next baseline) and the optional AI ports below.
 list(APPEND VCPKG_OVERLAY_PORTS "${CMAKE_CURRENT_SOURCE_DIR}/cmake/ports")
 
 # Local AI (docs/ai.md): whisper.cpp + ggml from the overlay ports in cmake/ports, built into the out-of-process

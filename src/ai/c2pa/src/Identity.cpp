@@ -57,12 +57,12 @@ std::string isoTime(std::int64_t unixSeconds) {
     return std::format("{:%Y-%m-%dT%H:%M:%SZ}", sys_seconds{seconds{unixSeconds}});
 }
 
-Bytes name(std::string_view commonName) {
+[[maybe_unused]] Bytes name(std::string_view commonName) {
     return der::sequence({der::set({der::sequence({der::oid(kOrganization), der::utf8(kOrganizationName)})}),
                           der::set({der::sequence({der::oid(kCommonName), der::utf8(commonName)})})});
 }
 
-Bytes extension(std::string_view id, bool critical, const Bytes& value) {
+[[maybe_unused]] Bytes extension(std::string_view id, bool critical, const Bytes& value) {
     if (critical) {
         return der::sequence({der::oid(id), der::boolean(true), der::octetString(value)});
     }
@@ -70,14 +70,14 @@ Bytes extension(std::string_view id, bool critical, const Bytes& value) {
 }
 
 /// A key identifier: the first 20 bytes of the SHA-256 of the public key.
-Bytes keyId(std::span<const std::uint8_t> publicPoint) {
+[[maybe_unused]] Bytes keyId(std::span<const std::uint8_t> publicPoint) {
     Sha256 hash;
     hash.update(std::span(reinterpret_cast<const std::byte*>(publicPoint.data()), publicPoint.size()));
     const auto digest = hash.finish();
     return Bytes(digest.begin(), digest.begin() + 20);
 }
 
-Bytes ecSpki(std::span<const std::uint8_t> point) {
+[[maybe_unused]] Bytes ecSpki(std::span<const std::uint8_t> point) {
     return der::sequence({der::sequence({der::oid(kEcPublicKey), der::oid(kP256)}), der::bitString(point)});
 }
 

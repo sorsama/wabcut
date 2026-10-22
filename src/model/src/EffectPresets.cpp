@@ -747,7 +747,8 @@ std::expected<EffectPreset, Error> makeEffectPreset(const ProjectState& state, c
     const auto [num, den] = curveRate(clip);
     // Curve time on the clip -> timeline ticks from its In point.
     const auto toOffset = [start, num, den](Ticks t) {
-        return clampTicks(static_cast<long double>((t - start).value) * den / num);
+        return clampTicks(static_cast<long double>((t - start).value) * static_cast<long double>(den)
+                          / static_cast<long double>(num));
     };
     EffectPreset p;
     p.name = std::move(name);
@@ -907,7 +908,7 @@ std::expected<PresetResult, Error> applyEffectPreset(const ProjectState& state, 
             } else if (type == EffectPresetType::AnchorToOutPoint) {
                 u += static_cast<long double>(shift.value);
             }
-            return start + clampTicks(u * num / den);
+            return start + clampTicks(u * static_cast<long double>(num) / static_cast<long double>(den));
         };
         ClipContent content = target.content();
         for (const EffectInstance& e : preset.effects) {
