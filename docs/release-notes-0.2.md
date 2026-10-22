@@ -107,7 +107,8 @@ saved by 0.2.
 - Warp Stabilizer's Subspace Warp is a per-frame perspective, not Premiere's mesh warp. No face-aware Morph Cut.
 - No OpenFX video plug-ins or AU audio plug-ins; no VR / 360; no review links, shared projects or stock media.
 - Linux and macOS are preview builds (see the [0.1 notes](release-notes-0.1.md#known-issues) for what they lack).
-  Content Credentials are Windows only.
+  Content Credentials are Windows only. On Linux, transcript corrections and the transcript's Find and Replace do not
+  apply yet.
 - Not code-signed; no auto-update. Real local-AI quality and live cloud-provider runs are not benchmarked.
 
 ## Privacy
