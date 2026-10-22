@@ -17,6 +17,10 @@
 #include <string>
 #include <vector>
 
+#ifdef _WIN32
+#include <windows.h> // GetPriorityClass
+#endif
+
 using namespace wabcut;
 using namespace wabcut::ai;
 using namespace std::chrono_literals;
@@ -184,7 +188,9 @@ TEST_CASE("ChildProcess: AI helpers run below normal priority under the helper p
     auto other = ChildProcess::spawn(plain);
     REQUIRE(other);
     CHECK_FALSE((*other)->cpuRateLimitPercent());
-    CHECK_FALSE((*other)->belowNormalPriority());
+    // Untouched: it runs at the test's own priority (a CI runner may start the tests below normal already).
+    if (GetPriorityClass(GetCurrentProcess()) != BELOW_NORMAL_PRIORITY_CLASS)
+        CHECK_FALSE((*other)->belowNormalPriority());
 
     for (auto* child : {&*helper, &*unlimited, &*explicitCap, &*other}) {
         (*child)->closeInput();

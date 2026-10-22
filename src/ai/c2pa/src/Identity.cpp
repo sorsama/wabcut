@@ -30,23 +30,24 @@ namespace {
 
 using der::Bytes;
 
+// [[maybe_unused]]: only the Windows signing path (CNG) issues certificates.
 constexpr std::string_view kEcPublicKey = "1.2.840.10045.2.1";
 constexpr std::string_view kP256 = "1.2.840.10045.3.1.7";
 constexpr std::string_view kP384 = "1.3.132.0.34";
 constexpr std::string_view kP521 = "1.3.132.0.35";
-constexpr std::string_view kEcdsaSha256 = "1.2.840.10045.4.3.2";
+[[maybe_unused]] constexpr std::string_view kEcdsaSha256 = "1.2.840.10045.4.3.2";
 constexpr std::string_view kRsa = "1.2.840.113549.1.1.1";
 constexpr std::string_view kRsaPss = "1.2.840.113549.1.1.10";
 constexpr std::string_view kEd25519 = "1.3.101.112";
 constexpr std::string_view kCommonName = "2.5.4.3";
 constexpr std::string_view kOrganization = "2.5.4.10";
-constexpr std::string_view kBasicConstraints = "2.5.29.19";
-constexpr std::string_view kKeyUsage = "2.5.29.15";
-constexpr std::string_view kExtKeyUsage = "2.5.29.37";
-constexpr std::string_view kSubjectKeyId = "2.5.29.14";
-constexpr std::string_view kAuthorityKeyId = "2.5.29.35";
-constexpr std::string_view kDocumentSigning = "1.3.6.1.5.5.7.3.36";
-constexpr std::string_view kC2paClaimSigning = "1.3.6.1.4.1.62558.2.1";
+[[maybe_unused]] constexpr std::string_view kBasicConstraints = "2.5.29.19";
+[[maybe_unused]] constexpr std::string_view kKeyUsage = "2.5.29.15";
+[[maybe_unused]] constexpr std::string_view kExtKeyUsage = "2.5.29.37";
+[[maybe_unused]] constexpr std::string_view kSubjectKeyId = "2.5.29.14";
+[[maybe_unused]] constexpr std::string_view kAuthorityKeyId = "2.5.29.35";
+[[maybe_unused]] constexpr std::string_view kDocumentSigning = "1.3.6.1.5.5.7.3.36";
+[[maybe_unused]] constexpr std::string_view kC2paClaimSigning = "1.3.6.1.4.1.62558.2.1";
 
 constexpr std::string_view kOrganizationName = "Self-issued with Wabcut (not verified)";
 

@@ -398,9 +398,10 @@ TEST_CASE("mask.objectSelect on a nested clip: the nest's picture, the mask on t
     const auto applied = h.ok("mask.objectSelect", params);
     CHECK(applied.data["cached"] == true);
     CHECK(h.session.undoCount() == undo + 1);
-    const Clip& c = clipIn(h.state(), seq, nested);
+    const ProjectSnapshot held = h.state(); // c and m refer into it: held, not a temporary
+    const Clip& c = clipIn(held, seq, nested);
     CHECK(c.isNested()); // still the nest
-    const Mask& m = onlyObjectMask(h.state(), seq, nested);
+    const Mask& m = onlyObjectMask(held, seq, nested);
     REQUIRE(m.matte);
     CHECK(m.shape == MaskShape::Matte);
     CHECK(m.matte->sequence == inner);
@@ -453,7 +454,8 @@ TEST_CASE("mask.objectSelect on a multicam clip: the active angle, never flatten
     REQUIRE(pictures.asked.size() == 1);
     CHECK(pictures.asked.front() == AngleSet::of(0)); // angle 0's picture
     CHECK(r.data["frames"] == 100);
-    const Clip& c = clipIn(h.state(), seq, mc.video);
+    const ProjectSnapshot held = h.state(); // c refers into it: held, not a temporary
+    const Clip& c = clipIn(held, seq, mc.video);
     CHECK(c.isNested());
     CHECK(c.sequence == mc.multicam);
     CHECK(c.angles == AngleSet::of(0));
@@ -464,7 +466,8 @@ TEST_CASE("mask.objectSelect on a multicam clip: the active angle, never flatten
 
     // Switch to angle 1: the mask stays on the clip, where it was on the frame.
     REQUIRE(h.session.apply("Switch", [&](const ProjectState& state) { return wabcut::edit::switchMulticamAngle(state, seq, mc.video, std::nullopt, 1); }));
-    const Clip& switched = clipIn(h.state(), seq, mc.video);
+    const ProjectSnapshot afterSwitch = h.state(); // switched refers into it
+    const Clip& switched = clipIn(afterSwitch, seq, mc.video);
     CHECK(switched.angles == AngleSet::of(1));
     CHECK(onlyObjectMask(h.state(), seq, mc.video) == first);
 
@@ -472,7 +475,8 @@ TEST_CASE("mask.objectSelect on a multicam clip: the active angle, never flatten
     const auto again = h.ok("mask.propagate", Json{{"sequence", seq.value}, {"clip", mc.video.value}, {"mask", id}});
     REQUIRE(pictures.asked.size() == 2);
     CHECK(pictures.asked.back() == AngleSet::of(1));
-    const Mask& moved = onlyObjectMask(h.state(), seq, mc.video);
+    const ProjectSnapshot afterPropagate = h.state(); // moved refers into it
+    const Mask& moved = onlyObjectMask(afterPropagate, seq, mc.video);
     CHECK(moved.id == id);
     CHECK(moved.matte->sequence == mc.multicam);
     CHECK(moved.matte->track != first.matte->track);
