@@ -109,7 +109,7 @@ Control and "Ctrl" as Meta on macOS, and rejects Cmd/Opt on Windows/Linux so the
 
 ## Command table
 
-All 250 commands. *Source*: 2026, 2024 and 2017 are the Adobe pages above; † marks the 2026 "assign multiple"
+All 276 commands. *Source*: 2026, 2024 and 2017 are the Adobe pages above; † marks the 2026 "assign multiple"
 page; `.kys` means Premiere's shipped default key sets. *Premiere .kys item* is the `(context, command name)` pair
 the importer maps from; *(not mapped)* means no verified pair, so `.kys` import skips the command.
 
@@ -117,6 +117,7 @@ the importer maps from; *(not mapped)* means no verified pair, so `.kys` import 
 |---|---|---|---|---|---|---|
 | New Project… | `file.newProject` | Application | `Ctrl+Alt+N` | `Opt+Cmd+N` | 2026 | `global / cmd.file.new.project` |
 | New Sequence… | `file.newSequence` | Application | `Ctrl+N` | `Cmd+N` | 2026 | `global / cmd.file.new.sequence` |
+| New Sequence From Clip [^21] | `file.newSequenceFromClip` | Application | | | Wabcut | (not mapped) |
 | Open Project… | `file.openProject` | Application | `Ctrl+O` | `Cmd+O` | 2026 | `global / cmd.file.openproject` |
 | Close | `file.close` | Application | `Ctrl+W` | `Cmd+W` | 2026 | `global / cmd.file.closepanel` |
 | Close Project | `file.closeProject` | Application | `Ctrl+Shift+W` | `Shift+Cmd+W` | 2026 | `global / cmd.file.close` |
@@ -126,6 +127,7 @@ the importer maps from; *(not mapped)* means no verified pair, so `.kys` import 
 | Import from Media Browser | `file.importFromMediaBrowser` | Application | `Ctrl+Alt+I` | `Opt+Cmd+I` | 2026 | `global / cmd.file.importfrombrowser` |
 | Import… | `file.import` | Application | `Ctrl+I` | `Cmd+I` | 2026 | `global / cmd.file.import` |
 | Export Media… | `file.exportMedia` | Application | `Ctrl+M` | `Cmd+M` | 2026 | `global / cmd.file.export.movie` |
+| Export Frame… [^22] | `file.exportFrame` | Application | `Ctrl+Shift+E` | `Shift+E` | .kys | `global / cmd.export.frame` |
 | Send to Media Encoder | `file.sendToMediaEncoder` | Application | `Alt+Shift+M` | `Opt+Shift+M` | 2026 | `global / cmd.file.export.sendtoqueue` |
 | Get Media File Properties for Selection… | `file.getProperties` | Application | `Ctrl+Shift+H` | `Shift+Cmd+H` | 2026 | `global / cmd.file.properties.selection` |
 | Exit | `file.exit` | Application | `Ctrl+Q` | `Cmd+Q` | 2026 | `global / cmd.file.exit` |
@@ -145,6 +147,8 @@ the importer maps from; *(not mapped)* means no verified pair, so `.kys` import 
 | Find… | `edit.find` | Application | `Ctrl+F` | `Cmd+F` | 2026 | `global / cmd.edit.find` |
 | Edit Original | `edit.editOriginal` | Application | `Ctrl+E` | `Cmd+E` | 2026 | `global / cmd.edit.editoriginal` |
 | Keyboard Shortcuts… | `edit.keyboardShortcuts` | Application | `Ctrl+Alt+K` | `Opt+Cmd+K` | 2026 | `global / cmd.edit.keyboardshortcuts` |
+| Preferences: Media… [^21] | `edit.preferencesMedia` | Application | | | .kys | `global / cmd.edit.preferences.media` |
+| Preferences: Timeline… [^21] | `edit.preferencesTimeline` | Application | | | .kys | `global / cmd.edit.preferences.timeline` |
 | Make Subclip… | `clip.makeSubclip` | Application | `Ctrl+U` | `Cmd+U` | 2026 | `global / cmd.clip.makesubclip` |
 | Audio Channels… | `clip.audioChannels` | Application | `Shift+G` | `Shift+G` | 2026 | `global / cmd.clip.audiooptions.sourcechannelmappings` |
 | Audio Gain… | `clip.audioGain` | Application | `G` | `G` | 2026 | `global / cmd.clip.audiooptions.gain` |
@@ -155,6 +159,17 @@ the importer maps from; *(not mapped)* means no verified pair, so `.kys` import 
 | Link | `clip.link` | Application | `Ctrl+L` | `Cmd+L` | 2026 | `global / cmd.clip.linkaudioandvideo` |
 | Group | `clip.group` | Application | `Ctrl+G` | `Cmd+G` | 2026 | `global / cmd.clip.group` |
 | Ungroup | `clip.ungroup` | Application | `Ctrl+Shift+G` | `Shift+Cmd+G` | 2026 | `global / cmd.clip.ungroup` |
+| Scale to Frame Size [^21] | `clip.scaleToFrameSize` | Application | | | .kys | `global / cmd.clip.scaletoframesize` |
+| Set to Frame Size [^21] | `clip.setToFrameSize` | Application | | | .kys | `global / cmd.clip.settoframesize` |
+| Set to Fill Frame [^21] | `clip.setToFillFrame` | Application | | | .kys | `global / cmd.clip.fillframe` |
+| Frame Hold Options… [^21] | `clip.frameHoldOptions` | Application | | | .kys | `global / cmd.clip.videooptions.frameholdoptions` |
+| Add Frame Hold [^21] | `clip.addFrameHold` | Application | | | .kys | `global / cmd.clip.videooptions.addframehold` |
+| Insert Frame Hold Segment [^21] | `clip.insertFrameHoldSegment` | Application | | | .kys | `global / cmd.clip.videooptions.insertframeholdsegment` |
+| Merge Clips… [^21] | `clip.mergeClips` | Application | | | .kys | `global / cmd.clip.merge` |
+| Interpret Footage… [^21] | `clip.interpretFootage` | Application | | | .kys | `global / cmd.file.interpretfootage` |
+| Modify Timecode… [^21] | `clip.modifyTimecode` | Application | | | .kys | `global / cmd.file.timecode` |
+| Replace Footage… [^21] | `clip.replaceFootage` | Application | | | .kys | `global / cmd.clip.replacefootage` |
+| Make Offline [^21] | `clip.makeOffline` | Application | | | Wabcut | (not mapped) |
 | Slow-mo at Playhead [^20] | `moments.slowMo` | Application | | | Wabcut | (not mapped) |
 | Punch-in at Playhead [^20] | `moments.punchIn` | Application | | | Wabcut | (not mapped) |
 | Render Effects In to Out | `sequence.renderInToOut` | Application | `Enter` | `Return` | 2026 | `global / cmd.sequence.preview` |
@@ -181,6 +196,15 @@ the importer maps from; *(not mapped)* means no verified pair, so `.kys` import 
 | Previous in Sequence | `sequence.previousInSequence` | Application | `Ctrl+Shift+;` | `Opt+;` | 2026 | `global / cmd.sequence.findprevioussequencegap` |
 | Snap in Timeline | `sequence.snap` | Application | `S` | `S` | 2026 | `global / cmd.sequence.snap` |
 | Make Subsequence [^4] | `sequence.makeSubsequence` | Application | `Shift+U` | `Shift+U` | 2026 (Windows), .kys (macOS) | `global / cmd.sequence.makesubsequence` |
+| Make Subsequence from In to Out [^21] | `sequence.makeSubsequenceFromInToOut` | Application | | | .kys | `global / cmd.sequence.makesubsequencefromintoout` |
+| Sequence Settings… [^21] | `sequence.settings` | Application | | | .kys | `global / cmd.sequence.sequencesettingsgeneral` |
+| Replace With Clip: From Source Monitor [^21] | `sequence.replaceFromSourceMonitor` | Application | | | .kys | `global / clip.replaceclip.fromsourcemonitor` |
+| Replace With Clip: From Source Monitor, Match Frame [^21] | `sequence.replaceFromSourceMonitorMatchFrame` | Application | | | .kys | `global / clip.replaceclip.fromsourcemonitor.matchframe` |
+| Replace With Clip: From Bin [^21] | `sequence.replaceFromBin` | Application | | | .kys | `global / clip.replaceclip.frombin` |
+| Join Through Edits [^21] | `sequence.joinThroughEdits` | Application | | | .kys | `timeline / cmd.sequence.jointhroughedits` |
+| Next in Track [^21] | `sequence.nextInTrack` | Application | | | .kys | `global / cmd.sequence.findnexttrackgap` |
+| Previous in Track [^21] | `sequence.previousInTrack` | Application | | | .kys | `global / cmd.sequence.findprevioustrackgap` |
+| Close Gap [^21] | `sequence.closeGap` | Application | | | .kys | `global / cmd.sequence.close.gaps` |
 | Add New Caption Track | `sequence.addCaptionTrack` | Application | `Ctrl+Alt+A` | `Opt+Cmd+A` | 2026 | `global / cmd.caption.add.track` |
 | Add Caption at Playhead | `sequence.addCaptionAtPlayhead` | Application | `Ctrl+Alt+C` | `Opt+Cmd+C` | 2026 | `global / cmd.caption.add.trackitem` |
 | Go to Next Caption Segment [^5] | `sequence.nextCaptionSegment` | Application | `Ctrl+Alt+Down` | `Opt+Cmd+Down` | 2026 | `timeline / cmd.timeline.goto.next.caption.trackitem` |
@@ -188,6 +212,9 @@ the importer maps from; *(not mapped)* means no verified pair, so `.kys` import 
 | Ripple Trim Previous Edit to Playhead | `sequence.rippleTrimPreviousToPlayhead` | Application | `Q` | `Q` | 2024 | `global / cmd.sequence.rippletrimpreviousedittoplayhead` |
 | Ripple Trim Next Edit to Playhead | `sequence.rippleTrimNextToPlayhead` | Application | `W` | `W` | 2024 | `global / cmd.sequence.rippletrimnextedittoplayhead` |
 | Select Clip at Playhead | `sequence.selectClipAtPlayhead` | Application | `D` | `D` | 2024 | `global / cmd.tlnav.select.clip.at.playhead` |
+| Selection Follows Playhead (0.2, a toggle) | `sequence.selectionFollowsPlayhead` | Application | (none) | (none) | Wabcut | (not mapped) |
+| Show Video Fade Handles (0.2, a toggle) | `timeline.showVideoFadeHandles` | Application | (none) | (none) | Wabcut | (not mapped) |
+| Show Audio Fade Handles (0.2, a toggle) | `timeline.showAudioFadeHandles` | Application | (none) | (none) | Wabcut | (not mapped) |
 | Select Camera 1 [^17] | `multicam.selectCamera1` | Application | `1` | `1` | .kys | `global / cmd.multicam.choosenocut.camera1` |
 | Select Camera 2 | `multicam.selectCamera2` | Application | `2` | `2` | .kys | `global / cmd.multicam.choosenocut.camera2` |
 | Select Camera 3 | `multicam.selectCamera3` | Application | `3` | `3` | .kys | `global / cmd.multicam.choosenocut.camera3` |
@@ -241,6 +268,7 @@ the importer maps from; *(not mapped)* means no verified pair, so `.kys` import 
 | Workspace: Learning | `window.workspace9` | Application | `Alt+Shift+9` | `Opt+Shift+9` | 2026 | `global / cmd.window.user.workspace.8` |
 | Reset to Saved Layout | `window.resetToSavedLayout` | Application | `Alt+Shift+0` | `Opt+Shift+0` | 2026 | `global / cmd.window.workspace.revert` |
 | Maximize Frame [^7] | `window.maximizeFrame` | Application | `` Shift+` `` | `` Shift+` `` | 2026 | `global / cmd.toggle.maximize.focused.frame` |
+| Toggle Full Screen [^22] | `monitor.toggleFullScreen` | Application | `` Ctrl+` `` | `` Ctrl+` `` | .kys | `global / cmd.toggle.fullscreen.monitor` |
 | Audio Clip Mixer | `window.audioClipMixer` | Application | `Shift+9` | `Shift+9` | 2026 | `global / uif.window.Audio Clip Mixer` |
 | Audio Track Mixer | `window.audioTrackMixer` | Application | `Shift+6` | `Shift+6` | 2026 | `global / uif.window.Audio Mixers` |
 | Effect Controls | `window.effectControls` | Application | `Shift+5` | `Shift+5` | 2026 | `global / uif.window.Effect Controls` |
@@ -250,6 +278,7 @@ the importer maps from; *(not mapped)* means no verified pair, so `.kys` import 
 | Projects | `window.projects` | Application | `Shift+1` | `Shift+1` | 2026 | `global / uif.window.Projects` |
 | Source Monitor | `window.sourceMonitor` | Application | `Shift+2` | `Shift+2` | 2026 | `global / uif.window.Source Monitors` |
 | Timeline | `window.timeline` | Application | `Shift+3` | `Shift+3` | 2026 | `global / uif.window.Timelines` |
+| History [^21] | `window.history` | Application | | | .kys | `global / uif.window.History` |
 | Selection Tool | `tool.selection` | Application | `V` | `V` | 2017 | `global / cmd.tools.01pointer` |
 | Track Select Forward Tool [^8] | `tool.trackSelectForward` | Application | `A` | `A` | 2017 | `global / cmd.tools.02trackselectforward` |
 | Track Select Backward Tool [^9] | `tool.trackSelectBackward` | Application | `Shift+A` | `Shift+A` | 2026† | `global / cmd.tools.02_5trackselectbackward` |
@@ -283,6 +312,9 @@ the importer maps from; *(not mapped)* means no verified pair, so `.kys` import 
 | Go to Selected Clip End | `transport.goToSelectedClipEnd` | Application | `Shift+End` | `Shift+End` | 2024 | `global / cmd.transport.selectedclip.end` |
 | Play In to Out | `transport.playInToOut` | Application | `Ctrl+Shift+Space` | `Opt+K` | 2024 | `global / cmd.transport.playintoout` |
 | Play Around | `transport.playAround` | Application | `Shift+K` | `Shift+K` | 2024 | `global / cmd.transport.playedit` |
+| Loop [^22] | `monitor.loop` | Application | | | .kys | `global / cmd.monitor.loop` |
+| Enable Transmit [^22] | `monitor.enableTransmit` | Application | | | .kys | `global / cmd.toggletransmit` |
+| Toggle Crop Direct Manipulation [^22] | `monitor.toggleCropDirectManipulation` | Application | | | .kys | `global / cmd.monitor.toggle.crop.dm` |
 | Record Voice-over [^18] | `record.toggle` | Application | | | `.kys` | `timeline / cmd.timeline.voiceover.track.record` |
 | Start Voice-over Recording [^18] | `record.start` | Application | | | Wabcut | (not mapped) |
 | Stop Voice-over Recording [^18] | `record.stop` | Application | | | Wabcut | (not mapped) |
@@ -305,6 +337,15 @@ the importer maps from; *(not mapped)* means no verified pair, so `.kys` import 
 | Show Guides | `programMonitor.showGuides` | Program Monitor | `Ctrl+;` | `Cmd+;` | 2026 | `program.monitor / cmd.monitor.guides` |
 | Snap in Program Monitor | `programMonitor.snap` | Program Monitor | `Ctrl+Shift+;` | `Shift+Cmd+;` | 2026 | `program.monitor / cmd.monitor.snapping` |
 | Lock Guides | `programMonitor.lockGuides` | Program Monitor | `Ctrl+Alt+Shift+R` | `Opt+Shift+Cmd+R` | 2026 | `program.monitor / cmd.monitor.lockguides` |
+| Add Guide… [^22] | `programMonitor.addGuide` | Program Monitor | | | .kys | `program.monitor / cmd.monitor.addguide` |
+| Clear Guides [^22] | `programMonitor.clearGuides` | Program Monitor | | | .kys | `program.monitor / cmd.monitor.removeguides` |
+| Save Guides as Template… [^22] | `programMonitor.saveGuides` | Program Monitor | | | .kys | `program.monitor / cmd.monitor.saveguides` |
+| Manage Guides… [^22] | `programMonitor.manageGuides` | Program Monitor | | | .kys | `program.monitor / cmd.monitor.manageguides` |
+| Transparency Grid [^22] | `programMonitor.transparencyGrid` | Program Monitor | | | .kys | `program.monitor / cmd.monitor.toggletransparencygrid` |
+| Transparency Grid [^22] | `sourceMonitor.transparencyGrid` | Source Monitor | | | .kys | `source.monitor / cmd.monitor.toggletransparencygrid` |
+| Show Dropped Frame Indicator [^22] | `programMonitor.droppedFrameIndicator` | Program Monitor | | | .kys | `program.monitor / cmd.monitor.toggledroppedframeindicator` |
+| Overlays [^22] | `programMonitor.overlays` | Application | | | .kys | `global / cmd.monitor.overlays` |
+| Show Audio Time Units [^22] | `programMonitor.audioTimeUnits` | Program Monitor | | | Wabcut | (not mapped) |
 | Nudge Selected Object Up by Five | `programMonitor.nudgeUpFive` | Program Monitor | `Ctrl+Shift+Up` | `Shift+Cmd+Up` | 2026 | `program.monitor / cmd.monitor.nudge.up.five` |
 | Nudge Selected Object Right by Five | `programMonitor.nudgeRightFive` | Program Monitor | `Ctrl+Shift+Right` | `Shift+Cmd+Right` | 2026 | `program.monitor / cmd.monitor.nudge.right.five` |
 | Nudge Selected Object Left by Five | `programMonitor.nudgeLeftFive` | Program Monitor | `Ctrl+Shift+Left` | `Shift+Cmd+Left` | 2026 | `program.monitor / cmd.monitor.nudge.left.five` |
@@ -354,6 +395,8 @@ the importer maps from; *(not mapped)* means no verified pair, so `.kys` import 
 | Nudge Clip Selection Right Five Frames | `timeline.nudgeClipRightFive` | Timeline | `Alt+Shift+Right` | `Shift+Cmd+Right` | 2026 | `timeline / cmd.timeline.nudge.right.several` |
 | Nudge Clip Selection Right One Frame | `timeline.nudgeClipRight` | Timeline | `Alt+Right` | `Cmd+Right` | 2026 | `timeline / cmd.timeline.nudge.right.one` |
 | Previous Sequence Tab [^14] | `timeline.previousSequenceTab` | Timeline | `Ctrl+Shift+Tab` | `Ctrl+Shift+Tab` | Wabcut | (not mapped) |
+| Select Next Clip (0.2) [^sel] | `timeline.selectNextClip` | Timeline | `Ctrl+Down` | `Cmd+Down` | Wabcut | (not mapped) |
+| Select Previous Clip (0.2) [^sel] | `timeline.selectPreviousClip` | Timeline | `Ctrl+Up` | `Cmd+Up` | Wabcut | (not mapped) |
 | Ripple Delete | `timeline.rippleDelete` | Timeline | `Alt+Backspace` | `Opt+Backspace` | 2026 | `timeline / cmd.timeline.ripple.delete` |
 | Set Work Area Bar In Point | `timeline.setWorkAreaIn` | Timeline | `Alt+[` | `Opt+[` | 2026 | `timeline / cmd.timeline.workbar.set.in` |
 | Set Work Area Bar Out Point | `timeline.setWorkAreaOut` | Timeline | `Alt+]` | `Opt+]` | 2026 | `timeline / cmd.timeline.workbar.set.out` |
@@ -381,6 +424,7 @@ the importer maps from; *(not mapped)* means no verified pair, so `.kys` import 
 [^11]: Meter Input(s) Only: On macOS this is the physical Control key (Qt MetaModifier), not Command.
 [^12]: Move Selection Left: Premiere's internal name really is cmd.project.movel.eft.
 [^13]: Expand All Tracks / Minimize All Tracks (M5i): from Adobe's older tables (the 2017 print pages); the 2024 and 2026 pages no longer list them. Verified in M5j against both shipped key sets: `cmd.timeline.expand.all.tracks` and `cmd.timeline.minimize.all.tracks` in `context.global` (so Application scope), Shift+= and Shift+- on both OSes.
+[^sel]: Select Next / Previous Clip (0.2): the keys published lists of Premiere shortcuts give (Ctrl/Cmd+Down and Up); not checked against the shipped .kys files, so marked `wabcut` in the JSON and not mapped on .kys import.
 [^14]: Next / Previous Sequence Tab (M5i): Wabcut's, not Premiere's (source `wabcut` in the JSON). Premiere has no default for cycling sequence tabs. On macOS this is the physical Control key (Qt MetaModifier), because Cmd+Tab is the system app switcher. Qt reports Ctrl+Shift+Tab as Ctrl+Shift+Backtab; `KeyChord::normalized()` folds it.
 [^15]: Toggle Trim Type: verified in M5j against both shipped key sets: `cmd.sequence.toggletrimtype` in `context.global`, Ctrl+Shift+T on Windows and Control+T on macOS (the physical Control key: Qt MetaModifier, written `Ctrl` in the macOS table). M5i had the 2024 page's Shift+T in the Timeline, which shadowed Trim Edit there; the id moved from `timeline.toggleTrimType` to `sequence.toggleTrimType` with the scope. With no edit point selected it still starts a Trim Edit (see "Trim mode" below).
 [^16]: Trim Backward / Forward (Many): verified in M5j against both shipped key sets (`cmd.sequence.trimbackward`, `trimforward`, `trimbackwardmany`, `trimforwardmany` in `context.global`); the ids moved from `timeline.*` to `sequence.*`. Many uses the Large trim offset preference (default 5 frames). Ctrl+Alt+arrows stay Slip, as in Premiere. The Program Monitor's own Ctrl+arrow nudges win while it has focus (Windows).
@@ -388,6 +432,8 @@ the importer maps from; *(not mapped)* means no verified pair, so `.kys` import 
 [^18]: Voice-over recording (A.8, [ai.md](ai.md) "Voice-over recording"): no default key, as in Premiere. Checked against both shipped key sets: the macOS set lists `cmd.timeline.voiceover.track.record` (Voice-over Record, the track header's microphone) in `context.timeline` with no key, and the Windows set does not list it. A custom `.kys` that binds it maps to `record.toggle`. `record.start` / `record.stop` are Wabcut's (start only / stop only). While a pass runs, Space (Play/Stop) stops it and keeps the take, as in Premiere.
 [^19]: Remove Attributes (C.11, M5m): Premiere's Edit > Remove Attributes… has no default key, and neither shipped key set (Windows `Premiere_default_keys.kys`, macOS `Default Adobe.kys`) lists an item for it, so it has no `.kys` mapping. It opens the attributes dialog on the selection's own attributes (`clip.removeAttributes`).
 [^20]: Moments (M5o, gaming): Wabcut's, with no default key; Premiere has no counterpart. They act on the clip under the playhead (the selected one if several): Slow-mo at Playhead is the 25 % / 1 s slow motion centred on the playhead (one `timeRemap.*` undo step, later clips ripple); Punch-in at Playhead zooms to 130 % of the clip's scale for 1 s (Motion keyframes). The Timeline's Moments popover (the zap button in the tracks header) and the clip menu's Moments submenu list the other presets; a key assigned in Keyboard Shortcuts shows next to both.
+[^21]: P.2 (E5, Premiere editing parity): Premiere binds no key to these; Wabcut has none either. Every `.kys` pair is the command's item in Premiere's shipped macOS key set (`Default Adobe.kys`), which lists every command (the Windows set lists only bound ones), so a custom key set that binds one carries over. New Sequence From Clip and Make Offline have no verified item there. The Editing bridge runs them (`EditingBridge::handlesCommand`); Edit Original, Duplicate, Make Subsequence and Next / Previous in Sequence, listed above with their keys, now run too. Keyboard Shortcuts > Export… also saves a whole key set as a `.kys` (`exportKys`), which Premiere and Wabcut import.
+[^22]: The monitors (P.2, [monitors.md](monitors.md)): checked against both shipped key sets. Export Frame (`cmd.export.frame`, `context.global`) is Ctrl+Shift+E on Windows and Shift+E on macOS; Toggle Full Screen (`cmd.toggle.fullscreen.monitor`, `context.global`) is Ctrl+` on both (the physical Control key on macOS). Loop (`cmd.monitor.loop`), Enable Transmit (`cmd.toggletransmit`) and Toggle Crop Direct Manipulation (`cmd.monitor.toggle.crop.dm`) are in `context.global` without a key; Add Guide, Clear Guides (`cmd.monitor.removeguides`), Save Guides as Template, Manage Guides and Transparency Grid (`cmd.monitor.toggletransparencygrid`, in both monitors' contexts) have no key either, nor do Show Dropped Frame Indicator (`cmd.monitor.toggledroppedframeindicator`) and Overlays (`cmd.monitor.overlays`, `context.global`); Show Audio Time Units has no item in either key set, so no `.kys` mapping. Loop acts on the focused monitor (the Source Monitor's while it has the focus, else the Program Monitor's), Export Frame too. The Program Monitor's Show Rulers, Show Guides, Lock Guides, Snap and Nudge rows above now act (Motion direct manipulation, guides).
 
 ## How resolution works
 
@@ -604,9 +650,13 @@ their Premiere meaning:
 | `sequence.rippleTrimPreviousToPlayhead`, `sequence.rippleTrimNextToPlayhead` | Q / W |
 | `sequence.extendEditToPlayhead` | E: extend the selected edit point to the playhead |
 | `sequence.selectClipAtPlayhead` | D |
+| `sequence.selectionFollowsPlayhead` | toggle Selection Follows Playhead (0.2) |
+| `sequence.nextInSequence`, `sequence.previousInSequence` | Go to Gap: the playhead to the next / previous gap in the sequence (0.2) |
+| `timeline.selectNextClip`, `timeline.selectPreviousClip` | select the next / previous clip on the targeted tracks, after / before the selected one (0.2) |
+| `timeline.showVideoFadeHandles`, `timeline.showAudioFadeHandles` | show / hide the fade handles of video / audio clips (0.2) |
 | `sequence.matchFrame`, `sequence.reverseMatchFrame` | F / Shift+R |
 | `sequence.snap` | toggle snapping |
-| `clip.link`, `clip.group`, `clip.ungroup`, `clip.enable` | link/unlink, group, enable |
+| `clip.link`, `clip.group`, `clip.ungroup`, `clip.enable` | link/unlink, group / ungroup (0.2: the `clip.group` / `clip.ungroup` commands), enable |
 | `clip.speedDuration` | open Speed/Duration |
 | `sequence.applyVideoTransition`, `sequence.applyAudioTransition`, `sequence.applyDefaultTransitions` | default transitions |
 | `timeline.nudgeClip*`, `timeline.slideClip*`, `timeline.slipClip*` | nudge / slide / slip by 1 or 5 frames |
@@ -768,10 +818,17 @@ sets were surveyed in total).
   Premiere commands with shortcuts but no Wabcut equivalent are listed in `KysImport::unmappedCommands`, and a
   macOS key set cannot be applied to a Windows/Linux keymap or the reverse.
 
+**Export (P.2).** `exportKys(keymap)` writes the effective shortcuts as a Premiere key set (`<PremiereData Version="3">`,
+`<shortcuts Version="5">`, the keymap's platform): one `<context.*>` per context, an item per shortcut of every command
+with a `.kys` identity (`encodeKysVirtualKey` is `decodeKysVirtualKey`'s inverse over the verified codes; keys without
+one are listed in `KysExport::skipped`), and an item without `<virtualkey>` for a command with no shortcut, so importing
+it unbinds the command. `saveKys` writes the file; Keyboard Shortcuts > Export… saves one when the name ends in `.kys`.
+`tests/keymap/test_kys_export.cpp` reads the result back with `parseKys` for both platforms.
+
 **TODO (`.kys`).** One source suggests that Premiere 27 nests contexts under `mode.Edit` / `mode.Color`
 (`/PremiereData/shortcuts/mode.Edit/context.global/…`). No such file has been seen, so the importer rejects that
 layout as Unsupported instead of guessing. Verify it with a real Premiere 27 key set before adding it. The same
-applies to virtual keys 5 and 19–30. Export to `.kys` is not implemented.
+applies to virtual keys 5 and 19–30, which export leaves out (`KysExport::skipped`).
 
 ## Keyboard Shortcuts editor (UI)
 

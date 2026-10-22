@@ -1,0 +1,6 @@
+2definition.json
+{"clientControls":[{"uiName":"T","value":"x"}]}
+media/logo.png
+PNG
+../evil
+x

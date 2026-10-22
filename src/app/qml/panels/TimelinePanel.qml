@@ -56,7 +56,7 @@ Panel {
         // 0.1.2: T, Premiere's Type tool: a click in the Program Monitor adds text there (MonitorPanel.typeTool).
         { key: "type", icon: "type", name: qsTr("Type"), label: qsTr("Type tool: click in the Program Monitor to add text"), command: "tool.type" },
         { key: "hand", icon: "hand", name: qsTr("Hand"), label: qsTr("Hand tool: drag to scroll the timeline"), command: "tool.hand" },
-        { key: "zoom", icon: "zoom-in", name: qsTr("Zoom"), label: qsTr("Zoom tool: click to zoom in, Alt+click to zoom out"), command: "tool.zoom" },
+        { key: "zoom", icon: "zoom-in", name: qsTr("Zoom"), label: qsTr("Zoom tool: click to zoom in, Alt+click to zoom out, drag to zoom to a range"), command: "tool.zoom" },
         // M5m, Premiere's Remix tool (no default key): drag a music clip's end to a new length; the music is rearranged
         // by its bars (audio.remix), previewed, then applied.
         { key: "remix", icon: "music", name: qsTr("Remix"), label: qsTr("Remix tool: drag a music clip's end to a new length"), command: "" }
@@ -693,52 +693,15 @@ Panel {
                 onPressed: lanesArea.focusByPointer()
             }
 
-            // The hand and zoom tools (0.1.1): over the lanes, so a press never reaches the view and nothing is edited.
-            // The wheel is not taken (no onWheel), so it still scrolls and zooms as usual. With any other tool it is
-            // hidden too, not only disabled (0.1.3): Qt Quick's cursor lookup does not skip a disabled item, and a
-            // MouseArea always has a cursor (the arrow, or the CursorArea's), which covered the lanes' own.
-            MouseArea {
+            // The hand and zoom tools (0.1.1; the zoom marquee 0.2; their cursors 0.1.3): TimelineZoomToolArea.qml.
+            TimelineZoomToolArea {
                 id: viewToolArea
                 objectName: "timelineViewToolArea"
                 z: 5
                 anchors.fill: lanes
-                enabled: root.viewTool
-                visible: root.viewTool
-                acceptedButtons: Qt.LeftButton
-                hoverEnabled: true
-
-                property real pressX: 0
-                property real pressScrollX: 0
-                // Alt over the zoom tool: a click zooms out (the cursor says so).
-                property bool altHeld: false
-
-                onPressed: mouse => {
-                    lanesArea.focusByPointer()
-                    pressX = mouse.x
-                    pressScrollX = lanes.view.scrollX
-                }
-                onPositionChanged: mouse => {
-                    altHeld = (mouse.modifiers & Qt.AltModifier) !== 0
-                    if (root.tool === "hand" && pressed)
-                        lanes.view.scrollX = pressScrollX - (mouse.x - pressX)
-                }
-
-                // 0.1.3: the tools' own cursors (EditCursors, Boxicons): an open hand, a holding hand while it drags, a
-                // magnifier with a plus or (Alt) a minus. With any other tool it has none (""), and is disabled with the
-                // overlay, so the lanes' own cursors show.
-                CursorArea {
-                    objectName: "timelineViewToolCursor"
-                    anchors.fill: parent
-                    shape: !root.viewTool ? ""
-                         : root.tool === "hand" ? (viewToolArea.pressed ? "grab" : "hand")
-                         : viewToolArea.altHeld ? "zoomOut" : "zoomIn"
-                }
-                onClicked: mouse => {
-                    if (root.tool !== "zoom")
-                        return
-                    const out = (mouse.modifiers & Qt.AltModifier) !== 0
-                    lanes.view.zoomAt(lanes.view.zoomLevel + (out ? -0.1 : 0.1), mouse.x)
-                }
+                view: lanes.view
+                tool: root.viewTool ? root.tool : ""
+                onPressedByPointer: lanesArea.focusByPointer()
             }
 
             // One panel overlay for the active speed gesture; the lanes remain a bare scene-graph host.
@@ -785,12 +748,13 @@ Panel {
 
             // Effects and transitions dragged from the Effects panel (M5d): the clip or edit point under the pointer
             // lights up with what the drop would do. A transition is dry-run first: "using the available handles"
-            // (amber) when the media is short, the model's reason (red) when it cannot go there.
+            // (amber) when the media is short, the model's reason (red) when it cannot go there. 0.2: a Text Style from
+            // the Library ("textStyle:<name>") goes on a graphic clip.
             DropArea {
                 id: effectDrop
                 objectName: "timelineEffectDropArea"
                 anchors.fill: parent
-                keys: ["application/x-wabcut-effect"]
+                keys: ["application/x-wabcut-effect", "application/x-wabcut-text-style"]
 
                 property string effectId: ""
                 property var target: ({})
@@ -810,7 +774,9 @@ Panel {
                 }
 
                 onEntered: drag => {
-                    effectId = drag.getDataAsString("application/x-wabcut-effect")
+                    effectId = drag.formats.indexOf("application/x-wabcut-text-style") >= 0
+                        ? "textStyle:" + drag.getDataAsString("application/x-wabcut-text-style")
+                        : drag.getDataAsString("application/x-wabcut-effect")
                     track(drag.x, drag.y)
                     drag.accepted = effectId !== ""
                 }

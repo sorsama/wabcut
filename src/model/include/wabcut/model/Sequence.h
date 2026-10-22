@@ -6,6 +6,7 @@
 
 #include <wabcut/model/CaptionStyle.h>
 #include <wabcut/model/Ids.h>
+#include <wabcut/model/MediaInfo.h>
 #include <wabcut/model/Time.h>
 #include <wabcut/model/Track.h>
 
@@ -49,6 +50,9 @@ struct CaptionTrack {
     /// Sorted by start, positive durations; never overlapping unless style.allowOverlap.
     std::vector<CaptionCue> cues;
     CaptionStyle style;
+    /// 0.2: Premiere's Track Style - the caption preset (the project's or a built-in, CaptionStyle.h) the track follows;
+    /// saving that preset again restyles every track that follows it (edit::saveCaptionPreset). "" = none.
+    std::string trackStyle;
 
     bool operator==(const CaptionTrack&) const = default;
 };
@@ -159,6 +163,18 @@ struct SequenceDerivation {
     bool operator==(const SequenceDerivation&) const = default;
 };
 
+/// 0.2 (P.3): where an item brought in from another project came from (edit::importProjectItems): that project's file
+/// and the item's id there. A weak reference into another file (never renumbered, may name an item since deleted
+/// there): Reveal in Source Project opens that project at the item, and a relink there can be offered to the copy.
+struct ImportSource {
+    static constexpr std::size_t kMaxPathBytes = 4096;
+
+    std::string project;  ///< the other project file (absolute, UTF-8)
+    std::uint64_t id = 0; ///< the item's id in that project
+
+    bool operator==(const ImportSource&) const = default;
+};
+
 /// How a multicam source's angles were synchronised (Premiere's Create Multi-Camera Source Sequence).
 enum class MulticamSync : std::uint8_t {
     Timecode,  ///< the media's start timecodes line up
@@ -190,9 +206,31 @@ struct MulticamAngle {
 struct MulticamInfo {
     MulticamSync sync = MulticamSync::Timecode;
     std::vector<MulticamAngle> angles; ///< at least one, at most kMaxMulticamAngles
+    /// P.2 (E5): a merged clip (Premiere's Clip > Merge Clips, MergeClips.h): angle 0 is the camera (its video, and its
+    /// audio unless that was left out), the others separately recorded audio; its clips show angle 0's picture and play
+    /// every angle's audio. The Library lists it as a merged clip. Saved only when set.
+    bool merged = false;
 
     bool operator==(const MulticamInfo&) const = default;
 };
+
+/// P.2 (E5): how a sequence shows video times (Premiere's Sequence Settings > Display Format): timecode (drop or non-drop
+/// as Sequence::dropFrame says), frame numbers, or feet and frames of 16 mm (40 frames a foot) or 35 mm (16 a foot) film.
+enum class VideoTimeDisplay : std::uint8_t { Timecode, Frames, Feet16mm, Feet35mm };
+/// P.2 (E5): how a sequence shows audio times (Premiere's Audio Display Format): audio samples or milliseconds.
+enum class AudioTimeDisplay : std::uint8_t { AudioSamples, Milliseconds };
+
+/// "progressive", "upperFirst", "lowerFirst".
+std::string_view toString(FieldOrder order);
+std::optional<FieldOrder> fieldOrderFromString(std::string_view text);
+/// "timecode", "frames", "feet16mm", "feet35mm".
+std::string_view toString(VideoTimeDisplay display);
+std::optional<VideoTimeDisplay> videoTimeDisplayFromString(std::string_view text);
+/// "audioSamples", "milliseconds".
+std::string_view toString(AudioTimeDisplay display);
+std::optional<AudioTimeDisplay> audioTimeDisplayFromString(std::string_view text);
+/// p02 audio: the most submix tracks a sequence has (project files are untrusted).
+inline constexpr std::size_t kMaxSubmixTracks = 32;
 
 /// The latest start timecode a sequence may have: just under 24 hours (X.1).
 inline constexpr Ticks kMaxStartTimecode{24LL * 3600 * kTicksPerSecond - 1};
@@ -211,10 +249,32 @@ struct Sequence {
     /// X.1: the timecode of the sequence's first frame (Premiere's Start Time, often 01:00:00:00), 0 to
     /// kMaxStartTimecode. Interchange and display only: times in the model still count from 0. Saved only when set.
     Ticks startTimecode;
+    // ---- P.2 (E5): Premiere's Sequence Settings beyond the frame size and rates (edit::setSequenceSettings). ----
+    /// Pixel aspect ratio of the sequence frame (1/1 square; 10/11, 40/33, 4/3, 2/1 anamorphic ...). Saved only when
+    /// not square. The compositor renders square pixels; exports and interchange carry it.
+    Rate pixelAspect{1, 1};
+    /// Field order (Progressive, Upper / Lower First). Saved only when not progressive.
+    FieldOrder fields = FieldOrder::Progressive;
+    /// Preview file format of the render cache ("" = Wabcut's default; else an id such as "prores", "dnxhr", "h264").
+    /// At most 32 bytes. Saved only when set.
+    std::string previewFormat;
+    /// Display formats of the sequence's times (timecode, frames, feet + frames; audio samples or milliseconds).
+    /// Saved only when not the defaults (Timecode, AudioSamples).
+    VideoTimeDisplay videoDisplay = VideoTimeDisplay::Timecode;
+    AudioTimeDisplay audioDisplay = AudioTimeDisplay::AudioSamples;
+    /// 0.2 (schema 18): the sequence's label colour (Premiere's Label on a sequence: the Project panel and, with Show
+    /// Sequence Label Color, its timeline tab), an index into the 16 label colours (0..15). Saved only when not 0.
+    std::int32_t colorIndex = 0;
     /// V1..Vn, bottom to top.
     std::vector<TrackPtr> videoTracks;
     /// A1..An.
     std::vector<TrackPtr> audioTracks;
+    /// p02 audio: the submix tracks (Premiere's audio submix tracks, listed after the audio tracks): buses that audio
+    /// tracks are assigned to (Track::output) or send to (Track::sends). Kind Audio, but never in audioTracks and never
+    /// holding clips; editing operations that place clips do not see them. Their channel format (Track::format: mono,
+    /// stereo, 5.1 or adaptive), effects, fader, panner, mute and solo work as on an audio track, and their output is
+    /// the Mix or another submix. At most kMaxSubmixTracks. Saved only when there are some.
+    std::vector<TrackPtr> submixTracks;
     /// Sequence In mark (inclusive tick).
     std::optional<Ticks> markIn;
     /// Sequence Out mark (exclusive tick: the end of the last marked frame).
@@ -247,6 +307,8 @@ struct Sequence {
     std::optional<SequenceDerivation> derivedFrom;
     /// Set on a multicam source sequence (C.8, Nesting.h); absent otherwise.
     std::optional<MulticamInfo> multicam;
+    /// 0.2 (P.3): set on a copy imported from another project (ImportSource). Saved only when set.
+    std::optional<ImportSource> importSource;
 
     struct TrackPosition {
         TrackKind kind = TrackKind::Video;
@@ -275,8 +337,15 @@ struct Sequence {
         }
     }
 
+    /// A video or audio track (never a submix track: see findSubmix / findAudioBus).
     const Track* findTrack(TrackId trackId) const;
     std::optional<TrackPosition> trackPosition(TrackId trackId) const;
+    /// p02 audio: a submix track, or null.
+    const Track* findSubmix(TrackId trackId) const;
+    /// p02 audio: an audio track or a submix track (what has a fader, an effect stack and an output), or null.
+    const Track* findAudioBus(TrackId trackId) const;
+    /// p02 audio: index of a submix track in submixTracks.
+    std::optional<std::size_t> submixIndex(TrackId trackId) const;
     /// Linear in the number of clips.
     std::optional<ClipLocation> findClip(ClipId clipId) const;
     /// End of the last clip on any track (O(tracks)).

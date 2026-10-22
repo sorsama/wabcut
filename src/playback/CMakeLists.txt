@@ -11,6 +11,8 @@ add_library(wabcut_playback STATIC
     src/audio/MediaAudioFeed.cpp
     src/audio/NestedMix.cpp
     src/audio/NestedMix.h
+    src/audio/SubmixGraph.cpp
+    src/audio/SubmixGraph.h
     src/audio/OfflineMixdown.cpp
     src/audio/SyntheticAudioFeed.cpp
     src/audio/TimelineAudioPlayer.cpp

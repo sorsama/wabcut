@@ -87,4 +87,20 @@ void applyFader(const ParamValue& volume, const ParamValue* pan, std::int64_t fr
     }
 }
 
+/// The frame number of timeline time `at` (floor), counted from timeline 0.
+inline std::int64_t timelineFrame(Ticks at, std::int64_t ticksPerFrame) noexcept {
+    return at.value >= 0 ? at.value / ticksPerFrame : -((-at.value + ticksPerFrame - 1) / ticksPerFrame);
+}
+
+/// A track's (or a send's, a submix's) level and balance on `frames` frames read at timeline time `at`, on the
+/// parameter grid counted from timeline 0: what the player's callback applies to a track and OfflineMixdown with
+/// submix routing too, so the two agree from any start. The balance applies on a stereo mix only (on 5.1 the track's
+/// 5.1 panner placed it).
+inline void applyTimelineFader(const ParamValue& volume, const ParamValue& pan, Ticks at, std::int64_t frames, float* block,
+                               int channels, std::int64_t ticksPerFrame) noexcept {
+    const std::int64_t first = timelineFrame(at, ticksPerFrame);
+    applyFader(volume, channels == 2 ? &pan : nullptr, first, first + frames, block, channels,
+               [ticksPerFrame](std::int64_t f) { return Ticks{f * ticksPerFrame}; });
+}
+
 } // namespace wabcut::playback::detail

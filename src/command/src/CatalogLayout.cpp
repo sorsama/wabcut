@@ -190,8 +190,10 @@ void registerLayoutCommands(CommandRegistry& registry) {
     addBuiltin(
         registry,
         {"sequence.presets", 1, "Sequence Presets",
-         "The sequence presets sequence.create takes: landscape 1080p, 1440p and 4K at 30, 60, 120, 144 and 240 fps (and "
-         "59.94), and vertical 1080x1920 for Shorts, TikTok and Reels at 60 (\"shorts\") and 30 fps. Every rate is exact "
+         "The sequence presets sequence.create and sequence.setSettings take (Premiere's rates for the target uses): "
+         "landscape 720p, 1080p, 1440p and 4K at 23.976, 24, 25, 29.97 (also drop-frame), 30, 50, 59.94 (also "
+         "drop-frame) and 60 fps, 1080p to 4K also at 120, 144 and 240 fps; vertical 1080x1920 for Shorts, TikTok and "
+         "Reels (\"shorts\" at 60 fps, \"shorts30\", \"vertical23.976\" ...) and square 1080x1080. Every rate is exact "
          "in ticks.",
          Capability::Read, withSequence({}), Json::object(), {},
          [](ExecutionContext& c) {
@@ -202,7 +204,8 @@ void registerLayoutCommands(CommandRegistry& registry) {
                                      {"group", std::string(p.group)},
                                      {"width", p.width},
                                      {"height", p.height},
-                                     {"frameRate", rateJson(p.frameRate)}});
+                                     {"frameRate", rateJson(p.frameRate)},
+                                     {"dropFrame", p.dropFrame}});
              }
              CommandOutput out;
              out.state = c.state();

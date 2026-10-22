@@ -138,8 +138,10 @@ using SignalsByMedia = std::map<std::uint64_t, const MediaSignals*>;
 
 /// The sequence's signals: the visual signal from the topmost enabled video clip showing analysed media; game, mic
 /// and chat signals and hints wherever an enabled clip (video or audio) plays analysed media (the strongest when
-/// several do), at the clip's source time (speed, reverse and time remapping applied). Nested and generated clips
-/// have no signals (a warning says so). The result covers [0, sequence duration).
+/// several do), at the clip's source time (speed, reverse and time remapping applied). A nested or multicam clip reads
+/// what it shows or plays (resolveLeaves: the active angle's media, the nested sequence's clips, through every level's
+/// time map). Generated clips have no signals; media without analysis gets a warning. The result covers [0, sequence
+/// duration).
 MediaSignals mapToSequence(const ProjectState& state, SequenceId sequence, const SignalsByMedia& media,
                            std::vector<std::string>* warnings = nullptr);
 

@@ -395,11 +395,21 @@ std::expected<Placement, Error> placementOf(const ProjectState& state, SequenceI
     if (clip.isFreeze() || clip.isRemapped()) {
         return std::unexpected(Error(ErrorCode::InvalidArgument, "auto zoom needs a clip that plays at a steady speed (not a freeze frame or time remap)"));
     }
-    const MediaItem* media = state.findMedia(clip.media);
-    if (!media || clip.stream.index < 0 || static_cast<std::size_t>(clip.stream.index) >= media->info.video.size()) {
-        return std::unexpected(Error(ErrorCode::NotFound, "the clip's media has no such video stream"));
+    reframe::DisplayGeometry display;
+    if (clip.isNested()) {
+        // 0.2: a nested or multicam clip's picture is its nested sequence's canvas.
+        const Sequence* inner = state.findSequence(clip.sequence);
+        if (!inner || inner->width <= 0 || inner->height <= 0) {
+            return std::unexpected(Error(ErrorCode::NotFound, "the clip's nested sequence has no picture"));
+        }
+        display = reframe::DisplayGeometry{static_cast<double>(inner->width), static_cast<double>(inner->height)};
+    } else {
+        const MediaItem* media = state.findMedia(clip.media);
+        if (!media || clip.stream.index < 0 || static_cast<std::size_t>(clip.stream.index) >= media->info.video.size()) {
+            return std::unexpected(Error(ErrorCode::NotFound, "the clip's media has no such video stream"));
+        }
+        display = reframe::displayGeometry(media->info.video[static_cast<std::size_t>(clip.stream.index)]);
     }
-    const reframe::DisplayGeometry display = reframe::displayGeometry(media->info.video[static_cast<std::size_t>(clip.stream.index)]);
     Placement p;
     p.frameWidth = seq->width;
     p.frameHeight = seq->height;

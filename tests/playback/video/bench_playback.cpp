@@ -17,13 +17,17 @@
 //   wabcut_playback_bench --media DIR [--config 3x1080p60|6x1080p60|1x2160p30|3x1080p60pq|1x1440p144|1x1080p240|smoke]
 //                         [--seconds 20]
 //                         [--software] [--backend pool|sessions] [--zero-copy] [--effects] [--divisor 1]
-//                         [--nest | --multicam N] [--out report.md]
+//                         [--nest | --multicam N] [--color rec709|aces|hdr-pq|hdr-hlg] [--input SPACE] [--pq-output]
+//                         [--out report.md]
 //
 // --nest: the config's layers go into a nested sequence, played through one nested clip (at 90 %) on V1 (C.8).
 // --multicam N: the config's first N streams become the angles of a multicam source, played through multicam clips on
 // V1 that cut to the next angle every 2 s (C.8; needs N streams in the config, e.g. 6x1080p60 for 4).
 // I.9 (gaming): 3x1080p60pq plays three HDR game captures (HEVC Main 10, BT.2020 PQ) tone-mapped into the SDR
 // sequence; 1x1440p144 and 1x1080p240 one high-frame-rate capture in a sequence of its rate.
+// --color MODE: the project's colour management (I.9): the monitor shows the ACES SDR output or the tone-mapped SDR
+// preview of HDR. --input SPACE: every clip's input colour space (e.g. s-log3: the camera-log LUT path; default Auto).
+// --pq-output: the monitor stand-in renders the PQ output an HDR display would get (the export role, PQ target).
 
 #include <wabcut/media/Probe.h>
 #include <wabcut/model/EditSession.h>
@@ -52,6 +56,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -225,6 +230,9 @@ int main(int argc, char** argv) {
     int divisor = 1;
     bool nest = false; // --nest: the layers inside one nested clip
     int multicam = 0;  // --multicam N: N angles of a multicam source, cut every 2 s
+    std::string colorMode = "rec709"; // --color: the project's colour management (I.9)
+    std::string inputSpace;           // --input: every clip's input colour space
+    bool pqOutput = false;            // --pq-output: render the PQ output (export role) instead of the SDR monitor
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         const auto next = [&]() -> std::string { return i + 1 < argc ? argv[++i] : std::string(); };
@@ -250,14 +258,28 @@ int main(int argc, char** argv) {
             nest = true;
         } else if (a == "--multicam") {
             multicam = std::stoi(next());
+        } else if (a == "--color") {
+            colorMode = next();
+        } else if (a == "--input") {
+            inputSpace = next();
+        } else if (a == "--pq-output") {
+            pqOutput = true;
         } else if (a == "--out") {
             outPath = next();
         }
     }
     const Config config = makeConfig(configName);
+    const std::optional<ColorManagementMode> mode = colorManagementModeFromString(colorMode);
+    const std::optional<InputColorSpace> space =
+        inputSpace.empty() ? std::nullopt : inputColorSpaceFromString(inputSpace);
+    if (!mode || (!inputSpace.empty() && !space)) {
+        std::fprintf(stderr, "unknown --color %s or --input %s\n", colorMode.c_str(), inputSpace.c_str());
+        return 2;
+    }
 
     // ---- Project: one track per stream ----
     ProjectState state;
+    state.colorManagement.mode = *mode;
     Ticks shortest = Ticks::fromSeconds(3600);
     for (const Layer& layer : config.layers) {
         const std::string path = (std::filesystem::path(mediaDir) / layer.file).string();
@@ -287,6 +309,11 @@ int main(int argc, char** argv) {
         clip.media = state.media[i]->id;
         clip.timelineRange = {Ticks{}, length};
         clip.setProperties(config.layers[i].props);
+        if (space) {
+            ClipContent content = clip.content();
+            content.inputColorSpace = space;
+            clip.setContent(std::move(content));
+        }
         if (effects) {
             ClipContent content = clip.content();
             EffectInstance blur;
@@ -392,9 +419,13 @@ int main(int argc, char** argv) {
         sessions ? playback::DecodeBackend::Sessions : playback::DecodeBackend::Pool;
     options.scheduler.zeroCopy = zeroCopy;
     options.scheduler.displayLatencyNs = kRefreshNs;
+    if (pqOutput) {
+        options.scheduler.color.exportTarget = color::OutputTarget::Pq;
+    }
     // The renderer first: with --zero-copy it shares its device before any decoder opens.
     render::OffscreenOptions ro;
-    ro.role = render::OutputRole::Display;
+    ro.role = pqOutput ? render::OutputRole::Export : render::OutputRole::Display;
+    ro.tenBit = pqOutput; // an HDR display's 10 bits
     ro.compositor = {render::TexturePool::Preview, divisor, 48};
     ro.shareDeviceWithDecoders = zeroCopy;
     ro.timestamps = timestamps;
@@ -492,6 +523,9 @@ int main(int argc, char** argv) {
     md << "### " << config.name << (software ? " (software decode)" : "")
        << (sessions ? " [decode: private sessions]" : " [decode: DecoderPool]") << (zeroCopy ? " [zero-copy]" : "") << (effects ? " [effects: blur 12 + basic correction per layer]" : "")
        << (nest ? " [nested: the layers inside one nested clip at 90 %]" : "")
+       << (*mode != ColorManagementMode::DisplayRec709 ? " [colour: " + colorMode + (space ? ", input " + inputSpace : std::string()) +
+                                                              (pqOutput ? ", PQ output (10-bit)" : ", SDR monitor") + "]"
+                                                       : std::string())
        << (multicam > 0 ? " [multicam: " + std::to_string(multicam) + " angles, a cut every 2 s]" : std::string())
        << ", " << config.layers.size()
        << " stream(s), sequence " << config.width << "x" << config.height << " @ " << config.rate.toDouble()

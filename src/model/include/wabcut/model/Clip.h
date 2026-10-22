@@ -5,10 +5,13 @@
 
 #include <wabcut/model/AudioChannels.h>
 #include <wabcut/model/Blend.h>
+#include <wabcut/model/ColorManagement.h>
 #include <wabcut/model/Effects.h>
+#include <wabcut/model/FieldOptions.h>
 #include <wabcut/model/Ids.h>
 #include <wabcut/model/Parameters.h>
 #include <wabcut/model/Time.h>
+#include <wabcut/model/TimeInterpolation.h>
 #include <wabcut/model/TimeRemap.h>
 
 #include <cstddef>
@@ -118,6 +121,23 @@ struct ClipContent {
     /// C.15, video clips: the Opacity section's Blend Mode, how the clip combines with what is below it (Blend.h; the
     /// math in docs/internal/c15-parity-handoff.md). Not keyframable (opacity is). Saved only when not Normal.
     BlendMode blendMode = BlendMode::Normal;
+    /// P.2 (E5), video clips: Premiere's Clip > Video Options > Scale to Frame Size. The picture is fitted into the
+    /// sequence frame before Motion (FrameScaling.h, scaleToFrameFactor), so Motion > Scale stays 100 % for a fitted
+    /// picture. Saved only when set.
+    bool scaleToFrame = false;
+    /// P.2 (E5), frame holds: Premiere's Frame Hold Options > Hold Filters. On a freeze frame the clip's keyframed
+    /// parameters and effects hold at their value at the held frame too (curveTimeAt stays at sourceIn); off (the
+    /// default), they keep animating through the hold. Saved only when set.
+    bool holdFilters = false;
+    /// P.2, video clips: Time Interpolation (TimeInterpolation.h), how a retimed clip makes the frames between its
+    /// media's frames. Saved only when not Frame Sampling.
+    TimeInterpolation timeInterpolation = TimeInterpolation::FrameSampling;
+    /// I.9, video clips: how the clip's decoded pictures are read into the working space (ColorManagement.h). Unset:
+    /// from the stream's colour tags (Auto). Ignored in display-referred Rec.709 projects. Saved only when set.
+    std::optional<InputColorSpace> inputColorSpace;
+    /// 0.2, video clips: Premiere's Clip > Video Options > Field Options (FieldOptions.h). Saved only when not the
+    /// default.
+    ClipFieldOptions fieldOptions;
 
     bool operator==(const ClipContent& other) const;
 };
@@ -134,6 +154,8 @@ struct Clip {
     bool enabled = true;
     /// Invalid when the clip is not linked.
     LinkGroupId linkGroup;
+    /// 0.2, Premiere's Clip > Group (ClipGroups.h): invalid when the clip is not grouped. Saved only when set.
+    ClipGroupId group;
     std::int32_t colorIndex = 0;
     /// Plays its source range backwards: the clip starts on the last frame of [sourceIn, sourceOut).
     bool reversed = false;
@@ -163,6 +185,8 @@ struct Clip {
     const AudioChannelMap* channelMap() const { return content().channels ? &*content().channels : nullptr; }
     /// A graphic clip's layers (Graphics.h), or null.
     const Graphic* graphic() const { return content().graphic.get(); }
+    /// I.9: the clip's input colour space override, or nullopt (Auto: from the stream's tags).
+    std::optional<InputColorSpace> inputColorSpace() const { return content().inputColorSpace; }
     /// Amount of source media the clip plays: [sourceIn, sourceOut). 0 for a freeze frame. A remapped clip: the
     /// curve time it spans (sourceIn is a curve time there).
     constexpr Ticks sourceDuration() const { return toSourceTicks(timelineRange.duration, speed); }
@@ -197,8 +221,12 @@ struct Clip {
     /// Keyframe curve time at timeline position `t` (Parameters.h: curves are in media time). The source time
     /// shown, except on a freeze frame, where effects keep animating at normal rate from the held frame
     /// (Premiere's Frame Hold with "Hold Filters" off), and on a remapped clip, where curve time runs with the
-    /// timeline from sourceIn the same way (effects animate at normal rate through holds, ramps and reverse).
+    /// timeline from sourceIn the same way (effects animate at normal rate through holds, ramps and reverse). P.2: a freeze
+    /// frame with Hold Filters (ClipContent::holdFilters) holds its parameters at sourceIn.
     Ticks curveTimeAt(Ticks t) const {
+        if (isFreeze() && content().holdFilters) {
+            return sourceIn;
+        }
         return isFreeze() || isRemapped() ? sourceIn + (t - start()) : sourceTimeAt(t);
     }
     /// Timeline ranges where the clip plays its media forwards at exactly 100 %, in order: where its audio is heard.
@@ -269,6 +297,8 @@ struct Clip {
         next.blendMode = mode;
         setContent(std::move(next));
     }
+    /// P.2: the clip's Time Interpolation (ClipContent::timeInterpolation).
+    TimeInterpolation timeInterpolation() const { return content().timeInterpolation; }
     const EffectStack& effects() const { return content().effects; }
     void setEffects(EffectStack effects) {
         ClipContent next = content();
@@ -282,7 +312,7 @@ struct Clip {
     bool operator==(const Clip& o) const {
         return id == o.id && media == o.media && stream == o.stream && timelineRange == o.timelineRange &&
                sourceIn == o.sourceIn && speed == o.speed && enabled == o.enabled && linkGroup == o.linkGroup &&
-               colorIndex == o.colorIndex && reversed == o.reversed && maintainPitch == o.maintainPitch &&
+               group == o.group && colorIndex == o.colorIndex && reversed == o.reversed && maintainPitch == o.maintainPitch &&
                sequence == o.sequence && angles == o.angles && (m_content == o.m_content || content() == o.content());
     }
 

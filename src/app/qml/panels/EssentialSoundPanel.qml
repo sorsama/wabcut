@@ -176,6 +176,17 @@ Panel {
                         onClicked: EssentialSound.setType(modelData.id)
                     }
                 }
+                // p02 audio: Premiere's auto-tagging (audio.autoTag: a local classifier listens to each clip).
+                PillButton {
+                    objectName: "essentialAutoTag"
+                    compact: true
+                    variant: "ghost"
+                    iconName: "sparkles"
+                    text: qsTr("Auto-tag")
+                    enabled: !EssentialSound.busy
+                    tooltip: qsTr("Tag each selected clip with the type it sounds like (clips with a type keep it)")
+                    onClicked: EssentialSound.autoTag()
+                }
                 PillButton {
                     objectName: "essentialClear"
                     visible: root.typed || root.type === "mixed"

@@ -1,6 +1,9 @@
 #include <wabcut/editor/MediaImport.h>
 
+#include <wabcut/interchange/CaptionFiles.h>
+#include <wabcut/interchange/Xmp.h>
 #include <wabcut/media/Probe.h>
+#include <wabcut/model/ImageSequence.h>
 #include <wabcut/model/MediaLocator.h>
 #include <wabcut/model/ProjectIO.h>
 #include <wabcut/model/ProjectOps.h>
@@ -8,6 +11,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <fstream>
 #include <optional>
 #include <string>
 #include <system_error>
@@ -48,6 +52,21 @@ ImportFileKind classifyImportFile(const std::filesystem::path& file) {
     if (lowerExtension(file) == io::kProjectExtension) {
         return ImportFileKind::Project;
     }
+    // P.2: caption files become caption tracks (Premiere imports them as captions too). An .xml is one only when it is
+    // Timed Text (TTML, DFXP, SMPTE-TT), not a timeline.
+    const std::string name = pathToUtf8(file.filename());
+    if (interchange::hasCaptionFileExtension(name)) {
+        return ImportFileKind::Captions;
+    }
+    if (lowerExtension(file) == ".xml") {
+        std::ifstream in(file, std::ios::binary);
+        std::string head(64 * 1024, '\0');
+        in.read(head.data(), static_cast<std::streamsize>(head.size()));
+        head.resize(static_cast<std::size_t>(std::max<std::streamsize>(in.gcount(), 0)));
+        if (interchange::detectCaptionFile(head, name)) {
+            return ImportFileKind::Captions;
+        }
+    }
     const interchange::Detection detection = interchange::ImportRouter::detect(file);
     return detection.format == interchange::Format::Unknown ? ImportFileKind::Media : ImportFileKind::Interchange;
 }
@@ -82,6 +101,14 @@ MediaImportResult importMediaFiles(EditSession& session, std::span<const std::fi
     auto work = [&] {
         for (std::size_t i = next.fetch_add(1); i < files.size(); i = next.fetch_add(1)) {
             probed[i] = describeMediaFile(files[i], options.projectFile);
+            // 0.2 (P.3): the file's XMP fills the linked clip metadata (a file without any keeps it empty).
+            if (options.readXmp && *probed[i] && !(*probed[i])->isGenerator()) {
+                interchange::XmpReadOptions read;
+                read.scanFilesUpTo = std::uintmax_t{32} * 1024 * 1024;
+                if (auto packet = interchange::readMediaXmp(files[i], read); packet && *packet) {
+                    interchange::applyXmpClipFields(**probed[i], interchange::clipFieldsFromXmp((*packet)->properties), false);
+                }
+            }
         }
     };
     {
@@ -114,6 +141,10 @@ MediaImportResult importMediaFiles(EditSession& session, std::span<const std::fi
             continue; // the same file twice in one import (byFile: below, from the first)
         }
         outcome->bin = options.bin;
+        outcome->scaling = options.scaling; // P.2: Preferences > Media > Default Media Scaling
+        if (outcome->info.isStillImage && options.stillDuration) {
+            outcome->stillDuration = options.stillDuration; // P.2: Preferences > Timeline > Still Image Default Duration
+        }
         toAdd.push_back(std::move(*outcome));
         order.push_back(i);
     }
@@ -158,6 +189,33 @@ MediaImportResult importMediaFiles(EditSession& session, std::span<const std::fi
     }
     result.added = std::move(ids);
     return result;
+}
+
+std::expected<MediaItem, Error> describeImageSequence(const std::filesystem::path& firstFrame, Rate frameRate,
+                                                      const std::filesystem::path& projectFile) {
+    auto sequence = findImageSequence(firstFrame, frameRate);
+    if (!sequence) {
+        return std::unexpected(std::move(sequence.error()));
+    }
+    const std::string path = imageSequencePath(*sequence);
+    auto info = media::probe(path);
+    if (!info) {
+        return std::unexpected(std::move(info.error()));
+    }
+    if (info->video.size() != 1 || !info->audio.empty()) {
+        return std::unexpected(Error{ErrorCode::Unsupported, "Not an image sequence: " + pathToUtf8(firstFrame)});
+    }
+    auto fingerprint = fingerprintFile(pathFromUtf8(path));
+    if (!fingerprint) {
+        return std::unexpected(std::move(fingerprint.error()));
+    }
+    MediaItem item;
+    item.name = pathToUtf8(sequence->firstFramePath().filename()); // Premiere names the clip after its first file
+    item.locator.path = path;
+    item.locator.relativePath = projectFile.empty() ? std::string{} : relativeMediaPath(projectFile, pathFromUtf8(path));
+    item.locator.fingerprint = std::move(*fingerprint);
+    item.info = std::move(*info);
+    return item;
 }
 
 interchange::MediaInspector probeInspector() {

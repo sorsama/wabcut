@@ -305,6 +305,24 @@ std::optional<std::string> EditSession::redoLabel() const {
     return m_redo.empty() ? std::nullopt : std::optional<std::string>(m_redo.back().label);
 }
 
+std::vector<std::string> EditSession::undoLabels() const {
+    std::vector<std::string> out;
+    out.reserve(m_undo.size());
+    for (const Step& s : m_undo) {
+        out.push_back(s.label);
+    }
+    return out;
+}
+
+std::vector<std::string> EditSession::redoLabels() const {
+    std::vector<std::string> out;
+    out.reserve(m_redo.size());
+    for (auto it = m_redo.rbegin(); it != m_redo.rend(); ++it) {
+        out.push_back(it->label);
+    }
+    return out;
+}
+
 void EditSession::beginGesture(std::string label) {
     if (m_gestureDepth++ == 0) {
         m_gestureLabel = std::move(label);
@@ -352,6 +370,70 @@ void EditSession::reset(ProjectState state) {
     const ProjectSnapshot current = snapshot();
     auto next = std::make_shared<const ProjectState>(std::move(state));
     raiseIdHighWater(*next);
+    const ChangeSet changes = diff(*current, *next);
+    retire(current);
+    publish(std::move(next), ChangeKind::Reset, {}, changes);
+}
+
+EditSession::Parked EditSession::park(ProjectState replacement) {
+    m_gestureDepth = 0;
+    m_gestureStarted = false;
+    m_mergeOpen = false;
+    Parked out;
+    out.m_state = snapshot();
+    out.m_undo = std::move(m_undo);
+    out.m_redo = std::move(m_redo);
+    out.m_undoBytes = m_undoBytes;
+    out.m_idHighWater = m_idHighWater;
+    m_undo.clear();
+    m_redo.clear();
+    m_undoBytes = 0;
+    m_idHighWater = 1;
+    auto next = std::make_shared<const ProjectState>(std::move(replacement));
+    raiseIdHighWater(*next);
+    const ChangeSet changes = diff(*out.m_state, *next);
+    publish(std::move(next), ChangeKind::Reset, {}, changes);
+    return out;
+}
+
+EditSession::Parked EditSession::exchange(Parked other) {
+    m_gestureDepth = 0;
+    m_gestureStarted = false;
+    m_mergeOpen = false;
+    Parked out;
+    out.m_state = snapshot();
+    out.m_undo = std::move(m_undo);
+    out.m_redo = std::move(m_redo);
+    out.m_undoBytes = m_undoBytes;
+    out.m_idHighWater = m_idHighWater;
+    m_undo = std::move(other.m_undo);
+    m_redo = std::move(other.m_redo);
+    m_undoBytes = other.m_undoBytes;
+    m_idHighWater = std::max<std::uint64_t>(1, other.m_idHighWater);
+    ProjectSnapshot next = other.m_state ? std::move(other.m_state) : std::make_shared<const ProjectState>();
+    raiseIdHighWater(*next);
+    const ChangeSet changes = diff(*out.m_state, *next);
+    publish(std::move(next), ChangeKind::Reset, {}, changes);
+    return out;
+}
+
+void EditSession::restore(Parked parked) {
+    for (Step& s : m_undo) {
+        retire(std::move(s.state));
+    }
+    for (Step& s : m_redo) {
+        retire(std::move(s.state));
+    }
+    m_gestureDepth = 0;
+    m_gestureStarted = false;
+    m_mergeOpen = false;
+    m_undo = std::move(parked.m_undo);
+    m_redo = std::move(parked.m_redo);
+    m_undoBytes = parked.m_undoBytes;
+    m_idHighWater = std::max<std::uint64_t>(1, parked.m_idHighWater);
+    ProjectSnapshot next = parked.m_state ? std::move(parked.m_state) : std::make_shared<const ProjectState>();
+    raiseIdHighWater(*next);
+    const ProjectSnapshot current = snapshot();
     const ChangeSet changes = diff(*current, *next);
     retire(current);
     publish(std::move(next), ChangeKind::Reset, {}, changes);

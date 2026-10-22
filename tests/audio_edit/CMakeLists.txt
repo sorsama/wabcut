@@ -15,6 +15,10 @@ set(wabcut_audio_edit_test_sources
     test_plugin_commands.cpp
     test_voice_over_takes.cpp
     test_audio_channels_commands.cpp
+    test_submix_commands.cpp
+    SoundTestSignals.h
+    test_sound_classifier.cpp
+    test_autotag_commands.cpp
     test_streamer_audio.cpp)
 set(wabcut_audio_edit_test_libs wabcut_audio_edit wabcut_ai_edit wabcut_ai_analysis)
 if(NOT WABCUT_CORE_ONLY)

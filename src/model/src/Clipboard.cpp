@@ -305,6 +305,15 @@ std::expected<ClipboardDocument, Error> copyClips(const ProjectState& state, Seq
                             c.linkGroup = {};
                         }
                     }
+                    // So do groups (0.2).
+                    if (c.group.isValid()) {
+                        const auto members = std::count_if(picked->begin(), picked->end(), [&](const Picked& o) {
+                            return o.clip->group == c.group;
+                        });
+                        if (members < 2) {
+                            c.group = {};
+                        }
+                    }
                     t->clips.push_back(std::move(c));
                 }
             }
@@ -686,6 +695,7 @@ std::expected<PasteResult, Error> pasteClips(const ProjectState& state, Sequence
         ed.captionsInsert(at, duration);
     }
     std::unordered_map<std::uint64_t, LinkGroupId> groups;
+    std::unordered_map<std::uint64_t, ClipGroupId> clipGroups;
     std::unordered_map<std::uint64_t, ClipId> clipMap;
     for (const TrackKind kind : {TrackKind::Video, TrackKind::Audio}) {
         const auto& from = clipSeq->tracks(kind);
@@ -731,6 +741,13 @@ std::expected<PasteResult, Error> pasteClips(const ProjectState& state, Sequence
                     }
                     n.linkGroup = g->second;
                     ed.touchGroup(n.linkGroup);
+                }
+                if (c.group.isValid()) { // 0.2: the pasted copies of a group are a new group
+                    auto g = clipGroups.find(c.group.value);
+                    if (g == clipGroups.end()) {
+                        g = clipGroups.emplace(c.group.value, ed.newClipGroup()).first;
+                    }
+                    n.group = g->second;
                 }
                 if (!n.effects().empty()) {
                     EffectStack effects = n.effects();

@@ -2,6 +2,7 @@
 
 #include "Exporters.h"
 
+#include <wabcut/model/Effects.h>
 #include <wabcut/model/MediaLocator.h>
 #include <wabcut/model/Timecode.h>
 #include <wabcut/model/TitleOps.h>
@@ -21,7 +22,9 @@ std::string trackLabel(TrackKind kind, std::size_t index) {
 /// The IR kind and the name other editors know for a model transition effect.
 std::pair<TransitionKind, std::string> transitionOf(const std::string& effect, TrackKind kind) {
     if (kind == TrackKind::Audio) {
-        return {TransitionKind::AudioCrossfade, effect == "constantGain" ? "Constant Gain" : "Constant Power"};
+        return {TransitionKind::AudioCrossfade, effect == "constantGain"      ? "Constant Gain"
+                                                : effect == "exponentialFade" ? "Exponential Fade"
+                                                                              : "Constant Power"};
     }
     if (effect == "crossDissolve") {
         return {TransitionKind::Dissolve, "Cross Dissolve"};
@@ -34,6 +37,10 @@ std::pair<TransitionKind, std::string> transitionOf(const std::string& effect, T
     }
     if (effect == "wipe") {
         return {TransitionKind::Wipe, "Wipe"};
+    }
+    // 0.2: Premiere's library by its display name ("Iris Round"), which the importers map back.
+    if (const EffectDescriptor* d = EffectRegistry::builtin().find(effect); d && d->kind == EffectKind::VideoTransition) {
+        return {TransitionKind::Other, std::string(d->displayName)};
     }
     return {TransitionKind::Other, effect};
 }

@@ -15,6 +15,7 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -302,6 +303,63 @@ TEST_CASE("cdl.export / cdl.import round-trip the wheels", "[color][commands][cd
     CHECK(c.h.errorOf("cdl.import", Json{{"clip", b.value}, {"path", (dir / "x.txt").generic_string()}}) == "InvalidParams");
 }
 
+TEST_CASE("lut.export writes the grade as a 33-point cube that reproduces it", "[color][commands][lut]") {
+    ColorHarness c(R"(
+        V1 tgt |AaaaBbbb|
+    )");
+    const ClipId a = c.h.clip("V1@0");
+    c.h.ok("color.grade.set", Json{{"clip", a.value},
+                                   {"params", Json{{"basic.exposure", 0.4}, {"basic.contrast", 20}, {"basic.saturation", 130},
+                                                   {"creative.fadedFilm", 15}, {"wheels.gain.blue", 1.1},
+                                                   {"vignette.amount", -1.5}}},
+                                   {"curves", Json{{"master", Json::array({Json::array({0, 0}), Json::array({0.5, 0.6}),
+                                                                           Json::array({1, 1})})}}},
+                                   {"look", "builtin:teal-orange"}});
+    const auto dir = std::filesystem::path(WABCUT_TEST_OUTPUT_DIR) / "color";
+    std::filesystem::create_directories(dir);
+    const auto file = dir / "graded # shot.cube";
+    std::filesystem::remove(file);
+    // A dry run writes nothing.
+    REQUIRE(c.h.run(Json{{"command", "lut.export"}, {"params", Json{{"clip", a.value}, {"path", file.generic_string()}}}, {"dryRun", true}}).ok());
+    CHECK_FALSE(std::filesystem::exists(file));
+    const auto exported = c.h.ok("lut.export", Json{{"clip", a.value}, {"path", file.generic_string()}, {"title", "Shot #1 \"final\""}});
+    CHECK(exported.data["size"] == 33);
+    CHECK(exported.data["leftOut"] == Json::array({"Vignette"}));
+    CHECK(c.h.errorOf("lut.export", Json{{"clip", a.value}, {"path", file.generic_string()}}) == "EditRejected"); // exists
+    CHECK(c.h.errorOf("lut.export", Json{{"clip", c.h.clip("V1@4").value}, {"path", (dir / "b.cube").generic_string()}}) == "NotFound");
+    CHECK(c.h.errorOf("lut.export", Json{{"clip", a.value}, {"path", (dir / "b.txt").generic_string()}}) == "InvalidParams");
+
+    // It reads back, and applying it gives what the grade gives (without the vignette) to within the lattice's error.
+    auto lut = loadCube(file);
+    REQUIRE(lut);
+    CHECK(lut->size3d == 33);
+    CHECK(lut->title == "Shot 1 final");
+    GradeSpec spec = evaluateGrade(*c.grade("V1@0"), Ticks{}, LutLibrary::shared().resolver(*c.h.state()));
+    spec.params.vignette = false;
+    // Trilinear interpolation between 33 points: a few code values at worst where the curves bend, far less on average.
+    double worst = 0;
+    double sum = 0;
+    for (int i = 0; i < 400; ++i) {
+        const Rgb code{std::fmod(i * 0.6180339887, 1.0), std::fmod(i * 0.3247179572, 1.0), std::fmod(i * 0.5698402910, 1.0)};
+        const Rgb want = encode709(gradePixel(spec, decode709(code)));
+        const Rgb got = applyLut(*lut, code);
+        for (std::size_t k = 0; k < 3; ++k) {
+            const double e = std::abs(std::clamp(want[k], 0.0, 1.0) - got[k]);
+            worst = std::max(worst, e);
+            sum += e;
+        }
+    }
+    INFO("worst " << worst << ", mean " << sum / 1200.0);
+    CHECK(worst < 0.03);
+    CHECK(sum / 1200.0 < 0.005);
+    // An untouched grade is the identity.
+    const Lut identity = gradeToLut(GradeSpec{}, 17, "x");
+    for (int r = 0; r < 17; r += 4) {
+        const Rgb e = identity.entry3d(r, 16 - r, r / 2);
+        CHECK(e[0] == Approx(r / 16.0).margin(1e-6));
+        CHECK(e[1] == Approx((16 - r) / 16.0).margin(1e-6));
+    }
+}
 TEST_CASE("scopes.read: a verdict an agent can use", "[color][commands][scopes]") {
     ColorHarness c(R"(
         V1 tgt |Aaaa|
@@ -345,4 +403,179 @@ TEST_CASE("A scene of multicam clips is one angle's adjacent pieces (0.1.2)", "[
     REQUIRE(v1.clips.size() == 3);
     CHECK(sceneClips(seq, v1.clips[0].id) == std::vector<ClipId>{v1.clips[0].id, v1.clips[1].id});
     CHECK(sceneClips(seq, v1.clips[2].id) == std::vector<ClipId>{v1.clips[2].id});
+}
+
+TEST_CASE("color.management.* and color.inputSpace.*: the project's colour management and a clip's input colour space (I.9)",
+          "[color][commands][colormanagement]") {
+    ColorHarness c(R"(
+        V1 tgt |Aaaaaaaa|
+    )");
+    // The default, and what there is to choose from.
+    const auto get = c.h.ok("color.management.get");
+    CHECK(get.data["mode"] == "rec709");
+    CHECK(get.data["name"] == "Direct Rec.709 (SDR)");
+    CHECK(get.data["hdr"] == false);
+    CHECK(get.data["managed"] == false);
+    CHECK(get.data["autoDetectLog"] == true);
+    CHECK(get.data["modes"].size() == 6); // Premiere's Color Setup presets
+    CHECK(get.data["modes"][0]["name"] == "Direct Rec.709 (SDR)");
+    CHECK_FALSE(get.data["modes"][0]["description"].get<std::string>().empty());
+    CHECK(get.data["inputSpaces"].size() == allInputColorSpaces().size());
+
+    // Set: one undo step, only the given fields change.
+    const auto set = c.h.ok("color.management.set", Json{{"mode", "hdr-pq"}, {"peakNits", 4000}});
+    CHECK(set.data["mode"] == "hdr-pq");
+    CHECK(set.data["hdr"] == true);
+    CHECK(set.data["peakNits"] == 4000.0);
+    CHECK(set.data["referenceWhiteNits"] == 203.0);
+    CHECK(c.h.state()->colorManagement.mode == ColorManagementMode::HdrPq);
+    CHECK(c.h.session.undoCount() == 1);
+    CHECK(c.h.errorOf("color.management.set", Json{{"mode", "hdr-xx"}}) == "InvalidParams");
+    CHECK(c.h.errorOf("color.management.set", Json{{"referenceWhiteNits", 500}}) == "InvalidParams"); // schema bounds
+    c.h.ok("color.management.set", Json{{"peakNits", 250}});                                               // above 203: valid
+    CHECK_FALSE(c.h.errorOf("color.management.set", Json{{"peakNits", 150}}).empty());                    // below the white
+    CHECK_FALSE(c.h.errorOf("color.management.set", Json{{"referenceWhiteNits", 300}}).empty());          // not below the peak
+
+    // A clip's input colour space: auto from the tags, an override, back to auto.
+    const ClipId a = c.h.clip("V1@0");
+    const auto before = c.h.ok("color.inputSpace.get", Json{{"clip", a.value}});
+    CHECK(before.data["clips"][0]["override"].is_null());
+    CHECK(before.data["clips"][0]["auto"] == "rec709");
+    const auto logged = c.h.ok("color.inputSpace.set", Json{{"clips", Json::array({a.value})}, {"space", "s-log3-cine"}});
+    CHECK(logged.data["clips"][0]["effective"] == "s-log3-cine");
+    CHECK(logged.warnings.empty()); // an HDR project: the input space applies
+    CHECK(c.h.sequence(c.h.state()).findClip(a)->clip().inputColorSpace() == InputColorSpace::SLog3SGamut3Cine);
+    CHECK(c.h.errorOf("color.inputSpace.set", Json{{"clip", a.value}, {"space", "red-log"}}) == "InvalidParams");
+    const auto back = c.h.ok("color.inputSpace.set", Json{{"clip", a.value}, {"space", "auto"}});
+    CHECK(back.data["clips"][0]["override"].is_null());
+
+    // Direct Rec.709 converts the clip (tone-mapped on input): no warning. With colour management disabled the
+    // override is kept but says it does nothing there.
+    c.h.ok("color.management.set", Json{{"mode", "rec709"}});
+    const auto direct = c.h.ok("color.inputSpace.set", Json{{"clip", a.value}, {"space", "v-log"}});
+    CHECK(direct.warnings.empty());
+    c.h.ok("color.management.set", Json{{"mode", "off"}, {"autoDetectLog", false}});
+    CHECK(c.h.state()->colorManagement.mode == ColorManagementMode::Disabled);
+    CHECK_FALSE(c.h.state()->colorManagement.autoDetectLog);
+    const auto ignored = c.h.ok("color.inputSpace.set", Json{{"clip", a.value}, {"space", "logc4"}});
+    CHECK(ignored.warnings.size() == 1);
+    const auto wide = c.h.ok("color.management.set", Json{{"mode", "wide-gamut"}});
+    CHECK(wide.data["name"] == "Wide Gamut (No Tone Mapping)");
+    CHECK(wide.data["managed"] == true);
+}
+
+namespace {
+
+/// A face (a skin box at the centre) over a background, per media: A neutral skin on blue, B a greenish skin on orange.
+class FaceRenderer final : public ColorServices {
+public:
+    std::expected<ColorImage, Error> frame(const ProjectState& state, SequenceId sequence, const FrameRequest& request) override {
+        const Sequence& seq = *state.findSequence(sequence);
+        const Clip& clip = seq.findClip(request.solo)->clip();
+        const char letter = state.findMedia(clip.media)->name.front();
+        GradeSpec spec;
+        bool graded = false;
+        for (const EffectInstance& e : clip.effects()) {
+            if (e.id == request.stopBefore) {
+                break;
+            }
+            if (e.effect == kGradeEffect && e.enabled) {
+                spec = evaluateGrade(e, clip.curveTimeAt(request.time), LutLibrary::shared().resolver(state));
+                graded = true;
+            }
+        }
+        ColorImage image;
+        image.width = 64;
+        image.height = 36;
+        image.rgba.resize(64 * 36 * 4);
+        for (int y = 0; y < 36; ++y) {
+            for (int x = 0; x < 64; ++x) {
+                const bool face = x >= 24 && x < 40 && y >= 6 && y < 30;
+                Rgb c = letter == 'A' ? (face ? Rgb{0.45, 0.3, 0.22} : Rgb{0.05, 0.1, 0.5})
+                                      : (face ? Rgb{0.36, 0.33, 0.19} : Rgb{0.5, 0.25, 0.05});
+                if (graded) {
+                    c = gradePixel(spec, c);
+                }
+                const Rgb e = encode709(c);
+                float* p = image.rgba.data() + (static_cast<std::size_t>(y) * 64 + x) * 4;
+                p[0] = static_cast<float>(e[0]), p[1] = static_cast<float>(e[1]), p[2] = static_cast<float>(e[2]), p[3] = 1.0f;
+            }
+        }
+        return image;
+    }
+};
+
+/// The face box, or none.
+class FakeFaces final : public FaceFinder {
+public:
+    bool none = false;
+    int calls = 0;
+    std::expected<std::vector<FaceBox>, Error> faces(const ColorImage&) override {
+        ++calls;
+        if (none) {
+            return std::vector<FaceBox>{};
+        }
+        return std::vector<FaceBox>{FaceBox{24.0 / 64, 6.0 / 36, 16.0 / 64, 24.0 / 36}};
+    }
+};
+
+/// How far the clip's skin (graded) is from the reference's, in Oklab.
+double skinError(FaceRenderer& r, const ProjectState& state, SequenceId seq, ClipId clip) {
+    const Clip& c = state.findSequence(seq)->findClip(clip)->clip();
+    const auto image = r.frame(state, seq, FrameRequest{c.start(), clip, {}});
+    REQUIRE(image);
+    const float* p = image->rgba.data() + (18 * 64 + 32) * 4;
+    const Rgb lab = linearToOklab(decode709({p[0], p[1], p[2]}));
+    const Rgb ref = linearToOklab({0.45, 0.3, 0.22});
+    return std::sqrt(std::pow(lab[0] - ref[0], 2) + std::pow(lab[1] - ref[1], 2) + std::pow(lab[2] - ref[2], 2));
+}
+
+} // namespace
+
+TEST_CASE("color.match with faceDetection matches the faces' skin tones first (Premiere's Face Detection, 0.2)",
+          "[color][commands][faces]") {
+    auto renderer = std::make_shared<FaceRenderer>();
+    auto faces = std::make_shared<FakeFaces>();
+    command::EnginePolicy policy;
+    policy.services = std::make_shared<command::ServiceBundle>(std::vector<std::shared_ptr<command::CommandServices>>{renderer, faces});
+    CommandHarness h(R"(
+        V1 tgt |AaaaBbbb|
+    )", policy, ai::edit::editingCommands());
+    const ClipId a = h.clip("V1@0"), b = h.clip("V1@4");
+    const Json reference{{"clip", a.value}};
+
+    // Off by default: the whole frame counts, the backgrounds pull the skin off.
+    const auto whole = h.ok("color.match", Json{{"clip", b.value}, {"reference", reference}});
+    CHECK(faces->calls == 0);
+    CHECK_FALSE(whole.data["clips"][0].contains("faces"));
+    const double wholeError = skinError(*renderer, *h.state(), h.tl.seq, b);
+    REQUIRE(h.session.undo());
+
+    const auto byFaces = h.ok("color.match", Json{{"clip", b.value}, {"reference", reference}, {"faceDetection", true}});
+    CHECK(faces->calls == 2); // the reference and the clip
+    CHECK(byFaces.data["referenceFaces"] == 1);
+    CHECK(byFaces.data["clips"][0]["faces"] == 1);
+    const double faceError = skinError(*renderer, *h.state(), h.tl.seq, b);
+    INFO("skin error: whole frame " << wholeError << ", face detection " << faceError);
+    CHECK(faceError < wholeError * 0.6);
+    CHECK(h.session.undoCount() == 1); // one undo step
+
+    // No face on a picture: a warning, the whole picture counts.
+    REQUIRE(h.session.undo());
+    faces->none = true;
+    const auto noFace = h.ok("color.matchScene", Json{{"reference", a.value}, {"clips", Json::array({b.value})}, {"faceDetection", true}});
+    CHECK(noFace.data["referenceFaces"] == 0);
+    REQUIRE_FALSE(noFace.warnings.empty());
+    CHECK(noFace.warnings.front().find("no face") != std::string::npos);
+
+    // Without a detector the host cannot do it: refused with the reason, nothing changed.
+    CommandHarness bare(R"(
+        V1 tgt |AaaaBbbb|
+    )", command::EnginePolicy{command::CapabilitySet::all(), 1024, renderer}, ai::edit::editingCommands());
+    const auto refused = bare.run(Json{{"command", "color.match"},
+                                       {"params", Json{{"clip", bare.clip("V1@4").value}, {"reference", Json{{"clip", bare.clip("V1@0").value}}},
+                                                       {"faceDetection", true}}}});
+    REQUIRE(refused.error);
+    CHECK(refused.error->message.find("Face Detection needs the face detector") != std::string::npos);
+    CHECK(bare.session.undoCount() == 0);
 }

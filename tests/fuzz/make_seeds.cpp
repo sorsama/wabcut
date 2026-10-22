@@ -91,6 +91,34 @@ int main(int argc, char** argv) {
         write(out / "project_io" / "every-shape.wabcut", take(io::toJson(state), "save"));
         write(out / "project_io" / "empty.wabcut", take(io::toJson(ProjectState{}), "save an empty project"));
         write(out / "export" / "every-shape.wabcut", take(io::toJson(state), "save"));
+        {
+            // I.9: colour management and a clip's input colour space.
+            ProjectState managed = state;
+            managed.colorManagement.mode = ColorManagementMode::HdrPq;
+            managed.colorManagement.peakNits = 4000.0;
+            bool done = false;
+            for (SequencePtr& s : managed.sequences) {
+                for (std::size_t i = 0; i < s->videoTracks.size() && !done; ++i) {
+                    Track track = *s->videoTracks[i];
+                    for (std::size_t k = 0; k < track.clips.size(); ++k) {
+                        Clip& c = track.clips.mutableAt(k);
+                        if (!c.isNested() && !c.hasUnknownSource()) {
+                            ClipContent content = c.content();
+                            content.inputColorSpace = InputColorSpace::SLog3SGamut3Cine;
+                            c.setContent(std::move(content));
+                            done = true;
+                            break;
+                        }
+                    }
+                    if (done) {
+                        Sequence copy = *s;
+                        copy.videoTracks[i] = std::make_shared<const Track>(std::move(track));
+                        s = std::make_shared<const Sequence>(std::move(copy));
+                    }
+                }
+            }
+            write(out / "project_io" / "colour-managed.wabcut", take(io::toJson(managed), "save a colour-managed project"));
+        }
 
         // A history of two revisions: its index, an object, and each revision's chunks.
         const fs::path work = out / "work" / "history";

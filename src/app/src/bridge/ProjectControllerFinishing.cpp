@@ -4,6 +4,8 @@
 
 #include "ProjectController.h"
 
+#include "EditingBridge.h"
+
 #include <wabcut/model/Timecode.h>
 
 #include <algorithm>
@@ -168,7 +170,11 @@ bool ProjectController::applyDefaultTransition(bool audio) {
     const TrackKind kind = audio ? TrackKind::Audio : TrackKind::Video;
     return applyEditFn(audio ? QT_TRANSLATE_NOOP("wabcut::app::ProjectController", "Apply Audio Transition")
                              : QT_TRANSLATE_NOOP("wabcut::app::ProjectController", "Apply Video Transition"),
-                       [=](const ProjectState& state) { return edit::applyDefaultTransition(state, seq, playhead, kind); });
+                       [=](const ProjectState& state) {
+                           // P.2: Preferences > Timeline's default transition durations.
+                           return edit::applyDefaultTransition(state, seq, playhead, kind,
+                                                               EditingBridge::defaultTransitionsSetting());
+                       });
 }
 
 bool ProjectController::applyDefaultTransitionsToSelection() {
@@ -177,7 +183,9 @@ bool ProjectController::applyDefaultTransitionsToSelection() {
         return false;
     const SequenceId seq = m_sequence;
     return applyEditFn(QT_TRANSLATE_NOOP("wabcut::app::ProjectController", "Apply Default Transitions"),
-                       [&](const ProjectState& state) { return edit::applyDefaultTransitions(state, seq, clips); });
+                       [&](const ProjectState& state) {
+                           return edit::applyDefaultTransitions(state, seq, clips, EditingBridge::defaultTransitionsSetting());
+                       });
 }
 
 void ProjectController::setTimelineHighlights(std::vector<TimelineHighlight> highlights) {
@@ -196,7 +204,15 @@ QVariantMap ProjectController::speedDurationInfo() const {
     if (c.isFreeze())
         return {{QStringLiteral("available"), false}, {QStringLiteral("reason"), tr("Frame holds cannot be retimed")},
                 {QStringLiteral("frozen"), true}};
+    // P.2: the dialog's Time Interpolation is the video clip's (the selected one, or the video partner of an audio clip).
+    const std::optional<ClipId> video = c.stream.kind == StreamKind::Video ? std::optional<ClipId>(c.id)
+                                                                           : propertyTarget(StreamKind::Video);
+    const auto videoLoc = video ? seq->findClip(*video) : std::nullopt;
+    const TimeInterpolation interpolation = videoLoc ? videoLoc->clip().timeInterpolation() : TimeInterpolation::FrameSampling;
     return {
+        {QStringLiteral("hasVideo"), videoLoc.has_value()},
+        {QStringLiteral("timeInterpolation"), QString::fromLatin1(toString(interpolation).data(),
+                                                                  static_cast<qsizetype>(toString(interpolation).size()))},
         {QStringLiteral("available"), true},
         {QStringLiteral("reason"), QString()},
         {QStringLiteral("speed"), 100.0 * c.speed.num / c.speed.den},

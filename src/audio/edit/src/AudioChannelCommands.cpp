@@ -18,6 +18,7 @@
 #include "AudioCommandHelpers.h"
 
 #include <wabcut/model/AudioChannelOps.h>
+#include <wabcut/model/Resolve.h>
 
 namespace wabcut::audio::edit {
 
@@ -374,36 +375,67 @@ CommandOutput channelLevels(ExecutionContext& c) {
     }
     const std::vector<ClipId> clips = audioClipsOf(c, c.clips("clips"));
     Json report = Json::array();
+    // One recording a clip plays: its media's stream over `source`.
+    struct Played {
+        const MediaItem* media = nullptr;
+        int stream = 0;
+        TimeRange source;
+    };
     for (const ClipId id : clips) {
         const Clip& clip = clipIn(c, id);
-        const MediaItem* media = c.state().findMedia(clip.media);
-        if (media == nullptr) {
+        std::vector<Played> played;
+        if (clip.isNested()) {
+            // 0.2: a nested or multicam clip plays a mix of recordings (a multicam clip: its active audio angles'
+            // tracks): each of them is measured over what the clip plays of it, found at its start or a little later
+            // (an angle that starts late), one entry each.
+            for (int quarter = 0; quarter < 4 && played.empty(); ++quarter) {
+                const Ticks t = clip.start() + Ticks{clip.duration().value * quarter / 4};
+                for (const ResolvedLeaf& leaf : resolveLeaves(c.state(), c.sequenceId(), clip, t)) {
+                    const MediaItem* media = c.state().findMedia(leaf.clip->media);
+                    const int stream = leaf.clip->stream.kind == StreamKind::Audio ? leaf.clip->stream.index : 0;
+                    if (media == nullptr || std::ranges::any_of(played, [&](const Played& p) { return p.media == media && p.stream == stream; })) {
+                        continue;
+                    }
+                    played.push_back({media, stream, TimeRange{leaf.sourceTime, std::min(clip.end() - t, leaf.clip->end() - leaf.time)}});
+                }
+            }
+        } else if (const MediaItem* media = c.state().findMedia(clip.media)) {
+            played.push_back({media, clip.stream.index, TimeRange{clip.sourceIn, clip.sourceDuration()}});
+        }
+        if (played.empty()) {
             fail(ErrorCode::InvalidParams, "clip " + std::to_string(id.value) + " plays no media item", Json{{"path", "/clips"}});
         }
-        const TimeRange source{clip.sourceIn, clip.sourceDuration()};
-        auto levels = services->channels->measure(c.state(), *media, clip.stream.index, source, c.control());
-        if (!levels) {
-            failWith(levels.error(), "cannot measure the channels of clip " + std::to_string(id.value));
-        }
-        Json list = Json::array();
-        std::size_t loudest = 0;
-        for (std::size_t k = 0; k < levels->size(); ++k) {
-            list.push_back(Json{{"channel", k + 1}, {"peakDb", levelJson((*levels)[k].peakDb)}, {"rmsDb", levelJson((*levels)[k].rmsDb)}});
-            if ((*levels)[k].rmsDb > (*levels)[loudest].rmsDb) {
-                loudest = k;
+        for (const Played& p : played) {
+            const TimeRange source = p.source;
+            auto levels = services->channels->measure(c.state(), *p.media, p.stream, source, c.control());
+            if (!levels) {
+                failWith(levels.error(), "cannot measure the channels of clip " + std::to_string(id.value));
             }
-        }
-        // A channel 30 dB or more under the loudest is "silent" for the report ("left-only" audio).
-        Json silent = Json::array();
-        for (std::size_t k = 0; k < levels->size(); ++k) {
-            if ((*levels)[k].rmsDb < (*levels)[loudest].rmsDb - 30.0) {
-                silent.push_back(k + 1);
+            Json list = Json::array();
+            std::size_t loudest = 0;
+            for (std::size_t k = 0; k < levels->size(); ++k) {
+                list.push_back(Json{{"channel", k + 1}, {"peakDb", levelJson((*levels)[k].peakDb)}, {"rmsDb", levelJson((*levels)[k].rmsDb)}});
+                if ((*levels)[k].rmsDb > (*levels)[loudest].rmsDb) {
+                    loudest = k;
+                }
             }
+            // A channel 30 dB or more under the loudest is "silent" for the report ("left-only" audio).
+            Json silent = Json::array();
+            for (std::size_t k = 0; k < levels->size(); ++k) {
+                if ((*levels)[k].rmsDb < (*levels)[loudest].rmsDb - 30.0) {
+                    silent.push_back(k + 1);
+                }
+            }
+            Json entry{{"clip", id.value},
+                       {"channels", std::move(list)},
+                       {"silentChannels", std::move(silent)},
+                       {"measuredSeconds", round3(std::min(source.duration.toSeconds(), ChannelAnalyzer::kMaxSeconds))}};
+            if (clip.isNested()) {
+                entry["media"] = p.media->id.value; // the recording inside the nested / multicam clip
+                entry["name"] = p.media->name;
+            }
+            report.push_back(std::move(entry));
         }
-        report.push_back(Json{{"clip", id.value},
-                              {"channels", std::move(list)},
-                              {"silentChannels", std::move(silent)},
-                              {"measuredSeconds", round3(std::min(source.duration.toSeconds(), ChannelAnalyzer::kMaxSeconds))}});
     }
     CommandOutput out;
     out.state = c.state();

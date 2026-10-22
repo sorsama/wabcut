@@ -9,6 +9,7 @@ import QtQuick
 // M5m (A.8): Takes, the submenu of a recorded voice-over take (only on such clips).
 // M5n (A.9): Audio Channels, the submenu of clips with sound (Audio Channels…, Fill, Swap, Split to Mono), after Takes.
 // M5o (gaming): Moments, the submenu of one-click speed and zoom presets, after Speed/Duration….
+// P.2 (E5): Video Options, Replace With Clip, Join Through Edits and Make Subsequence (the Editing bridge).
 ContextMenu {
     id: clipMenu
     objectName: "clipContextMenu"
@@ -34,6 +35,8 @@ ContextMenu {
         showChannels()
         showTakes()
         momentsMenu.refresh()
+        videoOptionsMenu.refresh()
+        interpolationMenu.refresh()
         popup(target, point.x, point.y)
     }
     /// The Moments submenu (M5o).
@@ -179,11 +182,48 @@ ContextMenu {
         command: "clip.link"
         onTriggered: ProjectController.toggleLinkSelection()
     }
+    // 0.2: Premiere's Group / Ungroup (Ctrl/Cmd+G, Ctrl/Cmd+Shift+G).
+    ContextMenuItem {
+        objectName: "groupMenuItem"
+        text: qsTr("Group")
+        iconName: "layers"
+        command: "clip.group"
+        enabled: ProjectController.selectedClips.length > 1
+        onTriggered: ProjectController.groupSelection()
+    }
+    ContextMenuItem {
+        objectName: "ungroupMenuItem"
+        text: qsTr("Ungroup")
+        iconName: "layers"
+        command: "clip.ungroup"
+        enabled: ProjectController.selectionGrouped
+        onTriggered: ProjectController.ungroupSelection()
+    }
     ContextMenuItem {
         text: qsTr("Speed/Duration…")
         iconName: "gauge"
         command: "clip.speedDuration"
         onTriggered: KeymapDispatcher.trigger("clip.speedDuration") // Main.qml opens the dialog
+    }
+    // P.2 (E5): Premiere's Clip > Video Options (frame holds, Scale to Frame Size, Set to Frame Size / Fill Frame),
+    // Replace With Clip and Join Through Edits (on a clip at a through edit).
+    VideoOptionsSubmenu {
+        id: videoOptionsMenu
+        clipKey: clipMenu.clipId
+    }
+    // P.2: Clip > Video Options > Time Interpolation (next to Video Options in this menu).
+    TimeInterpolationSubmenu {
+        id: interpolationMenu
+    }
+    ReplaceWithClipSubmenu {}
+    ContextMenuItem {
+        objectName: "joinThroughEditsMenuItem"
+        visible: videoOptionsMenu.info.throughEdit === true
+        height: visible ? implicitHeight : 0
+        text: qsTr("Join Through Edits")
+        iconName: "link"
+        command: "sequence.joinThroughEdits"
+        onTriggered: Editing.joinThroughEdits(clipMenu.clipId)
     }
     // M5o (gaming): one-click slow-mo, ramps, freeze + replay, fast forward and zoom punch-ins for this clip.
     MomentsSubmenu {
@@ -199,6 +239,14 @@ ContextMenu {
     }
     // ---- Nesting and multi-camera (M5l) ----
     ContextMenuSeparator {}
+    ContextMenuItem {
+        objectName: "makeSubsequenceMenuItem"
+        text: qsTr("Make Subsequence")
+        iconName: "copy"
+        command: "sequence.makeSubsequence"
+        enabled: clipMenu.selection.length > 0
+        onTriggered: Editing.makeSubsequence(false)
+    }
     ContextMenuItem {
         objectName: "nestMenuItem"
         text: qsTr("Nest…")

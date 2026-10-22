@@ -3,11 +3,14 @@
 
 #include "TimelineFixture.h"
 
+#include <wabcut/model/Animations.h>
 #include <wabcut/model/FinishingOps.h>
 #include <wabcut/model/ProjectIO.h>
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
+#include <set>
 #include <vector>
 
 using namespace wabcut;
@@ -326,4 +329,67 @@ TEST_CASE("Transitions store their alignment; changes keep or re-derive it", "[m
     }
     CHECK(transitionAlignmentFromString(toString(TransitionAlignment::Custom)) == TransitionAlignment::Custom);
     CHECK_FALSE(transitionAlignmentFromString("middle"));
+}
+
+TEST_CASE("Animations: Premiere 25.5's animations are video transitions; Surprise Me becomes one of them (0.2)",
+          "[model][transitions][animations]") {
+    const EffectRegistry& registry = EffectRegistry::builtin();
+    for (std::string_view id : animationTransitions()) {
+        INFO(id);
+        const EffectDescriptor* d = registry.find(id);
+        REQUIRE(d);
+        CHECK(d->kind == EffectKind::VideoTransition);
+        CHECK(d->category == "Animations");
+        CHECK(isAnimationTransition(id));
+    }
+    for (const char* name : {"Block", "Fade", "Flip", "Fold", "Pop", "Pull", "Spin", "Spring", "Travel"}) {
+        INFO(name);
+        CHECK(std::ranges::any_of(animationTransitions(),
+                                  [&](std::string_view id) { return registry.find(id)->displayName == name; }));
+    }
+    REQUIRE(registry.find(kSurpriseAnimation));
+    CHECK(registry.find(kSurpriseAnimation)->displayName == "Surprise Me");
+    CHECK_FALSE(isAnimationTransition("crossDissolve"));
+
+    // Picks: every animation turns up, with its option in range; Start and End are kept, nothing else.
+    std::set<std::string> picked;
+    for (std::uint64_t seed = 0; seed < 400; ++seed) {
+        const PickedAnimation p = surpriseAnimation(seed, {{"end", ParamValue(0.8)}, {"side", ParamValue(9.0)}});
+        INFO(p.effect);
+        picked.insert(p.effect);
+        const EffectDescriptor* d = registry.find(p.effect);
+        REQUIRE(d);
+        CHECK(p.effect != kSurpriseAnimation);
+        bool end = false;
+        for (const EffectParam& param : p.params) {
+            const EffectParamInfo* info = d->param(param.key);
+            REQUIRE(info);
+            CHECK(param.value.isValid(info->minValue, info->maxValue));
+            end = end || (param.key == "end" && param.value.valueAt(Ticks{}) == 0.8);
+        }
+        CHECK(end);
+    }
+    CHECK(picked.size() == animationTransitions().size());
+    CHECK(surpriseAnimation(7).effect == surpriseAnimation(7).effect);
+
+    // Added on a clip's In point: stored as the animation it picked, one step; changing a transition to Surprise Me
+    // picks too.
+    Timeline tl(R"(
+        V1 tgt |Aaaaaaaaaaaa|
+    )");
+    TransitionSpec in;
+    in.incoming = tl.clip("V1@0");
+    in.after = f(4);
+    in.effect = std::string(kSurpriseAnimation);
+    const auto r = ok(edit::addTransition(tl.state, tl.seq, tl.track("V1"), in));
+    const Transition& added = trackOf(r.state, tl.seq).transitions.at(0);
+    CHECK(added.effect != kSurpriseAnimation);
+    CHECK(std::ranges::find(animationTransitions(), added.effect) != animationTransitions().end());
+    edit::TransitionChange again;
+    again.effect = std::string(kSurpriseAnimation);
+    const auto changed = edit::setTransition(r.state, tl.seq, added.id, again);
+    REQUIRE(changed);
+    const Transition& now = trackOf(changed->state, tl.seq).transitions.at(0);
+    CHECK(now.effect != kSurpriseAnimation);
+    CHECK(isAnimationTransition(now.effect));
 }

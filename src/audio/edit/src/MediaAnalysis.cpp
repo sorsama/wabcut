@@ -674,6 +674,54 @@ public:
 
 std::shared_ptr<ChannelAnalyzer> makeMediaChannelAnalyzer() { return std::make_shared<MediaChannelAnalyzer>(); }
 
+namespace {
+
+/// p02 audio: Essential Sound auto-tagging on decoded audio: at most kMaxSeconds from the middle of the source range,
+/// mono at 16 kHz, through SoundClassifier.h.
+class MediaSoundTagger final : public SoundTagger {
+public:
+    std::expected<SoundGuess, Error> classify(const ProjectState& state, const MediaItem& item, int streamOrdinal,
+                                             TimeRange sourceRange, command::ExecutionControl* control) override {
+        if (streamOrdinal < 0 || static_cast<std::size_t>(streamOrdinal) >= item.info.audio.size()) {
+            return std::unexpected(Error(ErrorCode::NotFound, "'" + item.name + "' has no audio stream " + std::to_string(streamOrdinal)));
+        }
+        constexpr int kRate = 16000;
+        const Rate rate{kRate, 1};
+        const Ticks most = Ticks::fromSeconds(static_cast<std::int64_t>(kMaxSeconds));
+        const Ticks length = std::min(sourceRange.duration, most);
+        const Ticks from = sourceRange.start + Ticks{(sourceRange.duration - length).value / 2};
+        const std::int64_t total = ticksToSamples(length, rate);
+        SessionFeed feed(state);
+        std::vector<float> mono(static_cast<std::size_t>(std::max<std::int64_t>(total, 0)), 0.0f);
+        constexpr std::int64_t kBlock = 16384;
+        std::int64_t got = 0;
+        while (got < total) {
+            const std::int64_t n = std::min(kBlock, total - got);
+            const auto read = feed.read(item.id, streamOrdinal, from + samplesToTicks(got, rate),
+                                        std::span<float>(mono.data() + got, static_cast<std::size_t>(n)), 1, rate);
+            if (!read) {
+                return std::unexpected(read.error());
+            }
+            const auto frames = static_cast<std::int64_t>(std::min<std::size_t>(*read, static_cast<std::size_t>(n)));
+            got += frames;
+            if (frames < n) {
+                break; // the media ended
+            }
+            if (control != nullptr) {
+                if (auto stop = control->checkpoint("listening to the clip")) {
+                    return std::unexpected(Error(ErrorCode::Cancelled, stop->message));
+                }
+            }
+        }
+        mono.resize(static_cast<std::size_t>(got));
+        return classifySound(mono, kRate);
+    }
+};
+
+} // namespace
+
+std::shared_ptr<SoundTagger> makeMediaSoundTagger() { return std::make_shared<MediaSoundTagger>(); }
+
 std::shared_ptr<AudioServices> makeMediaAudioServices(std::shared_ptr<const ai::edit::TranscriptProvider> transcripts,
                                                       std::shared_ptr<ai::AnalysisCache> cache) {
     RenderAnalysisOptions options;
@@ -683,6 +731,7 @@ std::shared_ptr<AudioServices> makeMediaAudioServices(std::shared_ptr<const ai::
                                                                                            EnergySpeechOptions{}, options));
     services->music = makeMediaMusicAnalyzer(cache); // A.7
     services->channels = makeMediaChannelAnalyzer(); // A.9
+    services->tagger = makeMediaSoundTagger();       // p02 audio: Essential Sound auto-tagging
     services->sync = makeMediaAudioSync(std::move(cache)); // A.5
     return services;
 }

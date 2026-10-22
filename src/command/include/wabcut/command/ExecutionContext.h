@@ -15,6 +15,7 @@
 #include <wabcut/model/CaptionText.h>
 #include <wabcut/model/Clipboard.h>
 #include <wabcut/model/EditOps.h>
+#include <wabcut/model/EffectPresets.h>
 #include <wabcut/model/GamingOps.h>
 #include <wabcut/model/History.h>
 #include <wabcut/model/Nesting.h>
@@ -200,6 +201,43 @@ public:
 private:
     std::filesystem::path m_userLibrary;
     std::shared_ptr<const TextMeasurer> m_measurer;
+};
+
+/// 0.2, effect presets (EffectPresets.h): the user's Effects panel items - presets, presets bins, custom bins and
+/// favourites - for the effects.* commands. Premiere keeps them with the user, not the project: the app's live in its
+/// data folder ("effects-library.json"), wabcut-cli's in the WABCUT_EFFECTS_LIBRARY file; an engine whose services have
+/// none keeps one in memory (CommandEngine), so every session can save and apply presets. The file is read on first
+/// use; a file that does not read is left untouched (error()) and the library starts empty. Every change is written
+/// back atomically. Thread-safe; copies share one library.
+class EffectLibraryServices : public CommandServices {
+public:
+    /// Empty `file`: kept in memory only.
+    explicit EffectLibraryServices(std::filesystem::path file = {});
+    const std::filesystem::path& file() const { return m_file; }
+    /// The library (read from the file the first time).
+    EffectsLibrary library() const;
+    /// Replaces the library and writes it to the file; returns the write error, if any (the library in memory is
+    /// replaced anyway, and the error is kept for error()).
+    std::optional<std::string> set(EffectsLibrary library);
+    /// Why the file could not be read or written last, or empty.
+    std::string error() const;
+    /// Counts changes (set and reload), so a host can tell its panels to refresh.
+    std::uint64_t revision() const;
+    /// Reads the file again (another Wabcut may have changed it).
+    void reload();
+
+private:
+    struct Store {
+        std::mutex mutex;
+        bool loaded = false;
+        EffectsLibrary library;
+        std::string error;
+        std::uint64_t revision = 0;
+    };
+    void loadLocked(Store& store) const;
+
+    std::filesystem::path m_file;
+    std::shared_ptr<Store> m_store;
 };
 
 /// C.15, the preview render cache (PreviewCache.h): the project's cache (its folder, index and budget) and the render

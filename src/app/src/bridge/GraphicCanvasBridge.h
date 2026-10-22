@@ -185,6 +185,9 @@ public:
         double fontSize = 72;
         bool italic = false;
         Rgba fill{1, 1, 1, 1};
+        /// 0.2, type on a path: the path at the graphic time (its own pixels; empty: none).
+        std::vector<MaskVertex> textPath;
+        bool textPathClosed = false;
     };
     struct Resolved {
         ClipId clip;

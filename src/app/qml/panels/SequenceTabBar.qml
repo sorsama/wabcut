@@ -6,6 +6,8 @@ import QtQuick
 // sideways to reorder. Ctrl+Tab / Ctrl+Shift+Tab cycle them from the Timeline (TimelinePanel.runCommand).
 // Design language v3: Chrome-style tabs on a dark strip; the current one is cut from the panel's surface (rounded
 // top corners, flared feet that run into the panel below), the others are text with hairline separators.
+// 0.2, Premiere 25.x: with Show Sequence Label Color (the timeline display settings) a swatch of the sequence's label
+// colour sits before its name; a right click opens the Label menu (the same label as in the Project panel).
 Item {
     id: root
 
@@ -24,6 +26,36 @@ Item {
         color: Theme.sunken
         topLeftRadius: Theme.radiusTab
         topRightRadius: Theme.radiusTab
+    }
+
+    // 0.2, the tab's right-click menu: Premiere's Label (the 16 label colours, Library.labelNames).
+    ContextMenu {
+        id: tabMenu
+        objectName: "sequenceTabMenu"
+        property string sequence: ""
+        function openFor(sequenceId, target, point) {
+            sequence = sequenceId
+            popup(target, point.x, point.y)
+        }
+        ContextMenu {
+            id: tabLabelMenu
+            objectName: "sequenceTabLabelMenu"
+            title: qsTr("Label")
+            Instantiator {
+                model: Library.labelNames
+                delegate: ContextMenuItem {
+                    required property string modelData
+                    required property int index
+                    objectName: "sequenceTabLabelItem_" + index
+                    text: modelData
+                    iconName: "square"
+                    iconColor: Theme.clipColor(index)
+                    onTriggered: SequenceTabs.setLabel(tabMenu.sequence, index)
+                }
+                onObjectAdded: (index, object) => tabLabelMenu.insertItem(index, object as ContextMenuItem)
+                onObjectRemoved: (index, object) => tabLabelMenu.removeItem(object as ContextMenuItem)
+            }
+        }
     }
 
     ListView {
@@ -48,8 +80,10 @@ Item {
             readonly property bool closable: SequenceTabs.count > 1
 
             objectName: "sequenceTab_" + modelData.id
+            readonly property bool showLabel: Preferences.showSequenceLabelColor
             width: Math.min(Theme.sequenceTabMaxWidth, glyph.width + label.implicitWidth + Theme.space(6.5)
-                                                       + (closable ? close.width : 0))
+                                                       + (closable ? close.width : 0)
+                                                       + (showLabel ? swatch.width + Theme.space(1.5) : 0))
             height: list.height
             z: current ? 1 : 0
             opacity: root.dragFrom === index ? 0.6 : 1
@@ -109,9 +143,24 @@ Item {
                 size: Theme.iconXs
                 color: tab.current ? Theme.accentStroke : Theme.textTertiary
             }
+            // 0.2: the sequence's label colour (Show Sequence Label Color).
+            Rectangle {
+                id: swatch
+                objectName: "sequenceTabLabel_" + tab.modelData.id
+                visible: tab.showLabel
+                anchors.left: glyph.right
+                anchors.leftMargin: Theme.space(1.5)
+                anchors.verticalCenter: face.verticalCenter
+                width: Theme.space(2.5)
+                height: width
+                radius: Theme.radiusBadge / 2
+                color: Theme.clipColor(tab.modelData.label ?? 0)
+                border.width: Theme.hairline
+                border.color: Theme.clipBorder
+            }
             Text {
                 id: label
-                anchors.left: glyph.right
+                anchors.left: tab.showLabel ? swatch.right : glyph.right
                 anchors.leftMargin: Theme.space(1.5)
                 anchors.right: tab.closable ? close.left : parent.right
                 anchors.verticalCenter: face.verticalCenter
@@ -127,13 +176,15 @@ Item {
                 id: area
                 anchors.fill: parent
                 hoverEnabled: true
-                acceptedButtons: Qt.LeftButton | Qt.MiddleButton
+                acceptedButtons: Qt.LeftButton | Qt.MiddleButton | Qt.RightButton
                 cursorShape: Qt.PointingHandCursor
                 property real pressX: 0
                 onPressed: mouse => {
                     pressX = mouse.x
                     if (mouse.button === Qt.LeftButton)
                         SequenceTabs.activate(tab.modelData.id)
+                    else if (mouse.button === Qt.RightButton)
+                        tabMenu.openFor(tab.modelData.id, area, Qt.point(mouse.x, mouse.y)) // 0.2: Label
                 }
                 onPositionChanged: mouse => {
                     if (!(mouse.buttons & Qt.LeftButton))

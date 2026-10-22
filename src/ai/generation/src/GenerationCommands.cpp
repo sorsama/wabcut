@@ -62,7 +62,7 @@ void registerGenerationCommands(CommandRegistry& registry) {
     add({"provenance.report", 1, "Generated media provenance", "Unsigned report of generated segments; no prompts or credentials.",
         Capability::Read, schema::object({{"sequence", schema::integer("Sequence id.", 1)}}), Json::object(), {},
         [](ExecutionContext& c) { CommandOutput out; out.state = c.state(); out.data = provenanceReport(c.state(), c.sequenceId()); return out; }});
-    for (const std::string operation : {"extend", "broll", "image"}) {
+    for (const std::string operation : {"extend", "broll", "image", "sfx"}) {
         Json props{{"prompt", schema::string("What to generate.")}, {"sequence", schema::integer("Sequence id.", 1)}};
         std::vector<std::string> required;
         if (operation == "extend") {
@@ -77,6 +77,12 @@ void registerGenerationCommands(CommandRegistry& registry) {
             props["aspect"]["enum"] = Json::array({"16:9", "9:16"});
             props["at"] = schema::integer("Placement in timeline ticks.", 0);
             required = {"prompt", "duration", "aspect"};
+        } else if (operation == "sfx") {
+            // 0.2: a sound effect from a prompt (Premiere's Generative Media), through the user's own key.
+            props["duration"] = schema::number("Seconds (0.5 to 30); omit and the model picks the length.", 0.5, 30.0);
+            props["loop"] = schema::boolean("A seamless loop (ambience, engine hum). Default false.", false);
+            props["at"] = schema::integer("Placement in timeline ticks, on a new audio track.", 0);
+            required = {"prompt"};
         } else {
             props["size"] = schema::string("Image output tier, currently 720p.");
             props["size"]["enum"] = Json::array({"720p"});
@@ -88,6 +94,7 @@ void registerGenerationCommands(CommandRegistry& registry) {
             Capability::EditProject, params,
             operation == "extend" ? Json{{"clip", 1}, {"side", "tail"}, {"seconds", 4}} :
             operation == "broll" ? Json{{"prompt", "Aerial city"}, {"duration", 4}, {"aspect", "16:9"}} :
+            operation == "sfx" ? Json{{"prompt", "Footsteps on gravel, slow"}, {"duration", 4}} :
             Json{{"prompt", "Soft paper background"}, {"size", "720p"}}, {}, [operation](ExecutionContext& c) { return generate(c, operation); }}));
     }
 }
@@ -113,7 +120,10 @@ std::expected<CommandOutput, Error> stageAsset(const ProjectState& original, Seq
         asset.generated->source = source->media;
         asset.generated->operation = head ? "extend-head" : "extend-tail";
     }
-    if (at || extend) {
+    // 0.2: a generated sound effect (audio only) is placed on an audio track of its own; it never extends a clip.
+    const bool sound = asset.info.video.empty() && !asset.info.audio.empty();
+    if (sound && extend) return invalid("a sound effect cannot extend a clip");
+    if ((at || extend) && !sound) {
         if (asset.info.video.empty()) return invalid("placed asset has no video");
         const auto& video = asset.info.video.front();
         if (video.width != sequence->width || video.height != sequence->height || video.frameRate != sequence->frameRate)
@@ -125,11 +135,12 @@ std::expected<CommandOutput, Error> stageAsset(const ProjectState& original, Seq
     out.data = {{"media", imported->id.value}, {"aiGenerated", true}};
     if (!at) return out; // Library-only import
     if (!track.isValid()) {
-        auto added = wabcut::edit::addTrack(out.state, sequenceId, TrackKind::Video, "Generated B-roll");
+        auto added = wabcut::edit::addTrack(out.state, sequenceId, sound ? TrackKind::Audio : TrackKind::Video,
+                                            sound ? "Generated sound" : "Generated B-roll");
         if (!added) return std::unexpected(added.error());
         track = added->id; out.state = std::move(added->state);
     }
-    wabcut::edit::SourceClip clip{imported->id, {Ticks{}, duration}, {{{StreamKind::Video, 0}, track}}};
+    wabcut::edit::SourceClip clip{imported->id, {Ticks{}, duration}, {{{sound ? StreamKind::Audio : StreamKind::Video, 0}, track}}};
     auto placed = wabcut::edit::overwriteEdit(out.state, sequenceId, clip, *at);
     if (!placed) return std::unexpected(placed.error());
     out.state = std::move(placed->state);

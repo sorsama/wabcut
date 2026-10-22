@@ -20,8 +20,13 @@
 namespace wabcut::app {
 namespace {
 using namespace ai;
-MediaGenerationRequest requestFor(const ModelSpec& model, const QString& prompt, int seconds, const QString& aspect) {
+MediaGenerationRequest requestFor(const ModelSpec& model, const QString& prompt, int seconds, const QString& aspect, bool loop = false) {
     MediaGenerationRequest r; r.prompt = prompt.toStdString(); r.aspectRatio = aspect.toStdString();
+    if (model.generation.soundEffect) { // 0.2: a sound effect; 0 seconds = the model picks the length
+        r.kind = GeneratedMediaKind::SoundEffect; r.aspectRatio.clear(); r.resolution.clear(); r.loop = loop;
+        if (seconds > 0) r.duration = Ticks::fromSeconds(seconds);
+        return r;
+    }
     r.kind = model.generation.image ? GeneratedMediaKind::Image : GeneratedMediaKind::Video;
     r.resolution = "720p"; if (!model.generation.image) r.duration = Ticks::fromSeconds(seconds);
     return r;
@@ -105,26 +110,33 @@ GenerateController* GenerateController::create(QQmlEngine* engine, QJSEngine*) {
 QVariantList GenerateController::models() const {
     QVariantList list;
     for (const auto* m : ai::ModelRegistry::builtin().modelsWith(ai::Capability::GenerateMedia))
-        list.push_back(QVariantMap{{"id", qs(m->id)}, {"name", qs(m->name)}, {"provider", qs(m->provider)}, {"image", m->generation.image}});
+        list.push_back(QVariantMap{{"id", qs(m->id)}, {"name", qs(m->name)}, {"provider", qs(m->provider)}, {"image", m->generation.image},
+            {"sound", m->generation.soundEffect}, {"loop", m->generation.loop}, {"maxSeconds", m->generation.maxSeconds}});
     return list;
 }
-QVariantMap GenerateController::estimate(const QString& modelId, const QString& prompt, int seconds, const QString& aspect) const {
-    if (!m_ai || seconds < 1 || seconds > 10) return {{"ok", false}, {"error", tr("Choose 1 to 10 seconds")}};
-    const auto* model = m_ai->platform().providers().models().model(modelId.toStdString());
+QVariantMap GenerateController::estimate(const QString& modelId, const QString& prompt, int seconds, const QString& aspect, bool loop) const {
+    const auto* model = m_ai ? m_ai->platform().providers().models().model(modelId.toStdString()) : nullptr;
     if (!model) return {{"ok", false}, {"error", tr("Choose a generation model")}};
-    auto p = m_ai->platform().preflightGeneration(model->id, requestFor(*model, prompt, seconds, aspect));
+    if (model->generation.soundEffect) {
+        if (seconds < 0 || seconds > model->generation.maxSeconds || (seconds > 0 && seconds < model->generation.minSeconds))
+            return {{"ok", false}, {"error", tr("Choose up to %1 seconds (0: the model picks)").arg(model->generation.maxSeconds)}};
+    } else if (seconds < 1 || seconds > 10) {
+        return {{"ok", false}, {"error", tr("Choose 1 to 10 seconds")}};
+    }
+    auto p = m_ai->platform().preflightGeneration(model->id, requestFor(*model, prompt, seconds, aspect, loop));
     if (!p) return {{"ok", false}, {"error", qs(p.error().message)}};
     return {{"ok", p->cost.priced && p->consent != ai::ConsentState::Blocked}, {"cost", qs(ai::formatUsd(p->cost.ceiling))},
         {"dollars", static_cast<double>(p->cost.ceiling) / 1000000.0}, {"provider", qs(p->candidate.provider->name)},
         {"terms", qs(p->candidate.provider->termsUrl)}, {"dataPolicy", qs(p->candidate.provider->dataPolicy)},
-        {"seconds", ai::generatedSeconds(model->generation, Ticks::fromSeconds(seconds))},
+        {"seconds", model->generation.soundEffect ? ai::soundEffectSeconds(*model, requestFor(*model, prompt, seconds, aspect, loop))
+                                                  : static_cast<double>(ai::generatedSeconds(model->generation, Ticks::fromSeconds(seconds)))},
         {"error", p->consent == ai::ConsentState::Blocked ? tr("Offline / no-cloud is enabled") : QString{}}};
 }
 void GenerateController::run(const QString& id, const QString& prompt, int seconds, const QString& aspect,
-    double maxDollars, bool consentOnce, double atSeconds, const QString& clipKey, bool head, bool acknowledgeRedactions) {
+    double maxDollars, bool consentOnce, double atSeconds, const QString& clipKey, bool head, bool acknowledgeRedactions, bool loop) {
     if (m_busy || !m_ai || !m_project) return;
     const QString effectivePrompt = !clipKey.isEmpty() && prompt.trimmed().isEmpty() ? QStringLiteral("Continue this shot naturally.") : prompt;
-    auto preview = estimate(id, effectivePrompt, seconds, aspect);
+    auto preview = estimate(id, effectivePrompt, seconds, aspect, loop);
     if (!preview.value("ok").toBool() || !consentOnce || !std::isfinite(maxDollars) || maxDollars < 0 || maxDollars > 1000 ||
         !std::isfinite(atSeconds) || atSeconds > 86400) { m_message = tr("Review the cost and consent before running"); emit changed(); return; }
     // Cloud keys are never read from a plaintext fallback for generative media.
@@ -132,14 +144,14 @@ void GenerateController::run(const QString& id, const QString& prompt, int secon
         m_message = tr("Generative media requires the system keychain or session keys"); emit changed(); return;
     }
     const auto* model = m_ai->platform().providers().models().model(id.toStdString());
-    auto request = requestFor(*model, effectivePrompt, seconds, aspect);
+    auto request = requestFor(*model, effectivePrompt, seconds, aspect, loop);
     const auto sequence = m_project->currentSequence();
     if (!sequence) { m_message = tr("Open a sequence first"); emit changed(); return; }
     std::optional<ClipId> extend;
     if (!clipKey.isEmpty()) {
         QString numeric = clipKey; if (numeric.startsWith('c')) numeric.remove(0, 1);
         bool ok = false; const auto value = numeric.toULongLong(&ok);
-        if (!ok || !sequence->findClip(ClipId{value}) || model->generation.image) { m_message = tr("Choose a video clip"); emit changed(); return; }
+        if (!ok || !sequence->findClip(ClipId{value}) || model->generation.image || model->generation.soundEffect) { m_message = tr("Choose a video clip"); emit changed(); return; }
         extend = ClipId{value};
         // Validate placement before any upload or charge.
         MediaItem probe; probe.name = "Generation placement check";
@@ -192,9 +204,14 @@ void GenerateController::run(const QString& id, const QString& prompt, int secon
         if (!result) { fail(result.error().message); return; }
         if (result->files.empty()) { fail("Provider returned no generated asset"); return; }
         auto assetPath = result->files.front();
-        const Ticks duration = Ticks::fromSeconds(seconds);
+        Ticks duration = Ticks::fromSeconds(seconds);
         auto info = media::probe(pathToUtf8(assetPath));
         if (!info) { fail(info.error().message); return; }
+        const bool sound = request.kind == ai::GeneratedMediaKind::SoundEffect;
+        if (sound) { // 0.2: the sound effect as it came (its own length: the model may have picked it)
+            if (info->audio.empty() || info->duration.value <= 0) { fail("The provider sent no playable sound"); return; }
+            duration = info->duration;
+        }
         if (request.kind == ai::GeneratedMediaKind::Video) {
             update(tr("Matching the sequence format"), 0.75);
             auto conformedPath = directory / "conformed.mp4";
@@ -203,7 +220,7 @@ void GenerateController::run(const QString& id, const QString& prompt, int secon
             if (!conformed) { fail(conformed.error().message); return; }
             info = std::move(conformed); assetPath = conformedPath;
         }
-        MediaItem asset; asset.name = "AI-generated " + id.toStdString(); asset.locator.path = pathToUtf8(assetPath); asset.info = *info;
+        MediaItem asset; asset.name = (sound ? "AI sound effect " : "AI-generated ") + id.toStdString(); asset.locator.path = pathToUtf8(assetPath); asset.info = *info;
         asset.locator.relativePath = relativeMediaPath(projectFile, assetPath);
         auto fingerprint = fingerprintFile(assetPath);
         if (!fingerprint) { fail(fingerprint.error().message); return; }
@@ -211,23 +228,26 @@ void GenerateController::run(const QString& id, const QString& prompt, int secon
         GeneratedProvenance provenance; provenance.provider = result->provider; provenance.model = result->model;
         provenance.promptHash = ai::promptHash(request.prompt); provenance.createdAt = result->createdAt;
         provenance.kind = std::string(ai::toString(request.kind));
-        provenance.operation = extend ? (head ? "extend-head" : "extend-tail") : request.kind == ai::GeneratedMediaKind::Image ? "text-to-image" : "text-to-video";
+        provenance.operation = extend ? (head ? "extend-head" : "extend-tail") : request.kind == ai::GeneratedMediaKind::Image ? "text-to-image"
+                               : sound ? "text-to-sound-effect" : "text-to-video";
         if (extend) provenance.source = sequence->findClip(*extend)->clip().media;
         asset.generated = provenance;
         if (auto wrote = ai::writeProvenanceSidecars(assetPath, provenance); !wrote) { fail(wrote.error().message); return; }
-        const auto at = atSeconds >= 0 && request.kind == ai::GeneratedMediaKind::Video ? std::optional<Ticks>(Ticks{static_cast<std::int64_t>(atSeconds * kTicksPerSecond)}) : std::nullopt;
+        const auto at = atSeconds >= 0 && request.kind != ai::GeneratedMediaKind::Image ? std::optional<Ticks>(Ticks{static_cast<std::int64_t>(atSeconds * kTicksPerSecond)}) : std::nullopt;
         auto stage = ai::generation::stageAsset(original, sequence->id, std::move(asset), duration, at, extend, head);
         if (!stage) { fail(stage.error().message); return; }
         auto picture = directory / "preview.png";
         if (request.kind == ai::GeneratedMediaKind::Image) picture = assetPath;
+        else if (sound) picture.clear(); // nothing to look at: "Open preview" plays it
         else if (auto frame = ai::generation::boundaryFrame(pathToUtf8(assetPath), Ticks{}, stop)) (void)thumbnail(*frame, picture);
         if (stop.stop_requested()) { fail("Generation cancelled"); return; }
         auto state = std::make_shared<const ProjectState>(std::move(stage->state));
         QMetaObject::invokeMethod(this, [this, state, picture, assetPath, stop, cost = result->cost] {
             if (stop.stop_requested()) { m_busy = false; m_message = tr("Generation cancelled"); emit changed(); return; }
             m_staged = state; m_busy = false; m_progress = 1; m_message = tr("Preview ready — accept to import in one undo step");
-            m_results = {QVariantMap{{"preview", QUrl::fromLocalFile(QString::fromStdWString(picture.wstring()))},
-                {"file", QUrl::fromLocalFile(QString::fromStdWString(assetPath.wstring()))}, {"cost", qs(ai::formatUsd(cost))}, {"aiGenerated", true}}};
+            m_results = {QVariantMap{{"preview", picture.empty() ? QUrl() : QUrl::fromLocalFile(QString::fromStdWString(picture.wstring()))},
+                {"file", QUrl::fromLocalFile(QString::fromStdWString(assetPath.wstring()))}, {"cost", qs(ai::formatUsd(cost))}, {"aiGenerated", true},
+                {"sound", picture.empty()}}};
             emit changed();
         }, Qt::QueuedConnection);
         } catch (const std::exception&) { fail("Generation stopped after an internal error"); }
@@ -257,7 +277,9 @@ public:
         QVariantMap p{{"operation", qs(std::string(operation))}, {"prompt", qs(context.string("prompt"))},
             {"aspect", qs(context.string("aspect", "16:9"))}, {"head", context.string("side") == "head"},
             {"clip", operation == "extend" ? QStringLiteral("c%1").arg(context.integer("clip")) : QString{}},
-            {"seconds", operation == "image" ? 4 : static_cast<int>(std::ceil(context.number(operation == "extend" ? "seconds" : "duration")))},
+            {"seconds", operation == "image" ? 4 : operation == "sfx" ? (context.has("duration") ? static_cast<int>(std::ceil(context.number("duration"))) : 0)
+                                                 : static_cast<int>(std::ceil(context.number(operation == "extend" ? "seconds" : "duration")))},
+            {"loop", operation == "sfx" && context.boolean("loop", false)},
             {"at", context.has("at") ? static_cast<double>(context.integer("at")) / kTicksPerSecond : -1.0}};
         const auto sequence = context.sequenceId();
         p["sequence"] = QString::number(sequence.value);

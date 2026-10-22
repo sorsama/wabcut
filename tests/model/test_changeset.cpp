@@ -3,8 +3,13 @@
 #include "TimelineFixture.h"
 
 #include <wabcut/model/ChangeSet.h>
+#include <wabcut/model/ClipGroups.h>
+#include <wabcut/model/ColorManagementOps.h>
 #include <wabcut/model/EditOps.h>
 #include <wabcut/model/EditSession.h>
+#include <wabcut/model/EditingOps.h>
+#include <wabcut/model/FrameScaling.h>
+#include <wabcut/model/MotionOps.h>
 #include <wabcut/model/ProjectOps.h>
 
 #include <catch2/catch_test_macros.hpp>
@@ -124,6 +129,51 @@ TEST_CASE("Property roles say what kind of change happened", "[model][changeset]
 
     const std::vector<ClipId> pair{b, tl.clip("A1@3")};
     CHECK(rolesOf(edit::linkClips(tl.state, tl.seq, pair)) == PropertyRoles(PropertyRole::Link));
+}
+
+TEST_CASE("The 0.2 clip settings report the clip modified with their role (p02 integration)", "[model][changeset]") {
+    // Scale to Frame Size, Hold Filters, Time Interpolation and the input colour space live in the clip's shared
+    // content: a change to any of them alone must still list the clip, so views and caches gated on the ChangeSet
+    // follow it.
+    Timeline tl(R"(
+        V1 tgt |..A10aaaaa..|
+    )");
+    const ClipId clip = tl.clip("V1@2");
+    const std::vector<ClipId> sel{clip};
+    const auto check = [&](const edit::EditResult& r, PropertyRole role) {
+        const SequenceChange& c = only(r, tl.seq);
+        CHECK(c.modifiedClips == sel);
+        CHECK(c.addedClips.empty());
+        CHECK(c.removedClips.empty());
+        CHECK(c.roles == PropertyRoles(role));
+    };
+    SECTION("Scale to Frame Size") {
+        check(ok(edit::setScaleToFrameSize(tl.state, tl.seq, sel, true)), PropertyRole::Motion);
+    }
+    SECTION("Hold Filters on a frame hold") {
+        edit::FrameHoldOptions hold;
+        const auto held = ok(edit::setFrameHoldOptions(tl.state, tl.seq, clip, hold));
+        hold.holdFilters = true;
+        check(ok(edit::setFrameHoldOptions(held.state, tl.seq, clip, hold)), PropertyRole::Source);
+    }
+    SECTION("Time Interpolation") {
+        check(ok(edit::setTimeInterpolation(tl.state, tl.seq, sel, TimeInterpolation::OpticalFlow)), PropertyRole::Source);
+    }
+    SECTION("Input colour space") {
+        check(ok(edit::setClipInputColorSpace(tl.state, tl.seq, sel, InputColorSpace::SLog3SGamut3)), PropertyRole::Effects);
+    }
+    SECTION("Clip group (0.2 timeline)") {
+        Timeline two(R"(
+            V1 tgt |AaBb|
+        )");
+        const std::vector<ClipId> pair{two.clip("V1@0"), two.clip("V1@2")};
+        const auto grouped = ok(edit::groupClips(two.state, two.seq, pair));
+        REQUIRE(grouped.changes.sequences.size() == 1);
+        const SequenceChange* c = grouped.changes.sequence(two.seq);
+        REQUIRE(c);
+        CHECK(std::is_permutation(c->modifiedClips.begin(), c->modifiedClips.end(), pair.begin(), pair.end()));
+        CHECK(c->roles == PropertyRoles(PropertyRole::Link));
+    }
 }
 
 TEST_CASE("A clip moved to another track is modified, not removed and added", "[model][changeset]") {

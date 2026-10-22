@@ -4,6 +4,8 @@
 #include <wabcut/model/MediaLocator.h>
 
 #include <algorithm>
+#include <cmath>
+#include <format>
 #include <system_error>
 
 namespace wabcut::ai {
@@ -28,7 +30,26 @@ AiError invalid(std::string what) { return AiError(AiErrorCode::InvalidRequest, 
 
 } // namespace
 
-std::string_view toString(GeneratedMediaKind kind) { return kind == GeneratedMediaKind::Video ? "video" : "image"; }
+std::string_view toString(GeneratedMediaKind kind) {
+    switch (kind) {
+    case GeneratedMediaKind::Video:
+        return "video";
+    case GeneratedMediaKind::Image:
+        return "image";
+    case GeneratedMediaKind::SoundEffect:
+        return "audio";
+    }
+    return "video";
+}
+
+double soundEffectSeconds(const ModelSpec& model, const MediaGenerationRequest& request) {
+    const GenerationSpec& g = model.generation;
+    if (!request.duration || request.duration->value <= 0) {
+        return g.maxSeconds; // the model picks the length: the estimate assumes the longest
+    }
+    const double asked = static_cast<double>(request.duration->value) / static_cast<double>(kTicksPerSecond);
+    return std::clamp(asked, g.minSeconds, g.maxSeconds);
+}
 
 std::string_view toString(GenerationState state) {
     switch (state) {
@@ -76,6 +97,40 @@ std::expected<void, AiError> checkGenerationRequest(const ModelSpec& model, cons
     }
     const GenerationSpec& g = model.generation;
     const bool video = request.kind == GeneratedMediaKind::Video;
+    if (request.kind == GeneratedMediaKind::SoundEffect) {
+        // 0.2: a sound effect from a prompt alone.
+        if (!g.soundEffect) {
+            return std::unexpected(AiError(AiErrorCode::Unsupported, model.id + " does not generate sound effects"));
+        }
+        if (request.prompt.empty()) {
+            return std::unexpected(invalid("describe the sound"));
+        }
+        if (!request.firstFrame.empty() || !request.lastFrame.empty() || !request.inputClip.empty()) {
+            return std::unexpected(invalid("a sound effect is made from a prompt alone"));
+        }
+        if (g.maxPromptChars > 0 && utf8Length(request.prompt) > static_cast<std::size_t>(g.maxPromptChars)) {
+            return std::unexpected(invalid("the prompt is longer than " + std::to_string(g.maxPromptChars) + " characters"));
+        }
+        if (request.duration) {
+            const double seconds = static_cast<double>(request.duration->value) / static_cast<double>(kTicksPerSecond);
+            if (seconds < g.minSeconds - 1e-9 || seconds > g.maxSeconds + 1e-9) {
+                return std::unexpected(invalid(std::format("a sound effect lasts {:g} to {:g} seconds", g.minSeconds, g.maxSeconds)));
+            }
+        }
+        if (request.loop && !g.loop) {
+            return std::unexpected(AiError(AiErrorCode::Unsupported, model.id + " cannot make a loop"));
+        }
+        if (request.promptInfluence && !(*request.promptInfluence >= 0.0 && *request.promptInfluence <= 1.0)) {
+            return std::unexpected(invalid("prompt influence lies between 0 and 1"));
+        }
+        if (request.count != 1) {
+            return std::unexpected(invalid("one sound effect per request"));
+        }
+        if (!request.extra.empty()) {
+            return std::unexpected(invalid("unpriced provider options are not supported"));
+        }
+        return {};
+    }
     if ((video && !g.video) || (!video && !g.image)) {
         return std::unexpected(
             AiError(AiErrorCode::Unsupported, model.id + " does not generate " + std::string(toString(request.kind))));
@@ -138,6 +193,11 @@ std::expected<void, AiError> checkGenerationRequest(const ModelSpec& model, cons
 Usage generationUsage(const ModelSpec& model, const MediaGenerationRequest& request) {
     Usage u;
     u.mediaTier = generationTier(model, request);
+    if (request.kind == GeneratedMediaKind::SoundEffect) {
+        // Billed per minute of sound: the length asked for, or the longest when the model picks it.
+        u.audioMilliseconds = static_cast<std::int64_t>(std::ceil(soundEffectSeconds(model, request) * 1000.0));
+        return u;
+    }
     if (request.kind == GeneratedMediaKind::Video) {
         const int seconds = generatedSeconds(model.generation, request.duration);
         std::int64_t ms = static_cast<std::int64_t>(seconds) * 1000;

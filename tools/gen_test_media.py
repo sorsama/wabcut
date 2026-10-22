@@ -341,6 +341,51 @@ CLIPS: list[dict] = [
             "-sc_threshold", "0", "-bf", "2", *BT709, *BITEXACT, "{out}",
         ]]],
     },
+    # ---- 0.2 media formats: interlaced footage and camera chapters (spanned clips).
+    {
+        "name": "mpeg2_interlaced_tff.mpg",
+        "what": "MPEG-2 interlaced 640x480 29.97 fps in MPEG-PS (Matroska mislabels the field order), upper field "
+                "first, 30 frames: the upper field (even lines) of frame n is frame 2n of a 59.94 fps pattern and the "
+                "lower field frame 2n + 1, each with its own barcode",
+        "expect": {"codec_name": "mpeg2video", "field_order": "tt"},
+        "recipes": [[[
+            "-filter_complex",
+            video_source("640x480", "60000/1001", "1.001", "yuv420p", extra="tinterlace=mode=interleave_top,setfield=tff"),
+            "-map", "[v]", "-frames:v", "30",
+            "-c:v", "mpeg2video", "-q:v", "2", "-g", "15", "-bf", "0", *BT709,
+            "-fflags", "+bitexact", "-flags:v", "+ilme+ildct+bitexact", "-map_metadata", "-1", "{out}",
+        ]]],
+    },
+    *[{
+        "name": name,
+        "what": f"GoPro-style chapter {chapter} of one recording: H.264 640x360 30 fps, frames {first}..{first + 29} "
+                f"(barcodes {first}..{first + 29}) + AAC stereo 48 kHz (a 440 Hz sine continuing from {first / 30:g} s)",
+        "expect": {"codec_name": "h264", "nb_frames": "30"},
+        "recipes": [[[
+            "-filter_complex",
+            video_source("640x360", "30", "2", "yuv420p", extra=f"trim=start_frame={first}:end_frame={first + 30},"
+                                                                 "setpts=PTS-STARTPTS") +
+            f";aevalsrc=exprs='0.5*sin(2*PI*440*(t+{first / 30}))|0.5*sin(2*PI*440*(t+{first / 30}))':s=48000:d=1[a]",
+            "-map", "[v]", "-map", "[a]",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "16", "-g", "30", "-bf", "0", *BT709,
+            "-c:a", "aac", "-b:a", "128k", *BITEXACT, "{out}",
+        ]]],
+    } for name, chapter, first in (("GX010042.MP4", 1, 0), ("GX020042.MP4", 2, 30))],
+    *[{
+        "name": name,
+        "what": f"AVCHD-style stream file: H.264 640x360 30 fps in MPEG-TS, frames {first}..{first + 29} (barcodes "
+                f"{first}..{first + 29}) + AAC stereo 48 kHz; two of them are one spanned recording",
+        "expect": {"codec_name": "h264"},
+        "recipes": [[[
+            "-filter_complex",
+            video_source("640x360", "30", "2", "yuv420p", extra=f"trim=start_frame={first}:end_frame={first + 30},"
+                                                                 "setpts=PTS-STARTPTS") +
+            f";aevalsrc=exprs='0.5*sin(2*PI*660*(t+{first / 30}))|0.5*sin(2*PI*660*(t+{first / 30}))':s=48000:d=1[a]",
+            "-map", "[v]", "-map", "[a]",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "16", "-g", "30", "-bf", "0", *BT709,
+            "-c:a", "aac", "-b:a", "128k", "-f", "mpegts", *BITEXACT, "{out}",
+        ]]],
+    } for name, first in (("avchd_00000.MTS", 0), ("avchd_00001.MTS", 30))],
     # ---- RC.1 stills: a PNG with alpha (FFmpeg's png codec needs its zlib feature) and a JPEG.
     {
         "name": "still_alpha.png",

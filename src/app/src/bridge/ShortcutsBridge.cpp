@@ -923,11 +923,13 @@ QString ShortcutsBridge::exportOverrides(const QUrl& url) const {
         return tr("Keyboard shortcuts are not available");
     }
     QString path = url.isLocalFile() ? url.toLocalFile() : url.toString();
-    if (!path.endsWith(QLatin1String(".json"), Qt::CaseInsensitive)) {
+    // P.2: a .kys is a whole Premiere key set (Keyboard Shortcuts > Save As); otherwise the overrides as .json.
+    const bool kys = path.endsWith(QLatin1String(".kys"), Qt::CaseInsensitive);
+    if (!kys && !path.endsWith(QLatin1String(".json"), Qt::CaseInsensitive)) {
         path += QStringLiteral(".json");
     }
     QSaveFile file(path);
-    const std::string json = keys->saveOverrides();
+    const std::string json = kys ? km::exportKys(*keys).xml : keys->saveOverrides();
     if (!file.open(QIODevice::WriteOnly) || file.write(json.data(), static_cast<qint64>(json.size())) < 0 || !file.commit()) {
         return tr("Cannot write %1: %2").arg(QFileInfo(path).fileName(), file.errorString());
     }

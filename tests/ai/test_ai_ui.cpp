@@ -18,6 +18,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <wabcut/ai/ChildProcess.h>
 #include <wabcut/ai/Secrets.h>
 #include <wabcut/ai/llm/Tiers.h>
 
@@ -418,4 +419,52 @@ TEST_CASE("Rough cut placement with the cloud model asks for consent instead of 
     const QString refused = roughCut->preview(QStringLiteral("- the intro\n- why we started"), {{QStringLiteral("interpret"), true}});
     CHECK(refused.contains(QStringLiteral("consent")));
     CHECK_FALSE(roughCut->busy()); // nothing ran
+}
+
+// 0.2: the AI helpers' CPU cap is a preference (Preferences > AI > Models): persisted, applied to helpers started
+// afterwards (the process-wide helper policy), 75 % by default.
+TEST_CASE("AiController: the AI helpers' CPU limit is persisted and sets the helper policy (0.2)", "[ai][ui][cpu]") {
+    isolate();
+    const wabcut::ai::HelperCpuPolicy saved = wabcut::ai::helperCpuPolicy();
+    {
+        AiController ai;
+        CHECK(ai.helperCpuLimit() == wabcut::ai::kDefaultHelperCpuPercent);
+        ai.setHelperCpuLimit(50);
+        CHECK(ai.helperCpuLimit() == 50);
+        CHECK(wabcut::ai::helperCpuPolicy().cpuRatePercent == 50);
+        CHECK(wabcut::ai::helperCpuPolicy().lowPriority);
+        ai.setHelperCpuLimit(500); // clamped
+        CHECK(ai.helperCpuLimit() == 100);
+        ai.setHelperCpuLimit(25);
+    }
+    wabcut::ai::setHelperCpuPolicy({});
+    {
+        AiController again; // read back at start
+        CHECK(again.helperCpuLimit() == 25);
+        CHECK(wabcut::ai::helperCpuPolicy().cpuRatePercent == 25);
+    }
+    wabcut::ai::setHelperCpuPolicy(saved);
+}
+
+// 0.2: Generate lists the sound-effect model with its kind, and its estimate takes 0 seconds (the model picks the length,
+// estimated at its longest) or a length up to 30 s.
+TEST_CASE("Generate offers sound effects with their own lengths and price (0.2)", "[ai][ui][generation][sfx]") {
+    isolate();
+    AiController ai;
+    wabcut::app::GenerateController generate;
+    generate.setAiController(&ai);
+    const QVariantMap sound = find(generate.models(), QStringLiteral("id"), QStringLiteral("eleven_text_to_sound_v2"));
+    REQUIRE_FALSE(sound.isEmpty());
+    CHECK(sound.value(QStringLiteral("sound")).toBool());
+    CHECK(sound.value(QStringLiteral("loop")).toBool());
+    CHECK(sound.value(QStringLiteral("maxSeconds")).toDouble() == 30.0);
+    const QVariantMap four = generate.estimate(QStringLiteral("eleven_text_to_sound_v2"), QStringLiteral("rain on a tent"), 4, {}, false);
+    CHECK(four.value(QStringLiteral("cost")).toString().contains(QStringLiteral("0.008")));
+    CHECK(four.value(QStringLiteral("seconds")).toDouble() == 4.0);
+    const QVariantMap picked = generate.estimate(QStringLiteral("eleven_text_to_sound_v2"), QStringLiteral("rain on a tent"), 0, {}, true);
+    CHECK(picked.value(QStringLiteral("seconds")).toDouble() == 30.0);
+    CHECK(picked.value(QStringLiteral("cost")).toString().contains(QStringLiteral("0.06")));
+    CHECK_FALSE(generate.estimate(QStringLiteral("eleven_text_to_sound_v2"), QStringLiteral("rain"), 45, {}, false).value(QStringLiteral("ok")).toBool());
+    // A video model keeps its own range.
+    CHECK_FALSE(generate.estimate(QStringLiteral("gen4.5"), QStringLiteral("city"), 0, QStringLiteral("16:9")).value(QStringLiteral("ok")).toBool());
 }

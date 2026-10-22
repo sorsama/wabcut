@@ -3,7 +3,9 @@ import QtQuick
 
 // Timeline display settings (M5i; the Tracks header's sliders button): Premiere's thumbnail modes, waveform styles,
 // through edits, duplicate frame markers, clip markers, the snap indicator, linked selection, and the track heights
-// (expand all, minimise all, presets). Choices apply at once and persist through Preferences.
+// (expand all, minimise all, presets). Choices apply at once and persist through Preferences. 0.2: the video and audio
+// fade handles, sequence label colours on the tabs and audio time units (kept by Monitors, shared with the Program
+// Monitor's menu).
 Popover {
     id: root
     objectName: "timelineDisplayPopover"
@@ -74,6 +76,13 @@ Popover {
             checked: Preferences.logarithmicWaveforms
             onToggled: Preferences.logarithmicWaveforms = checked
         }
+        Toggle {
+            objectName: "volumeWaveformsToggle"
+            text: qsTr("Use clip volume")
+            tooltip: qsTr("Show audio waveforms using clip volume: scaled by each clip's Audio Gain and Volume keyframes")
+            checked: Preferences.volumeWaveforms
+            onToggled: Preferences.volumeWaveforms = checked
+        }
 
         GroupLabel { text: qsTr("Audio track keyframes") }
         PillTabs {
@@ -121,6 +130,35 @@ Popover {
             tooltip: qsTr("Clicking a clip selects its linked clips; Alt-click selects one")
             checked: Preferences.linkedSelection
             onToggled: Preferences.linkedSelection = checked
+        }
+        // 0.2: Premiere's Show Video / Audio Fade Handles, Show Sequence Label Color and Show Audio Time Units.
+        Toggle {
+            objectName: "videoFadeHandlesToggle"
+            text: qsTr("Video fade handles")
+            tooltip: qsTr("Handles in the top corners of video clips: drag one to fade in or out")
+            checked: Preferences.showVideoFadeHandles
+            onToggled: Preferences.showVideoFadeHandles = checked
+        }
+        Toggle {
+            objectName: "audioFadeHandlesToggle"
+            text: qsTr("Audio fade handles")
+            tooltip: qsTr("Handles in the top corners of audio clips: drag one to fade in or out")
+            checked: Preferences.showAudioFadeHandles
+            onToggled: Preferences.showAudioFadeHandles = checked
+        }
+        Toggle {
+            objectName: "sequenceLabelColorToggle"
+            text: qsTr("Sequence label colour")
+            tooltip: qsTr("A swatch of each sequence's label colour on its tab; right-click a tab to change it")
+            checked: Preferences.showSequenceLabelColor
+            onToggled: Preferences.showSequenceLabelColor = checked
+        }
+        Toggle {
+            objectName: "audioTimeUnitsToggle"
+            text: qsTr("Audio time units")
+            tooltip: qsTr("Count time in audio samples: the playhead and audio clips move between frames")
+            checked: Monitors.audioTimeUnits
+            onToggled: Monitors.audioTimeUnits = checked
         }
 
         GroupLabel { text: qsTr("Track height") }

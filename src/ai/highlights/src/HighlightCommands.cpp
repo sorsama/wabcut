@@ -9,6 +9,7 @@
 #include <wabcut/model/EditSession.h>
 #include <wabcut/model/FinishingOps.h>
 #include <wabcut/model/MediaLocator.h>
+#include <wabcut/model/Resolve.h>
 
 #include <algorithm>
 #include <cctype>
@@ -226,18 +227,21 @@ std::vector<Marker> replaceHighlightMarkers(const std::vector<Marker>& existing,
     return markers;
 }
 
-/// Every recording the sequence's enabled clips play (not nested, generated or still media), in first-seen order.
+/// Every recording the sequence's enabled clips play (not generated or still media; 0.2: a nested or multicam clip
+/// the recordings it plays, its active angles), in first-seen order.
 std::vector<const MediaItem*> recordingsOf(const ProjectState& state, const Sequence& seq) {
     std::vector<const MediaItem*> recordings;
     std::set<std::uint64_t> seen;
     for (const std::vector<TrackPtr>* tracks : {&seq.videoTracks, &seq.audioTracks}) {
         for (const TrackPtr& t : *tracks) {
             for (const Clip& clip : t->clips) {
-                if (!clip.enabled || clip.isNested() || !seen.insert(clip.media.value).second) {
-                    continue;
-                }
-                if (const MediaItem* item = state.findMedia(clip.media); item && !item->isGenerator() && !item->info.isStillImage) {
-                    recordings.push_back(item);
+                for (const MediaId media : mediaPlayedBy(state, clip)) {
+                    if (!seen.insert(media.value).second) {
+                        continue;
+                    }
+                    if (const MediaItem* item = state.findMedia(media); item && !item->isGenerator() && !item->info.isStillImage) {
+                        recordings.push_back(item);
+                    }
                 }
             }
         }

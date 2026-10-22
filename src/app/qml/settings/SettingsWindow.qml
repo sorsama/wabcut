@@ -62,7 +62,7 @@ Popup {
         return null
     }
     /// Runs `what` once the window has closed (see the header): "media", "plugins", "audio", "extensions",
-    /// "shortcuts" or "trainer".
+    /// "shortcuts", "trainer" or "editing" (0.2: Preferences > Media and Timeline).
     function runAction(what: string) {
         if (!root.visible) {
             root.dispatch(what)
@@ -82,6 +82,8 @@ Popup {
             Extensions.openManager()
         else if (what === "shortcuts" || what === "trainer")
             root.helpRequested(what)
+        else if (what === "editing")
+            Editing.runCommand("edit.preferencesMedia")
     }
 
     parent: Overlay.overlay
@@ -320,7 +322,9 @@ Popup {
     }
     Component {
         id: timelinePage
-        TimelineSettingsPage {}
+        TimelineSettingsPage {
+            onActionRequested: what => root.runAction(what)
+        }
     }
     Component {
         id: performancePage

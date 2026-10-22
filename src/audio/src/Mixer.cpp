@@ -121,8 +121,21 @@ void Mixer::beginBlock(std::span<float> output) noexcept {
     }
 }
 
+bool Mixer::busAudible(int bus) const noexcept {
+    if (bus < 0 || bus >= m_busCount) {
+        return false;
+    }
+    const BusParams& p = m_params[bus];
+    return !p.muted.load(std::memory_order_relaxed) && (!m_anySolo || p.soloed.load(std::memory_order_relaxed));
+}
+
 void Mixer::addBus(int bus, std::span<const float> input, int inputChannels) noexcept {
-    if (bus < 0 || bus >= m_busCount || m_blockFrames == 0) {
+    addBusTo(bus, input, inputChannels, m_block);
+}
+
+void Mixer::addBusTo(int bus, std::span<const float> input, int inputChannels, std::span<float> destination) noexcept {
+    if (bus < 0 || bus >= m_busCount || m_blockFrames == 0 ||
+        destination.size() < static_cast<std::size_t>(m_blockFrames) * static_cast<std::size_t>(m_channels)) {
         return;
     }
     BusState& state = m_state[bus];
@@ -170,7 +183,7 @@ void Mixer::addBus(int bus, std::span<const float> input, int inputChannels) noe
         }
         const std::size_t samples = static_cast<std::size_t>(n) * outCh;
         m_busMeters[bus].process(std::span<const float>(scratch, samples));
-        float* const out = m_block.data() + static_cast<std::size_t>(sliceStart) * outCh;
+        float* const out = destination.data() + static_cast<std::size_t>(sliceStart) * outCh;
         for (std::size_t s = 0; s < samples; ++s) {
             out[s] += scratch[s];
         }

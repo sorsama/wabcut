@@ -6,8 +6,10 @@
 #include "ProjectLifecycle.h"
 
 #include <wabcut/ai/edit/TranscriptCommands.h>
+#include <wabcut/ai/vision/ColorFaces.h>
 #include <wabcut/color/Cdl.h>
 #include <wabcut/color/ColorCommands.h>
+#include <wabcut/color/ColorSpaces.h>
 #include <wabcut/color/Looks.h>
 #include <wabcut/command/Engine.h>
 #include <wabcut/editor/ColorFrames.h>
@@ -93,6 +95,9 @@ void ColorBridge::onHistory() {
         return;
     const TimelineChange& change = c->lastChange();
     bool relevant = change.projectWide() || change.touches(m_clip) || change.touches(c->primaryClip());
+    // The project's colour management (the Color Management dialog, the monitor badge) is no timeline change.
+    if (const ProjectSnapshot snapshot = c->session().snapshot(); snapshot && snapshot->colorManagement != m_management)
+        relevant = true;
     if (!relevant && (!m_targetFromSelection || !m_clip.isValid()))
         relevant = c->lastChangeAtPlayhead(); // another clip may be under the playhead now
     if (relevant)
@@ -205,8 +210,86 @@ void ColorBridge::refresh() {
     for (const EffectParam& p : color::gradeParamsToEffect(params, false)) {
         m_params.insert(toQString(p.key), p.value.constant());
     }
+    // Colour management (I.9).
+    const ProjectSnapshot snapshot = c ? c->session().snapshot() : ProjectSnapshot{};
+    const ColorManagement management = snapshot ? snapshot->colorManagement : ColorManagement{};
+    m_management = management;
+    m_colorManagement = {{QStringLiteral("mode"), QString::fromLatin1(toString(management.mode))},
+                         {QStringLiteral("name"), QString::fromUtf8(displayName(management.mode))},
+                         {QStringLiteral("description"), QString::fromUtf8(description(management.mode))},
+                         {QStringLiteral("hdr"), management.isHdr()},
+                         {QStringLiteral("managed"), management.managed()},
+                         {QStringLiteral("peakNits"), management.peakNits},
+                         {QStringLiteral("referenceWhiteNits"), management.referenceWhiteNits},
+                         {QStringLiteral("autoDetectLog"), management.autoDetectLog}};
+    m_monitorLabel.clear();
+    if (management.mode == ColorManagementMode::Disabled) {
+        m_monitorLabel = tr("Color management off");
+    } else if (management.managed()) {
+        if (const auto plan = color::planOutput(management, color::OutputTarget::Sdr)) {
+            m_monitorLabel = QString::fromUtf8(plan->label);
+        }
+    }
+    m_inputColorSpace.clear();
+    if (target.isValid() && snapshot) {
+        const Clip& clip = seq->findClip(target)->clip();
+        const MediaItem* media = snapshot->findMedia(clip.media);
+        const auto index = static_cast<std::size_t>(std::max(clip.stream.index, 0));
+        const VideoStreamInfo* stream =
+            media && !clip.isNested() && index < media->info.video.size() ? &media->info.video[index] : nullptr;
+        const bool detect = management.autoDetectLog && management.mode != ColorManagementMode::Disabled;
+        const InputColorSpace automatic = stream ? autoInputColorSpace(*stream, detect) : InputColorSpace::Rec709;
+        const std::optional<InputColorSpace> detected = stream ? detectedLogSpace(*stream) : std::nullopt;
+        const InputColorSpace effective = clip.inputColorSpace().value_or(automatic);
+        m_inputColorSpace = {
+            {QStringLiteral("override"),
+             clip.inputColorSpace() ? QString::fromLatin1(toString(*clip.inputColorSpace())) : QString()},
+            {QStringLiteral("auto"), QString::fromLatin1(toString(automatic))},
+            {QStringLiteral("autoName"), QString::fromUtf8(displayName(automatic))},
+            {QStringLiteral("detected"), detected ? QString::fromLatin1(toString(*detected)) : QString()},
+            {QStringLiteral("effective"), QString::fromLatin1(toString(effective))},
+            {QStringLiteral("name"), QString::fromUtf8(displayName(effective))}};
+    }
     emit stateChanged();
     applyView();
+}
+
+QVariantList ColorBridge::colorManagementModes() const {
+    QVariantList out;
+    for (const ColorManagementMode m : allColorManagementModes()) {
+        out.append(QVariantMap{{QStringLiteral("id"), QString::fromLatin1(toString(m))},
+                               {QStringLiteral("name"), QString::fromUtf8(displayName(m))},
+                               {QStringLiteral("description"), QString::fromUtf8(description(m))}});
+    }
+    return out;
+}
+
+QVariantList ColorBridge::inputColorSpaces() const {
+    QVariantList out;
+    for (const InputColorSpace s : allInputColorSpaces()) {
+        out.append(QVariantMap{{QStringLiteral("id"), QString::fromLatin1(toString(s))},
+                               {QStringLiteral("name"), QString::fromUtf8(displayName(s))}});
+    }
+    return out;
+}
+
+bool ColorBridge::setColorManagement(const QVariantMap& values) {
+    QVariantMap params;
+    for (const char* key : {"mode", "peakNits", "referenceWhiteNits", "autoDetectLog"}) {
+        if (values.contains(QLatin1String(key))) {
+            params.insert(QLatin1String(key), values.value(QLatin1String(key)));
+        }
+    }
+    return runCommand("color.management.set", params, nullptr);
+}
+
+bool ColorBridge::setInputColorSpace(const QString& space) {
+    if (!m_clip.isValid()) {
+        return false;
+    }
+    return runCommand("color.inputSpace.set",
+                      {{QStringLiteral("clip"), static_cast<qulonglong>(m_clip.value)}, {QStringLiteral("space"), space}},
+                      nullptr);
 }
 
 QVariantList ColorBridge::lutChoices() const {
@@ -597,7 +680,18 @@ bool ColorBridge::runCommand(const char* name, const QVariantMap& params, QStrin
         projectFile = file->document().file();
     }
     command::EnginePolicy policy;
-    policy.services = std::make_shared<editor::ColorFrameService>(projectFile);
+    // The colour tools' frames and (0.2) Color Match's face detector, when it is downloaded: one helper kept for the
+    // bridge's lifetime once it was needed.
+    std::vector<std::shared_ptr<command::CommandServices>> services{std::make_shared<editor::ColorFrameService>(projectFile)};
+    if (params.value(QStringLiteral("faceDetection")).toBool()) {
+        if (!m_faces) {
+            m_faces = ai::vision::installedFaceFinder();
+        }
+        if (m_faces) {
+            services.push_back(m_faces);
+        }
+    }
+    policy.services = std::make_shared<command::ServiceBundle>(std::move(services));
     const command::CommandRegistry& registry = ai::edit::editingCommands();
     command::CommandEngine commands(c->session(), registry, policy);
     command::CommandRequest request;
@@ -638,7 +732,7 @@ bool ColorBridge::autoColor() {
     return ok;
 }
 
-bool ColorBridge::matchToReference(double strength, bool skinPriority) {
+bool ColorBridge::matchToReference(double strength, bool skinPriority, bool faceDetection) {
     if (!m_clip.isValid() || !m_reference) {
         setStatus(tr("Set a reference frame first"));
         return false;
@@ -648,7 +742,8 @@ bool ColorBridge::matchToReference(double strength, bool skinPriority) {
                                {{QStringLiteral("clip"), static_cast<qulonglong>(m_clip.value)},
                                 {QStringLiteral("reference"), static_cast<qlonglong>(m_referenceTime.value)},
                                 {QStringLiteral("strength"), std::clamp(strength, 0.0, 1.0)},
-                                {QStringLiteral("skinPriority"), skinPriority}},
+                                {QStringLiteral("skinPriority"), skinPriority},
+                                {QStringLiteral("faceDetection"), faceDetection}},
                                &data);
     if (ok) {
         setStatus(tr("Matched to the reference at %1").arg(m_referenceLabel));
@@ -656,7 +751,7 @@ bool ColorBridge::matchToReference(double strength, bool skinPriority) {
     return ok;
 }
 
-bool ColorBridge::matchScene(double strength, bool skinPriority) {
+bool ColorBridge::matchScene(double strength, bool skinPriority, bool faceDetection) {
     if (!m_clip.isValid()) {
         return false;
     }
@@ -664,7 +759,8 @@ bool ColorBridge::matchScene(double strength, bool skinPriority) {
     const bool ok = runCommand("color.matchScene",
                                {{QStringLiteral("reference"), static_cast<qulonglong>(m_clip.value)},
                                 {QStringLiteral("strength"), std::clamp(strength, 0.0, 1.0)},
-                                {QStringLiteral("skinPriority"), skinPriority}},
+                                {QStringLiteral("skinPriority"), skinPriority},
+                                {QStringLiteral("faceDetection"), faceDetection}},
                                &data);
     if (ok) {
         const auto json = command::Json::parse(data.toStdString(), nullptr, false);
@@ -702,6 +798,38 @@ QString ColorBridge::exportCdl(const QUrl& file) {
         return m_status;
     }
     setStatus(tr("CDL written to %1").arg(file.fileName()));
+    return {};
+}
+
+QString ColorBridge::exportCube(const QUrl& file) {
+    if (!m_clip.isValid() || !m_grade.isValid()) {
+        return tr("The clip has no grade");
+    }
+    QVariantMap params{{QStringLiteral("clip"), static_cast<qulonglong>(m_clip.value)},
+                       {QStringLiteral("effect"), static_cast<qulonglong>(m_grade.value)},
+                       {QStringLiteral("path"), file.toLocalFile()},
+                       {QStringLiteral("overwrite"), true}}; // the save dialog asked already
+    // The grade as the panel shows it: at the playhead when it is inside the clip.
+    if (ProjectController* c = controller()) {
+        if (const SequencePtr seq = c->currentSequence()) {
+            if (const auto loc = seq->findClip(m_clip); loc && c->playhead() >= loc->clip().start() && c->playhead() < loc->clip().end()) {
+                params.insert(QStringLiteral("time"), static_cast<qlonglong>(c->playhead().value));
+            }
+        }
+    }
+    QString data;
+    if (!runCommand("lut.export", params, &data)) {
+        return m_status;
+    }
+    const auto json = command::Json::parse(data.toStdString(), nullptr, false);
+    QStringList leftOut;
+    if (json.is_object() && json.contains("leftOut")) {
+        for (const auto& item : json["leftOut"]) {
+            leftOut << toQString(item.get<std::string>());
+        }
+    }
+    setStatus(leftOut.isEmpty() ? tr("LUT written to %1").arg(file.fileName())
+                                : tr("LUT written to %1 (without %2)").arg(file.fileName(), leftOut.join(QStringLiteral(", "))));
     return {};
 }
 

@@ -90,11 +90,18 @@ void registerBuiltinCommands(CommandRegistry& registry) {
     detail::registerCollaborationCommands(registry);
     detail::registerClipboardCommands(registry);
     detail::registerLibraryCommands(registry);
+    detail::registerProjectPanelCommands(registry); // 0.2, P.3
     detail::registerGraphicsCommands(registry);
     detail::registerInterchangeCommands(registry);
     detail::registerParityCommands(registry);
+    detail::registerTimelineCommands(registry);
     detail::registerLayoutCommands(registry);
     detail::registerGamingCommands(registry);
+    detail::registerEditingCommands(registry);
+    detail::registerMotionCommands(registry); // P.2
+    detail::registerExportCommands(registry);
+    detail::registerMonitorCommands(registry);
+    detail::registerEffectsLibraryCommands(registry);
 }
 
 const CommandRegistry& builtinCommands() {

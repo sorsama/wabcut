@@ -22,8 +22,17 @@ std::vector<std::string> hardwareEncoderOrder(VideoCodec codec);
 /// restores the policy. Thread-safe; affects exports started afterwards.
 void setHardwareEncoderOrder(std::vector<std::string> encoders);
 
-/// The software encoder of a codec: libx264, libx265, prores_ks, dnxhd, libsvtav1 (SVT-AV1, I.9).
+/// The software encoder of a codec: libx264, libx265, prores_ks, dnxhd, libsvtav1 (SVT-AV1, I.9); 0.2: png, tiff, dpx,
+/// mjpeg, targa, exr, qtrle, cfhd.
 std::string_view softwareEncoder(VideoCodec codec);
+
+/// 0.2 (the CPU limit preference for exports): at most `threads` threads per encoder and per frame converter of the
+/// exports started afterwards (and the render threads of the rendered source: one below 4); 0 = no limit (FFmpeg's
+/// automatic thread count). Process-wide, thread-safe.
+void setExportThreadLimit(int threads);
+int exportThreadLimit();
+/// The thread limit of `percent` of this computer's logical processors (at least 1); 100 or more = 0 (no limit).
+int threadLimitForPercent(int percent);
 
 /// Every encoder "auto" tries for `codec`, in order: hardwareEncoderOrder(codec) then softwareEncoder(codec).
 std::vector<std::string> encoderCandidates(VideoCodec codec);

@@ -100,6 +100,14 @@ MediaReadinessBridge::MediaReadinessBridge(ProjectLifecycle* lifecycle, Playback
         options.settings.divisor = settings.value(QStringLiteral("proxies/divisor"), 2).toInt() == 4 ? 4 : 2;
         m_manager = std::make_unique<editor::ProxyManager>(m_lifecycle->document(), std::move(options));
         connect(m_lifecycle, &ProjectLifecycle::documentChanged, this, &MediaReadinessBridge::attachDocument);
+        // 0.2 (P.3): the production's Production Settings may keep the previews in another folder.
+        connect(m_lifecycle, &ProjectLifecycle::scratchDisksChanged, this, [this] {
+            if (m_render.running()) {
+                return; // the render finishing reapplies its cache
+            }
+            m_previewProject.clear();
+            applyPreview(true);
+        });
         connect(m_lifecycle, &ProjectLifecycle::mediaStatusChanged, this, [this] {
             if (m_manager) {
                 m_manager->refresh(true);
@@ -339,6 +347,8 @@ void MediaReadinessBridge::ensurePreviewCache() {
         options.projectFile = project;
         m_renderer = editor::makeExportPreviewRenderer(std::move(options));
     }
+    // Queued: callers are often in the middle of reading the cache (the timeline's render bar).
+    QMetaObject::invokeMethod(this, &MediaReadinessBridge::previewFilesChanged, Qt::QueuedConnection);
 }
 
 std::shared_ptr<PreviewCache> MediaReadinessBridge::previewCache() {
@@ -399,6 +409,7 @@ QString MediaReadinessBridge::renderInToOut() {
             self->m_renderMessage = result.ok() ? QString() : commandErrorText(result);
             self->applyPreview(true); // the monitor picks up the new files
             emit self->renderChanged();
+            emit self->previewFilesChanged(); // the render bar turns green there (0.2)
         });
     if (!started) {
         m_rendering = false;

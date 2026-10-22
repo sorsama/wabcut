@@ -619,3 +619,119 @@ TEST_CASE("C.13: a box pinned around a name hugs the drawn name (the rasteriser 
     CHECK(boxInk.bottom() - nameInk.bottom() >= 8 - 4);
     CHECK(boxInk.height() <= nameInk.height() + 8 + 8 + 48); // not taller than the line box
 }
+
+// ---- 0.2: type on a path --------------------------------------------------------------------------------------------
+
+TEST_CASE("0.2: text on a circle stands on the path, upright or turned", "[render][graphics][textpath]") {
+    // A ring of text round a circle of radius 60 centred on (160, 90): ink only near the ring, none in the middle.
+    Graphic graphic;
+    graphic.width = kW;
+    graphic.height = kH;
+    GraphicLayer ring = textLayer(1, "AROUND THE WORLD AROUND THE", 18.0, 160, 90);
+    TextPath path;
+    bool closed = false;
+    path.path = {MaskPathKey{Ticks{}, edit::textPathVertices(edit::TextPathShape::Circle, 120.0, 0.0, &closed),
+                             Interpolation::Linear}};
+    path.closed = closed;
+    ring.text.path = path;
+    graphic.layers = {ring};
+    const DrawList list = resolveGraphic(graphic, Ticks{}, realText());
+    REQUIRE(list.items.size() == 1);
+    const auto raster = rasterizeGraphic(list, kW, kH);
+    save(*raster, QStringLiteral("text_on_circle.png"));
+    const QRect ink = inkOf(*raster);
+    REQUIRE_FALSE(ink.isEmpty());
+    INFO(std::format("ink {} {} {} {}", ink.x(), ink.y(), ink.width(), ink.height()));
+    // Letters stand outside the circle (baseline on it): the ink reaches past radius 60 but stays within 60 + the size.
+    CHECK(ink.left() >= 160 - 60 - 24);
+    CHECK(ink.top() >= 90 - 60 - 24);
+    CHECK(ink.left() <= 160 - 60);
+    double inside = 0.0;
+    double onRing = 0.0;
+    for (int y = 0; y < kH; ++y) {
+        for (int x = 0; x < kW; ++x) {
+            const double r = std::hypot(x - 160.0, y - 90.0);
+            const double a = alphaAt(*raster, x, y);
+            if (r < 50.0) {
+                inside += a;
+            } else if (r <= 60.0 + 18.0) {
+                onRing += a;
+            }
+        }
+    }
+    CHECK(inside == 0.0);
+    CHECK(onRing > 200.0);
+    CHECK(raster->info().animatedClusters > 10);
+
+    // Upright characters (Perpendicular off) still follow the ring but do not turn: the ink differs.
+    graphic.layers[0].text.path->perpendicular = false;
+    const auto upright = rasterizeGraphic(resolveGraphic(graphic, Ticks{}, realText()), kW, kH);
+    CHECK(upright->rgba() != raster->rgba());
+}
+
+TEST_CASE("0.2: text on a path through the compositor (GPU) equals its CPU raster", "[render][gpu][graphics][textpath]") {
+    Graphic graphic;
+    graphic.width = kW;
+    graphic.height = kH;
+    GraphicLayer ring = textLayer(1, "AROUND THE WORLD AROUND THE", 18.0, 160, 90);
+    TextPath path;
+    bool closed = false;
+    path.path = {MaskPathKey{Ticks{}, edit::textPathVertices(edit::TextPathShape::Circle, 120.0, 0.0, &closed),
+                             Interpolation::Linear}};
+    path.closed = closed;
+    ring.text.path = path;
+    graphic.layers = {ring};
+    const auto raster = rasterizeGraphic(resolveGraphic(graphic, Ticks{}, realText()), kW, kH);
+    CompositeLayer layer;
+    layer.view = raster->view(raster);
+    auto renderer = makeRenderer();
+    auto image = renderer->render(compositeOf({kW, kH}, {layer}));
+    REQUIRE(image);
+    savePng(*image, QStringLiteral("graphics/gpu_text_on_circle.png"));
+    double worst = 0.0;
+    for (int y = 0; y < kH; y += 2) {
+        for (int x = 0; x < kW; x += 2) {
+            const std::uint8_t* p = raster->rgba().data() + (static_cast<std::size_t>(y) * kW + x) * 4;
+            const double alpha = p[3] / 255.0;
+            Rgb expected{};
+            for (int c = 0; c < 3; ++c) {
+                const double straight = alpha > 0.0 ? std::min(1.0, p[c] / 255.0 / alpha) : 0.0;
+                const double linear = straight <= 0.04045 ? straight / 12.92 : std::pow((straight + 0.055) / 1.055, 2.4);
+                expected[static_cast<std::size_t>(c)] = linearToOutput(OutputTransform::Rec709, linear * alpha);
+            }
+            worst = std::max(worst, maxDiff(pixelOf(*image, x, y), expected));
+        }
+    }
+    CHECK(worst <= 3.0 / 255.0);
+}
+
+TEST_CASE("0.2: text on a line starts at the first margin and Force Alignment spreads it to the last", "[render][graphics][textpath]") {
+    Graphic graphic;
+    graphic.width = kW;
+    graphic.height = kH;
+    GraphicLayer text = textLayer(1, "ABC", 24.0, 0, 100);
+    TextPath path;
+    path.path = {MaskPathKey{Ticks{}, {MaskVertex{20, 0, 0, 0, 0, 0}, MaskVertex{300, 0, 0, 0, 0, 0}}, Interpolation::Linear}};
+    path.firstMargin = 40.0;
+    text.text.path = path;
+    graphic.layers = {text};
+    const QRect atMargin = inkOf(*rasterizeGraphic(resolveGraphic(graphic, Ticks{}, realText()), kW, kH));
+    REQUIRE_FALSE(atMargin.isEmpty());
+    CHECK(std::abs(atMargin.left() - 60) <= 4);   // 20 + 40
+    CHECK(atMargin.bottom() <= 100 + 2);          // standing on the line
+    CHECK(atMargin.bottom() >= 100 - 3);
+    graphic.layers[0].text.path->forceAlignment = true;
+    graphic.layers[0].text.path->lastMargin = 20.0;
+    const QRect spread = inkOf(*rasterizeGraphic(resolveGraphic(graphic, Ticks{}, realText()), kW, kH));
+    INFO(std::format("margin {} {}, spread {} {}", atMargin.left(), atMargin.right(), spread.left(), spread.right()));
+    CHECK(spread.width() > atMargin.width() * 3);
+    CHECK(spread.right() <= 300 - 20 + 12);
+    // Animated margin: the text travels along the path.
+    Curve travel;
+    travel.keys = {Keyframe{Ticks{}, 0.0}, Keyframe{Ticks{kTicksPerSecond}, 200.0}};
+    graphic.layers[0].text.path->forceAlignment = false;
+    graphic.layers[0].text.path->firstMargin = ParamValue(travel);
+    const QRect start = inkOf(*rasterizeGraphic(resolveGraphic(graphic, Ticks{}, realText()), kW, kH));
+    const QRect later = inkOf(*rasterizeGraphic(resolveGraphic(graphic, Ticks{kTicksPerSecond / 2}, realText()), kW, kH));
+    CHECK(std::abs((later.left() - start.left()) - 100) <= 4);
+}

@@ -32,6 +32,7 @@ struct SequenceIdTag;
 struct TrackIdTag;
 struct ClipIdTag;
 struct LinkGroupIdTag;
+struct ClipGroupIdTag;
 struct BinIdTag;
 struct TransitionIdTag;
 struct EffectInstanceIdTag;
@@ -47,6 +48,8 @@ using TrackId = Id<TrackIdTag>;
 using ClipId = Id<ClipIdTag>;
 /// Clips sharing a valid LinkGroupId are linked (Premiere's A/V link): they select and edit together.
 using LinkGroupId = Id<LinkGroupIdTag>;
+/// Clips sharing a valid ClipGroupId are grouped (Premiere's Clip > Group, ClipGroups.h): they select and move together.
+using ClipGroupId = Id<ClipGroupIdTag>;
 using BinId = Id<BinIdTag>;
 using TransitionId = Id<TransitionIdTag>;
 /// An effect instance in an effect stack. Unique within its stack; both halves of a razor cut share their

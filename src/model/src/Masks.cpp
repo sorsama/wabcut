@@ -369,8 +369,9 @@ std::optional<std::string> maskProblem(const Mask& mask) {
         if (m.track.empty() || m.track.size() > kMaxMatteTrack || m.model.size() > kMaxMatteTrack) {
             return "a matte track needs an identity of 1.." + std::to_string(kMaxMatteTrack) + " bytes";
         }
-        if (!m.media.isValid() || m.stream < 0 || m.stream > 64 || m.source.start.value < 0 || m.source.duration.value < 0) {
-            return "a matte track needs its media, stream and source range";
+        if (m.media.isValid() == m.sequence.isValid() || m.stream < 0 || m.stream > 64 || m.source.start.value < 0 ||
+            m.source.duration.value < 0) {
+            return "a matte track needs its media (or its nested sequence), stream and source range";
         }
         // The bounding box is what a frame without a matte shows (fail closed): always stored with the mask.
         for (const char* key : {"center.x", "center.y", "size.x", "size.y"}) {

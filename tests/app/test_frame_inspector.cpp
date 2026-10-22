@@ -287,3 +287,79 @@ TEST_CASE("Explain this frame: the panel, with an override, as a screenshot", "[
     INFO(join(messages));
     CHECK(messages.isEmpty());
 }
+
+TEST_CASE("Explain this frame describes Border, Ultra Key and Track Matte layers (0.2)", "[app][inspector]") {
+    // V1: A with a Border, an Ultra Key, a Track Matte Key reading V2 by its luma, and a grade after them; V2 (output
+    // off, as editors hide a matte track): B, the matte for the first five frames.
+    Timeline tl(R"(
+        V2 off |Bbbbb.....|
+        V1 tgt |Aaaaaaaaaa|
+    )");
+    const ClipId a = tl.clip("V1@0");
+    const ClipId b = tl.clip("V2@0");
+    ProjectState state = tl.state;
+    state = ok(edit::addEffect(state, tl.seq, std::vector<ClipId>{a}, "wabcut.border", {EffectParam{"width", ParamValue(8.0)}})).state;
+    state = ok(edit::addEffect(state, tl.seq, std::vector<ClipId>{a}, "wabcut.key.ultra")).state;
+    state = ok(edit::addEffect(state, tl.seq, std::vector<ClipId>{a}, "wabcut.key.trackMatte",
+                               {EffectParam{"matteTrack", ParamValue(2.0)}, EffectParam{"compositeUsing", ParamValue(1.0)}}))
+                .state;
+    state = ok(edit::addEffect(state, tl.seq, std::vector<ClipId>{a}, "wabcut.color.grade",
+                               {EffectParam{"basic.exposure", ParamValue(1.0)}}))
+                .state;
+    requireValid(state);
+    const Sequence& seq = *state.findSequence(tl.seq);
+
+    const FrameExplanation e = explainFrame(state, seq, f(2), {}, nullptr);
+    const ExplainedVideoLayer* fill = layerOf(e, a);
+    REQUIRE(fill);
+    REQUIRE(fill->effects.size() == 4);
+    CHECK(fill->effects[0].name == QStringLiteral("Border"));
+    CHECK(fill->effects[0].detail == QStringLiteral("8 px, #FFFFFF, 100 % opacity"));
+    CHECK(fill->effects[1].detail ==
+          QStringLiteral("key #00FF00, output Composite; matte: transparency 45, tolerance 50, pedestal 10; cleanup: choke 0, "
+                         "soften 0; spill 50"));
+    CHECK(fill->effects[2].detail == QStringLiteral("Matte V2 (luma)"));
+    CHECK(fill->effects[3].detail.isEmpty());
+    // The grade after them pairs with its evaluated stage (before 0.2 the Border broke the pairing: no stages).
+    REQUIRE_FALSE(fill->grade.empty());
+    CHECK(fill->matteFor.isEmpty());
+    // B is A's matte, not drawn itself (its track's output is off; the matte is read anyway).
+    const ExplainedVideoLayer* matte = layerOf(e, b);
+    REQUIRE(matte);
+    CHECK(matte->matteFor == QStringLiteral("Track Matte of V1"));
+
+    // Where V2 is empty, the matte is: the layer shows nothing (or, reversed, in full).
+    const FrameExplanation empty = explainFrame(state, seq, f(7), {}, nullptr);
+    REQUIRE(layerOf(empty, a));
+    CHECK(layerOf(empty, a)->effects[2].detail == QStringLiteral("Matte V2 is empty here: the layer shows nothing"));
+    CHECK_FALSE(layerOf(empty, b));
+
+    // A matte track that does not exist.
+    const EffectInstanceId key = seq.findClip(a)->clip().effects()[2].id;
+    const ProjectState missing = ok(edit::setParameter(state, tl.seq, a, edit::ParamRef::ofEffect(key, "matteTrack"), ParamValue(5.0))).state;
+    const FrameExplanation none = explainFrame(missing, *missing.findSequence(tl.seq), f(2), {}, nullptr);
+    REQUIRE(layerOf(none, a));
+    CHECK(layerOf(none, a)->effects[2].detail == QStringLiteral("No matte track V5: the layer shows nothing"));
+
+    // The bridge publishes them for the panel.
+    ProjectController controller;
+    controller.resetProject(state, tl.seq);
+    FrameInspector inspector;
+    inspector.setController(&controller);
+    controller.setPlayhead(f(2));
+    inspector.setActive(true);
+    inspector.refresh();
+    bool sawMatte = false;
+    bool sawDetail = false;
+    for (const QVariant& row : inspector.layers()) {
+        const QVariantMap layer = row.toMap();
+        if (layer.value(QStringLiteral("matteText")).toString() == QStringLiteral("Track Matte of V1"))
+            sawMatte = true;
+        for (const QVariant& effect : layer.value(QStringLiteral("effects")).toList()) {
+            if (effect.toMap().value(QStringLiteral("detail")).toString() == QStringLiteral("Matte V2 (luma)"))
+                sawDetail = true;
+        }
+    }
+    CHECK(sawMatte);
+    CHECK(sawDetail);
+}

@@ -1,5 +1,6 @@
 #include <wabcut/model/ProjectIO.h>
 
+#include <wabcut/model/FrameScaling.h>
 #include <wabcut/model/Nesting.h>
 #include <wabcut/model/RedactionMedia.h>
 
@@ -131,6 +132,12 @@ json mediaInfoJson(const MediaInfo& info) {
                              {"rotationDegrees", v.rotationDegrees},
                              {"duration", v.duration.value},
                              {"frameCount", v.frameCount}});
+        if (!v.logColorSpace.empty()) { // 0.2, schema 17: only when the camera's metadata names its log
+            video.back()["logColorSpace"] = v.logColorSpace;
+        }
+        if (v.fieldOrder != FieldOrder::Progressive) { // 0.2 media, schema 18: only for interlaced streams
+            video.back()["fieldOrder"] = std::string(toString(v.fieldOrder));
+        }
     }
     json audio = json::array();
     for (const AudioStreamInfo& a : info.audio) {
@@ -155,6 +162,30 @@ json mediaInfoJson(const MediaInfo& info) {
              {"audio", std::move(audio)}};
     if (info.startTimecode) { // C.8: only when the file has one
         out["startTimecode"] = info.startTimecode->value;
+    }
+    return out;
+}
+
+/// P.2 (schema 17): Interpret Footage, each field only when set.
+json interpretationJson(const MediaInterpretation& in) {
+    json out = json::object();
+    if (in.frameRate) {
+        out["frameRate"] = rateJson(*in.frameRate);
+    }
+    if (in.pixelAspect) {
+        out["pixelAspect"] = rateJson(*in.pixelAspect);
+    }
+    if (in.fieldOrder) {
+        out["fieldOrder"] = std::string(toString(*in.fieldOrder));
+    }
+    if (in.ignoreAlpha) {
+        out["ignoreAlpha"] = true;
+    }
+    if (in.invertAlpha) {
+        out["invertAlpha"] = true;
+    }
+    if (in.premultiplication) {
+        out["premultiplication"] = enumToName(kAlphaModes, *in.premultiplication);
     }
     return out;
 }
@@ -251,6 +282,9 @@ json maskJson(const Mask& m) {
                             {"stream", m.matte->stream},
                             {"source", json{{"start", m.matte->source.start.value}, {"duration", m.matte->source.duration.value}}},
                             {"model", m.matte->model}};
+        if (m.matte->sequence.isValid()) {
+            out["matte"]["sequence"] = m.matte->sequence.value; // schema 18
+        }
     }
     return out;
 }
@@ -358,6 +392,9 @@ json clipJson(const Clip& c) {
                 {"name", c.name()},
                 {"colorIndex", c.colorIndex},
                 {"parameters", parametersJson(c.properties())}};
+    if (c.group.isValid()) { // 0.2, Clip > Group: only when grouped
+        out["group"] = c.group.value;
+    }
     if (c.reversed) {
         out["reversed"] = true;
     }
@@ -378,6 +415,28 @@ json clipJson(const Clip& c) {
     }
     if (c.blendMode() != BlendMode::Normal) { // C.15: only when set
         out["blendMode"] = std::string(toString(c.blendMode()));
+    }
+    if (c.content().scaleToFrame) { // P.2 (schema 17): only when set
+        out["scaleToFrame"] = true;
+    }
+    if (c.content().holdFilters) { // P.2 (schema 17): Frame Hold Options > Hold Filters, only when set
+        out["holdFilters"] = true;
+    }
+    if (c.timeInterpolation() != TimeInterpolation::FrameSampling) { // P.2 (schema 17): only when set
+        out["timeInterpolation"] = std::string(toString(c.timeInterpolation()));
+    }
+    if (const std::optional<InputColorSpace> space = c.inputColorSpace()) { // I.9 (schema 17): only when set
+        out["inputColorSpace"] = std::string(toString(*space));
+    }
+    if (const ClipFieldOptions& fields = c.content().fieldOptions; !fields.isDefault()) { // 0.2 (schema 18)
+        json options = json::object();
+        if (fields.reverseFieldDominance) {
+            options["reverseFieldDominance"] = true;
+        }
+        if (fields.processing != FieldProcessing::None) {
+            options["processing"] = std::string(toString(fields.processing));
+        }
+        out["fieldOptions"] = std::move(options);
     }
     if (c.isNested() || c.hasUnknownSource()) {
         out["source"] = clipSourceJson(c); // instead of "media"
@@ -432,6 +491,30 @@ json trackJson(const Track& t) {
     }
     if (!(t.pan == ParamValue())) {
         out["pan"] = paramValueJson(t.pan);
+    }
+    // p02 audio: the output assignment and the sends, written only when set.
+    if (t.output.isValid()) {
+        out["output"] = t.output.value;
+    }
+    if (!t.sends.empty()) {
+        json sends = json::array();
+        for (const TrackSend& s : t.sends) {
+            json send{{"submix", s.submix.value}};
+            if (s.preFader) {
+                send["preFader"] = true;
+            }
+            if (s.muted) {
+                send["muted"] = true;
+            }
+            if (!(s.level == ParamValue())) {
+                send["level"] = paramValueJson(s.level);
+            }
+            if (!(s.pan == ParamValue())) {
+                send["pan"] = paramValueJson(s.pan);
+            }
+            sends.push_back(std::move(send));
+        }
+        out["sends"] = std::move(sends);
     }
     return out;
 }
@@ -516,6 +599,9 @@ json captionTracksJson(const std::vector<CaptionTrack>& tracks) {
                            {"enabled", t.enabled},
                            {"cues", std::move(cues)},
                            {"style", captionStyleJson(t.style)}});
+        if (!t.trackStyle.empty()) {
+            out.back()["trackStyle"] = t.trackStyle; // 0.2: the project caption style it follows
+        }
     }
     return out;
 }
@@ -592,8 +678,18 @@ json sequenceJson(const Sequence& s, const std::function<json(const TrackPtr&)>&
     if (s.masterFormat != ChannelFormat::Stereo) { // A.9: only when not stereo
         out["masterFormat"] = std::string(toString(s.masterFormat));
     }
+    if (!s.submixTracks.empty()) { // p02 audio: only when there are some
+        json submixes = json::array();
+        for (const TrackPtr& t : s.submixTracks) {
+            submixes.push_back(track(t));
+        }
+        out["submixTracks"] = std::move(submixes);
+    }
     if (s.startTimecode.value != 0) { // X.1: only when set
         out["startTimecode"] = s.startTimecode.value;
+    }
+    if (s.importSource) { // P.3 (schema 18): a copy from another project, only when set
+        out["importSource"] = json{{"project", s.importSource->project}, {"id", s.importSource->id}};
     }
     if (s.derivedFrom) { // written only when set: other projects stay byte-identical
         json params = json::parse(s.derivedFrom->params, nullptr, false);
@@ -614,6 +710,120 @@ json sequenceJson(const Sequence& s, const std::function<json(const TrackPtr&)>&
                                   {"offset", a.offset.value}});
         }
         out["multicam"] = json{{"sync", std::string(toString(s.multicam->sync))}, {"angles", std::move(angles)}};
+        if (s.multicam->merged) { // P.2 (schema 17): a merged clip
+            out["multicam"]["merged"] = true;
+        }
+    }
+    // P.2 (schema 17): Premiere's sequence settings beyond the frame size and rates, each only when not the default.
+    if (!(s.pixelAspect == Rate{1, 1})) {
+        out["pixelAspect"] = rateJson(s.pixelAspect);
+    }
+    if (s.fields != FieldOrder::Progressive) {
+        out["fields"] = std::string(toString(s.fields));
+    }
+    if (!s.previewFormat.empty()) {
+        out["previewFormat"] = s.previewFormat;
+    }
+    if (s.videoDisplay != VideoTimeDisplay::Timecode) {
+        out["videoDisplay"] = std::string(toString(s.videoDisplay));
+    }
+    if (s.audioDisplay != AudioTimeDisplay::AudioSamples) {
+        out["audioDisplay"] = std::string(toString(s.audioDisplay));
+    }
+    if (s.colorIndex != 0) { // 0.2 (schema 18): the sequence's label
+        out["colorIndex"] = s.colorIndex;
+    }
+    return out;
+}
+
+/// P.3 (schema 18): a Search Bin's query, each field only when set.
+json binSearchJson(const BinSearch& s) {
+    json out = json::object();
+    if (!s.text.empty()) {
+        out["text"] = s.text;
+    }
+    if (!s.field.empty()) {
+        out["field"] = s.field;
+    }
+    if (!s.type.empty()) {
+        out["type"] = s.type;
+    }
+    if (s.label >= 0) {
+        out["label"] = s.label;
+    }
+    for (const auto& [key, on] : {std::pair{"good", s.good}, std::pair{"offline", s.offline},
+                                  std::pair{"generated", s.generated}, std::pair{"transcribed", s.transcribed},
+                                  std::pair{"proxy", s.proxy}, std::pair{"unused", s.unused},
+                                  std::pair{"duplicates", s.duplicates}}) {
+        if (on) {
+            out[key] = true;
+        }
+    }
+    if (!s.from.empty()) {
+        out["from"] = s.from;
+    }
+    if (!s.to.empty()) {
+        out["to"] = s.to;
+    }
+    return out;
+}
+
+/// P.3 (schema 18): clip metadata, each field only when set.
+json clipMetadataJson(const ClipMetadata& m) {
+    json out = json::object();
+    for (const auto& [key, value] :
+         {std::pair{"scene", &m.scene}, std::pair{"shot", &m.shot}, std::pair{"take", &m.take},
+          std::pair{"logNote", &m.logNote}, std::pair{"client", &m.client}, std::pair{"status", &m.status},
+          std::pair{"cameraAngle", &m.cameraAngle}, std::pair{"cameraLabel", &m.cameraLabel},
+          std::pair{"cameraModel", &m.cameraModel}, std::pair{"shotDate", &m.shotDate},
+          std::pair{"shotLocation", &m.shotLocation}}) {
+        if (!value->empty()) {
+            out[key] = *value;
+        }
+    }
+    if (m.good) {
+        out["good"] = true;
+    }
+    return out;
+}
+
+std::string_view freeformKindName(FreeformPlacement::Kind kind) {
+    switch (kind) {
+    case FreeformPlacement::Kind::Media:
+        return "media";
+    case FreeformPlacement::Kind::Sequence:
+        return "sequence";
+    case FreeformPlacement::Kind::Bin:
+        return "bin";
+    }
+    return "media";
+}
+
+json freeformItemsJson(const FreeformArrangement& a) {
+    json items = json::array();
+    for (const FreeformPlacement& p : a.items) {
+        json item{{"kind", std::string(freeformKindName(p.kind))}, {"id", p.id}, {"x", p.x}, {"y", p.y}};
+        if (p.size != 1.0) {
+            item["size"] = p.size;
+        }
+        items.push_back(std::move(item));
+    }
+    return items;
+}
+
+/// P.3 (schema 18): the Freeform views.
+json freeformJson(const std::vector<FreeformView>& views) {
+    json out = json::array();
+    for (const FreeformView& v : views) {
+        json view{{"bin", v.bin.value}, {"scale", v.current.scale}, {"items", freeformItemsJson(v.current)}};
+        if (!v.layouts.empty()) {
+            json layouts = json::array();
+            for (const FreeformLayout& l : v.layouts) {
+                layouts.push_back(json{{"name", l.name}, {"scale", l.arrangement.scale}, {"items", freeformItemsJson(l.arrangement)}});
+            }
+            view["layouts"] = std::move(layouts);
+        }
+        out.push_back(std::move(view));
     }
     return out;
 }
@@ -624,7 +834,11 @@ json projectJson(const ProjectState& state, const std::function<json(const Seque
                  const std::function<json(json)>& mediaOut = {}) {
     json bins = json::array();
     for (const Bin& b : state.bins) {
-        bins.push_back(json{{"id", b.id.value}, {"parent", b.parent.value}, {"name", b.name}});
+        json bin{{"id", b.id.value}, {"parent", b.parent.value}, {"name", b.name}};
+        if (b.search) { // P.3 (schema 18): Search Bins, only when set
+            bin["search"] = binSearchJson(*b.search);
+        }
+        bins.push_back(std::move(bin));
     }
     json media = json::array();
     for (const MediaPtr& m : state.media) {
@@ -712,6 +926,34 @@ json projectJson(const ProjectState& state, const std::function<json(const Seque
                                      {"device", r.device},
                                      {"latencyCompensation", r.latencyCompensation.value},
                                      {"createdAt", r.createdAt}};
+        }
+        if (m->scaling != MediaScaling::None) { // P.2 (schema 17): default media scaling, only when set
+            item["scaling"] = std::string(toString(m->scaling));
+        }
+        if (m->interpretation && !m->interpretation->isEmpty()) { // P.2: Interpret Footage, only when set
+            item["interpretation"] = interpretationJson(*m->interpretation);
+        }
+        if (m->timecode) { // P.2: Modify > Timecode, only when set
+            json timecode = json::object();
+            if (m->timecode->start) {
+                timecode["start"] = m->timecode->start->value;
+            }
+            if (!m->timecode->reelName.empty()) {
+                timecode["reelName"] = m->timecode->reelName;
+            }
+            item["timecode"] = std::move(timecode);
+        }
+        if (m->stillDuration) { // P.2: the still's default duration, only when set
+            item["stillDuration"] = m->stillDuration->value;
+        }
+        if (m->madeOffline) { // P.2: Make Offline, only when set
+            item["madeOffline"] = true;
+        }
+        if (!m->metadata.isEmpty()) { // P.3 (schema 18): clip metadata, only when set
+            item["metadata"] = clipMetadataJson(m->metadata);
+        }
+        if (m->importSource) { // P.3 (schema 18): a copy from another project, only when set
+            item["importSource"] = json{{"project", m->importSource->project}, {"id", m->importSource->id}};
         }
         media.push_back(std::move(item));
     }
@@ -817,6 +1059,24 @@ json projectJson(const ProjectState& state, const std::function<json(const Seque
             templates.push_back(detail::templateToJsonValue(t));
         }
         doc["templates"] = std::move(templates);
+    }
+    if (!state.colorManagement.isDefault()) { // I.9: only when not display-referred Rec.709
+        const ColorManagement& cm = state.colorManagement;
+        doc["colorManagement"] = json{{"mode", std::string(toString(cm.mode))}, {"peakNits", cm.peakNits},
+                                      {"referenceWhiteNits", cm.referenceWhiteNits}};
+        if (!cm.autoDetectLog) { // only when off
+            doc["colorManagement"]["autoDetectLog"] = false;
+        }
+    }
+    if (!state.textStyles.empty()) {
+        json styles = json::array();
+        for (const ProjectTextStyle& s : state.textStyles) {
+            styles.push_back(detail::textStyleToJsonValue(s));
+        }
+        doc["textStyles"] = std::move(styles);
+    }
+    if (!state.freeform.empty()) { // P.3 (schema 18): Freeform views, only when there are some
+        doc["freeform"] = freeformJson(state.freeform);
     }
     return doc;
 }
@@ -947,11 +1207,9 @@ void migrate10To11(json&) {}
 /// Schema 12 only adds matte masks (AI-14: mask shape "matte" with its "matte" track). An older build refuses a schema
 /// 12 file as "saved by a newer version" instead of failing on the unknown shape.
 void migrate11To12(json&) {}
-
 /// Schema 13 only adds graphics (C.13): the optional clip "graphic", project "brandKit" and "templates", and caption
 /// style "brand" references. Every schema 12 file is a valid schema 13 file.
 void migrate12To13(json&) {}
-
 /// Schema 14 only adds the sequence "startTimecode" (X.1), written only when set. Every schema 13 file is a valid schema
 /// 14 file.
 void migrate13To14(json&) {}
@@ -962,6 +1220,25 @@ void migrate14To15(json&) {}
 /// Schema 16 only adds the media audio stream "title" (A.10: the stream's name in the file, for multi-track ingest),
 /// written only when set. Every schema 15 file is a valid schema 16 file: its streams read as untitled.
 void migrate15To16(json&) {}
+
+/// Schema 17 only adds P.2's optional fields (Premiere editing parity and the motion features, ProjectIO.h: clip
+/// "timeInterpolation" among them), the generator kinds of Bars and Tone and the Universal Counting Leader, and colour
+/// management (I.9, back in 0.2): the optional project "colorManagement" (mode, peakNits, referenceWhiteNits,
+/// autoDetectLog), clip "inputColorSpace" and media video stream "logColorSpace". All are written only when set; absent
+/// colour management means Direct Rec.709 and Auto, the pictures older files always had. Every schema 16 file is a valid
+/// schema 17 file (its tracks go to the Mix with no sends: p02 audio's optional sequence "submixTracks" and track
+/// "output" and "sends"); an older build refuses a schema 17 file instead of showing an HDR or Wide Gamut project
+/// unmanaged or dropping the routing. 0.2's graphics and captions fields too: graphic "roll", a layer's "textStyle"
+/// and pins "to": "frame", project "textStyles", caption track "trackStyle".
+void migrate16To17(json&) {}
+
+/// Schema 18 adds optional fields only, each written only when set: sequence "colorIndex", a matte mask's "sequence",
+/// a text layer's "onPath", a video stream's "fieldOrder", clip "fieldOptions", and P.3's Project panel fields - media
+/// "metadata" (Status and the camera fields among them), bin "search", project "freeform", and media / sequence
+/// "importSource" { project, id } (a copy imported from another project). Nothing to convert: every schema 17 file is
+/// a valid schema 18 file, its streams read as progressive (they were composited so) and its clips without field
+/// options.
+void migrate17To18(json&) {}
 
 void migrate7To8(json& doc) {
     if (!doc.contains("sequences") || !doc["sequences"].is_array()) {
@@ -1020,7 +1297,8 @@ constexpr std::array<Migration, kSchemaVersion - kOldestSchemaVersion> kMigratio
                                                                                     &migrate9To10, &migrate10To11,
                                                                                     &migrate11To12, &migrate12To13,
                                                                                     &migrate13To14, &migrate14To15,
-                                                                                    &migrate15To16};
+                                                                                    &migrate15To16, &migrate16To17,
+                                                                                    &migrate17To18};
 
 // --- Reading (current schema) -------------------------------------------------------------------------
 
@@ -1072,6 +1350,22 @@ MediaInfo readMediaInfo(const Reader& r) {
             }
             s.duration = v.nonNegativeTicks("duration", Ticks{});
             s.frameCount = v.int64In("frameCount", -1, -1, std::numeric_limits<std::int64_t>::max());
+            if (v.has("logColorSpace")) { // 0.2 (schema 17): an input colour space id of a camera log
+                const Reader log = v.child("logColorSpace");
+                s.logColorSpace = log.asString();
+                const auto space = inputColorSpaceFromString(s.logColorSpace);
+                if (!space || !isCameraLog(*space)) {
+                    log.fail("unknown camera log");
+                }
+            }
+            if (v.has("fieldOrder")) { // 0.2 media (schema 18): the file's interlacing
+                const Reader fields = v.child("fieldOrder");
+                const auto order = fieldOrderFromString(fields.asString());
+                if (!order) {
+                    fields.fail("unknown field order");
+                }
+                s.fieldOrder = *order;
+            }
             info.video.push_back(std::move(s));
         }
     }
@@ -1305,6 +1599,9 @@ Mask readMask(const Reader& r) {
         const Reader source = matte.child("source");
         mm.source = TimeRange{source.ticks("start"), source.ticks("duration")};
         mm.model = matte.string("model");
+        if (matte.has("sequence")) {
+            mm.sequence = SequenceId{matte.uint64("sequence")};
+        }
         m.matte = std::move(mm);
     }
     if (const auto problem = maskProblem(m)) {
@@ -1467,6 +1764,7 @@ Clip readClip(const Reader& r, const ProjectState& state) {
     }
     c.enabled = r.boolean("enabled", true);
     c.linkGroup = LinkGroupId{r.uint64("linkGroup", 0)};
+    c.group = ClipGroupId{r.uint64("group", 0)}; // 0.2, optional; bounded by the id generator (ProjectState)
     c.colorIndex = r.int32("colorIndex", 0);
     c.reversed = r.boolean("reversed", false);
     c.maintainPitch = r.boolean("maintainPitch", false);
@@ -1502,6 +1800,35 @@ Clip readClip(const Reader& r, const ProjectState& state) {
             r.fail("unknown blend mode '" + name.substr(0, 64) + "'");
         }
         content.blendMode = *mode;
+    }
+    content.scaleToFrame = r.boolean("scaleToFrame", false); // P.2 (schema 17)
+    content.holdFilters = r.boolean("holdFilters", false);   // P.2 (schema 17)
+    if (r.has("timeInterpolation")) { // P.2 (schema 17)
+        const std::string name = r.string("timeInterpolation");
+        const auto mode = timeInterpolationFromString(name);
+        if (!mode) {
+            r.fail("unknown time interpolation '" + name.substr(0, 64) + "'");
+        }
+        content.timeInterpolation = *mode;
+    }
+    if (r.has("inputColorSpace")) { // I.9 (schema 17)
+        const Reader space = r.child("inputColorSpace");
+        content.inputColorSpace = inputColorSpaceFromString(space.asString());
+        if (!content.inputColorSpace) {
+            space.fail("unknown input colour space");
+        }
+    }
+    if (r.has("fieldOptions")) { // 0.2 media (schema 18): Field Options
+        const Reader fields = r.child("fieldOptions");
+        content.fieldOptions.reverseFieldDominance = fields.boolean("reverseFieldDominance", false);
+        if (fields.has("processing")) {
+            const Reader processing = fields.child("processing");
+            const auto value = fieldProcessingFromString(processing.asString());
+            if (!value) {
+                processing.fail("unknown field processing");
+            }
+            content.fieldOptions.processing = *value;
+        }
     }
     content.unknownSource = std::move(unknownSource);
     // Clips that still carry their media's defaults share its block (cheap copies, less memory).
@@ -1716,6 +2043,28 @@ TrackPtr readTrack(const Reader& r, TrackKind kind, const ProjectState& state) {
     if (r.has("pan")) { // absent = centre
         t->pan = readParamValue(r.child("pan"));
     }
+    t->output = TrackId{r.uint64("output", 0)}; // p02 audio; absent = the Mix
+    if (r.has("sends")) {                       // p02 audio; validation checks the count and the targets
+        const Reader list = r.child("sends");
+        const std::size_t n = list.arraySize();
+        if (n > kMaxTrackSends) {
+            list.fail("a track has at most " + std::to_string(kMaxTrackSends) + " sends");
+        }
+        for (std::size_t i = 0; i < n; ++i) {
+            const Reader s = list.element(i);
+            TrackSend send;
+            send.submix = TrackId{s.uint64("submix")};
+            send.preFader = s.boolean("preFader", false);
+            send.muted = s.boolean("muted", false);
+            if (s.has("level")) {
+                send.level = readParamValue(s.child("level"));
+            }
+            if (s.has("pan")) {
+                send.pan = readParamValue(s.child("pan"));
+            }
+            t->sends.push_back(std::move(send));
+        }
+    }
     return t;
 }
 
@@ -1794,6 +2143,15 @@ CaptionStyle readCaptionStyle(const Reader& r) {
     return s;
 }
 
+/// P.3 (schema 18): where a copy came from (validate checks UTF-8).
+ImportSource readImportSource(const Reader& r) {
+    ImportSource s{r.string("project"), r.uint64("id", 0)};
+    if (s.project.size() > ImportSource::kMaxPathBytes) {
+        r.child("project").fail("too long");
+    }
+    return s;
+}
+
 SequencePtr readSequence(const Reader& r, const ProjectState& state) {
     auto s = std::make_shared<Sequence>();
     s->id = SequenceId{r.uint64("id")};
@@ -1868,7 +2226,31 @@ SequencePtr readSequence(const Reader& r, const ProjectState& state) {
             angle.offset = a.nonNegativeTicks("offset", Ticks{});
             multicam.angles.push_back(std::move(angle));
         }
+        multicam.merged = m.boolean("merged", false); // P.2 (schema 17)
         s->multicam = std::move(multicam);
+    }
+    // P.2 (schema 17): sequence settings (validate() bounds the values).
+    if (r.has("pixelAspect")) {
+        s->pixelAspect = r.rate("pixelAspect");
+    }
+    const auto named = [&](const char* key, auto parse, auto& target) {
+        if (!r.has(key)) {
+            return;
+        }
+        const std::string text = r.string(key);
+        const auto value = parse(text);
+        if (!value) {
+            r.child(key).fail("unknown value '" + text.substr(0, 64) + "'");
+        }
+        target = *value;
+    };
+    named("fields", [](const std::string& t) { return fieldOrderFromString(t); }, s->fields);
+    named("videoDisplay", [](const std::string& t) { return videoTimeDisplayFromString(t); }, s->videoDisplay);
+    named("audioDisplay", [](const std::string& t) { return audioTimeDisplayFromString(t); }, s->audioDisplay);
+    s->previewFormat = r.string("previewFormat");
+    s->colorIndex = r.int32In("colorIndex", 0, 0, 15); // 0.2 (schema 18)
+    if (r.has("importSource")) { // P.3 (schema 18)
+        s->importSource = readImportSource(r.child("importSource"));
     }
     if (r.has("derivedFrom")) {
         const Reader d = r.child("derivedFrom");
@@ -1911,6 +2293,7 @@ SequencePtr readSequence(const Reader& r, const ProjectState& state) {
             if (t.has("style")) {
                 track.style = readCaptionStyle(t.child("style"));
             }
+            track.trackStyle = t.string("trackStyle");
             s->captionTracks.push_back(std::move(track));
         }
     }
@@ -1928,7 +2311,120 @@ SequencePtr readSequence(const Reader& r, const ProjectState& state) {
             list.push_back(readTrack(tracks.element(i), kind, state));
         }
     }
+    if (r.has("submixTracks")) { // p02 audio; validation checks they hold no clips and route without cycles
+        const Reader tracks = r.child("submixTracks");
+        if (tracks.arraySize() > kMaxSubmixTracks) {
+            tracks.fail("more than " + std::to_string(kMaxSubmixTracks) + " submix tracks");
+        }
+        for (std::size_t i = 0; i < tracks.arraySize(); ++i) {
+            s->submixTracks.push_back(readTrack(tracks.element(i), TrackKind::Audio, state));
+        }
+    }
     return s;
+}
+
+/// P.3 (schema 18): a Search Bin's query (binSearchProblem checks it).
+BinSearch readBinSearch(const Reader& r) {
+    BinSearch s;
+    s.text = r.string("text");
+    s.field = r.string("field");
+    s.type = r.string("type");
+    s.label = r.int32In("label", -1, -1, 15);
+    s.good = r.boolean("good", false);
+    s.offline = r.boolean("offline", false);
+    s.generated = r.boolean("generated", false);
+    s.transcribed = r.boolean("transcribed", false);
+    s.proxy = r.boolean("proxy", false);
+    s.unused = r.boolean("unused", false);
+    s.duplicates = r.boolean("duplicates", false);
+    s.from = r.string("from");
+    s.to = r.string("to");
+    if (const auto problem = binSearchProblem(s)) {
+        r.fail(*problem);
+    }
+    return s;
+}
+
+/// P.3 (schema 18): clip metadata, bounded (validate checks UTF-8).
+ClipMetadata readClipMetadata(const Reader& r) {
+    ClipMetadata m;
+    m.scene = r.string("scene");
+    m.shot = r.string("shot");
+    m.take = r.string("take");
+    m.logNote = r.string("logNote");
+    m.client = r.string("client");
+    m.good = r.boolean("good", false);
+    m.status = r.string("status");
+    m.cameraAngle = r.string("cameraAngle");
+    m.cameraLabel = r.string("cameraLabel");
+    m.cameraModel = r.string("cameraModel");
+    m.shotDate = r.string("shotDate");
+    m.shotLocation = r.string("shotLocation");
+    for (const std::string* field : {&m.scene, &m.shot, &m.take, &m.client, &m.status, &m.cameraAngle, &m.cameraLabel,
+                                     &m.cameraModel, &m.shotDate, &m.shotLocation}) {
+        if (field->size() > ClipMetadata::kMaxFieldBytes) {
+            r.fail("a clip metadata field is too long");
+        }
+    }
+    if (m.logNote.size() > MediaItem::kMaxTextBytes) {
+        r.fail("the log note is too long");
+    }
+    return m;
+}
+
+FreeformArrangement readFreeformArrangement(const Reader& r) {
+    FreeformArrangement a;
+    a.scale = r.has("scale") ? r.child("scale").asDouble() : 1.0;
+    if (r.has("items")) {
+        const Reader items = r.child("items");
+        if (items.arraySize() > kMaxFreeformItems) {
+            items.fail("too many placements");
+        }
+        a.items.reserve(items.arraySize());
+        for (std::size_t i = 0; i < items.arraySize(); ++i) {
+            const Reader p = items.element(i);
+            FreeformPlacement placement;
+            const std::string kind = p.string("kind", "media");
+            if (kind == "media") {
+                placement.kind = FreeformPlacement::Kind::Media;
+            } else if (kind == "sequence") {
+                placement.kind = FreeformPlacement::Kind::Sequence;
+            } else if (kind == "bin") {
+                placement.kind = FreeformPlacement::Kind::Bin;
+            } else {
+                p.child("kind").fail("unknown value \"" + kind + "\"");
+            }
+            placement.id = p.uint64("id");
+            placement.x = p.child("x").asDouble();
+            placement.y = p.child("y").asDouble();
+            placement.size = p.has("size") ? p.child("size").asDouble() : 1.0;
+            a.items.push_back(placement);
+        }
+    }
+    return a;
+}
+
+/// P.3 (schema 18): the Freeform views (validate checks order and ranges).
+std::vector<FreeformView> readFreeform(const Reader& list) {
+    std::vector<FreeformView> out;
+    for (std::size_t i = 0; i < list.arraySize(); ++i) {
+        const Reader v = list.element(i);
+        FreeformView view;
+        view.bin = BinId{v.uint64("bin", 0)};
+        view.current = readFreeformArrangement(v);
+        if (v.has("layouts")) {
+            const Reader layouts = v.child("layouts");
+            if (layouts.arraySize() > FreeformView::kMaxLayouts) {
+                layouts.fail("too many saved layouts");
+            }
+            for (std::size_t k = 0; k < layouts.arraySize(); ++k) {
+                const Reader l = layouts.element(k);
+                view.layouts.push_back(FreeformLayout{l.string("name"), readFreeformArrangement(l)});
+            }
+        }
+        out.push_back(std::move(view));
+    }
+    return out;
 }
 
 ProjectState readProject(const Reader& root) {
@@ -1939,7 +2435,11 @@ ProjectState readProject(const Reader& root) {
         const Reader bins = root.child("bins");
         for (std::size_t i = 0; i < bins.arraySize(); ++i) {
             const Reader b = bins.element(i);
-            state.bins.push_back(Bin{BinId{b.uint64("id")}, BinId{b.uint64("parent", 0)}, b.string("name")});
+            Bin bin{BinId{b.uint64("id")}, BinId{b.uint64("parent", 0)}, b.string("name"), std::nullopt};
+            if (b.has("search")) { // P.3 (schema 18)
+                bin.search = readBinSearch(b.child("search"));
+            }
+            state.bins.push_back(std::move(bin));
         }
     }
     if (root.has("media")) {
@@ -1991,6 +2491,12 @@ ProjectState readProject(const Reader& root) {
             item.description = m.string("description");
             if (item.comment.size() > MediaItem::kMaxTextBytes || item.description.size() > MediaItem::kMaxTextBytes) {
                 m.fail("comment or description is too long");
+            }
+            if (m.has("metadata")) { // P.3 (schema 18)
+                item.metadata = readClipMetadata(m.child("metadata"));
+            }
+            if (m.has("importSource")) { // P.3 (schema 18)
+                item.importSource = readImportSource(m.child("importSource"));
             }
             if (m.has("posterFrame")) {
                 item.posterFrame = m.nonNegativeTicks("posterFrame", Ticks{});
@@ -2055,6 +2561,55 @@ ProjectState readProject(const Reader& root) {
                 }
                 item.recording = std::move(recording);
             }
+            if (m.has("scaling")) { // P.2 (schema 17)
+                const std::string name = m.string("scaling");
+                const auto scaling = mediaScalingFromString(name);
+                if (!scaling) {
+                    m.child("scaling").fail("unknown media scaling '" + name.substr(0, 64) + "'");
+                }
+                item.scaling = *scaling;
+            }
+            if (m.has("interpretation")) { // P.2 (schema 17); validate() bounds the values
+                const Reader in = m.child("interpretation");
+                MediaInterpretation interpretation;
+                if (in.has("frameRate")) {
+                    interpretation.frameRate = in.rate("frameRate");
+                }
+                if (in.has("pixelAspect")) {
+                    interpretation.pixelAspect = in.rate("pixelAspect");
+                }
+                if (in.has("fieldOrder")) {
+                    const std::string text = in.string("fieldOrder");
+                    interpretation.fieldOrder = fieldOrderFromString(text);
+                    if (!interpretation.fieldOrder) {
+                        in.child("fieldOrder").fail("unknown field order '" + text.substr(0, 64) + "'");
+                    }
+                }
+                interpretation.ignoreAlpha = in.boolean("ignoreAlpha", false);
+                interpretation.invertAlpha = in.boolean("invertAlpha", false);
+                if (in.has("premultiplication")) {
+                    interpretation.premultiplication = in.enumeration("premultiplication", kAlphaModes);
+                }
+                if (!interpretation.isEmpty()) {
+                    item.interpretation = interpretation;
+                }
+            }
+            if (m.has("timecode")) { // P.2 (schema 17)
+                const Reader tc = m.child("timecode");
+                MediaTimecode timecode;
+                if (tc.has("start")) {
+                    timecode.start = tc.nonNegativeTicks("start", Ticks{});
+                }
+                timecode.reelName = tc.string("reelName");
+                if (timecode.reelName.size() > MediaTimecode::kMaxReelNameBytes) {
+                    tc.child("reelName").fail("the reel name is too long");
+                }
+                item.timecode = std::move(timecode);
+            }
+            if (m.has("stillDuration")) { // P.2 (schema 17); validate() bounds it
+                item.stillDuration = m.nonNegativeTicks("stillDuration", Ticks{});
+            }
+            item.madeOffline = m.boolean("madeOffline", false); // P.2 (schema 17)
             item.clipDefaults = std::make_shared<const ClipContent>(ClipContent{item.name, {}});
             state.media.push_back(std::make_shared<const MediaItem>(std::move(item)));
         }
@@ -2176,6 +2731,37 @@ ProjectState readProject(const Reader& root) {
             state.templates.push_back(detail::templateFromJsonValue(list.element(i)));
         }
     }
+    if (root.has("colorManagement")) { // I.9
+        const Reader cm = root.child("colorManagement");
+        const std::optional<ColorManagementMode> mode = colorManagementModeFromString(cm.child("mode").asString());
+        if (!mode) {
+            cm.child("mode").fail("unknown colour management");
+        }
+        ColorManagement& out = state.colorManagement;
+        out.mode = *mode;
+        if (cm.has("peakNits")) {
+            out.peakNits = cm.child("peakNits").asDouble();
+        }
+        if (cm.has("referenceWhiteNits")) {
+            out.referenceWhiteNits = cm.child("referenceWhiteNits").asDouble();
+        }
+        out.autoDetectLog = cm.boolean("autoDetectLog", true);
+        if (const auto problem = colorManagementProblem(out)) {
+            cm.fail(std::string(*problem));
+        }
+    }
+    if (root.has("textStyles")) {
+        const Reader list = root.child("textStyles");
+        if (list.arraySize() > kMaxProjectTextStyles) {
+            list.fail("more than " + std::to_string(kMaxProjectTextStyles) + " text styles");
+        }
+        for (std::size_t i = 0; i < list.arraySize(); ++i) {
+            state.textStyles.push_back(detail::textStyleFromJsonValue(list.element(i)));
+        }
+    }
+    if (root.has("freeform")) { // P.3 (schema 18)
+        state.freeform = readFreeform(root.child("freeform"));
+    }
     return state;
 }
 
@@ -2204,7 +2790,10 @@ json mediaRenderJson(const ProjectState& state, const MediaItem& m) {
         out["subclip"] = json{{"start", m.subclip->range.start.value},
                               {"duration", m.subclip->range.duration.value},
                               {"restricted", m.subclip->restricted}};
+    }    if (m.interpretation && !m.interpretation->isEmpty()) { // P.2: interpreted pixels render differently
+        out["interpretation"] = interpretationJson(*m.interpretation);
     }
+
     json redactions = json::array();
     for (const Redaction* r : redactionsCovering(state, m.id)) {
         redactions.push_back(redactionJson(*r));
@@ -2222,6 +2811,7 @@ json clipRenderJson(const Clip& c, Ticks origin) {
     out.erase("name");
     out.erase("colorIndex");
     out.erase("linkGroup");
+    out.erase("group");
     out["start"] = (c.start() - origin).value;
     return out;
 }
@@ -2474,7 +3064,7 @@ std::expected<ProjectState, Error> readChunks(const std::string& rootKey, const 
             if (auto ok = expand(s); !ok) {
                 return std::unexpected(ok.error());
             }
-            for (const char* list : {"videoTracks", "audioTracks"}) {
+            for (const char* list : {"videoTracks", "audioTracks", "submixTracks"}) {
                 if (s.is_object() && s.contains(list) && s[list].is_array()) {
                     for (json& t : s[list]) {
                         if (auto ok = expand(t); !ok) {
@@ -2506,7 +3096,7 @@ std::expected<std::vector<std::string>, Error> chunkReferences(std::string_view 
         if (j.contains("media")) {
             take(j["media"]);
         }
-        for (const char* list : {"sequences", "videoTracks", "audioTracks"}) {
+        for (const char* list : {"sequences", "videoTracks", "audioTracks", "submixTracks"}) {
             if (j.contains(list) && j[list].is_array()) {
                 for (const json& v : j[list]) {
                     take(v);
@@ -2730,6 +3320,8 @@ nlohmann::json paramValueToJson(const ParamValue& value) { return io::paramValue
 ParamValue paramValueFromJson(const Reader& reader) { return io::readParamValue(reader); }
 nlohmann::json maskToJson(const Mask& mask) { return io::maskJson(mask); }
 Mask maskFromJson(const Reader& reader) { return io::readMask(reader); }
+nlohmann::json effectStackToJsonValue(const EffectStack& stack) { return io::effectStackJson(stack); }
+EffectStack effectStackFromJsonValue(const Reader& reader) { return io::readEffectStack(reader); }
 
 } // namespace detail
 

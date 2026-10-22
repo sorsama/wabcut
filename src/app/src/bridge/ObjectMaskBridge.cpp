@@ -15,6 +15,7 @@
 #include <wabcut/command/Engine.h>
 #include <wabcut/model/EditOps.h>
 #include <wabcut/model/EditSession.h>
+#include <wabcut/model/FrameScaling.h>
 #include <wabcut/model/ProjectOps.h>
 #include <wabcut/render/PreparedComposite.h>
 
@@ -131,18 +132,30 @@ struct ObjectMaskBridge::Placement {
     }
 
     static std::optional<Placement> of(const ProjectState& project, const Sequence& seq, const Clip& clip, Ticks t) {
-        const MediaItem* item = project.findMedia(clip.media);
-        if (!item || clip.stream.index < 0 || clip.stream.index >= static_cast<int>(item->info.video.size())) {
-            return std::nullopt;
+        // The clip's frame: its media stream's picture, or (0.2) for a nested or multicam clip the nested sequence's
+        // canvas, which its object masks are made from (square pixels, no stored rotation).
+        VideoStreamInfo v;
+        if (clip.isNested()) {
+            const Sequence* nested = project.findSequence(clip.sequence);
+            if (!nested) {
+                return std::nullopt;
+            }
+            v.width = nested->width;
+            v.height = nested->height;
+        } else {
+            const MediaItem* item = project.findMedia(clip.media);
+            if (!item || clip.stream.index < 0 || clip.stream.index >= static_cast<int>(item->info.video.size())) {
+                return std::nullopt;
+            }
+            v = item->info.video[static_cast<std::size_t>(clip.stream.index)];
         }
-        const VideoStreamInfo& v = item->info.video[static_cast<std::size_t>(clip.stream.index)];
         if (v.width <= 0 || v.height <= 0 || seq.width <= 0 || seq.height <= 0) {
             return std::nullopt;
         }
         const ClipProperties& p = clip.properties();
         render::LayerTransform transform;
         transform.position = {p.value(ParamId::PositionX, t), p.value(ParamId::PositionY, t)};
-        transform.scale = p.value(ParamId::Scale, t);
+        transform.scale = p.value(ParamId::Scale, t) * scaleToFrameFactor(project, clip, seq.width, seq.height); // P.2
         transform.rotationDegrees = p.value(ParamId::Rotation, t);
         transform.anchor = {p.value(ParamId::AnchorX, t), p.value(ParamId::AnchorY, t)};
         const int quarter = ((v.rotationDegrees / 90) % 4 + 4) % 4;
@@ -923,6 +936,62 @@ bool ObjectMaskBridge::redactObject(double x0, double y0, double x1, double y1) 
                                   Qt::QueuedConnection);
     });
     return true;
+}
+
+bool ObjectMaskBridge::redactFaces() {
+    ProjectController* c = controller();
+    SourceMonitorBridge* sm = sourceMonitor();
+    const MediaId media = sm ? sm->mediaId() : MediaId{};
+    const ProjectSnapshot snap = c ? c->snapshot() : nullptr;
+    const MediaItem* item = snap && media.isValid() ? snap->findMedia(media) : nullptr;
+    if (m_busy || !item || !item->info.hasVideo()) {
+        setStatus(tr("Load a video source first"));
+        return false;
+    }
+    const auto base = servicesFor(projectFile());
+    if (!base || !base->detector) {
+        setStatus(tr("Download the face detector first (Preferences > AI > Local models: the subject detectors)"));
+        return false;
+    }
+    const edit::SourceMarks marks = edit::storedSourceMarks(*item);
+    Json params{{"media", media.value},
+                {"in", marks.in.value_or(Ticks{}).value},
+                {"out", marks.out.value_or(item->info.duration).value}};
+    if (MaskBridge* mb = masks()) {
+        params["style"] = mb->redactStyle().toStdString();
+    }
+    return runCommand("redaction.detectFaces", params, tr("Finding faces…"), [this](const Outcome& o) -> QString {
+        ProjectController* live = controller();
+        std::vector<Redaction> made;
+        for (const Json& r : o.result.data.value("redactions", Json::array())) {
+            const RedactionId id{r.value("redaction", std::uint64_t{0})};
+            const auto it = std::find_if(o.state->redactions.begin(), o.state->redactions.end(), [&](const Redaction& x) { return x.id == id; });
+            if (it != o.state->redactions.end()) {
+                made.push_back(*it);
+            }
+        }
+        if (made.empty()) {
+            return tr("No face found: nothing was redacted");
+        }
+        auto added = live->session().apply("Redact Faces", [&](const ProjectState& s) -> std::expected<ProjectState, Error> {
+            ProjectState state = s;
+            for (const Redaction& r : made) {
+                auto one = edit::addRedaction(state, r);
+                if (!one) {
+                    return std::unexpected(one.error());
+                }
+                state = std::move(one->state);
+            }
+            return state;
+        });
+        if (!added) {
+            return QString::fromStdString(added.error().message);
+        }
+        if (MaskBridge* mb = masks()) {
+            mb->refresh();
+        }
+        return tr("Redacted %n face(s)", nullptr, static_cast<int>(made.size()));
+    });
 }
 
 // ---- The model -----------------------------------------------------------------------------------------------------

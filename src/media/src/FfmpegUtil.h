@@ -33,8 +33,10 @@ namespace wabcut::media::detail {
 // ---- RAII
 // ----------------------------------------------------------------------------------------------------
 
+/// Closes an input; one openInput read from memory (a spanned clip's concat script, a layered file's picture) also
+/// frees its AVIOContext and the bytes behind it.
 struct FormatContextDeleter {
-    void operator()(AVFormatContext* p) const noexcept { avformat_close_input(&p); }
+    void operator()(AVFormatContext* p) const noexcept;
 };
 struct CodecContextDeleter {
     void operator()(AVCodecContext* p) const noexcept { avcodec_free_context(&p); }

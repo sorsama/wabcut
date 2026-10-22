@@ -116,6 +116,37 @@ TEST_CASE("Effect commands", "[command][finishing][effects]") {
     CHECK(h.errorOf("clip.removeEffect", Json{{"clip", at("V1", 0)}, {"effect", blur}}) == "NotFound");
 }
 
+TEST_CASE("Effect commands: Simple Text's text and Image Matte Key's image are effect data (0.2)",
+          "[command][finishing][effects]") {
+    CommandHarness h(R"(
+        V1 tgt |Aaaaaaaa|
+    )");
+    const std::uint64_t text = h.ok("clip.addEffect", Json{{"clips", Json::array({at("V1", 0)})},
+                                                          {"effect", "wabcut.video.simpleText"},
+                                                          {"params", Json{{"size", 20}}}})
+                                   .createdIds[0];
+    h.ok("clip.setEffect", Json{{"clip", at("V1", 0)}, {"effect", text}, {"data", Json{{"text", "Chapter 2"}}}});
+    const EffectData* d = clipOf(h, "V1@0").effects()[0].findData("text");
+    REQUIRE(d);
+    REQUIRE(d->text());
+    CHECK(*d->text() == "Chapter 2");
+    CHECK(h.session.undoCount() == 2);
+    CHECK(h.ok("clip.details", Json{{"clip", at("V1", 0)}}).data["effects"][0]["data"]["text"] == "Chapter 2");
+    // An empty string removes it (the default text again); values are strings of at most 1024 bytes.
+    h.ok("clip.setEffect", Json{{"clip", at("V1", 0)}, {"effect", text}, {"data", Json{{"text", ""}}}});
+    CHECK_FALSE(clipOf(h, "V1@0").effects()[0].findData("text"));
+    CHECK(h.errorOf("clip.setEffect", Json{{"clip", at("V1", 0)}, {"effect", text}, {"data", Json{{"text", 5}}}}) ==
+          "InvalidParams");
+    CHECK(h.errorOf("clip.setEffect",
+                    Json{{"clip", at("V1", 0)}, {"effect", text}, {"data", Json{{"text", std::string(2000, 'x')}}}}) ==
+          "InvalidParams");
+    const std::uint64_t matte = h.ok("clip.addEffect", Json{{"clips", Json::array({at("V1", 0)})},
+                                                           {"effect", "wabcut.key.imageMatte"}})
+                                    .createdIds[0];
+    h.ok("clip.setEffect", Json{{"clip", at("V1", 0)}, {"effect", matte}, {"data", Json{{"image", "media:7"}}}});
+    CHECK(*clipOf(h, "V1@0").effects()[1].findData("image")->text() == "media:7");
+}
+
 TEST_CASE("Transition commands", "[command][finishing][transitions]") {
     CommandHarness h(R"(
         V1 tgt |AaaaaaaaB9bbbbbbb|

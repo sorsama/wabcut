@@ -44,6 +44,8 @@ QtObject {
     property string filmstripMode: "continuous"
     property bool rectifiedWaveforms: false
     property bool logarithmicWaveforms: false
+    // p02 audio: waveforms scaled by the clip's Audio Gain and Volume ("Show Audio Waveforms Using Clip Volume").
+    property bool volumeWaveforms: false
     property bool showThroughEdits: true
     property bool showDuplicateFrames: false
     property bool showClipMarkers: true
@@ -51,6 +53,12 @@ QtObject {
     property string trackKeyframes: "off"
     property bool snapIndicator: true
     property bool linkedSelection: true
+    // 0.2: Premiere's Show Video / Audio Fade Handles and Show Sequence Label Color (Timeline Display Settings).
+    property bool showVideoFadeHandles: true
+    property bool showAudioFadeHandles: true
+    property bool showSequenceLabelColor: false
+    // 0.2: Sequence > Selection Follows Playhead, remembered like Premiere's menu switch (Main syncs ProjectController).
+    property bool selectionFollowsPlayhead: false
     // Trim (Premiere's Preferences > Trim and Playback): the Large trim offset, and the play-around preroll/postroll.
     property int trimLargeOffset: 5
     property real trimPreroll: 2
@@ -210,12 +218,17 @@ QtObject {
         property alias filmstripMode: prefs.filmstripMode
         property alias rectifiedWaveforms: prefs.rectifiedWaveforms
         property alias logarithmicWaveforms: prefs.logarithmicWaveforms
+        property alias volumeWaveforms: prefs.volumeWaveforms
         property alias showThroughEdits: prefs.showThroughEdits
         property alias showDuplicateFrames: prefs.showDuplicateFrames
         property alias showClipMarkers: prefs.showClipMarkers
         property alias trackKeyframes: prefs.trackKeyframes
         property alias snapIndicator: prefs.snapIndicator
         property alias linkedSelection: prefs.linkedSelection
+        property alias showVideoFadeHandles: prefs.showVideoFadeHandles
+        property alias showAudioFadeHandles: prefs.showAudioFadeHandles
+        property alias showSequenceLabelColor: prefs.showSequenceLabelColor
+        property alias selectionFollowsPlayhead: prefs.selectionFollowsPlayhead
         property alias trimLargeOffset: prefs.trimLargeOffset
         property alias trimPreroll: prefs.trimPreroll
         property alias trimPostroll: prefs.trimPostroll

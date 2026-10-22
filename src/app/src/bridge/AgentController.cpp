@@ -1,6 +1,9 @@
 #include "AgentController.h"
 
 #include "AiController.h"
+#include "ExportController.h"
+#include "EffectPresetsBridge.h"
+#include "SpellingBridge.h"
 #include "GenerateController.h"
 #include "GraphicsBridge.h"
 #include "GlobalBridge.h"
@@ -33,6 +36,9 @@
 #endif
 #include <wabcut/audio/edit/MediaAnalysis.h>
 #include <wabcut/command/ExecutionContext.h>
+#include <wabcut/command/SpellingServices.h>
+#include <wabcut/editor/MediaImport.h>
+#include <wabcut/export/StillExport.h>
 #include <wabcut/model/Timecode.h>
 
 #include <QCoreApplication>
@@ -724,12 +730,22 @@ std::shared_ptr<command::CommandServices> AgentController::services() {
     // C.13 (M5o): template.* read the user's template library; text boxes measure with the app's Qt layout.
     if (auto* graphics = m_engine ? m_engine->singletonInstance<GraphicsBridge*>("Wabcut", "Graphics") : nullptr)
         parts.push_back(graphics->graphicsServices());
+    // 0.2: effects.* save and apply presets in the user's effects library (the Effects panel's).
+    parts.push_back(sharedEffectLibrary());
+    // 0.2 graphics: captions.checkSpelling / graphic.checkSpelling / spelling.check with the user's dictionary.
+    parts.push_back(std::make_shared<command::SpellingServices>(sharedSpelling()));
     // 0.1.1: render.previewInOut / deletePreviewFiles / status on the project's preview cache (the one playback uses).
     if (auto* readiness = m_engine ? m_engine->singletonInstance<MediaReadinessBridge*>("Wabcut", "MediaReadiness") : nullptr)
         parts.push_back(readiness->previewServices());
+    // 0.2: export.* - "export a Short and a 1080p version", Quick Export, the queue, presets, watch folders.
+    if (auto* exporter = m_engine ? m_engine->singletonInstance<ExportController*>("Wabcut", "ExportController") : nullptr)
+        parts.push_back(exporter->commandServices());
     // C.9 / I.9: review packages the assistant exports get rendered thumbnails (the export path), not placeholders.
     parts.push_back(std::make_shared<command::ReviewServices>(
         std::make_shared<ReviewFrames>([projectFile] { return projectFile; })));
+    // P.2 (E6): Export Frame (sequence.exportFrame, source.exportFrame) renders through the export path.
+    parts.push_back(exporter::stillExportServices(
+        [projectFile](const std::filesystem::path& file) { return editor::describeMediaFile(file, projectFile); }));
     return std::make_shared<command::ServiceBundle>(std::move(parts));
 }
 
@@ -737,7 +753,7 @@ agent::AgentOptions AgentController::optionsForRun() {
     agent::AgentOptions o = m_options;
     o.registry = &ai::edit::editingCommands();
     o.services = services();
-    for (const std::string name : {"gen.extend", "gen.broll", "gen.image", "dub.create", "narration.create"}) o.additiveProjectCommands.push_back(name);
+    for (const std::string name : {"gen.extend", "gen.broll", "gen.image", "gen.sfx", "dub.create", "narration.create"}) o.additiveProjectCommands.push_back(name);
     if (o.transcriptDir.empty()) {
         // The redacted record of every run stays on this computer, next to the AI request log.
         const QString dir = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation) + QStringLiteral("/ai/agent");

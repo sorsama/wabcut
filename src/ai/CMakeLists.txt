@@ -96,6 +96,7 @@ add_subdirectory(audio)
 # wabcut_ai_reframe — auto reframe: the virtual camera, the reframed sequence and its commands (AI-9).
 # Owner: AI platform engineer. See src/ai/reframe/CMakeLists.txt. Before `edit`, whose catalog includes its commands.
 add_subdirectory(reframe)
+add_subdirectory(stabilize) # wabcut_ai_stabilize - Warp Stabilizer / Rolling Shutter Repair analysis (P.2), see its CMakeLists.txt
 
 # ---------------------------------------------------------------------------------------------------------------
 # wabcut_ai_edit (+ wabcut_ai_edit_media in full builds) — transcript-first editing: text edits as catalog
@@ -136,3 +137,9 @@ add_subdirectory(workflow)
 # wabcut_ai_agent — the editing assistant: tool loop, staging, verification, quick actions, guarded apply (AI-5).
 # Owner: AI platform engineer. See src/ai/agent/CMakeLists.txt.
 add_subdirectory(agent)
+
+# ---------------------------------------------------------------------------------------------------------------
+# wabcut_ai_c2pa - signed C2PA Content Credentials for exports (AI-15): the manifest of an export, a per-user signing
+# identity, signing and verification with the prebuilt c2pa-rs C library. Owner: AI platform engineer. See
+# src/ai/c2pa/CMakeLists.txt.
+add_subdirectory(c2pa)

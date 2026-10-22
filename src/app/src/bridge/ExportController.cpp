@@ -9,24 +9,35 @@
 #include "ProjectController.h"
 #include "TranscriptBridge.h"
 
+#include <wabcut/editor/SourceEdit.h>
 #include <wabcut/export/Encoders.h>
+#include <wabcut/export/ReviewFrames.h>
+#include <wabcut/model/EditSession.h>
+#include <wabcut/model/ProjectOps.h>
 #include <wabcut/model/MediaLocator.h>
+#include <wabcut/model/Timecode.h>
 #include <wabcut/playback/video/Evaluate.h>
 
 #include <QCoreApplication>
 #include <QDesktopServices>
 #include <QDir>
 #include <QFileInfo>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QMetaObject>
 #include <QProcess>
 #include <QQmlEngine>
 #include <QRegularExpression>
+#include <QSettings>
 #include <QStandardPaths>
+#include <QStringList>
 #include <QUrl>
 #include <QtQml/qqml.h>
 
 #include <algorithm>
 #include <cmath>
+#include <fstream>
+#include <iterator>
 #include <mutex>
 
 namespace wabcut::app {
@@ -126,8 +137,95 @@ QString codecText(ex::VideoCodec c) {
         return QStringLiteral("GIF");
     case ex::VideoCodec::Vp9:
         return QStringLiteral("VP9");
+    case ex::VideoCodec::Png:
+        return QStringLiteral("PNG");
+    case ex::VideoCodec::Tiff:
+        return QStringLiteral("TIFF");
+    case ex::VideoCodec::Dpx:
+        return QStringLiteral("DPX");
+    case ex::VideoCodec::Jpeg:
+        return QStringLiteral("JPEG");
+    case ex::VideoCodec::Targa:
+        return QStringLiteral("Targa");
+    case ex::VideoCodec::Exr:
+        return QStringLiteral("OpenEXR");
+    case ex::VideoCodec::Animation:
+        return QStringLiteral("Animation");
+    case ex::VideoCodec::CineForm:
+        return QStringLiteral("CineForm");
     }
     return {};
+}
+
+/// 0.2: overrides as the export library reads them (QVariant values through JSON).
+ex::Json jsonFromVariantMap(const QVariantMap& map) {
+    const QByteArray bytes = QJsonDocument(QJsonObject::fromVariantMap(map)).toJson(QJsonDocument::Compact);
+    try {
+        return ex::Json::parse(bytes.constData(), bytes.constData() + bytes.size());
+    } catch (...) {
+        return ex::Json::object();
+    }
+}
+
+/// 0.2: which group of the Export workspace a built-in preset belongs to.
+QString presetCategory(std::string_view id) {
+    static constexpr std::string_view kFormats[] = {"prores-4444-alpha", "animation-alpha", "cineform-alpha", "dnxhr-hq",
+                                                    "dnxhr-444", "dnxhd-1080p-hq", "audio-mp3", "audio-aac",
+                                                    "audio-aiff", "png-sequence", "tiff-sequence", "dpx-sequence",
+                                                    "jpeg-sequence", "targa-sequence", "exr-sequence", "png-still"};
+    for (const std::string_view f : kFormats) {
+        if (f == id) {
+            return QStringLiteral("formats");
+        }
+    }
+    if (id.find("hdr") != std::string_view::npos) {
+        return QStringLiteral("hdr");
+    }
+    return QStringLiteral("general");
+}
+
+QString formatIcon(const ex::ExportSettings& s) {
+    if (s.container == ex::Container::Image) {
+        return QStringLiteral("image");
+    }
+    if (ex::isAudioOnly(s.container)) {
+        return QStringLiteral("audio-lines");
+    }
+    return QStringLiteral("film");
+}
+
+std::mutex& presetFolderMutex() {
+    static std::mutex m;
+    return m;
+}
+
+std::filesystem::path& presetFolderOverride() {
+    static std::filesystem::path folder;
+    return folder;
+}
+
+/// 0.2: the Content Credentials thumbnail - the export's own picture in the middle of its range, rendered by the
+/// exporter's renderer (redactions included; fail closed: no thumbnail rather than one without them), as SDR JPEG
+/// at most 320 pixels wide. Runs on the export thread after the file is complete.
+std::function<std::string(const std::filesystem::path&)> exportThumbnail(std::shared_ptr<const ProjectState> snapshot,
+                                                                         SequenceId sequence, std::optional<TimeRange> range) {
+    return [snapshot = std::move(snapshot), sequence, range](const std::filesystem::path&) -> std::string {
+        if (!snapshot) {
+            return {};
+        }
+        const Ticks at = range ? range->start + Ticks{range->duration.value / 2} : Ticks{};
+        exporter::ReviewFrameOptions options;
+        options.color = render::colorPipelineFor(snapshot->colorManagement);
+        exporter::RenderedReviewFrames frames(options);
+        auto frame = frames.frame(*snapshot, sequence, at, 320);
+        return frame && frame->mime == "image/jpeg" ? frame->bytes : std::string();
+    };
+}
+
+/// The project's colour management (I.9): an export's dynamic range (Auto, PQ, HLG) resolves against it.
+ColorManagement managementOf(const ProjectController* controller) {
+    const ProjectSnapshot snapshot = controller ? controller->snapshot() : ProjectSnapshot{};
+    return snapshot ? snapshot->colorManagement : ColorManagement{};
 }
 
 QString pixelFormatText(ex::OutputPixelFormat f) {
@@ -142,89 +240,30 @@ QString pixelFormatText(ex::OutputPixelFormat f) {
         return translate("10-bit 4:2:2");
     case ex::OutputPixelFormat::Pal8:
         return translate("256 colours");
+    case ex::OutputPixelFormat::Yuv444p10:
+        return translate("10-bit 4:4:4");
+    case ex::OutputPixelFormat::Yuva444p10:
+        return translate("10-bit 4:4:4 + alpha");
+    case ex::OutputPixelFormat::Rgb24:
+        return translate("8-bit RGB");
+    case ex::OutputPixelFormat::Rgba:
+        return translate("8-bit RGB + alpha");
+    case ex::OutputPixelFormat::Rgb48:
+        return translate("16-bit RGB");
+    case ex::OutputPixelFormat::Rgba64:
+        return translate("16-bit RGB + alpha");
+    case ex::OutputPixelFormat::Gbrp10:
+        return translate("10-bit RGB");
+    case ex::OutputPixelFormat::Gbrp12:
+        return translate("12-bit RGB");
+    case ex::OutputPixelFormat::Gbrap12:
+        return translate("12-bit RGB + alpha");
+    case ex::OutputPixelFormat::Rgbf:
+        return translate("half float RGB");
+    case ex::OutputPixelFormat::Rgbaf:
+        return translate("half float RGB + alpha");
     }
     return {};
-}
-
-std::optional<ex::Container> parseContainer(const QString& s) {
-    if (s == QLatin1String("mp4")) {
-        return ex::Container::Mp4;
-    }
-    if (s == QLatin1String("mov")) {
-        return ex::Container::Mov;
-    }
-    if (s == QLatin1String("mkv")) {
-        return ex::Container::Mkv;
-    }
-    if (s == QLatin1String("wav")) {
-        return ex::Container::Wav;
-    }
-    if (s == QLatin1String("gif")) {
-        return ex::Container::Gif;
-    }
-    if (s == QLatin1String("webm")) {
-        return ex::Container::WebM;
-    }
-    return std::nullopt;
-}
-
-std::optional<ex::VideoCodec> parseCodec(const QString& s) {
-    if (s == QLatin1String("h264")) {
-        return ex::VideoCodec::H264;
-    }
-    if (s == QLatin1String("hevc")) {
-        return ex::VideoCodec::Hevc;
-    }
-    if (s == QLatin1String("prores")) {
-        return ex::VideoCodec::ProRes;
-    }
-    if (s == QLatin1String("dnxhr")) {
-        return ex::VideoCodec::DnxHR;
-    }
-    if (s == QLatin1String("av1")) {
-        return ex::VideoCodec::Av1;
-    }
-    if (s == QLatin1String("gif")) {
-        return ex::VideoCodec::Gif;
-    }
-    if (s == QLatin1String("vp9")) {
-        return ex::VideoCodec::Vp9;
-    }
-    return std::nullopt;
-}
-
-/// M5o: an output frame rate from "60", "59.94" or "60000/1001" (NTSC rates by their usual decimals); 0 = the sequence's.
-std::optional<std::optional<Rate>> parseFrameRate(const QVariant& value) {
-    const QString text = value.toString().trimmed();
-    if (const qsizetype slash = text.indexOf(QLatin1Char('/')); slash > 0) {
-        bool okNum = false;
-        bool okDen = false;
-        const int num = text.left(slash).toInt(&okNum);
-        const int den = text.mid(slash + 1).toInt(&okDen);
-        if (!okNum || !okDen || num <= 0 || den <= 0 || num / den > 1000)
-            return std::nullopt;
-        return std::optional<Rate>(Rate{num, den}.normalized());
-    }
-    bool ok = false;
-    const double fps = text.toDouble(&ok);
-    if (!ok || fps < 0 || fps > 1000)
-        return std::nullopt;
-    if (fps == 0)
-        return std::optional<Rate>(); // the sequence rate
-    for (const int base : {24, 30, 60, 120, 240}) { // 23.976, 29.97, 59.94, 119.88, 239.76
-        const double ntsc = base * 1000.0 / 1001.0;
-        if (std::abs(fps - ntsc) < 0.01)
-            return std::optional<Rate>(Rate{base * 1000, 1001});
-    }
-    if (std::abs(fps - std::round(fps)) > 1e-6)
-        return std::nullopt;
-    return std::optional<Rate>(Rate{static_cast<std::int32_t>(std::lround(fps)), 1});
-}
-
-Error badOverride(const QString& key, const QVariant& value) {
-    return Error{
-        ErrorCode::InvalidArgument,
-        QStringLiteral("Unsupported export option %1 = %2").arg(key, value.toString()).toStdString()};
 }
 
 std::filesystem::path outputFromOverride(const QVariant& value) {
@@ -330,11 +369,17 @@ const ExportJobModel::Row* ExportJobModel::update(exporter::ExportJobId queueId,
     }
     Row& r = *it;
     const bool wasFinished = r.finished;
+    r.held = status.held;
     const exporter::ExportProgress& p = status.progress;
     switch (p.phase) {
     case exporter::ExportPhase::Queued:
-        r.state = QStringLiteral("queued");
-        r.phaseText = translate("Queued");
+        // 0.2: sent to the queue and waiting for Start Queue (Media Encoder's "Ready").
+        r.state = status.held ? QStringLiteral("held") : QStringLiteral("queued");
+        r.phaseText = status.held ? translate("Ready") : translate("Queued");
+        break;
+    case exporter::ExportPhase::Paused:
+        r.state = QStringLiteral("paused");
+        r.phaseText = translate("Paused");
         break;
     case exporter::ExportPhase::Preparing:
         r.state = QStringLiteral("running");
@@ -381,6 +426,12 @@ const ExportJobModel::Row* ExportJobModel::update(exporter::ExportJobId queueId,
             r.detail += QStringLiteral(" · ") + translate("%1 MB").arg(static_cast<double>(status.result->bytes) / 1e6, 0, 'f', 1);
         if (status.result->attempts > 1)
             r.detail += QStringLiteral(" · ") + translate("encoded twice to fit the size");
+        // 0.2 (I.9): an HDR file, with a PQ master's measured light levels.
+        if (status.result->dynamicRange == ex::DynamicRange::Pq)
+            r.detail += QStringLiteral(" · ") +
+                        translate("HDR PQ · MaxCLL %1 / MaxFALL %2 nits").arg(status.result->maxCll).arg(status.result->maxFall);
+        else if (status.result->dynamicRange == ex::DynamicRange::Hlg)
+            r.detail += QStringLiteral(" · ") + translate("HDR HLG");
     } else if (status.error) {
         r.detail = ExportController::plainError(*status.error);
     }
@@ -407,6 +458,19 @@ void ExportJobModel::removeFinished() {
         }
     }
     emit countChanged();
+}
+
+void ExportJobModel::removeFinished(exporter::ExportJobId queueId) {
+    for (int i = rowCount() - 1; i >= 0; --i) {
+        const Row& r = m_rows[static_cast<std::size_t>(i)];
+        if (r.queueId == queueId && r.finished) {
+            beginRemoveRows({}, i, i);
+            m_rows.erase(m_rows.begin() + i);
+            endRemoveRows();
+            emit countChanged();
+            return;
+        }
+    }
 }
 
 // ---- ExportController ------------------------------------------------------------------------------------
@@ -437,7 +501,49 @@ ExportController::ExportController(QObject* parent)
                       {QStringLiteral("hevc"), QString()},
                       {QStringLiteral("prores"), QString()},
                       {QStringLiteral("dnxhr"), QString()}};
+    // 0.2: Media Encoder's Watch Folders, queued on this controller's queue (their jobs join the list as they come).
+    ex::WatchFolderService::Options watchOptions;
+    m_watch = std::make_shared<ex::WatchFolderService>(*m_queue, watchOptions);
     connect(m_jobs, &ExportJobModel::activeCountChanged, this, &ExportController::busyChanged);
+    // AI-15: the Content Credentials setting ("ai" until the user picks another).
+    QSettings settings;
+    const QString credentials = settings.value(QStringLiteral("export/contentCredentials"), QStringLiteral("ai")).toString();
+    if (ai::c2pa::credentialsModeFromString(credentials.toStdString())) {
+        m_contentCredentials = credentials;
+    }
+    // 0.2: what the credentials say besides the export itself, and who signs them.
+    m_credentialsProducer = settings.value(QStringLiteral("export/c2paProducer")).toString();
+    m_credentialsThumbnail = settings.value(QStringLiteral("export/c2paThumbnail"), true).toBool();
+    m_credentialsDoNotTrain = settings.value(QStringLiteral("export/c2paDoNotTrain"), false).toBool();
+    m_credentialsCertificate = settings.value(QStringLiteral("export/c2paCertificate")).toString();
+    m_credentialsKey = settings.value(QStringLiteral("export/c2paKey")).toString();
+    // 0.2: the CPU limit preference and the watch folders.
+    m_cpuLimit = std::clamp(settings.value(QStringLiteral("export/cpuLimit"), 100).toInt(), 10, 100);
+    ex::setExportThreadLimit(ex::threadLimitForPercent(m_cpuLimit));
+    const QByteArray watched = settings.value(QStringLiteral("export/watchFolders")).toByteArray();
+    if (!watched.isEmpty()) {
+        try {
+            const ex::Json list = ex::Json::parse(watched.constData(), watched.constData() + watched.size());
+            for (const ex::Json& w : list.is_array() ? list : ex::Json::array()) {
+                const std::string presetId = w.value("preset", "");
+                const auto preset = userPresetStore()->findAny(presetId);
+                if (!preset) {
+                    continue;
+                }
+                ex::WatchFolder folder;
+                folder.folder = pathFromUtf8(w.value("folder", ""));
+                folder.output = pathFromUtf8(w.value("output", ""));
+                folder.presetId = presetId;
+                folder.settings = preset->settings;
+                folder.moveSources = w.value("moveSources", true);
+                if (!folder.folder.empty()) {
+                    (void)m_watch->add(std::move(folder));
+                }
+            }
+        } catch (...) {
+            // A broken setting watches nothing.
+        }
+    }
 }
 
 ExportController::~ExportController() {
@@ -445,6 +551,8 @@ ExportController::~ExportController() {
         std::lock_guard lock(m_relay->mutex);
         m_relay->target = nullptr;
     }
+    m_commandServices.reset(); // 0.2: the watch folders queue on m_queue: they stop first
+    m_watch.reset();
     m_queue.reset(); // cancels what is queued or running, then joins the worker
     if (m_probe.joinable()) {
         m_probe.join();
@@ -491,169 +599,53 @@ QVariantList ExportController::presets() const {
             {QStringLiteral("id"), fromUtf8(p.id)},
             {QStringLiteral("name"), presetName(p.id)},
             {QStringLiteral("description"), text ? translate(text->description) : fromUtf8(p.description)},
-            {QStringLiteral("icon"), QString::fromLatin1(text ? text->icon : "film")}});
+            {QStringLiteral("icon"), text ? QString::fromLatin1(text->icon) : formatIcon(p.settings)},
+            {QStringLiteral("category"), presetCategory(p.id)},
+            {QStringLiteral("user"), false}});
+    }
+    // 0.2: the user's presets (Save Preset, Import Preset).
+    for (const ex::Preset& p : userPresetStore()->list()) {
+        list.append(QVariantMap{{QStringLiteral("id"), fromUtf8(p.id)},
+                                {QStringLiteral("name"), fromUtf8(p.name)},
+                                {QStringLiteral("description"), fromUtf8(p.description)},
+                                {QStringLiteral("icon"), formatIcon(p.settings)},
+                                {QStringLiteral("category"), QStringLiteral("user")},
+                                {QStringLiteral("user"), true}});
     }
     return list;
 }
 
+std::shared_ptr<ex::PresetStore> ExportController::userPresetStore() {
+    std::lock_guard lock(presetFolderMutex());
+    static std::shared_ptr<ex::PresetStore> store;
+    std::filesystem::path folder = presetFolderOverride();
+    if (folder.empty()) {
+        const QString config = QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation);
+        folder = config.isEmpty() ? std::filesystem::path() : pathFromQString(config) / "Export Presets";
+    }
+    if (!store || store->folder() != folder) {
+        store = std::make_shared<ex::PresetStore>(folder);
+    }
+    return store;
+}
+
+void ExportController::setUserPresetFolder(const std::filesystem::path& folder) {
+    std::lock_guard lock(presetFolderMutex());
+    presetFolderOverride() = folder;
+}
+
 std::expected<ex::ExportSettings, Error> ExportController::settingsFor(const QString& presetId,
                                                                        const QVariantMap& overrides) {
-    const auto preset = ex::findPreset(presetId.toStdString());
+    // 0.2: built-in or user presets; the override keys are the export library's (ExportPresets.h applyOverrides).
+    const auto preset = userPresetStore()->findAny(presetId.toStdString());
     if (!preset) {
         return std::unexpected(Error{ErrorCode::InvalidArgument,
                                      QStringLiteral("Unknown preset %1").arg(presetId).toStdString()});
     }
     ex::ExportSettings s = preset->settings;
-    auto has = [&](const char* key) {
-        const auto it = overrides.find(QLatin1String(key));
-        return it != overrides.end() && it->isValid() && !it->isNull();
-    };
-    auto value = [&](const char* key) { return overrides.value(QLatin1String(key)); };
-
-    // Container and codec first: they decide the defaults of the fields below.
-    if (has("container")) {
-        const auto c = parseContainer(value("container").toString());
-        if (!c) {
-            return std::unexpected(badOverride(QStringLiteral("container"), value("container")));
-        }
-        s.container = *c;
-        if (*c == ex::Container::Wav) {
-            s.video.enabled = false;
-            if (s.audio.codec == ex::AudioCodec::Aac) {
-                s.audio.codec = ex::AudioCodec::Pcm24;
-            }
-        } else if (*c == ex::Container::Mp4 && s.audio.codec != ex::AudioCodec::Aac) {
-            s.audio.codec = ex::AudioCodec::Aac; // MP4 carries AAC
-        } else if (*c == ex::Container::WebM) {
-            s.audio.codec = ex::AudioCodec::Opus; // WebM carries Opus
-        } else if (*c == ex::Container::Gif) {
-            s.audio.enabled = false; // a GIF has no sound
-        }
-    }
-    if (has("videoCodec")) {
-        const auto c = parseCodec(value("videoCodec").toString());
-        if (!c) {
-            return std::unexpected(badOverride(QStringLiteral("videoCodec"), value("videoCodec")));
-        }
-        if (*c != s.video.codec) {
-            s.video.codec = *c;
-            s.video.encoder = "auto";
-            s.video.pixelFormat = *c == ex::VideoCodec::ProRes  ? ex::OutputPixelFormat::Yuv422p10
-                                  : *c == ex::VideoCodec::DnxHR ? ex::OutputPixelFormat::Yuv422p
-                                                                : ex::OutputPixelFormat::Yuv420p;
-            s.video.dnxhrProfile = ex::DnxhrProfile::Hq;
-            s.video.proresProfile = ex::ProResProfile::Hq;
-        }
-    }
-    if (has("video")) {
-        s.video.enabled = value("video").toBool();
-    }
-    if (has("audio")) {
-        s.audio.enabled = value("audio").toBool();
-    }
-    if (has("encoder")) {
-        const QString e = value("encoder").toString();
-        s.video.encoder = e == QLatin1String("software") ? std::string(ex::softwareEncoder(s.video.codec))
-                                                         : e.toStdString();
-    }
-    if (has("quality")) {
-        s.video.rateControl = ex::RateControl::Quality;
-        s.video.quality = value("quality").toInt();
-    }
-    if (has("bitrateMbps")) {
-        s.video.rateControl = ex::RateControl::Bitrate;
-        s.video.bitrate = std::llround(value("bitrateMbps").toDouble() * 1e6);
-        s.video.maxBitrate = s.video.bitrate * 3 / 2;
-    }
-    if (has("maxBitrateMbps")) { // M5o: a tight cap for size targets (Discord); 0 = 1.5 x the bitrate
-        const double cap = value("maxBitrateMbps").toDouble();
-        if (cap < 0)
-            return std::unexpected(badOverride(QStringLiteral("maxBitrateMbps"), value("maxBitrateMbps")));
-        s.video.maxBitrate = cap == 0 ? s.video.bitrate * 3 / 2 : std::llround(cap * 1e6);
-    }
-    if (has("frameRate")) { // M5o: the output frame rate (gaming presets cap at 60); 0 = the sequence's
-        const auto rate = parseFrameRate(value("frameRate"));
-        if (!rate)
-            return std::unexpected(badOverride(QStringLiteral("frameRate"), value("frameRate")));
-        s.video.frameRate = *rate;
-    }
-    if (has("width") || has("height")) {
-        const int w = value("width").toInt();
-        const int h = value("height").toInt();
-        if (w <= 0 || h <= 0) { // 0 = the sequence size
-            s.video.width.reset();
-            s.video.height.reset();
-        } else {
-            s.video.width = w;
-            s.video.height = h;
-        }
-    }
-    if (has("scaleMode")) {
-        const QString m = value("scaleMode").toString();
-        if (m == QLatin1String("fit")) {
-            s.video.scaleMode = ex::ScaleMode::Fit;
-        } else if (m == QLatin1String("fill")) {
-            s.video.scaleMode = ex::ScaleMode::Fill;
-        } else if (m == QLatin1String("stretch")) {
-            s.video.scaleMode = ex::ScaleMode::Stretch;
-        } else {
-            return std::unexpected(badOverride(QStringLiteral("scaleMode"), value("scaleMode")));
-        }
-    }
-    if (has("range")) {
-        const QString r = value("range").toString();
-        if (r == QLatin1String("whole")) {
-            s.range = ex::RangeMode::WholeSequence;
-        } else if (r == QLatin1String("inOut")) {
-            s.range = ex::RangeMode::InOut;
-        } else if (r == QLatin1String("workArea")) {
-            s.range = ex::RangeMode::WorkArea;
-        } else {
-            return std::unexpected(badOverride(QStringLiteral("range"), value("range")));
-        }
-    }
-    if (has("captions")) { // I.4: off, burned in (the monitor's look), or a sidecar next to the file
-        const QString c = value("captions").toString();
-        if (c == QLatin1String("off")) {
-            s.captions.mode = ex::CaptionExport::None;
-        } else if (c == QLatin1String("burnIn")) {
-            s.captions.mode = ex::CaptionExport::BurnIn;
-        } else if (c == QLatin1String("srt")) {
-            s.captions.mode = ex::CaptionExport::Srt;
-        } else if (c == QLatin1String("vtt")) {
-            s.captions.mode = ex::CaptionExport::Vtt;
-        } else {
-            return std::unexpected(badOverride(QStringLiteral("captions"), value("captions")));
-        }
-    }
-    if (has("audioCodec")) {
-        const QString a = value("audioCodec").toString();
-        if (a == QLatin1String("aac")) {
-            s.audio.codec = ex::AudioCodec::Aac;
-        } else if (a == QLatin1String("pcm16")) {
-            s.audio.codec = ex::AudioCodec::Pcm16;
-        } else if (a == QLatin1String("pcm24")) {
-            s.audio.codec = ex::AudioCodec::Pcm24;
-        } else if (a == QLatin1String("ac3")) { // A.9: Dolby Digital (5.1); a WAV keeps its PCM
-            if (s.container != ex::Container::Wav) {
-                s.audio.codec = ex::AudioCodec::Ac3;
-            }
-        } else {
-            return std::unexpected(badOverride(QStringLiteral("audioCodec"), value("audioCodec")));
-        }
-    }
-    if (has("audioChannels")) { // A.9: 0 = as the master (5.1 for a 5.1 master when the codec takes it), 1, 2, 6
-        const int channels = value("audioChannels").toInt();
-        if (channels != 0 && channels != 1 && channels != 2 && channels != 6) {
-            return std::unexpected(badOverride(QStringLiteral("audioChannels"), value("audioChannels")));
-        }
-        s.audio.channels = channels;
-    }
-    if (has("sampleRate")) {
-        s.audio.sampleRate = value("sampleRate").toInt();
-    }
-    if (has("audioBitrateKbps")) {
-        s.audio.bitrate = std::llround(value("audioBitrateKbps").toDouble() * 1000.0);
+    s.presetId = preset->id;
+    if (auto ok = ex::applyOverrides(s, jsonFromVariantMap(overrides)); !ok) {
+        return std::unexpected(ok.error());
     }
     if (auto ok = ex::validate(s); !ok) {
         return std::unexpected(ok.error());
@@ -680,7 +672,6 @@ SequencePtr ExportController::sequenceFor(const QString& sequenceId) const {
 QString ExportController::defaultOutputPath(const QString& sequenceId, const QString& presetId,
                                             const QVariantMap& overrides) const {
     const auto settings = settingsFor(presetId, overrides);
-    const ex::Container container = settings ? settings->container : ex::Container::Mp4;
     const SequencePtr sequence = sequenceFor(sequenceId);
     QString folder;
     if (!m_projectFile.empty()) {
@@ -693,7 +684,7 @@ QString ExportController::defaultOutputPath(const QString& sequenceId, const QSt
         folder = QDir::homePath();
     }
     const QString base = safeFileName(sequence ? QString::fromStdString(sequence->name) : QString());
-    const QString ext = fromUtf8(ex::fileExtension(container));
+    const QString ext = fromUtf8(settings ? ex::outputExtension(*settings) : ex::fileExtension(ex::Container::Mp4));
     auto taken = [&](const QString& path) {
         if (QFileInfo::exists(path)) {
             return true;
@@ -713,18 +704,24 @@ QString ExportController::defaultOutputPath(const QString& sequenceId, const QSt
 }
 
 QVariantMap ExportController::describe(const QString& sequenceId, const QString& presetId,
-                                       const QVariantMap& overrides) const {
+                                       const QVariantMap& rawOverrides) const {
     QVariantMap d;
     const SequencePtr sequence = sequenceFor(sequenceId);
     d[QStringLiteral("rangeAvailable")] =
         QVariantMap{{QStringLiteral("whole"), sequence != nullptr},
                     {QStringLiteral("inOut"), sequence && sequence->markedRange().has_value()},
-                    {QStringLiteral("workArea"), sequence && sequence->workArea.has_value()}};
+                    {QStringLiteral("workArea"), sequence && sequence->workArea.has_value()},
+                    {QStringLiteral("custom"), sequence != nullptr}};
     auto fail = [&](const Error& e) {
         d[QStringLiteral("ok")] = false;
         d[QStringLiteral("error")] = plainError(e);
         return d;
     };
+    const auto prepared = preparedOverrides(rawOverrides, sequence.get());
+    if (!prepared) {
+        return fail(prepared.error());
+    }
+    const QVariantMap& overrides = *prepared;
     const auto settings = settingsFor(presetId, overrides);
     if (!settings) {
         return fail(settings.error());
@@ -732,7 +729,7 @@ QVariantMap ExportController::describe(const QString& sequenceId, const QString&
     if (!sequence) {
         return fail(Error{ErrorCode::NotFound, "There is no sequence to export"});
     }
-    const auto r = ex::resolve(*settings, *sequence);
+    const auto r = ex::resolve(*settings, *sequence, managementOf(project()));
     if (!r) {
         return fail(r.error());
     }
@@ -766,6 +763,18 @@ QVariantMap ExportController::describe(const QString& sequenceId, const QString&
             : s.video.rateControl == ex::RateControl::Quality
                 ? translate("Constant quality %1").arg(s.video.quality)
                 : translate("%1 Mb/s").arg(static_cast<double>(s.video.bitrate) / 1e6, 0, 'f', 1);
+        // 0.2 (I.9): what the picture is written as, and whether this format can carry HDR from this sequence.
+        const ColorManagement management = managementOf(project());
+        d[QStringLiteral("dynamicRangeSetting")] = fromUtf8(ex::dynamicRangeName(s.video.dynamicRange));
+        d[QStringLiteral("hdr")] = r->dynamicRange != ex::DynamicRange::Sdr;
+        d[QStringLiteral("hdrAvailable")] =
+            management.managed() && (s.video.codec == ex::VideoCodec::Hevc || s.video.codec == ex::VideoCodec::Av1 ||
+                                     s.video.codec == ex::VideoCodec::ProRes);
+        d[QStringLiteral("dynamicRange")] =
+            r->dynamicRange == ex::DynamicRange::Pq    ? translate("HDR · Rec.2100 PQ · HDR10 metadata, %1 nits").arg(management.peakNits)
+            : r->dynamicRange == ex::DynamicRange::Hlg ? translate("HDR · Rec.2100 HLG")
+            : management.isHdr()                       ? translate("SDR · tone-mapped from HDR")
+                                                       : translate("SDR · Rec.709");
     } else {
         d[QStringLiteral("format")] = fromUtf8(ex::containerName(s.container)).toUpper();
         d[QStringLiteral("resolution")] = translate("No video");
@@ -784,23 +793,54 @@ QVariantMap ExportController::describe(const QString& sequenceId, const QString&
             ? translate("AAC · %1 kHz · %2 kb/s · %3").arg(s.audio.sampleRate / 1000.0).arg(s.audio.bitrate / 1000).arg(channelText)
         : s.audio.codec == ex::AudioCodec::Ac3
             ? translate("AC-3 · %1 kHz · %2 kb/s · %3").arg(s.audio.sampleRate / 1000.0).arg(s.audio.bitrate / 1000).arg(channelText)
+        : s.audio.codec == ex::AudioCodec::Mp3
+            ? translate("MP3 · %1 kHz · %2 kb/s · %3").arg(s.audio.sampleRate / 1000.0).arg(s.audio.bitrate / 1000).arg(channelText)
             : translate("PCM %1-bit · %2 kHz · %3")
                   .arg(s.audio.codec == ex::AudioCodec::Pcm16 ? 16 : 24)
                   .arg(s.audio.sampleRate / 1000.0)
                   .arg(channelText);
     d[QStringLiteral("duration")] = clockText(r->duration.toSeconds());
-    d[QStringLiteral("range")] = s.range == ex::RangeMode::InOut      ? translate("In to Out")
-                                 : s.range == ex::RangeMode::WorkArea ? translate("Work area")
-                                                                      : translate("Whole sequence");
-    d[QStringLiteral("output")] =
-        overrides.contains(QStringLiteral("output"))
-            ? pathToQString(outputFromOverride(overrides.value(QStringLiteral("output"))))
-            : defaultOutputPath(sequenceId, presetId, overrides);
+    // Premiere's Range names (0.2).
+    d[QStringLiteral("range")] = s.range == ex::RangeMode::InOut      ? translate("Source In/Out")
+                                 : s.range == ex::RangeMode::WorkArea ? translate("Work Area")
+                                 : s.range == ex::RangeMode::Custom   ? translate("Custom")
+                                                                      : translate("Entire Source");
+    d[QStringLiteral("rangeSetting")] = fromUtf8(ex::rangeModeName(s.range));
+    d[QStringLiteral("rangeIn")] = fromUtf8(ticksToTimecode(r->range.start, sequence->frameRate, sequence->dropFrame));
+    d[QStringLiteral("rangeOut")] = fromUtf8(ticksToTimecode(r->range.end(), sequence->frameRate, sequence->dropFrame));
+    // 0.2: what the format can do (the drawer shows the rows that apply).
+    const ex::VideoCodec vc = s.video.codec;
+    d[QStringLiteral("extension")] = fromUtf8(ex::outputExtension(s));
+    d[QStringLiteral("audioOnly")] = ex::isAudioOnly(s.container);
+    d[QStringLiteral("isImage")] = s.container == ex::Container::Image;
+    d[QStringLiteral("exportAsSequence")] = s.video.exportAsSequence;
+    d[QStringLiteral("alpha")] = s.video.enabled && ex::hasAlpha(s.video.pixelFormat);
+    d[QStringLiteral("alphaAvailable")] =
+        s.video.enabled && (vc == ex::VideoCodec::ProRes || vc == ex::VideoCodec::Png || vc == ex::VideoCodec::Tiff ||
+                            vc == ex::VideoCodec::Targa || vc == ex::VideoCodec::Animation || vc == ex::VideoCodec::Exr ||
+                            vc == ex::VideoCodec::CineForm);
+    d[QStringLiteral("subtitlesAvailable")] =
+        s.video.enabled && (s.container == ex::Container::Mp4 || s.container == ex::Container::Mov || s.container == ex::Container::Mkv);
+    d[QStringLiteral("subtitles")] = s.subtitles.enabled;
+    d[QStringLiteral("smartRenderAvailable")] = vc == ex::VideoCodec::ProRes || vc == ex::VideoCodec::DnxHR;
+    d[QStringLiteral("chapterMarkers")] = static_cast<int>(std::count_if(
+        sequence->markers.begin(), sequence->markers.end(), [&](const Marker& m) {
+            return m.type == MarkerType::Chapter && m.start >= r->range.start && m.start < r->range.end();
+        }));
+    QString output = overrides.contains(QStringLiteral("output"))
+                         ? pathToQString(outputFromOverride(overrides.value(QStringLiteral("output"))))
+                         : defaultOutputPath(sequenceId, presetId, overrides);
+    if (!output.isEmpty()) { // the format decides the extension
+        std::filesystem::path path = pathFromQString(output);
+        path.replace_extension(std::string(ex::outputExtension(s)));
+        output = pathToQString(path);
+    }
+    d[QStringLiteral("output")] = output;
     return d;
 }
 
 QString ExportController::queueExport(const QString& sequenceId, const QString& presetId,
-                                      const QVariantMap& overrides) {
+                                      const QVariantMap& rawOverrides) {
     if (!project()) {
         setLastError(translate("There is no project to export."));
         return {};
@@ -810,6 +850,12 @@ QString ExportController::queueExport(const QString& sequenceId, const QString& 
         setLastError(translate("There is no sequence to export."));
         return {};
     }
+    const auto prepared = preparedOverrides(rawOverrides, sequence.get());
+    if (!prepared) {
+        setLastError(plainError(prepared.error()));
+        return {};
+    }
+    const QVariantMap& overrides = *prepared;
     auto settings = settingsFor(presetId, overrides);
     if (!settings) {
         setLastError(plainError(settings.error()));
@@ -844,7 +890,7 @@ QString ExportController::queueExport(const QString& sequenceId, const QString& 
             }
         }
     }
-    if (const auto r = ex::resolve(*settings, *sequence); !r) {
+    if (const auto r = ex::resolve(*settings, *sequence, managementOf(project())); !r) {
         setLastError(plainError(r.error()));
         return {};
     }
@@ -855,7 +901,7 @@ QString ExportController::queueExport(const QString& sequenceId, const QString& 
         setLastError(translate("Choose where to save the export."));
         return {};
     }
-    output.replace_extension(std::string(ex::fileExtension(settings->container))); // the container decides
+    output.replace_extension(std::string(ex::outputExtension(*settings))); // the format decides (0.2: stills too)
 
     ex::ExportRequest request;
     request.snapshot = project()->snapshot();
@@ -865,24 +911,321 @@ QString ExportController::queueExport(const QString& sequenceId, const QString& 
     request.projectFile = m_projectFile;
     request.videoSource = m_videoSource;
     setLastError({});
-    return queueRequest(std::move(request), presetName(settings->presetId));
+    const auto user = settings->presetId.starts_with("user-") ? userPresetStore()->find(settings->presetId) : std::nullopt;
+    return queueRequestAs(newJobId(), std::move(request), user ? fromUtf8(user->name) : presetName(settings->presetId),
+                          overrides.value(QStringLiteral("hold")).toBool(),
+                          overrides.value(QStringLiteral("contentCredentials")).toString());
 }
 
-QString ExportController::queueRequest(ex::ExportRequest request, const QString& presetLabel) {
+QString ExportController::quickExport(const QString& presetId, const QString& output) {
+    QVariantMap overrides;
+    if (!output.isEmpty()) {
+        overrides[QStringLiteral("output")] = output;
+    }
+    return queueExport(QString(), presetId, overrides);
+}
+
+std::expected<ExportController::Transcode, Error> ExportController::queueTranscode(const MediaItem& source,
+                                                                                  const QString& presetId,
+                                                                                  const std::filesystem::path& folder) {
+    auto settings = settingsFor(presetId, {});
+    if (!settings) {
+        return std::unexpected(settings.error());
+    }
+    std::error_code ec;
+    if (folder.empty() || !std::filesystem::is_directory(folder, ec)) {
+        return std::unexpected(Error{ErrorCode::NotFound, "The folder to transcode into is not there"});
+    }
+    // The item alone in a project: on V1 (and its audio on A1..) of a sequence of its own size and rate.
+    edit::SequenceSettings sequence;
+    sequence.name = source.name;
+    if (source.info.hasVideo()) {
+        const VideoStreamInfo& v = source.info.video.front();
+        if (v.width > 0 && v.height > 0) {
+            sequence.width = v.width;
+            sequence.height = v.height;
+        }
+        if (v.frameRate.num > 0 && v.frameRate.den > 0) {
+            sequence.frameRate = v.frameRate;
+        }
+    }
+    MediaItem copy = source;
+    copy.id = MediaId{};
+    copy.bin = BinId{};
+    copy.markIn.reset();
+    copy.markOut.reset();
+    copy.subclip.reset();
+    copy.locator.proxy.reset(); // the original is what is transcoded
+    auto withMedia = edit::addMedia(ProjectState{}, copy);
+    if (!withMedia) {
+        return std::unexpected(withMedia.error());
+    }
+    auto withSequence = edit::addSequence(withMedia->state, sequence);
+    if (!withSequence) {
+        return std::unexpected(withSequence.error());
+    }
+    EditSession session(std::move(withSequence->state));
+    if (auto dropped = editor::dropMedia(session, {.media = withMedia->id, .sequence = withSequence->id, .at = Ticks{}});
+        !dropped) {
+        return std::unexpected(dropped.error());
+    }
+    const ProjectSnapshot snap = session.snapshot();
+    if (const auto r = ex::resolve(*settings, *snap->findSequence(withSequence->id), snap->colorManagement); !r) {
+        return std::unexpected(r.error());
+    }
+    // "<name><extension>", numbered when taken.
+    const std::filesystem::path stem = pathFromUtf8(source.name.empty() ? std::string("Transcoded") : source.name).filename();
+    const std::string ext(ex::outputExtension(*settings));
+    std::filesystem::path output = folder / stem;
+    output += ext;
+    for (int n = 1; std::filesystem::exists(output, ec) && n < 10000; ++n) {
+        output = folder / stem;
+        output += "_" + std::to_string(n) + ext;
+    }
+    ex::ExportRequest request;
+    request.snapshot = snap;
+    request.sequence = withSequence->id;
+    request.settings = *settings;
+    request.output = output;
+    request.videoSource = m_videoSource;
+    const auto user = settings->presetId.starts_with("user-") ? userPresetStore()->find(settings->presetId) : std::nullopt;
+    const QString job = queueRequestAs(newJobId(), std::move(request),
+                                       user ? fromUtf8(user->name) : presetName(settings->presetId), false);
+    return Transcode{job, output};
+}
+
+QStringList ExportController::sendToQueue(const QString& sequenceId, const QStringList& presetIds,
+                                          const QVariantMap& overrides, bool hold) {
+    // Every destination is checked first: nothing is queued when one of them cannot export.
+    for (const QString& id : presetIds) {
+        const QVariantMap check = describe(sequenceId, id, overrides);
+        if (!check.value(QStringLiteral("ok")).toBool()) {
+            setLastError(check.value(QStringLiteral("error")).toString());
+            return {};
+        }
+    }
+    QStringList jobs;
+    for (const QString& id : presetIds) {
+        QVariantMap o = overrides;
+        o[QStringLiteral("hold")] = hold;
+        if (presetIds.size() > 1) {
+            o.remove(QStringLiteral("output")); // each destination gets its own default name
+        }
+        const QString job = queueExport(sequenceId, id, o);
+        if (!job.isEmpty()) {
+            jobs << job;
+        }
+    }
+    return jobs;
+}
+
+void ExportController::setContentCredentials(const QString& mode) {
+    if (mode == m_contentCredentials || !ai::c2pa::credentialsModeFromString(mode.toStdString())) {
+        return;
+    }
+    m_contentCredentials = mode;
+    QSettings().setValue(QStringLiteral("export/contentCredentials"), mode);
+    emit contentCredentialsChanged();
+}
+
+bool ExportController::contentCredentialsAvailable() const { return ai::c2pa::available(); }
+
+void ExportController::setCredentialsProducer(const QString& name) {
+    const QString trimmed = name.trimmed().left(256);
+    if (trimmed == m_credentialsProducer) {
+        return;
+    }
+    m_credentialsProducer = trimmed;
+    QSettings().setValue(QStringLiteral("export/c2paProducer"), trimmed);
+    emit contentCredentialsChanged();
+}
+
+void ExportController::setCredentialsThumbnail(bool on) {
+    if (on == m_credentialsThumbnail) {
+        return;
+    }
+    m_credentialsThumbnail = on;
+    QSettings().setValue(QStringLiteral("export/c2paThumbnail"), on);
+    emit contentCredentialsChanged();
+}
+
+void ExportController::setCredentialsDoNotTrain(bool on) {
+    if (on == m_credentialsDoNotTrain) {
+        return;
+    }
+    m_credentialsDoNotTrain = on;
+    QSettings().setValue(QStringLiteral("export/c2paDoNotTrain"), on);
+    emit contentCredentialsChanged();
+}
+
+void ExportController::setCredentialsCertificate(const QString& path) {
+    const QString local = path.startsWith(QLatin1String("file:")) ? QUrl(path).toLocalFile() : path;
+    if (local == m_credentialsCertificate) {
+        return;
+    }
+    m_credentialsCertificate = local;
+    QSettings().setValue(QStringLiteral("export/c2paCertificate"), local);
+    emit contentCredentialsChanged();
+}
+
+void ExportController::setCredentialsKey(const QString& path) {
+    const QString local = path.startsWith(QLatin1String("file:")) ? QUrl(path).toLocalFile() : path;
+    if (local == m_credentialsKey) {
+        return;
+    }
+    m_credentialsKey = local;
+    QSettings().setValue(QStringLiteral("export/c2paKey"), local);
+    emit contentCredentialsChanged();
+}
+
+QVariantMap ExportController::signingIdentity() const {
+    QVariantMap out{{QStringLiteral("local"), m_credentialsCertificate.isEmpty() || m_credentialsKey.isEmpty()},
+                    {QStringLiteral("ready"), false},
+                    {QStringLiteral("subject"), QString()},
+                    {QStringLiteral("notAfter"), QString()},
+                    {QStringLiteral("error"), QString()}};
+    const auto fill = [&](const ai::c2pa::SigningIdentity& id) {
+        out[QStringLiteral("ready")] = true;
+        out[QStringLiteral("subject")] = QString::fromStdString(id.subject);
+        out[QStringLiteral("notAfter")] = QString::fromStdString(id.notAfter);
+    };
+    if (!out.value(QStringLiteral("local")).toBool()) {
+        if (m_testIdentity) {
+            if (auto id = m_testIdentity()) {
+                fill(*id);
+            }
+            return out;
+        }
+        const auto read = [](const QString& file) -> std::optional<std::string> {
+            std::ifstream in(std::filesystem::path(file.toStdWString()), std::ios::binary);
+            if (!in) {
+                return std::nullopt;
+            }
+            return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+        };
+        auto chain = read(m_credentialsCertificate);
+        auto key = read(m_credentialsKey);
+        if (!chain || !key) {
+            out[QStringLiteral("error")] = tr("The certificate or key file cannot be read.");
+            return out;
+        }
+        auto id = ai::c2pa::identityFromPem(std::move(*chain), ai::Secret(std::move(*key)));
+        if (!id) {
+            out[QStringLiteral("error")] = QString::fromStdString(id.error().message);
+            return out;
+        }
+        fill(*id);
+        return out;
+    }
+    // The local identity, if one was made already (the first signed export makes it).
+    if (auto keychain = ai::c2pa::osKeychain()) {
+        if (auto id = ai::c2pa::localIdentity(*keychain, ai::c2pa::defaultIdentityDir(), false)) {
+            fill(*id);
+        }
+    }
+    return out;
+}
+
+ai::c2pa::IdentityProvider ExportController::credentialsIdentity() const {
+    if (m_testIdentity) {
+        return m_testIdentity;
+    }
+    // The user's own certificate when the settings name its PEM files (docs/ai.md "Content Credentials"); else the
+    // per-user local identity, made on first use, its key in the OS keychain. Read on the export thread.
+    QSettings settings;
+    const std::filesystem::path certificate(settings.value(QStringLiteral("export/c2paCertificate")).toString().toStdWString());
+    const std::filesystem::path key(settings.value(QStringLiteral("export/c2paKey")).toString().toStdWString());
+    return [certificate, key]() -> std::expected<ai::c2pa::SigningIdentity, ai::AiError> {
+        if (!certificate.empty() && !key.empty()) {
+            const auto read = [](const std::filesystem::path& file) -> std::optional<std::string> {
+                std::ifstream in(file, std::ios::binary);
+                if (!in) {
+                    return std::nullopt;
+                }
+                return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+            };
+            auto chain = read(certificate);
+            auto pem = read(key);
+            if (!chain || !pem) {
+                return std::unexpected(ai::AiError(ai::AiErrorCode::InvalidRequest, "the signing certificate or key file cannot be read"));
+            }
+            return ai::c2pa::identityFromPem(std::move(*chain), ai::Secret(std::move(*pem)));
+        }
+        auto keychain = ai::c2pa::osKeychain();
+        if (!keychain) {
+            return std::unexpected(ai::AiError(ai::AiErrorCode::Unsupported, "there is no OS keychain for the signing key here"));
+        }
+        return ai::c2pa::localIdentity(*keychain, ai::c2pa::defaultIdentityDir(), true);
+    };
+}
+
+QString ExportController::newJobId() {
+    return QStringLiteral("j%1").arg(m_nextJob.fetch_add(1));
+}
+
+ex::ExportJobId ExportController::queueIdOf(const QString& jobId) const {
+    std::lock_guard lock(m_idsMutex);
+    const auto it = m_queueIds.find(jobId);
+    return it == m_queueIds.end() ? 0 : it->second;
+}
+
+QString ExportController::queueRequest(ex::ExportRequest request, const QString& presetLabel, const QString& credentials) {
+    return queueRequestAs(newJobId(), std::move(request), presetLabel, false, credentials);
+}
+
+QString ExportController::queueRequestAs(const QString& jobIdIn, ex::ExportRequest request, const QString& presetLabel,
+                                         bool hold, const QString& credentials) {
     ExportJobModel::Row row;
-    row.jobId = QStringLiteral("j%1").arg(m_nextJob++);
+    row.jobId = jobIdIn;
+    row.held = hold;
+    if (hold) {
+        row.state = QStringLiteral("held");
+    }
     row.title = QString::fromStdU16String(request.output.filename().u16string());
     row.outputPath = pathToQString(request.output);
     row.presetName = presetLabel;
-    row.phaseText = translate("Queued");
+    row.phaseText = hold ? translate("Ready") : translate("Queued");
     const QString jobId = row.jobId;
     ai::Json provenance;
+    std::optional<TimeRange> exported;
     if (request.snapshot) if (const auto* seq = request.snapshot->findSequence(request.sequence)) {
-        const auto resolved = ex::resolve(request.settings, *seq);
-        if (resolved) provenance = ai::provenanceReport(*request.snapshot, request.sequence, resolved->range);
+        const auto resolved = ex::resolve(request.settings, *seq, request.snapshot->colorManagement);
+        if (resolved) {
+            provenance = ai::provenanceReport(*request.snapshot, request.sequence, resolved->range);
+            exported = resolved->range;
+        }
     }
-    row.queueId = m_queue->enqueue(std::move(request));
+    // AI-15: signed Content Credentials in MP4 / MOV exports when the setting asks for them. The finalize step signs the
+    // complete file on the export thread; it never fails the export (ExportRequest::finalize).
+    std::shared_ptr<std::atomic<bool>> signedFlag;
+    const auto mode = ai::c2pa::credentialsModeFromString((credentials.isEmpty() ? m_contentCredentials : credentials).toStdString())
+                          .value_or(ai::c2pa::CredentialsMode::Ai);
+    const std::string format = ai::c2pa::formatForPath(request.output);
+    if (request.snapshot && !request.finalize && mode != ai::c2pa::CredentialsMode::Off && !format.empty() &&
+        ai::c2pa::available() &&
+        (mode == ai::c2pa::CredentialsMode::Always || ai::c2pa::containsGenerated(*request.snapshot, request.sequence, exported))) {
+        ai::c2pa::ManifestOptions options;
+        options.title = row.title.toStdString();
+        options.format = format;
+        options.softwareVersion = WABCUT_VERSION;
+        options.range = exported;
+        options.projectFile = request.projectFile;
+        // 0.2: Premiere's Content Credentials settings - the producer, a thumbnail of the export, no AI training.
+        options.producer = m_credentialsProducer.toStdString();
+        options.doNotTrain = m_credentialsDoNotTrain;
+        if (m_credentialsThumbnail) {
+            options.thumbnail = exportThumbnail(request.snapshot, request.sequence, exported);
+        }
+        signedFlag = std::make_shared<std::atomic<bool>>(false);
+        request.finalize = ai::c2pa::exportFinalizer(request.snapshot, request.sequence, std::move(options), credentialsIdentity(), signedFlag);
+    }
+    row.queueId = m_queue->enqueue(std::move(request), hold);
+    {
+        std::lock_guard lock(m_idsMutex);
+        m_queueIds[row.jobId] = row.queueId;
+    }
     if (!provenance.is_null()) m_provenance[row.queueId] = std::move(provenance);
+    if (signedFlag) m_signed[row.queueId] = std::move(signedFlag);
     m_jobs->append(std::move(row));
     emit jobQueued(jobId);
     return jobId;
@@ -894,6 +1237,24 @@ std::string ExportController::provenanceSidecarText(const ai::Json& provenance) 
 }
 
 void ExportController::onStatus(const ex::ExportJobStatus& status) {
+    // 0.2: a job queued by a watch folder appears in the list when it reports first.
+    if (std::none_of(m_jobs->rows().begin(), m_jobs->rows().end(), [&](const ExportJobModel::Row& r) { return r.queueId == status.id; })) {
+        ExportJobModel::Row row;
+        row.jobId = newJobId();
+        row.queueId = status.id;
+        row.title = QString::fromStdU16String(status.output.filename().u16string());
+        row.outputPath = pathToQString(status.output);
+        row.presetName = presetName(status.presetId);
+        row.phaseText = translate("Queued");
+        {
+            std::lock_guard lock(m_idsMutex);
+            m_queueIds[row.jobId] = row.queueId;
+        }
+        m_jobs->append(std::move(row));
+        if (status.progress.phase != ex::ExportPhase::Queued) {
+            emit watchFoldersChanged(); // its counters moved
+        }
+    }
     const bool wasFinished = [&] {
         for (const auto& r : m_jobs->rows()) {
             if (r.queueId == status.id) {
@@ -904,15 +1265,33 @@ void ExportController::onStatus(const ex::ExportJobStatus& status) {
     }();
     const ExportJobModel::Row* row = m_jobs->update(status.id, status);
     if (row && row->finished && !wasFinished) {
+        bool signedFile = false;
+        if (auto it = m_signed.find(status.id); it != m_signed.end()) {
+            signedFile = it->second->load();
+            m_signed.erase(it);
+        }
         if (auto it = m_provenance.find(status.id); it != m_provenance.end()) {
             if (row->state == QLatin1String("done")) {
                 auto sidecar = std::filesystem::path(row->outputPath.toStdWString()); sidecar += ".provenance.json";
-                if (auto wrote = io::writeFileAtomically(sidecar, provenanceSidecarText(it->second)); !wrote)
+                if (signedFile) {
+                    // The signed manifest in the file says it: no unsigned sidecar next to it, nor one left from before.
+                    std::error_code ec;
+                    std::filesystem::remove(sidecar, ec);
+                } else if (auto wrote = io::writeFileAtomically(sidecar, provenanceSidecarText(it->second)); !wrote)
                     setLastError(tr("Export finished, but its unsigned provenance sidecar could not be written."));
             }
             m_provenance.erase(it);
         }
+        if (status.result && !status.result->warnings.empty()) { // e.g. "Content Credentials not signed: ..."
+            QStringList warnings;
+            for (const std::string& w : status.result->warnings)
+                warnings << QString::fromStdString(w);
+            setLastError(tr("Export finished. %1").arg(warnings.join(QLatin1Char(' '))));
+        }
         emit jobFinished(row->jobId, row->state == QLatin1String("done"), row->detail);
+        if (m_watch && !m_watch->folders().empty()) {
+            emit watchFoldersChanged(); // a watch folder's counters may have moved
+        }
     }
 }
 
@@ -927,6 +1306,32 @@ void ExportController::cancelAll() {
         if (!r.finished) {
             m_queue->cancel(r.queueId);
         }
+    }
+}
+
+void ExportController::start(const QString& jobId) {
+    if (const ExportJobModel::Row* row = m_jobs->find(jobId)) {
+        m_queue->start(row->queueId);
+    }
+}
+
+void ExportController::startQueue() {
+    for (const ExportJobModel::Row& r : m_jobs->rows()) {
+        if (!r.finished && r.held) {
+            m_queue->start(r.queueId);
+        }
+    }
+}
+
+void ExportController::pause(const QString& jobId) {
+    if (const ExportJobModel::Row* row = m_jobs->find(jobId)) {
+        m_queue->pause(row->queueId);
+    }
+}
+
+void ExportController::resume(const QString& jobId) {
+    if (const ExportJobModel::Row* row = m_jobs->find(jobId)) {
+        m_queue->resume(row->queueId);
     }
 }
 
@@ -985,6 +1390,351 @@ void ExportController::setLastError(const QString& text) {
         m_lastError = text;
         emit lastErrorChanged();
     }
+}
+
+void ExportController::setProjectFile(std::filesystem::path file) {
+    m_projectFile = std::move(file);
+    std::lock_guard lock(m_idsMutex);
+    m_sharedProjectFile = m_projectFile;
+}
+
+std::expected<QVariantMap, Error> ExportController::preparedOverrides(const QVariantMap& overrides,
+                                                                       const Sequence* sequence) const {
+    QVariantMap out = overrides;
+    // Custom range: In / Out as timecodes in the sequence's rate (or ticks).
+    if (out.contains(QStringLiteral("rangeIn")) || out.contains(QStringLiteral("rangeOut"))) {
+        const QVariant in = out.take(QStringLiteral("rangeIn"));
+        const QVariant outPoint = out.take(QStringLiteral("rangeOut"));
+        if (sequence && in.isValid() && outPoint.isValid() && !in.isNull() && !outPoint.isNull()) {
+            const auto ticksOf = [&](const QVariant& v) -> std::optional<Ticks> {
+                bool isNumber = false;
+                const qlonglong n = v.toLongLong(&isNumber);
+                if (isNumber && v.typeId() != QMetaType::QString) {
+                    return Ticks{n};
+                }
+                auto t = parseTimecode(v.toString().trimmed().toStdString(), sequence->frameRate, sequence->dropFrame);
+                return t ? std::optional<Ticks>(*t) : std::nullopt;
+            };
+            const auto start = ticksOf(in);
+            const auto end = ticksOf(outPoint);
+            if (!start || !end || !(*start < *end) || start->value < 0) {
+                return std::unexpected(Error{ErrorCode::InvalidArgument, "Custom range: the In point must be before the Out point"});
+            }
+            out[QStringLiteral("customRange")] =
+                QVariantMap{{QStringLiteral("start"), QVariant::fromValue<qlonglong>(start->value)},
+                            {QStringLiteral("end"), QVariant::fromValue<qlonglong>(end->value)}};
+        }
+    }
+    // Files the effects read, chosen in a file dialog (URLs).
+    if (out.contains(QStringLiteral("effects"))) {
+        QVariantMap fx = out.value(QStringLiteral("effects")).toMap();
+        const auto local = [](QVariantMap section, const QString& key) {
+            const QString value = section.value(key).toString();
+            if (value.startsWith(QLatin1String("file:"))) {
+                section[key] = QUrl(value).toLocalFile();
+            }
+            return section;
+        };
+        if (fx.contains(QStringLiteral("imageOverlay"))) {
+            fx[QStringLiteral("imageOverlay")] = local(fx.value(QStringLiteral("imageOverlay")).toMap(), QStringLiteral("image"));
+        }
+        if (fx.contains(QStringLiteral("look"))) {
+            fx[QStringLiteral("look")] = local(fx.value(QStringLiteral("look")).toMap(), QStringLiteral("lut"));
+        }
+        out[QStringLiteral("effects")] = fx;
+    }
+    // Timecodes typed in the panel (Set Start Timecode, the Timecode Overlay's starting timecode) into ticks.
+    const auto timecodeField = [&](QVariantMap section, const QString& key) -> std::expected<QVariantMap, Error> {
+        const QVariant v = section.value(key);
+        if (v.typeId() != QMetaType::QString) {
+            return section;
+        }
+        const QString text = v.toString().trimmed();
+        if (text.isEmpty()) {
+            section.remove(key);
+            return section;
+        }
+        const Rate rate = sequence ? sequence->frameRate : kRate30;
+        const auto t = parseTimecode(text.toStdString(), rate, sequence && sequence->dropFrame);
+        if (!t || t->value < 0) {
+            return std::unexpected(Error{ErrorCode::InvalidArgument,
+                                         QStringLiteral("%1 is not a timecode (hh:mm:ss:ff)").arg(text).toStdString()});
+        }
+        section[key] = QVariant::fromValue<qlonglong>(t->value);
+        return section;
+    };
+    if (out.contains(QStringLiteral("metadata"))) {
+        auto m = timecodeField(out.value(QStringLiteral("metadata")).toMap(), QStringLiteral("startTimecode"));
+        if (!m) {
+            return std::unexpected(m.error());
+        }
+        out[QStringLiteral("metadata")] = *m;
+    }
+    if (out.contains(QStringLiteral("effects"))) {
+        QVariantMap fx = out.value(QStringLiteral("effects")).toMap();
+        if (fx.contains(QStringLiteral("timecodeOverlay"))) {
+            auto tc = timecodeField(fx.value(QStringLiteral("timecodeOverlay")).toMap(), QStringLiteral("startTimecode"));
+            if (!tc) {
+                return std::unexpected(tc.error());
+            }
+            fx[QStringLiteral("timecodeOverlay")] = *tc;
+            out[QStringLiteral("effects")] = fx;
+        }
+    }
+    return out;
+}
+
+QVariantMap ExportController::savePreset(const QString& name, const QString& description, const QString& presetId,
+                                         const QVariantMap& overrides, bool overwrite) {
+    QVariantMap out{{QStringLiteral("ok"), false}};
+    const auto prepared = preparedOverrides(overrides, sequenceFor(QString()).get());
+    if (!prepared) {
+        out[QStringLiteral("error")] = plainError(prepared.error());
+        return out;
+    }
+    QVariantMap clean = *prepared;
+    clean.remove(QStringLiteral("output")); // a preset is the format, not a file
+    clean.remove(QStringLiteral("contentCredentials"));
+    auto settings = settingsFor(presetId, clean);
+    if (!settings) {
+        out[QStringLiteral("error")] = plainError(settings.error());
+        return out;
+    }
+    auto saved = userPresetStore()->save(name.toStdString(), description.toStdString(), std::move(*settings), overwrite);
+    if (!saved) {
+        out[QStringLiteral("error")] = plainError(saved.error());
+        return out;
+    }
+    emit presetsChanged();
+    out[QStringLiteral("ok")] = true;
+    out[QStringLiteral("id")] = fromUtf8(saved->id);
+    out[QStringLiteral("name")] = fromUtf8(saved->name);
+    return out;
+}
+
+QVariantMap ExportController::importPreset(const QString& file, bool overwrite) {
+    QVariantMap out{{QStringLiteral("ok"), false}};
+    auto imported = userPresetStore()->importFile(outputFromOverride(file), overwrite);
+    if (!imported) {
+        out[QStringLiteral("error")] = plainError(imported.error());
+        return out;
+    }
+    emit presetsChanged();
+    out[QStringLiteral("ok")] = true;
+    out[QStringLiteral("id")] = fromUtf8(imported->id);
+    out[QStringLiteral("name")] = fromUtf8(imported->name);
+    return out;
+}
+
+bool ExportController::exportPreset(const QString& id, const QString& file) {
+    std::filesystem::path path = outputFromOverride(file);
+    if (path.extension().empty()) {
+        path += ".json";
+    }
+    if (auto ok = userPresetStore()->exportFile(id.toStdString(), path); !ok) {
+        setLastError(plainError(ok.error()));
+        return false;
+    }
+    return true;
+}
+
+bool ExportController::deletePreset(const QString& id) {
+    if (auto ok = userPresetStore()->remove(id.toStdString()); !ok) {
+        setLastError(plainError(ok.error()));
+        return false;
+    }
+    emit presetsChanged();
+    return true;
+}
+
+QVariantList ExportController::watchFolders() const {
+    QVariantList list;
+    if (!m_watch) {
+        return list;
+    }
+    for (const ex::WatchFolderStatus& f : m_watch->folders()) {
+        const auto preset = userPresetStore()->findAny(f.folder.presetId);
+        list.append(QVariantMap{
+            {QStringLiteral("id"), QStringLiteral("w%1").arg(f.id)},
+            {QStringLiteral("folder"), pathToQString(f.folder.folder)},
+            {QStringLiteral("preset"), fromUtf8(f.folder.presetId)},
+            {QStringLiteral("presetName"), preset ? (preset->id.starts_with("user-") ? fromUtf8(preset->name) : presetName(preset->id))
+                                                  : fromUtf8(f.folder.presetId)},
+            {QStringLiteral("output"), pathToQString(f.folder.output.empty() ? f.folder.folder / "Output" : f.folder.output)},
+            {QStringLiteral("moveSources"), f.folder.moveSources},
+            {QStringLiteral("queued"), f.queued},
+            {QStringLiteral("done"), f.done},
+            {QStringLiteral("failed"), f.failed},
+            {QStringLiteral("lastError"), fromUtf8(f.lastError)}});
+    }
+    return list;
+}
+
+QVariantMap ExportController::addWatchFolder(const QString& folder, const QString& presetId, const QString& output,
+                                             bool moveSources) {
+    QVariantMap out{{QStringLiteral("ok"), false}};
+    const auto preset = userPresetStore()->findAny(presetId.toStdString());
+    if (!preset) {
+        out[QStringLiteral("error")] = translate("Choose a preset for the watch folder.");
+        return out;
+    }
+    ex::WatchFolder w;
+    w.folder = outputFromOverride(folder);
+    w.output = output.isEmpty() ? std::filesystem::path() : outputFromOverride(output);
+    w.presetId = preset->id;
+    w.settings = preset->settings;
+    w.moveSources = moveSources;
+    auto id = m_watch->add(std::move(w));
+    if (!id) {
+        out[QStringLiteral("error")] = plainError(id.error());
+        return out;
+    }
+    saveWatchFolders();
+    emit watchFoldersChanged();
+    out[QStringLiteral("ok")] = true;
+    out[QStringLiteral("id")] = QStringLiteral("w%1").arg(*id);
+    return out;
+}
+
+void ExportController::removeWatchFolder(const QString& id) {
+    bool ok = false;
+    const std::uint64_t number = QStringView(id).mid(id.startsWith(QLatin1Char('w')) ? 1 : 0).toULongLong(&ok);
+    if (ok && m_watch->remove(number)) {
+        saveWatchFolders();
+        emit watchFoldersChanged();
+    }
+}
+
+void ExportController::saveWatchFolders() const {
+    ex::Json list = ex::Json::array();
+    for (const ex::WatchFolderStatus& f : m_watch->folders()) {
+        list.push_back(ex::Json{{"folder", pathToUtf8(f.folder.folder)},
+                                {"output", pathToUtf8(f.folder.output)},
+                                {"preset", f.folder.presetId},
+                                {"moveSources", f.folder.moveSources}});
+    }
+    QSettings().setValue(QStringLiteral("export/watchFolders"), QByteArray::fromStdString(list.dump()));
+}
+
+void ExportController::setCpuLimit(int percent) {
+    percent = std::clamp(percent, 10, 100);
+    if (percent == m_cpuLimit) {
+        return;
+    }
+    m_cpuLimit = percent;
+    ex::setExportThreadLimit(ex::threadLimitForPercent(percent));
+    QSettings().setValue(QStringLiteral("export/cpuLimit"), percent);
+    emit cpuLimitChanged();
+}
+
+std::shared_ptr<ex::ExportCommandServices> ExportController::commandServices() {
+    if (m_commandServices) {
+        return m_commandServices;
+    }
+    // The commands run off the GUI thread: queueing posts to it, the queue and the id map are thread-safe.
+    ex::ExportCommandServices::Host host;
+    QPointer<ExportController> self(this);
+    host.newJobId = [self]() { return self ? self->newJobId().toStdString() : std::string("j0"); };
+    host.enqueue = [self](std::string job, ex::ExportRequest request, std::string presetName, bool hold) {
+        if (!self) {
+            return;
+        }
+        auto shared = std::make_shared<ex::ExportRequest>(std::move(request));
+        QMetaObject::invokeMethod(
+            self.data(),
+            [self, job = QString::fromStdString(job), shared, name = QString::fromStdString(presetName), hold]() {
+                if (self) {
+                    self->queueRequestAs(job, std::move(*shared), name, hold);
+                }
+            },
+            Qt::QueuedConnection);
+    };
+    ex::ExportQueue* queue = m_queue.get();
+    host.jobs = [self, queue]() {
+        ex::Json out = ex::Json::array();
+        if (!self) {
+            return out;
+        }
+        std::map<ex::ExportJobId, QString> names;
+        {
+            std::lock_guard lock(self->m_idsMutex);
+            for (const auto& [job, id] : self->m_queueIds) {
+                names[id] = job;
+            }
+        }
+        for (const ex::ExportJobStatus& s : queue->jobs()) {
+            const auto it = names.find(s.id);
+            const std::string state = s.held && s.progress.phase == ex::ExportPhase::Queued ? "held" : std::string(ex::exportPhaseName(s.progress.phase));
+            ex::Json j{{"job", it == names.end() ? std::string() : it->second.toStdString()},
+                       {"output", pathToUtf8(s.output)},
+                       {"preset", s.presetId},
+                       {"state", state == "preparing" || state == "rendering" || state == "finalizing" ? "running" : state},
+                       {"progress", s.progress.phase == ex::ExportPhase::Done ? 1.0 : s.progress.fraction()}};
+            if (s.error) {
+                j["detail"] = s.error->message;
+            }
+            out.push_back(std::move(j));
+        }
+        return out;
+    };
+    host.control = [self, queue](std::string_view job, std::string_view action) -> std::expected<void, Error> {
+        const ex::ExportJobId id = self ? self->queueIdOf(QString::fromUtf8(job.data(), static_cast<qsizetype>(job.size()))) : 0;
+        if (id == 0) {
+            return std::unexpected(Error{ErrorCode::NotFound, "No export job \"" + std::string(job) + "\""});
+        }
+        if (action == "start") {
+            queue->start(id);
+        } else if (action == "pause") {
+            queue->pause(id);
+        } else if (action == "resume") {
+            queue->resume(id);
+        } else if (action == "cancel") {
+            queue->cancel(id);
+        } else if (action == "remove") {
+            // Only that job, and only once it has finished (ExportQueue::remove: no effect on others).
+            queue->remove(id);
+            QMetaObject::invokeMethod(
+                self.data(), [self, id] { if (self) self->m_jobs->removeFinished(id); }, Qt::QueuedConnection);
+        } else {
+            return std::unexpected(Error{ErrorCode::InvalidArgument, "Unknown action " + std::string(action)});
+        }
+        return {};
+    };
+    host.defaultOutput = [self](const Sequence& sequence, const ex::ExportSettings& settings) {
+        std::filesystem::path folder;
+        if (self) {
+            std::lock_guard lock(self->m_idsMutex);
+            folder = self->m_sharedProjectFile.parent_path();
+        }
+        if (folder.empty()) {
+            folder = pathFromQString(QStandardPaths::writableLocation(QStandardPaths::MoviesLocation));
+        }
+        const QString base = safeFileName(QString::fromStdString(sequence.name));
+        const QString ext = fromUtf8(ex::outputExtension(settings));
+        std::filesystem::path path = folder / pathFromQString(base + ext);
+        std::error_code ec;
+        for (int n = 2; std::filesystem::exists(path, ec) && n < 1000; ++n) {
+            path = folder / pathFromQString(QStringLiteral("%1 (%2)%3").arg(base).arg(n).arg(ext));
+        }
+        return path;
+    };
+    host.projectFile = m_projectFile;
+    host.videoSource = m_videoSource;
+    host.presets = userPresetStore();
+    host.watch = m_watch;
+    host.presetsChanged = [self] {
+        QMetaObject::invokeMethod(self.data(), [self] { if (self) emit self->presetsChanged(); }, Qt::QueuedConnection);
+    };
+    host.watchFoldersChanged = [self] {
+        QMetaObject::invokeMethod(self.data(), [self] {
+            if (self) {
+                self->saveWatchFolders();
+                emit self->watchFoldersChanged();
+            }
+        }, Qt::QueuedConnection);
+    };
+    m_commandServices = std::make_shared<ex::ExportCommandServices>(std::move(host));
+    return m_commandServices;
 }
 
 QString ExportController::plainError(const Error& error) {

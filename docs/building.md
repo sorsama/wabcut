@@ -60,7 +60,13 @@ Dependency versions at the baseline (the vcpkg port version is the upstream vers
 | pugixml | 1.16 | MIT | also fetched by the core build |
 | zlib | 1.3.2 | Zlib | also fetched by the core build |
 | spdlog / fmt | 1.17.0 / 12.2.0 | MIT | declared in `vcpkg.json` |
+| OpenColorIO | 2.6.0 | BSD-3-Clause (and BSD-2-Clause parts) | colour management (I.9, `docs/color.md`) |
+| Expat / Imath / minizip-ng / pystring / yaml-cpp | 2.8.5 / 3.2.3 / 4.1.0 / 1.2.0 / 0.9.0 | MIT / BSD-3-Clause / Zlib / BSD-3-Clause / MIT | OpenColorIO's dependencies (minizip-ng with zlib only) |
 | Catch2 | 3.16.0 | BSL-1.0 | tests only; also fetched by the core build |
+
+Not from vcpkg: **c2pa-rs 0.91.2** (MIT OR Apache-2.0), the official prebuilt C library `c2pa_c.dll` for Content
+Credentials (Windows x64; [below](#content-credentials-c2pa-rs)), pinned by URL and SHA-256 in
+`src/ai/c2pa/CMakeLists.txt`.
 
 
 > **Debug info (2026-10-12):** the `win-msvc` preset embeds debug info in the object files (`/Z7`,
@@ -235,7 +241,29 @@ not been tried with clang-cl: its vcpkg dependencies are built with MSVC.
 | `WABCUT_FUZZ` | `OFF`; ON in `win-msvc-asan` | The parser harnesses in `tests/fuzz` become libFuzzer executables, everything else gets coverage instrumentation. Needs `WABCUT_SANITIZE=address` |
 | `WABCUT_FUZZ_REGRESSION_RUNS` | `1000` | Mutations each fuzz harness runs in ctest after its seeds |
 | `WABCUT_CORE_COMMAND_TESTS` | `OFF`; ON in `win-msvc-asan` | Build the command suite in core-only builds too, without the stdio tests that spawn `wabcut-cli` |
+| `WABCUT_WITH_C2PA` | `ON` for full Windows x64 builds; `OFF` elsewhere and with `WABCUT_CORE_ONLY` | Sign C2PA Content Credentials into exports with c2pa-rs's prebuilt C library. See [Content Credentials](#content-credentials-c2pa-rs). OFF: exports keep the unsigned provenance sidecar |
+| `WABCUT_C2PA_ARCHIVE` | empty | A downloaded `c2pa-v0.91.2-x86_64-pc-windows-msvc.zip` for offline builds (its SHA-256 is checked all the same) |
 | `WABCUT_WITH_CLOUD_AI` | `ON` (not with `WABCUT_CORE_ONLY`) | AI provider keys in the OS keychain. Adds the vcpkg feature `ai-cloud`: QtKeychain 0.17 from the overlay port `cmake/ports/qtkeychain`, built against `WABCUT_QT_DIR` (`dev-env.ps1` passes it into vcpkg's clean build environment with `VCPKG_KEEP_ENV_VARS`; the port refuses any other Qt than the one pinned in `wabcut-qt.cmake`). OFF: keys last for the session only. The cloud adapters (`src/ai_net`) are built either way |
+
+### Content Credentials (c2pa-rs)
+
+`WABCUT_WITH_C2PA` (Windows x64 full builds) links the signing and verification of C2PA Content Credentials
+(`src/ai/c2pa`, docs/export.md "Content Credentials") against c2pa-rs's C library. Like ONNX Runtime, it is never
+compiled here: configure downloads the official release archive
+`https://github.com/contentauth/c2pa-rs/releases/download/c2pa-v0.91.2/c2pa-v0.91.2-x86_64-pc-windows-msvc.zip`
+(95 MB, once per build dir, into `_deps/c2pa-0.91.2`), checks its SHA-256
+`418a8ffa9ce97b655e20bfa89e40bf848d01e5d239c0685d4c7149c05d7e2dfd` (a mismatch stops configure), and extracts only
+`include/c2pa.h`, `lib/c2pa_c.dll` and its import library (the archive's 290 MB static library is skipped). Offline:
+point `WABCUT_C2PA_ARCHIVE` at a copy. The DLL is delay-loaded (`/DELAYLOAD:c2pa_c.dll`): the app starts without it,
+and signing then reports "unavailable" (exports keep the unsigned sidecar). It is copied next to every executable in
+`bin/` and installed next to `wabcut.exe` and `wabcut-cli.exe`.
+
+**Licence.** c2pa-rs is MIT OR Apache-2.0, compatible with Wabcut's GPL-3.0-or-later. The Rust crates compiled into
+the DLL and the licence each declares (MIT, Apache-2.0, BSD-2/3-Clause, ISC, Zlib, Unicode-3.0, Unlicense; all
+permissive) are listed in `src/ai/c2pa/licenses/c2pa-rs-crates.txt`, installed with `c2pa-rs.txt` under
+`licenses/` and named in `THIRD-PARTY-NOTICES.txt`. To update: change `c2pa_version` and `c2pa_sha256` (the release
+API's asset digest), rebuild the crate list from the new DLL, run the c2pa tests (`wabcut_ai_tests "[c2pa]"` and
+`wabcut_export_tests "[c2pa]"`).
 
 ### Local AI
 
@@ -468,7 +496,9 @@ Windows 10/11 machine with nothing else installed:
 bin/                      wabcut.exe, wabcut-cli.exe, and the AI helpers wabcut-infer.exe (whisper.cpp) and
                           wabcut-embed.exe (ONNX Runtime), each with version information (FileVersion, ProductName)
                           Qt libraries (windeployqt), qt.conf
-                          FFmpeg, x264, x265, dav1d, libvpl, SVT-AV1, libvpx, Opus and pugixml DLLs
+                          FFmpeg, x264, x265, dav1d, libvpl, SVT-AV1, libvpx, Opus and pugixml DLLs; OpenColorIO
+                          and its dependencies (yaml-cpp, Expat, Imath, minizip-ng, pystring, as DLLs where vcpkg
+                          builds them); c2pa_c.dll (Content Credentials, WABCUT_WITH_C2PA)
                           ggml-cpu-*.dll and ggml-vulkan.dll (whisper.cpp's compute modules, loaded at run time),
                           vulkan-1.dll, onnxruntime.dll and onnxruntime_providers_shared.dll
                           MSVC runtime (app-local; the UCRT ships with Windows 10+)

@@ -59,7 +59,7 @@ if(WABCUT_WITH_AUDIO_PLUGINS AND NOT WABCUT_CORE_ONLY)
 endif()
 
 project(Wabcut
-    VERSION 0.1.3
+    VERSION 0.2.0
     DESCRIPTION "Open-source cross-platform non-linear video editor"
     LANGUAGES C CXX)
 
@@ -123,6 +123,7 @@ add_subdirectory(src/ai)          # pure C++: AI interfaces, model registry, tra
 add_subdirectory(src/audio/edit)  # pure C++: dialogue-first audio commands (roles, loudness, ducking); core too
 add_subdirectory(src/render/color) # pure C++: colour grade core - LUTs, grade math, CDL, scopes stats, Auto/Match, colour commands; core too
 add_subdirectory(src/render/masks) # pure C++: region tracker and the mask / track / redaction commands (I.6); core too
+add_subdirectory(src/render/motion) # pure C++: dense optical flow and flow interpolation (P.2); core too
 add_subdirectory(src/render/reference) # pure C++: CPU reference renders (C.16), the GPU shaders' test oracles; core too
 add_subdirectory(src/script)      # extensions (C.12): manifests, permissions, the editor's side in pure C++ (core too);
                                   # the wabcut-scripthost helper (QJSEngine) in full builds

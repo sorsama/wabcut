@@ -175,6 +175,9 @@ signals:
     void cachesChanged();
     void settingsRequested();
     void renderChanged();
+    /// 0.2: the preview cache's files may have changed (a render finished, or the project's cache was made anew): the
+    /// timeline's render bar looks again.
+    void previewFilesChanged();
 
 private:
     void attachDocument();

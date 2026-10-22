@@ -214,6 +214,7 @@ TEST_CASE("Nested composites: a nested sequence's caption, placed, scaled and fa
     auto raster = CaptionRenderer::shared().render(frame);
     CompositeLayer caption;
     caption.view = raster->view(raster);
+    caption.graphics = true;
     const auto nested = nestedOf({kW, kH}, {layerOf(makeRgbaFrame(kW, kH, busy)), caption});
     LayerTransform placed;
     placed.scale = 0.6;

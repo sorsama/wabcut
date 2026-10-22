@@ -23,6 +23,8 @@
 
 namespace wabcut::ai::edit {
 
+class ProfanityFilter;
+
 struct CaptionOptions {
     int maxCharsPerLine = 42;
     int maxLines = 2;
@@ -39,6 +41,9 @@ struct CaptionOptions {
     /// Line-break rules (CaptionText.h; the app's ICU / Qt breaker): lines may also break at its opportunities inside
     /// words. Null: between transcript words only.
     const LineBreaker* breaker = nullptr;
+    /// p02 audio: Premiere's "Hide profanity" (Profanity.h): profane words read as their first letter and asterisks
+    /// ("f***"). Null: words as they are.
+    const ProfanityFilter* profanity = nullptr;
 };
 
 /// Display width of UTF-8 text (combining marks count 0).

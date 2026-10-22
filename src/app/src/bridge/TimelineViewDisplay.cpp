@@ -156,6 +156,13 @@ void TimelineView::setLogarithmicWaveforms(bool on) {
     bumpDisplay();
 }
 
+void TimelineView::setVolumeWaveforms(bool on) {
+    if (on == m_volumeWaveforms)
+        return;
+    m_volumeWaveforms = on;
+    bumpDisplay();
+}
+
 void TimelineView::setShowDuplicateFrames(bool on) {
     if (on == m_showDuplicates)
         return;

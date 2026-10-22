@@ -90,6 +90,15 @@ class AudioMixerBridge : public QObject {
     Q_PROPERTY(QVariantMap liveLoudness READ liveLoudness NOTIFY liveLoudnessChanged FINAL)
     /// Poll the meters (~30 Hz) while true: the mixer sets it while it is on screen.
     Q_PROPERTY(bool metersActive READ metersActive WRITE setMetersActive NOTIFY metersActiveChanged FINAL)
+    /// p02 audio (AudioMixerRouting.cpp): the submix strips, in submix order: [{ key ("t15"), name, shortName ("S1"),
+    /// format, muted, solo, gainDb, pan, automated, automation, effects, output, outputName, meter }]. Every strip (tracks
+    /// too) also has `output` ("mix" or a submix key), `outputName` and `sends`: [{ index (1..5), submix, submixName,
+    /// preFader, muted, levelDb, pan }].
+    Q_PROPERTY(QVariantList submixes READ submixes NOTIFY stripsChanged FINAL)
+    /// Where a track or submix can output to: [{ id ("mix" or a submix key), name }], the Mix first.
+    Q_PROPERTY(QVariantList outputs READ outputs NOTIFY stripsChanged FINAL)
+    /// Premiere's "Create ... Submix" choices of the output and send menus: [{ id ("new:stereo"), name }].
+    Q_PROPERTY(QVariantList submixFormats READ submixFormats CONSTANT FINAL)
 
     /// Loudness targets: [{ id, name, lufs, truePeak }]; "custom" takes `customLufs`.
     Q_PROPERTY(QVariantList targets READ targets CONSTANT FINAL)
@@ -135,7 +144,8 @@ public:
         std::array<double, kMeterChannels> holdDb{};
         bool clipped = false;
     };
-    /// Where readings come from: `index` 0 = A1 ..., -1 = master; nullopt when there is nothing to read.
+    /// Where readings come from: `index` 0 = A1 ..., -1 = master, -2 = S1, -3 = S2 ... (p02 submixes); nullopt when
+    /// there is nothing to read.
     using MeterSource = std::function<std::optional<MeterReading>(int index)>;
     static constexpr double kMeterFloorDb = -90.0;
 
@@ -239,6 +249,27 @@ public:
     /// Clears a strip's clip indicator.
     Q_INVOKABLE void clearClip(const QString& key);
 
+    // ---- Routing (p02 audio, AudioMixerRouting.cpp): submixes, output assignment, sends ----
+    QVariantList submixes() const { return m_submixes; }
+    QVariantList outputs() const { return m_outputs; }
+    QVariantList submixFormats() const;
+    /// Adds a submix track ("mono", "stereo", "5.1", "adaptive"). Returns "" or the error.
+    Q_INVOKABLE QString addSubmix(const QString& format);
+    /// Deletes a submix (its tracks go to the Mix).
+    Q_INVOKABLE QString removeSubmix(const QString& submix);
+    /// A track's or submix's output: "mix", a submix key, or "new:<format>" (a new submix, assigned in one undo step).
+    Q_INVOKABLE QString setOutput(const QString& target, const QString& output);
+    /// A send from a track to a submix key or "new:<format>".
+    Q_INVOKABLE QString addSend(const QString& track, const QString& submix);
+    /// Send `send` (1..5) of a track: its level (dB) and pan; a drag is one undo step until endSendGesture().
+    Q_INVOKABLE QString setSendLevel(const QString& track, int send, double db);
+    Q_INVOKABLE QString setSendPan(const QString& track, int send, double pan);
+    Q_INVOKABLE void endSendGesture();
+    /// "preFader" or "muted".
+    Q_INVOKABLE QString setSendOption(const QString& track, int send, const QString& option, bool value);
+    Q_INVOKABLE QString setSendSubmix(const QString& track, int send, const QString& submix);
+    Q_INVOKABLE QString removeSend(const QString& track, int send);
+
     // ---- Audio tools ----
     /// Measures "mix", "tracks" (every audio track and the mix) or "clips" (the selected audio clips).
     Q_INVOKABLE QString analyze(const QString& scope);
@@ -279,6 +310,13 @@ private:
     };
 
     void rebuild();
+    /// p02 audio (AudioMixerRouting.cpp): a strip's routing fields (output, outputName, sends), the submix strips and the
+    /// output choices of `seq`.
+    void addRouting(QVariantMap& strip, const Track& track, const Sequence& seq) const;
+    QVariantList buildSubmixes(const Sequence& seq) const;
+    QVariantList buildOutputs(const Sequence& seq) const;
+    QString editSend(const QString& track, int send, const char* label, const std::string& merge,
+                     const std::function<void(TrackSend&)>& change);
     /// One automation pass (playing with a writing strip): the stretches each (target, param) wrote so far.
     struct Pass {
         struct Lane {
@@ -337,7 +375,10 @@ private:
     bool m_synchronous = false;
     QVariantList m_strips;
     QVariantMap m_master;
+    QVariantList m_submixes; ///< p02 audio
+    QVariantList m_outputs;
     std::vector<TrackId> m_trackOrder; ///< audio tracks, A1 first (meter index = position)
+    std::vector<TrackId> m_submixOrder; ///< p02 audio: submix tracks, S1 first (meter index -2 - position)
     std::map<QString, MeterLevels> m_levels;
     std::map<QString, std::array<qint64, kMeterChannels>> m_holdSince; ///< ms timestamps of the peak holds
     QString m_target = QStringLiteral("youtube");

@@ -86,6 +86,23 @@ struct DisplayGeometry {
 };
 DisplayGeometry displayGeometry(const VideoStreamInfo& stream);
 
+/// 0.2: the one picture track a nested or multicam video clip shows - a multicam clip's active angle's video track, a
+/// nested sequence's only enabled video track with clips. Null for layers (several such tracks) and other clips.
+/// Analyses of the picture (Auto Reframe, Auto Zoom) read the media clips there and place what they find on the nested
+/// canvas with canvasPlacement().
+const Track* nestedPictureTrack(const ProjectState& state, const Clip& clip);
+
+/// Where a clip's displayed picture sits on its sequence's canvas at curve time `time`, as fractions: a picture point
+/// (x, y) in 0..1 is at canvas (offsetX + factorX * x, offsetY + factorY * y). From Position, Scale and Anchor; rotation
+/// is not followed.
+struct CanvasPlacement {
+    double offsetX = 0.0;
+    double offsetY = 0.0;
+    double factorX = 1.0;
+    double factorY = 1.0;
+};
+CanvasPlacement canvasPlacement(const Clip& clip, DisplayGeometry picture, double canvasWidth, double canvasHeight, Ticks time);
+
 /// The crop window of one clip over its source range.
 struct ClipPlan {
     std::vector<Ticks> times;         ///< source (curve) times of the samples

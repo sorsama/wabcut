@@ -114,7 +114,11 @@ struct OffscreenRenderer::Impl {
             return {};
         }
         targetRt.reset();
-        target.reset(rhi->newTexture(QRhiTexture::RGBA8, size, 1,
+        const QRhiTexture::Format format = options.tenBit ? QRhiTexture::RGB10A2 : QRhiTexture::RGBA8; // I.9
+        if (options.tenBit && !rhi->isTextureFormatSupported(format)) {
+            return std::unexpected(Error{ErrorCode::Unsupported, "This GPU cannot render 10-bit (RGB10A2) frames"});
+        }
+        target.reset(rhi->newTexture(format, size, 1,
                                      QRhiTexture::RenderTarget | QRhiTexture::UsedAsTransferSource));
         if (!target->create()) {
             target.reset();
@@ -317,6 +321,7 @@ OffscreenRenderer::render(const std::shared_ptr<const PreparedComposite>& compos
     }
     into.width = w;
     into.height = h;
+    into.tenBit = m_impl->options.tenBit;
     into.revision = composite->revision;
     into.targetTime = composite->targetTime;
     into.rgba.resize(rowBytes * static_cast<std::size_t>(h));

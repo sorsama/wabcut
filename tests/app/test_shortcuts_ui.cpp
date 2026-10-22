@@ -247,7 +247,7 @@ TEST_CASE("Shortcuts: a Premiere .kys imports with its unmapped commands listed;
     CHECK(preview.value("kind").toString() == QStringLiteral("kys"));
     CHECK(preview.value("changed").toInt() > 0);
     CHECK_FALSE(preview.value("unmapped").toStringList().isEmpty());
-    CHECK(preview.value("unmapped").toStringList().join(' ').contains(QStringLiteral("cmd.export.frame")));
+    CHECK(preview.value("unmapped").toStringList().join(' ').contains(QStringLiteral("cmd.multicam.transmit.gridview")));
     CHECK_FALSE(preview.value("warnings").toStringList().isEmpty());
     CHECK(resolved(fx.keys, km::Scope::Timeline, "X") == "marker.markClip"); // a preview changes nothing
 
@@ -268,6 +268,20 @@ TEST_CASE("Shortcuts: a Premiere .kys imports with its unmapped commands listed;
     const QVariantMap back = s.importKeySet(QUrl::fromLocalFile(json));
     REQUIRE(back.value("ok").toBool());
     CHECK(back.value("kind").toString() == QStringLiteral("json"));
+    CHECK(resolved(fx.keys, km::Scope::Timeline, "X") == "tool.razor");
+
+    // P.2: Export… to a .kys saves the whole key set as Premiere's; importing it gives the same keys.
+    const QString saved = fx.config.filePath(QStringLiteral("mine.kys"));
+    REQUIRE(s.exportOverrides(QUrl::fromLocalFile(saved)).isEmpty());
+    QFile set(saved);
+    REQUIRE(set.open(QIODevice::ReadOnly));
+    CHECK(set.readAll().contains("<PremiereData Version=\"3\">"));
+    set.close();
+    s.resetAll();
+    CHECK(resolved(fx.keys, km::Scope::Timeline, "X") == "marker.markClip");
+    const QVariantMap fromKys = s.importKeySet(QUrl::fromLocalFile(saved));
+    REQUIRE(fromKys.value("ok").toBool());
+    CHECK(fromKys.value("kind").toString() == QStringLiteral("kys"));
     CHECK(resolved(fx.keys, km::Scope::Timeline, "X") == "tool.razor");
 
     // A macOS key set does not fit Windows keys; a missing file is an error.

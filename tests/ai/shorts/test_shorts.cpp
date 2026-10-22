@@ -4,6 +4,7 @@
 // cap) and the 60-minute performance figure.
 
 #include "CommandHarness.h"
+#include "NestedTestUtil.h"
 #include "ShortsTestUtil.h"
 
 #include <wabcut/ai/ConsentLedger.h>
@@ -25,6 +26,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include <tuple>
 
 using namespace wabcut;
 using namespace wabcut::ai;
@@ -219,6 +221,49 @@ TEST_CASE("A cut near a short's edge is used; media signals refine the score", "
     REQUIRE_FALSE(seen.shorts.empty());
     CHECK(seen.shorts[0].parts.visual >= 0.5);
     CHECK(std::ranges::find(seen.shorts[0].reasons, "faces on screen") != seen.shorts[0].reasons.end());
+}
+
+TEST_CASE("Shorts hear and see a podcast through a multicam clip and a nest like the flat recording (0.2)", "[ai][shorts][multicam]") {
+    World w;
+    const LoudStretch loud(w.podcast.topics[3].first, w.podcast.topics[3].second);
+    vision::SubjectAnalysis faces;
+    faces.end = Ticks{kTicksPerSecond * 600};
+    for (double t = 0.1; t < 600.0; t += 0.5) {
+        vision::SubjectSample sample;
+        sample.time = Ticks{static_cast<std::int64_t>(t * static_cast<double>(kTicksPerSecond))};
+        if (t >= w.podcast.topics[3].first) { // faces from the product topic on
+            sample.faces.push_back(vision::SubjectBox{vision::Box{0.4f, 0.2f, 0.2f, 0.3f}, 0.9f, 1, 0.0f});
+        }
+        faces.samples.push_back(sample);
+    }
+    ShortsSignals signals;
+    signals.energy = &loud;
+    signals.subjects = [&](const MediaItem& media, int) { return media.id == w.tl.media('A') ? &faces : nullptr; };
+    ShortsOptions options;
+    options.count = 4;
+    const auto parts = [&](const ProjectState& state) {
+        const auto transcript = ai::edit::SequenceTranscript::build(state, w.tl.seq, *w.transcripts);
+        REQUIRE(transcript.size() == w.transcript.size()); // the transcript reads through (C.17b)
+        std::vector<std::tuple<double, double, double, double>> out; // start, end, energy, visual
+        for (const ShortCandidate& s : findShorts(state, w.tl.seq, transcript, {}, signals, options).shorts) {
+            out.emplace_back(sec(s.range.start), sec(s.range.end()), s.parts.energy, s.parts.visual);
+        }
+        return out;
+    };
+    const auto flat = parts(w.tl.state);
+    REQUIRE(flat.size() == 4);
+    CHECK(std::ranges::any_of(flat, [](const auto& p) { return std::get<2>(p) > 0.6; })); // the loud topic
+    CHECK(std::ranges::any_of(flat, [](const auto& p) { return std::get<3>(p) >= 0.5; })); // faces
+
+    SECTION("a two-angle multicam clip playing and showing the recording") {
+        const Ticks length = w.tl.sequence().contentEnd();
+        const wabcut::test::PlacedMulticam mc = wabcut::test::placeMulticam(w.tl.state, w.tl.seq, {w.tl.media('A'), w.tl.media('B')}, {Ticks{}, Ticks{}},
+                                                              TimeRange{Ticks{}, length}, Ticks{});
+        CHECK(parts(mc.state) == flat);
+    }
+    SECTION("a nest") {
+        CHECK(parts(wabcut::test::nestEverything(w.tl.state, w.tl.seq).edit.state) == flat);
+    }
 }
 
 // --- The cloud re-rank -------------------------------------------------------------------------------------------------

@@ -143,6 +143,15 @@ struct EffectParamInfo {
     double minValue;
     double maxValue;
     bool animatable = true;        ///< false: constants only (switches, choices)
+    /// A menu (Premiere's popups: "Anti-aliasing Quality", a direction): the labels of the whole values minValue,
+    /// minValue + 1, ... maxValue, separated by '|' ("Off|Low|Medium|High"). Empty for a slider or a switch.
+    std::string_view options{};
+
+    bool isChoice() const { return !options.empty(); }
+    /// The label of a menu value ("" when it is not one of the options).
+    std::string_view optionLabel(double value) const;
+    /// The menu's labels in value order.
+    std::vector<std::string_view> optionLabels() const;
 };
 
 struct EffectDescriptor {

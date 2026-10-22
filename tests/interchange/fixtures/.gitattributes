@@ -1,3 +1,5 @@
 *.prproj binary
 # X.1 golden exports: byte-exact (EDLs end lines with CR LF)
 export/* -text -whitespace
+# P.2 caption writer goldens: byte-exact (EBU STL is binary)
+captions/basic-* -text -whitespace

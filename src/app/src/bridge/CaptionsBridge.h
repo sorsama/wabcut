@@ -57,7 +57,8 @@ class CaptionsBridge : public QObject {
     Q_PROPERTY(QVariantList tracks READ tracks NOTIFY tracksChanged FINAL)
     /// The track shown and edited ("" when there is none).
     Q_PROPERTY(QString track READ track WRITE setTrack NOTIFY tracksChanged FINAL)
-    /// The shown track's name, language and visibility: { name, language, enabled } (empty without a track).
+    /// The shown track's name, language, visibility and Track Style: { name, language, enabled, trackStyle } (empty
+    /// without a track).
     Q_PROPERTY(QVariantMap trackInfo READ trackInfo NOTIFY tracksChanged FINAL)
     /// Cues of `track`: [{ index, text, startText, endText, durationText, start, end (seconds), speaker ("v…" or ""),
     /// speakerName, speakerColor, cps (characters a second), fast (above the language's reading speed) }]
@@ -77,6 +78,12 @@ class CaptionsBridge : public QObject {
     /// Show the captions on the program monitor (the compositor draws them; Playback follows this).
     Q_PROPERTY(bool overlay READ overlay WRITE setOverlay NOTIFY styleChanged FINAL)
     Q_PROPERTY(QString message READ message NOTIFY messageChanged FINAL)
+    /// p02 audio: Premiere's "Hide profanity": captions generated or updated from the transcript show profane words as
+    /// "f***". With the extra words (comma-separated; a trailing * matches words that start with it) and the allowed
+    /// ones, it is kept in the settings.
+    Q_PROPERTY(bool hideProfanity READ hideProfanity WRITE setHideProfanity NOTIFY profanityChanged FINAL)
+    Q_PROPERTY(QString profanityWords READ profanityWords WRITE setProfanityWords NOTIFY profanityChanged FINAL)
+    Q_PROPERTY(QString allowedWords READ allowedWords WRITE setAllowedWords NOTIFY profanityChanged FINAL)
 
 public:
     explicit CaptionsBridge(QObject* parent = nullptr);
@@ -99,11 +106,49 @@ public:
     bool overlay() const { return m_overlay; }
     void setOverlay(bool on);
     QString message() const { return m_message; }
+    bool hideProfanity() const { return m_hideProfanity; }
+    void setHideProfanity(bool on);
+    QString profanityWords() const { return m_profanityWords; }
+    void setProfanityWords(const QString& words);
+    QString allowedWords() const { return m_allowedWords; }
+    void setAllowedWords(const QString& words);
+
+    // ---- Profanity (p02 audio) ----
+    /// Masks the profane words of the shown track's cues now (captions.hideProfanity).
+    Q_INVOKABLE QString hideProfanityNow();
+    /// Bleeps ("bleep") or mutes ("mute") the profane words in the sound (audio.bleepProfanity: audio redactions; the
+    /// picture is untouched). "" or why not.
+    Q_INVOKABLE QString bleepProfanity(const QString& mode);
 
     // ---- Tracks ----
     /// Makes captions from the transcript (captions.generateFromTranscript with its speakers), replacing the shown
     /// track. "" or why not.
     Q_INVOKABLE QString generate(int maxCharsPerLine = 42, int maxLines = 2);
+    /// 0.2: Find and Replace in the shown caption track or every caption track (captions.findReplace), or in the
+    /// transcript (transcript.findReplace); one undo step. "" or why not; message() says how many were replaced.
+    Q_INVOKABLE QString findReplace(const QString& find, const QString& replace, bool matchCase, bool wholeWord,
+                                    const QString& scope);
+    /// 0.2: Find (the arrows of Find and Replace): the matches in `scope` ("track", "all" or "transcript") in order -
+    /// captions: [{ captionTrack, cue, start, end (UTF-16 of the cue's text), time, text }]; the transcript:
+    /// [{ words: [first, last], time, text }] (captions.find, transcript.find).
+    Q_INVOKABLE QVariantList findMatches(const QString& find, bool matchCase, bool wholeWord, const QString& scope);
+    /// 0.2: Replace - one match findMatches() gave (captions.findReplace "at", transcript.findReplace "words"); one
+    /// undo step. "" or why not.
+    Q_INVOKABLE QString replaceMatch(const QString& find, const QString& replace, bool matchCase, bool wholeWord,
+                                     const QString& scope, const QVariantMap& match);
+    /// 0.2 spell check (Spelling): the shown track's misspelled words in its language, with suggestions:
+    /// [{ cue, start, end (UTF-16 of the cue's text), word, action, suggestions }].
+    Q_INVOKABLE QVariantList spellingIssues();
+    /// Check Spelling's Change: the cue's text with [start, end) (UTF-16) replaced by `with` ("" deletes a repeated
+    /// word and a space); one undo step.
+    Q_INVOKABLE QString changeWord(int cue, int start, int end, const QString& with);
+    /// Check Spelling's Change All: every whole-word `word` (same case) of the shown track becomes `with`
+    /// (captions.findReplace); one undo step.
+    Q_INVOKABLE QString changeAll(const QString& word, const QString& with);
+    /// 0.2: a caption track from an .srt, .vtt or timed .txt file (captions.import); it becomes the shown track.
+    Q_INVOKABLE QString importFile(const QUrl& file);
+    /// 0.2: the transcript as a .txt or .csv file (transcript.export).
+    Q_INVOKABLE QString exportTranscript(const QUrl& file);
     /// Rewrites the cues' text from the corrected transcript, keeping their timing (captions.updateFromTranscript).
     Q_INVOKABLE QString updateFromTranscript();
     /// A new empty caption track styled by `preset` ("" = the default look); it becomes the shown track.
@@ -122,6 +167,11 @@ public:
     /// Saves the shown track's style as a project preset (replacing one of that name; built-in names are refused).
     Q_INVOKABLE QString savePreset(const QString& name);
     Q_INVOKABLE QString removePreset(const QString& name);
+    /// 0.2: Premiere's Track Style - the shown track follows a caption preset ("" = none; captions.setTrackStyle), so
+    /// saving the preset again restyles it; Push to Track Style makes the track's look the preset's
+    /// (captions.pushTrackStyle) and restyles every track that follows it. One undo step each.
+    Q_INVOKABLE QString setTrackStyle(const QString& preset);
+    Q_INVOKABLE QString pushTrackStyle();
 
     // ---- Cues ----
     Q_INVOKABLE QString setCueText(int index, const QString& text);
@@ -160,6 +210,7 @@ signals:
     void styleChanged();
     void messageChanged();
     void updateSuggestedChanged();
+    void profanityChanged();
 
 private:
     const CaptionTrack* shownTrack() const;
@@ -180,6 +231,9 @@ private:
     bool m_overlay = true;
     bool m_updateSuggested = false;
     QString m_message;
+    bool m_hideProfanity = false;
+    QString m_profanityWords;
+    QString m_allowedWords;
 };
 
 struct CaptionsBridgeSingleton {

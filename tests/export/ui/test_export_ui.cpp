@@ -11,16 +11,22 @@
 #include "TranscriptBridge.h"
 
 #include <wabcut/ai/Transcript.h>
+#include <wabcut/export/Encoders.h>
 #include <wabcut/export/ExportJob.h>
 #include <wabcut/export/RenderedVideoSource.h>
 #include <wabcut/media/FrameHandle.h>
 #include <wabcut/media/Probe.h>
 #include <wabcut/playback/video/Evaluate.h>
 
+#include <QCoreApplication>
 #include <QDir>
 #include <QFile>
 #include <QImage>
+#include <QJSValue>
+#include <QQuickItem>
+#include <QUrl>
 
+#include <algorithm>
 #include <catch2/catch_test_macros.hpp>
 #include <chrono>
 #include <condition_variable>
@@ -28,6 +34,7 @@
 #include <fstream>
 #include <memory>
 #include <mutex>
+#include <string_view>
 #include <thread>
 
 using namespace wabcut;
@@ -172,9 +179,11 @@ ex::ExportRequest requestFor(const ProjectState& state, const char* presetId,
 
 TEST_CASE("ExportController maps presets and overrides and explains errors in plain language",
           "[export][app]") {
+    ExportController::setUserPresetFolder(freshDir("no_user_presets")); // nothing of the user's
     ExportController controller;
     const QVariantList presets = controller.presets();
-    REQUIRE(presets.size() == 18); // the six general ones, then the gaming presets (I.9)
+    // The six general ones, the gaming presets, the four HDR ones (I.9, 0.2), then the sixteen formats of 0.2.
+    REQUIRE(presets.size() == 38);
     QStringList ids;
     QStringList names;
     for (const QVariant& p : presets) {
@@ -191,6 +200,9 @@ TEST_CASE("ExportController maps presets and overrides and explains errors in pl
                                        QStringLiteral("prores-422-hq"), QStringLiteral("audio-wav")});
     CHECK(names.contains(QStringLiteral("Discord 25 MB")));
     CHECK(names.contains(QStringLiteral("GIF (memes)")));
+    CHECK(ids.mid(18, 4) == QStringList{QStringLiteral("youtube-hdr-pq"), QStringLiteral("youtube-hdr-pq-av1"),
+                                        QStringLiteral("hdr-hlg"), QStringLiteral("prores-hdr-pq")});
+    CHECK(presets[22].toMap().value(QStringLiteral("category")) == QStringLiteral("formats"));
 
     // Overrides on top of a preset, with the dependent defaults following the codec / container.
     auto s = ExportController::settingsFor(QStringLiteral("match-source"),
@@ -241,6 +253,80 @@ TEST_CASE("ExportController maps presets and overrides and explains errors in pl
     CHECK(ExportController::plainError(
               Error{ErrorCode::InvalidArgument, "MP4 holds AAC audio; use MOV, MKV or WAV for PCM"})
               .endsWith(QLatin1Char('.')));
+}
+
+TEST_CASE("ExportController: HDR masters of an HDR sequence through the dynamic range override (0.2)", "[export][app][hdr]") {
+    ProjectController project;
+    ProjectState state = makeProject(seconds(2));
+    ExportController controller;
+    controller.setProject(&project);
+
+    // Direct Rec.709 (SDR): no HDR choice, SDR out.
+    project.resetProject(state);
+    QVariantMap d = controller.describe({}, QStringLiteral("youtube-1080p"));
+    REQUIRE(d.value(QStringLiteral("ok")).toBool());
+    CHECK_FALSE(d.value(QStringLiteral("hdrAvailable")).toBool());
+    CHECK_FALSE(d.value(QStringLiteral("hdr")).toBool());
+    // A PQ override is refused in plain language: the sequence is not HDR.
+    d = controller.describe({}, QStringLiteral("youtube-1080p"), {{QStringLiteral("dynamicRange"), QStringLiteral("pq")}});
+    CHECK_FALSE(d.value(QStringLiteral("ok")).toBool());
+
+    // Direct PQ (HDR): HEVC offers HDR; Auto writes PQ once 10-bit, the override switches HEVC to 10-bit itself.
+    state.colorManagement.mode = ColorManagementMode::HdrPq;
+    project.resetProject(state);
+    d = controller.describe({}, QStringLiteral("youtube-hdr-pq"));
+    REQUIRE(d.value(QStringLiteral("ok")).toBool());
+    CHECK(d.value(QStringLiteral("hdrAvailable")).toBool());
+    CHECK(d.value(QStringLiteral("hdr")).toBool());
+    CHECK(d.value(QStringLiteral("dynamicRange")).toString().contains(QStringLiteral("PQ")));
+    auto s = ExportController::settingsFor(QStringLiteral("match-source"), {{QStringLiteral("videoCodec"), QStringLiteral("hevc")},
+                                                                         {QStringLiteral("dynamicRange"), QStringLiteral("hlg")}});
+    REQUIRE(s.has_value());
+    CHECK(s->video.dynamicRange == ex::DynamicRange::Hlg);
+    CHECK(s->video.pixelFormat == ex::OutputPixelFormat::Yuv420p10);
+    d = controller.describe({}, QStringLiteral("youtube-1080p"), {{QStringLiteral("dynamicRange"), QStringLiteral("sdr")}});
+    REQUIRE(d.value(QStringLiteral("ok")).toBool());
+    CHECK_FALSE(d.value(QStringLiteral("hdr")).toBool());
+    CHECK(d.value(QStringLiteral("dynamicRange")).toString().contains(QStringLiteral("tone-mapped")));
+    CHECK_FALSE(ExportController::settingsFor(QStringLiteral("match-source"), {{QStringLiteral("dynamicRange"), QStringLiteral("dolby")}})
+                    .has_value());
+}
+
+TEST_CASE("ExportController keeps Premiere's Content Credentials settings: producer, thumbnail, AI training, certificate (0.2)",
+          "[export][app][c2pa]") {
+    {
+        ExportController controller;
+        CHECK(controller.credentialsProducer().isEmpty());
+        CHECK(controller.credentialsThumbnail());     // on by default
+        CHECK_FALSE(controller.credentialsDoNotTrain());
+        CHECK(controller.signingIdentity().value(QStringLiteral("local")).toBool());
+        controller.setCredentialsProducer(QStringLiteral("  Phosphor Films  "));
+        controller.setCredentialsThumbnail(false);
+        controller.setCredentialsDoNotTrain(true);
+        controller.setContentCredentials(QStringLiteral("always"));
+        const auto dir = freshDir("c2pa-settings");
+        controller.setCredentialsCertificate(QUrl::fromLocalFile(q(dir / "chain.pem")).toString());
+        controller.setCredentialsKey(q(dir / "key.pem"));
+        // Files that do not exist: the dialog says why it cannot sign with them.
+        const QVariantMap identity = controller.signingIdentity();
+        CHECK_FALSE(identity.value(QStringLiteral("local")).toBool());
+        CHECK_FALSE(identity.value(QStringLiteral("ready")).toBool());
+        CHECK_FALSE(identity.value(QStringLiteral("error")).toString().isEmpty());
+    }
+    ExportController again; // persisted (QSettings)
+    CHECK(again.credentialsProducer() == QStringLiteral("Phosphor Films"));
+    CHECK_FALSE(again.credentialsThumbnail());
+    CHECK(again.credentialsDoNotTrain());
+    CHECK(again.contentCredentials() == QStringLiteral("always"));
+    CHECK(again.credentialsCertificate().endsWith(QStringLiteral("chain.pem")));
+    CHECK_FALSE(again.credentialsCertificate().startsWith(QStringLiteral("file:")));
+    again.setCredentialsCertificate({});
+    again.setCredentialsKey({});
+    again.setContentCredentials(QStringLiteral("ai"));
+    again.setCredentialsThumbnail(true);
+    again.setCredentialsDoNotTrain(false);
+    again.setCredentialsProducer({});
+    CHECK(again.signingIdentity().value(QStringLiteral("local")).toBool());
 }
 
 TEST_CASE("ExportController queues exports of the current sequence and tracks them", "[export][app][media]") {
@@ -576,4 +662,258 @@ TEST_CASE("Default export names (wave-3 audit): a sequence name is never a Windo
         CHECK(controller.defaultOutputPath({}, QStringLiteral("match-source"))
                   .endsWith(QDir::separator() + QString::fromLatin1(expected)));
     }
+}
+
+// 0.2 (Premiere parity): Quick Export, Send to Media Encoder (held jobs, Start Queue), Save / Delete Preset, the custom
+// range, what describe() tells the drawer about a format, watch folders, the CPU limit, and the new Export workspace
+// pieces on the real QML shell without a Qt warning.
+TEST_CASE("Export workspace 0.2: Quick Export the queue presets watch folders and the CPU limit", "[export][app][parity]") {
+    const auto dir = freshDir("parity");
+    ExportController::setUserPresetFolder(dir / "presets");
+    ProjectController project;
+    project.resetProject(makeProject(seconds(2)));
+    ExportController controller;
+    controller.setProject(&project);
+    controller.setVideoSourceFactory(ex::syntheticVideoSourceFactory());
+    controller.setProjectFile(dir / "Interview.wabcut");
+
+    // What the drawer shows for Premiere's formats.
+    QVariantMap d = controller.describe({}, QStringLiteral("png-sequence"));
+    REQUIRE(d.value(QStringLiteral("ok")).toBool());
+    CHECK(d.value(QStringLiteral("isImage")).toBool());
+    CHECK(d.value(QStringLiteral("extension")) == QStringLiteral(".png"));
+    CHECK(d.value(QStringLiteral("alphaAvailable")).toBool());
+    CHECK(d.value(QStringLiteral("output")).toString().endsWith(QStringLiteral("Interview.png")));
+    d = controller.describe({}, QStringLiteral("audio-mp3"));
+    CHECK(d.value(QStringLiteral("audioOnly")).toBool());
+    d = controller.describe({}, QStringLiteral("match-source"));
+    CHECK(d.value(QStringLiteral("range")) == QStringLiteral("Entire Source"));
+    CHECK(d.value(QStringLiteral("rangeIn")) == QStringLiteral("00:00:00:00"));
+    CHECK(d.value(QStringLiteral("rangeOut")) == QStringLiteral("00:00:02:00"));
+    CHECK(d.value(QStringLiteral("subtitlesAvailable")).toBool());
+    CHECK_FALSE(d.value(QStringLiteral("alphaAvailable")).toBool());
+    d = controller.describe({}, QStringLiteral("match-source"),
+                            {{QStringLiteral("range"), QStringLiteral("custom")},
+                             {QStringLiteral("rangeIn"), QStringLiteral("00:00:00:15")},
+                             {QStringLiteral("rangeOut"), QStringLiteral("00:00:01:15")}});
+    REQUIRE(d.value(QStringLiteral("ok")).toBool());
+    CHECK(d.value(QStringLiteral("range")) == QStringLiteral("Custom"));
+    CHECK(d.value(QStringLiteral("frames")) == QStringLiteral("30"));
+    d = controller.describe({}, QStringLiteral("match-source"),
+                            {{QStringLiteral("rangeIn"), QStringLiteral("00:00:01:00")},
+                             {QStringLiteral("rangeOut"), QStringLiteral("00:00:00:10")}});
+    CHECK_FALSE(d.value(QStringLiteral("ok")).toBool());
+    d = controller.describe({}, QStringLiteral("match-source"),
+                            {{QStringLiteral("metadata"), QVariantMap{{QStringLiteral("startTimecode"), QStringLiteral("01:00:00:00")},
+                                                                     {QStringLiteral("xmp"), QStringLiteral("sidecar")}}}});
+    CHECK(d.value(QStringLiteral("ok")).toBool());
+
+    // Save Preset, then it is a preset like the others; Delete.
+    const QVariantMap saved = controller.savePreset(QStringLiteral("Podcast 44k"), QStringLiteral("for the feed"),
+                                                    QStringLiteral("audio-wav"), {{QStringLiteral("sampleRate"), 44100}});
+    REQUIRE(saved.value(QStringLiteral("ok")).toBool());
+    const QString userId = saved.value(QStringLiteral("id")).toString();
+    CHECK(userId == QStringLiteral("user-podcast-44k"));
+    const auto user = [&] {
+        for (const QVariant& p : controller.presets()) {
+            if (p.toMap().value(QStringLiteral("id")) == userId) {
+                return p.toMap();
+            }
+        }
+        return QVariantMap{};
+    }();
+    CHECK(user.value(QStringLiteral("user")).toBool());
+    CHECK(user.value(QStringLiteral("name")) == QStringLiteral("Podcast 44k"));
+    CHECK_FALSE(controller.savePreset(QStringLiteral("Podcast 44k"), {}, QStringLiteral("audio-wav")).value(QStringLiteral("ok")).toBool());
+    REQUIRE(ExportController::settingsFor(userId, {}).has_value());
+    CHECK(ExportController::settingsFor(userId, {})->audio.sampleRate == 44100);
+
+    // Quick Export with it.
+    const QString quick = controller.quickExport(userId, q(dir / "quick.wav"));
+    REQUIRE_FALSE(quick.isEmpty());
+    REQUIRE(waitFinished(controller, quick));
+    CHECK(row(controller, quick)->state == QStringLiteral("done"));
+    CHECK(std::filesystem::is_regular_file(dir / "quick.wav"));
+
+    // Send to Media Encoder: two destinations wait for Start Queue.
+    const QStringList held = controller.sendToQueue({}, {QStringLiteral("audio-wav"), QStringLiteral("audio-aiff")}, {}, true);
+    REQUIRE(held.size() == 2);
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    QCoreApplication::processEvents();
+    CHECK(row(controller, held[0])->state == QStringLiteral("held"));
+    CHECK(row(controller, held[1])->state == QStringLiteral("held"));
+    controller.startQueue();
+    REQUIRE(waitFinished(controller, held[0]));
+    REQUIRE(waitFinished(controller, held[1]));
+    CHECK(row(controller, held[1])->state == QStringLiteral("done"));
+    CHECK(controller.sendToQueue({}, {QStringLiteral("no-such")}).isEmpty());
+    CHECK_FALSE(controller.lastError().isEmpty());
+
+    REQUIRE(controller.deletePreset(userId));
+    CHECK_FALSE(ExportController::settingsFor(userId, {}).has_value());
+
+    // Watch folders.
+    const QVariantMap watch = controller.addWatchFolder(q(dir / "Drop"), QStringLiteral("audio-wav"));
+    REQUIRE(watch.value(QStringLiteral("ok")).toBool());
+    REQUIRE(controller.watchFolders().size() == 1);
+    CHECK(controller.watchFolders()[0].toMap().value(QStringLiteral("presetName")) == QStringLiteral("Audio only"));
+    controller.removeWatchFolder(watch.value(QStringLiteral("id")).toString());
+    CHECK(controller.watchFolders().isEmpty());
+
+    // The CPU limit preference.
+    controller.setCpuLimit(50);
+    CHECK(ex::exportThreadLimit() == ex::threadLimitForPercent(50));
+    controller.setCpuLimit(100);
+    CHECK(ex::exportThreadLimit() == 0);
+
+    // The export commands over this controller's queue.
+    const auto services = controller.commandServices();
+    REQUIRE(services != nullptr);
+    CHECK(services->presets().size() == ex::builtInPresets().size());
+    // export.queue.remove drops that finished job only.
+    REQUIRE(row(controller, quick) != nullptr);
+    REQUIRE(row(controller, held[0]) != nullptr);
+    REQUIRE(services->control(quick.toStdString(), "remove").has_value());
+    REQUIRE(waitFor([&] { return row(controller, quick) == nullptr; }, 5'000));
+    CHECK(row(controller, held[0]) != nullptr);
+}
+
+TEST_CASE("Export workspace 0.2: the new sections load without a Qt warning", "[export][app][parity]") {
+    qputenv("QML_IMPORT_PATH", QByteArrayLiteral(WABCUT_QT_QML_DIR));
+    resetSettings();
+    clearMessages();
+    Shell shell;
+    REQUIRE(shell.window != nullptr);
+    INFO(join(shell.errors));
+    shell.window->setProperty("workspace", 2);
+    REQUIRE(waitFor([&] { return shell.object("exportEffectsSection") != nullptr; }, 10'000));
+    CHECK(shell.object("exportFormatPresets") != nullptr);
+    CHECK(shell.object("exportSendToQueue") != nullptr);
+    CHECK(shell.object("quickExportButton") != nullptr);
+    QObject* effects = shell.object("exportEffectsSection");
+    effects->setProperty("open", true);
+    // Every effect applied, so each one's options show (through the panel's overrides, like a click).
+    for (const char* section : {"look", "imageOverlay", "nameOverlay", "timecodeOverlay", "limiter", "loudness"}) {
+        QMetaObject::invokeMethod(effects, "setEffect", Q_ARG(QVariant, QVariant(QString::fromLatin1(section))),
+                                  Q_ARG(QVariant, QVariant(QStringLiteral("applied"))), Q_ARG(QVariant, QVariant(true)));
+    }
+    REQUIRE(shell.settle(true, kViolet));
+    const QVariantMap fx = effects->property("fx").value<QJSValue>().toVariant().toMap();
+    CHECK(fx.value(QStringLiteral("look")).toMap().value(QStringLiteral("applied")).toBool());
+    CHECK(fx.value(QStringLiteral("loudness")).toMap().value(QStringLiteral("applied")).toBool());
+    QObject* queue = shell.object("exportQueueDialog");
+    REQUIRE(queue != nullptr);
+    QMetaObject::invokeMethod(queue, "openOn", Q_ARG(QVariant, QVariant(QStringLiteral("watch"))));
+    REQUIRE(shell.settle(true, kViolet));
+    QMetaObject::invokeMethod(queue, "close");
+    QObject* manager = shell.object("exportPresetManager");
+    REQUIRE(manager != nullptr);
+    QMetaObject::invokeMethod(manager, "openWith", Q_ARG(QVariant, QVariant(QStringLiteral("match-source"))),
+                              Q_ARG(QVariant, QVariant(QVariantMap{})));
+    REQUIRE(shell.settle(true, kViolet));
+    QMetaObject::invokeMethod(manager, "close");
+    const QStringList messages = takeMessages();
+    INFO("Qt messages:\n" << join(messages));
+    CHECK(messages.isEmpty());
+}
+
+// Premiere's File > Export > Send to Media Encoder (Alt+Shift+M): the keymap command, from the Edit workspace, puts the
+// current export into the queue held (Media Encoder's "Ready") and shows the queue.
+TEST_CASE("Export workspace 0.2: Send to Media Encoder queues the export held and shows the queue", "[export][app][parity]") {
+    qputenv("QML_IMPORT_PATH", QByteArrayLiteral(WABCUT_QT_QML_DIR));
+    resetSettings();
+    clearMessages();
+    Shell shell;
+    REQUIRE(shell.window != nullptr);
+    INFO(join(shell.errors));
+    auto* controller = shell.engine.singletonInstance<ExportController*>("Wabcut", "ExportController");
+    REQUIRE(controller != nullptr);
+    const int before = controller->jobs()->rowCount();
+    QMetaObject::invokeMethod(shell.window.get(), "runCommand", Q_ARG(QVariant, QVariant(QStringLiteral("file.sendToMediaEncoder"))));
+    REQUIRE(waitFor([&] { return controller->jobs()->rowCount() == before + 1; }, 10'000));
+    CHECK(shell.window->property("workspace").toInt() == 2);
+    const ExportJobModel::Row held = controller->jobs()->rows().back(); // a copy: the model changes below
+    CHECK(held.state == QStringLiteral("held"));
+    CHECK(held.held);
+    QObject* queue = shell.object("exportQueueDialog");
+    REQUIRE(queue != nullptr);
+    REQUIRE(waitFor([&] { return queue->property("visible").toBool(); }, 5'000));
+    REQUIRE(shell.settle(true, kViolet));
+    controller->cancel(held.jobId);
+    REQUIRE(waitFinished(*controller, held.jobId));
+    CHECK(row(*controller, held.jobId)->state == QStringLiteral("cancelled"));
+    const QStringList messages = takeMessages();
+    INFO("Qt messages:\n" << join(messages));
+    CHECK(messages.isEmpty());
+}
+
+TEST_CASE("Export workspace 0.2 screenshots: effects and metadata, the queue, the presets, Quick Export", "[export][app][screenshot][parity]") {
+    qputenv("QML_IMPORT_PATH", QByteArrayLiteral(WABCUT_QT_QML_DIR));
+    resetSettings();
+    clearMessages();
+    const auto save = [](const QImage& image, const char* file) {
+        REQUIRE_FALSE(image.isNull());
+        const QString path = outputDir() + QLatin1Char('/') + QLatin1String(file);
+        REQUIRE(image.save(path));
+        UNSCOPED_INFO("wrote " << path.toStdString());
+    };
+    {
+        Shell warmUp;
+        REQUIRE(warmUp.window != nullptr);
+        REQUIRE_FALSE(warmUp.grab().isNull());
+    }
+    // 1. The Effects & Metadata section open, scrolled into view.
+    {
+        Shell shell;
+        REQUIRE(shell.window != nullptr);
+        shell.window->setProperty("workspace", 2);
+        REQUIRE(waitFor([&] { return shell.item("exportEffectsSection") != nullptr; }, 10'000));
+        QQuickItem* effects = shell.item("exportEffectsSection");
+        effects->setProperty("open", true);
+        for (const char* section : {"look", "nameOverlay", "loudness"}) {
+            QMetaObject::invokeMethod(effects, "setEffect", Q_ARG(QVariant, QVariant(QString::fromLatin1(section))),
+                                      Q_ARG(QVariant, QVariant(QStringLiteral("applied"))), Q_ARG(QVariant, QVariant(true)));
+        }
+        REQUIRE(shell.settle(true, kViolet));
+        QQuickItem* flick = nullptr;
+        for (QQuickItem* p = effects->parentItem(); p; p = p->parentItem()) {
+            if (p->inherits("QQuickFlickable")) {
+                flick = p;
+                break;
+            }
+        }
+        REQUIRE(flick != nullptr);
+        auto* content = flick->property("contentItem").value<QQuickItem*>();
+        flick->setProperty("contentY", effects->mapToItem(content, QPointF(0, 0)).y() - 8);
+        REQUIRE(shell.settle(true, kViolet));
+        save(shell.grab(), "workspace-export-effects.png");
+        // The rest of the section: the panel scrolled to its end.
+        flick->setProperty("contentY", std::max(0.0, flick->property("contentHeight").toReal() - flick->height()));
+        REQUIRE(shell.settle(true, kViolet));
+        save(shell.grab(), "workspace-export-effects-end.png");
+    }
+    // 2. The export queue (Media Encoder) on its Watch Folders page, and 3. the preset manager.
+    for (const char* which : {"queue", "presets", "quick"}) {
+        Shell shell;
+        REQUIRE(shell.window != nullptr);
+        shell.window->setProperty("workspace", 2);
+        REQUIRE(waitFor([&] { return shell.object("exportQueueDialog") != nullptr; }, 10'000));
+        if (std::string_view(which) == "queue") {
+            QMetaObject::invokeMethod(shell.object("exportQueueDialog"), "openOn", Q_ARG(QVariant, QVariant(QStringLiteral("queue"))));
+        } else if (std::string_view(which) == "presets") {
+            QMetaObject::invokeMethod(shell.object("exportPresetManager"), "openWith",
+                                      Q_ARG(QVariant, QVariant(QStringLiteral("match-source"))), Q_ARG(QVariant, QVariant(QVariantMap{})));
+        } else {
+            QObject* quick = shell.object("quickExportButton");
+            REQUIRE(quick != nullptr);
+            QMetaObject::invokeMethod(quick, "clicked");
+        }
+        REQUIRE(shell.settle(true, kViolet));
+        save(shell.grab(), std::string_view(which) == "queue"     ? "export-queue-dialog.png"
+                           : std::string_view(which) == "presets" ? "export-preset-manager.png"
+                                                                  : "quick-export.png");
+    }
+    const QStringList messages = takeMessages();
+    INFO("Qt messages:\n" << join(messages));
+    CHECK(messages.isEmpty());
 }

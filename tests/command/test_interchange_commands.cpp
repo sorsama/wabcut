@@ -62,7 +62,7 @@ TEST_CASE("interchange.export writes a timeline file and returns its report (X.1
         CHECK(back->project.findSequence(back->sequences.front())->videoTracks.front()->clips.size() == 3);
     }
     CHECK(h.session.undoCount() == 0); // the project did not change
-    CHECK(h.errorOf("interchange.export", Json{{"format", "aaf"}, {"path", pathToUtf8(dir / "x.aaf")}}) == "InvalidParams");
+    CHECK(h.errorOf("interchange.export", Json{{"format", "xml"}, {"path", pathToUtf8(dir / "x.xml")}}) == "InvalidParams");
     CHECK(h.errorOf("interchange.export", Json{{"format", "fcpxml"}, {"fcpxmlVersion", "1.9"}, {"path", pathToUtf8(dir / "x.fcpxml")}}) ==
           "InvalidParams");
 }

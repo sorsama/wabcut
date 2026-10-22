@@ -41,10 +41,12 @@ enum class ReportCategory : std::uint8_t {
     Media,
     /// Motion graphics (C.13): Lottie layers, shapes, keyframes, text and masks.
     Graphic,
+    /// Caption files (P.2): cues, their styles and positions.
+    Caption,
 };
 
 inline constexpr std::size_t kReportOutcomeCount = 3;
-inline constexpr std::size_t kReportCategoryCount = 11;
+inline constexpr std::size_t kReportCategoryCount = 12;
 
 /// Stable lower-case names ("carried", "sequence-setting", ...) used by the CLI and JSON output.
 std::string_view toString(ReportOutcome outcome);

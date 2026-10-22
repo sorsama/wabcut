@@ -180,7 +180,8 @@ public:
 
 // --- Media generation (asynchronous on the provider: create, poll, fetch) -------------------------------------
 
-enum class GeneratedMediaKind { Video, Image };
+/// SoundEffect (0.2): a sound effect from a text prompt (ElevenLabs sound generation, Premiere's Generative Media).
+enum class GeneratedMediaKind { Video, Image, SoundEffect };
 
 std::string_view toString(GeneratedMediaKind kind);
 
@@ -199,6 +200,10 @@ struct MediaGenerationRequest {
     bool audio = false;               ///< ask for generated sound where the model makes it (often a pricier tier)
     int count = 1;                    ///< outputs per request (images; video models usually allow 1)
     std::optional<std::int64_t> seed;
+    /// Sound effects (0.2): a seamless loop where the model makes one; how closely to follow the prompt (0..1; the
+    /// model's default when unset). `duration` unset = the model picks the length from the prompt.
+    bool loop = false;
+    std::optional<double> promptInfluence;
     Json extra = Json::object();      ///< provider-specific options
 };
 

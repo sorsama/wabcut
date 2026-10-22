@@ -180,7 +180,9 @@ TEST_CASE("Mixer strips reflect the model: roles, mute/solo, track and master ef
     CHECK(fx.strip(0).value("shortName").toString() == QStringLiteral("A1"));
     CHECK(fx.strip(0).value("meter").toInt() == 0);
     CHECK(m.roles().size() == 4);
-    CHECK(m.effectTypes().size() == 12); // M5m: Enhance Speech (for the track's clips) and the six A.7 effects
+    // M5m: Enhance Speech (for the track's clips) and the six A.7 effects first; p02 audio: then Premiere's catalog.
+    CHECK(m.effectTypes().size() > 12);
+    CHECK(m.effectTypes().at(11).toMap().value(QStringLiteral("id")).toString() == QStringLiteral("wabcut.audio.width"));
 
     // Role: track.setRole, one undo step.
     std::size_t undo = fx.undoCount();

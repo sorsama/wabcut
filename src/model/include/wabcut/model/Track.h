@@ -110,6 +110,25 @@ struct Transition {
     bool operator==(const Transition&) const = default;
 };
 
+/// p02 audio: the most sends an audio track has (Premiere's Audio Track Mixer sends A to E).
+inline constexpr std::size_t kMaxTrackSends = 5;
+
+/// p02 audio: a send from an audio track to a submix track (Premiere's Audio Track Mixer sends): a copy of the track's
+/// signal, taken before its fader (pre-fader) or after it (post-fader, Premiere's default), at the send's own level and
+/// pan, mixed into the submix next to whatever the submix gets from the tracks assigned to it. A muted or soloed-away
+/// track is silent in its sends too.
+struct TrackSend {
+    TrackId submix;        ///< a submix track of the same sequence (Sequence::submixTracks)
+    bool preFader = false; ///< Pre-Fader: the send ignores the track's fader and panner
+    bool muted = false;    ///< the send's mute
+    /// Send volume, dB (ParamId::VolumeDb's range, -144..+24; 0 = unity): a constant or keyframes in timeline time.
+    ParamValue level;
+    /// Send pan (ParamId::Pan, -1..1): a balance on a stereo mix, the pan of a mono submix's input; timeline time.
+    ParamValue pan;
+
+    bool operator==(const TrackSend&) const = default;
+};
+
 struct Track {
     TrackId id;
     TrackKind kind = TrackKind::Video;
@@ -152,6 +171,11 @@ struct Track {
     /// ParamRef::of(ParamId::VolumeDb / ParamId::Pan)). Default (0 dB, centre) on video tracks.
     ParamValue volume;
     ParamValue pan;
+    /// p02 audio, audio and submix tracks: Premiere's track output assignment: TrackId{} = the Mix (the master), or a
+    /// submix track of the sequence (never one that outputs back to this track: no cycles). Saved only when set.
+    TrackId output;
+    /// p02 audio, audio tracks: the track's sends to submixes, at most kMaxTrackSends. Saved only when there are some.
+    std::vector<TrackSend> sends;
 
     /// End of the last clip (0 for an empty track).
     Ticks end() const { return clips.empty() ? Ticks{} : clips.back().end(); }
@@ -194,7 +218,7 @@ struct Track {
         return id == o.id && kind == o.kind && name == o.name && enabled == o.enabled && locked == o.locked &&
                syncLocked == o.syncLocked && muted == o.muted && solo == o.solo && targeted == o.targeted &&
                role == o.role && recordArmed == o.recordArmed && format == o.format && surround == o.surround &&
-               effects == o.effects && volume == o.volume && pan == o.pan;
+               effects == o.effects && volume == o.volume && pan == o.pan && output == o.output && sends == o.sends;
     }
 
     bool operator==(const Track&) const = default;

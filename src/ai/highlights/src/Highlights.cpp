@@ -1,6 +1,7 @@
 #include <wabcut/ai/highlights/Highlights.h>
 
 #include <wabcut/ai/analysis/AnalysisCommands.h>
+#include <wabcut/model/Resolve.h>
 
 #include <nlohmann/json.hpp>
 
@@ -10,6 +11,7 @@
 #include <cstdio>
 #include <numeric>
 #include <set>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -434,6 +436,36 @@ MediaSignals mapToSequence(const ProjectState& state, SequenceId sequenceId, con
     for (const TrackPtr& t : seq->audioTracks) {
         tracks.emplace_back(t.get(), false);
     }
+    // Sample j of a recording's signals shown / played at sample i of the sequence.
+    const auto copySample = [&](const MediaSignals& m, std::size_t i, std::size_t j, bool isVideo) {
+        if (isVideo && !m.visual.empty() && j < m.visual.size()) {
+            // The higher track's picture is what shows.
+            out.visual[i] = m.visual[j];
+            out.motionRatio[i] = j < m.motionRatio.size() ? m.motionRatio[j] : 0.0f;
+            out.flash[i] = j < m.flash.size() ? m.flash[j] : 0.0f;
+            out.cuts[i] = j < m.cuts.size() ? m.cuts[j] : 0.0f;
+        }
+        copyAt(out.game, m.game, i, j);
+        copyAt(out.gameRiseDb, m.gameRiseDb, i, j);
+        copyAt(out.mic, m.mic, i, j);
+        copyAt(out.voiceRiseDb, m.voiceRiseDb, i, j);
+        copyAt(out.pitchRise, m.pitchRise, i, j);
+        copyAt(out.laugh, m.laugh, i, j);
+        copyAt(out.chat, m.chat, i, j);
+        copyAt(out.chatRatio, m.chatRatio, i, j);
+        copyAt(out.chatCount, m.chatCount, i, j);
+    };
+    const auto signalsOf = [&](MediaId id) -> const MediaSignals* {
+        const auto found = media.find(id.value);
+        if (found == media.end() || !found->second) {
+            if (const MediaItem* item = state.findMedia(id); item && !item->isGenerator()) {
+                notes.insert("'" + item->name + "' has no highlight analysis");
+            }
+            return nullptr;
+        }
+        return found->second;
+    };
+    const Ticks halfSample{kTicksPerSecond / (2 * kFeatureRate)};
     for (const auto& [track, isVideo] : tracks) {
         if (!track || !track->enabled || (!isVideo && track->muted)) {
             continue;
@@ -443,21 +475,53 @@ MediaSignals mapToSequence(const ProjectState& state, SequenceId sequenceId, con
                 continue;
             }
             if (clip.isNested()) {
-                notes.insert("nested and multicam clips are not analysed (open them to find their highlights)");
-                continue;
-            }
-            const auto found = media.find(clip.media.value);
-            if (found == media.end() || !found->second) {
-                if (const MediaItem* item = state.findMedia(clip.media); item && !item->isGenerator()) {
-                    notes.insert("'" + item->name + "' has no highlight analysis");
+                // 0.2: a nested or multicam clip (a gaming nest, a podcast's cameras) through what it shows or plays: at
+                // each sample the leaves resolveLeaves() gives - the active angle's media, the nested sequence's clips
+                // (V1 first, so the top picture wins) - at their media time through every level's time map.
+                std::set<std::tuple<std::uint64_t, std::int64_t, std::string>> hintsUsed; // (media, at, label)
+                const std::size_t first = featureIndex(clip.start());
+                const std::size_t last = std::min(n, featureIndex(clip.end()) + 1);
+                for (std::size_t i = first; i < last; ++i) {
+                    const Ticks t = featureTime(i) + halfSample;
+                    if (t < clip.start() || t >= clip.end()) {
+                        continue;
+                    }
+                    for (const ResolvedLeaf& leaf : resolveLeaves(state, sequenceId, clip, t)) {
+                        const MediaSignals* m = signalsOf(leaf.clip->media);
+                        if (!m || leaf.sourceTime < Ticks{}) {
+                            continue;
+                        }
+                        const std::size_t j = featureIndex(leaf.sourceTime);
+                        copySample(*m, i, j, isVideo);
+                        const auto words = std::equal_range(m->keywords.begin(), m->keywords.end(), KeywordHit{j, {}},
+                                                            [](const KeywordHit& a, const KeywordHit& b) { return a.index < b.index; });
+                        for (auto k = words.first; k != words.second; ++k) {
+                            if (keywordsSeen.insert({i, k->word}).second) {
+                                out.keywords.push_back({i, k->word});
+                            }
+                        }
+                        for (const Hint& h : m->hints) {
+                            if (h.at < Ticks{} || featureIndex(h.at) != j || !hintsUsed.insert({leaf.clip->media.value, h.at.value, h.label}).second) {
+                                continue;
+                            }
+                            const Ticks where = std::clamp(featureTime(i) + (h.at - featureTime(j)), clip.start(), clip.end() - Ticks{1});
+                            if (hintsSeen.insert({where.value, h.label}).second) {
+                                out.hints.push_back({where, h.label, h.source});
+                            }
+                        }
+                    }
                 }
                 continue;
             }
-            const MediaSignals& m = *found->second;
+            const MediaSignals* found = signalsOf(clip.media);
+            if (!found) {
+                continue;
+            }
+            const MediaSignals& m = *found;
             const std::size_t first = featureIndex(clip.start());
             const std::size_t last = std::min(n, featureIndex(clip.end()) + 1);
             for (std::size_t i = first; i < last; ++i) {
-                const Ticks t = featureTime(i) + Ticks{kTicksPerSecond / (2 * kFeatureRate)}; // the sample's middle
+                const Ticks t = featureTime(i) + halfSample; // the sample's middle
                 if (t < clip.start() || t >= clip.end()) {
                     continue;
                 }
@@ -465,23 +529,7 @@ MediaSignals mapToSequence(const ProjectState& state, SequenceId sequenceId, con
                 if (source < Ticks{}) {
                     continue;
                 }
-                const std::size_t j = featureIndex(source);
-                if (isVideo && !m.visual.empty() && j < m.visual.size()) {
-                    // The higher track's picture is what shows.
-                    out.visual[i] = m.visual[j];
-                    out.motionRatio[i] = j < m.motionRatio.size() ? m.motionRatio[j] : 0.0f;
-                    out.flash[i] = j < m.flash.size() ? m.flash[j] : 0.0f;
-                    out.cuts[i] = j < m.cuts.size() ? m.cuts[j] : 0.0f;
-                }
-                copyAt(out.game, m.game, i, j);
-                copyAt(out.gameRiseDb, m.gameRiseDb, i, j);
-                copyAt(out.mic, m.mic, i, j);
-                copyAt(out.voiceRiseDb, m.voiceRiseDb, i, j);
-                copyAt(out.pitchRise, m.pitchRise, i, j);
-                copyAt(out.laugh, m.laugh, i, j);
-                copyAt(out.chat, m.chat, i, j);
-                copyAt(out.chatRatio, m.chatRatio, i, j);
-                copyAt(out.chatCount, m.chatCount, i, j);
+                copySample(m, i, featureIndex(source), isVideo);
             }
             // Keyword hits and hints where the clip shows them.
             const Ticks sourceFrom = std::min(clip.sourceTimeAt(clip.start()), clip.sourceTimeAt(clip.end() - Ticks{1}));

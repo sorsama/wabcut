@@ -6,6 +6,8 @@
 #include "TimelineGeometry.h"
 #include "TimeRemapBridge.h"
 
+#include <wabcut/audio/edit/Loudness.h>
+#include <wabcut/model/ClipGroups.h>
 #include <wabcut/model/EditOps.h>
 #include <wabcut/model/Graphics.h>
 #include <wabcut/model/RedactionMedia.h>
@@ -417,12 +419,18 @@ void TimelineView::setController(ProjectController* controller) {
             ++m_selectionRevision; // drawn with the overlay
             update();
         });
-        connect(m_controller, &ProjectController::peaksChanged, this,
-                [this] { setPeakSource(m_controller ? m_controller->peakSource() : nullptr); });
+        connect(m_controller, &ProjectController::peaksChanged, this, [this] {
+            // p02 audio: new peaks from the same source rebuild only the tracks of the media they belong to.
+            std::shared_ptr<const PeakSource> source = m_controller ? m_controller->peakSource() : nullptr;
+            if (source && source == m_peaks)
+                refreshPeaks();
+            else
+                setPeakSource(std::move(source));
+        });
         connect(m_controller, &ProjectController::filmstripsChanged, this,
                 [this] { setFilmstripSource(m_controller ? m_controller->filmstripSource() : nullptr); });
         connect(m_controller, &ProjectController::playheadChanged, this, [this] {
-            m_playhead = m_controller->playhead();
+            m_playhead = m_controller->finePlayhead(); // 0.2: to the sample with audio time units on
             emit playheadXChanged();
             update();
         });
@@ -548,7 +556,23 @@ void TimelineView::setPlaying(bool playing) {
 
 void TimelineView::setPeakSource(std::shared_ptr<const PeakSource> source) {
     m_peaks = source ? std::move(source) : std::make_shared<PlaceholderPeakSource>();
+    (void)m_peaks->mediaChangedSince(0, m_peakSerial); // what the full rebuild below draws
+    m_pendingPeakMedia.clear();
     ++m_styleRevision; // forces a rebuild of every waveform
+    update();
+}
+
+void TimelineView::refreshPeaks() {
+    std::uint64_t now = m_peakSerial;
+    const std::optional<std::vector<std::uint64_t>> changed = m_peaks->mediaChangedSince(m_peakSerial, now);
+    m_peakSerial = now;
+    if (!changed) {
+        ++m_styleRevision; // the source cannot say which: every waveform
+    } else if (changed->empty()) {
+        return;
+    } else {
+        m_pendingPeakMedia.insert(changed->begin(), changed->end());
+    }
     update();
 }
 
@@ -739,11 +763,18 @@ void TimelineView::updateFacts(const TimelineChange& change) {
                 m_facts.channels.erase(id.value);
             }
         }
-        for (const std::vector<ClipId>* list : {&s->modifiedClips, &s->addedClips}) {
-            for (ClipId id : *list) {
-                if (const auto loc = seq->findClip(id))
-                    addClipFacts(m_facts, *snap, *loc->track, loc->clip());
-            }
+        // One walk over the clips for the whole change: a ripple modifies thousands, and findClip per id is linear.
+        std::vector<std::uint64_t> wanted;
+        for (const std::vector<ClipId>* list : {&s->modifiedClips, &s->addedClips})
+            for (ClipId id : *list)
+                wanted.push_back(id.value);
+        std::ranges::sort(wanted);
+        if (!wanted.empty()) {
+            seq->forEachTrack([&](const Track& track) {
+                for (const Clip& c : track.clips)
+                    if (std::ranges::binary_search(wanted, c.id.value))
+                        addClipFacts(m_facts, *snap, track, c);
+            });
         }
     }
     // A nested sequence no clip plays any more keeps its entry (nothing draws it), as long as the cache lives.
@@ -806,8 +837,9 @@ void TimelineView::refreshFromController() {
     m_contentDuration = m_controller ? m_controller->contentDuration() : Ticks::fromSeconds(30);
     if (const SequenceId next = m_sequence ? m_sequence->id : SequenceId{}; next != m_shownSequence)
         switchSequenceView(next);
-    m_playhead = m_controller ? m_controller->playhead() : Ticks{};
+    m_playhead = m_controller ? m_controller->finePlayhead() : Ticks{};
     relayoutRows();
+    scheduleRenderBar(); // 0.2: the render bar follows edits, undo and the sequence shown
     refreshSelection();
     clampScroll();
     emit viewChanged();
@@ -867,13 +899,21 @@ Rate TimelineView::frameRate() const {
     return m_sequence ? m_sequence->frameRate : kRate30;
 }
 
+Rate TimelineView::displayRate() const {
+    if (m_audioTimeUnits && m_sequence && m_sequence->audioRate.isValid())
+        return m_sequence->audioRate;
+    return frameRate();
+}
+
 double TimelineView::fitPixelsPerSecond() const {
     const double seconds = std::max(1.0, m_contentDuration.toSeconds());
     return std::max(1e-3, width() / seconds);
 }
 
 double TimelineView::maxPixelsPerSecond() const {
-    return std::max(fitPixelsPerSecond(), m_style.maxPixelsPerFrame * frameRate().toDouble());
+    // 0.2, Show Audio Time Units: down to single samples (two pixels each), as Premiere zooms in on audio.
+    const double units = m_audioTimeUnits ? 2.0 * displayRate().toDouble() : m_style.maxPixelsPerFrame * frameRate().toDouble();
+    return std::max(fitPixelsPerSecond(), units);
 }
 
 void TimelineView::setPixelsPerSecond(double pps) {
@@ -1023,6 +1063,30 @@ TimelineView::RulerStep TimelineView::rulerStep() const {
     const Rate rate = frameRate();
     const std::int64_t base = timecodeBase(rate);
     RulerStep step;
+    if (m_audioTimeUnits) {
+        // 0.2, Show Audio Time Units: labels every 1, 2, 5, 10 ... samples up to a second, then the second intervals;
+        // `frames` counts samples.
+        const Rate audio = displayRate();
+        const std::int64_t perSecond = std::max<std::int64_t>(1, audio.num / std::max<std::int64_t>(1, audio.den));
+        constexpr std::array<std::pair<std::int64_t, int>, 14> kSampleIntervals{{
+            {1, 1}, {2, 2}, {5, 5}, {10, 5}, {20, 4}, {50, 5}, {100, 4}, {200, 4}, {500, 5}, {1000, 4}, {2000, 4},
+            {5000, 5}, {10000, 4}, {20000, 4}}};
+        for (const auto& [samples, subdivisions] : kSampleIntervals) {
+            step.frames = samples;
+            step.subdivisions = subdivisions;
+            step.px = static_cast<double>(samples) / static_cast<double>(perSecond) * m_pps;
+            if (step.px >= m_style.rulerLabelSpacing)
+                return step;
+        }
+        for (const auto& [seconds, subdivisions] : kRulerIntervals) {
+            step.frames = std::int64_t{seconds} * perSecond;
+            step.subdivisions = subdivisions;
+            step.px = std::int64_t{seconds} * m_pps;
+            if (step.px >= m_style.rulerLabelSpacing)
+                break;
+        }
+        return step;
+    }
     for (const auto& [seconds, subdivisions] : kRulerIntervals) {
         step.frames = std::int64_t{seconds} * base;
         step.subdivisions = subdivisions;
@@ -1056,6 +1120,8 @@ int TimelineView::rulerSubdivisions() const {
 }
 
 QString TimelineView::rulerLabel(int tickIndex, int stepFrames) const {
+    if (m_audioTimeUnits && m_sequence && m_controller) // samples (0.2)
+        return m_controller->formatAudioTime(framesToTicks(std::int64_t{tickIndex} * stepFrames, displayRate()));
     const bool dropFrame = m_sequence && m_sequence->dropFrame;
     return QString::fromStdString(framesToTimecode(std::int64_t{tickIndex} * stepFrames, frameRate(), dropFrame));
 }
@@ -1094,6 +1160,8 @@ QString TimelineView::clipAt(double x, double y) const {
 }
 
 QString TimelineView::timeAt(double x) const {
+    if (m_audioTimeUnits && m_controller) // 0.2
+        return m_controller->formatAudioTime(snapToFrame(ticksAtX(x), displayRate()));
     const bool dropFrame = m_sequence && m_sequence->dropFrame;
     return QString::fromStdString(ticksToTimecode(ticksAtX(x), frameRate(), dropFrame));
 }
@@ -1123,7 +1191,7 @@ std::vector<ClipId> TimelineView::clipsInRect(const QRectF& rect) const {
         for (auto it = clips.iteratorAt(firstClipEndingAfter(clips, t0)); it != clips.end() && it->start() <= t1; ++it)
             ids.push_back(it->id);
     }
-    return m_linkedSelection ? edit::withLinkedClips(*m_sequence, ids) : ids;
+    return m_linkedSelection ? edit::withGroupedClips(*m_sequence, ids) : ids; // links and (0.2) groups
 }
 
 void TimelineView::selectAt(double x, double y, int modifiers) {
@@ -1214,6 +1282,7 @@ struct BuildContext {
     const std::unordered_map<std::uint64_t, double>* shiftPx = nullptr;
     // The volume rubber band on audio clips (M5g).
     bool showVolume = false;
+    bool showOpacity = false; // 0.2: the pen shows video clips' Opacity band (TimelineViewVolume.cpp)
     bool showSpeed = false;
     // Media whose files are offline: their clips are hatched (design language v2).
     const std::unordered_set<std::uint64_t>* offline = nullptr;
@@ -1229,6 +1298,7 @@ struct BuildContext {
     bool throughEdits = false;
     bool rectified = false;
     bool logarithmic = false;
+    bool volumeWaveforms = false; // p02 audio: scaled by the clip's Audio Gain and Volume
     /// Enabled source redactions by media id: thumbnails of the frames they cover are not shown (review P2-9; the
     /// thumbnails are decoded from the raw file).
     const std::unordered_map<std::uint64_t, std::vector<const Redaction*>>* redactions = nullptr; ///< by redaction root
@@ -1238,6 +1308,8 @@ struct BuildContext {
     int filmPlaceholders = 0;
     int filmRedacted = 0;
     int filmNodes = 0;
+    int buildingWaveforms = 0; // p02 audio: audio clips shaded where their peaks are still building
+    float loudestWaveform = 0;
 };
 
 /// A thumbnail quad: where it goes (built coordinates) and which part of the atlas it shows (normalised).
@@ -1451,17 +1523,41 @@ void addHatch(MeshBuilder& mesh, const TimelineStyle& st, const QRectF& rect) {
 }
 
 /// The volume rubber band of an audio clip (TimelineViewVolume.cpp has its editing): the line, sampled every 3 px so
-/// any interpolation shows, and the keys (diamond: linear, circle: Bezier, square: hold).
-void addVolumeLine(BuildContext& ctx, const Clip& clip, const QRectF& rect, double x0, double x1) {
+/// any interpolation shows, and the keys (diamond: linear, circle: Bezier, square: hold). 0.2, `opacity`: a video clip's
+/// Opacity band instead (the pen tool), drawn over its thumbnails (addVolumeLine below).
+/// p02 audio ("Show Audio Waveforms Using Clip Volume"): each peak column times the clip's Audio Gain and its Volume at
+/// the column's middle (level and keyframes), clamped to full scale.
+void scaleByClipVolume(const Clip& clip, double x0, double step, const std::function<Ticks(double)>& tickAt,
+                       std::span<float> peaks) {
+    double gainDb = 0.0;
+    if (const EffectInstance* gain = audio::edit::normalizationGain(clip.effects()); gain && gain->enabled) {
+        if (const ParamValue* value = gain->find("gain"))
+            gainDb = value->valueAt(Ticks{});
+    }
+    const ParamValue& volume = clip.properties()[ParamId::VolumeDb];
+    const bool animated = volume.curve() != nullptr;
+    const double constantDb = animated ? 0.0 : volume.constant();
+    for (std::size_t k = 0; k < peaks.size(); ++k) {
+        double db = gainDb + constantDb;
+        if (animated) {
+            const Ticks t = std::clamp(tickAt(x0 + (static_cast<double>(k) + 0.5) * step), clip.start(), clip.end() - Ticks{1});
+            db += volume.valueAt(clip.curveTimeAt(t));
+        }
+        peaks[k] = static_cast<float>(std::min(1.0, static_cast<double>(peaks[k]) * std::pow(10.0, db / 20.0)));
+    }
+}
+
+void addVolumeLine(BuildContext& ctx, const Clip& clip, const QRectF& rect, double x0, double x1, bool opacity = false) {
     if (x1 - x0 < 2)
         return;
     const TimelineStyle& st = ctx.style;
     const QRectF area = TimelineView::volumeArea(rect);
-    const auto yOf = [&](double db) { return area.top() + TimelineView::volumeFraction(db) * area.height(); };
+    const auto yOf = [&](double v) { return area.top() + TimelineView::bandFraction(!opacity, v) * area.height(); };
     const auto tickAt = [&](double x) {
         return Ticks{static_cast<std::int64_t>((x + ctx.originX) / ctx.pps * static_cast<double>(kTicksPerSecond))};
     };
-    const ParamValue& volume = clip.properties()[ParamId::VolumeDb];
+    MeshBuilder& mesh = opacity && ctx.top ? *ctx.top : ctx.mesh;
+    const ParamValue& volume = clip.properties()[opacity ? ParamId::Opacity : ParamId::VolumeDb];
     // A light line on a dark underlay: it reads on every clip colour and waveform, in both themes.
     constexpr double kWidth = 1.5;
     constexpr double kUnderlay = 3.5;
@@ -1470,8 +1566,8 @@ void addVolumeLine(BuildContext& ctx, const Clip& clip, const QRectF& rect, doub
     const Curve* curve = volume.curve();
     if (!curve) {
         const double y = yOf(volume.constant());
-        ctx.mesh.addRect(QRectF(x0, y - kUnderlay / 2, x1 - x0, kUnderlay), underlay);
-        ctx.mesh.addRect(QRectF(x0, y - kWidth / 2, x1 - x0, kWidth), st.volumeColor);
+        mesh.addRect(QRectF(x0, y - kUnderlay / 2, x1 - x0, kUnderlay), underlay);
+        mesh.addRect(QRectF(x0, y - kWidth / 2, x1 - x0, kWidth), st.volumeColor);
         return;
     }
     const int n = static_cast<int>(std::clamp(std::ceil((x1 - x0) / 3.0), 1.0, 2000.0));
@@ -1482,8 +1578,8 @@ void addVolumeLine(BuildContext& ctx, const Clip& clip, const QRectF& rect, doub
         const Ticks t = std::clamp(tickAt(x), clip.start(), clip.end() - Ticks{1});
         points.emplace_back(x, yOf(volume.valueAt(clip.curveTimeAt(t))));
     }
-    ctx.mesh.addPolyline(points, kUnderlay, underlay);
-    ctx.mesh.addPolyline(points, kWidth, st.volumeColor);
+    mesh.addPolyline(points, kUnderlay, underlay);
+    mesh.addPolyline(points, kWidth, st.volumeColor);
     constexpr double kKey = 4.0;
     for (const Keyframe& k : curve->keys) {
         const auto t = clip.timelineTimeOfCurveTime(k.time);
@@ -1494,17 +1590,17 @@ void addVolumeLine(BuildContext& ctx, const Clip& clip, const QRectF& rect, doub
             continue;
         const QPointF c(x, yOf(k.value));
         if (k.interpolation == Interpolation::Bezier) {
-            ctx.mesh.addRoundedRect(QRectF(c.x() - kKey, c.y() - kKey, kKey * 2, kKey * 2), kKey, st.volumeKeyColor,
+            mesh.addRoundedRect(QRectF(c.x() - kKey, c.y() - kKey, kKey * 2, kKey * 2), kKey, st.volumeKeyColor,
                                     st.volumeKeyBorder, 1.0);
         } else if (k.interpolation == Interpolation::Hold) {
-            ctx.mesh.addRect(QRectF(c.x() - kKey, c.y() - kKey, kKey * 2, kKey * 2), st.volumeKeyBorder);
-            ctx.mesh.addRect(QRectF(c.x() - kKey + 1, c.y() - kKey + 1, kKey * 2 - 2, kKey * 2 - 2), st.volumeKeyColor);
+            mesh.addRect(QRectF(c.x() - kKey, c.y() - kKey, kKey * 2, kKey * 2), st.volumeKeyBorder);
+            mesh.addRect(QRectF(c.x() - kKey + 1, c.y() - kKey + 1, kKey * 2 - 2, kKey * 2 - 2), st.volumeKeyColor);
         } else {
             const double o = kKey + 1;
-            ctx.mesh.addTriangle({c.x(), c.y() - o}, {c.x() + o, c.y()}, {c.x(), c.y() + o}, st.volumeKeyBorder);
-            ctx.mesh.addTriangle({c.x(), c.y() - o}, {c.x(), c.y() + o}, {c.x() - o, c.y()}, st.volumeKeyBorder);
-            ctx.mesh.addTriangle({c.x(), c.y() - kKey}, {c.x() + kKey, c.y()}, {c.x(), c.y() + kKey}, st.volumeKeyColor);
-            ctx.mesh.addTriangle({c.x(), c.y() - kKey}, {c.x(), c.y() + kKey}, {c.x() - kKey, c.y()}, st.volumeKeyColor);
+            mesh.addTriangle({c.x(), c.y() - o}, {c.x() + o, c.y()}, {c.x(), c.y() + o}, st.volumeKeyBorder);
+            mesh.addTriangle({c.x(), c.y() - o}, {c.x(), c.y() + o}, {c.x() - o, c.y()}, st.volumeKeyBorder);
+            mesh.addTriangle({c.x(), c.y() - kKey}, {c.x() + kKey, c.y()}, {c.x(), c.y() + kKey}, st.volumeKeyColor);
+            mesh.addTriangle({c.x(), c.y() - kKey}, {c.x(), c.y() + kKey}, {c.x() - kKey, c.y()}, st.volumeKeyColor);
         }
     }
 }
@@ -2028,6 +2124,9 @@ std::pair<int, int> buildTrack(BuildContext& ctx, TrackBucket& b, const Timeline
                     if (n > 0 && tb > ta
                         && ctx.peaks.peaks(it->media, it->stream, it->sourceTimeAt(ta), it->sourceTimeAt(tb),
                                            ctx.peakScratch)) {
+                        if (ctx.volumeWaveforms)
+                            scaleByClipVolume(*it, wx0, (wx1 - wx0) / static_cast<double>(n), tickAt, ctx.peakScratch);
+                        ctx.loudestWaveform = std::max(ctx.loudestWaveform, *std::ranges::max_element(ctx.peakScratch));
                         if (ctx.logarithmic) {
                             // Premiere's logarithmic waveform scaling: a 48 dB range.
                             for (float& p : ctx.peakScratch)
@@ -2042,11 +2141,49 @@ std::pair<int, int> buildTrack(BuildContext& ctx, TrackBucket& b, const Timeline
                             ctx.mesh.addEnvelope(wx0, step, centre, half, ctx.peakScratch, st.waveform(it->colorIndex));
                         }
                     }
+                    // p02 audio: the part of the clip whose peaks are still being decoded is shaded (the waveform fills
+                    // in as they build; refreshPeaks() rebuilds this track when its media's peaks move on).
+                    if (n > 0 && tb > ta) {
+                        if (const std::optional<Ticks> until = ctx.peaks.buildingUntil(it->media, it->stream)) {
+                            const double step = (wx1 - wx0) / static_cast<double>(n);
+                            const QColor shade = withAlpha(st.waveform(it->colorIndex), 0.16);
+                            const QColor edge = withAlpha(st.waveform(it->colorIndex), 0.6);
+                            const double top = rect.top() + st.waveTop;
+                            bool any = false;
+                            std::size_t k = 0;
+                            while (k < n) {
+                                // Columns whose source time is past the decoded part (either side, for reversed clips).
+                                const auto pending = [&](std::size_t c) {
+                                    return it->sourceTimeAt(tickAt(wx0 + (static_cast<double>(c) + 0.5) * step)) >= *until;
+                                };
+                                if (!pending(k)) {
+                                    ++k;
+                                    continue;
+                                }
+                                const std::size_t from = k;
+                                while (k < n && pending(k))
+                                    ++k;
+                                const double xa = wx0 + static_cast<double>(from) * step;
+                                const double xb = wx0 + static_cast<double>(k) * step;
+                                ctx.mesh.addRect(QRectF(xa, top, xb - xa, 2 * half), shade);
+                                // A thin edge where the decoded part ends (the build's progress).
+                                if (from > 0)
+                                    ctx.mesh.addRect(QRectF(xa, top, 1, 2 * half), edge);
+                                else if (k < n)
+                                    ctx.mesh.addRect(QRectF(xb - 1, top, 1, 2 * half), edge);
+                                any = true;
+                            }
+                            if (any)
+                                ++ctx.buildingWaveforms;
+                        }
+                    }
                 }
                 if (ctx.showVolume)
                     addVolumeLine(ctx, *it, rect, std::max(rect.left(), 0.0), std::min(rect.right(), endX));
             }
 
+            if (ctx.showOpacity && !row.audio)
+                addVolumeLine(ctx, *it, rect, std::max(rect.left(), 0.0), std::min(rect.right(), endX), true);
             if (ctx.showSpeed && !row.audio)
                 addSpeedLine(ctx, *it, rect, std::max(rect.left(), 0.0), std::min(rect.right(), endX));
 
@@ -2187,6 +2324,7 @@ QSGNode* TimelineView::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
                      root->names,
                      root->pool};
     ctx.showVolume = volumeBandShown();
+    ctx.showOpacity = m_tool == TimelineTool::Pen;
     ctx.showSpeed = m_showSpeed;
     ctx.styleRevision = m_styleRevision;
     ctx.introText = m_introText;
@@ -2281,6 +2419,7 @@ QSGNode* TimelineView::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
     ctx.throughEdits = m_showThroughEdits;
     ctx.rectified = m_rectified;
     ctx.logarithmic = m_logarithmic;
+    ctx.volumeWaveforms = m_volumeWaveforms;
     std::unordered_map<std::uint64_t, double> shiftPx;
     if (!m_shiftFrom.empty()) {
         for (const auto& [id, from] : m_shiftFrom)
@@ -2324,6 +2463,11 @@ QSGNode* TimelineView::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
                 rebuild = true;
             else if (m_pendingRanges.contains(row.track->id.value))
                 ++stats.skippedTracks;
+        }
+        if (!rebuild && row.audio && !m_pendingPeakMedia.empty()) {
+            // p02 audio: new peaks for media this track plays.
+            rebuild = std::ranges::any_of(row.track->clips,
+                                          [&](const Clip& c) { return m_pendingPeakMedia.contains(c.media.value); });
         }
         if (!rebuild && hoverChanged) {
             const auto touches = [&](ClipId id) {
@@ -2381,6 +2525,9 @@ QSGNode* TimelineView::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
     }
     stats.filmstripTiles = ctx.filmTiles;
     stats.filmstripPlaceholders = ctx.filmPlaceholders;
+    stats.buildingWaveforms = ctx.buildingWaveforms;
+    stats.loudestWaveform = ctx.loudestWaveform;
+    m_pendingPeakMedia.clear();
     stats.filmstripRedacted = ctx.filmRedacted;
     for (const TrackBucket& b : root->buckets)
         stats.filmstripNodes += static_cast<int>(b.film.size());
@@ -2470,6 +2617,10 @@ QSGNode* TimelineView::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
                         bracket(m_style.selectionColor, 0);
                     }
                 }
+                // 0.2 (TimelineViewFade.cpp): the fade handles of a selected clip or the one under the pointer.
+                if (b.track && c.index < b.track->clips.size()
+                    && fadeHandlesShown(b.track->clips[c.index], b.track->kind == TrackKind::Audio))
+                    addFadeHandles(mesh, rect, b.track->clips[c.index]);
             }
         }
         // Trim edit points (M5i, TrimBridge): Premiere's brackets, red for roll and regular trims, yellow for ripple; a

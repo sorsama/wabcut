@@ -69,4 +69,27 @@ std::expected<KysImport, Error> importKys(const std::filesystem::path& path,
 /// (InvalidArgument).
 std::expected<void, Error> applyKysImport(KeymapManager& keymap, const KysImport& import);
 
+// ---- Export (P.2, E5): Premiere's Keyboard Shortcuts > Save As (a .kys) ----
+
+/// The inverse of decodeKysVirtualKey: the <virtualkey> of a chord's key (Keypad included), or nullopt for keys
+/// with no verified code (they are left out of an export).
+std::optional<std::uint32_t> encodeKysVirtualKey(const KeyChord& chord);
+
+struct KysExport {
+    std::string xml;
+    /// Shortcuts that could not be written (a key without a verified code): "Command name: Ctrl+F13".
+    std::vector<std::string> skipped;
+    /// How many commands (with a Premiere identity) the key set lists.
+    std::size_t commands = 0;
+};
+
+/// A Premiere key set (.kys) of `keymap`'s effective shortcuts: every command with a Premiere identity
+/// (CommandInfo::kysContext/kysName) in its context, one item per shortcut, and an item without a key for a command
+/// with none (so importing it in Premiere or Wabcut unbinds it). The layout parseKys() reads (version 5, the keymap's
+/// platform: "windows" for Windows and Linux, "macintosh" for macOS).
+KysExport exportKys(const KeymapManager& keymap);
+
+/// Writes exportKys() to a file. Errors: IoError.
+std::expected<KysExport, Error> saveKys(const KeymapManager& keymap, const std::filesystem::path& path);
+
 } // namespace wabcut::keymap

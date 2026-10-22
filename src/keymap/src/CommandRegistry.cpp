@@ -14,6 +14,8 @@ constexpr std::array kBuiltinCommands{
     // File
     CommandInfo{"file.newProject", Scope::Application, "File", "New Project…", "New Project …", "context.global", "cmd.file.new.project", false},
     CommandInfo{"file.newSequence", Scope::Application, "File", "New Sequence…", "New Sequence…", "context.global", "cmd.file.new.sequence", false},
+    // P.2 (E5): File > New > Sequence From Clip (no default key; no verified .kys name).
+    CommandInfo{"file.newSequenceFromClip", Scope::Application, "File", "New Sequence From Clip", "Sequence From Clip", "", "", false},
     CommandInfo{"file.openProject", Scope::Application, "File", "Open Project…", "Open Project...", "context.global", "cmd.file.openproject", false},
     CommandInfo{"file.close", Scope::Application, "File", "Close", "Close", "context.global", "cmd.file.closepanel", false},
     CommandInfo{"file.closeProject", Scope::Application, "File", "Close Project", "Close Project", "context.global", "cmd.file.close", false},
@@ -23,6 +25,8 @@ constexpr std::array kBuiltinCommands{
     CommandInfo{"file.importFromMediaBrowser", Scope::Application, "File", "Import from Media Browser", "Import from Media Browser", "context.global", "cmd.file.importfrombrowser", false},
     CommandInfo{"file.import", Scope::Application, "File", "Import…", "Import...", "context.global", "cmd.file.import", false},
     CommandInfo{"file.exportMedia", Scope::Application, "File", "Export Media…", "Export Media", "context.global", "cmd.file.export.movie", false},
+    // P.2 (E6): File > Export > Frame (the monitors' camera): Ctrl+Shift+E on Windows, Shift+E on macOS (shipped key sets).
+    CommandInfo{"file.exportFrame", Scope::Application, "File", "Export Frame…", "Export Frame", "context.global", "cmd.export.frame", false},
     CommandInfo{"file.sendToMediaEncoder", Scope::Application, "File", "Send to Media Encoder", "Send to Media Encoder", "context.global", "cmd.file.export.sendtoqueue", false},
     CommandInfo{"file.getProperties", Scope::Application, "File", "Get Media File Properties for Selection…", "Get Media File Properties for Selection...", "context.global", "cmd.file.properties.selection", false},
     CommandInfo{"file.exit", Scope::Application, "File", "Exit", "Exit", "context.global", "cmd.file.exit", false},
@@ -44,6 +48,9 @@ constexpr std::array kBuiltinCommands{
     CommandInfo{"edit.find", Scope::Application, "Edit", "Find…", "Find...", "context.global", "cmd.edit.find", false},
     CommandInfo{"edit.editOriginal", Scope::Application, "Edit", "Edit Original", "Edit Original", "context.global", "cmd.edit.editoriginal", false},
     CommandInfo{"edit.keyboardShortcuts", Scope::Application, "Edit", "Keyboard Shortcuts…", "Keyboard Shortcuts", "context.global", "cmd.edit.keyboardshortcuts", false},
+    // P.2 (E5): Edit > Preferences > Media (no default key; .kys name from the shipped macOS key set).
+    CommandInfo{"edit.preferencesMedia", Scope::Application, "Edit", "Preferences: Media…", "Media...", "context.global", "cmd.edit.preferences.media", false},
+    CommandInfo{"edit.preferencesTimeline", Scope::Application, "Edit", "Preferences: Timeline…", "Timeline...", "context.global", "cmd.edit.preferences.timeline", false},
     // Clip
     CommandInfo{"clip.makeSubclip", Scope::Application, "Clip", "Make Subclip…", "Make Subclip...", "context.global", "cmd.clip.makesubclip", false},
     CommandInfo{"clip.audioChannels", Scope::Application, "Clip", "Audio Channels…", "Audio Channels...", "context.global", "cmd.clip.audiooptions.sourcechannelmappings", false},
@@ -55,6 +62,21 @@ constexpr std::array kBuiltinCommands{
     CommandInfo{"clip.link", Scope::Application, "Clip", "Link", "Link", "context.global", "cmd.clip.linkaudioandvideo", false},
     CommandInfo{"clip.group", Scope::Application, "Clip", "Group", "Group", "context.global", "cmd.clip.group", false},
     CommandInfo{"clip.ungroup", Scope::Application, "Clip", "Ungroup", "Ungroup", "context.global", "cmd.clip.ungroup", false},
+    // P.2 (E5): Clip > Video Options. No default key in Premiere; the .kys names are from its shipped macOS key set.
+    CommandInfo{"clip.scaleToFrameSize", Scope::Application, "Clip", "Scale to Frame Size", "Scale to Frame Size", "context.global", "cmd.clip.scaletoframesize", false},
+    CommandInfo{"clip.setToFrameSize", Scope::Application, "Clip", "Set to Frame Size", "Set to Frame Size", "context.global", "cmd.clip.settoframesize", false},
+    CommandInfo{"clip.setToFillFrame", Scope::Application, "Clip", "Set to Fill Frame", "Fill Frame", "context.global", "cmd.clip.fillframe", false},
+    CommandInfo{"clip.frameHoldOptions", Scope::Application, "Clip", "Frame Hold Options…", "Frame Hold Options...", "context.global", "cmd.clip.videooptions.frameholdoptions", false},
+    CommandInfo{"clip.fieldOptions", Scope::Application, "Clip", "Field Options…", "Field Options...", "context.global", "cmd.clip.videooptions.fieldoptions", false},
+    CommandInfo{"clip.addFrameHold", Scope::Application, "Clip", "Add Frame Hold", "Add Frame Hold", "context.global", "cmd.clip.videooptions.addframehold", false},
+    CommandInfo{"clip.insertFrameHoldSegment", Scope::Application, "Clip", "Insert Frame Hold Segment", "Insert Frame Hold Segment", "context.global", "cmd.clip.videooptions.insertframeholdsegment", false},
+    // P.2 (E5): Clip > Merge Clips, Modify > Interpret Footage / Timecode, Replace Footage, Make Offline.
+    CommandInfo{"clip.mergeClips", Scope::Application, "Clip", "Merge Clips…", "Merge Clips...", "context.global", "cmd.clip.merge", false},
+    CommandInfo{"clip.interpretFootage", Scope::Application, "Clip", "Interpret Footage…", "Interpret Footage...", "context.global", "cmd.file.interpretfootage", false},
+    CommandInfo{"clip.rawSourceSettings", Scope::Application, "Clip", "Source Settings…", "Source Settings...", "", "", false}, // 0.2 camera RAW
+    CommandInfo{"clip.modifyTimecode", Scope::Application, "Clip", "Modify Timecode…", "Timecode...", "context.global", "cmd.file.timecode", false},
+    CommandInfo{"clip.replaceFootage", Scope::Application, "Clip", "Replace Footage…", "Replace Footage...", "context.global", "cmd.clip.replacefootage", false},
+    CommandInfo{"clip.makeOffline", Scope::Application, "Clip", "Make Offline", "Make Offline...", "", "", false},
     // M5o (gaming): the Moments presets on the clip at the playhead. Wabcut's, with no default key.
     CommandInfo{"moments.slowMo", Scope::Application, "Clip", "Slow-mo at Playhead", "", "", "", false},
     CommandInfo{"moments.punchIn", Scope::Application, "Clip", "Punch-in at Playhead", "", "", "", false},
@@ -83,6 +105,17 @@ constexpr std::array kBuiltinCommands{
     CommandInfo{"sequence.previousInSequence", Scope::Application, "Sequence", "Previous in Sequence", "Previous in Sequence", "context.global", "cmd.sequence.findprevioussequencegap", false},
     CommandInfo{"sequence.snap", Scope::Application, "Sequence", "Snap in Timeline", "Snap in Timeline", "context.global", "cmd.sequence.snap", false},
     CommandInfo{"sequence.makeSubsequence", Scope::Application, "Sequence", "Make Subsequence", "Make Subsequence", "context.global", "cmd.sequence.makesubsequence", false},
+    // P.2 (E5): Sequence Settings, Replace With Clip, Make Subsequence from In to Out, Join Through Edits, Go to Gap > in
+    // Track, Close Gap. No default keys in Premiere; the .kys names are from its shipped macOS key set.
+    CommandInfo{"sequence.makeSubsequenceFromInToOut", Scope::Application, "Sequence", "Make Subsequence from In to Out", "Make Subsequence from In to Out", "context.global", "cmd.sequence.makesubsequencefromintoout", false},
+    CommandInfo{"sequence.settings", Scope::Application, "Sequence", "Sequence Settings…", "Sequence Settings...", "context.global", "cmd.sequence.sequencesettingsgeneral", false},
+    CommandInfo{"sequence.replaceFromSourceMonitor", Scope::Application, "Sequence", "Replace With Clip: From Source Monitor", "From Source Monitor", "context.global", "clip.replaceclip.fromsourcemonitor", false},
+    CommandInfo{"sequence.replaceFromSourceMonitorMatchFrame", Scope::Application, "Sequence", "Replace With Clip: From Source Monitor, Match Frame", "From Source Monitor, Match Frame", "context.global", "clip.replaceclip.fromsourcemonitor.matchframe", false},
+    CommandInfo{"sequence.replaceFromBin", Scope::Application, "Sequence", "Replace With Clip: From Bin", "From Bin", "context.global", "clip.replaceclip.frombin", false},
+    CommandInfo{"sequence.joinThroughEdits", Scope::Application, "Sequence", "Join Through Edits", "Join Through Edits", "context.timeline", "cmd.sequence.jointhroughedits", false},
+    CommandInfo{"sequence.nextInTrack", Scope::Application, "Sequence", "Next in Track", "Next in Track", "context.global", "cmd.sequence.findnexttrackgap", false},
+    CommandInfo{"sequence.previousInTrack", Scope::Application, "Sequence", "Previous in Track", "Previous in Track", "context.global", "cmd.sequence.findprevioustrackgap", false},
+    CommandInfo{"sequence.closeGap", Scope::Application, "Sequence", "Close Gap", "Close Gap", "context.global", "cmd.sequence.close.gaps", false},
     CommandInfo{"sequence.addCaptionTrack", Scope::Application, "Sequence", "Add New Caption Track", "Add new caption track", "context.global", "cmd.caption.add.track", false},
     CommandInfo{"sequence.addCaptionAtPlayhead", Scope::Application, "Sequence", "Add Caption at Playhead", "Add caption at playhead", "context.global", "cmd.caption.add.trackitem", false},
     CommandInfo{"sequence.nextCaptionSegment", Scope::Application, "Sequence", "Go to Next Caption Segment", "Go to the next caption segment", "context.timeline", "cmd.timeline.goto.next.caption.trackitem", true},
@@ -90,6 +123,13 @@ constexpr std::array kBuiltinCommands{
     CommandInfo{"sequence.rippleTrimPreviousToPlayhead", Scope::Application, "Sequence", "Ripple Trim Previous Edit to Playhead", "Ripple Trim Previous Edit To Playhead", "context.global", "cmd.sequence.rippletrimpreviousedittoplayhead", false},
     CommandInfo{"sequence.rippleTrimNextToPlayhead", Scope::Application, "Sequence", "Ripple Trim Next Edit to Playhead", "Ripple Trim Next Edit To Playhead", "context.global", "cmd.sequence.rippletrimnextedittoplayhead", false},
     CommandInfo{"sequence.selectClipAtPlayhead", Scope::Application, "Sequence", "Select Clip at Playhead", "Select Clip at Playhead", "context.global", "cmd.tlnav.select.clip.at.playhead", false},
+    // 0.2: Sequence > Selection Follows Playhead (a toggle). No default key in Premiere's key sets; its .kys name is not
+    // verified, so a custom key set does not carry one over.
+    CommandInfo{"sequence.selectionFollowsPlayhead", Scope::Application, "Sequence", "Selection Follows Playhead", "Selection Follows Playhead", "", "", false},
+    // 0.2: Premiere 26.5's Timeline Display Settings switches for the clips' fade handles (no default key; their .kys
+    // names are not verified).
+    CommandInfo{"timeline.showVideoFadeHandles", Scope::Application, "Timeline", "Show Video Fade Handles", "Show Video Fade Handles", "", "", false},
+    CommandInfo{"timeline.showAudioFadeHandles", Scope::Application, "Timeline", "Show Audio Fade Handles", "Show Audio Fade Handles", "", "", false},
     // Multi-Camera (M5l): Premiere's shipped key sets list these in context.global (docs/keymap.md).
     CommandInfo{"multicam.selectCamera1", Scope::Application, "Multi-Camera", "Select Camera 1", "Select Camera 1", "context.global", "cmd.multicam.choosenocut.camera1", false},
     CommandInfo{"multicam.selectCamera2", Scope::Application, "Multi-Camera", "Select Camera 2", "Select Camera 2", "context.global", "cmd.multicam.choosenocut.camera2", false},
@@ -156,6 +196,8 @@ constexpr std::array kBuiltinCommands{
     CommandInfo{"window.projects", Scope::Application, "Window", "Projects", "Projects", "context.global", "uif.window.Projects", false},
     CommandInfo{"window.sourceMonitor", Scope::Application, "Window", "Source Monitor", "Source Monitor", "context.global", "uif.window.Source Monitors", false},
     CommandInfo{"window.timeline", Scope::Application, "Window", "Timeline", "Timeline", "context.global", "uif.window.Timelines", false},
+    // P.2 (E5): Window > History (the undo steps).
+    CommandInfo{"window.history", Scope::Application, "Window", "History", "History", "context.global", "uif.window.History", false},
     // Tools
     CommandInfo{"tool.selection", Scope::Application, "Tools", "Selection Tool", "Selection Tool", "context.global", "cmd.tools.01pointer", false},
     CommandInfo{"tool.trackSelectForward", Scope::Application, "Tools", "Track Select Forward Tool", "Track Select Forward Tool", "context.global", "cmd.tools.02trackselectforward", false},
@@ -191,6 +233,13 @@ constexpr std::array kBuiltinCommands{
     CommandInfo{"transport.goToSelectedClipEnd", Scope::Application, "Playback", "Go to Selected Clip End", "Go to Selected Clip End", "context.global", "cmd.transport.selectedclip.end", false},
     CommandInfo{"transport.playInToOut", Scope::Application, "Playback", "Play In to Out", "Play In to Out", "context.global", "cmd.transport.playintoout", false},
     CommandInfo{"transport.playAround", Scope::Application, "Playback", "Play Around", "Play Around", "context.global", "cmd.transport.playedit", false},
+    // P.2 (E6): the monitors' Loop button (the focused monitor's; no default key in either shipped key set).
+    CommandInfo{"monitor.loop", Scope::Application, "Playback", "Loop", "Loop", "context.global", "cmd.monitor.loop", false},
+    // P.2 (E6): the Program Monitor full screen on its display (Ctrl+` in both shipped key sets) and Transmit (no key).
+    CommandInfo{"monitor.toggleFullScreen", Scope::Application, "Window", "Toggle Full Screen", "Toggle Full Screen", "context.global", "cmd.toggle.fullscreen.monitor", false},
+    CommandInfo{"monitor.enableTransmit", Scope::Application, "Playback", "Enable Transmit", "Enable Transmit", "context.global", "cmd.toggletransmit", false},
+    // P.2 (E6): Premiere 26's crop handles in the Program Monitor (no default key).
+    CommandInfo{"monitor.toggleCropDirectManipulation", Scope::Application, "Program Monitor", "Toggle Crop Direct Manipulation", "Toggle Crop Direct Manipulation", "context.global", "cmd.monitor.toggle.crop.dm", false},
     // A.8: voice-over recording (Premiere's Voice-over Record, the track header's microphone). Premiere's default key sets
     // bind no key to it (the macOS set lists cmd.timeline.voiceover.track.record in context.timeline, unbound; the
     // Windows set does not list it), so ours have none either; a custom .kys that binds one carries over to
@@ -224,6 +273,18 @@ constexpr std::array kBuiltinCommands{
     CommandInfo{"programMonitor.showGuides", Scope::ProgramMonitor, "Program Monitor", "Show Guides", "Show Guides", "context.program.monitor", "cmd.monitor.guides", false},
     CommandInfo{"programMonitor.snap", Scope::ProgramMonitor, "Program Monitor", "Snap in Program Monitor", "Snap in Program Monitor", "context.program.monitor", "cmd.monitor.snapping", false},
     CommandInfo{"programMonitor.lockGuides", Scope::ProgramMonitor, "Program Monitor", "Lock Guides", "Lock Guides", "context.program.monitor", "cmd.monitor.lockguides", false},
+    // P.2 (E6): the rest of View's guide commands (no default keys in either shipped key set).
+    CommandInfo{"programMonitor.addGuide", Scope::ProgramMonitor, "Program Monitor", "Add Guide…", "Add Guide...", "context.program.monitor", "cmd.monitor.addguide", false},
+    CommandInfo{"programMonitor.clearGuides", Scope::ProgramMonitor, "Program Monitor", "Clear Guides", "Clear Guides", "context.program.monitor", "cmd.monitor.removeguides", false},
+    CommandInfo{"programMonitor.saveGuides", Scope::ProgramMonitor, "Program Monitor", "Save Guides as Template…", "Save Guides as Template...", "context.program.monitor", "cmd.monitor.saveguides", false},
+    CommandInfo{"programMonitor.manageGuides", Scope::ProgramMonitor, "Program Monitor", "Manage Guides…", "Manage Guides...", "context.program.monitor", "cmd.monitor.manageguides", false},
+    // P.2 (E6): each monitor's Transparency Grid (no default key).
+    CommandInfo{"programMonitor.transparencyGrid", Scope::ProgramMonitor, "Program Monitor", "Transparency Grid", "Transparency Grid", "context.program.monitor", "cmd.monitor.toggletransparencygrid", false},
+    CommandInfo{"sourceMonitor.transparencyGrid", Scope::SourceMonitor, "Source Monitor", "Transparency Grid", "Transparency Grid", "context.source.monitor", "cmd.monitor.toggletransparencygrid", false},
+    // P.2 (E6): the Program Monitor's view settings (no default keys; Show Audio Time Units is in neither key set).
+    CommandInfo{"programMonitor.droppedFrameIndicator", Scope::ProgramMonitor, "Program Monitor", "Show Dropped Frame Indicator", "Show Dropped Frame Indicator", "context.program.monitor", "cmd.monitor.toggledroppedframeindicator", false},
+    CommandInfo{"programMonitor.overlays", Scope::Application, "Program Monitor", "Overlays", "Overlays", "context.global", "cmd.monitor.overlays", false},
+    CommandInfo{"programMonitor.audioTimeUnits", Scope::ProgramMonitor, "Program Monitor", "Show Audio Time Units", "Show Audio Time Units", "", "", false},
     CommandInfo{"programMonitor.nudgeUpFive", Scope::ProgramMonitor, "Program Monitor", "Nudge Selected Object Up by Five", "Nudge Selected Object up by five frames", "context.program.monitor", "cmd.monitor.nudge.up.five", true},
     CommandInfo{"programMonitor.nudgeRightFive", Scope::ProgramMonitor, "Program Monitor", "Nudge Selected Object Right by Five", "Nudge Selected Object right by five frames", "context.program.monitor", "cmd.monitor.nudge.right.five", true},
     CommandInfo{"programMonitor.nudgeLeftFive", Scope::ProgramMonitor, "Program Monitor", "Nudge Selected Object Left by Five", "Nudge Selected Object left by five frames", "context.program.monitor", "cmd.monitor.nudge.left.five", true},
@@ -275,6 +336,9 @@ constexpr std::array kBuiltinCommands{
     CommandInfo{"timeline.nudgeClipRightFive", Scope::Timeline, "Timeline", "Nudge Clip Selection Right Five Frames", "Nudge Clip Selection Right Five Frames", "context.timeline", "cmd.timeline.nudge.right.several", true},
     CommandInfo{"timeline.nudgeClipRight", Scope::Timeline, "Timeline", "Nudge Clip Selection Right One Frame", "Nudge Clip Selection Right One Frame", "context.timeline", "cmd.timeline.nudge.right.one", true},
     CommandInfo{"timeline.previousSequenceTab", Scope::Timeline, "Timeline", "Previous Sequence Tab", "", "", "", true},
+    // 0.2: Select Next / Previous Clip (on the selected clip's track; nothing selected: from the playhead). No default key.
+    CommandInfo{"timeline.selectNextClip", Scope::Timeline, "Timeline", "Select Next Clip", "Select Next Clip", "", "", true},
+    CommandInfo{"timeline.selectPreviousClip", Scope::Timeline, "Timeline", "Select Previous Clip", "Select Previous Clip", "", "", true},
     CommandInfo{"timeline.rippleDelete", Scope::Timeline, "Timeline", "Ripple Delete", "Ripple Delete", "context.timeline", "cmd.timeline.ripple.delete", false},
     CommandInfo{"timeline.setWorkAreaIn", Scope::Timeline, "Timeline", "Set Work Area Bar In Point", "Set Work Area Bar In Point", "context.timeline", "cmd.timeline.workbar.set.in", false},
     CommandInfo{"timeline.setWorkAreaOut", Scope::Timeline, "Timeline", "Set Work Area Bar Out Point", "Set Work Area Bar Out Point", "context.timeline", "cmd.timeline.workbar.set.out", false},

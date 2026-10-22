@@ -186,6 +186,16 @@ std::expected<GenerationSpec, AiError> parseGeneration(const Json& j, const std:
     g.lastFrameAlone = flag(j, "lastFrameAlone", false);
     g.extendVideo = flag(j, "extendVideo", false);
     g.audio = flag(j, "audio", false);
+    g.soundEffect = flag(j, "soundEffect", false);
+    g.loop = flag(j, "loop", false);
+    for (const auto& [key, field] : {std::pair{"minSeconds", &g.minSeconds}, std::pair{"maxSeconds", &g.maxSeconds}}) {
+        if (auto it = j.find(key); it != j.end()) {
+            if (!it->is_number() || it->get<double>() < 0.0) {
+                return std::unexpected(invalid(where + ": " + key + " must be a length in seconds"));
+            }
+            *field = it->get<double>();
+        }
+    }
     g.cancel = flag(j, "cancel", false);
     if (auto it = j.find("durations"); it != j.end() && it->is_array()) {
         for (const auto& d : *it) {
@@ -202,8 +212,11 @@ std::expected<GenerationSpec, AiError> parseGeneration(const Json& j, const std:
         g.fps = it->get<double>();
     }
     g.maxPromptChars = static_cast<int>(integer(j, "maxPromptChars"));
-    if (!g.video && !g.image) {
-        return std::unexpected(invalid(where + ": generation makes neither video nor image"));
+    if (!g.video && !g.image && !g.soundEffect) {
+        return std::unexpected(invalid(where + ": generation makes neither video, image nor sound effects"));
+    }
+    if (g.soundEffect && (g.maxSeconds <= 0.0 || g.minSeconds > g.maxSeconds)) {
+        return std::unexpected(invalid(where + ": a sound-effect model needs minSeconds <= maxSeconds"));
     }
     return g;
 }
@@ -783,6 +796,12 @@ Json ModelRegistry::toJson() const {
                           {"cancel", g.cancel},         {"durations", g.durations},
                           {"aspectRatios", g.aspectRatios}, {"resolutions", g.resolutions},
                           {"fps", g.fps},               {"maxPromptChars", g.maxPromptChars}};
+            if (g.soundEffect) {
+                generation["soundEffect"] = true;
+                generation["loop"] = g.loop;
+                generation["minSeconds"] = g.minSeconds;
+                generation["maxSeconds"] = g.maxSeconds;
+            }
         }
         models.push_back({{"id", m.id},
                           {"provider", m.provider},

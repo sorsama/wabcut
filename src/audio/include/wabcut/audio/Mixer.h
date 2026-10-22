@@ -89,6 +89,14 @@ public:
     /// block; a bus that is not added this block meters silence and keeps its gain state.
     void addBus(int bus, std::span<const float> input, int inputChannels) noexcept;
 
+    /// p02 audio (submixes): addBus() into `destination` (a submix's input: outputChannels() interleaved, at least the
+    /// block's frames) instead of the block. Gain ramps, mute/solo and the bus meter as addBus().
+    void addBusTo(int bus, std::span<const float> input, int inputChannels, std::span<float> destination) noexcept;
+
+    /// Whether bus `bus` is heard this block by the mute and solo rules (beginBlock() samples the solo state): what its
+    /// sends follow. Audio thread, between beginBlock() and endBlock().
+    bool busAudible(int bus) const noexcept;
+
     /// Finish the block: master insert, master gain, master meter, soft clip guard.
     void endBlock(MasterInsert* insert = nullptr) noexcept;
 

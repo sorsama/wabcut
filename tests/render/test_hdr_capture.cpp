@@ -5,7 +5,7 @@
 
 #include "RenderTestSupport.h"
 
-#include <wabcut/color/Hdr.h>
+#include <wabcut/color/ColorSpaces.h>
 #include <wabcut/render/Compositor.h>
 
 #include <catch2/catch_approx.hpp>

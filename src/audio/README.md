@@ -114,6 +114,12 @@ audio-engine period when the driver reports 0.
 | `Space.h` | Essential Sound's reverb (8-line FDN, RT60 and damping) and stereo width (A.7) | the reverb's lines are allocated by its constructor; width never changes L + R |
 | `Loudness.h` | libebur128 wrapper | not RT (allocates gating blocks); for the analysis jobs |
 | `TimeStretch.h` | streaming WSOLA | preview shuttle only |
+| `Fft.h` | radix-2 real FFT and a streaming STFT (sqrt-Hann, 75 % overlap) | p02: for the spectral effects; latency = the frame size |
+
+Premiere Pro's audio effects catalog (p02, docs/audio.md: Amplitude and Compression, Delay and Echo, Filter and EQ,
+Modulation, Noise Reduction/Restoration, Reverb, Special, Stereo Imagery, Time and Pitch) lives in
+`src/effects/{Amplitude,Filter,Time}Effects.cpp` behind `src/effects/PremiereEffects.h`; `EffectChain.cpp` dispatches to
+it. Like the effects above, they allocate only when built, and their output does not depend on the block size.
 
 `include/wabcut/audio/effects/EffectChain.h` maps the model's audio effect ids onto processors and runs a stack. Parameter
 curves are evaluated on a fixed 32-frame grid counted from the render origin, never from block boundaries: each cell sees the

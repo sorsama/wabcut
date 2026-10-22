@@ -153,15 +153,16 @@ struct DeadTimeAnalysis {
 /// The media activity of a media item, or null when there is none.
 using ActivityLookup = std::function<const MediaActivity*(MediaId)>;
 
-/// The tracks dead-time detection uses by default: the lowest video track holding media (the gameplay capture) and every
-/// unmuted audio track (game audio and commentary: talking over a quiet stretch keeps it).
+/// The tracks dead-time detection uses by default: the lowest video track holding media or a nested / multicam clip (the
+/// gameplay capture) and every unmuted audio track (game audio and commentary: talking over a quiet stretch keeps it).
 std::vector<TrackId> defaultActivityTracks(const Sequence& sequence);
 
 /// Samples per second of the timeline curves findDeadTime builds.
 inline constexpr std::int64_t kActivityRate = 10;
 
 /// Finds dead time: each listened track's clips are sampled from their media's activity (through each clip's speed,
-/// direction and remap), the loudest audio and busiest picture per sample are normalised by their 90th percentile over
+/// direction and remap; a nested or multicam clip through what it shows or plays there - resolveLeaves(), the active
+/// angle - the busiest of its leaves), the loudest audio and busiest picture per sample are normalised by their 90th percentile over
 /// the sequence, combined (max) and smoothed over half a second; stretches below the threshold
 /// (0.04 + 0.32 x sensitivity) for at least minSeconds are dead. Gaps on every listened track are dead too. Errors:
 /// NotFound (sequence, a track), InvalidArgument (options).

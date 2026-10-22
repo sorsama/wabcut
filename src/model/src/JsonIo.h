@@ -4,6 +4,7 @@
 // walks untrusted JSON with the path of every value, throwing FormatError (turned into ParseError by the public entry
 // points), and the readers and writers of the values several formats share.
 
+#include <wabcut/model/Effects.h>
 #include <wabcut/model/Graphics.h>
 #include <wabcut/model/Masks.h>
 #include <wabcut/model/Parameters.h>
@@ -192,6 +193,10 @@ ParamValue paramValueFromJson(const Reader& reader);
 /// A mask (Masks.h, I.6), and back.
 json maskToJson(const Mask& mask);
 Mask maskFromJson(const Reader& reader);
+/// An effect stack as a clip's "effects" (every instance as it is), and back (shape only: the caller bounds the count and
+/// checks the values, effectStackProblem). Effect presets (EffectPresets.cpp) use them.
+json effectStackToJsonValue(const EffectStack& stack);
+EffectStack effectStackFromJsonValue(const Reader& reader);
 
 /// Graphics (GraphicJson.cpp, C.13): a clip's graphic, the brand kit and a template as project files hold them. The
 /// readers check the result (graphicProblem, ...) and fail through the Reader.
@@ -201,5 +206,8 @@ json brandKitToJsonValue(const BrandKit& kit);
 BrandKit brandKitFromJsonValue(const Reader& reader);
 json templateToJsonValue(const GraphicTemplate& tmpl);
 GraphicTemplate templateFromJsonValue(const Reader& reader);
+/// 0.2: a project text style ({"name", "text": {"runs": [style], "align", "background"}, "shadow"}).
+json textStyleToJsonValue(const ProjectTextStyle& style);
+ProjectTextStyle textStyleFromJsonValue(const Reader& reader);
 
 } // namespace wabcut::io::detail

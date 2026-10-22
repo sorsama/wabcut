@@ -67,27 +67,60 @@ const Clip& clipOf(ExecutionContext& c, ClipId id) {
     return loc->clip();
 }
 
-const MediaItem& videoMediaOf(const ProjectState& state, const Clip& clip) {
-    const MediaItem* item = state.findMedia(clip.media);
-    if (clip.stream.kind != StreamKind::Video || !item || clip.stream.index < 0 ||
-        clip.stream.index >= static_cast<int>(item->info.video.size())) {
-        fail(CommandError::EditRejected, "clip " + std::to_string(clip.id.value) + " is not a video clip of a media item");
+double aspectOf(const MediaItem& media, int stream) {
+    const VideoStreamInfo& v = media.info.video[static_cast<std::size_t>(stream)];
+    const double par = v.sampleAspect.isValid() ? v.sampleAspect.toDouble() : 1.0;
+    return v.width > 0 && v.height > 0 ? v.width * par / v.height : 16.0 / 9.0;
+}
+
+/// What a clip's object mask is made from: its media's video stream, or (0.2) what a nested or multicam clip shows (the
+/// nested sequence's canvas, a multicam source's active angle) at nested time.
+struct ClipPicture {
+    const MediaItem* media = nullptr; ///< null: the nested picture
+    int stream = 0;
+    double aspect = 16.0 / 9.0;
+    SequenceId nested;
+};
+
+ClipPicture pictureOf(const ProjectState& state, const Clip& clip) {
+    if (clip.stream.kind != StreamKind::Video) {
+        fail(CommandError::EditRejected, "clip " + std::to_string(clip.id.value) + " is not a video clip");
     }
-    // Mask curve time is media time only for clips that play their media: under Time Remapping or a frame hold it runs
-    // with the timeline (docs/masks.md), and the mattes would not line up.
+    // Mask curve time is media (or nested) time only for clips that play their source: under Time Remapping or a frame
+    // hold it runs with the timeline (docs/masks.md), and the mattes would not line up.
     if (clip.isRemapped()) {
         fail(CommandError::EditRejected, "Turn off Time Remapping before selecting an object in this clip");
     }
     if (clip.isFreeze()) {
         fail(CommandError::EditRejected, "clip " + std::to_string(clip.id.value) + " is a frame hold: select the object on the clip it holds");
     }
-    return *item;
+    ClipPicture p;
+    if (clip.isNested()) {
+        const Sequence* nested = state.findSequence(clip.sequence);
+        if (!nested || nested->width <= 0 || nested->height <= 0) {
+            fail(CommandError::EditRejected, "clip " + std::to_string(clip.id.value) + " plays a nested sequence that no longer exists");
+        }
+        p.nested = clip.sequence;
+        p.aspect = static_cast<double>(nested->width) / nested->height;
+        return p;
+    }
+    const MediaItem* item = state.findMedia(clip.media);
+    if (!item || clip.stream.index < 0 || clip.stream.index >= static_cast<int>(item->info.video.size())) {
+        fail(CommandError::EditRejected, "clip " + std::to_string(clip.id.value) + " is not a video clip of a media item");
+    }
+    p.media = item;
+    p.stream = clip.stream.index;
+    p.aspect = aspectOf(*item, clip.stream.index);
+    return p;
 }
 
-double aspectOf(const MediaItem& media, int stream) {
-    const VideoStreamInfo& v = media.info.video[static_cast<std::size_t>(stream)];
-    const double par = v.sampleAspect.isValid() ? v.sampleAspect.toDouble() : 1.0;
-    return v.width > 0 && v.height > 0 ? v.width * par / v.height : 16.0 / 9.0;
+/// Runs `request` on the clip's picture.
+std::expected<ObjectResult, Error> segmentPicture(SegmentServices& s, ExecutionContext& c, const Clip& clip, const ClipPicture& picture,
+                                                  const ObjectRequest& request, const std::function<bool(double, const std::string&)>& checkpoint) {
+    if (picture.media) {
+        return segmentObject(s, shotsOf(c), *picture.media, picture.stream, request, {}, checkpoint);
+    }
+    return segmentNested(s, c.state(), clip, request, {}, checkpoint);
 }
 
 /// The media time of the clip's frame at "time" (default its first frame on the timeline).
@@ -300,8 +333,7 @@ CommandOutput objectSelect(ExecutionContext& c) {
     SegmentServices& s = servicesOf(c);
     const ClipId id = c.clip("clip");
     const Clip& clip = clipOf(c, id);
-    const MediaItem& media = videoMediaOf(c.state(), clip);
-    const int stream = clip.stream.index;
+    const ClipPicture picture = pictureOf(c.state(), clip);
     const Ticks at = mediaTimeOf(c, clip);
     Prompt prompt = promptOf(c, at);
     std::string name = c.string("name");
@@ -313,18 +345,18 @@ CommandOutput objectSelect(ExecutionContext& c) {
         if (!s.detector) {
             fail(CommandError::EditRejected, "no subject detector is installed here (Settings > AI > Local models): click on the object instead");
         }
-        if (!s.frames) {
+        if (picture.media ? !s.frames : !s.nestedFrames) {
             fail(CommandError::InvalidRequest, "the host decodes no pictures");
         }
-        auto frames = s.frames(media, stream);
+        auto frames = picture.media ? s.frames(*picture.media, picture.stream) : s.nestedFrames(c.state(), clip);
         if (!frames) {
             failWith(frames.error());
         }
-        auto picture = (*frames)->pictureAt(at, 1024);
-        if (!picture) {
-            failWith(picture.error());
+        auto frame = (*frames)->pictureAt(at, 1024);
+        if (!frame) {
+            failWith(frame.error());
         }
-        auto box = findSubject(*s.detector, *picture, aspectOf(media, stream), subject, c.string("colour"), c.string("pick", "largest"));
+        auto box = findSubject(*s.detector, *frame, picture.aspect, subject, c.string("colour"), c.string("pick", "largest"));
         if (!box) {
             failWith(box.error());
         }
@@ -340,12 +372,13 @@ CommandOutput objectSelect(ExecutionContext& c) {
     request.direction = directionOf(c, "propagate", Direction::Both, clip);
     request.span = spanOf(c, clip);
     request.acrossShots = c.boolean("acrossShots", false);
-    auto result = segmentObject(s, shotsOf(c), media, stream, request, {}, checkpointOf(c));
+    auto result = segmentPicture(s, c, clip, picture, request, checkpointOf(c));
     if (!result) {
         failWith(result.error());
     }
-    Mask m = objectMask(*result->track, media.id, name.empty() ? "Object" : name, c.has("feather") ? c.number("feather") : kDefaultMatteFeather,
-                        c.has("expansion") ? c.number("expansion") : 0.0);
+    Mask m = objectMask(*result->track, picture.media ? picture.media->id : MediaId{}, name.empty() ? "Object" : name,
+                        c.has("feather") ? c.number("feather") : kDefaultMatteFeather, c.has("expansion") ? c.number("expansion") : 0.0,
+                        picture.nested);
     m.inverted = c.boolean("inverted", false);
     if (c.has("mode")) {
         const auto mode = maskModeFromString(c.string("mode"));
@@ -386,12 +419,17 @@ CommandOutput rerun(ExecutionContext& c, bool refine) {
     SegmentServices& s = servicesOf(c);
     const ClipId id = c.clip("clip");
     const Clip& clip = clipOf(c, id);
-    const MediaItem& media = videoMediaOf(c.state(), clip);
+    const ClipPicture picture = pictureOf(c.state(), clip);
     const std::uint32_t maskId = maskIdParam(c);
     const EffectInstance& holder = effectWithMask(clip, effectParamOf(c), maskId);
     Mask m = maskIn(holder, maskId);
     const std::shared_ptr<const MatteTrack> base = baseTrackOf(s, m);
-    if (m.matte->media != media.id || m.matte->stream != clip.stream.index) {
+    // A nested picture's mask follows its nest (after an angle switch it re-tracks the angle shown now); a media
+    // mask its media stream.
+    const bool sameSource = picture.media ? m.matte->media == picture.media->id && m.matte->stream == clip.stream.index &&
+                                                !m.matte->sequence.isValid()
+                                          : m.matte->sequence == picture.nested;
+    if (!sameSource) {
         fail(CommandError::EditRejected, "mask " + std::to_string(maskId) + " was made from other media: select the object again");
     }
     ObjectRequest request;
@@ -437,11 +475,11 @@ CommandOutput rerun(ExecutionContext& c, bool refine) {
         request.direction = directionOf(c, "direction", Direction::Both, clip);
         request.span = spanOf(c, clip);
     }
-    auto result = segmentObject(s, shotsOf(c), media, clip.stream.index, request, {}, checkpointOf(c));
+    auto result = segmentPicture(s, c, clip, picture, request, checkpointOf(c));
     if (!result) {
         failWith(result.error());
     }
-    setMatteTrack(m, *result->track, media.id);
+    setMatteTrack(m, *result->track, picture.media ? picture.media->id : MediaId{}, picture.nested);
     const EffectInstanceId effect = holder.id;
     CommandOutput out;
     out.data = runJson(c, clip, *result);
@@ -534,7 +572,8 @@ void registerObjectMaskCommands(command::CommandRegistry& registry) {
          "(\"subject\": a face, a person, a car...) on a frame of a clip with SAM 2.1 (local, on this computer), and tracks it through "
          "the shot. The result is a mask that follows it, on an effect of the clip (\"blur the background behind the speaker\": a Gaussian "
          "Blur with an inverted object mask; \"brighten the red car\": a grade limited to it) or on the clip's opacity (remove the "
-         "background). Stops at shot cuts unless acrossShots. One undo step; dryRun previews it.",
+         "background). Stops at shot cuts unless acrossShots. On a nested or multicam clip it segments what the clip shows (the nest's "
+         "picture, the active angle) and masks the clip itself; nothing is flattened. One undo step; dryRun previews it.",
          command::Capability::EditSequence, std::move(select),
          Json{{"clip", 42}, {"time", "00:00:05:00"}, {"points", Json::array({Json{{"x", 0.52}, {"y", 0.40}, {"positive", true}}})}}, {}, objectSelect}));
 

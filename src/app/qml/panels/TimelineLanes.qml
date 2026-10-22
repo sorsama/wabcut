@@ -39,12 +39,19 @@ Item {
         filmstripMode: Preferences.filmstripMode
         rectifiedWaveforms: Preferences.rectifiedWaveforms
         logarithmicWaveforms: Preferences.logarithmicWaveforms
+        volumeWaveforms: Preferences.volumeWaveforms
         showThroughEdits: Preferences.showThroughEdits
         showDuplicateFrames: Preferences.showDuplicateFrames
         showClipMarkers: Preferences.showClipMarkers
         trackKeyframes: Preferences.trackKeyframes
         showSnapIndicator: Preferences.snapIndicator
         linkedSelection: Preferences.linkedSelection
+        // 0.2: the render bar's preview cache, the fade handle switches and Show Audio Time Units (one setting with
+        // the Program Monitor's, kept by Monitors; ProjectController moves the playhead by samples while it is on).
+        readiness: MediaReadiness
+        showVideoFadeHandles: Preferences.showVideoFadeHandles
+        showAudioFadeHandles: Preferences.showAudioFadeHandles
+        audioTimeUnits: ProjectController.audioTimeUnits
         trimPoints: Trim.points
         trimType: Trim.type
         onEditPointClicked: (clipId, edge, type, modifiers) => Trim.selectEditPoint(clipId, edge, type, modifiers)

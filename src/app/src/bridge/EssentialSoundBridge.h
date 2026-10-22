@@ -111,6 +111,9 @@ public:
     /// Tags the selection: "dialogue", "music", "sfx", "ambience" (its default preset), or "none" (clear). Returns ""
     /// when started, else why not.
     Q_INVOKABLE QString setType(const QString& type);
+    /// p02 audio: Premiere's auto-tagging: the selected clips (none: every audio clip of the sequence) get the type
+    /// they sound like (audio.autoTag; clips that have a type keep it), one undo step.
+    Q_INVOKABLE QString autoTag();
     /// Applies a preset of the selection's type. Returns "" or why not.
     Q_INVOKABLE QString applyPreset(const QString& preset);
     /// Sets one setting ("repair.noise", "clarity.eq", "ducking.enabled", "width", ...) and applies at once.

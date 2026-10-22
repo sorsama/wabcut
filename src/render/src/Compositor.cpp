@@ -1,6 +1,7 @@
 #include <wabcut/render/Compositor.h>
 
-#include <wabcut/color/Hdr.h>
+#include <wabcut/color/ColorSpaces.h>
+#include <wabcut/render/EffectLibrary.h>
 
 #include <QColor>
 #include <QFloat16>
@@ -28,7 +29,7 @@ struct LayerUniforms {
     float srcRect[4];
     float params[4];
     std::int32_t mode[4];
-    float cm[4]; ///< I.9 (gaming): HDR captures (layer.frag cm)
+    float cm[4]; ///< I.9: x = HLG system gamma - 1, y = input LUT size
 };
 static_assert(sizeof(LayerUniforms) == 272);
 
@@ -36,8 +37,10 @@ struct OutputUniforms {
     float cornerToClip[16];
     float uvXform[4];
     std::int32_t mode[4];
+    float toOutput[16]; ///< I.9: working -> Rec.2020 (PQ, HLG)
+    float cm[4];        ///< I.9: reference white, HLG peak, HLG system gamma, output LUT size
 };
-static_assert(sizeof(OutputUniforms) == 96);
+static_assert(sizeof(OutputUniforms) == 176);
 
 // shaders/fx.vert + fx.frag
 struct FxUniforms {
@@ -50,8 +53,21 @@ struct FxUniforms {
     float toFrame1[4];
     float frame[4];
     std::int32_t mode[4];
+    float p3[4]; // 0.2: the family shaders' extra parameters (fx_transition.frag, fx_*.frag)
+    float p4[4];
+    float p5[4];
+    float p6[4];
+    float p7[4];
 };
-static_assert(sizeof(FxUniforms) == 192);
+static_assert(sizeof(FxUniforms) == 272);
+static_assert(sizeof(FxUniforms) <= sizeof(LayerUniforms)); // fx passes share the layer slots
+
+/// The fragment shader of each fx family (Compositor::fxFamilyPipeline): the core passes, transitions, and the effect
+/// library's families (render/EffectLibrary.h, FxFamily).
+constexpr std::array<const char*, 6> kFxFamilyShaders{
+    "fx.frag", "fx_transition.frag", "fx_color.frag", "fx_distort.frag", "fx_stylize.frag", "fx_generate.frag"};
+constexpr int kFamilyCore = 0;
+constexpr int kFamilyTransition = 1;
 
 // shaders/mask.vert + mask.frag (std140; I.6).
 struct MaskUniforms {
@@ -151,6 +167,7 @@ enum GradeFlag : std::int32_t {
     kGfHslSharpen = 2097152,
     kGfHslSat = 4194304,
     kGfCurves = 8388608,
+    kGfAcesCct = 16777216, ///< I.9: a managed pipeline grades in ACEScct
 };
 
 /// Rows of the grade's curve texture, and the longest 1D LUT row it stores (longer tables are resampled).
@@ -199,11 +216,15 @@ enum FxMode : std::int32_t {
     kFxKeyApply = 12, //            contrast, spill suppression, colour correction and the output
     kFxBlend = 13,    // a blend mode over the canvas below the layer (C.15, 0.1.2)
     kFxTrackMatte = 14, // the layer times its track matte (C.15, 0.1.2)
+    kFxLibrary = 15,    // an effect of the library (0.2): a family shader, mode.z = the op (EffectLibrary.h)
 };
 
 /// Offscreen passes an effect needs (uniform slots are reserved up front).
-int fxPassCount(EffectType type) {
-    switch (type) {
+int fxPassCount(const LayerEffect& effect) {
+    if (effect.type == EffectType::Library) {
+        return 6; // the most a library effect plans (a key's matte, morphology, two blur passes, apply)
+    }
+    switch (effect.type) {
     case EffectType::GaussianBlur:
         return 2;
     case EffectType::Sharpen:
@@ -240,9 +261,21 @@ double srgbToLinear(double v) {
 
 constexpr quint32 kLayerBlockSize = sizeof(LayerUniforms);
 constexpr quint32 kOutputBlockSize = sizeof(OutputUniforms);
+static_assert(kOutputBlockSize <= kLayerBlockSize, "one uniform slot size serves both");
 constexpr int kInitialUniformSlots = 16;
 
-/// A colour matrix times `scale` as a column-major mat4 (as storeMat3 below stores a Mat3).
+/// The colour of an imported frame as ColorInfo (for the Auto input colour space of a managed pipeline).
+ColorInfo colorInfoOf(const ResolvedColor& c) {
+    ColorInfo info;
+    info.matrix = c.matrix;
+    info.range = c.range;
+    info.primaries = c.primaries;
+    info.transfer = c.transfer;
+    info.chromaLocation = c.chromaLocation;
+    return info;
+}
+
+/// A colour-management matrix times `scale` as a column-major mat4 (as storeMat3 below stores a Mat3).
 void storeColorMatrix(float* out, const color::Matrix3& m, double scale) {
     for (int col = 0; col < 4; ++col) {
         for (int row = 0; row < 4; ++row) {
@@ -252,9 +285,20 @@ void storeColorMatrix(float* out, const color::Matrix3& m, double scale) {
     }
 }
 
-// layer.frag mode.y of an HDR capture tone-mapped into SDR (I.9, gaming).
-constexpr std::int32_t kTfPqSdr = 8;
+// output.frag mode.x of a managed output plan (I.9).
+constexpr std::int32_t kOutPq = 3;
+constexpr std::int32_t kOutHlg = 4;
+constexpr std::int32_t kOutLut = 5;
+constexpr std::int32_t kOutToneMap = 6;
+constexpr std::int32_t kOutRec709Matrix = 7; // 0.2: Wide Gamut (No Tone Mapping)
+// layer.frag mode.y of a managed input plan.
+constexpr std::int32_t kTfPq = 5;
+constexpr std::int32_t kTfPqSdr = 8;  // I.9 (gaming): an HDR capture tone-mapped into an SDR project
 constexpr std::int32_t kTfHlgSdr = 9;
+constexpr std::int32_t kTfHlg = 6;
+constexpr std::int32_t kTfLut = 7;
+constexpr std::int32_t kTfLutSdr = 10; // 0.2: Direct Rec.709's camera log, tone-mapped as a capture after the LUT
+
 
 // Unit square as a triangle strip: (0,0) (1,0) (0,1) (1,1).
 constexpr float kQuad[] = {0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f};
@@ -292,6 +336,36 @@ void storeClip(float* out, const QMatrix4x4& corr, const Affine2D& m) {
                             0.0f, 0.0f, 1.0f, 0.0f, //
                             0.0f, 0.0f, 0.0f, 1.0f);
     std::memcpy(out, (corr * affine).constData(), 16 * sizeof(float));
+}
+
+/// P.2: clipSpaceCorr * (outer * H * inner) as a 4x4 acting on (x, y, 0, 1), with H projective (row-major 3 x 3): the
+/// clip-space w carries H's denominator, so the rasteriser interpolates the layer's coordinates perspective-correctly.
+void storeProjectiveClip(float* out, const QMatrix4x4& corr, const Affine2D& outer, const std::array<double, 9>& h,
+                         const Affine2D& inner) {
+    const auto mat = [](const Affine2D& a) { return std::array<double, 9>{a.a, a.c, a.e, a.b, a.d, a.f, 0.0, 0.0, 1.0}; };
+    const auto mul = [](const std::array<double, 9>& x, const std::array<double, 9>& y) {
+        std::array<double, 9> r{};
+        for (int i = 0; i < 3; ++i) {
+            for (int j = 0; j < 3; ++j) {
+                double s = 0.0;
+                for (int k = 0; k < 3; ++k) {
+                    s += x[static_cast<std::size_t>(i * 3 + k)] * y[static_cast<std::size_t>(k * 3 + j)];
+                }
+                r[static_cast<std::size_t>(i * 3 + j)] = s;
+            }
+        }
+        return r;
+    };
+    const std::array<double, 9> m = mul(mul(mat(outer), h), mat(inner));
+    const QMatrix4x4 projective(static_cast<float>(m[0]), static_cast<float>(m[1]), 0.0f, static_cast<float>(m[2]),
+                                static_cast<float>(m[3]), static_cast<float>(m[4]), 0.0f, static_cast<float>(m[5]),
+                                0.0f, 0.0f, 1.0f, 0.0f, //
+                                static_cast<float>(m[6]), static_cast<float>(m[7]), 0.0f, static_cast<float>(m[8]));
+    std::memcpy(out, (corr * projective).constData(), 16 * sizeof(float));
+}
+
+bool isIdentityWarp(const std::array<double, 9>& w) {
+    return w == std::array<double, 9>{1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0};
 }
 
 std::int32_t transferCode(TransferFunction t) {
@@ -432,10 +506,14 @@ void Compositor::releaseResources() {
     m_dummy3d.reset();
     m_dummyCurves.reset();
     m_gradeStaticUploaded = false;
+    releaseFlowResources(); // P.2
     m_fxSrbs.clear();
     m_intermediates.clear();
     m_fxPipeline.reset();
     m_fxOverPipeline.reset();
+    for (auto& pipeline : m_fxFamilyPipelines) {
+        pipeline.reset();
+    }
     for (auto* variants : {&m_layerBlendPipelines, &m_layerArrayBlendPipelines, &m_fxBlendPipelines}) {
         for (auto& pipeline : *variants) {
             pipeline.reset();
@@ -445,6 +523,10 @@ void Compositor::releaseResources() {
     m_layerSrbs.clear();
     m_outputPipeline.reset();
     m_outputSrb.reset();
+    m_outputLutSrb.reset();
+    m_outputLutSrbTexture = nullptr;
+    m_lutLayerSrbs.clear();
+    m_cmLuts.clear();
     m_outputPassCompat.reset();
     m_outputPassSeen = nullptr;
     m_layerPipeline.reset();
@@ -496,8 +578,12 @@ std::expected<void, Error> Compositor::ensureStaticResources() {
                                             QRhiSampler::ClampToEdge, QRhiSampler::ClampToEdge));
     m_dummy.reset(m_rhi->newTexture(QRhiTexture::RGBA8, QSize(1, 1)));
     m_dummyArray.reset(m_rhi->newTextureArray(QRhiTexture::RGBA8, 1, QSize(1, 1)));
+    // Colour-management LUTs (I.9) and the grade's LUTs: texelFetch, nearest.
+    m_nearestSampler.reset(m_rhi->newSampler(QRhiSampler::Nearest, QRhiSampler::Nearest, QRhiSampler::None,
+                                             QRhiSampler::ClampToEdge, QRhiSampler::ClampToEdge, QRhiSampler::ClampToEdge));
+    m_dummy3d.reset(m_rhi->newTexture(QRhiTexture::RGBA8, 1, 1, 1, 1, QRhiTexture::ThreeDimensional));
     if (!m_quad->create() || !m_planeSampler->create() || !m_canvasSampler->create() || !m_dummy->create() ||
-        !m_dummyArray->create()) {
+        !m_dummyArray->create() || !m_nearestSampler->create() || !m_dummy3d->create()) {
         releaseResources();
         return std::unexpected(Error{ErrorCode::DeviceError, "Could not create compositor resources"});
     }
@@ -522,6 +608,7 @@ std::expected<void, Error> Compositor::ensureUniformCapacity(int slotCount) {
     m_uniformSlots = capacity;
     ++m_uniformGeneration;
     m_outputSrb.reset(); // references the old buffer
+    m_outputLutSrb.reset();
     return {};
 }
 
@@ -552,6 +639,7 @@ std::expected<void, Error> Compositor::ensureCanvas(QSize pixels) {
         return std::unexpected(Error{ErrorCode::DeviceError, "Could not create the canvas render target"});
     }
     m_outputSrb.reset(); // samples the old canvas
+    m_outputLutSrb.reset();
 
     if (!m_layerPipeline) {
         const QShader vs = loadShader("layer.vert");
@@ -574,6 +662,8 @@ std::expected<void, Error> Compositor::ensureCanvas(QSize pixels) {
                                                       m_dummy.get(), m_planeSampler.get()),
             QRhiShaderResourceBinding::sampledTexture(4, QRhiShaderResourceBinding::FragmentStage,
                                                       m_dummy.get(), m_planeSampler.get()),
+            QRhiShaderResourceBinding::sampledTexture(5, QRhiShaderResourceBinding::FragmentStage,
+                                                      m_dummy3d.get(), m_nearestSampler.get()),
         });
         m_layerLayoutSrb->create();
 
@@ -608,6 +698,8 @@ std::expected<void, Error> Compositor::ensureCanvas(QSize pixels) {
                                                           m_dummyArray.get(), m_planeSampler.get()),
                 QRhiShaderResourceBinding::sampledTexture(2, QRhiShaderResourceBinding::FragmentStage,
                                                           m_dummyArray.get(), m_planeSampler.get()),
+                QRhiShaderResourceBinding::sampledTexture(5, QRhiShaderResourceBinding::FragmentStage,
+                                                          m_dummy3d.get(), m_nearestSampler.get()),
             });
             m_layerArrayLayoutSrb->create();
             m_layerArrayPipeline.reset(m_rhi->newGraphicsPipeline());
@@ -640,6 +732,8 @@ std::expected<void, Error> Compositor::ensureOutputPipeline(QRhiRenderPassDescri
                                                                       kOutputBlockSize),
             QRhiShaderResourceBinding::sampledTexture(1, QRhiShaderResourceBinding::FragmentStage,
                                                       m_canvas.get(), m_canvasSampler.get()),
+            QRhiShaderResourceBinding::sampledTexture(2, QRhiShaderResourceBinding::FragmentStage,
+                                                      m_dummy3d.get(), m_nearestSampler.get()),
         });
         if (!m_outputSrb->create()) {
             m_outputSrb.reset();
@@ -725,6 +819,9 @@ std::expected<void, Error> Compositor::ensureFxPipelines() {
     for (auto& pipeline : m_fxBlendPipelines) {
         pipeline.reset(); // made from the old m_fxOverPipeline
     }
+    for (auto& pipeline : m_fxFamilyPipelines) {
+        pipeline.reset(); // made with the old layout bindings
+    }
     m_fxPipeline = makePipeline(false);
     m_fxOverPipeline = makePipeline(true);
     if (!m_fxPipeline || !m_fxOverPipeline) {
@@ -733,6 +830,30 @@ std::expected<void, Error> Compositor::ensureFxPipelines() {
         return std::unexpected(Error{ErrorCode::DeviceError, "Could not create the effect pipelines"});
     }
     return {};
+}
+
+QRhiGraphicsPipeline* Compositor::fxFamilyPipeline(int family) {
+    if (family <= kFamilyCore || family >= kFxFamilies) {
+        return m_fxPipeline.get();
+    }
+    std::unique_ptr<QRhiGraphicsPipeline>& pipeline = m_fxFamilyPipelines[static_cast<std::size_t>(family)];
+    if (!pipeline && m_fxPipeline) {
+        const QShader fs = loadShader(kFxFamilyShaders[static_cast<std::size_t>(family)]);
+        if (!fs.isValid()) {
+            return nullptr;
+        }
+        pipeline.reset(m_rhi->newGraphicsPipeline());
+        pipeline->setTopology(m_fxPipeline->topology());
+        pipeline->setCullMode(m_fxPipeline->cullMode());
+        pipeline->setShaderStages({*m_fxPipeline->shaderStageAt(0), {QRhiShaderStage::Fragment, fs}});
+        pipeline->setVertexInputLayout(m_fxPipeline->vertexInputLayout());
+        pipeline->setShaderResourceBindings(m_fxPipeline->shaderResourceBindings());
+        pipeline->setRenderPassDescriptor(m_fxPipeline->renderPassDescriptor());
+        if (!pipeline->create()) {
+            pipeline.reset();
+        }
+    }
+    return pipeline.get();
 }
 
 QRhiGraphicsPipeline* Compositor::blendPipeline(QRhiGraphicsPipeline* base, BlendPipelines& variants, int variant) {
@@ -815,14 +936,10 @@ std::expected<void, Error> Compositor::ensureGradeUniformCapacity(int slotCount)
 }
 
 std::expected<void, Error> Compositor::ensureGradePipeline() {
-    if (!m_nearestSampler) {
-        m_nearestSampler.reset(m_rhi->newSampler(QRhiSampler::Nearest, QRhiSampler::Nearest, QRhiSampler::None,
-                                                 QRhiSampler::ClampToEdge, QRhiSampler::ClampToEdge,
-                                                 QRhiSampler::ClampToEdge));
-        m_dummy3d.reset(m_rhi->newTexture(QRhiTexture::RGBA8, 1, 1, 1, 1, QRhiTexture::ThreeDimensional));
+    if (!m_dummyCurves) { // the nearest sampler and the 3D dummy are static resources (I.9)
         m_dummyCurves.reset(m_rhi->newTexture(QRhiTexture::RGBA32F, QSize(color::BakedCurves::kSize, kCurveRows)));
-        if (!m_nearestSampler->create() || !m_dummyCurves->create() || !m_dummy3d->create()) {
-            m_nearestSampler.reset();
+        if (!m_dummyCurves->create()) {
+            m_dummyCurves.reset();
             return std::unexpected(Error{ErrorCode::DeviceError, "Could not create the grade resources"});
         }
         m_gradeStaticUploaded = false;
@@ -898,6 +1015,102 @@ QRhiTexture* Compositor::lutTexture(const std::shared_ptr<const color::Lut>& lut
                                    z, 0, QRhiTextureSubresourceUploadDescription(slice.data(), static_cast<quint32>(slice.size() * sizeof(float))))));
     }
     return entry.texture.get();
+}
+
+// ---- Colour management (I.9) ----------------------------------------------------------------------------------
+
+QRhiTexture* Compositor::cmLutTexture(const std::shared_ptr<const color::BakedLut>& lut, QRhiResourceUpdateBatch* updates) {
+    if (!lut || lut->size < 2 || !m_rhi->isFeatureSupported(QRhi::ThreeDimensionalTextures)) {
+        return nullptr;
+    }
+    const auto n = static_cast<std::size_t>(lut->size);
+    if (lut->rgba.size() < n * n * n * 4) {
+        return nullptr;
+    }
+    CmLutTexture& entry = m_cmLuts[lut.get()];
+    entry.lastUsedFrame = m_frameCounter;
+    if (entry.texture && entry.lut == lut) {
+        return entry.texture.get();
+    }
+    entry.lut = lut;
+    entry.texture.reset(m_rhi->newTexture(QRhiTexture::RGBA32F, lut->size, lut->size, lut->size, 1, QRhiTexture::ThreeDimensional));
+    entry.texture->setName(QByteArrayLiteral("wabcut colour management LUT"));
+    if (!entry.texture->create()) {
+        m_cmLuts.erase(lut.get());
+        return nullptr;
+    }
+    // Red fastest, then green, then blue (BakedLut): one upload per blue slice (layer = z).
+    const std::size_t slice = n * n * 4;
+    for (std::size_t z = 0; z < n; ++z) {
+        updates->uploadTexture(entry.texture.get(),
+                               QRhiTextureUploadDescription(QRhiTextureUploadEntry(
+                                   static_cast<int>(z), 0,
+                                   QRhiTextureSubresourceUploadDescription(lut->rgba.data() + z * slice,
+                                                                           static_cast<quint32>(slice * sizeof(float))))));
+    }
+    return entry.texture.get();
+}
+
+QRhiShaderResourceBindings* Compositor::lutLayerSrb(const ImportedFrame& frame, QRhiTexture* lut) {
+    const bool array = frame.arrayTextures;
+    if (array && !m_layerArrayPipeline) {
+        return nullptr;
+    }
+    NativeSrb& entry = m_lutLayerSrbs[LutLayerKey{array, frame.setSerial, lut}];
+    entry.lastUsedFrame = m_frameCounter;
+    if (!entry.srb || entry.uniformGeneration != m_uniformGeneration) {
+        const auto stages = QRhiShaderResourceBinding::VertexStage | QRhiShaderResourceBinding::FragmentStage;
+        const auto frag = QRhiShaderResourceBinding::FragmentStage;
+        const auto tex = [&](int i) {
+            QRhiTexture* t = frame.planes[static_cast<std::size_t>(i)];
+            return t ? t : m_dummy.get();
+        };
+        entry.srb.reset(m_rhi->newShaderResourceBindings());
+        if (array) {
+            entry.srb->setBindings({
+                QRhiShaderResourceBinding::uniformBufferWithDynamicOffset(0, stages, m_uniforms.get(), kLayerBlockSize),
+                QRhiShaderResourceBinding::sampledTexture(1, frag, frame.planes[0], m_planeSampler.get()),
+                QRhiShaderResourceBinding::sampledTexture(2, frag, frame.planes[1], m_planeSampler.get()),
+                QRhiShaderResourceBinding::sampledTexture(5, frag, lut, m_nearestSampler.get()),
+            });
+        } else {
+            entry.srb->setBindings({
+                QRhiShaderResourceBinding::uniformBufferWithDynamicOffset(0, stages, m_uniforms.get(), kLayerBlockSize),
+                QRhiShaderResourceBinding::sampledTexture(1, frag, tex(0), m_planeSampler.get()),
+                QRhiShaderResourceBinding::sampledTexture(2, frag, tex(1), m_planeSampler.get()),
+                QRhiShaderResourceBinding::sampledTexture(3, frag, tex(2), m_planeSampler.get()),
+                QRhiShaderResourceBinding::sampledTexture(4, frag, tex(3), m_planeSampler.get()),
+                QRhiShaderResourceBinding::sampledTexture(5, frag, lut, m_nearestSampler.get()),
+            });
+        }
+        if (!entry.srb->create()) {
+            entry.srb.reset();
+            return nullptr;
+        }
+        entry.uniformGeneration = m_uniformGeneration;
+    }
+    return entry.srb.get();
+}
+
+QRhiShaderResourceBindings* Compositor::outputLutSrb(QRhiTexture* lut) {
+    if (m_outputLutSrb && m_outputLutSrbTexture == lut) {
+        return m_outputLutSrb.get();
+    }
+    const auto stages = QRhiShaderResourceBinding::VertexStage | QRhiShaderResourceBinding::FragmentStage;
+    const auto frag = QRhiShaderResourceBinding::FragmentStage;
+    m_outputLutSrb.reset(m_rhi->newShaderResourceBindings());
+    m_outputLutSrb->setBindings({
+        QRhiShaderResourceBinding::uniformBufferWithDynamicOffset(0, stages, m_uniforms.get(), kOutputBlockSize),
+        QRhiShaderResourceBinding::sampledTexture(1, frag, m_canvas.get(), m_canvasSampler.get()),
+        QRhiShaderResourceBinding::sampledTexture(2, frag, lut, m_nearestSampler.get()),
+    });
+    if (!m_outputLutSrb->create()) {
+        m_outputLutSrb.reset();
+        m_outputLutSrbTexture = nullptr;
+        return nullptr;
+    }
+    m_outputLutSrbTexture = lut;
+    return m_outputLutSrb.get();
 }
 
 Compositor::GradeTextures* Compositor::gradeTextures(const color::GradeSpec& grade, QRhiResourceUpdateBatch* updates,
@@ -1146,6 +1359,8 @@ QRhiShaderResourceBindings* Compositor::layerSrb(const ImportedFrame& frame) {
                                                           frame.planes[0], m_planeSampler.get()),
                 QRhiShaderResourceBinding::sampledTexture(2, QRhiShaderResourceBinding::FragmentStage,
                                                           frame.planes[1], m_planeSampler.get()),
+                QRhiShaderResourceBinding::sampledTexture(5, QRhiShaderResourceBinding::FragmentStage,
+                                                          m_dummy3d.get(), m_nearestSampler.get()),
             });
             if (!entry.srb->create()) {
                 entry.srb.reset();
@@ -1182,6 +1397,8 @@ QRhiShaderResourceBindings* Compositor::layerSrb(const ImportedFrame& frame) {
                                                       m_planeSampler.get()),
             QRhiShaderResourceBinding::sampledTexture(4, QRhiShaderResourceBinding::FragmentStage, tex(3),
                                                       m_planeSampler.get()),
+            QRhiShaderResourceBinding::sampledTexture(5, QRhiShaderResourceBinding::FragmentStage, m_dummy3d.get(),
+                                                      m_nearestSampler.get()),
         });
         if (!entry->srb->create()) {
             entry->srb.reset();
@@ -1249,6 +1466,8 @@ QRhiShaderResourceBindings* Compositor::nestedSrb(QRhiTexture* texture) {
                                                       m_planeSampler.get()),
             QRhiShaderResourceBinding::sampledTexture(4, QRhiShaderResourceBinding::FragmentStage, m_dummy.get(),
                                                       m_planeSampler.get()),
+            QRhiShaderResourceBinding::sampledTexture(5, QRhiShaderResourceBinding::FragmentStage, m_dummy3d.get(),
+                                                      m_nearestSampler.get()),
         });
         if (!entry.srb->create()) {
             entry.srb.reset();
@@ -1355,7 +1574,7 @@ std::expected<CompositeStats, Error> Compositor::renderImpl(QRhiCommandBuffer* c
     for (const CompositeLayer& layer : composite.layers) {
         slotsNeeded += 2 + (layer.transition ? 1 : 0);
         for (const LayerEffect& effect : layer.effects) {
-            slotsNeeded += fxPassCount(effect.type);
+            slotsNeeded += fxPassCount(effect);
             gradeSlotsNeeded += effect.type == EffectType::Grade && effect.grade ? kGradeSlotsPerEffect : 0;
             maskSlotsNeeded += (effect.mask ? maskSlots(effect.mask) : 0) + (effect.type == EffectType::Mosaic ? 1 : 0);
         }
@@ -1399,6 +1618,8 @@ std::expected<CompositeStats, Error> Compositor::renderImpl(QRhiCommandBuffer* c
         const quint32 black = 0;
         updates->uploadTexture(m_dummy.get(), QRhiTextureUploadDescription(QRhiTextureUploadEntry(
                                                   0, 0, QRhiTextureSubresourceUploadDescription(&black, 4))));
+        updates->uploadTexture(m_dummy3d.get(), QRhiTextureUploadDescription(QRhiTextureUploadEntry(
+                                                    0, 0, QRhiTextureSubresourceUploadDescription(&black, 4))));
         m_staticUploaded = true;
     }
     if (gradeSlotsNeeded > 0) {
@@ -1407,9 +1628,6 @@ std::expected<CompositeStats, Error> Compositor::renderImpl(QRhiCommandBuffer* c
             return std::unexpected(ok.error());
         }
         if (!m_gradeStaticUploaded) {
-            const quint32 black = 0;
-            updates->uploadTexture(m_dummy3d.get(), QRhiTextureUploadDescription(QRhiTextureUploadEntry(
-                                                         0, 0, QRhiTextureSubresourceUploadDescription(&black, 4))));
             const std::vector<float> zeros(static_cast<std::size_t>(color::BakedCurves::kSize) * kCurveRows * 4, 0.0f);
             updates->uploadTexture(m_dummyCurves.get(),
                                    QRhiTextureUploadDescription(QRhiTextureUploadEntry(
@@ -1432,6 +1650,16 @@ std::expected<CompositeStats, Error> Compositor::renderImpl(QRhiCommandBuffer* c
             return std::unexpected(ok.error());
         }
     }
+    if (m_frameCounter % 64 == 0 && (!m_cmLuts.empty() || !m_lutLayerSrbs.empty())) { // colour management (I.9)
+        std::erase_if(m_lutLayerSrbs, [&](const auto& e) { return e.second.lastUsedFrame + 256 < m_frameCounter; });
+        const auto before = m_cmLuts.size();
+        std::erase_if(m_cmLuts, [&](const auto& e) { return e.second.lastUsedFrame + 256 < m_frameCounter; });
+        if (m_cmLuts.size() != before) {
+            m_lutLayerSrbs.clear(); // they may name the textures just dropped
+            m_outputLutSrb.reset();
+            m_outputLutSrbTexture = nullptr;
+        }
+    }
     if (m_frameCounter % 64 == 0 && (!m_sdfTextures.empty() || !m_coverageTextures.empty() || !m_matteTextures.empty())) {
         const auto before = m_sdfTextures.size() + m_coverageTextures.size() + m_matteTextures.size();
         std::erase_if(m_sdfTextures, [&](const auto& e) { return e.second->lastUsedFrame + 256 < m_frameCounter; });
@@ -1452,6 +1680,7 @@ std::expected<CompositeStats, Error> Compositor::renderImpl(QRhiCommandBuffer* c
     m_placements.clear();
     if (m_frameCounter % 64 == 0) { // canvases of nested composites no longer rendered
         std::erase_if(m_nestedSrbs, [&](const auto& entry) { return entry.second.lastUsedFrame + 256 < m_frameCounter; });
+        evictMotionTextures(); // P.2: flow mixes no longer drawn
     }
     std::size_t nestedIndex = 0;
     std::vector<int> placementOf(static_cast<std::size_t>(layerCount), -1);
@@ -1467,7 +1696,9 @@ std::expected<CompositeStats, Error> Compositor::renderImpl(QRhiCommandBuffer* c
         }
         for (std::size_t e = 0; e < layer.effects.size(); ++e) {
             const LayerEffect& effect = layer.effects[e];
-            if (effect.type == EffectType::TrackMatte && effect.matte && effect.matte->canvas.isValid()) {
+            // Track Matte Keys' mattes and the library effects' second pictures (0.2), on a canvas like this one.
+            if ((effect.type == EffectType::TrackMatte || effect.type == EffectType::Library) && effect.matte &&
+                effect.matte->canvas.isValid()) {
                 const auto matte = renderNested(cb, *effect.matte, keepAlive, colorPipeline, ViewState{}, nestedIndex++, stats);
                 if (matte) {
                     matteTextures[{i, e}] = matte->planes[0];
@@ -1540,7 +1771,15 @@ std::expected<CompositeStats, Error> Compositor::renderImpl(QRhiCommandBuffer* c
         const double fringeX = sx > 0.0 ? std::min(div / sx, w) : 0.0;
         const double fringeY = sy > 0.0 ? std::min(div / sy, h) : 0.0;
         const Affine2D cornerToSrc{w + 2.0 * fringeX, 0.0, 0.0, h + 2.0 * fringeY, -fringeX, -fringeY};
-        storeClip(u.cornerToClip, corr, toNdc * toCanvas * cornerToSrc);
+        if (isIdentityWarp(layer.warp)) {
+            storeClip(u.cornerToClip, corr, toNdc * toCanvas * cornerToSrc);
+        } else {
+            // P.2: the stabilizers' warp, given in fractions of the frame: in this frame's pixels it is S warp S^-1.
+            const std::array<double, 9>& g = layer.warp;
+            const std::array<double, 9> pixels{g[0], g[1] * w / h, g[2] * w, g[3] * h / w, g[4], g[5] * h,
+                                               g[6] / w, g[7] / h, g[8]};
+            storeProjectiveClip(u.cornerToClip, corr, toNdc * toCanvas, pixels, cornerToSrc);
+        }
 
         const SampleToRgb s2r = sampleToRgb(color.matrix, color.range, f.encoding, isRgb);
         storeMat3(u.sampleToRgb, s2r.matrix, s2r.offset);
@@ -1571,23 +1810,84 @@ std::expected<CompositeStats, Error> Compositor::renderImpl(QRhiCommandBuffer* c
         u.params[3] = static_cast<float>(h / th);
         u.mode[0] = layoutCode(f.layout);
         u.mode[1] = transferCode(color.transfer);
-        u.mode[2] = f.alpha == AlphaMode::None ? 0 : f.alpha == AlphaMode::Straight ? 1 : 2;
+        u.mode[2] = f.alpha == AlphaMode::None || layer.ignoreAlpha ? 0 : f.alpha == AlphaMode::Straight ? 1 : 2;
+        if (layer.invertAlpha && !layer.ignoreAlpha && f.alpha != AlphaMode::None) {
+            u.mode[2] |= 4; // P.2: Interpret Footage > Invert Alpha Channel (layer.frag's ALPHA_INVERT)
+        }
+        u.mode[2] |= (layer.fieldMode & 3) << 3; // 0.2 field options: deinterlacing or Flicker Removal (layer.frag)
         u.mode[3] = layer.nested ? 1 : 0; // a nested canvas is float: keep what is above 1 (I.9)
-        if (!layer.nested &&
-            (color.transfer == TransferFunction::PQ || color.transfer == TransferFunction::HLG)) {
-            // I.9 (gaming): an HDR game capture in an SDR project, tone-mapped into SDR (color::hdrCaptureToSdr).
-            u.mode[1] = color.transfer == TransferFunction::PQ ? kTfPqSdr : kTfHlgSdr;
-            storeColorMatrix(u.toWorking, color::rec2020ToRec709(), 1.0);
-            u.cm[0] = static_cast<float>(color::hlgSystemGamma(color::kCapturePeakNits) - 1.0);
-            u.cm[2] = static_cast<float>(color::kCaptureReferenceWhiteNits);
-            u.cm[3] = static_cast<float>(color::kCapturePeakNits);
-            ++stats.toneMappedCaptures;
+        // Colour management (I.9, 0.2): the layer's input colour space into the working space (a nested canvas is
+        // already there). Managed working spaces read every layer through a plan (Auto follows the frame's tags).
+        // Direct Rec.709 reads code values as they are (byte for byte), except HDR media (PQ / HLG tags or override:
+        // tone-mapped into SDR, as HDR game captures always were) and clips with an input colour space (an override, or
+        // the camera log their metadata names): log is tone-mapped on input. Disable Color Management converts nothing.
+        // A layer whose plan cannot be built keeps the display-referred reading.
+        QRhiShaderResourceBindings* placedSrb = srb;
+        std::optional<InputColorSpace> planned;
+        if (!layer.nested) {
+            if (colorPipeline.managed()) {
+                planned = layer.inputSpace.value_or(autoInputColorSpace(colorInfoOf(color), isRgb));
+            } else if (colorPipeline.management.mode == ColorManagementMode::DisplayRec709) {
+                planned = layer.inputSpace;
+                if (!planned && (color.transfer == TransferFunction::PQ || color.transfer == TransferFunction::HLG)) {
+                    planned = color.transfer == TransferFunction::PQ ? InputColorSpace::Rec2100Pq : InputColorSpace::Rec2100Hlg;
+                }
+            }
+        }
+        if (planned) {
+            const InputColorSpace space = *planned;
+            const auto plan = color::planInput(colorPipeline.management, space, color.range == ColorRange::Limited, layer.graphics);
+            if (!plan) {
+                ++stats.colorPlanErrors;
+            } else if (plan->kind == color::InputPlan::Kind::ToneMapSdr) {
+                // An HDR picture in a Direct Rec.709 project, tone-mapped into SDR (color::hdrCaptureToSdr).
+                u.mode[1] = plan->transfer == TransferFunction::PQ ? kTfPqSdr : kTfHlgSdr;
+                storeColorMatrix(u.toWorking, plan->matrix, 1.0);
+                u.cm[0] = static_cast<float>(color::hlgSystemGamma(color::kCapturePeakNits) - 1.0);
+                u.cm[2] = static_cast<float>(color::kCaptureReferenceWhiteNits);
+                u.cm[3] = static_cast<float>(color::kCapturePeakNits);
+                ++stats.toneMappedCaptures;
+            } else if (plan->kind == color::InputPlan::Kind::Lut || plan->kind == color::InputPlan::Kind::LutToneMapSdr) {
+                QRhiTexture* lut = cmLutTexture(plan->lut, updates);
+                placedSrb = lut ? lutLayerSrb(f, lut) : nullptr;
+                if (!placedSrb) {
+                    ++stats.colorPlanErrors;
+                    ++stats.layersFailed; // no 3D textures: leave it out rather than show it unmanaged
+                    continue;
+                }
+                u.mode[1] = kTfLut;
+                u.cm[1] = static_cast<float>(plan->lut->size);
+                if (plan->kind == color::InputPlan::Kind::LutToneMapSdr) {
+                    // Direct Rec.709's camera log: the scene light, then the HDR capture tone map (captureToSdr).
+                    u.mode[1] = kTfLutSdr;
+                    storeColorMatrix(u.toWorking, plan->matrix, 1.0); // Rec.2020 -> Rec.709
+                    u.cm[2] = static_cast<float>(color::kCaptureReferenceWhiteNits);
+                    u.cm[3] = static_cast<float>(color::kCapturePeakNits);
+                    ++stats.toneMappedCaptures;
+                }
+                ++stats.managedInputs;
+                ++stats.inputLuts;
+            } else {
+                double scale = plan->scale;
+                if (plan->transfer == TransferFunction::PQ) {
+                    u.mode[1] = kTfPq;
+                    scale *= 10000.0; // the shader's PQ curve gives nits / 10000
+                } else if (plan->transfer == TransferFunction::HLG) {
+                    u.mode[1] = kTfHlg;
+                    scale *= plan->hlgPeakNits; // the shader's HLG display light is relative to the peak
+                    u.cm[0] = static_cast<float>(color::hlgSystemGamma(plan->hlgPeakNits) - 1.0);
+                } else {
+                    u.mode[1] = transferCode(plan->transfer);
+                }
+                storeColorMatrix(u.toWorking, plan->matrix, scale);
+                ++stats.managedInputs;
+            }
         }
 
         const int slot = static_cast<int>(m_placements.size());
         updates->updateDynamicBuffer(m_uniforms.get(), static_cast<quint32>(slot) * slotSize, sizeof(u), &u);
         placementOf[static_cast<std::size_t>(i)] = slot;
-        m_placements.push_back({f, slot, toCanvas, layer.clipId, srb});
+        m_placements.push_back({f, slot, toCanvas, layer.clipId, placedSrb});
     }
     stats.layersDrawn += static_cast<int>(m_placements.size()); // plus those inside nested composites
     stats.bytesUploaded += m_importer.stats().bytesUploaded - bytesBefore;
@@ -1614,6 +1914,8 @@ std::expected<CompositeStats, Error> Compositor::renderImpl(QRhiCommandBuffer* c
         MaskTexture* maskTarget = nullptr; ///< a frame-space mask texture instead of `target`
         bool canvasDraws = false;          ///< the canvas so far (`draws`) into `target`: a shader blend's backdrop
         std::vector<Draw> draws;
+        QRhiTexture* motion = nullptr;     ///< P.2: a flow mix (flowmix.frag) of in0 and in1 along this motion
+        int family = kFamilyCore;          ///< an fx quad's shader family (kFxFamilyShaders)
     };
     std::vector<Pass> passes;
     std::vector<Draw> draws;
@@ -1656,13 +1958,15 @@ std::expected<CompositeStats, Error> Compositor::renderImpl(QRhiCommandBuffer* c
             t->inUse = false;
         }
     };
-    const auto fxPass = [&](const FxUniforms& u, QRhiTexture* in0, QRhiTexture* in1,
-                            QRhiTexture* mipsOf = nullptr) -> Intermediate* {
+    const auto fxPass = [&](const FxUniforms& u, QRhiTexture* in0, QRhiTexture* in1, QRhiTexture* mipsOf = nullptr,
+                            int family = kFamilyCore) -> Intermediate* {
         Intermediate* out = acquire();
         if (!out) {
             return nullptr;
         }
-        passes.push_back({out, -1, writeFx(u), in0, in1 ? in1 : m_dummy.get(), mipsOf});
+        Pass pass{out, -1, writeFx(u), in0, in1 ? in1 : m_dummy.get(), mipsOf};
+        pass.family = family;
+        passes.push_back(std::move(pass));
         return out;
     };
     // Separable Gaussian of `in` (sigma in canvas texels); `in` stays acquired.
@@ -1727,6 +2031,7 @@ std::expected<CompositeStats, Error> Compositor::renderImpl(QRhiCommandBuffer* c
         flag(p.hslSharpen > 0, kGfHslSharpen);
         flag(p.hslSaturation != 100, kGfHslSat);
         flag(g.vignetteActive(), kGfVignette);
+        flag(colorPipeline.managed() || g.encoding == color::GradeEncoding::AcesCct, kGfAcesCct);
         u.mode[1] = yUp ? 1 : 0;
         u.mode[2] = flags;
         u.mode[3] = maskOn ? view.maskView : 0;
@@ -2120,6 +2425,100 @@ std::expected<CompositeStats, Error> Compositor::renderImpl(QRhiCommandBuffer* c
     };
     int currentLayer = -1; // the composite layer being planned (mask owners)
 
+    // ---- The effect library (0.2, EffectLibrary.h): family shaders, LayerEffect::params as p0..p7 ----
+    const auto libraryUniforms = [&](std::uint16_t op, const LayerEffect& e, const Placement& placement) {
+        FxUniforms u = fxBase(kFxLibrary);
+        withFrame(u, placement);
+        u.mode[2] = op;
+        const auto& q = e.params;
+        storeVec4(u.p0, q[0], q[1], q[2], q[3]);
+        storeVec4(u.p1, q[4], q[5], q[6], q[7]);
+        storeVec4(u.p2, q[8], q[9], q[10], q[11]);
+        storeVec4(u.p3, q[12], q[13], q[14], q[15]);
+        storeVec4(u.p4, q[16], q[17], q[18], q[19]);
+        storeVec4(u.p5, q[20], q[21], q[22], q[23]);
+        storeVec4(u.p6, q[24], q[25], q[26], q[27]);
+        storeVec4(u.p7, q[28], q[29], q[30], q[31]);
+        return u;
+    };
+    // A library effect on `in` (kept; the caller releases it): one pass of its family shader, or a few for the ops that
+    // blur or key first (their CPU twins in render/reference: the same passes). `second`: its second picture (echoes,
+    // text, another track's layer, an image), null when it has none. `in` itself when there is nothing to do.
+    const auto applyLibrary = [&](Intermediate* in, const LayerEffect& e, const Placement& placement,
+                                  QRhiTexture* second) -> Intermediate* {
+        const auto op = static_cast<LibraryOp>(e.op);
+        const int family = static_cast<int>(familyOf(op));
+        const auto& q = e.params;
+        const auto pass = [&](int step, QRhiTexture* in0, QRhiTexture* in1) {
+            FxUniforms u = libraryUniforms(e.op, e, placement);
+            u.mode[3] = step;
+            return fxPass(u, in0, in1, nullptr, family);
+        };
+        const auto blurred = [&](Intermediate* source, double sigma, bool repeatEdges) -> Intermediate* {
+            return blurOf(source, std::max(0.0, sigma) / div, repeatEdges);
+        };
+        switch (op) {
+        case LibraryOp::None:
+            return in;
+        case LibraryOp::UnsharpMask:
+        case LibraryOp::AlphaGlow:
+        case LibraryOp::BevelAlpha:
+        case LibraryOp::RoughenEdges: {
+            // tex1 = the layer blurred: Radius (sigma), Glow / 2, Edge Thickness, Border / 2.
+            const double sigma = op == LibraryOp::UnsharpMask ? q[1]
+                                 : op == LibraryOp::AlphaGlow  ? q[0] / 2.0
+                                 : op == LibraryOp::BevelAlpha ? q[0]
+                                                               : q[4] / 2.0;
+            Intermediate* soft = blurred(in, sigma, op == LibraryOp::UnsharpMask);
+            if (!soft) {
+                return nullptr;
+            }
+            Intermediate* out = pass(0, in->texture.get(), soft->texture.get());
+            release(soft);
+            return out;
+        }
+        case LibraryOp::RadialShadow: {
+            Intermediate* shadow = pass(0, in->texture.get(), nullptr);
+            if (shadow && q[7] / 3.0 / div >= 0.05) {
+                Intermediate* soft = blurred(shadow, q[7] / 3.0, false);
+                release(shadow);
+                shadow = soft;
+            }
+            if (!shadow) {
+                return nullptr;
+            }
+            Intermediate* out = pass(1, in->texture.get(), shadow->texture.get());
+            release(shadow);
+            return out;
+        }
+        case LibraryOp::ColorKey: {
+            Intermediate* matte = pass(0, in->texture.get(), nullptr);
+            if (matte && q[4] != 0.0) {
+                Intermediate* thin = pass(1, matte->texture.get(), nullptr);
+                release(matte);
+                matte = thin;
+            }
+            if (matte && q[5] / div >= 0.05) {
+                Intermediate* soft = blurred(matte, q[5], true);
+                release(matte);
+                matte = soft;
+            }
+            if (!matte) {
+                return nullptr;
+            }
+            Intermediate* out = pass(2, in->texture.get(), matte->texture.get());
+            release(matte);
+            return out;
+        }
+        default:
+            break;
+        }
+        // One pass; tex1 = the second picture with mode.w = 1 when there is one.
+        FxUniforms u = libraryUniforms(e.op, e, placement);
+        u.mode[3] = second ? 1 : 0;
+        return fxPass(u, in->texture.get(), second, nullptr, family);
+    };
+
     // One stack effect on `in` (released unless returned).
     const auto applyEffect = [&](Intermediate* in, const LayerEffect& e, const Placement& placement,
                                  std::size_t effectIndex) -> Intermediate* {
@@ -2292,6 +2691,14 @@ std::expected<CompositeStats, Error> Compositor::renderImpl(QRhiCommandBuffer* c
             release(matte);
             break;
         }
+        case EffectType::Library: { // 0.2: Premiere's effect library (EffectLibrary.h)
+            const auto found = matteTextures.find({currentLayer, effectIndex});
+            out = applyLibrary(in, e, placement, found != matteTextures.end() ? found->second : nullptr);
+            if (out == in) {
+                return in; // nothing to do
+            }
+            break;
+        }
         }
         // A masked effect: its result mixed into its input by the masks' coverage (local corrections).
         if (e.mask && !e.mask->shapes.empty() && e.type != EffectType::OpacityMask && out && out != in) {
@@ -2375,12 +2782,43 @@ std::expected<CompositeStats, Error> Compositor::renderImpl(QRhiCommandBuffer* c
             const bool hasB = count == 2 || mix.incomingOnly;
             Intermediate* a = hasA ? renderLayer(i) : nullptr;
             Intermediate* b = hasB ? renderLayer(i + (hasA ? 1 : 0)) : nullptr;
+            // P.2: a flow mix (Optical Flow, Morph Cut) of two rendered sides along their motion; otherwise (one side,
+            // no motion, no texture) it mixes as a cross dissolve below.
+            QRhiTexture* motionTex = mix.kind == TransitionKind::FlowMorph && a && b ? motionTexture(mix.motion, updates) : nullptr;
+            if (motionTex) {
+                FxUniforms fu = fxBase(kFxTransition);
+                storeVec4(fu.p0, std::clamp(mix.progress, 0.0, 1.0), mix.motion->width, mix.motion->height, 0.0);
+                Intermediate* morphed = acquire();
+                if (morphed) {
+                    Pass flow{morphed, -1, writeFx(fu), a->texture.get(), b->texture.get()};
+                    flow.motion = motionTex;
+                    passes.push_back(std::move(flow));
+                    draws.push_back({-1, morphed, blitSlot()});
+                    ++stats.transitions;
+                }
+                release(a);
+                release(b);
+                i += count;
+                continue;
+            }
+            // fx_transition.frag; CPU twin render/reference/Transitions.cpp (the uniforms there: transitionMix). A flow
+            // mix without its motion is a cross dissolve (FlowMorph is no pattern of the library shader).
+            const TransitionKind pattern = mix.kind == TransitionKind::FlowMorph ? TransitionKind::CrossDissolve : mix.kind;
             FxUniforms u = fxBase(kFxTransition);
-            const double kind = mix.kind == TransitionKind::DipToColor ? 1.0 : mix.kind == TransitionKind::Wipe ? 2.0 : 0.0;
-            storeVec4(u.p0, std::clamp(mix.progress, 0.0, 1.0), kind, mix.angleDegrees * 3.14159265358979323846 / 180.0,
-                      std::clamp(mix.feather, 0.0, 1.0));
+            storeVec4(u.p0, std::clamp(mix.progress, 0.0, 1.0), static_cast<double>(pattern),
+                      mix.angleDegrees * 3.14159265358979323846 / 180.0, std::clamp(mix.feather, 0.0, 1.0));
             storeVec4(u.p1, mix.color[0], mix.color[1], mix.color[2], div);
-            Intermediate* mixed = fxPass(u, a ? a->texture.get() : m_dummy.get(), b ? b->texture.get() : nullptr);
+            // Anti-aliasing Quality: the edge's coverage ramp in sequence pixels, at least one canvas texel.
+            constexpr std::array<double, 4> kAntiAliasWidths{1.0, 2.0, 3.0, 5.0};
+            const double aa = std::max(static_cast<double>(div),
+                                       kAntiAliasWidths[static_cast<std::size_t>(std::clamp(mix.antiAliasing, 0, 3))]);
+            storeVec4(u.p2, std::max(0.0, mix.borderWidth), aa, mix.reverse ? 1.0 : 0.0, mix.direction);
+            storeVec4(u.p3, mix.borderColor[0], mix.borderColor[1], mix.borderColor[2],
+                      static_cast<double>(mix.seed & 0xFFFFFFu));
+            storeVec4(u.p4, mix.center[0], mix.center[1], mix.custom[0], mix.custom[1]);
+            storeVec4(u.p5, mix.custom[2], mix.custom[3], 0.0, 0.0);
+            Intermediate* mixed = fxPass(u, a ? a->texture.get() : m_dummy.get(), b ? b->texture.get() : nullptr,
+                                         nullptr, kFamilyTransition);
             release(a);
             release(b);
             if (mixed) {
@@ -2450,6 +2888,7 @@ std::expected<CompositeStats, Error> Compositor::renderImpl(QRhiCommandBuffer* c
                            : output.viewport.isEmpty() ? letterboxRect(targetPixels, composite.canvas)
                                                        : output.viewport;
     const int outputSlot = nextSlot++;
+    QRhiShaderResourceBindings* outputSrb = m_outputSrb.get();
     if (!canvasOnly) {
         OutputUniforms u{};
         storeClip(u.cornerToClip, corr, Affine2D{2.0, 0.0, 0.0, -2.0, -1.0, 1.0});
@@ -2459,6 +2898,45 @@ std::expected<CompositeStats, Error> Compositor::renderImpl(QRhiCommandBuffer* c
         u.uvXform[3] = yUp ? 1.0f : 0.0f;
         u.mode[0] = outputCode(outputTransformFor(colorPipeline, output.role));
         u.mode[1] = output.alpha == OutputAlpha::Opaque ? 0 : output.alpha == OutputAlpha::Straight ? 1 : 2;
+        if (colorPipeline.managed()) { // I.9: the output plan of the project's colour management
+            const auto plan = color::planOutput(colorPipeline.management, outputTargetFor(colorPipeline, output.role));
+            if (!plan) {
+                ++stats.colorPlanErrors; // stays Rec.709
+            } else if (plan->kind == color::OutputPlan::Kind::Lut) {
+                QRhiTexture* lut = cmLutTexture(plan->lut, updates);
+                QRhiShaderResourceBindings* srb = lut ? outputLutSrb(lut) : nullptr;
+                if (srb) {
+                    u.mode[0] = kOutLut;
+                    u.mode[2] = static_cast<std::int32_t>(plan->finish); // output.frag: 0 as is, 1 BT.1886, 2 PQ, 3 HLG
+                    storeColorMatrix(u.toOutput, plan->matrix, 1.0); // the lattice's space (identity: working)
+                    u.cm[0] = static_cast<float>(plan->displayNits);
+                    u.cm[1] = static_cast<float>(plan->peakNits);
+                    u.cm[2] = static_cast<float>(color::hlgSystemGamma(plan->peakNits));
+                    u.cm[3] = static_cast<float>(plan->lut->size);
+                    outputSrb = srb;
+                } else {
+                    ++stats.colorPlanErrors;
+                }
+            } else if (plan->kind == color::OutputPlan::Kind::ToneMapSdr) {
+                u.mode[0] = kOutToneMap;
+                storeColorMatrix(u.toOutput, plan->matrix, 1.0); // Rec.2020 -> Rec.709
+                u.cm[0] = static_cast<float>(plan->referenceWhiteNits);
+                u.cm[1] = static_cast<float>(plan->peakNits);
+            } else if (plan->kind == color::OutputPlan::Kind::Pq || plan->kind == color::OutputPlan::Kind::Hlg) {
+                u.mode[0] = plan->kind == color::OutputPlan::Kind::Pq ? kOutPq : kOutHlg;
+                storeColorMatrix(u.toOutput, plan->matrix, 1.0);
+                u.cm[0] = static_cast<float>(plan->referenceWhiteNits);
+                u.cm[1] = static_cast<float>(plan->peakNits);
+                u.cm[2] = static_cast<float>(color::hlgSystemGamma(plan->peakNits));
+            } else if (plan->kind == color::OutputPlan::Kind::Srgb) {
+                u.mode[0] = 1;
+            } else if (plan->matrix != color::Matrix3{1, 0, 0, 0, 1, 0, 0, 0, 1}) {
+                u.mode[0] = kOutRec709Matrix; // Wide Gamut (No Tone Mapping): ACEScg -> Rec.709, BT.709, clipped
+                storeColorMatrix(u.toOutput, plan->matrix, 1.0);
+            } else {
+                u.mode[0] = 0;
+            }
+        }
         updates->updateDynamicBuffer(m_uniforms.get(), static_cast<quint32>(outputSlot) * slotSize, sizeof(u),
                                      &u);
     }
@@ -2468,6 +2946,9 @@ std::expected<CompositeStats, Error> Compositor::renderImpl(QRhiCommandBuffer* c
             return std::unexpected(ok.error());
         }
     }
+    // P.2: flow mixes need their own pipeline; without it they mix as cross dissolves (their uniforms read as one).
+    const bool flowReady = std::none_of(passes.begin(), passes.end(), [](const Pass& p) { return p.motion != nullptr; }) ||
+                           ensureFlowPipeline(sizeof(FxUniforms)).has_value();
 
     const QRhiCommandBuffer::VertexInput quad(m_quad.get(), 0);
     const QRhiViewport canvasViewport(0, 0, static_cast<float>(canvasPixels.width()),
@@ -2527,6 +3008,12 @@ std::expected<CompositeStats, Error> Compositor::renderImpl(QRhiCommandBuffer* c
     prepareBlends(draws);
     for (const Pass& pass : passes) {
         prepareBlends(pass.draws);
+        if (pass.family != kFamilyCore && !fxFamilyPipeline(pass.family)) {
+            updates->release();
+            return std::unexpected(Error{ErrorCode::DeviceError,
+                                         std::string("Could not create the effect pipeline of ") +
+                                             kFxFamilyShaders[static_cast<std::size_t>(pass.family)]});
+        }
     }
     const auto drawCanvas = [&](const std::vector<Draw>& list) {
         QRhiGraphicsPipeline* bound = nullptr;
@@ -2585,8 +3072,18 @@ std::expected<CompositeStats, Error> Compositor::renderImpl(QRhiCommandBuffer* c
                 cb->setVertexInput(0, 1, &quad);
                 cb->draw(4);
             }
+        } else if (QRhiShaderResourceBindings* srb = pass.motion && flowReady
+                                                          ? flowSrb(pass.in0, pass.in1, pass.motion, sizeof(FxUniforms))
+                                                          : nullptr) {
+            // P.2: the flow mix (shaders/flowmix.frag).
+            cb->setGraphicsPipeline(m_flowPipeline.get());
+            cb->setViewport(canvasViewport);
+            const QRhiCommandBuffer::DynamicOffset offset(0, static_cast<quint32>(pass.slot) * slotSize);
+            cb->setShaderResources(srb, 1, &offset);
+            cb->setVertexInput(0, 1, &quad);
+            cb->draw(4);
         } else {
-            drawFx(m_fxPipeline.get(), bound, pass.slot, pass.in0, pass.in1);
+            drawFx(fxFamilyPipeline(pass.family), bound, pass.slot, pass.in0, pass.in1);
         }
         cb->endPass();
     }
@@ -2628,7 +3125,7 @@ std::expected<CompositeStats, Error> Compositor::renderImpl(QRhiCommandBuffer* c
                          static_cast<float>(targetPixels.height() - viewport.y() - viewport.height()),
                          static_cast<float>(viewport.width()), static_cast<float>(viewport.height())));
         const QRhiCommandBuffer::DynamicOffset offset(0, static_cast<quint32>(outputSlot) * slotSize);
-        cb->setShaderResources(m_outputSrb.get(), 1, &offset);
+        cb->setShaderResources(outputSrb, 1, &offset);
         cb->setVertexInput(0, 1, &quad);
         cb->draw(4);
     }

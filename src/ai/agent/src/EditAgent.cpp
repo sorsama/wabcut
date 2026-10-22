@@ -650,6 +650,24 @@ AgentOutcome EditAgent::runUnguarded(IChatModel& model, const AgentRequest& requ
                                               constraintLines(request.constraints, &baseSeq)));
 
     const auto today = m_options.today();
+    // p02 integration: native tool calls carry every offered tool's full JSON schema, and the 0.2 catalog's routed
+    // groups no longer always fit a small local context. The lowest-ranked routed tools are left out until the first
+    // call fits (the constrained envelope's compact signatures need no trimming); a request that still does not fit
+    // stops below as before.
+    if (localModel && !constrained && budget > 0 && !previous) {
+        const std::vector<ToolSpec> all = tools();
+        RouteOptions route;
+        route.maxTools = std::min(budget, chat.tools.size());
+        while (route.maxTools > 1 &&
+               estimateChatCost(model.spec(), chat, today).inputTokens + chat.maxOutputTokens > contextLimit) {
+            --route.maxTools;
+            chat.tools = routeTools(all, *m_options.registry, request.prompt, route);
+        }
+        out.offeredTools.clear();
+        for (const ToolSpec& t : chat.tools) {
+            out.offeredTools.push_back(t.name);
+        }
+    }
     int verificationsLeft = limits.verificationRetries;
     std::optional<std::uint64_t> verifiedAt; // staging revision the report describes
     bool finished = false;

@@ -62,7 +62,7 @@ std::string typeText(const Json& schema) {
     if (schema.contains("enum")) {
         std::string out;
         for (const Json& v : schema["enum"]) {
-            out += (out.empty() ? "" : " \\| ") + std::string("`") + v.get<std::string>() + "`";
+            out += (out.empty() ? "" : " \\| ") + std::string("`") + (v.is_string() ? v.get<std::string>() : v.dump()) + "`";
         }
         return out;
     }

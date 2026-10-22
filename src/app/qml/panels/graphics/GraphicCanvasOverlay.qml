@@ -200,6 +200,34 @@ Item {
         }
     }
 
+    // 0.2, type on a path: the selected text layer's path, drawn thin under its point handles.
+    Canvas {
+        id: pathCanvas
+        objectName: "graphicTextPath"
+        anchors.fill: parent
+        visible: root.hasSelection && (root.selection.textPath ?? []).length > 0
+        readonly property var points: root.selection.textPath ?? []
+        readonly property color stroke: Theme.accentStroke
+        onPointsChanged: requestPaint()
+        onWidthChanged: requestPaint()
+        onHeightChanged: requestPaint()
+        onPaint: {
+            const ctx = getContext("2d")
+            ctx.reset()
+            const pts = points
+            if (pts.length < 4)
+                return
+            ctx.strokeStyle = stroke
+            ctx.lineWidth = 1.5
+            ctx.setLineDash([4, 3])
+            ctx.beginPath()
+            ctx.moveTo(pts[0] * width, pts[1] * height)
+            for (let i = 2; i + 1 < pts.length; i += 2)
+                ctx.lineTo(pts[i] * width, pts[i + 1] * height)
+            ctx.stroke()
+        }
+    }
+
     // The selected layer's handles (by count, so a drag's own updates keep the pressed handle alive).
     Repeater {
         model: root.hasSelection && !root.editing ? (root.selection.handles ?? []).length : 0
@@ -208,7 +236,8 @@ Item {
             required property int index
             readonly property var modelData: index < (root.selection.handles ?? []).length ? root.selection.handles[index]
                                                                                           : ({kind: "", x: 0, y: 0})
-            readonly property bool round: modelData.kind === "rotate"
+            readonly property bool pathPoint: modelData.kind.startsWith("pathVertex-")
+            readonly property bool round: modelData.kind === "rotate" || pathPoint
             readonly property real size: 9
             objectName: "graphicHandle_" + modelData.kind
             x: modelData.x * root.width - width / 2
@@ -220,7 +249,8 @@ Item {
             border.width: 1.5
             border.color: Theme.accentStroke
             Accessible.role: Accessible.Button
-            Accessible.name: modelData.kind === "rotate" ? qsTr("Rotate the layer")
+            Accessible.name: pathPoint ? qsTr("Path point %1").arg(Number(modelData.kind.slice(11)) + 1)
+                           : modelData.kind === "rotate" ? qsTr("Rotate the layer")
                            : modelData.kind === "box-right" || modelData.kind === "box-left" ? qsTr("Text box width")
                            : modelData.kind === "box-bottom" ? qsTr("Text box height")
                            : modelData.kind === "box-corner" ? qsTr("Text box size")
@@ -230,7 +260,8 @@ Item {
                 id: handleMouse
                 anchors.fill: parent
                 anchors.margins: -4
-                cursorShape: handle.round ? Qt.PointingHandCursor
+                cursorShape: handle.pathPoint ? Qt.SizeAllCursor
+                           : handle.round ? Qt.PointingHandCursor
                            : handle.modelData.kind === "box-right" || handle.modelData.kind === "box-left" ? Qt.SizeHorCursor
                            : handle.modelData.kind === "box-bottom" ? Qt.SizeVerCursor : Qt.SizeFDiagCursor
                 preventStealing: true

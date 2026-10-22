@@ -76,9 +76,11 @@ Panel {
             x: Theme.space(3)
             anchors.verticalCenter: parent.verticalCenter
             width: parent.width - x - bypass.width - Theme.space(2)
-            text: effectRow.modelData.masks !== ""
+            // 0.2: Border, Ultra Key and Track Matte Key say what they do at this frame (detail).
+            readonly property string base: effectRow.modelData.masks !== ""
                   ? qsTr("%1 · %2 · masks: %3").arg(effectRow.modelData.name).arg(effectRow.modelData.stateText).arg(effectRow.modelData.masks)
                   : qsTr("%1 · %2").arg(effectRow.modelData.name).arg(effectRow.modelData.stateText)
+            text: (effectRow.modelData.detail ?? "") !== "" ? qsTr("%1 · %2").arg(base).arg(effectRow.modelData.detail) : base
             elide: Text.ElideRight
             color: effectRow.modelData.state === "applied" ? Theme.textPrimary : Theme.textTertiary
             font.family: Theme.fontSans
@@ -267,6 +269,17 @@ Panel {
                         Line {
                             text: qsTr("Opacity %1 · %2").arg(layer.modelData.opacityText).arg(layer.modelData.motionText)
                             color: Theme.textTertiary
+                        }
+                        // 0.2: the blend mode, and a layer that is another layer's matte (not drawn itself).
+                        Line {
+                            visible: layer.modelData.blendText !== ""
+                            text: qsTr("Blend mode: %1").arg(layer.modelData.blendText)
+                        }
+                        Line {
+                            objectName: "frameInspectorMatte_" + layer.modelData.key
+                            visible: layer.modelData.matteText !== ""
+                            text: qsTr("%1: not drawn itself, it shapes that layer").arg(layer.modelData.matteText)
+                            color: Theme.accentStroke
                         }
                         Line {
                             visible: layer.modelData.gradeText !== ""

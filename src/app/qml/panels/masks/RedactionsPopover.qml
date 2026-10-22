@@ -65,6 +65,17 @@ Popover {
             Item {
                 Layout.fillWidth: true
             }
+            // 0.2: every face of this source, followed and covered (redaction.detectFaces).
+            PillButton {
+                objectName: "redactFacesButton"
+                text: qsTr("Redact faces")
+                iconName: "eye-off"
+                compact: true
+                enabled: !ObjectMasks.busy
+                tooltip: qsTr("Find every face from In to Out (or the whole source) and cover each one with its own redaction")
+                Accessible.name: qsTr("Redact every face in this source")
+                onClicked: ObjectMasks.redactFaces()
+            }
             PillButton {
                 visible: !ObjectMasks.available && !ObjectMasks.downloading
                 compact: true

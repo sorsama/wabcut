@@ -1,6 +1,7 @@
 pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Layouts
+import QtQuick.Controls.Basic
 
 // The selected layer of a graphic in Essential Graphics > Edit (Graphics.layer): its text (font, size, weight, colour,
 // tracking, leading, alignment, paragraph box, background), shape (kind, size, corners, fill - solid or a linear / radial
@@ -22,6 +23,8 @@ ColumnLayout {
     readonly property var shadow: sel.shadow ?? ({})
     readonly property var masks: sel.masks ?? []
     readonly property var runs: text.runs ?? []
+    /// 0.2: type on a path ({ enabled, closed, reverse, perpendicular, forceAlignment, firstMargin, lastMargin }).
+    readonly property var onPath: text.onPath ?? ({ enabled: false })
     /// The text run the run controls edit (most graphics have one).
     property int runIndex: 0
     readonly property var run: runs[Math.min(runIndex, Math.max(0, runs.length - 1))] ?? ({})
@@ -94,14 +97,118 @@ ColumnLayout {
         visible: root.kind === "text"
         spacing: Theme.space(1)
 
-        FieldInput {
+        // The layer's text (Enter starts a new line), misspelled words underlined (right-click for suggestions).
+        TextArea {
+            id: layerText
             objectName: "graphicText"
             Layout.fillWidth: true
             text: root.text.text ?? ""
             placeholderText: qsTr("Type the text")
+            placeholderTextColor: Theme.textTertiary
+            wrapMode: TextEdit.Wrap
+            selectByMouse: true
+            padding: Theme.space(1.5)
+            color: Theme.textPrimary
+            selectionColor: Theme.accentFill
+            selectedTextColor: Theme.accentOnFill
+            font.family: Theme.fontSans
+            font.pixelSize: Theme.textMd
             Accessible.name: qsTr("Text")
-            onTextEdited: Graphics.setText(root.layerId, text)
-            onEditingFinished: Graphics.endEdit()
+            onTextChanged: {
+                if (activeFocus && text !== (root.text.text ?? ""))
+                    Graphics.setText(root.layerId, text)
+            }
+            onActiveFocusChanged: {
+                if (!activeFocus)
+                    Graphics.endEdit()
+            }
+            Keys.onShortcutOverride: event => event.accepted = event.text !== "" || event.key === Qt.Key_Backspace
+                                                               || event.key === Qt.Key_Delete
+            background: Rectangle {
+                radius: Theme.radiusField
+                color: layerText.activeFocus ? Theme.raised : Theme.sunken
+                border.width: layerText.activeFocus ? Theme.focusRingWidth : Theme.hairline
+                border.color: layerText.activeFocus ? Theme.accentStroke : Theme.border
+            }
+            ContextMenu.menu: null // SpellingMenu below has Cut, Copy and Paste too
+            SpellHighlighter {
+                objectName: "graphicTextSpelling"
+                document: layerText.textDocument
+                language: root.text.language ?? ""
+                color: Theme.danger
+            }
+            TapHandler {
+                acceptedButtons: Qt.RightButton
+                onTapped: eventPoint => layerSpelling.openAt(eventPoint.position.x, eventPoint.position.y)
+            }
+            SpellingMenu {
+                id: layerSpelling
+                target: layerText
+                language: root.text.language ?? ""
+                onCorrected: text => {
+                    Graphics.setText(root.layerId, text)
+                    Graphics.endEdit()
+                }
+            }
+        }
+        // 0.2: type on a path - the path, its options and margins; its points move on the Program Monitor.
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: Theme.space(1)
+            Text {
+                text: qsTr("Path")
+                color: Theme.textSecondary
+                font.family: Theme.fontSans
+                font.pixelSize: Theme.textSm
+            }
+            GraphicChoicePill {
+                objectName: "graphicTextPath"
+                Layout.fillWidth: true
+                options: [{ id: "none", name: qsTr("Straight lines") }, { id: "line", name: qsTr("Line") },
+                    { id: "arc", name: qsTr("Arc") }, { id: "circle", name: qsTr("Circle") }, { id: "wave", name: qsTr("Wave") }]
+                current: root.onPath.enabled === true ? "" : "none"
+                placeholder: qsTr("On a path (drag its points on the monitor)")
+                Accessible.name: qsTr("Type on a path")
+                onChosen: id => Graphics.setTextPath(root.layerId, id)
+            }
+        }
+        Flow {
+            Layout.fillWidth: true
+            visible: root.onPath.enabled === true
+            spacing: Theme.space(2)
+            Repeater {
+                model: [{ key: "perpendicular", label: qsTr("Perpendicular") }, { key: "reverse", label: qsTr("Reverse") },
+                    { key: "forceAlignment", label: qsTr("Force alignment") }]
+                delegate: Toggle {
+                    required property var modelData
+                    objectName: "graphicTextPath_" + modelData.key
+                    text: modelData.label
+                    checked: root.onPath[modelData.key] === true
+                    onToggled: Graphics.setTextPathOption(root.layerId, modelData.key, checked)
+                }
+            }
+        }
+        GraphicParamRow {
+            visible: root.onPath.enabled === true
+            layerId: root.layerId
+            path: "text.onPath.firstMargin"
+            param: root.onPath.firstMargin ?? ({})
+            label: qsTr("First margin")
+            unit: qsTr("px")
+            from: -2000
+            to: 4000
+            origin: 0
+        }
+        GraphicParamRow {
+            visible: root.onPath.enabled === true
+            layerId: root.layerId
+            path: "text.onPath.lastMargin"
+            param: root.onPath.lastMargin ?? ({})
+            label: qsTr("Last margin")
+            unit: qsTr("px")
+            from: -2000
+            to: 4000
+            origin: 0
         }
         RowLayout {
             Layout.fillWidth: true

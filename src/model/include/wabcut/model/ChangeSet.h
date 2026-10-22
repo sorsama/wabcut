@@ -71,6 +71,9 @@ struct ChangeSet {
     bool reviewNotesChanged = false;     ///< ProjectState::reviewNotes (C.9)
     bool brandKitChanged = false;        ///< ProjectState::brandKit (C.13)
     bool templatesChanged = false;       ///< ProjectState::templates (C.13)
+    bool colorManagementChanged = false; ///< ProjectState::colorManagement (I.9)
+    bool textStylesChanged = false;      ///< ProjectState::textStyles (0.2)
+    bool freeformChanged = false;        ///< ProjectState::freeform (0.2, P.3: Freeform views)
 
     const SequenceChange* sequence(SequenceId id) const;
     bool empty() const;

@@ -227,6 +227,109 @@ std::expected<KysImport, Error> importKys(const std::filesystem::path& path,
     return parseKys(xml, registry);
 }
 
+std::optional<std::uint32_t> encodeKysVirtualKey(const KeyChord& chord) {
+    const bool keypad = chord.mods.has(Modifier::Keypad);
+    for (const auto& [code, key] : kNamedKeys) {
+        if (key == chord.key && !keypad) {
+            return code;
+        }
+    }
+    for (int n = 1; n <= 12; ++n) {
+        if (chord.key == functionKey(n) && !keypad) {
+            return kFirstFunctionKey + static_cast<std::uint32_t>(n - 1);
+        }
+    }
+    // Printable US-ASCII keys: their character (letters upper case, as Premiere writes them).
+    if (chord.key > 0x20 && chord.key < 0x7f) {
+        int c = chord.key;
+        if (c >= 'a' && c <= 'z') {
+            c -= 'a' - 'A';
+        }
+        return kCharacterFlag | (keypad ? kKeypadFlag : 0u) | static_cast<std::uint32_t>(c);
+    }
+    return std::nullopt;
+}
+
+KysExport exportKys(const KeymapManager& keymap) {
+    const bool mac = usesMacModifiers(keymap.platform());
+    const std::span<const ModifierElement> modifierElements =
+        mac ? std::span<const ModifierElement>(kMacModifiers) : std::span<const ModifierElement>(kWindowsModifiers);
+    KysExport out;
+    // context -> items, in registry order.
+    std::vector<std::pair<std::string, std::vector<std::string>>> contexts;
+    const auto contextItems = [&](std::string_view name) -> std::vector<std::string>& {
+        for (auto& [c, items] : contexts) {
+            if (c == name) {
+                return items;
+            }
+        }
+        contexts.emplace_back(std::string(name), std::vector<std::string>{});
+        return contexts.back().second;
+    };
+    const auto item = [&](std::string_view command, std::optional<std::uint32_t> key, Modifiers mods) {
+        std::string text = std::format("\t\t\t<item.%INDEX% Version=\"1\">\n");
+        if (key) {
+            text += std::format("\t\t\t\t<virtualkey>{}</virtualkey>\n", *key);
+            for (const ModifierElement& m : modifierElements) {
+                text += std::format("\t\t\t\t<{0}>{1}</{0}>\n", m.name, mods.has(m.modifier) ? "true" : "false");
+            }
+        }
+        text += std::format("\t\t\t\t<commandname>{}</commandname>\n\t\t\t</item.%INDEX%>\n", command);
+        return text;
+    };
+    for (const CommandInfo& info : keymap.registry().all()) {
+        if (info.kysContext.empty() || info.kysName.empty()) {
+            continue;
+        }
+        ++out.commands;
+        std::vector<std::string>& items = contextItems(info.kysContext);
+        const std::vector<KeyChord> chords = keymap.chordsFor(info.id);
+        bool any = false;
+        for (const KeyChord& chord : chords) {
+            const auto key = encodeKysVirtualKey(chord);
+            if (!key) {
+                out.skipped.push_back(std::string(info.displayName) + ": " + formatKeyChord(chord, keymap.platform()));
+                continue;
+            }
+            items.push_back(item(info.kysName, key, chord.mods.without(Modifier::Keypad)));
+            any = true;
+        }
+        if (!any) {
+            items.push_back(item(info.kysName, std::nullopt, Modifiers()));
+        }
+    }
+    std::string xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<PremiereData Version=\"3\">\n\t<shortcuts Version=\"5\">\n";
+    xml += std::format("\t\t<platform>{}</platform>\n", mac ? "macintosh" : "windows");
+    for (const auto& [context, items] : contexts) {
+        xml += std::format("\t\t<{} Version=\"1\">\n\t\t\t<itemcount>{}</itemcount>\n", context, items.size());
+        for (std::size_t i = 0; i < items.size(); ++i) {
+            std::string text = items[i];
+            for (std::size_t at = text.find("%INDEX%"); at != std::string::npos; at = text.find("%INDEX%", at)) {
+                text.replace(at, 7, std::to_string(i));
+            }
+            xml += text;
+        }
+        xml += std::format("\t\t</{}>\n", context);
+    }
+    xml += "\t</shortcuts>\n</PremiereData>\n";
+    out.xml = std::move(xml);
+    return out;
+}
+
+std::expected<KysExport, Error> saveKys(const KeymapManager& keymap, const std::filesystem::path& path) {
+    KysExport out = exportKys(keymap);
+    std::ofstream file(path, std::ios::binary | std::ios::trunc);
+    if (!file) {
+        return std::unexpected(Error{ErrorCode::IoError, std::format("cannot write '{}'", utf8Path(path))});
+    }
+    file.write(out.xml.data(), static_cast<std::streamsize>(out.xml.size()));
+    file.flush();
+    if (!file) {
+        return std::unexpected(Error{ErrorCode::IoError, std::format("cannot write '{}'", utf8Path(path))});
+    }
+    return out;
+}
+
 std::expected<void, Error> applyKysImport(KeymapManager& keymap, const KysImport& import) {
     if (usesMacModifiers(import.platform) != usesMacModifiers(keymap.platform())) {
         return std::unexpected(

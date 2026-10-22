@@ -1,7 +1,7 @@
 pragma ComponentBehavior: Bound
 import QtQuick
 
-// The Library's tools menu (M5k, the header's ··· button): hover scrub, unused media (show, remove), duplicate media
+// The Library's tools menu (M5k, the header's ··· button): Import Image Sequence (0.2), hover scrub, unused media (show, remove), duplicate media
 // and Make Subclip; Sort by (M5n: the keyboard's way to sort, as a click on a list header does; the current column
 // again reverses the order). Its own file: QtQuick.Controls' ContextMenu attached type would hide Wabcut's ContextMenu
 // in a file that imports the controls.
@@ -11,7 +11,37 @@ ContextMenu {
 
     signal removeUnusedRequested()
     signal makeSubclipRequested()
+    signal importImageSequenceRequested()
+    // 0.2 (P.3)
+    signal newSearchBinRequested()
+    signal importFromProjectRequested()
+    signal productionRequested()
 
+    ContextMenuItem {
+        objectName: "libraryImportImageSequence"
+        text: qsTr("Import image sequence…")
+        iconName: "import"
+        onTriggered: menu.importImageSequenceRequested()
+    }
+    ContextMenuItem {
+        objectName: "libraryImportFromProject"
+        text: qsTr("Import from project…")
+        iconName: "layers"
+        onTriggered: menu.importFromProjectRequested()
+    }
+    ContextMenuItem {
+        objectName: "libraryNewSearchBin"
+        text: qsTr("New search bin…")
+        iconName: "folder-search"
+        onTriggered: menu.newSearchBinRequested()
+    }
+    ContextMenuItem {
+        objectName: "libraryOpenProduction"
+        text: qsTr("Productions and other projects")
+        iconName: "folders"
+        onTriggered: menu.productionRequested()
+    }
+    ContextMenuSeparator {}
     ContextMenuItem {
         objectName: "libraryHoverScrubItem"
         text: qsTr("Hover scrub")
@@ -19,6 +49,18 @@ ContextMenu {
         checked: Library.hoverScrub
         command: "project.hoverScrub"
         onTriggered: Library.hoverScrub = !Library.hoverScrub
+    }
+    ContextMenuItem {
+        objectName: "libraryLargerThumbnails"
+        text: qsTr("Larger thumbnails")
+        enabled: Library.thumbnailScale < 2
+        onTriggered: Library.thumbnailScale += 0.25
+    }
+    ContextMenuItem {
+        objectName: "librarySmallerThumbnails"
+        text: qsTr("Smaller thumbnails")
+        enabled: Library.thumbnailScale > 0.5
+        onTriggered: Library.thumbnailScale -= 0.25
     }
     ContextMenuSeparator {}
     ContextMenuItem {
@@ -70,6 +112,7 @@ ContextMenu {
         }
     }
     ContextMenuSeparator {}
+    NewItemSubmenu {} // P.2: Bars and Tone, Universal Counting Leader and the other synthetic items
     ContextMenuItem {
         text: qsTr("Make subclip…")
         iconName: "scissors"

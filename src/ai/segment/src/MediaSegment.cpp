@@ -4,8 +4,11 @@
 #include <wabcut/ai/edit/MediaServices.h>
 #include <wabcut/ai/search/MediaSearchAccess.h>
 #include <wabcut/ai/vision/HelperDetector.h>
+#include <wabcut/editor/ProjectDocument.h>
+#include <wabcut/export/RenderedVideoSource.h>
 #include <wabcut/media/Fingerprint.h>
 #include <wabcut/media/VideoDecoder.h>
+#include <wabcut/model/Resolve.h>
 #include <wabcut/render/Matte.h>
 
 #include <algorithm>
@@ -122,6 +125,234 @@ TimeRange MediaFrameSource::frames() const { return m->frames; }
 double MediaFrameSource::aspect() const { return m->aspect; }
 int MediaFrameSource::decoded() const { return m->decoded; }
 
+// ---- NestedFrameSource --------------------------------------------------------------------------------------------
+
+namespace {
+constexpr int kNestedLongSide = 1024; ///< the rendered picture's longer side (the model's input is 1024 square)
+constexpr std::int64_t kNestedRunAhead = 900; ///< frames one forward renderer run may cover (30 s at 30 fps)
+
+/// `frame` (RGBA8 or anything search::storedPicture reads) at `size` x `size`, stretched: a box average per texel.
+search::Image squarePicture(const media::FrameHandle& frame, int size) {
+    const media::CpuPlanes* cpu = frame.cpu();
+    if (!cpu || frame.format != media::PixelFormat::RGBA8) {
+        return search::storedPicture(frame, size, size);
+    }
+    search::Image out;
+    out.width = size;
+    out.height = size;
+    out.rgb.assign(static_cast<std::size_t>(size) * size * 3, 0);
+    const media::Plane& plane = cpu->planes[0];
+    for (int y = 0; y < size; ++y) {
+        const int y0 = y * frame.height / size, y1 = std::max(y0 + 1, (y + 1) * frame.height / size);
+        for (int x = 0; x < size; ++x) {
+            const int x0 = x * frame.width / size, x1 = std::max(x0 + 1, (x + 1) * frame.width / size);
+            std::uint32_t sum[3] = {0, 0, 0};
+            std::uint32_t n = 0;
+            for (int yy = y0; yy < std::min(y1, frame.height); ++yy) {
+                const std::uint8_t* row = plane.data + static_cast<std::ptrdiff_t>(yy) * plane.stride;
+                for (int xx = x0; xx < std::min(x1, frame.width); ++xx) {
+                    sum[0] += row[xx * 4];
+                    sum[1] += row[xx * 4 + 1];
+                    sum[2] += row[xx * 4 + 2];
+                    ++n;
+                }
+            }
+            std::uint8_t* px = &out.rgb[(static_cast<std::size_t>(y) * size + x) * 3];
+            for (int c = 0; c < 3; ++c) {
+                px[c] = static_cast<std::uint8_t>(n ? (sum[c] + n / 2) / n : 0);
+            }
+        }
+    }
+    return out;
+}
+} // namespace
+
+struct NestedFrameSource::Impl {
+    ProjectState shown;
+    SequencePtr sequence;
+    exporter::VideoSourceFactory factory;
+    int width = 0;
+    int height = 0;
+    Rate rate{30, 1};
+    Ticks frameDuration{};
+    TimeRange frames;
+    double aspect = 16.0 / 9.0;
+    // The renderer run going forward: frames [from, from + total * fd), `taken` delivered so far.
+    std::unique_ptr<exporter::IVideoFrameSource> running;
+    Ticks from{};
+    std::int64_t total = 0;
+    std::int64_t requested = 0;
+    std::int64_t taken = 0;
+    int runs = 0;
+    struct Picture {
+        Ticks time{};
+        int size = 0;
+        search::Image image;
+    };
+    std::deque<Picture> kept; ///< most recent first
+
+    ~Impl() { stop(); }
+    void stop() {
+        if (running) {
+            running->stop();
+            running.reset();
+        }
+    }
+    const Picture* find(Ticks t, int size) const {
+        const auto it = std::ranges::find_if(kept, [&](const Picture& p) { return p.size == size && p.time == t; });
+        return it == kept.end() ? nullptr : &*it;
+    }
+    Ticks onGrid(Ticks t) const { return frames.start + Ticks{(t - frames.start).value / frameDuration.value * frameDuration.value}; }
+    Ticks nextTime() const { return from + Ticks{frameDuration.value * taken}; }
+
+    std::expected<void, Error> start(Ticks at, std::int64_t count) {
+        stop();
+        exporter::VideoSourceFormat format;
+        format.width = width;
+        format.height = height;
+        format.frameRate = rate;
+        format.start = at;
+        format.frameCount = std::max<std::int64_t>(1, count);
+        auto source = factory(shown, *sequence, format);
+        if (!source) {
+            return std::unexpected(source.error());
+        }
+        running = std::move(*source);
+        from = at;
+        total = format.frameCount;
+        requested = 0;
+        taken = 0;
+        ++runs;
+        return {};
+    }
+    /// The running renderer's next frame, kept at `size`.
+    std::expected<const Picture*, Error> take(int size) {
+        while (requested < total && requested - taken < std::max(1, running->maxInFlight())) {
+            if (auto r = running->request(requested); !r) {
+                return std::unexpected(r.error());
+            }
+            ++requested;
+        }
+        auto frame = running->next();
+        if (!frame) {
+            return std::unexpected(frame.error());
+        }
+        Picture p;
+        p.time = nextTime();
+        p.size = size;
+        p.image = squarePicture(*frame, size);
+        ++taken;
+        if (!p.image.valid()) {
+            return std::unexpected(Error(ErrorCode::DecoderError, "a frame of the nested sequence could not be rendered"));
+        }
+        kept.push_front(std::move(p));
+        while (kept.size() > 14) {
+            kept.pop_back();
+        }
+        return &kept.front();
+    }
+};
+
+NestedFrameSource::NestedFrameSource() : m(std::make_unique<Impl>()) {}
+NestedFrameSource::~NestedFrameSource() = default;
+
+std::expected<std::unique_ptr<NestedFrameSource>, Error> NestedFrameSource::open(const ProjectState& state, const Clip& clip,
+                                                                               const std::filesystem::path& projectFile,
+                                                                               exporter::VideoSourceFactory factory) {
+    const Sequence* nested = clip.isNested() ? state.findSequence(clip.sequence) : nullptr;
+    if (!nested || nested->width <= 0 || nested->height <= 0) {
+        return std::unexpected(Error(ErrorCode::InvalidArgument, "the clip plays no nested or multicam sequence"));
+    }
+    std::unique_ptr<NestedFrameSource> source(new NestedFrameSource());
+    Impl& m = *source->m;
+    // The nest as the clip shows it: only the video tracks it reads (a multicam clip's active angle), no captions; a
+    // multicam source has no master stage of its own.
+    auto seq = std::make_shared<Sequence>(*nested);
+    const std::vector<std::size_t> read = nestedTracksRead(*nested, clip);
+    for (std::size_t i = 0; i < seq->videoTracks.size(); ++i) {
+        if (std::ranges::find(read, i) == read.end()) {
+            auto track = std::make_shared<Track>(*seq->videoTracks[i]);
+            track->clips = ClipList{};
+            track->transitions.clear();
+            track->effects.clear();
+            seq->videoTracks[i] = std::move(track);
+        }
+    }
+    seq->captionTracks.clear();
+    if (seq->multicam) {
+        seq->effects.clear();
+    }
+    m.sequence = seq;
+    m.shown = editor::withMediaChecked(state, projectFile).withSequence(seq);
+    m.factory = factory ? std::move(factory) : exporter::renderedVideoSourceFactory([] {
+        exporter::RenderedSourceOptions o;
+        o.renderThreads = 1;
+        o.maxInFlight = 2;
+        return o;
+    }());
+    const double scale = std::min(1.0, static_cast<double>(kNestedLongSide) / std::max(nested->width, nested->height));
+    m.width = std::max(16, static_cast<int>(std::lround(nested->width * scale)) & ~1);
+    m.height = std::max(16, static_cast<int>(std::lround(nested->height * scale)) & ~1);
+    m.rate = nested->frameRate.isValid() ? nested->frameRate : Rate{30, 1};
+    m.frameDuration = m.rate.isExact() ? Ticks{m.rate.ticksPerUnit()} : framesToTicks(1, m.rate, Rounding::Floor).value_or(Ticks{kTicksPerSecond / 30});
+    m.frames = TimeRange{Ticks{0}, nested->duration.value > 0 ? nested->duration : m.frameDuration};
+    m.aspect = static_cast<double>(nested->width) / nested->height;
+    return source;
+}
+
+std::expected<search::Image, Error> NestedFrameSource::pictureAt(Ticks t, int size) {
+    const Ticks at = m->onGrid(std::clamp(t, m->frames.start, m->frames.end() - Ticks{1}));
+    if (const Impl::Picture* had = m->find(at, size)) {
+        return had->image;
+    }
+    const auto remaining = [&](Ticks from) { return std::max<std::int64_t>(1, (m->frames.end() - from).value / m->frameDuration.value); };
+    if (m->running && at == m->nextTime() && m->taken < m->total) {
+        auto got = m->take(size); // the run going forward
+        if (!got) {
+            return std::unexpected(got.error());
+        }
+        return (*got)->image;
+    }
+    if (m->running && at > m->nextTime() && m->taken < m->total && (at - m->nextTime()).value / m->frameDuration.value < 8) {
+        while (m->nextTime() < at) { // a few frames ahead: skip forward in the run
+            if (auto got = m->take(size); !got) {
+                return std::unexpected(got.error());
+            }
+        }
+        auto got = m->take(size);
+        if (!got) {
+            return std::unexpected(got.error());
+        }
+        return (*got)->image;
+    }
+    // Backward (or a jump): render a block that ends at `at` and keep it, so the next frames back are kept too. A jump
+    // forward starts a run from `at`.
+    const bool back = !m->kept.empty() && at < m->kept.front().time;
+    const Ticks start = back ? std::max(m->frames.start, at - Ticks{m->frameDuration.value * 11}) : at;
+    const std::int64_t count = back ? (at - start).value / m->frameDuration.value + 1 : std::min(kNestedRunAhead, remaining(at));
+    if (auto started = m->start(start, count); !started) {
+        return std::unexpected(started.error());
+    }
+    while (m->nextTime() <= at) {
+        if (auto got = m->take(size); !got) {
+            return std::unexpected(got.error());
+        }
+    }
+    if (back) {
+        m->stop();
+    }
+    if (const Impl::Picture* had = m->find(at, size)) {
+        return had->image;
+    }
+    return std::unexpected(Error(ErrorCode::DecoderError, "a frame of the nested sequence could not be rendered"));
+}
+
+Ticks NestedFrameSource::frameDuration() const { return m->frameDuration; }
+TimeRange NestedFrameSource::frames() const { return m->frames; }
+double NestedFrameSource::aspect() const { return m->aspect; }
+int NestedFrameSource::runs() const { return m->runs; }
+const ProjectState& NestedFrameSource::shown() const { return m->shown; }
+
 // ---- Services -----------------------------------------------------------------------------------------------------
 
 namespace {
@@ -211,6 +442,14 @@ std::shared_ptr<SegmentServices> mediaSegmentServices(MediaSegmentOptions o) {
             return std::unexpected(path.error());
         }
         return media::sourceFingerprint(*path);
+    };
+    services->nestedFrames = [projectFile, renderer = o.nestedRenderer](const ProjectState& state,
+                                                                        const Clip& clip) -> std::expected<std::unique_ptr<FrameSource>, Error> {
+        auto source = NestedFrameSource::open(state, clip, projectFile, renderer);
+        if (!source) {
+            return std::unexpected(source.error());
+        }
+        return std::unique_ptr<FrameSource>(std::move(*source));
     };
     services->cacheRoot = cacheRoot;
     if (o.detector && vision::subjectModelsInstalled(store)) {

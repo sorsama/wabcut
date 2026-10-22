@@ -377,26 +377,6 @@ std::array<std::uint8_t, 4> greenScreen(int x, int y) {
     return {byte(0.16 + 0.5 * light), byte(0.78 + light), byte(0.27 + 0.3 * light), a};
 }
 
-ref::Image toReference(const LinearImage& image) {
-    ref::Image out(image.width, image.height);
-    for (int y = 0; y < image.height; ++y) {
-        for (int x = 0; x < image.width; ++x) {
-            out.setD(x, y, image.at(x, y));
-        }
-    }
-    return out;
-}
-
-LinearImage fromReference(const ref::Image& image) {
-    LinearImage out(image.width, image.height);
-    for (int y = 0; y < image.height; ++y) {
-        for (int x = 0; x < image.width; ++x) {
-            out.at(x, y) = image.atD(x, y);
-        }
-    }
-    return out;
-}
-
 std::vector<std::uint8_t> rgbOf(const RenderedImage& image) {
     std::vector<std::uint8_t> rgb;
     rgb.reserve(image.rgba.size() / 4 * 3);

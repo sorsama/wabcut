@@ -304,6 +304,32 @@ Panel {
                 }
             }
 
+            // ---- Track Style (0.2): the track follows a preset; Push makes the track's look the preset's ----
+            GroupLabel { text: qsTr("Track style") }
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: Theme.space(1)
+                ChoicePill {
+                    objectName: "captionTrackStyle"
+                    Layout.fillWidth: true
+                    text: (Captions.trackInfo.trackStyle ?? "") !== "" ? Captions.trackInfo.trackStyle : qsTr("None")
+                    options: [{ id: "", name: qsTr("None") }].concat(Captions.presets.map(p => ({ id: p.name, name: p.name })))
+                    current: Captions.trackInfo.trackStyle ?? ""
+                    Accessible.name: qsTr("Track style")
+                    onChosen: id => Captions.setTrackStyle(id)
+                }
+                PillButton {
+                    objectName: "captionPushTrackStyle"
+                    compact: true
+                    visible: (Captions.trackInfo.trackStyle ?? "") !== ""
+                    enabled: !(Captions.presets.find(p => p.name === Captions.trackInfo.trackStyle)?.builtin ?? true)
+                    text: qsTr("Push")
+                    tooltip: qsTr("Push to Track Style: %1 takes this track's look, and so does every track that follows it")
+                                 .arg(Captions.trackInfo.trackStyle ?? "")
+                    onClicked: Captions.pushTrackStyle()
+                }
+            }
+
             // ---- Text ----
             GroupLabel { text: qsTr("Text") }
             Row2 {

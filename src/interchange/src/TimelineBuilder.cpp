@@ -6,6 +6,7 @@
 #include <wabcut/interchange/FileUrl.h>
 #include <wabcut/model/AudioChannelOps.h>
 #include <wabcut/model/EditOps.h>
+#include <wabcut/model/Effects.h>
 #include <wabcut/model/FinishingOps.h>
 #include <wabcut/model/MediaLocator.h>
 #include <wabcut/model/Nesting.h>
@@ -68,9 +69,20 @@ MappedTransition mapTransition(TrackKind kind, const IrTransition& t) {
             return {"constantGain", {}};
         }
         if (contains(lower, "exponential")) {
-            return {"constantPower", "the exponential fade became a constant-power crossfade"};
+            return {"exponentialFade", {}}; // 0.2
         }
         return {"constantPower", {}};
+    }
+    // 0.2: a transition of Premiere's library by its name ("Iris Round", "Additive Dissolve (Legacy)"), with its
+    // default options; a plain "Wipe" keeps its note below (its direction is not read).
+    std::string name = lower;
+    if (const auto legacy = name.find(" (legacy)"); legacy != std::string::npos) {
+        name.erase(legacy);
+    }
+    for (const EffectDescriptor& d : EffectRegistry::builtin().all()) {
+        if (d.kind == EffectKind::VideoTransition && d.id != "wipe" && toLowerAscii(std::string(d.displayName)) == name) {
+            return {std::string(d.id), {}};
+        }
     }
     switch (t.kind) {
     case TransitionKind::Dissolve:

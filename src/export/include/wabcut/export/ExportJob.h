@@ -6,6 +6,7 @@
 #include <wabcut/export/VideoFrameSource.h>
 #include <wabcut/model/EditSession.h>
 #include <wabcut/model/Error.h>
+#include <wabcut/model/PreviewCache.h>
 #include <wabcut/model/ProjectState.h>
 
 #include <condition_variable>
@@ -35,8 +36,24 @@ VideoSourceFactory defaultVideoSourceFactory();
 /// A factory for SyntheticVideoSource.
 VideoSourceFactory syntheticVideoSourceFactory(SyntheticPattern pattern = {});
 
-enum class ExportPhase : std::uint8_t { Queued, Preparing, Rendering, Finalizing, Done, Failed, Cancelled };
+/// 0.2: Paused - a running export held between two frames (ExportQueue::pause, Media Encoder's Pause).
+enum class ExportPhase : std::uint8_t { Queued, Preparing, Rendering, Finalizing, Done, Failed, Cancelled, Paused };
 std::string_view exportPhaseName(ExportPhase phase);
+
+/// 0.2: holds a running export between two frames while paused. Thread-safe.
+class PauseGate {
+public:
+    void pause();
+    void resume();
+    bool paused() const;
+    /// Blocks while paused; false when `stop` was requested meanwhile.
+    bool wait(const std::stop_token& stop);
+
+private:
+    mutable std::mutex m_mutex;
+    std::condition_variable_any m_changed;
+    bool m_paused = false;
+};
 
 struct ExportProgress {
     ExportPhase phase = ExportPhase::Queued;
@@ -63,6 +80,15 @@ struct ExportRequest {
     /// Optional: called on the job's thread at every phase change and at most ~10 times a second while
     /// rendering. Must be quick and must not call back into the job.
     std::function<void(const ExportProgress&)> onProgress;
+    /// Optional (AI-15: Content Credentials): runs on the job's thread once the file is complete and closed, before
+    /// it is renamed into place, with that temporary file; it may rewrite the file (e.g. sign a C2PA manifest into
+    /// it). It never fails the export: it returns a warning for ExportResult::warnings ("" = none), and a step that
+    /// cannot do its work must leave the file as it was. Exceptions become warnings too.
+    std::function<std::string(const std::filesystem::path& file, std::stop_token stop)> finalize;
+    /// 0.2: pauses the export between frames while engaged (the queue sets it). Optional.
+    std::shared_ptr<PauseGate> pause;
+    /// 0.2, Use Previews (ExportRenderOptions::usePreviews): the project's preview render cache (C.15). Optional.
+    std::shared_ptr<PreviewCache> previews;
 };
 
 struct ExportResult {
@@ -80,13 +106,29 @@ struct ExportResult {
     std::filesystem::path captions;
     /// What the file does not have although the project asks for it: audio plugins missing on this computer or that
     /// failed to load (known before rendering), and plugins that crashed, hung, were late or produced invalid samples
-    /// while it rendered (their processing is missing from then on). Empty when the export is complete.
+    /// while it rendered (their processing is missing from then on), and what a finalize step could not do (the file
+    /// itself is complete), e.g. "Content Credentials not signed: ...". Empty when the export is complete.
     std::vector<std::string> warnings;
+    /// I.9: what the picture was written as, and a PQ export's measured content light levels (nits; 0 = not PQ).
+    DynamicRange dynamicRange = DynamicRange::Sdr;
+    int maxCll = 0;
+    int maxFall = 0;
     /// I.9: the output file's size in bytes, and how many encodes it took (2: a target-size export that ended over
     /// its size the first time and was encoded again at the rate that fits).
     std::int64_t bytes = 0;
     int attempts = 1;
     std::int64_t videoBitrate = 0; ///< the bitrate the video was encoded at (Bitrate and TargetSize; bits/s)
+    // 0.2:
+    std::int64_t imageFiles = 0;      ///< Container::Image: the stills written (`output` is the first)
+    int chapters = 0;                 ///< chapters written from chapter markers
+    std::string startTimecode;        ///< the timecode track's / BWF's start ("" = none written)
+    int subtitleCues = 0;             ///< cues in the soft subtitle track
+    std::filesystem::path xmp;        ///< the XMP sidecar written (empty: none, or embedded)
+    bool xmpEmbedded = false;
+    std::optional<double> loudnessLufs; ///< Loudness Normalization: what the mix measured (integrated, LUFS)
+    double loudnessGainDb = 0.0;        ///< and the gain applied
+    std::filesystem::path loudnessLog;  ///< "<output>.loudness.txt" when asked for
+    std::int64_t copiedFrames = 0;      ///< smart rendering: frames whose packets were copied, not encoded
 };
 
 /// One export, run synchronously by run() on the calling thread (a job-queue worker, never the GUI thread).
@@ -129,12 +171,17 @@ struct ExportJobStatus {
     ExportProgress progress;
     std::optional<ExportResult> result; ///< set when Done
     std::optional<Error> error;         ///< set when Failed or Cancelled
+    /// 0.2: queued but held (Media Encoder's "Ready": sent to the queue, waiting for Start Queue / start()).
+    bool held = false;
 };
 
 /// The export job queue: one worker thread runs jobs in submission order (exports are heavy; one at a time).
 /// All member functions are thread-safe. The listener is called on the worker thread whenever a job's status
 /// changes (throttled to ~10 Hz while rendering); bridge it to the GUI thread yourself. The destructor
 /// cancels the running job and everything queued, then joins.
+///
+/// 0.2 (Media Encoder's queue): a job can be enqueued held (it waits for start()), a queued job paused (held) and a
+/// running one paused between frames (ExportPhase::Paused) and resumed.
 class ExportQueue {
 public:
     using Listener = std::function<void(const ExportJobStatus&)>;
@@ -144,9 +191,18 @@ public:
     ExportQueue(const ExportQueue&) = delete;
     ExportQueue& operator=(const ExportQueue&) = delete;
 
-    ExportJobId enqueue(ExportRequest request);
+    /// `hold`: the job waits for start() (Send to Media Encoder without starting the queue).
+    ExportJobId enqueue(ExportRequest request, bool hold = false);
     /// Cancels a queued or running job (no effect once it finished).
     void cancel(ExportJobId id);
+    /// 0.2: releases a held job (no effect on others).
+    void start(ExportJobId id);
+    /// 0.2: holds a queued job, pauses a running one between frames.
+    void pause(ExportJobId id);
+    /// 0.2: resumes a paused running job, releases a held one.
+    void resume(ExportJobId id);
+    /// 0.2: drops a finished job from jobs() (no effect on others).
+    void remove(ExportJobId id);
     std::vector<ExportJobStatus> jobs() const;
     std::optional<ExportJobStatus> status(ExportJobId id) const;
     /// Blocks until the job has finished (Done, Failed or Cancelled) and returns its final status.

@@ -35,6 +35,14 @@
     "hnswlib",
     "miniaudio",
     "nlohmann-json",
+    "opencolorio",
+    {
+      "name": "minizip-ng",
+      "default-features": false,
+      "features": [
+        "zlib"
+      ]
+    },
     "spdlog",
     "pugixml",
     "rnnoise",

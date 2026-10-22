@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <expected>
 #include <memory>
+#include <optional>
 #include <string>
 
 namespace wabcut::exporter {
@@ -28,6 +29,22 @@ struct VideoSourceFormat {
     std::int64_t frameCount = 0;
     /// Captions to burn into the picture (CaptionExport::BurnIn), drawn as the preview draws them.
     std::optional<CaptionExportSettings> burnInCaptions;
+    /// I.9: what the picture is written as (ResolvedExport::dynamicRange: Sdr, Pq or Hlg) and whether it is rendered
+    /// at 10 bits (ResolvedExport::tenBitRender). A 10-bit source delivers YUV444P10 frames, limited range, in the
+    /// export's matrix (BT.2020 for PQ / HLG, BT.709 otherwise) with the export's primaries and transfer.
+    DynamicRange dynamicRange = DynamicRange::Sdr;
+    bool tenBit = false;
+    /// 0.2: an export with an alpha channel: RGBA8 frames with straight alpha (render::OutputAlpha::Straight), never
+    /// 10-bit.
+    bool alpha = false;
+};
+
+/// The content light levels of an HDR (PQ) export, measured over every frame rendered (CTA-861.3): MaxCLL the
+/// brightest pixel (max of R, G, B) in nits, MaxFALL the brightest frame average of that.
+struct ContentLightLevels {
+    double maxCll = 0.0;
+    double maxFall = 0.0;
+    std::int64_t frames = 0;
 };
 
 /// A pipelined, in-order frame producer.
@@ -49,6 +66,8 @@ public:
     virtual std::expected<void, Error> request(std::int64_t frameIndex) = 0;
     virtual std::expected<media::FrameHandle, Error> next() = 0;
     virtual void stop() = 0;
+    /// I.9: the light levels of the frames rendered so far (PQ sources), or nullopt.
+    virtual std::optional<ContentLightLevels> lightLevels() const { return std::nullopt; }
 };
 
 /// Deterministic test pattern with three layers, rendered on its own thread (like the real renderer):

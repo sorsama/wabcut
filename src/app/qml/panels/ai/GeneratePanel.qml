@@ -11,7 +11,9 @@ Panel {
     property bool cloudAllowed: !AiController.offlineMode && !AiController.projectLock
     property var selectedModel: provider.currentIndex >= 0 ? GenerateController.models[provider.currentIndex] : null
     property string effectivePrompt: extendClip && prompt.text.trim() === "" ? qsTr("Continue this shot naturally.") : prompt.text
-    property var quote: cloudAllowed && selectedModel ? GenerateController.estimate(selectedModel.id, effectivePrompt, seconds.value, aspect.currentText) : ({ok: false, error: qsTr("Offline / no-cloud is enabled")})
+    // 0.2: a sound-effect model (ElevenLabs): seconds 0 lets it pick the length, a loop where it makes one, no picture.
+    property bool soundModel: !!selectedModel && !!selectedModel.sound
+    property var quote: cloudAllowed && selectedModel ? GenerateController.estimate(selectedModel.id, effectivePrompt, seconds.value, aspect.currentText, loop.checked) : ({ok: false, error: qsTr("Offline / no-cloud is enabled")})
     onQuoteChanged: approved.checked = false
     onExtendClipChanged: { approved.checked = false; root.prepareUpload() }
     // Extend uploads one picture: render it now (as an export would show it, redactions applied) and show it before
@@ -24,11 +26,12 @@ Panel {
     Connections {
         target: GenerateController
         function onProposalRequested(p) {
-            root.extendClip = p.clip; prompt.text = p.prompt; seconds.value = p.seconds;
+            root.extendClip = p.clip; prompt.text = p.prompt; seconds.value = p.seconds; loop.checked = !!p.loop;
             aspect.currentIndex = p.aspect === "9:16" ? 1 : 0; side.currentIndex = p.head ? 1 : 0;
             place.checked = p.at >= 0; at.value = Math.max(0, p.at);
             for (let i = 0; i < GenerateController.models.length; ++i) {
-                if (GenerateController.models[i].image === (p.operation === "image")) { provider.currentIndex = i; break; }
+                const m = GenerateController.models[i];
+                if (p.operation === "sfx" ? m.sound : (!m.sound && m.image === (p.operation === "image"))) { provider.currentIndex = i; break; }
             }
             approved.checked = false;
         }
@@ -43,15 +46,19 @@ Panel {
             Label { text: qsTr("Your key · estimate before every run"); color: Theme.textSecondary; wrapMode: Text.Wrap; Layout.fillWidth: true }
             ComboBox { id: provider; Layout.fillWidth: true; model: GenerateController.models; textRole: "name"
                 HoverHandler { enabled: provider.enabled; cursorShape: Qt.PointingHandCursor } }
-            TextArea { id: prompt; objectName: "generationPrompt"; Layout.fillWidth: true; Layout.preferredHeight: Theme.space(18); placeholderText: qsTr("Describe the shot or background"); wrapMode: TextEdit.Wrap; color: Theme.textPrimary; font.family: Theme.fontSans; font.pixelSize: Theme.textMd; padding: Theme.space(3); background: Rectangle { color: Theme.raised; radius: Theme.radiusField; border.color: prompt.activeFocus ? Theme.focus : Theme.borderStrong } }
+            TextArea { id: prompt; objectName: "generationPrompt"; Layout.fillWidth: true; Layout.preferredHeight: Theme.space(18); placeholderText: root.soundModel ? qsTr("Describe the sound: footsteps on gravel, a door slam, rain on a tent") : qsTr("Describe the shot or background"); wrapMode: TextEdit.Wrap; color: Theme.textPrimary; font.family: Theme.fontSans; font.pixelSize: Theme.textMd; padding: Theme.space(3); background: Rectangle { color: Theme.raised; radius: Theme.radiusField; border.color: prompt.activeFocus ? Theme.focus : Theme.borderStrong } }
             GridLayout {
                 columns: 2
                 Layout.fillWidth: true
-                Label { text: qsTr("Seconds"); color: Theme.textSecondary }
-                SpinBox { id: seconds; Layout.fillWidth: true; from: 1; to: 10; value: 4; enabled: !root.selectedModel || !root.selectedModel.image }
-                Label { text: qsTr("Aspect"); color: Theme.textSecondary }
-                ComboBox { id: aspect; Layout.fillWidth: true; model: root.selectedModel && root.selectedModel.image ? ["16:9", "9:16", "1:1"] : ["16:9", "9:16"]
+                Label { text: root.soundModel ? qsTr("Seconds (0: the model picks)") : qsTr("Seconds"); color: Theme.textSecondary }
+                SpinBox { id: seconds; objectName: "generationSeconds"; Layout.fillWidth: true; from: root.soundModel ? 0 : 1; to: root.soundModel ? Math.floor(root.selectedModel.maxSeconds) : 10; value: 4; enabled: !root.selectedModel || !root.selectedModel.image }
+                Label { visible: !root.soundModel; text: qsTr("Aspect"); color: Theme.textSecondary }
+                ComboBox { id: aspect; visible: !root.soundModel; Layout.fillWidth: true; model: root.selectedModel && root.selectedModel.image ? ["16:9", "9:16", "1:1"] : ["16:9", "9:16"]
                     HoverHandler { enabled: aspect.enabled; cursorShape: Qt.PointingHandCursor } }
+                Label { visible: root.soundModel && !!root.selectedModel.loop; text: qsTr("Loop"); color: Theme.textSecondary }
+                CheckBox { id: loop; objectName: "generationLoop"; visible: root.soundModel && !!root.selectedModel.loop; text: qsTr("Seamless loop"); onCheckedChanged: approved.checked = false
+                           Accessible.name: qsTr("Make the sound effect a seamless loop")
+                           HoverHandler { enabled: loop.enabled; cursorShape: Qt.PointingHandCursor } }
                 Label { visible: root.extendClip !== ""; text: qsTr("Extend"); color: Theme.textSecondary }
                 ComboBox { id: side; Layout.fillWidth: true; visible: root.extendClip !== ""; model: [qsTr("Tail"), qsTr("Head")]; onCurrentIndexChanged: { approved.checked = false; root.prepareUpload() }
                     HoverHandler { enabled: side.enabled; cursorShape: Qt.PointingHandCursor } }
@@ -59,7 +66,7 @@ Panel {
             ColumnLayout {
                 Layout.fillWidth: true
                 visible: root.extendClip === "" && (!root.selectedModel || !root.selectedModel.image)
-                CheckBox { id: place; onCheckedChanged: approved.checked = false; text: qsTr("Place over timeline")
+                CheckBox { id: place; onCheckedChanged: approved.checked = false; text: root.soundModel ? qsTr("Place on a new audio track") : qsTr("Place over timeline")
                     HoverHandler { enabled: place.enabled; cursorShape: Qt.PointingHandCursor } }
                 RowLayout {
                     visible: place.checked
@@ -129,7 +136,7 @@ Panel {
                 Layout.fillWidth: true
                 PillButton { Layout.fillWidth: true; text: qsTr("Provider terms"); enabled: !!root.quote.terms; onClicked: Qt.openUrlExternally(root.quote.terms) }
                 PillButton { Layout.fillWidth: true; objectName: "generationRun"; variant: "primary"; text: qsTr("Generate preview"); enabled: root.quote.ok && approved.checked && !GenerateController.busy;
-                    onClicked: GenerateController.run(root.selectedModel.id, root.effectivePrompt, seconds.value, aspect.currentText, root.quote.dollars, approved.checked, place.checked ? at.value : -1, root.extendClip, side.currentIndex === 1, acknowledged.checked) }
+                    onClicked: GenerateController.run(root.selectedModel.id, root.effectivePrompt, seconds.value, aspect.currentText, root.quote.dollars, approved.checked, place.checked ? at.value : -1, root.extendClip, side.currentIndex === 1, acknowledged.checked, loop.checked) }
                 PillButton { Layout.fillWidth: true; text: qsTr("Cancel"); visible: GenerateController.busy; onClicked: GenerateController.cancel() }
             }
             BeamProgress { Layout.fillWidth: true; value: GenerateController.progress; active: GenerateController.busy; visible: GenerateController.busy || GenerateController.staged }
@@ -140,7 +147,7 @@ Panel {
                     id: resultCard
                     required property var modelData
                     Layout.fillWidth: true
-                    Image { source: resultCard.modelData.preview; Layout.fillWidth: true; Layout.preferredHeight: Theme.space(45); fillMode: Image.PreserveAspectFit }
+                    Image { visible: !resultCard.modelData.sound; source: resultCard.modelData.preview; Layout.fillWidth: true; Layout.preferredHeight: Theme.space(45); fillMode: Image.PreserveAspectFit }
                     Label { text: qsTr("AI-generated · %1").arg(resultCard.modelData.cost); color: Theme.accentStroke }
                     PillButton { text: qsTr("Open preview"); onClicked: Qt.openUrlExternally(resultCard.modelData.file) }
                 }

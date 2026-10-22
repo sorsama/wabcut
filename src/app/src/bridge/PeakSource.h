@@ -15,7 +15,10 @@
 #include <wabcut/model/Ids.h>
 #include <wabcut/model/Time.h>
 
+#include <cstdint>
+#include <optional>
 #include <span>
+#include <vector>
 
 namespace wabcut::app {
 
@@ -28,6 +31,18 @@ public:
     /// are not available yet.
     virtual bool peaks(MediaId media, StreamRef stream, Ticks sourceStart, Ticks sourceEnd,
                        std::span<float> out) const = 0;
+
+    /// p02 audio: while the peaks of `stream` are still being decoded, the source time the decoded part reaches (the
+    /// timeline shades the rest of its clips); nullopt once they are complete, or when the source does not say.
+    virtual std::optional<Ticks> buildingUntil(MediaId /*media*/, StreamRef /*stream*/) const { return std::nullopt; }
+
+    /// p02 audio: the media (ids) whose peaks changed after `serial` (0, or a `now` an earlier call returned), so a view
+    /// rebuilds only their waveforms. nullopt when the source cannot tell: everything may have changed. `now` receives
+    /// the serial to pass next time. Any thread.
+    virtual std::optional<std::vector<std::uint64_t>> mediaChangedSince(std::uint64_t serial, std::uint64_t& now) const {
+        now = serial;
+        return std::nullopt;
+    }
 };
 
 class PlaceholderPeakSource final : public PeakSource {

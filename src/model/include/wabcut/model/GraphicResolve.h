@@ -160,10 +160,42 @@ struct DrawText {
     Rgba backgroundColor{0.0, 0.0, 0.0, 0.0};
     double backgroundPadding = 0.0;
     double backgroundRadius = 0.0;
-    /// Every cluster of the text (newlines excepted) when an animator is active; empty otherwise.
+    /// Every cluster of the text (newlines excepted) when an animator is active or the text is on a path; empty
+    /// otherwise.
     std::vector<DrawCluster> clusters;
+    /// 0.2, type on a path (TextPath): the path at this time in the layer's pixels (empty: lines), and its options
+    /// with the margins at this time. The renderer lays the text out as point text and places each cluster along it
+    /// (TextPathWalker).
+    std::vector<MaskVertex> path;
+    bool pathClosed = false;
+    bool pathReverse = false;
+    bool pathPerpendicular = true;
+    bool pathForceAlignment = false;
+    double firstMargin = 0.0;
+    double lastMargin = 0.0;
 
     bool operator==(const DrawText&) const = default;
+};
+
+/// 0.2, type on a path: a path flattened for placing text along it, by arc length. Past an open path's ends the end
+/// tangents carry on (text longer than the path continues straight); a closed path wraps round. Reverse runs from the
+/// last vertex to the first.
+class TextPathWalker {
+public:
+    TextPathWalker(const std::vector<MaskVertex>& path, bool closed, bool reverse);
+    double length() const { return m_length; }
+    /// The point `distance` along the path: x, y and the direction there (degrees clockwise from the x axis, y down).
+    std::array<double, 3> at(double distance) const;
+    /// Where a line `width` long starts along the path and how far apart its characters spread (1 = as laid out):
+    /// `align` between the margins (Justify spreads like forceAlignment).
+    std::array<double, 2> lineStart(double width, TextAlign align, double firstMargin, double lastMargin,
+                                    bool forceAlignment) const;
+
+private:
+    std::vector<std::array<double, 2>> m_points;
+    std::vector<double> m_lengths; ///< arc length at each point
+    double m_length = 0.0;
+    bool m_closed = false;
 };
 
 struct DrawImage {
@@ -214,16 +246,30 @@ struct ResolveOptions {
     const BrandKit* brandKit = nullptr;
     const TextMeasurer* measurer = nullptr;  ///< null = approximateTextMeasurer()
     const LineBreaker* lineBreaker = nullptr; ///< word units; null = simpleLineBreaker()
+    /// 0.2: a translation of the whole graphic, canvas pixels (Roll / Crawl: resolveGraphicClip sets it).
+    std::array<double, 2> offset{0.0, 0.0};
 };
 
 /// The graphic at graphic time `time`.
 DrawList resolveGraphic(const Graphic& graphic, Ticks time, const ResolveOptions& options = {});
 
+/// 0.2, Roll / Crawl (GraphicRoll): how far the graphic has travelled `sinceStart` into a clip `clipDuration` long, for
+/// content covering `content` (canvas pixels) on a width x height canvas. Still during the preroll, at the end position
+/// during the postroll; between them it accelerates over easeIn, moves at constant speed and slows over easeOut (a
+/// trapezoidal speed; ease times that do not fit shrink in proportion). A roll travels up (from content top at the
+/// frame's bottom with Start Off Screen, to content bottom at the frame's top with End Off Screen), Crawl Left to the
+/// left, Crawl Right to the right.
+std::array<double, 2> rollOffset(const GraphicRoll& roll, const Box& content, std::int32_t width, std::int32_t height,
+                                 Ticks sinceStart, Ticks clipDuration);
+/// The canvas box the items of a draw list cover (their content boxes mapped to the canvas); empty for none.
+Box contentBox(const DrawList& list);
+
 /// Responsive time: the design time shown `sinceStart` into a clip `clipDuration` long (ResponsiveTime).
 Ticks responsiveDesignTime(const ResponsiveTime& responsive, Ticks sinceStart, Ticks clipDuration);
 /// The graphic time a graphic clip shows at timeline time `t`.
 Ticks graphicTimeAt(const Clip& clip, const Graphic& graphic, Ticks t);
-/// The clip's graphic at timeline time `t`, with the project's brand kit (unless `options` names another).
+/// The clip's graphic at timeline time `t`, with the project's brand kit (unless `options` names another), rolled or
+/// crawled when it has a GraphicRoll.
 DrawList resolveGraphicClip(const ProjectState& state, const Clip& clip, Ticks t, ResolveOptions options = {});
 
 /// The content box of `layer` in its own pixels at graphic time `time` (groups: their visible children's, transformed).

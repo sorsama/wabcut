@@ -18,6 +18,11 @@ wabcut_add_test_suite(audio
         test_dsp_essential.cpp
         test_dsp_report.cpp
         test_dsp_filters.cpp
+        test_dsp_fft.cpp
+        test_effects_amplitude.cpp
+        test_effects_filter.cpp
+        test_effects_time.cpp
+        test_effects_catalog.cpp
         test_loudness.cpp
         test_speed_render.cpp
         test_time_stretch.cpp

@@ -1,5 +1,6 @@
 // Trims: Q/W ripple trim to playhead, regular trim, ripple edit (B), rolling edit (N), slip (Y), slide (U).
 
+#include <wabcut/model/ClipGroups.h>
 #include <wabcut/model/EditOps.h>
 
 #include "SequenceEditor.h"
@@ -130,17 +131,12 @@ EditOutcome trimEdge(const ProjectState& state, SequenceId sequenceId, ClipId cl
 
 // --- Ripple edit (B) ----------------------------------------------------------------------------------
 
-EditOutcome rippleTrim(const ProjectState& state, SequenceId sequenceId, ClipId clipId, Edge edge, Ticks delta,
-                       LinkMode links) {
-    const auto seq = detail::findSequence(state, sequenceId);
-    if (!seq) {
-        return std::unexpected(seq.error());
-    }
-    const auto parts = detail::edgeParticipants(**seq, clipId, edge, links);
-    if (!parts) {
-        return std::unexpected(parts.error());
-    }
-    SequenceEditor ed(state, **seq);
+namespace {
+
+/// The ripple edit of `parts` (one edge per track; the first is the edit point other sync-locked tracks ripple at).
+EditOutcome rippleParts(const ProjectState& state, const Sequence& sequence, const std::vector<ClipRef>* parts,
+                        Edge edge, Ticks delta) {
+    SequenceEditor ed(state, sequence);
     const Ticks minDuration = ed.oneFrame();
     DeltaBounds bounds;
     for (const ClipRef& p : *parts) {
@@ -203,6 +199,48 @@ EditOutcome rippleTrim(const ProjectState& state, SequenceId sequenceId, ClipId 
         ed.captionsRemove(TimeRange::fromStartEnd(editPoint + growth, editPoint));
     }
     return ed.finish(std::nullopt, d);
+}
+
+} // namespace
+
+EditOutcome rippleTrim(const ProjectState& state, SequenceId sequenceId, ClipId clipId, Edge edge, Ticks delta,
+                       LinkMode links) {
+    const auto seq = detail::findSequence(state, sequenceId);
+    if (!seq) {
+        return std::unexpected(seq.error());
+    }
+    const auto parts = detail::edgeParticipants(**seq, clipId, edge, links);
+    if (!parts) {
+        return std::unexpected(parts.error());
+    }
+    return rippleParts(state, **seq, &*parts, edge, delta);
+}
+
+EditOutcome rippleTrimEdges(const ProjectState& state, SequenceId sequenceId, std::span<const ClipId> clips, Edge edge,
+                            Ticks delta, LinkMode links) {
+    const auto seq = detail::findSequence(state, sequenceId);
+    if (!seq) {
+        return std::unexpected(seq.error());
+    }
+    if (clips.empty()) {
+        return std::unexpected(invalidArgument("no clip to trim"));
+    }
+    std::vector<ClipRef> parts;
+    for (const ClipId clip : clips) {
+        const auto own = detail::edgeParticipants(**seq, clip, edge, links);
+        if (!own) {
+            return std::unexpected(own.error());
+        }
+        for (const ClipRef& p : *own) {
+            const auto same = std::ranges::find_if(parts, [&](const ClipRef& q) { return q.track == p.track; });
+            if (same == parts.end()) {
+                parts.push_back(p);
+            } else if (same->clip != p.clip) {
+                return std::unexpected(invalidArgument("two of the edges are on one track"));
+            }
+        }
+    }
+    return rippleParts(state, **seq, &parts, edge, delta);
 }
 
 // --- Rolling edit (N) ---------------------------------------------------------------------------------

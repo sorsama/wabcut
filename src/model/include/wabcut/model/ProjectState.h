@@ -7,6 +7,7 @@
 // shared_ptr<const T>, so a revision costs O(touched tracks) and old revisions stay valid for undo and
 // for engine threads that still read them.
 
+#include <wabcut/model/ColorManagement.h>
 #include <wabcut/model/Error.h>
 #include <wabcut/model/Graphics.h>
 #include <wabcut/model/Ids.h>
@@ -17,6 +18,7 @@
 #include <wabcut/model/SharedList.h>
 #include <wabcut/model/Transcripts.h>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -28,15 +30,142 @@
 
 namespace wabcut {
 
+/// 0.2 (P.3, Premiere's Search Bin): what a search bin lists, live, from the whole project: the bins, sequences and media
+/// items that match (never what is inside them). The model only keeps the query; the Library evaluates it with the same
+/// rules as its Find bar (app LibraryModel). Every field empty or off matches everything.
+struct BinSearch {
+    static constexpr std::size_t kMaxTextBytes = 1024; ///< text, field, type, from, to (project files are untrusted)
+
+    /// What to find (UTF-8, case-insensitive); empty = anything.
+    std::string text;
+    /// Where `text` is looked for (Premiere's "Search" menu): "" = all (name, comment, description, clip metadata, tape
+    /// name and path) or one of kBinSearchFields.
+    std::string field;
+    /// "" or one of kBinSearchTypes.
+    std::string type;
+    std::int32_t label = -1; ///< label colour index (0..15), -1 = any
+    bool good = false;       ///< only media marked Good (ClipMetadata::good)
+    bool offline = false;
+    bool generated = false;  ///< AI-generated
+    bool transcribed = false;
+    bool proxy = false;      ///< has a proxy
+    bool unused = false;     ///< in no sequence
+    bool duplicates = false; ///< shares its file's content with another item
+    /// File date range, "YYYY-MM-DD", inclusive; empty = open.
+    std::string from;
+    std::string to;
+
+    bool operator==(const BinSearch&) const = default;
+};
+
+/// BinSearch::field values besides "" (all).
+inline constexpr std::array<std::string_view, 10> kBinSearchFields{
+    "name", "comment", "description", "scene", "shot", "take", "logNote", "client", "tapeName", "path"};
+/// BinSearch::type values besides "" (any).
+inline constexpr std::array<std::string_view, 6> kBinSearchTypes{"video", "audio", "still", "title", "sequence", "subclip"};
+bool isBinSearchField(std::string_view field);
+bool isBinSearchType(std::string_view type);
+/// Why `search` is not a valid query (an unknown field, type or label, a date that is not YYYY-MM-DD, text that is too
+/// long or not UTF-8), or nullopt.
+std::optional<std::string> binSearchProblem(const BinSearch& search);
+
 /// A folder in the project panel. Bins form a tree through `parent` (invalid = child of the root bin,
 /// which is implicit and has no entry).
 struct Bin {
     BinId id;
     BinId parent;
     std::string name;
+    /// 0.2 (P.3): set for a Search Bin, which holds nothing itself (no item, bin or sequence may be in it) and lists the
+    /// items matching this query. Saved only when set.
+    std::optional<BinSearch> search;
 
+    bool isSearch() const { return search.has_value(); }
     bool operator==(const Bin&) const = default;
 };
+
+/// 0.2 (P.3): Premiere's clip metadata of a media item (the Project panel's Scene, Shot, Take, Log Note, Good, Client and
+/// Status columns, the Metadata panel's Clip section, and the camera fields of its Dynamic Media schema), kept in the
+/// project. Premiere links them to the file's XMP: Scene = xmpDM:scene, Shot = xmpDM:shotName, Take = xmpDM:takeNumber,
+/// Log Note = xmpDM:logComment, Good = xmpDM:good, Client = xmpDM:client, Camera Angle / Label / Model =
+/// xmpDM:cameraAngle / cameraLabel / cameraModel, Shot Date = xmpDM:shotDate, Shot Location = xmpDM:shotLocation
+/// (interchange/Xmp.h reads and writes them); Status is project-only. Comment, Description and Tape Name live in
+/// MediaItem (comment, description, timecode->reelName).
+struct ClipMetadata {
+    static constexpr std::size_t kMaxFieldBytes = 1024; ///< every field but logNote (MediaItem::kMaxTextBytes)
+
+    std::string scene;
+    std::string shot;
+    std::string take;
+    std::string logNote;
+    std::string client;
+    bool good = false;
+    std::string status;
+    std::string cameraAngle;
+    std::string cameraLabel;
+    std::string cameraModel;
+    std::string shotDate; ///< as written (XMP dates are ISO-8601 text, e.g. "2026-10-16T09:30:00")
+    std::string shotLocation;
+
+    bool isEmpty() const {
+        return scene.empty() && shot.empty() && take.empty() && logNote.empty() && client.empty() && !good &&
+               status.empty() && cameraAngle.empty() && cameraLabel.empty() && cameraModel.empty() && shotDate.empty() &&
+               shotLocation.empty();
+    }
+    bool operator==(const ClipMetadata&) const = default;
+};
+
+/// 0.2 (P.3): an item's place in a bin's Freeform view (Premiere's Project panel Freeform view): a bin, sequence or media
+/// item of that bin, its top-left corner in view units (logical pixels at clip size 1) and its own size.
+struct FreeformPlacement {
+    enum class Kind : std::uint8_t { Media, Sequence, Bin };
+
+    Kind kind = Kind::Media;
+    /// Weak: an item since removed or moved to another bin is not shown (the next edit of the view drops it).
+    std::uint64_t id = 0;
+    double x = 0.0;
+    double y = 0.0;
+    /// The item's own size, on top of the view's clip size: kFreeformMinSize .. kFreeformMaxSize.
+    double size = 1.0;
+
+    bool operator==(const FreeformPlacement&) const = default;
+};
+
+/// Where a Freeform view's items are: back to front (later items draw over earlier ones: a stack is items placed over
+/// each other), and the view's clip size (its size slider).
+struct FreeformArrangement {
+    std::vector<FreeformPlacement> items;
+    double scale = 1.0; ///< kFreeformMinSize .. kFreeformMaxSize
+
+    bool operator==(const FreeformArrangement&) const = default;
+};
+
+/// A saved Freeform layout (Premiere's Save as New Layout / Restore Layout).
+struct FreeformLayout {
+    static constexpr std::size_t kMaxNameBytes = 128;
+
+    std::string name; ///< not empty, unique in its view (case-insensitive)
+    FreeformArrangement arrangement;
+
+    bool operator==(const FreeformLayout&) const = default;
+};
+
+/// One bin's Freeform view: the arrangement shown and the layouts saved for it.
+struct FreeformView {
+    static constexpr std::size_t kMaxLayouts = 64;
+
+    BinId bin; ///< invalid = the root bin
+    FreeformArrangement current;
+    std::vector<FreeformLayout> layouts;
+
+    bool operator==(const FreeformView&) const = default;
+};
+
+inline constexpr double kFreeformMinSize = 0.25;
+inline constexpr double kFreeformMaxSize = 4.0;
+/// Bound on a placement's coordinates (|x|, |y|), in view units.
+inline constexpr double kFreeformMaxCoordinate = 1.0e6;
+/// Bound on the placements of one arrangement (project files are untrusted).
+inline constexpr std::size_t kMaxFreeformItems = 100000;
 
 /// The generator of a synthetic media item: an item made by Wabcut rather than read from a file (a title).
 /// The renderer draws it; the model only stores what to draw. A title's numeric styling (size, colours,
@@ -94,6 +223,50 @@ struct SubclipSpec {
     bool restricted = true;
 
     bool operator==(const SubclipSpec&) const = default;
+};
+
+/// P.2 (E5): Premiere's Preferences > Media > Default Media Scaling, kept on the item it was imported with (Premiere keeps
+/// it on the master clip): how the item's video clips are sized when an edit places them in a sequence of another frame
+/// size (FrameScaling.h). Changing the preference later leaves items already imported as they are.
+enum class MediaScaling : std::uint8_t {
+    None,         ///< 100 %: the picture keeps its pixel size (cropped or letterboxed)
+    ScaleToFrame, ///< Scale to Frame Size: the clip is fitted to the frame and Motion > Scale stays 100 %
+    SetToFrame,   ///< Set to Frame Size: Motion > Scale is set so the whole picture fits the frame
+    SetToFill,    ///< Set to Fill Frame: Motion > Scale is set so the picture fills the frame (edges cropped)
+};
+
+/// P.2 (E5): Premiere's Clip > Modify > Interpret Footage, kept on the item (Interpret.h): what Wabcut assumes about its
+/// pictures instead of what the file says. Each field unset = as probed.
+struct MediaInterpretation {
+    /// Assume this frame rate: the file's frames play at this rate. A 120, 144 or 240 fps game capture conformed to 30
+    /// or 60 fps plays every frame in slow motion; the clips of the item run at the matching speed (edit::conformSpeed),
+    /// so the speed engine (and its frame interpolation) plays them.
+    std::optional<Rate> frameRate;
+    /// Conform the pixel aspect ratio to this (1/1 square, 10/11, 40/33, 4/3, 2/1 ...).
+    std::optional<Rate> pixelAspect;
+    /// Conform the field order to this.
+    std::optional<FieldOrder> fieldOrder;
+    /// Alpha channel: ignore it (opaque), invert it, and conform its premultiplication (Straight or Premultiplied).
+    bool ignoreAlpha = false;
+    bool invertAlpha = false;
+    std::optional<AlphaMode> premultiplication;
+
+    bool isEmpty() const {
+        return !frameRate && !pixelAspect && !fieldOrder && !ignoreAlpha && !invertAlpha && !premultiplication;
+    }
+    bool operator==(const MediaInterpretation&) const = default;
+};
+
+/// P.2 (E5): Premiere's Clip > Modify > Timecode on an item: the timecode of its first frame (instead of the file's
+/// MediaInfo::startTimecode) and its reel (tape) name. At most kMaxReelNameBytes of UTF-8.
+struct MediaTimecode {
+    static constexpr std::size_t kMaxReelNameBytes = 128;
+
+    /// The timecode of the first frame, as a time since 00:00:00:00 (0 .. 24 h); unset = the file's.
+    std::optional<Ticks> start;
+    std::string reelName;
+
+    bool operator==(const MediaTimecode&) const = default;
 };
 
 /// The part of a stream's media that edits may use: [start, end); `end` unset when unbounded (stills) or unknown.
@@ -208,6 +381,24 @@ struct MediaItem {
     /// A.9: Premiere's Modify > Audio Channels on the item: the channel map its audio clips use unless they have their
     /// own (Clip::channelMap). One map for every audio stream of the item. Saved only when set.
     std::optional<AudioChannelMap> channels;
+    /// P.2 (E5): how source edits size the item's video clips (MediaScaling, FrameScaling.h). Saved only when not None.
+    MediaScaling scaling = MediaScaling::None;
+    /// P.2 (E5): Interpret Footage (MediaInterpretation). Saved only when set.
+    std::optional<MediaInterpretation> interpretation;
+    /// P.2 (E5): Modify > Timecode (MediaTimecode). Saved only when set.
+    std::optional<MediaTimecode> timecode;
+    /// P.2 (E5), stills: the length a source edit gives the item's clips when no Source Out is set (Premiere's Preferences
+    /// > Timeline > Still Image Default Duration, applied as the item is imported). Unset: edit::kDefaultStillDuration.
+    /// Positive, at most 24 hours. Saved only when set.
+    std::optional<Ticks> stillDuration;
+    /// P.2 (E5): Premiere's Make Offline (media files remain on disk): the item is offline (locator.offline) even while
+    /// its file is there, until it is linked again (relink clears this). Saved only when set.
+    bool madeOffline = false;
+    /// 0.2 (P.3): clip metadata (Scene, Shot, Take, Log Note, Good, Client, Status, camera fields). Saved only when not
+    /// empty.
+    ClipMetadata metadata;
+    /// 0.2 (P.3): set on a copy imported from another project (ImportSource, Sequence.h). Saved only when set.
+    std::optional<ImportSource> importSource;
 
     bool hasStream(StreamRef stream) const;
     /// Amount of source media available for `stream`, or nullopt when unbounded (still images) or
@@ -233,7 +424,10 @@ struct MediaItem {
                generator == o.generator && markIn == o.markIn && markOut == o.markOut && markers == o.markers &&
                generated == o.generated && colorIndex == o.colorIndex && comment == o.comment &&
                description == o.description && posterFrame == o.posterFrame && subclip == o.subclip &&
-               audioTakes == o.audioTakes && derived == o.derived && recording == o.recording && channels == o.channels;
+               audioTakes == o.audioTakes && derived == o.derived && recording == o.recording && channels == o.channels &&
+               scaling == o.scaling && interpretation == o.interpretation && timecode == o.timecode &&
+               stillDuration == o.stillDuration && madeOffline == o.madeOffline && metadata == o.metadata &&
+               importSource == o.importSource;
     }
 };
 
@@ -293,6 +487,15 @@ struct ProjectState {
     std::optional<BrandKit> brandKit;
     /// The project's graphic templates (Graphics.h, C.13), sorted by id. Saved only when not empty. Shared until changed.
     SharedList<GraphicTemplate> templates;
+    /// Colour management (ColorManagement.h, I.9): the working space and the output. Saved only when not the default
+    /// (display-referred Rec.709), which keeps older projects byte-identical.
+    ColorManagement colorManagement;
+    /// 0.2: the project's text styles (Graphics.h ProjectTextStyle: Premiere's Text Style items), in the order they were
+    /// made, names unique. Saved only when not empty. Shared until changed.
+    SharedList<ProjectTextStyle> textStyles;
+    /// 0.2 (P.3): the bins' Freeform views (FreeformView), sorted by bin id (the root bin, invalid, first), at most one per
+    /// bin. Saved only when not empty.
+    std::vector<FreeformView> freeform;
 
     const MediaItem* findMedia(MediaId mediaId) const;
     const Sequence* findSequence(SequenceId sequenceId) const;
@@ -307,6 +510,10 @@ struct ProjectState {
     const ReviewNote* findReviewNote(ReviewNoteId noteId) const;
     /// A project template by id, or null.
     const GraphicTemplate* findTemplate(std::string_view id) const;
+    /// A project text style by name (case-insensitive), or null.
+    const ProjectTextStyle* findTextStyle(std::string_view name) const;
+    /// The Freeform view of `bin` (invalid = the root bin), or null when it has none.
+    const FreeformView* findFreeform(BinId bin) const;
 
     /// A copy with `sequence` replacing the sequence that has the same id (which must exist).
     ProjectState withSequence(SequencePtr sequence) const;

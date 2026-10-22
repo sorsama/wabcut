@@ -73,6 +73,13 @@ stands in. Every other parameter means what it means for any shape: `feather` so
 grows it or (negative) chokes it, `inverted` covers everything but the object, `opacity` and `mode` combine it. The
 schema is 12: an older build opening a project with a matte mask says it was made by a newer version.
 
+**On nested and multicam clips (0.2, schema 18).** The matte is made from what the clip shows - its nested sequence
+rendered at nested time with only the tracks it shows (a multicam clip's active angle) - and `matte` then names that
+`sequence` instead of a `media` (exactly one of the two is set). Its frames are at nested time, which is the nested
+clip's curve time, so the compositor looks them up exactly as for a media clip; the mask applies to the nested clip's
+composited picture. An angle switch keeps the mask (where it was on the frame); `mask.propagate` re-tracks the angle
+shown then. Builds before schema 18 refuse such a project.
+
 ### Redactions (`Redaction` in `model/Masks.h`)
 
 A redaction marks a region of a **media item** in **source time**: `media`, `source` (the media time range), `region`
@@ -257,6 +264,7 @@ checkpoints (MCP progress notifications) and through `TrackingServices::progress
 | `redaction.override` | except one clip (and its linked partners), or `redact: true` again |
 | `mask.objectSelect` | AI-14: click (`points`), draw (`box`) or name (`subject`) an object on a frame; SAM 2.1 segments it and tracks it through the shot; a matte mask on `effect` or the opacity ([ai.md](ai.md#ai-object-mask-ai-14)) |
 | `mask.refine`, `mask.propagate` | more clicks on a frame of an object mask; track it further |
+| `redaction.detectFaces` | 0.2: every face of a `media` item (between `in` and `out`) or a `clip`'s part of it, found by the face detector, followed (ByteTrack, reset at shot cuts) and covered by its own moving redaction (an ellipse keyed at the samples, grown by `margin`); `style`, `strength`, `samplesPerSecond`, `minFaceHeight`, `name`. Fail closed: a face seen once is redacted |
 
 ```json
 {"command": "redaction.add", "params": {"clip": {"track": "V1", "time": "00:00:04:00"}, "in": "00:00:03:00",
@@ -264,8 +272,9 @@ checkpoints (MCP progress notifications) and through `TrackingServices::progress
  "region": {"x": 0.62, "y": 0.55, "width": 0.14, "height": 0.08}}}
 ```
 
-The agent sees these commands as tools like every other (redaction has no agent-specific flow yet: that seam is the
-detector above).
+The agent sees these commands as tools like every other, except the redaction ones that change the project
+(`redaction.add`, `.update`, `.remove`, `.override`, `.detectFaces`): privacy stays in the user's hands. The Source
+Monitor's Redactions popover runs `redaction.detectFaces` ("Redact faces") in the style chosen there.
 
 ## User interface
 
@@ -319,3 +328,6 @@ redaction_two_sequences.png (one redaction, two sequences) and redaction_source_
 - The tracker does not re-acquire a lost region by itself: move the mask back and track again from there.
 - Object masks need their mattes on this computer (the analysis cache); elsewhere the bounding box stands in. They are
   refused on remapped clips and frame holds (curve time is not media time there).
+- Automatic face redaction finds what the face detector (YuNet) finds: a face in profile, very small (below
+  `minFaceHeight`) or heavily blurred can be missed, so review the result before you publish; between samples the
+  ellipse is interpolated with a margin rather than tracked per frame.

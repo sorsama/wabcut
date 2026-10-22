@@ -234,7 +234,8 @@ CommandOutput captionsGet(ExecutionContext& c) {
                                     {"language", track->language},
                                     {"enabled", track->enabled},
                                     {"cues", track->cues.size()},
-                                    {"style", captionStyleJson(track->style)}}},
+                                    {"style", captionStyleJson(track->style)},
+                                    {"trackStyle", track->trackStyle}}},
               {"cueFields", Json::array({"start", "end", "text"})},
               {"cues", std::move(cues)}};
     if (!speakers.empty()) {
@@ -293,11 +294,22 @@ CommandOutput clipDetails(ExecutionContext& c) {
             values[p.key] = valueJson(c, clip, p.value);
         }
         const EffectKind kind = loc->track->kind == TrackKind::Video ? EffectKind::Video : EffectKind::Audio;
-        effects.push_back(Json{{"instance", e.id.value},
-                               {"effect", e.effect},
-                               {"enabled", e.enabled},
-                               {"known", isEvaluable(e, kind)},
-                               {"params", std::move(values)}});
+        Json effect{{"instance", e.id.value},
+                    {"effect", e.effect},
+                    {"enabled", e.enabled},
+                    {"known", isEvaluable(e, kind)},
+                    {"params", std::move(values)}};
+        // 0.2: text data (Simple Text's text, Image Matte Key's image, a grade's LUT), as clip.setEffect takes it.
+        Json data = Json::object();
+        for (const EffectData& d : e.data) {
+            if (const std::string* text = d.text()) {
+                data[d.key] = *text;
+            }
+        }
+        if (!data.empty()) {
+            effect["data"] = std::move(data);
+        }
+        effects.push_back(std::move(effect));
     }
     Json transitions = Json::array();
     for (const Transition& t : loc->track->transitions) {
@@ -355,6 +367,13 @@ CommandOutput clipDetails(ExecutionContext& c) {
     }
     if (clip.isFreeze()) {
         details["frameHold"] = true;
+    }
+    if (clip.content().scaleToFrame) {
+        details["scaleToFrame"] = true; // P.2: Scale to Frame Size
+    }
+    if (const ClipFieldOptions& fields = clip.content().fieldOptions; !fields.isDefault()) { // 0.2: Field Options
+        details["fieldOptions"] = Json{{"reverseFieldDominance", fields.reverseFieldDominance},
+                                       {"processing", std::string(toString(fields.processing))}};
     }
     if (const Curve* remap = clip.timeRemap()) {
         // Keys at timeline times (null when outside the clip) with the source position they hold; the segments the
@@ -483,7 +502,8 @@ void registerProjectCommands(CommandRegistry& registry) {
     addBuiltin(registry,
                {"sequence.removeTrack", 1, "Delete Track",
                 "Deletes a track and its clips (their linked partners on other tracks stay, unlinked). The track must "
-                "be unlocked.",
+                "be unlocked. A submix track (\"S1\"): the tracks assigned to it output to the Mix and the sends to it "
+                "are removed.",
                 Capability::EditProject, withSequence({{"track", trackParam("The track to delete.")}}, {"track"}),
                 Json{{"track", "V3"}}, {},
                 [](ExecutionContext& c) {
@@ -512,7 +532,8 @@ void registerQueryCommands(CommandRegistry& registry) {
     addBuiltin(registry,
                {"clip.details", 1, "Clip Details",
                 "Everything about one clip: track, timeline and source range (ticks and timecode), media, stream, speed, "
-                "enabled, label colour, linked clips and all parameter values.",
+                "enabled, label colour, linked clips and all parameter values (and effects' text data, e.g. Simple "
+                "Text's text).",
                 Capability::Read, withSequence({{"clip", clipParam("The clip.")}}, {"clip"}), Json{{"clip", 42}}, {},
                 clipDetails});
     addBuiltin(registry,

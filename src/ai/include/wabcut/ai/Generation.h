@@ -33,6 +33,10 @@ std::string generationTier(const ModelSpec& model, const MediaGenerationRequest&
 /// model lacks.
 std::expected<void, AiError> checkGenerationRequest(const ModelSpec& model, const MediaGenerationRequest& request);
 
+/// 0.2 sound effects: the length a request is estimated and billed at - the one asked for (within the model's limits),
+/// or the model's longest when it picks the length itself.
+double soundEffectSeconds(const ModelSpec& model, const MediaGenerationRequest& request);
+
 /// Pre-run cost: generated seconds (rounded up to an allowed duration) x the tier's per-second price, or images x
 /// the per-image price, times `count`. Generation prices are fixed per output, so expected == ceiling.
 CostEstimate estimateGenerationCost(const ModelSpec& model, const MediaGenerationRequest& request,

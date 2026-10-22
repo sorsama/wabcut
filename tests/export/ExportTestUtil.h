@@ -83,11 +83,15 @@ bool haveMotionTimelineMedia();
 /// playback evaluator, decoders with the preview's default options (hardware allowed) and
 /// render::OffscreenRenderer in the Display role with the preview texture pool. Decoders persist across calls
 /// (keyed by clip) so a forward walk decodes sequentially. RGBA8, canvas size.
+/// What PreviewRenderer renders: the program monitor (display role, RGBA8), or an HDR export's picture (export role,
+/// RGB10A2 words, the project's PQ or HLG target; I.9).
+enum class PreviewOutput { Monitor, HdrExport };
+
 class PreviewRenderer {
 public:
-    explicit PreviewRenderer(const TestProject& project);
+    explicit PreviewRenderer(const TestProject& project, PreviewOutput output = PreviewOutput::Monitor);
     ~PreviewRenderer();
-    /// RGBA8 at `size` (default: the canvas).
+    /// RGBA8 at `size` (default: the canvas); RGB10A2 words for PreviewOutput::HdrExport.
     std::vector<std::uint8_t> render(Ticks time, Ticks frameDuration, int width = 0, int height = 0);
     /// Captions drawn as the program monitor draws them (playback::Scheduler::setCaptions); none by default.
     void setCaptions(std::optional<playback::CaptionSettings> captions);
@@ -110,6 +114,10 @@ struct ProbeResult {
 
 /// Runs the vcpkg ffprobe on `file`. nullopt (and `error`) when it cannot run.
 std::optional<ProbeResult> ffprobe(const std::filesystem::path& file, std::string* error = nullptr);
+/// I.9: ffprobe's whole text output for `arguments` (e.g. "-show_streams -show_frames -read_intervals %+#1") on `file`:
+/// side data (mastering display, content light level) and colour tags; nullopt (and `error`) when it fails.
+std::optional<std::string> ffprobeText(const std::filesystem::path& file, const std::string& arguments,
+                                       std::string* error = nullptr);
 
 // ---- Decoding ---------------------------------------------------------------------------------------------
 
@@ -144,6 +152,9 @@ YuvFrame referenceFrame(int renderWidth, int renderHeight, std::int64_t number, 
 
 /// `rgba` (width x height, RGBA8) converted the way the export converts rendered frames, to `like`'s layout.
 YuvFrame yuvFromRgba(const std::vector<std::uint8_t>& rgba, int width, int height, const YuvFrame& like);
+/// I.9: RGB10A2 words (R'G'B' code values, OffscreenOptions::tenBit) as an HDR export converts them: BT.2020
+/// non-constant-luminance limited-range Y'CbCr 4:4:4 at 10 bits, then swscale to `like`'s layout.
+YuvFrame yuvFromRgb10(const std::vector<std::uint8_t>& words, int width, int height, const YuvFrame& like);
 
 /// PSNR over all three planes (peak 2^bits - 1); +infinity for identical frames.
 double psnr(const YuvFrame& a, const YuvFrame& b);

@@ -380,6 +380,7 @@ std::expected<std::vector<SampleRange>, Error> TranscriptionService::detectSpeec
     childOptions.executable = config.inferExecutable;
     childOptions.arguments = config.helperArguments;
     childOptions.stderrFile = config.helperLog;
+    childOptions.aiHelper = true; // 0.2: below normal and the helper policy's CPU cap (Settings > AI)
     auto child = ChildProcess::spawn(childOptions);
     if (!child) {
         return std::unexpected(child.error());
@@ -525,6 +526,7 @@ std::expected<Transcript, Error> TranscriptionService::Impl::run(const Transcrip
     childOptions.executable = config.inferExecutable;
     childOptions.arguments = config.helperArguments;
     childOptions.stderrFile = config.helperLog;
+    childOptions.aiHelper = true; // 0.2: below normal and the helper policy's CPU cap (Settings > AI)
     auto child = ChildProcess::spawn(childOptions);
     if (!child) {
         return std::unexpected(child.error());

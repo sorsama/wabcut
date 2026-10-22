@@ -38,7 +38,7 @@ ExportSettings preset(std::string_view id) {
 
 TEST_CASE("Built-in presets exist, validate and say what they promise", "[export][settings]") {
     const auto presets = builtInPresets();
-    REQUIRE(presets.size() == 18); // six, and twelve for gaming videos (I.9)
+    REQUIRE(presets.size() == 38); // six, twelve for gaming videos, four HDR (I.9) and sixteen of Premiere's formats (0.2)
     for (const Preset& p : presets) {
         INFO(p.id);
         CHECK(!p.name.empty());
@@ -76,6 +76,20 @@ TEST_CASE("Built-in presets exist, validate and say what they promise", "[export
     CHECK(wav.container == Container::Wav);
     CHECK_FALSE(wav.video.enabled);
     CHECK(wav.audio.codec == AudioCodec::Pcm24);
+
+    // HDR (I.9): 10 bits, PQ or HLG.
+    const ExportSettings youtubeHdr = preset("youtube-hdr-pq");
+    CHECK(youtubeHdr.container == Container::Mp4);
+    CHECK(youtubeHdr.video.codec == VideoCodec::Hevc);
+    CHECK(youtubeHdr.video.pixelFormat == OutputPixelFormat::Yuv420p10);
+    CHECK(youtubeHdr.video.dynamicRange == DynamicRange::Pq);
+    CHECK(preset("youtube-hdr-pq-av1").video.codec == VideoCodec::Av1);
+    CHECK(preset("youtube-hdr-pq-av1").video.dynamicRange == DynamicRange::Pq);
+    CHECK(preset("hdr-hlg").video.dynamicRange == DynamicRange::Hlg);
+    const ExportSettings master = preset("prores-hdr-pq");
+    CHECK(master.container == Container::Mov);
+    CHECK(master.video.codec == VideoCodec::ProRes);
+    CHECK(master.video.dynamicRange == DynamicRange::Pq);
 }
 
 TEST_CASE("validate() rejects impossible combinations with a message", "[export][settings]") {

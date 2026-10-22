@@ -32,6 +32,19 @@ constexpr std::array<LibraryColumnInfo, kLibraryColumnCount> kColumns{{
     {LibraryColumn::Path, "path", 260, false, false},
     {LibraryColumn::Comment, "comment", 180, false, true},
     {LibraryColumn::Description, "description", 200, false, true},
+    {LibraryColumn::Scene, "scene", 96, false, true},
+    {LibraryColumn::Shot, "shot", 84, false, true},
+    {LibraryColumn::Take, "take", 72, false, true},
+    {LibraryColumn::LogNote, "logNote", 200, false, true},
+    {LibraryColumn::Good, "good", 64, false, true},
+    {LibraryColumn::Client, "client", 120, false, true},
+    {LibraryColumn::TapeName, "tapeName", 112, false, true},
+    {LibraryColumn::Status, "status", 104, false, true},
+    {LibraryColumn::CameraAngle, "cameraAngle", 104, false, true},
+    {LibraryColumn::CameraLabel, "cameraLabel", 104, false, true},
+    {LibraryColumn::CameraModel, "cameraModel", 120, false, true},
+    {LibraryColumn::ShotDate, "shotDate", 120, false, true},
+    {LibraryColumn::ShotLocation, "shotLocation", 140, false, true},
 }};
 
 QString text(const std::string& s) { return QString::fromStdString(s); }
@@ -159,13 +172,75 @@ QString libraryColumnTitle(LibraryColumn column) {
         return LibraryModel::tr("Comment");
     case LibraryColumn::Description:
         return LibraryModel::tr("Description");
+    case LibraryColumn::Scene:
+        return LibraryModel::tr("Scene");
+    case LibraryColumn::Shot:
+        return LibraryModel::tr("Shot");
+    case LibraryColumn::Take:
+        return LibraryModel::tr("Take");
+    case LibraryColumn::LogNote:
+        return LibraryModel::tr("Log Note");
+    case LibraryColumn::Good:
+        return LibraryModel::tr("Good");
+    case LibraryColumn::Client:
+        return LibraryModel::tr("Client");
+    case LibraryColumn::TapeName:
+        return LibraryModel::tr("Tape Name");
+    case LibraryColumn::Status:
+        return LibraryModel::tr("Status");
+    case LibraryColumn::CameraAngle:
+        return LibraryModel::tr("Camera Angle");
+    case LibraryColumn::CameraLabel:
+        return LibraryModel::tr("Camera Label");
+    case LibraryColumn::CameraModel:
+        return LibraryModel::tr("Camera Model");
+    case LibraryColumn::ShotDate:
+        return LibraryModel::tr("Shot Date");
+    case LibraryColumn::ShotLocation:
+        return LibraryModel::tr("Shot Location");
     }
     return {};
 }
 
 bool LibraryFilter::active() const {
     return !text.trimmed().isEmpty() || !type.isEmpty() || label >= 0 || transcribed || offline || proxy || generated ||
-           unused || duplicates || !from.isEmpty() || !to.isEmpty();
+           unused || duplicates || !from.isEmpty() || !to.isEmpty() || good;
+}
+
+LibraryFilter LibraryFilter::fromSearch(const BinSearch& s) {
+    LibraryFilter f;
+    f.text = QString::fromStdString(s.text);
+    f.field = QString::fromStdString(s.field);
+    f.type = QString::fromStdString(s.type);
+    f.label = s.label;
+    f.good = s.good;
+    f.offline = s.offline;
+    f.generated = s.generated;
+    f.transcribed = s.transcribed;
+    f.proxy = s.proxy;
+    f.unused = s.unused;
+    f.duplicates = s.duplicates;
+    f.from = QString::fromStdString(s.from);
+    f.to = QString::fromStdString(s.to);
+    return f;
+}
+
+BinSearch LibraryFilter::toSearch() const {
+    BinSearch s;
+    s.text = text.trimmed().toStdString();
+    s.field = field.toStdString();
+    s.type = type == QStringLiteral("bin") ? std::string() : type.toStdString(); // a search bin finds no bins by type
+    s.label = label;
+    s.good = good;
+    s.offline = offline;
+    s.generated = generated;
+    s.transcribed = transcribed;
+    s.proxy = proxy;
+    s.unused = unused;
+    s.duplicates = duplicates;
+    s.from = from.toStdString();
+    s.to = to.toStdString();
+    return s;
 }
 
 QString libraryFrameRateText(const MediaItem& media) {
@@ -238,6 +313,8 @@ QHash<int, QByteArray> LibraryModel::roleNames() const {
         {CommentRole, "comment"},
         {CountRole, "itemCount"},
         {DerivedRole, "derivedFrom"},
+        {SearchBinRole, "searchBin"},
+        {GoodRole, "good"},
     };
 }
 
@@ -316,7 +393,9 @@ QString LibraryModel::cellText(int rowIndex, LibraryColumn column) const {
                : row.kind == Row::Kind::Sequence ? text(row.sequence->name)
                                                  : text(row.media->name);
     case LibraryColumn::Label:
-        return row.kind == Row::Kind::Media ? libraryLabelName(row.media->colorIndex) : QString();
+        return row.kind == Row::Kind::Media      ? libraryLabelName(row.media->colorIndex)
+               : row.kind == Row::Kind::Sequence ? libraryLabelName(row.sequence->colorIndex) // 0.2
+                                                 : QString();
     case LibraryColumn::MediaType: {
         const QString kind = kindOf(row);
         if (kind == QStringLiteral("bin"))
@@ -399,6 +478,33 @@ QString LibraryModel::cellText(int rowIndex, LibraryColumn column) const {
         return row.kind == Row::Kind::Media ? text(row.media->comment) : QString();
     case LibraryColumn::Description:
         return row.kind == Row::Kind::Media ? text(row.media->description) : QString();
+    case LibraryColumn::Scene:
+        return row.kind == Row::Kind::Media ? text(row.media->metadata.scene) : QString();
+    case LibraryColumn::Shot:
+        return row.kind == Row::Kind::Media ? text(row.media->metadata.shot) : QString();
+    case LibraryColumn::Take:
+        return row.kind == Row::Kind::Media ? text(row.media->metadata.take) : QString();
+    case LibraryColumn::LogNote:
+        return row.kind == Row::Kind::Media ? text(row.media->metadata.logNote) : QString();
+    case LibraryColumn::Good:
+        // The list draws a check box (GoodRole); the text is for sorting, export and screen readers.
+        return row.kind == Row::Kind::Media && row.media->metadata.good ? tr("Good") : QString();
+    case LibraryColumn::Client:
+        return row.kind == Row::Kind::Media ? text(row.media->metadata.client) : QString();
+    case LibraryColumn::TapeName:
+        return row.kind == Row::Kind::Media && row.media->timecode ? text(row.media->timecode->reelName) : QString();
+    case LibraryColumn::Status:
+        return row.kind == Row::Kind::Media ? text(row.media->metadata.status) : QString();
+    case LibraryColumn::CameraAngle:
+        return row.kind == Row::Kind::Media ? text(row.media->metadata.cameraAngle) : QString();
+    case LibraryColumn::CameraLabel:
+        return row.kind == Row::Kind::Media ? text(row.media->metadata.cameraLabel) : QString();
+    case LibraryColumn::CameraModel:
+        return row.kind == Row::Kind::Media ? text(row.media->metadata.cameraModel) : QString();
+    case LibraryColumn::ShotDate:
+        return row.kind == Row::Kind::Media ? text(row.media->metadata.shotDate) : QString();
+    case LibraryColumn::ShotLocation:
+        return row.kind == Row::Kind::Media ? text(row.media->metadata.shotLocation) : QString();
     }
     return {};
 }
@@ -423,7 +529,9 @@ QVariant LibraryModel::data(const QModelIndex& index, int role) const {
         return kColumns[static_cast<std::size_t>(column)].editable &&
                (row.kind == Row::Kind::Media || (row.kind == Row::Kind::Bin && column == LibraryColumn::Name));
     case LabelRole:
-        return row.kind == Row::Kind::Media ? row.media->colorIndex : -1;
+        return row.kind == Row::Kind::Media      ? row.media->colorIndex
+               : row.kind == Row::Kind::Sequence ? row.sequence->colorIndex // 0.2: sequences have labels too
+                                                 : -1;
     case ThumbnailRole:
         if (row.kind == Row::Kind::Sequence)
             return m_context.sequenceThumbnail && m_snapshot ? m_context.sequenceThumbnail(*m_snapshot, *row.sequence) : QString();
@@ -499,9 +607,15 @@ QVariant LibraryModel::data(const QModelIndex& index, int role) const {
         const MediaItem* source = m_snapshot ? m_snapshot->findMedia(row.media->derived->source) : nullptr;
         return source ? text(source->name) : text(row.media->derived->part);
     }
+    case SearchBinRole:
+        return row.kind == Row::Kind::Bin && row.bin->isSearch();
+    case GoodRole:
+        return row.kind == Row::Kind::Media && row.media->metadata.good;
     case CountRole: {
         if (row.kind != Row::Kind::Bin || !m_snapshot)
             return 0;
+        if (row.bin->isSearch())
+            return searchCount(*row.bin->search);
         const BinId bin{row.id};
         int count = 0;
         for (const Bin& b : m_snapshot->bins)
@@ -528,7 +642,7 @@ QVariant LibraryModel::sortKey(const Row& row, LibraryColumn column) const {
     const MediaItem* m = row.kind == Row::Kind::Media ? row.media : nullptr;
     switch (column) {
     case LibraryColumn::Label:
-        return m ? m->colorIndex : -1;
+        return m ? m->colorIndex : row.kind == Row::Kind::Sequence ? row.sequence->colorIndex : -1;
     case LibraryColumn::Duration:
         if (row.kind == Row::Kind::Sequence)
             return static_cast<qlonglong>(row.sequence->duration.value);
@@ -552,6 +666,8 @@ QVariant LibraryModel::sortKey(const Row& row, LibraryColumn column) const {
         return m ? static_cast<qlonglong>(m->info.modifiedTime) : -1LL;
     case LibraryColumn::Generated:
         return m && m->generated ? 1 : 0;
+    case LibraryColumn::Good:
+        return m && m->metadata.good ? 1 : 0;
     default:
         break;
     }
@@ -623,7 +739,7 @@ bool LibraryModel::matches(const Row& row, const LibraryFilter& f) const {
     if (!f.type.isEmpty() && f.type != kind)
         return false;
     const bool mediaOnly = f.label >= 0 || f.transcribed || f.offline || f.proxy || f.generated || f.unused ||
-                           f.duplicates || !f.from.isEmpty() || !f.to.isEmpty();
+                           f.duplicates || !f.from.isEmpty() || !f.to.isEmpty() || f.good;
     if (mediaOnly && row.kind != Row::Kind::Media)
         return false;
     if (row.kind == Row::Kind::Media) {
@@ -643,6 +759,8 @@ bool LibraryModel::matches(const Row& row, const LibraryFilter& f) const {
             return false;
         if (f.generated && !m.generated)
             return false;
+        if (f.good && !m.metadata.good)
+            return false;
         if (f.unused && m_context.used && m_context.used->contains(row.id))
             return false;
         if (f.duplicates && !(m_context.duplicates && m_context.duplicates->contains(row.id)))
@@ -657,26 +775,95 @@ bool LibraryModel::matches(const Row& row, const LibraryFilter& f) const {
     if (needle.isEmpty())
         return true;
     const auto has = [&](const std::string& s) { return text(s).contains(needle, Qt::CaseInsensitive); };
+    const QString& field = f.field;
+    const bool all = field.isEmpty();
     switch (row.kind) {
     case Row::Kind::Bin:
-        return has(row.bin->name);
+        return (all || field == QStringLiteral("name")) && has(row.bin->name);
     case Row::Kind::Sequence:
-        return has(row.sequence->name);
+        return (all || field == QStringLiteral("name")) && has(row.sequence->name);
     case Row::Kind::Media:
         break;
     }
-    return has(row.media->name) || has(row.media->comment) || has(row.media->description) ||
-           has(row.media->locator.path);
+    const MediaItem& m = *row.media;
+    const ClipMetadata& md = m.metadata;
+    const std::string tape = m.timecode ? m.timecode->reelName : std::string();
+    if (!all) {
+        // Search Bins (0.2, P.3): one property.
+        if (field == QStringLiteral("name"))
+            return has(m.name);
+        if (field == QStringLiteral("comment"))
+            return has(m.comment);
+        if (field == QStringLiteral("description"))
+            return has(m.description);
+        if (field == QStringLiteral("scene"))
+            return has(md.scene);
+        if (field == QStringLiteral("shot"))
+            return has(md.shot);
+        if (field == QStringLiteral("take"))
+            return has(md.take);
+        if (field == QStringLiteral("logNote"))
+            return has(md.logNote);
+        if (field == QStringLiteral("client"))
+            return has(md.client);
+        if (field == QStringLiteral("tapeName"))
+            return has(tape);
+        if (field == QStringLiteral("status"))
+            return has(md.status);
+        if (field == QStringLiteral("cameraAngle"))
+            return has(md.cameraAngle);
+        if (field == QStringLiteral("cameraLabel"))
+            return has(md.cameraLabel);
+        if (field == QStringLiteral("cameraModel"))
+            return has(md.cameraModel);
+        if (field == QStringLiteral("shotDate"))
+            return has(md.shotDate);
+        if (field == QStringLiteral("shotLocation"))
+            return has(md.shotLocation);
+        if (field == QStringLiteral("path"))
+            return has(m.locator.path);
+        return false;
+    }
+    return has(m.name) || has(m.comment) || has(m.description) || has(m.locator.path) || has(md.scene) ||
+           has(md.shot) || has(md.take) || has(md.logNote) || has(md.client) || has(tape) || has(md.status) ||
+           has(md.cameraAngle) || has(md.cameraLabel) || has(md.cameraModel) || has(md.shotDate) || has(md.shotLocation);
+}
+
+int LibraryModel::searchCount(const BinSearch& search) const {
+    if (!m_snapshot)
+        return 0;
+    const LibraryFilter f = LibraryFilter::fromSearch(search);
+    int count = 0;
+    for (const Bin& b : m_snapshot->bins)
+        count += !b.isSearch() && matches({Row::Kind::Bin, b.id.value, &b, nullptr, nullptr}, f) ? 1 : 0;
+    for (const SequencePtr& s : m_snapshot->sequences)
+        count += matches({Row::Kind::Sequence, s->id.value, nullptr, s.get(), nullptr}, f) ? 1 : 0;
+    for (const MediaPtr& m : m_snapshot->media)
+        count += matches({Row::Kind::Media, m->id.value, nullptr, nullptr, m.get()}, f) ? 1 : 0;
+    return count;
 }
 
 void LibraryModel::refresh(ProjectSnapshot snapshot, BinId bin, const LibraryFilter& filter, const Context& context) {
     std::vector<Row> rows;
-    const bool filtering = filter.active();
+    // 0.2 (P.3): a search bin's query lists the whole project (and an active Find narrows it).
+    const Bin* searchBin = snapshot && bin.isValid() ? snapshot->findBin(bin) : nullptr;
+    const std::optional<LibraryFilter> query =
+        searchBin && searchBin->isSearch() ? std::optional<LibraryFilter>(LibraryFilter::fromSearch(*searchBin->search))
+                                           : std::nullopt;
+    const bool filtering = filter.active() || query.has_value();
     // The new context goes in first: matches() and the sort read it.
     m_context = context;
     if (snapshot) {
         rows.reserve(snapshot->media.size() + snapshot->bins.size() + snapshot->sequences.size());
         const auto take = [&](const Row& row, BinId parent) {
+            if (query) {
+                // A search bin never lists search bins (nor itself).
+                if (row.kind == Row::Kind::Bin && row.bin->isSearch())
+                    return;
+                if (inScope(row, filter) && matches(row, *query) && (!filter.active() || matches(row, filter)))
+                    rows.push_back(row);
+                return;
+            }
             if (inScope(row, filter) && (filtering ? matches(row, filter) : parent == bin))
                 rows.push_back(row);
         };

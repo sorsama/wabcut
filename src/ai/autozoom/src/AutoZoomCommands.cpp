@@ -1,5 +1,6 @@
 #include <wabcut/ai/autozoom/AutoZoomCommands.h>
 
+#include <wabcut/ai/reframe/Reframe.h>
 #include <wabcut/command/Schema.h>
 #include <wabcut/model/MediaLocator.h>
 
@@ -44,6 +45,38 @@ std::string readSidecarFile(const std::string& path) {
     return text.str();
 }
 
+/// 0.2: the one screen recording a nested or multicam clip shows over its window (a multicam angle, the clip inside a
+/// nest), at 100 % forwards.
+const Clip& recordingInside(ExecutionContext& c, const Clip& clip) {
+    const std::string name = "clip " + std::to_string(clip.id.value);
+    const Track* track = reframe::nestedPictureTrack(c.state(), clip);
+    if (!track) {
+        fail(ErrorCode::InvalidParams, name + " shows layers of a nested sequence: auto zoom reads one recording (zoom the clip inside it)",
+             Json{{"path", "/clip"}});
+    }
+    const Ticks from = std::min(clip.sourceIn, clip.sourceOut());
+    const Ticks to = std::max(clip.sourceIn, clip.sourceOut());
+    const Clip* found = nullptr;
+    for (const Clip& leaf : track->clips) {
+        if (!leaf.enabled || leaf.end() <= from || leaf.start() >= to) {
+            continue;
+        }
+        if (found || leaf.isNested() || !leaf.media.isValid()) {
+            fail(ErrorCode::InvalidParams, name + " shows several clips through its nested sequence: auto zoom reads one recording (zoom the clips inside it)",
+                 Json{{"path", "/clip"}});
+        }
+        found = &leaf;
+    }
+    if (!found) {
+        fail(ErrorCode::EditRejected, name + " shows no recording to zoom");
+    }
+    if (!found->speed.isUnity() || found->reversed || found->isRemapped() || found->isFreeze()) {
+        fail(ErrorCode::InvalidParams, "the recording " + name + " shows is retimed inside its nested sequence: auto zoom needs it at 100 %",
+             Json{{"path", "/clip"}});
+    }
+    return *found;
+}
+
 CommandOutput applyCommand(ExecutionContext& c) {
     const Sequence& seq = c.sequence();
     const ClipId clipId = c.clip("clip");
@@ -53,7 +86,14 @@ CommandOutput applyCommand(ExecutionContext& c) {
              Json{{"path", "/clip"}});
     }
     const Clip& clip = seq.findClip(clipId)->clip();
-    const MediaItem& media = *c.state().findMedia(clip.media);
+    // The recording analysed: the clip's own, or the one a nested or multicam clip shows (its activity is then moved into
+    // the nested time and onto the nested canvas, and the zoom keys go on the nested clip itself).
+    const Clip& recording = clip.isNested() ? recordingInside(c, clip) : clip;
+    const MediaItem* recordingMedia = c.state().findMedia(recording.media);
+    if (!recordingMedia || recording.stream.index < 0 || static_cast<std::size_t>(recording.stream.index) >= recordingMedia->info.video.size()) {
+        fail(ErrorCode::NotFound, "the clip's media has no such video stream", Json{{"path", "/clip"}});
+    }
+    const MediaItem& media = *recordingMedia;
     ZoomOptions options;
     if (c.has("maxZoom")) {
         options.maxZoom = c.number("maxZoom");
@@ -75,8 +115,16 @@ CommandOutput applyCommand(ExecutionContext& c) {
     options.typing = c.boolean("typing", true);
     options.dwell = c.boolean("dwell", true);
     const TimeRange source = TimeRange::fromStartEnd(clip.sourceIn, clip.sourceOut());
-    const int pictureWidth = static_cast<int>(std::lround(placement->pictureWidth));
-    const int pictureHeight = static_cast<int>(std::lround(placement->pictureHeight));
+    // The recording's own time and picture size (a nested clip: the part of the recording its window shows).
+    const reframe::DisplayGeometry recordingPicture =
+        clip.isNested() ? reframe::displayGeometry(media.info.video[static_cast<std::size_t>(recording.stream.index)])
+                        : reframe::DisplayGeometry{placement->pictureWidth, placement->pictureHeight};
+    const TimeRange recordingSource =
+        clip.isNested() ? TimeRange::fromStartEnd(recording.sourceIn + (std::max(recording.start(), source.start) - recording.start()),
+                                                  recording.sourceIn + (std::min(recording.end(), source.end()) - recording.start()))
+                        : source;
+    const int pictureWidth = static_cast<int>(std::lround(recordingPicture.width));
+    const int pictureHeight = static_cast<int>(std::lround(recordingPicture.height));
     auto* services = command::findService<AutoZoomServices>(c.services());
     const std::string detect = c.string("detect", "auto");
 
@@ -118,20 +166,20 @@ CommandOutput applyCommand(ExecutionContext& c) {
             detectOptions.fps = c.number("fps");
         }
         char key[160];
-        std::snprintf(key, sizeof key, "%llu/%d/%lld/%lld/%.3f/%d", static_cast<unsigned long long>(media.id.value), clip.stream.index,
-                      static_cast<long long>(source.start.value), static_cast<long long>(source.duration.value), detectOptions.fps,
-                      detectOptions.width);
+        std::snprintf(key, sizeof key, "%llu/%d/%lld/%lld/%.3f/%d", static_cast<unsigned long long>(media.id.value), recording.stream.index,
+                      static_cast<long long>(recordingSource.start.value), static_cast<long long>(recordingSource.duration.value),
+                      detectOptions.fps, detectOptions.width);
         if (auto remembered = services->cached(key)) {
             activity = std::move(*remembered);
             analysis = Json{{"cached", true}};
         } else {
-            auto reader = services->frames(media, clip.stream.index);
+            auto reader = services->frames(media, recording.stream.index);
             if (!reader) {
                 fail(ErrorCode::EditRejected, "cannot read the frames of '" + media.name + "': " + reader.error().message);
             }
             DetectStats stats;
             auto detected = detectActivity(
-                *reader, source, detectOptions,
+                *reader, recordingSource, detectOptions,
                 [&c](double f) {
                     char text[48];
                     std::snprintf(text, sizeof text, "looking for activity (%d%%)", static_cast<int>(std::lround(f * 100.0)));
@@ -146,6 +194,28 @@ CommandOutput applyCommand(ExecutionContext& c) {
             activity = std::move(*detected);
             services->remember(key, *activity);
             analysis = Json{{"frames", stats.frames}, {"seconds", rounded(stats.seconds)}, {"framesPerSecond", rounded(stats.framesPerSecond, 10.0)}};
+        }
+    }
+    if (clip.isNested()) {
+        // From the recording's time and picture to what the nested clip shows: the nested time and canvas.
+        const Sequence& inner = *c.state().findSequence(clip.sequence);
+        const auto onCanvas = [&](Ticks mediaTime, double& x, double& y, double* w, double* h) {
+            const Ticks nested = recording.start() + (mediaTime - recording.sourceIn);
+            const reframe::CanvasPlacement on =
+                reframe::canvasPlacement(recording, recordingPicture, inner.width, inner.height, recording.curveTimeAt(nested));
+            x = on.offsetX + on.factorX * x;
+            y = on.offsetY + on.factorY * y;
+            if (w && h) {
+                *w *= on.factorX;
+                *h *= on.factorY;
+            }
+            return nested;
+        };
+        for (ActivityEvent& e : activity->events) {
+            e.time = onCanvas(e.time, e.x, e.y, &e.width, &e.height);
+        }
+        for (CursorSample& s : activity->cursor) {
+            s.time = onCanvas(s.time, s.x, s.y, nullptr, nullptr);
         }
     }
     c.checkpoint("planning the zoom");
@@ -288,7 +358,8 @@ void registerAutoZoomCommands(command::CommandRegistry& registry) {
          "Zooms a screen recording in where things happen (clicks, typing, where the cursor rests) and back out when nothing "
          "does, like Screen Studio: smooth, editable Position and Scale keyframes on the clip (the AI-9 camera optimiser), "
          "never showing outside the frame. Activity comes from a cursor sidecar when there is one, else from the frames. "
-         "Running it again replaces its keys. One undo step; dryRun with \"preview\" returns the zoom path.",
+         "A multicam or nested clip is zoomed as one picture from the recording it shows (the active angle), keys on the "
+         "clip itself. Running it again replaces its keys. One undo step; dryRun with \"preview\" returns the zoom path.",
          command::Capability::EditSequence, std::move(params), Json{{"clip", 42}, {"maxZoom", 2.0}, {"easing", "easeInOut"}}, {}, applyCommand});
 }
 

@@ -1,6 +1,7 @@
 pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls.Basic
+import QtQuick.Dialogs
 
 // Library (M5k: Premiere's Project panel). Bridge: `Library` (LibraryBridge), rows: Library.items (LibraryModel).
 //
@@ -15,6 +16,9 @@ import QtQuick.Controls.Basic
 //   * Make Subclip (Ctrl/⌘+U) from the Source Monitor's marks; Edit Subclip; the poster frame from the hover-scrub
 //     position; Reveal in File Explorer; unused media (show, remove) and duplicates.
 //   * Media / Audio / Text tabs: everything, bins and audio, Essential Graphics (titles, M5d).
+//   * 0.2 (P.3): the Freeform view (LibraryFreeformView), Search Bins (the search bar's "Create new search bin",
+//     SearchBinPopover), the clip metadata columns, the Metadata panel and XMP from the item menu, and items dragged
+//     in from another project (the Production panel) imported here.
 //
 // I.1 behaviour kept: files dropped here are imported, "+" imports, media cards drag onto the timeline
 // (application/x-wabcut-media), a double-click shows the clip in the Source Monitor, a sequence opens in its tab.
@@ -30,6 +34,9 @@ Panel {
 
     signal importRequested()
     signal filesDropped(var urls)
+    /// 0.2 (P.3): show the Metadata panel / the Production panel.
+    signal metadataPanelRequested()
+    signal productionPanelRequested()
 
     title: qsTr("Library")
 
@@ -37,6 +44,10 @@ Panel {
     function focusContent() {
         if (Library.view === "list") {
             list.forceActiveFocus(Qt.TabFocusReason)
+            return
+        }
+        if (freeform.visible) {
+            freeform.forceActiveFocus(Qt.TabFocusReason)
             return
         }
         const keys = Library.selection
@@ -106,6 +117,15 @@ Panel {
             onClicked: Library.view = "list"
         },
         IconButton {
+            objectName: "libraryFreeformButton"
+            compact: true
+            checkable: true
+            checked: Library.view === "freeform"
+            iconName: "shapes"
+            tooltip: qsTr("Freeform view")
+            onClicked: Library.view = "freeform"
+        },
+        IconButton {
             objectName: "libraryNewBinButton"
             compact: true
             iconName: "folder-plus"
@@ -142,11 +162,24 @@ Panel {
             id: searchBar
             objectName: "librarySearchBar"
             anchors.left: parent.left
-            anchors.right: filterButton.left
+            anchors.right: searchBinButton.left
             anchors.rightMargin: Theme.space(1)
             anchors.verticalCenter: parent.verticalCenter
             onQueryChanged: Library.findText = searchBar.smart ? "" : searchBar.query
             onSmartChanged: Library.findText = searchBar.smart ? "" : searchBar.query
+        }
+        // Premiere's "Create new search bin": a search bin that finds what the search finds now.
+        IconButton {
+            id: searchBinButton
+            objectName: "librarySearchBinButton"
+            anchors.right: filterButton.left
+            anchors.rightMargin: Theme.space(1)
+            anchors.verticalCenter: parent.verticalCenter
+            compact: true
+            iconName: "folder-search"
+            enabled: Library.filtering && !searchBar.smart
+            tooltip: qsTr("Create new search bin")
+            onClicked: Library.createSearchBin()
         }
         IconButton {
             id: filterButton
@@ -220,11 +253,13 @@ Panel {
         GridView {
             id: grid
             objectName: "libraryGrid"
-            readonly property int columns: Math.max(1, Math.floor(width / Theme.mediaCardMinWidth))
+            // Premiere's Project panel zoom: Library.thumbnailScale sizes the cards (Ctrl+wheel here, or the tools menu).
+            readonly property int columns: Math.max(1, Math.floor(width / (Theme.mediaCardMinWidth * Library.thumbnailScale)))
             anchors.fill: parent
             anchors.leftMargin: -Theme.space(1)
             anchors.rightMargin: -Theme.space(1)
-            visible: Library.view === "grid"
+            // 0.2 (P.3): the Freeform view needs a plain bin; while Find or a search bin lists items, the grid shows.
+            visible: Library.view === "grid" || (Library.view === "freeform" && !Library.freeformAvailable)
             clip: true
             model: Library.items
             cellWidth: width / columns
@@ -235,6 +270,12 @@ Panel {
             ScrollBar.vertical: ThinScrollBar {}
             Accessible.role: Accessible.List
             Accessible.name: qsTr("Library: %n item(s)", "", count)
+
+            WheelHandler {
+                objectName: "libraryThumbnailZoom"
+                acceptedModifiers: Qt.ControlModifier
+                onWheel: event => Library.thumbnailScale += (event.angleDelta.y > 0 ? 0.25 : -0.25)
+            }
 
             /// Keyboard focus on the card of `row` (the grid itself when there is none).
             function focusRow(row) {
@@ -292,6 +333,7 @@ Panel {
                 required property int itemCount
                 required property string binPath
                 required property string derivedFrom
+                required property bool searchBin
                 width: grid.cellWidth
                 height: grid.cellHeight
 
@@ -317,6 +359,7 @@ Panel {
                     itemCount: cell.itemCount
                     binPath: cell.binPath
                     derivedFrom: cell.derivedFrom
+                    searchBin: cell.searchBin
                     onActivated: root.activate(cell.key, cell.kind)
                     onMenuRequested: point => root.showMenu(cell.key, cell.kind, card, point, card.scrubFraction)
                 }
@@ -365,6 +408,15 @@ Panel {
             visible: Library.view === "list"
             onActivated: (key, kind) => root.activate(key, kind)
             onMenuRequested: (key, target, position) => root.showMenu(key, Library.details(key).kind ?? "", target, position, -1)
+        }
+
+        LibraryFreeformView {
+            id: freeform
+            anchors.fill: parent
+            visible: Library.view === "freeform" && Library.freeformAvailable
+            onActivated: (key, kind) => root.activate(key, kind)
+            onMenuRequested: (key, kind, target, position, fraction) => root.showMenu(key, kind, target, position, fraction)
+            onSaveLayoutRequested: layoutPopover.open()
         }
     }
 
@@ -422,16 +474,80 @@ Panel {
         id: itemMenu
         onRenameRequested: key => root.rename(key)
         onMetadataRequested: key => metadataPopover.openFor(key, root)
+        onMetadataPanelRequested: root.metadataPanelRequested()
+        onEditSearchBinRequested: key => searchBinPopover.openEdit(key, searchRow)
         onSubclipRequested: key => subclipPopover.openMakeOf(key, searchRow)
         onEditSubclipRequested: key => subclipPopover.openEdit(key, searchRow)
         onOpenRequested: (key, kind) => root.activate(key, kind)
+        onRevealSourceRequested: key => {
+            const shown = Production.revealSource(key)
+            if (shown.ok && !shown.switched)
+                root.productionPanelRequested() // browsed read-only there, the item pointed at
+        }
     }
 
-    // The tools menu: hover scrub, unused media, duplicates, Make Subclip.
+    // The tools menu: Import Image Sequence, hover scrub, unused media, duplicates, Make Subclip.
     LibraryToolsMenu {
         id: toolsMenu
         onRemoveUnusedRequested: removeUnusedPopover.open()
         onMakeSubclipRequested: root.makeSubclip()
+        onImportImageSequenceRequested: imageSequenceDialog.openDialog()
+        onNewSearchBinRequested: searchBinPopover.openNew(searchRow)
+        onImportFromProjectRequested: importProjectDialog.open()
+        onProductionRequested: root.productionPanelRequested()
+    }
+
+    SearchBinPopover {
+        id: searchBinPopover
+    }
+
+    FileDialog {
+        id: importProjectDialog
+        title: qsTr("Import from project")
+        fileMode: FileDialog.OpenFile
+        nameFilters: [qsTr("Wabcut projects (*.wabcut)")]
+        currentFolder: ProjectFile.folder
+        onAccepted: Production.importProject(selectedFile)
+    }
+
+    // Save as New Layout (the Freeform view's menu).
+    Popover {
+        id: layoutPopover
+        objectName: "libraryLayoutPopover"
+        parent: searchRow
+        title: qsTr("Save as New Layout")
+        onOpened: {
+            layoutName.text = qsTr("Layout %1").arg(Library.freeformLayouts.length + 1)
+            layoutName.forceActiveFocus()
+            layoutName.selectAll()
+        }
+        Column {
+            width: Theme.space(72)
+            spacing: Theme.space(2)
+            FieldInput {
+                id: layoutName
+                objectName: "libraryLayoutName"
+                width: parent.width
+                Accessible.name: qsTr("Layout name")
+                Keys.onShortcutOverride: event => event.accepted = event.text !== "" || event.key === Qt.Key_Backspace
+                onAccepted: layoutSave.clicked()
+            }
+            PillButton {
+                id: layoutSave
+                objectName: "libraryLayoutSave"
+                variant: "primary"
+                text: qsTr("Save")
+                enabled: layoutName.text.trim() !== ""
+                onClicked: {
+                    Library.saveFreeformLayout(layoutName.text)
+                    layoutPopover.close()
+                }
+            }
+        }
+    }
+
+    ImageSequenceDialog {
+        id: imageSequenceDialog
     }
 
     Popover {
@@ -576,9 +692,20 @@ Panel {
             drop.accept(Qt.CopyAction)
         }
     }
+    // 0.2 (P.3): items of another project (the Production panel) come in as copies.
+    DropArea {
+        id: otherProjectDrop
+        objectName: "libraryOtherProjectDrop"
+        anchors.fill: parent
+        keys: ["application/x-wabcut-other-project"]
+        onDropped: drop => {
+            Production.importItems(drop.getDataAsString("application/x-wabcut-other-project").split(","))
+            drop.accept(Qt.CopyAction)
+        }
+    }
     Rectangle {
         anchors.fill: parent
-        visible: fileDrop.containsDrag
+        visible: fileDrop.containsDrag || otherProjectDrop.containsDrag
         radius: Theme.radiusPanel
         color: "transparent"
         border.width: Theme.selectionWidth

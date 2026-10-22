@@ -13,7 +13,7 @@ Item {
     required property string jobId
     required property string title
     required property string presetName
-    required property string jobState // "queued" | "running" | "done" | "failed" | "cancelled"
+    required property string jobState // "held" | "queued" | "running" | "paused" | "done" | "failed" | "cancelled"
     required property string phaseText
     required property real progress
     required property string fpsText
@@ -24,6 +24,10 @@ Item {
 
     signal cancelRequested()
     signal revealRequested()
+    // 0.2 (Media Encoder's queue): pause a running or queued job, resume it, start a held one.
+    signal pauseRequested()
+    signal resumeRequested()
+    signal startRequested()
 
     readonly property bool running: jobState === "running"
     readonly property color stateColor: jobState === "done" ? Theme.success
@@ -117,6 +121,22 @@ Item {
                     color: root.jobState === "failed" ? Theme.danger : Theme.textSecondary
                     font.family: Theme.fontMono
                     font.pixelSize: Theme.textSm
+                }
+
+                IconButton {
+                    objectName: "exportJobPause"
+                    visible: !root.finished
+                    compact: true
+                    iconName: root.jobState === "paused" || root.jobState === "held" ? "play" : "pause"
+                    tooltip: root.jobState === "held" ? qsTr("Start") : root.jobState === "paused" ? qsTr("Resume") : qsTr("Pause")
+                    onClicked: {
+                        if (root.jobState === "held")
+                            root.startRequested()
+                        else if (root.jobState === "paused")
+                            root.resumeRequested()
+                        else
+                            root.pauseRequested()
+                    }
                 }
 
                 IconButton {

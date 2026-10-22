@@ -159,3 +159,39 @@ TEST_CASE("minimize finds a bounded quadratic's minimum", "[color][tools]") {
     const auto clamped = minimize([](const std::vector<double>& v) { return std::pow(v[0] - 9.0, 2); }, {0.0}, {1.0}, {-5.0}, {5.0}, 200);
     CHECK(clamped[0] == Approx(5.0));
 }
+
+TEST_CASE("Color Match face priority: the faces' skin counts most, hair and background in the box less (0.2)", "[color][tools][match]") {
+    // A 100 x 50 picture: blue background, a skin-toned face at the centre with a dark (hair) band on its top.
+    ColorImage image;
+    image.width = 100;
+    image.height = 50;
+    image.rgba.resize(100 * 50 * 4);
+    const Rgb skin = encode709({0.45, 0.3, 0.22});
+    const Rgb hair = encode709({0.03, 0.02, 0.02});
+    const Rgb blue = encode709({0.05, 0.1, 0.5});
+    for (int y = 0; y < 50; ++y) {
+        for (int x = 0; x < 100; ++x) {
+            const bool inFace = x >= 40 && x < 60 && y >= 10 && y < 40;
+            const Rgb c = inFace ? (y < 15 ? hair : skin) : blue;
+            float* p = image.rgba.data() + (static_cast<std::size_t>(y) * 100 + x) * 4;
+            p[0] = static_cast<float>(c[0]), p[1] = static_cast<float>(c[1]), p[2] = static_cast<float>(c[2]), p[3] = 1.0f;
+        }
+    }
+    CHECK(faceWeights(image, {}).empty());
+    const std::vector<FaceBox> faces{FaceBox{0.4, 0.2, 0.2, 0.6}};
+    const std::vector<float> w = faceWeights(image, faces, 12.0);
+    REQUIRE(w.size() == 100 * 50);
+    const auto at = [&](int x, int y) { return w[static_cast<std::size_t>(y) * 100 + x]; };
+    CHECK(at(5, 5) == Approx(1.0));     // background
+    CHECK(at(50, 25) == Approx(12.0));  // skin at the centre: the full weight
+    CHECK(at(50, 12) < 5.0);            // hair inside the box counts less
+    CHECK(at(50, 12) > 1.0);
+    CHECK(at(41, 11) == Approx(1.0));   // the box's corner lies outside the ellipse
+    // Through the samples, the face now outweighs the background that covers far more of the frame.
+    const auto samples = samplePixels(image, 5000, &w);
+    double faceWeight = 0.0, rest = 0.0;
+    for (const ColorSample& s : samples) {
+        (skinLikelihood(s.display) > 0.5 ? faceWeight : rest) += s.weight;
+    }
+    CHECK(faceWeight > rest);
+}

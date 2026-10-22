@@ -16,20 +16,25 @@
 namespace wabcut {
 
 struct SequencePreset {
-    std::string_view id;    ///< stable: "1080p60", "1440p144", "2160p240", "shorts", ...
+    std::string_view id;    ///< stable: "1080p60", "1440p144", "2160p240", "shorts", "1080p29.97df", "square1080p30", ...
     std::string_view name;  ///< "1080p 60 fps (YouTube)"
-    std::string_view group; ///< "Landscape 16:9" or "Vertical 9:16"
+    std::string_view group; ///< "Landscape 16:9", "Vertical 9:16" or "Square 1:1"
     std::int32_t width = 0;
     std::int32_t height = 0;
     Rate frameRate;
+    /// P.2 (E5): shows drop-frame timecode (29.97 and 59.94 only).
+    bool dropFrame = false;
 };
 
-/// Every preset: landscape 1080p, 1440p and 2160p at 30, 60, 120, 144 and 240 fps (and 59.94), then vertical
-/// 1080x1920 at 60 ("shorts") and 30.
+/// Every preset (P.2 extends C.15's gaming list with Premiere's broadcast and film rates): landscape 720p, 1080p, 1440p
+/// and UHD 2160p at 23.976, 24, 25, 29.97 (drop-frame and non-drop), 30, 50, 59.94 (drop and non-drop), 60, and 1080p
+/// to 2160p also at 120, 144 and 240 fps; vertical 1080x1920 for Shorts / TikTok / Reels ("shorts" at 60, "shorts30");
+/// square 1080x1080.
 std::span<const SequencePreset> sequencePresets();
 const SequencePreset* findSequencePreset(std::string_view id);
 
-/// A new sequence's settings from a preset (48 kHz audio, no drop-frame display; `name` empty: the preset's name).
+/// A new sequence's settings from a preset (48 kHz audio, the preset's drop-frame display; `name` empty: the preset's
+/// name).
 edit::SequenceSettings sequenceSettingsFor(const SequencePreset& preset, std::string name = {});
 
 } // namespace wabcut

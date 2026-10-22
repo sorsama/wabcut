@@ -31,6 +31,8 @@ bool isPreviewLayer(const LayerSpec& layer) { return !layer.clip.isValid() && (l
 
 /// Steps a decoding target may fall behind before it is abandoned (about half a second at 60 Hz).
 constexpr std::int64_t kMaxWaitSteps = 30;
+/// P.2: Impl::pendingMedia while a picture waits for motion analysis rather than a decoder.
+constexpr std::uint64_t kMotionPending = ~std::uint64_t{0};
 
 std::int64_t ceilDiv(std::int64_t a, std::int64_t b) {
     return (a + b - 1) / b;
@@ -59,6 +61,35 @@ bool nestedSequenceChanged(const ProjectState& before, const ProjectState& after
         }
     }
     return false;
+}
+
+/// P.2: what a background motion analysis wakes when it finishes; cleared when the scheduler thread ends, since the
+/// analyzer outlives every scheduler.
+struct MotionWake {
+    std::mutex mutex;
+    std::function<void()> wake;
+
+    void operator()() {
+        std::lock_guard lock(mutex);
+        if (wake) {
+            wake();
+        }
+    }
+};
+
+/// P.2: the motion the analyzer has already (the scheduler waits for the rest before it publishes).
+class FoundMotion final : public MotionSource {
+public:
+    std::shared_ptr<const motion::FlowPair> motion(const MotionRequest& request) override {
+        return MotionAnalyzer::shared().find(request);
+    }
+};
+
+/// Whether the composite of `layers` may need motion (an interpolation group or a flow mix).
+bool needsMotion(const std::vector<LayerSpec>& layers) {
+    return std::any_of(layers.begin(), layers.end(), [](const LayerSpec& l) {
+        return l.interpolation || (l.transition && l.transition->kind == render::TransitionKind::FlowMorph);
+    });
 }
 
 } // namespace
@@ -90,6 +121,7 @@ struct Scheduler::Impl {
         samples.reserve(options.collectTimings ? 1 << 16 : 0);
         previewSettings.useProxies = options.preferProxies;
         preview = previewSettings;
+        motionWake->wake = [this] { wake(); };
     }
 
     /// Frames a source caches: the lookahead twice over, or a reverse window plus the lookahead.
@@ -116,6 +148,8 @@ struct Scheduler::Impl {
 
     void run();
     void pass();
+    /// P.2: asks the analyzer for the motion `layers` will need, where their frames are already decoded (lookahead).
+    void prefetchMotion(const std::vector<LayerSpec>& layers, const Sequence& seq);
     enum class Publish { Done, NotReady, NoComposite };
     /// Publishes `target` if every layer's frame is decoded (failed layers are left out).
     Publish publishIfReady(Ticks target, const std::vector<LayerSpec>& layers, const Sequence& seq,
@@ -133,8 +167,8 @@ struct Scheduler::Impl {
     /// Counts `late` missed targets against the media the scheduler waited for, else every decoded layer of the
     /// target (the automatic proxy policy reads lateFramesByMedia).
     void blameLate(std::uint64_t media, const std::vector<LayerSpec>& layers, std::uint64_t late) {
-        if (late == 0) {
-            return;
+        if (late == 0 || media == kMotionPending) {
+            return; // P.2: waiting for motion analysis is no decoder's fault
         }
         if (media != 0) {
             lateByMedia[media] += late;
@@ -177,6 +211,7 @@ struct Scheduler::Impl {
     std::uint64_t captionVersion = 0;
     ColorPreview colorSettings; // the Color workspace's views (setColorPreview)
     std::uint64_t colorVersion = 0;
+    std::optional<TimeRange> loopRange; // P.2, Premiere's Loop (setLoop)
 
     // Statistics.
     std::atomic<std::uint64_t> passes{0}, published{0}, skippedLate{0}, decodeRequests{0}, poolExhausted{0},
@@ -204,6 +239,9 @@ struct Scheduler::Impl {
     std::uint64_t epoch = ~std::uint64_t{0};
     bool haveNext = false;
     Ticks nextTarget{};
+    // P.2 Loop: the playhead frame of the previous playing pass of this epoch, to see the transport wrap.
+    bool haveLastPresent = false;
+    Ticks lastPresentFrame{};
     std::int64_t leadSteps = 1; // how far ahead of the playhead to re-aim after a late target
     bool boundaryDone = false;
     struct {
@@ -239,6 +277,11 @@ struct Scheduler::Impl {
     // Zero-copy: the renderer's shared device the sessions decode on (media::sharedD3D11Device()).
     media::DeviceToken sharedDevice{};
     bool sharedDeviceKnown = false;
+    // P.2: flow mixes' motion (MotionAnalyzer::shared()): what wakes this scheduler when an analysis it asked for ends,
+    // and how many the latest picture waits for (the monitor's "Analyzing in background").
+    std::shared_ptr<MotionWake> motionWake = std::make_shared<MotionWake>();
+    std::atomic<int> motionWaits{0};
+    FoundMotion foundMotion;
 
     std::thread thread;
 };
@@ -452,8 +495,26 @@ Scheduler::Impl::Publish Scheduler::Impl::publishIfReady(Ticks target, const std
         }
         auto it = sessions.find(sessionKey(layer));
         media::VideoFrame f;
-        const auto state = it == sessions.end() ? detail::FrameSource::Lookup::Failed
-                                                : it->second->lookup(layer.sourceTime, f);
+        Ticks wanted = layer.sourceTime;
+        if (layer.interpolationSecond) {
+            // P.2 Time Interpolation: the frame after the group's first one (decoded just before it).
+            if (frames.empty() || !frames.back().isValid()) {
+                frames.emplace_back(); // no first frame: the group shows nothing
+                continue;
+            }
+            wanted = interpolationNextTime(frames.back());
+        }
+        auto state = it == sessions.end() ? detail::FrameSource::Lookup::Failed : it->second->lookup(wanted, f);
+        if (state == detail::FrameSource::Lookup::Pending && layer.interpolationSecond) {
+            // Not asked for yet when the first guess was another frame (variable frame rate): ask now.
+            if (it->second->request(wanted, epoch, false, true)) {
+                decodeRequests.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+        if (state == detail::FrameSource::Lookup::Failed && layer.interpolationSecond) {
+            state = detail::FrameSource::Lookup::Ready; // past the media's end: the first frame alone
+            f = {};
+        }
         if (state == detail::FrameSource::Lookup::Pending) {
             frames.clear();
             pendingMedia = layer.media.value;
@@ -486,6 +547,28 @@ Scheduler::Impl::Publish Scheduler::Impl::publishIfReady(Ticks target, const std
         }
         frames.push_back(std::move(f)); // a failed lookup leaves an invalid frame: the layer is skipped
     }
+    // P.2: a flow mix (Optical Flow, Morph Cut) waits for its motion like a frame still decoding; an analysis that
+    // failed (a picture that does not decode) mixes as a dissolve instead.
+    const render::CanvasSize canvas{seq.width, seq.height};
+    if (needsMotion(layers)) {
+        int waits = 0;
+        MotionAnalyzer& analyzer = MotionAnalyzer::shared();
+        for (const MotionRequest& request : motionRequestsOf(layers, frames, canvas)) {
+            if (analyzer.find(request) || analyzer.failed(request)) {
+                continue;
+            }
+            analyzer.request(request, true, [wakeUp = motionWake] { (*wakeUp)(); });
+            ++waits;
+        }
+        motionWaits.store(waits, std::memory_order_relaxed);
+        if (waits > 0) {
+            frames.clear();
+            pendingMedia = kMotionPending; // not the media's fault: no proxy is made for it
+            return Publish::NotReady;
+        }
+    } else {
+        motionWaits.store(0, std::memory_order_relaxed);
+    }
     auto composite = pool.acquire();
     if (!composite) {
         poolExhausted.fetch_add(1, std::memory_order_relaxed);
@@ -498,6 +581,9 @@ Scheduler::Impl::Publish Scheduler::Impl::publishIfReady(Ticks target, const std
     composite->frameDuration = frame;
     composite->canvas = {seq.width, seq.height};
     composite->color = options.color;
+    if (lastSnapshot) {
+        composite->color.management = lastSnapshot->colorManagement; // the project's colour management (I.9)
+    }
     // What the picture is made of (the monitor's quality badge), before the frames move into the composite.
     int proxies = 0;
     int originals = 0;
@@ -522,7 +608,7 @@ Scheduler::Impl::Publish Scheduler::Impl::publishIfReady(Ticks target, const std
     offlineProxyLayers.store(offline, std::memory_order_relaxed);
     decodedDivisor.store(coarsest, std::memory_order_relaxed);
     pendingMedia = 0;
-    buildCompositeLayers(layers, frames, composite->layers);
+    buildCompositeLayers(layers, frames, composite->layers, &foundMotion, canvas);
     frames.clear();
     composite->colorView = colorPreview.view;
     if (colorPreview.reference) {
@@ -555,12 +641,15 @@ bool Scheduler::Impl::invalidate(const ProjectState& before, const ProjectState&
     // Burned-in caption text depends on the speakers' names and colours (showSpeakers) and on where bleeped speech
     // plays, which audio clips decide (review wave 5 E5-P2-11).
     const bool speakersChanged = captions && before.speakers != after.speakers;
+    // I.9: the working space and output of every picture.
+    const bool colorChanged = before.colorManagement != after.colorManagement;
     // C.13: the brand kit themes graphics and caption styles that name it.
     const bool brandChanged = before.brandKit != after.brandKit;
-    if (oldSeq == newSeq && !mediaChanged && !redactionsChanged && !nestedChanged && !speakersChanged && !brandChanged) {
+    if (oldSeq == newSeq && !mediaChanged && !redactionsChanged && !nestedChanged && !speakersChanged && !colorChanged &&
+        !brandChanged) {
         return false; // structural sharing: this sequence and the media are untouched
     }
-    bool all = oldSeq == nullptr || redactionsChanged || nestedChanged || speakersChanged || brandChanged;
+    bool all = oldSeq == nullptr || redactionsChanged || nestedChanged || speakersChanged || colorChanged || brandChanged;
     dirty.clear();
     if (oldSeq && oldSeq != newSeq) {
         const SequenceChange change = diffSequence(*oldSeq, *newSeq);
@@ -626,12 +715,14 @@ void Scheduler::Impl::pass() {
     SequenceId sequenceId;
     std::shared_ptr<TransportClock> transport;
     std::uint64_t wantedEpoch = 0;
+    std::optional<TimeRange> loop;
     {
         std::lock_guard lock(mutex);
         snapshot = session ? session->snapshot() : fixedSnapshot; // acquired once per pass
         sequenceId = sequence;
         transport = clock;
         wantedEpoch = requestedEpoch;
+        loop = loopRange;
         if (previewVersion != appliedPreviewVersion) {
             preview = previewSettings;
             appliedPreviewVersion = previewVersion;
@@ -704,10 +795,19 @@ void Scheduler::Impl::pass() {
         }
         lastSnapshot = snapshot;
         ++revision;
+        // P.2: Morph Cuts are analysed in the background as soon as they are applied (Premiere's "Analyzing in
+        // background"), not only when the playhead reaches them.
+        MotionAnalyzer& analyzer = MotionAnalyzer::shared();
+        for (const MotionRequest& request : morphCutRequests(*snapshot, *seq, &preview)) {
+            if (!analyzer.find(request) && !analyzer.failed(request)) {
+                analyzer.request(request, false, [wakeUp = motionWake] { (*wakeUp)(); });
+            }
+        }
     }
     if (wantedEpoch != epoch) {
         epoch = wantedEpoch;
         haveNext = false;
+        haveLastPresent = false;
         leadSteps = 1;
         lastStill.valid = false;
         boundaryDone = false;
@@ -722,6 +822,10 @@ void Scheduler::Impl::pass() {
     const Ticks present = transport->transportTime(now + options.displayLatencyNs);
     // The sequence's explicit length (contract rev 2), never shorter than its content.
     const Ticks end = std::max(seq->duration, seq->contentEnd());
+    // P.2 Loop: playback inside the loop goes no further than its end (forward) or its start (reverse), where the
+    // transport wraps.
+    const Ticks runEnd = loop && dir > 0 && present < loop->end() ? std::min(end, loop->end()) : end;
+    const Ticks runStart = loop && dir < 0 && present >= loop->start ? loop->start : Ticks{0};
 
     targets.clear();
     Ticks step{};
@@ -741,12 +845,22 @@ void Scheduler::Impl::pass() {
     } else {
         step = Ticks{dir * span.value};
         const Ticks presentFrame = snapToFrame(present, rate);
-        if (!haveNext) {
+        // P.2 Loop: the transport jumped back to the loop's start (forward; to its end in reverse) without a new
+        // epoch. Restart at the playhead; what was queued for the end of the run is not shown.
+        const bool wrapped = loop && haveLastPresent &&
+                             (dir > 0 ? presentFrame < lastPresentFrame : presentFrame > lastPresentFrame);
+        lastPresentFrame = presentFrame;
+        haveLastPresent = true;
+        if (!haveNext || wrapped) {
             nextTarget = presentFrame;
             haveNext = true;
         }
+        if (wrapped) {
+            leadSteps = 1;
+            mailbox->clearPending();
+        }
         const std::int64_t behind = dir > 0 ? (present - nextTarget).value : (nextTarget - present).value;
-        const bool inSequence = dir > 0 ? nextTarget < end : nextTarget.value >= 0;
+        const bool inSequence = dir > 0 ? nextTarget < runEnd : nextTarget >= runStart;
         bool waiting = false;
         if (behind >= span.value && inSequence) {
             // The next target's slot has passed. At shuttle speeds decoding one target can take longer than
@@ -788,7 +902,7 @@ void Scheduler::Impl::pass() {
         const Ticks horizon = presentFrame + Ticks{(options.lookaheadFrames + leadSteps) * step.value};
         for (int k = 0; k < options.lookaheadFrames && !waiting; ++k) {
             const Ticks t = nextTarget + Ticks{k * step.value};
-            if ((dir > 0 && (t >= end || t > horizon)) || (dir < 0 && (t.value < 0 || t < horizon))) {
+            if ((dir > 0 && (t >= runEnd || t > horizon)) || (dir < 0 && (t < runStart || t < horizon))) {
                 break;
             }
             targets.push_back(t);
@@ -839,12 +953,21 @@ void Scheduler::Impl::pass() {
                     s->targetStep = layerStep;
                 }
             }
-            if (i == 0 && dir != 0) {
+            // P.2: the frames of an interpolation group share a session and lie on both sides of the source time, so
+            // neither may drop the other's request.
+            const bool pairFrame = layer.interpolationSecond || (layer.clip.isValid() && !layer.nested &&
+                                                                 std::any_of(plan[i].begin(), plan[i].end(), [&](const LayerSpec& l) {
+                                                                     return l.interpolationSecond && sessionKey(l) == sessionKey(layer);
+                                                                 }));
+            if (i == 0 && dir != 0 && !pairFrame) {
                 s->dropPassed(layer.sourceTime, dir < 0);
             }
             if (s->request(layer.sourceTime, epoch, dir < 0, i == 0)) {
                 decodeRequests.fetch_add(1, std::memory_order_relaxed);
             }
+        }
+        if (needsMotion(plan[i])) {
+            prefetchMotion(plan[i], *seq);
         }
     }
 
@@ -873,6 +996,36 @@ void Scheduler::Impl::pass() {
     refreshStats(now);
 }
 
+void Scheduler::Impl::prefetchMotion(const std::vector<LayerSpec>& layers, const Sequence& seq) {
+    // The frames decoded so far (nothing is requested here): the second frame of an interpolation group at the time
+    // after its first one, as publishIfReady reads it.
+    std::vector<media::VideoFrame> found;
+    found.reserve(layers.size());
+    for (const LayerSpec& layer : layers) {
+        media::VideoFrame f;
+        if (needsDecode(layer)) {
+            const auto it = sessions.find(sessionKey(layer));
+            const bool firstReady = !found.empty() && found.back().isValid();
+            if (it != sessions.end() && (!layer.interpolationSecond || firstReady)) {
+                const Ticks wanted = layer.interpolationSecond ? interpolationNextTime(found.back()) : layer.sourceTime;
+                if (it->second->lookup(wanted, f) != detail::FrameSource::Lookup::Ready) {
+                    f = {};
+                    if (layer.interpolationSecond) {
+                        it->second->request(wanted, epoch, false, false); // the exact next frame, for the lookahead
+                    }
+                }
+            }
+        }
+        found.push_back(std::move(f));
+    }
+    MotionAnalyzer& analyzer = MotionAnalyzer::shared();
+    for (const MotionRequest& request : motionRequestsOf(layers, found, {seq.width, seq.height})) {
+        if (!analyzer.find(request) && !analyzer.failed(request)) {
+            analyzer.request(request, false, [wakeUp = motionWake] { (*wakeUp)(); });
+        }
+    }
+}
+
 void Scheduler::Impl::run() {
     for (;;) {
         bool moving = false;
@@ -887,6 +1040,10 @@ void Scheduler::Impl::run() {
             wakeFlag = false;
         }
         pass();
+    }
+    {
+        std::lock_guard lock(motionWake->mutex); // P.2: analyses finishing later wake nothing
+        motionWake->wake = nullptr;
     }
     sessions.clear(); // joins session workers / stops pool sources before the scheduler thread ends
     // Pool callbacks may still be running on pool workers: let them finish before the pool can be released, so
@@ -956,6 +1113,14 @@ void Scheduler::setStopAtEnd(bool stop) {
 
 bool Scheduler::stopAtEnd() const { return m_impl->stopAtEnd.load(std::memory_order_relaxed); }
 
+void Scheduler::setLoop(std::optional<TimeRange> range) {
+    {
+        std::lock_guard lock(m_impl->mutex);
+        m_impl->loopRange = range && !range->isEmpty() ? range : std::nullopt;
+    }
+    wake();
+}
+
 void Scheduler::setBoundaryCallback(std::function<void(int)> callback) {
     std::lock_guard lock(m_impl->mutex);
     m_impl->boundary = std::move(callback);
@@ -1016,6 +1181,7 @@ void placeSideBySide(std::vector<render::CompositeLayer>& layers, render::Canvas
     }
     render::CompositeLayer still;
     still.view = reference->view(reference);
+    still.graphics = true; // a grabbed still is display-referred, like a title (I.9)
     still.transform.position = {-quarter, 0.0};
     still.transform.scale = std::min(canvas.width / 2.0 / reference->width(), static_cast<double>(canvas.height) / reference->height());
     layers.insert(layers.begin(), std::move(still));
@@ -1041,6 +1207,7 @@ SchedulerStats Scheduler::stats() const {
     s.decodeDivisor = m_impl->decodedDivisor.load(std::memory_order_relaxed);
     s.deviceChanges = m_impl->deviceChanges.load(std::memory_order_relaxed);
     s.staleDeviceFrames = m_impl->staleDeviceFrames.load(std::memory_order_relaxed);
+    s.motionWaits = m_impl->motionWaits.load(std::memory_order_relaxed);
     std::lock_guard lock(m_impl->statsMutex);
     s.lateFramesByMedia = m_impl->lateByMediaStats;
     s.decodedFrames = m_impl->decodedFrames;

@@ -44,8 +44,8 @@ namespace wabcut::audio {
 
 /// Frames per parameter cell (0.67 ms at 48 kHz).
 inline constexpr int kParamCellFrames = 32;
-/// Most parameters an effect has.
-inline constexpr int kMaxEffectParams = 8;
+/// Most parameters an effect has (p02: Premiere's Graphic Equalizer (30 Bands) and Multiband Compressor have dozens).
+inline constexpr int kMaxEffectParams = 64;
 
 /// Parameter values over one cell, in the descriptor's parameter order (a plugin's: its bound keys' order).
 struct ParamCell {

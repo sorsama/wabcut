@@ -19,7 +19,51 @@ files. Rendering: `docs/internal/c13-graphics-handoff.md`. Commands: [commands.m
   long: its protected intro plays from the clip's start and its outro ends at the clip's end, whatever the clip's length;
   the middle stretches (Premiere's Responsive Design - Time). Its keys are in that design time.
 - **Pins.** A layer pinned to edges of a sibling follows them (Responsive Design - Position): a box pinned to all four
-  edges of a name grows with the name; a rectangle, ellipse or image pinned on two opposite edges resizes.
+  edges of a name grows with the name; a rectangle, ellipse or image pinned on two opposite edges resizes. 0.2: a
+  top-level layer can be pinned to the **video frame** (Premiere's "Pin To: Video Frame", the design canvas): a logo
+  pinned to the right and bottom edges stays that far from the corner when the canvas changes size.
+- **Roll / Crawl** (0.2). A graphic can roll (credits: Premiere's Essential Graphics **Roll**) or crawl left / right (a
+  ticker: the Legacy Titler's **Crawl Left / Crawl Right**) over the clip; the clip's length sets the speed. Premiere's
+  options: **Start Off Screen** (the content starts just past the frame's lower edge - crawl left: its right edge, crawl
+  right: its left edge), **End Off Screen** (it ends just past the opposite edge; off: it stops when its last edge
+  reaches the frame's, and content that fits does not move), **Preroll** and **Postroll** (held still at the start and
+  end), **Ease-In** and **Ease-Out** (a trapezoidal speed: accelerating, constant, slowing; ease times that do not fit
+  shrink in proportion). The extent is the graphic's content as drawn at that time (`rollOffset`, `contentBox`,
+  GraphicResolve.h); the playback, export and the panel's preview all go through `resolveGraphicClip`. Design the
+  graphic in place: layers below the frame are the rest of the roll. `graphic.setRoll`.
+- **Align and Distribute** (0.2, Premiere's Essential Graphics Align and Transform buttons): left, horizontal centre,
+  right, top, vertical centre, bottom - to the **video frame** (the design canvas) or to the **selection** - and, for
+  three or more layers, **distribute** horizontally or vertically (centres evenly spaced between the outermost two).
+  Layers move by their Position, an animated one with all its keys (the animation keeps its shape); the move is
+  measured through groups, rotation, scale and pins (a layer pinned on that axis does not move and is refused).
+  `graphic.align`. In the Essential Graphics panel, Ctrl-click layers in the layer list to select several; the Align
+  row has Premiere's **To video frame / To selection** switch, and Distribute spaces the selected layers (three or
+  more), else every top-level layer.
+- **Type on a path** (0.2; the Legacy Titler's Path Type tool, After Effects' Path Options): a text layer's `onPath`
+  makes its text run along a cubic Bezier path in the layer's pixels (keyframable like a shape's path) instead of on
+  lines: the first line's baseline sits on the path and later lines below it; the text's alignment places it between
+  **First Margin** and **Last Margin** (pixels from the path's ends, keyframable: animate the first margin to send the
+  text along the path); **Force Alignment** (or Justify) spreads the characters from the first margin to the last;
+  **Perpendicular To Path** turns each character with the path (off: upright); **Reverse Path** runs it from the last
+  point to the first. Past an open path's ends characters carry on along the end tangents; on a closed path they wrap
+  round. The box, background and wrapping of paragraph text do not apply. Every grapheme cluster is placed on its own
+  after layout (text-range animators still move, scale and rotate them), in the one rasteriser the preview and the
+  export share. Essential Graphics' **Path** row puts a text layer on a line, an arc, a circle or a wave sized to the
+  canvas (or back on straight lines) with the three options and the margins; on the Program Monitor the path is drawn
+  and each point is a handle (one undo step a drag; an animated path gets a key at the playhead).
+  `graphic.setTextPath` (shapes or custom vertices, options), or `graphic.updateLayer` with `text.onPath`.
+- **Text Styles** (0.2, Premiere's Text Styles, formerly Master Styles): a named look for text layers saved with the
+  project (`ProjectState::textStyles`, the project file's `"textStyles"`): the run style (font, weight, size, fill,
+  italic, underline, tracking, leading, baseline shift), alignment, background and shadow. **Create Text Style** saves a
+  text layer's look and links the layer; applying a style restyles text layers and links them (`GraphicLayer::textStyle`,
+  `"textStyle"` in the layer JSON); **Push to Text Style** (`textStyle.update`, from a layer's look or JSON) restyles
+  every linked layer of every graphic clip in the project (clips on locked tracks keep theirs); renaming keeps the links,
+  deleting a style leaves its layers' look. `textStyle.list` / `create` / `apply` / `update` / `rename` / `remove`. The
+  Essential Graphics panel's Text style row (a text layer's Edit page: None or a style, Create..., Push) applies and
+  pushes them; the Library's **Text** tab lists them as items, as Premiere's Project panel does: a card per style with
+  its look and how many layers follow it - click it to apply it to every text layer of the graphic clips selected on the
+  timeline, or drag it onto a graphic clip on the timeline to style that clip's text layers, groups' included (one undo
+  step either way; the drop target lights up, other clips refuse it), right-click to rename, duplicate or delete it.
 - **Bounds.** A graphic holds at most 256 layers, nested 8 deep, 16 KiB of text per layer, 1024 vertices per path; every
   value is range-checked. Graphics come from project files, templates and Lottie files: untrusted input.
 
@@ -72,6 +116,8 @@ graphic inside template files. Keys at their default are left out; readers accep
 }
 ```
 
+- **Type on a path** (0.2): a text object's `"onPath": {"path": [path keys as a shape's], "closed", "reverse",
+  "perpendicular" (default true), "forceAlignment", "firstMargin", "lastMargin"}` (project schema 18).
 - **Numbers that can animate** (transform values, shape sizes, radii, stroke width, trim, selector start/end/offset) are
   a number, or a curve `{"keys": [{"t": ticks, "v": value, "i": "linear" | "hold" | "bezier" | "easeIn" | "easeOut" |
   "easeInOut", "in": {"slope", "influence"}, "out": {...}}, ...]}` (the project file's curves; a bare array of keys is
@@ -82,8 +128,11 @@ graphic inside template files. Keys at their default are left out; readers accep
   (`x`, `y`, `anchorX`, `anchorY`, `scaleX`, `scaleY` %, `rotation`, `opacity` %), `blend` (`normal`, `multiply`, `screen`,
   `overlay`, `add`, `darken`, `lighten`, `difference`), `shadow` (`enabled`, `color`, `opacity` 0..1, `angle`,
   `distance`, `softness`), `masks` (the project file's masks, [masks.md](masks.md): the layer's space normalised by the
-  canvas), `in` / `out` (ticks: when it shows), `pin` (`to`, `edges`, `offsets` left/top/right/bottom), and one of
-  `text`, `shape`, `image`, `children` (a group's layers, bottom to top).
+  canvas), `in` / `out` (ticks: when it shows), `pin` (`to` - a sibling's id, or `"frame"` for the video frame -, `edges`,
+  `offsets` left/top/right/bottom), `textStyle` (the project text style it follows), and one of `text`, `shape`,
+  `image`, `children` (a group's layers, bottom to top).
+- **Roll** (`"roll"` on the graphic): `kind` (`roll`, `crawlLeft`, `crawlRight`), `startOffScreen`, `endOffScreen`
+  (default true), `preroll`, `postroll`, `easeIn`, `easeOut` (ticks).
 - **Text**: `runs` (`text`; `font`, `style`, `brandFont` (a kit font role), `weight` 100..900, `size`, `fill`, `italic`,
   `underline`, `tracking` 1/1000 em, `leading` px, `baselineShift`), `align` (`left`, `center`, `right`, `justify`),
   `boxWidth` / `boxHeight` (paragraph text; 0 = point text), `language` (`"th"`), `background` (`enabled`, `color`,
@@ -132,6 +181,29 @@ point; `clip`: the clip's length), `checkbox` (a layer's visibility). `template.
 `template.instantiate` adds a clip of a template with field values; `template.setField` changes them later, several in
 one undo step. The instance keeps the template's id and version and its fields, so it can be edited without the
 template.
+
+**Import and export (0.2).** `template.export` writes any template (the project's, the user's or a built-in) to a
+`.wabcut-template.json` file; `template.import` adds one to the project's library (default) or the user's. It also
+imports a **Motion Graphics template (`.mogrt`) made in Premiere Pro, approximately** (`wabcut/interchange/Mogrt.h`):
+the template's name, canvas and duration come from its `definition.json`; each text Essential Property becomes a text
+field of a lower third Wabcut lays out (a box behind a group of texts), the first colour property the box's colour and
+the others the texts' colours, the first checkbox the box's visibility. 0.2: the texts also take the look of
+the template's own text layers, read from the Premiere graphic inside it (`project.prgraphic`: a gzipped Premiere
+project whose text layers' Source Text is JSON) - the font (from its PostScript name: "BebasNeue-Regular" is Bebas
+Neue, Regular), size, fill colour, tracking, alignment and drop shadow, matched to the fields by their text, else in
+order. The graphic's layout, shapes and animation are still not read (positions are relative to pins, shape paths are
+binary), and sliders, points, media and further checkboxes are dropped; the import report lists every approximation. Templates made in **After Effects** are refused with a message saying so.
+A `.mogrt` is untrusted: at most 64 MiB, read by a bounded ZIP reader (`wabcut/interchange/Zip.h`: no ZIP64,
+multi-disk or encrypted archives; at most 4096 entries, 16 MiB an entry and 64 MiB in all, declared sizes and CRCs
+checked, absolute paths, drive letters and `..` refused), `definition.json` at most 4 MiB; `tests/fuzz/fuzz_mogrt.cpp`
+fuzzes it.
+
+**Caption Track Styles (0.2).** A caption track can follow a caption preset (Premiere's Track Style menu,
+`captions.setTrackStyle`; `"trackStyle"` on the caption track in the project file): it takes the preset's style, and
+saving the preset again (`captions.savePreset`) or **Push to Track Style** (`captions.pushTrackStyle`, the track's
+current look becomes the preset) restyles every caption track that follows it, in every sequence. Built-in presets
+cannot be pushed to; deleting a preset leaves its tracks' look. The Caption Style panel has the **Track style** menu
+(None or a preset) and **Push** (for a project preset).
 
 ## Built-in templates (C.16)
 

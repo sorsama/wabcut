@@ -360,6 +360,38 @@ TextAnimator readAnimator(const Reader& r) {
     return a;
 }
 
+json pathJson(const std::vector<MaskPathKey>& path);
+std::vector<MaskPathKey> readPath(const Reader& r);
+
+/// 0.2: type on a path ("onPath").
+json textPathJson(const TextPath& p) {
+    json out = json::object();
+    const TextPath d;
+    out["path"] = pathJson(p.path);
+    put(out, "closed", p.closed, d.closed, kIdentity);
+    put(out, "reverse", p.reverse, d.reverse, kIdentity);
+    put(out, "perpendicular", p.perpendicular, d.perpendicular, kIdentity);
+    put(out, "forceAlignment", p.forceAlignment, d.forceAlignment, kIdentity);
+    putParam(out, "firstMargin", p.firstMargin, 0.0);
+    putParam(out, "lastMargin", p.lastMargin, 0.0);
+    return out;
+}
+
+TextPath readTextPath(const Reader& r) {
+    requireObject(r);
+    TextPath p;
+    if (r.has("path")) {
+        p.path = readPath(r.child("path"));
+    }
+    p.closed = r.boolean("closed", false);
+    p.reverse = r.boolean("reverse", false);
+    p.perpendicular = r.boolean("perpendicular", true);
+    p.forceAlignment = r.boolean("forceAlignment", false);
+    p.firstMargin = param(r, "firstMargin", 0.0);
+    p.lastMargin = param(r, "lastMargin", 0.0);
+    return p;
+}
+
 json textJson(const TextContent& t) {
     json out = json::object();
     const TextContent d;
@@ -388,6 +420,9 @@ json textJson(const TextContent& t) {
             list.push_back(animatorJson(a));
         }
         out["animators"] = std::move(list);
+    }
+    if (t.path) {
+        out["onPath"] = textPathJson(*t.path);
     }
     return out;
 }
@@ -425,6 +460,9 @@ TextContent readText(const Reader& r) {
         for (std::size_t i = 0; i < n; ++i) {
             t.animators.push_back(readAnimator(list.element(i)));
         }
+    }
+    if (r.has("onPath")) {
+        t.path = readTextPath(r.child("onPath"));
     }
     return t;
 }
@@ -596,7 +634,8 @@ json pinJson(const LayerPin& p) {
             edges.push_back(name);
         }
     }
-    return json{{"to", p.target},
+    // 0.2: "frame" for the video frame (LayerPin::kVideoFrame).
+    return json{{"to", p.target == LayerPin::kVideoFrame ? json("frame") : json(p.target)},
                 {"edges", std::move(edges)},
                 {"offsets", json::array({p.offsets[0], p.offsets[1], p.offsets[2], p.offsets[3]})}};
 }
@@ -604,7 +643,14 @@ json pinJson(const LayerPin& p) {
 LayerPin readPin(const Reader& r) {
     requireObject(r);
     LayerPin p;
-    p.target = uint32(r, "to", 0);
+    if (r.has("to") && r.child("to").value().is_string()) {
+        if (r.child("to").asString() != "frame") {
+            r.child("to").fail("a pin is to a layer id or \"frame\"");
+        }
+        p.target = LayerPin::kVideoFrame;
+    } else {
+        p.target = uint32(r, "to", 0);
+    }
     const Reader edges = r.child("edges");
     const std::size_t n = edges.arraySize();
     if (n > 4) {
@@ -656,6 +702,7 @@ json layerJsonImpl(const GraphicLayer& l) {
     if (l.pin) {
         out["pin"] = pinJson(*l.pin);
     }
+    put(out, "textStyle", l.textStyle, d.textStyle, kIdentity); // 0.2
     if (l.kind == LayerKind::Text || !(l.text == d.text)) {
         out["text"] = textJson(l.text);
     }
@@ -709,6 +756,7 @@ GraphicLayer readLayerImpl(const Reader& r, std::size_t depth) {
     if (r.has("pin")) {
         l.pin = readPin(r.child("pin"));
     }
+    l.textStyle = r.string("textStyle");
     if (r.has("text")) {
         l.text = readText(r.child("text"));
     }
@@ -888,6 +936,16 @@ json graphicToJsonValue(const Graphic& g) {
                                  {"intro", g.responsive->intro.value},
                                  {"outro", g.responsive->outro.value}};
     }
+    if (g.roll) {
+        const GraphicRoll& roll = *g.roll;
+        out["roll"] = json{{"kind", std::string(toString(roll.kind))},
+                           {"startOffScreen", roll.startOffScreen},
+                           {"endOffScreen", roll.endOffScreen},
+                           {"preroll", roll.preroll.value},
+                           {"postroll", roll.postroll.value},
+                           {"easeIn", roll.easeIn.value},
+                           {"easeOut", roll.easeOut.value}};
+    }
     if (g.instance) {
         out["template"] = json{{"id", g.instance->templateId},
                                {"version", g.instance->version},
@@ -917,6 +975,24 @@ Graphic graphicFromJsonValue(const Reader& r) {
         requireObject(rt);
         g.responsive = ResponsiveTime{boundedTicks(rt, "duration", Ticks{}), boundedTicks(rt, "intro", Ticks{}),
                                       boundedTicks(rt, "outro", Ticks{})};
+    }
+    if (r.has("roll")) {
+        const Reader rr = r.child("roll");
+        requireObject(rr);
+        GraphicRoll roll;
+        const std::string kind = rr.string("kind", "roll");
+        const auto k = rollKindFromString(kind);
+        if (!k) {
+            rr.child("kind").fail("unknown roll kind \"" + kind + "\"");
+        }
+        roll.kind = *k;
+        roll.startOffScreen = rr.boolean("startOffScreen", true);
+        roll.endOffScreen = rr.boolean("endOffScreen", true);
+        roll.preroll = boundedTicks(rr, "preroll", Ticks{});
+        roll.postroll = boundedTicks(rr, "postroll", Ticks{});
+        roll.easeIn = boundedTicks(rr, "easeIn", Ticks{});
+        roll.easeOut = boundedTicks(rr, "easeOut", Ticks{});
+        g.roll = roll;
     }
     if (r.has("template")) {
         const Reader t = r.child("template");
@@ -999,6 +1075,41 @@ BrandKit brandKitFromJsonValue(const Reader& r) {
         r.fail("brand kit: " + *problem);
     }
     return kit;
+}
+
+json textStyleToJsonValue(const ProjectTextStyle& s) {
+    // As a text layer holds it: one run (no text) with the style, the alignment and the background; and the shadow.
+    TextContent text;
+    text.runs = {TextRun{"", s.style}};
+    text.align = s.align;
+    text.background = s.background;
+    json t = textJson(text);
+    t["runs"][0].erase("text");
+    json out{{"name", s.name}, {"text", std::move(t)}};
+    put(out, "shadow", s.shadow, DropShadow{}, shadowJson);
+    return out;
+}
+
+ProjectTextStyle textStyleFromJsonValue(const Reader& r) {
+    requireObject(r);
+    ProjectTextStyle s;
+    s.name = r.child("name").asString();
+    if (r.has("text")) {
+        const TextContent text = readText(r.child("text"));
+        if (text.runs.size() != 1) {
+            r.child("text").fail("a text style has one run");
+        }
+        s.style = text.runs.front().style;
+        s.align = text.align;
+        s.background = text.background;
+    }
+    if (r.has("shadow")) {
+        s.shadow = readShadow(r.child("shadow"));
+    }
+    if (const auto problem = textStyleProblem(s)) {
+        r.fail(*problem);
+    }
+    return s;
 }
 
 json templateToJsonValue(const GraphicTemplate& t) {
@@ -1085,6 +1196,13 @@ std::expected<FieldValue, Error> fieldValueFromJson(FieldKind kind, std::string_
 }
 
 std::string brandKitToJson(const BrandKit& kit) { return detail::dumped(detail::brandKitToJsonValue(kit)); }
+
+std::string textStyleToJson(const ProjectTextStyle& style) { return detail::dumped(detail::textStyleToJsonValue(style)); }
+
+std::expected<ProjectTextStyle, Error> textStyleFromJson(std::string_view text) {
+    return detail::readChecked<ProjectTextStyle>(text, "text style",
+                                                 [](const detail::Reader& r) { return detail::textStyleFromJsonValue(r); });
+}
 
 std::expected<BrandKit, Error> brandKitFromJson(std::string_view text) {
     return detail::readChecked<BrandKit>(text, "brand kit", [](const detail::Reader& r) { return detail::brandKitFromJsonValue(r); });

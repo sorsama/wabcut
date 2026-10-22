@@ -7,18 +7,26 @@ wabcut_add_test_suite(command
         test_caption_commands.cpp
         test_client_hooks.cpp
         test_clipboard_commands.cpp
+        test_project_panel_commands.cpp
         test_collaboration_commands.cpp
         test_cli.cpp
         test_docs.cpp
         test_edit_commands.cpp
+        test_editing_commands.cpp
+        test_effects_library_commands.cpp
         test_engine.cpp
+        test_file_commands_p2.cpp
         test_finishing_commands.cpp
+        test_timeline_commands.cpp
         test_gaming_commands.cpp
         test_graphics_commands.cpp
+        test_graphics_parity_commands.cpp
+        test_spelling_commands.cpp
         test_interchange_commands.cpp
         test_parity_commands.cpp
         test_mcp_files.cpp
         test_marker_commands.cpp
+        test_motion_commands.cpp
         test_mcp_docs.cpp
         test_mcp_golden.cpp
         test_mcp_parity.cpp
@@ -47,3 +55,6 @@ if(TARGET wabcut-cli)
     target_compile_definitions(wabcut_command_tests PRIVATE WABCUT_CLI_PATH="$<TARGET_FILE:wabcut-cli>")
     add_dependencies(wabcut_command_tests wabcut-cli)
 endif()
+
+# P.2 (E6): the Source and Program Monitors' commands (clip.setMotion, ...).
+target_sources(wabcut_command_tests PRIVATE test_monitor_commands.cpp)

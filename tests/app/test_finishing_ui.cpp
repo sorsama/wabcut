@@ -12,6 +12,9 @@
 #include "Titles.h"
 #include "TimelineView.h"
 
+#include <wabcut/model/Animations.h>
+#include <wabcut/model/GraphicOps.h>
+
 #include <catch2/catch_test_macros.hpp>
 
 #include <QCoreApplication>
@@ -176,6 +179,33 @@ TEST_CASE("Effect Controls: pinned sections, then the effect stack; add, reorder
     CHECK(stackOf(controller, audio).size() == 1);
     CHECK(fx.row(QStringLiteral("h:") + effectKey(stackOf(controller, audio)[0].id)).value(QStringLiteral("stackKind")).toString()
           == QStringLiteral("audio"));
+}
+
+TEST_CASE("Effect Controls: Simple Text's text row and menu parameters of library effects (0.2)", "[app][effects]") {
+    ProjectController controller;
+    EffectControlsModel& fx = *controller.effectControls();
+    const ClipId city = controller.primaryClip();
+    REQUIRE(city);
+    REQUIRE(fx.addEffect(QStringLiteral("wabcut.video.simpleText")).isEmpty());
+    const QString section = effectKey(stackOf(controller, city)[0].id);
+    const QString textRow = section + QStringLiteral(":data:text");
+    REQUIRE(rowKeys(fx).contains(textRow));
+    CHECK(fx.row(textRow).value(QStringLiteral("kind")).toString() == QStringLiteral("text"));
+    CHECK(fx.row(textRow).value(QStringLiteral("text")).toString() == QStringLiteral("Simple Text"));
+    CHECK(fx.row(section + QStringLiteral(":alignment")).value(QStringLiteral("kind")).toString() == QStringLiteral("choice"));
+
+    fx.setEffectText(textRow, QStringLiteral("Chapter 2: The Fall"));
+    const EffectData* data = stackOf(controller, city)[0].findData("text");
+    REQUIRE(data);
+    REQUIRE(data->text());
+    CHECK(QString::fromStdString(*data->text()) == QStringLiteral("Chapter 2: The Fall"));
+    CHECK(fx.row(textRow).value(QStringLiteral("text")).toString() == QStringLiteral("Chapter 2: The Fall"));
+    CHECK(controller.undoText() == QStringLiteral("Undo Simple Text: Text"));
+    controller.undo();
+    CHECK_FALSE(stackOf(controller, city)[0].findData("text"));
+    // Past the data bound: refused with a notice, nothing changes.
+    fx.setEffectText(textRow, QString(1100, QLatin1Char('x')));
+    CHECK_FALSE(stackOf(controller, city)[0].findData("text"));
 }
 
 // ---- Keyframes ------------------------------------------------------------------------------------------------------
@@ -467,20 +497,51 @@ TEST_CASE("Effects library: grouped registry, fuzzy search, panel rows", "[app][
                                 QStringLiteral("Audio Effects"), QStringLiteral("Audio Transitions")});
     const QVariantList videoEffects = all.front().toMap().value(QStringLiteral("items")).toList();
     QStringList names;
-    for (const QVariant& i : videoEffects)
+    QStringList ids;
+    for (const QVariant& i : videoEffects) {
         names << i.toMap().value(QStringLiteral("name")).toString();
+        ids << i.toMap().value(QStringLiteral("id")).toString();
+    }
     CHECK(names.contains(QStringLiteral("Gaussian Blur")));
     CHECK(names.contains(QStringLiteral("Crop")));
-    CHECK_FALSE(names.contains(QStringLiteral("Transform"))); // intrinsic: not in the library
+    CHECK_FALSE(ids.contains(QStringLiteral("wabcut.motion"))); // intrinsic: not in the library
+    CHECK(ids.contains(QStringLiteral("wabcut.distort.transform"))); // 0.2: Premiere's Transform effect is
     CHECK_FALSE(names.contains(QStringLiteral("Title Style"))); // comes with each title
 
     const QVariantList blur = fx.library(QStringLiteral("blur"));
-    REQUIRE(blur.size() == 1);
-    CHECK(blur.front().toMap().value(QStringLiteral("items")).toList().front().toMap().value(QStringLiteral("id")).toString()
-          == QStringLiteral("wabcut.blur.gaussian"));
-    const QVariantList dissolve = fx.library(QStringLiteral("dip"));
-    REQUIRE_FALSE(dissolve.isEmpty());
-    CHECK(dissolve.front().toMap().value(QStringLiteral("title")).toString() == QStringLiteral("Video Transitions"));
+    REQUIRE_FALSE(blur.isEmpty());
+    CHECK(blur.front().toMap().value(QStringLiteral("title")).toString() == QStringLiteral("Video Effects"));
+    QStringList blurIds;
+    for (const QVariant& i : blur.front().toMap().value(QStringLiteral("items")).toList())
+        blurIds << i.toMap().value(QStringLiteral("id")).toString();
+    CHECK(blurIds.contains(QStringLiteral("wabcut.blur.gaussian")));
+
+    // 0.2: Premiere's bins, alphabetical, with their effects alphabetical inside.
+    const QVariantList transitionBins = all.at(1).toMap().value(QStringLiteral("bins")).toList();
+    QStringList binTitles;
+    for (const QVariant& b : transitionBins)
+        binTitles << b.toMap().value(QStringLiteral("title")).toString();
+    for (const char* bin : {"Dissolve", "Iris", "Page Peel", "Slide", "Wipe", "Zoom"})
+        CHECK(binTitles.contains(QLatin1String(bin)));
+    QStringList sorted = binTitles;
+    std::sort(sorted.begin(), sorted.end(), [](const QString& a, const QString& b) { return a.compare(b, Qt::CaseInsensitive) < 0; });
+    CHECK(binTitles == sorted);
+    const QVariantList iris = transitionBins.at(binTitles.indexOf(QStringLiteral("Iris"))).toMap().value(QStringLiteral("items")).toList();
+    QStringList irisNames;
+    for (const QVariant& i : iris)
+        irisNames << i.toMap().value(QStringLiteral("name")).toString();
+    CHECK(irisNames == QStringList{QStringLiteral("Iris Box"), QStringLiteral("Iris Cross"), QStringLiteral("Iris Diamond"),
+                                   QStringLiteral("Iris Round")});
+    // "dip": the dips lead the video transitions (fuzzy matches such as Turbulent Displace come under Video Effects).
+    QVariantMap dips;
+    for (const QVariant& g : fx.library(QStringLiteral("dip"))) {
+        if (g.toMap().value(QStringLiteral("title")).toString() == QStringLiteral("Video Transitions"))
+            dips = g.toMap();
+    }
+    REQUIRE_FALSE(dips.isEmpty());
+    const QVariantList dipItems = dips.value(QStringLiteral("items")).toList();
+    REQUIRE_FALSE(dipItems.isEmpty());
+    CHECK(dipItems.front().toMap().value(QStringLiteral("name")).toString().startsWith(QStringLiteral("Dip to")));
     CHECK(fx.library(QStringLiteral("zzzz")).isEmpty());
     CHECK(fx.isTransition(QStringLiteral("crossDissolve")));
     CHECK_FALSE(fx.isTransition(QStringLiteral("wabcut.crop")));
@@ -641,6 +702,154 @@ TEST_CASE("Transitions: short media is fitted to the available handles, and said
     REQUIRE(after.size() == 2);
     CHECK_FALSE(after.front().outgoing);
     CHECK(rig.controller.undoText() == QStringLiteral("Undo Apply Video Transition"));
+}
+
+TEST_CASE("Animations: drop on a clip's In and Out points; lengthen with the handle; remove; Surprise Me picks one",
+          "[app][transitions][animations]") {
+    // 0.2: Premiere 25.5's Animations sit on a clip's edge like transitions.
+    const std::string picture = "\n        V1 tgt |A" + std::string(79, 'a') + "|\n";
+    Rig rig(picture);
+    TimelineView& view = *rig.view;
+    ProjectController& controller = rig.controller;
+    EffectControlsModel& fx = *controller.effectControls();
+    const auto transitions = [&] { return controller.currentSequence()->videoTracks[0]->transitions; };
+    const ClipId clip = controller.currentSequence()->videoTracks[0]->clips[0].id;
+    const double y = rig.y("V1");
+
+    // The Effects panel's Video Transitions have an Animations bin with Surprise Me.
+    QStringList animations;
+    for (const QVariant& group : fx.library(QString())) {
+        for (const QVariant& bin : group.toMap().value(QStringLiteral("bins")).toList()) {
+            if (bin.toMap().value(QStringLiteral("title")).toString() != QLatin1String("Animations"))
+                continue;
+            CHECK(group.toMap().value(QStringLiteral("kind")).toString() == QStringLiteral("videoTransition"));
+            for (const QVariant& item : bin.toMap().value(QStringLiteral("items")).toList())
+                animations << item.toMap().value(QStringLiteral("name")).toString();
+        }
+    }
+    INFO(animations.join(QStringLiteral(", ")).toStdString());
+    CHECK(animations.size() == 10);
+    CHECK(animations.contains(QStringLiteral("Surprise Me")));
+    CHECK(animations.contains(QStringLiteral("Fold")));
+
+    // On the In point: the clip pops in over a second; one undo step; selected.
+    const QVariantMap target = view.effectDropTarget(rig.x(2), y, QStringLiteral("animationPop"));
+    CHECK(target.value(QStringLiteral("ok")).toBool());
+    CHECK(target.value(QStringLiteral("message")).toString().startsWith(QStringLiteral("Pop")));
+    REQUIRE(view.dropEffect(rig.x(2), y, QStringLiteral("animationPop")).isEmpty());
+    REQUIRE(transitions().size() == 1);
+    const Transition in = transitions().front();
+    CHECK(in.effect == "animationPop");
+    CHECK_FALSE(in.outgoing);
+    CHECK(in.incoming == clip);
+    CHECK(in.before == Ticks{});
+    CHECK(in.after == f(25));
+    CHECK(controller.undoText() == QStringLiteral("Undo Add Transition"));
+    CHECK(controller.selectedTransitionId() == in.id);
+    CHECK(fx.title() == QStringLiteral("Pop"));
+    rig.harness.frame();
+
+    // Its duration handle: the right edge dragged 5 frames later lengthens it, one undo step.
+    const double right = rig.x(25);
+    rig.drag(QPointF(right - 2, y), QPointF(right - 2 + 5 * rig.pxPerFrame, y));
+    REQUIRE(transitions().size() == 1);
+    INFO(controller.undoText().toStdString() << "; " << controller.lastError().toStdString());
+    CHECK(transitions().front().after == f(30));
+    CHECK(controller.undoText() == QStringLiteral("Undo Transition Duration"));
+
+    // On the Out point: the clip travels out.
+    REQUIRE(view.dropEffect(rig.x(78), y, QStringLiteral("animationTravel")).isEmpty());
+    REQUIRE(transitions().size() == 2);
+    CHECK(transitions().back().effect == "animationTravel");
+    CHECK(transitions().back().outgoing == clip);
+    CHECK_FALSE(transitions().back().incoming);
+    CHECK(transitions().back().before == f(25));
+
+    // Surprise Me becomes one of the animations.
+    REQUIRE(controller.undo());
+    REQUIRE(transitions().size() == 1);
+    REQUIRE(view.dropEffect(rig.x(78), y, QString::fromLatin1(kSurpriseAnimation.data())).isEmpty());
+    REQUIRE(transitions().size() == 2);
+    const Transition surprise = transitions().back();
+    INFO(surprise.effect);
+    CHECK(surprise.effect != kSurpriseAnimation);
+    CHECK(isAnimationTransition(surprise.effect));
+    CHECK(controller.selectedTransitionId() == surprise.id);
+    CHECK(fx.title() != QStringLiteral("Surprise Me"));
+
+    // Removable: Delete with it selected.
+    REQUIRE(controller.runCommand(QStringLiteral("edit.clear")));
+    REQUIRE(transitions().size() == 1);
+    CHECK(transitions().front().effect == "animationPop");
+}
+
+TEST_CASE("Text Styles: a style dragged from the Library onto a graphic clip styles its text layers in one undo step",
+          "[app][graphics][textStyles]") {
+    Rig rig(R"(
+        V2     |..............................|
+        V1 tgt |Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|
+    )");
+    ProjectController& controller = rig.controller;
+    TimelineView& view = *rig.view;
+    const auto textLayer = [](std::uint32_t id, std::string value) {
+        GraphicLayer l;
+        l.id = id;
+        l.name = "Text " + std::to_string(id);
+        l.kind = LayerKind::Text;
+        TextStyle style;
+        style.fontSize = 48.0;
+        l.text.runs = {TextRun{std::move(value), style}};
+        return l;
+    };
+    // A graphic on V2: a text layer, a shape and a group holding another text layer; "Title" made from the first.
+    Graphic g;
+    GraphicLayer shape;
+    shape.id = 2;
+    shape.name = "Box";
+    shape.kind = LayerKind::Shape;
+    shape.shape.width = ParamValue(100.0);
+    shape.shape.height = ParamValue(100.0);
+    GraphicLayer group;
+    group.id = 3;
+    group.name = "Group";
+    group.kind = LayerKind::Group;
+    group.children = {textLayer(4, "Inside")};
+    g.layers = {textLayer(1, "Hello"), shape, group};
+    auto added = edit::addGraphic(*controller.snapshot(), rig.tl.seq, rig.tl.track("V2"), Ticks{}, f(20), g);
+    REQUIRE(added);
+    const ClipId graphic = added->placed.at(0);
+    auto styled = edit::createTextStyle(added->state, rig.tl.seq, graphic, 1, "Title");
+    REQUIRE(styled);
+    controller.resetProject(styled->state, rig.tl.seq);
+    rig.harness.frame();
+    CHECK(edit::textLayerIds(*styled->state.findSequence(rig.tl.seq)->findClip(graphic)->clip().graphic()) ==
+          std::vector<std::uint32_t>{1, 4});
+    const auto layer = [&](std::uint32_t id) {
+        return controller.currentSequence()->findClip(graphic)->clip().graphic()->findLayer(id)->textStyle;
+    };
+    CHECK(layer(4).empty());
+
+    // Over the graphic: it lights up; over a video clip or with an unknown style: refused with the reason.
+    const QVariantMap target = view.effectDropTarget(rig.x(5), rig.y("V2"), QStringLiteral("textStyle:Title"));
+    CHECK(target.value(QStringLiteral("ok")).toBool());
+    CHECK(target.value(QStringLiteral("kind")).toString() == QStringLiteral("clip"));
+    CHECK(target.value(QStringLiteral("message")).toString() == QStringLiteral("Apply Title"));
+    CHECK(target.value(QStringLiteral("width")).toDouble() > 0.0);
+    const QVariantMap onVideo = view.effectDropTarget(rig.x(5), rig.y("V1"), QStringLiteral("textStyle:Title"));
+    CHECK_FALSE(onVideo.value(QStringLiteral("ok")).toBool());
+    CHECK(onVideo.value(QStringLiteral("message")).toString().contains(QStringLiteral("graphic")));
+    CHECK_FALSE(view.effectDropTarget(rig.x(5), rig.y("V2"), QStringLiteral("textStyle:Nope")).value(QStringLiteral("ok")).toBool());
+    CHECK_FALSE(view.dropEffect(rig.x(5), rig.y("V1"), QStringLiteral("textStyle:Title")).isEmpty());
+
+    // The drop: every text layer (the grouped one too) follows Title; the shape is left alone; one undo step.
+    const auto before = rig.undoSteps();
+    CHECK(view.dropEffect(rig.x(5), rig.y("V2"), QStringLiteral("textStyle:Title")).isEmpty());
+    CHECK(rig.undoSteps() == before + 1);
+    CHECK(controller.undoText() == QStringLiteral("Undo Apply Text Style"));
+    CHECK(layer(1) == "Title");
+    CHECK(layer(4) == "Title");
+    REQUIRE(controller.undo());
+    CHECK(layer(4).empty());
 }
 
 // ---- Titles ---------------------------------------------------------------------------------------------------------

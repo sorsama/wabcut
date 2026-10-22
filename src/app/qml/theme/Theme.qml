@@ -353,6 +353,12 @@ QtObject {
     readonly property int duplicateBandHeight: 3
     readonly property color trimRoll: danger       // Premiere: roll and regular trims red,
     readonly property color trimRipple: warning    // ripple trims yellow
+    // 0.2: the render bar above the ruler (Premiere's): red must be rendered to play in real time, yellow may play in
+    // real time, green has a preview file.
+    readonly property color renderRed: danger
+    readonly property color renderYellow: warning
+    readonly property color renderGreen: success
+    readonly property int renderBarHeight: 3
     readonly property int trackHeightMin: 24
     readonly property int trackHeightMax: 240
     readonly property int trackHeightStep: 12

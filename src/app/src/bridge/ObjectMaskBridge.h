@@ -137,6 +137,9 @@ public:
     Q_INVOKABLE void newObject();
     /// The Source Monitor: a box dragged over the source picture (fractions of it) becomes an AI-tracked redaction.
     Q_INVOKABLE bool redactObject(double x0, double y0, double x1, double y1);
+    /// 0.2: every face of the Source Monitor's media (between its In and Out) found, followed and covered by its own
+    /// redaction (redaction.detectFaces), in the style Masks redacts with. One undo step.
+    Q_INVOKABLE bool redactFaces();
     Q_INVOKABLE void downloadModel();
     Q_INVOKABLE void cancelDownload();
 

@@ -4,6 +4,7 @@
 #include <wabcut/model/GamingOps.h>
 
 #include <wabcut/model/ChangeSet.h>
+#include <wabcut/model/Resolve.h>
 
 #include "SequenceEditor.h"
 
@@ -86,7 +87,7 @@ std::optional<std::string> deadTimeOptionsProblem(const DeadTimeOptions& o) {
 std::vector<TrackId> defaultActivityTracks(const Sequence& seq) {
     std::vector<TrackId> out;
     for (const auto& t : seq.videoTracks) {
-        if (std::any_of(t->clips.begin(), t->clips.end(), [](const Clip& c) { return c.media.isValid(); })) {
+        if (std::any_of(t->clips.begin(), t->clips.end(), [](const Clip& c) { return c.media.isValid() || c.isNested(); })) {
             out.push_back(t->id);
             break;
         }
@@ -146,28 +147,40 @@ std::expected<DeadTimeAnalysis, Error> findDeadTime(const ProjectState& state, S
                 break;
             }
             const Clip& clip = track.clips[clipIndex];
-            if (!clip.timelineRange.contains(t) || !clip.enabled || !clip.media.isValid()) {
+            if (!clip.timelineRange.contains(t) || !clip.enabled || (!clip.media.isValid() && !clip.isNested())) {
                 continue;
             }
-            const MediaItem* item = state.findMedia(clip.media);
-            if (!item || item->isGenerator()) {
-                continue; // a title or graphic over nothing: quiet
-            }
-            const MediaActivity* a = activity ? activity(clip.media) : nullptr;
-            const std::vector<float>* samples = a ? (audio ? &a->audio : &a->motion) : nullptr;
-            if (!a || samples->empty() || mediaActivityProblem(*a)) {
-                unmeasured.insert(clip.media.value);
-                unmeasuredAt[i] = true;
+            // One media clip's activity at the media time it shows or plays.
+            const auto sample = [&](const Clip& leaf, Ticks source) {
+                const MediaItem* item = state.findMedia(leaf.media);
+                if (!item || item->isGenerator()) {
+                    return; // a title or graphic over nothing: quiet
+                }
+                const MediaActivity* a = activity ? activity(leaf.media) : nullptr;
+                const std::vector<float>* samples = a ? (audio ? &a->audio : &a->motion) : nullptr;
+                if (!a || samples->empty() || mediaActivityProblem(*a)) {
+                    unmeasured.insert(leaf.media.value);
+                    unmeasuredAt[i] = true;
+                    return;
+                }
+                const std::int64_t index = source.value / a->step.value;
+                if (index < 0 || static_cast<std::size_t>(index) >= samples->size()) {
+                    return;
+                }
+                const double v = (*samples)[static_cast<std::size_t>(index)];
+                target[i] = std::max(target[i], v);
+                (audio ? anyAudio : anyMotion) = true;
+            };
+            if (clip.isNested()) {
+                // 0.2: a nested or multicam clip (a gaming nest, a podcast's cameras) through what it shows or plays at
+                // t: the active angle's media, the nested sequence's clips, each at its media time through every
+                // level's time map.
+                for (const ResolvedLeaf& leaf : resolveLeaves(state, seq.id, clip, t)) {
+                    sample(*leaf.clip, leaf.sourceTime);
+                }
                 continue;
             }
-            const Ticks source = clip.sourceTimeAt(t);
-            const std::int64_t index = source.value / a->step.value;
-            if (index < 0 || static_cast<std::size_t>(index) >= samples->size()) {
-                continue;
-            }
-            const double v = (*samples)[static_cast<std::size_t>(index)];
-            target[i] = std::max(target[i], v);
-            (audio ? anyAudio : anyMotion) = true;
+            sample(clip, clip.sourceTimeAt(t));
         }
     }
     for (const std::uint64_t id : unmeasured) {

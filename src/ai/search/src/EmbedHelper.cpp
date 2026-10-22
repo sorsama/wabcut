@@ -119,6 +119,7 @@ std::expected<void, Error> EmbedHelper::start(const std::stop_token& stop) {
     spawn.arguments = m_options.arguments;
     spawn.stderrFile = m_options.log;
     spawn.lowPriority = m_options.lowPriority;
+    spawn.aiHelper = true; // 0.2: below normal and the helper policy's CPU cap (Settings > AI)
     auto spawned = ChildProcess::spawn(spawn);
     if (!spawned) {
         return std::unexpected(Error(spawned.error().code == ErrorCode::NotFound ? ErrorCode::NotFound : ErrorCode::DecoderError,

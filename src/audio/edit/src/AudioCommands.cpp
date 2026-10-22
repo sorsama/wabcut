@@ -12,7 +12,9 @@
 #include <wabcut/command/ExecutionContext.h>
 #include <wabcut/command/Schema.h>
 #include <wabcut/model/FinishingOps.h>
+#include <wabcut/model/Nesting.h>
 #include <wabcut/model/ProjectOps.h>
+#include <wabcut/model/Resolve.h>
 
 #include <algorithm>
 #include <chrono>
@@ -99,9 +101,10 @@ Site siteOf(ExecutionContext& c, const char* key = "target") {
         return {EffectTarget::masterAudio(), "master"};
     }
     const TrackId track = c.trackValue(v, std::string("/") + key);
-    const Track* t = c.sequence().findTrack(track);
+    const Track* t = c.sequence().findAudioBus(track); // p02 audio: a submix track ("S1") too
     if (t == nullptr || t->kind != TrackKind::Audio) {
-        fail(ErrorCode::InvalidParams, "the target must be \"master\" or an audio track", Json{{"path", std::string("/") + key}});
+        fail(ErrorCode::InvalidParams, "the target must be \"master\", an audio track or a submix track",
+             Json{{"path", std::string("/") + key}});
     }
     return {EffectTarget::ofTrack(track), c.trackLabel(track)};
 }
@@ -201,7 +204,7 @@ CommandOutput effects(ExecutionContext& c) {
     // A.3: the fader after the stack (dB; tracks also the pan), constants or keyframes in timeline ticks.
     if (site.target.kind == EffectTarget::Kind::MasterAudio) {
         out.data["volume"] = valueJson(c.sequence().masterVolume);
-    } else if (const Track* track = c.sequence().findTrack(site.target.track)) {
+    } else if (const Track* track = c.sequence().findAudioBus(site.target.track)) {
         out.data["volume"] = valueJson(track->volume);
         out.data["pan"] = valueJson(track->pan);
     }
@@ -296,7 +299,7 @@ CommandOutput setFader(ExecutionContext& c, const Site& site, ParamId id, const 
     const Sequence& after = sequenceIn(r.state, c.sequenceId());
     const ParamValue* now = &after.masterVolume;
     if (site.target.kind == EffectTarget::Kind::Track) {
-        const Track* t = after.findTrack(site.target.track);
+        const Track* t = after.findAudioBus(site.target.track);
         now = id == ParamId::VolumeDb ? &t->volume : &t->pan;
     }
     return edited(std::move(r), Json{{"target", site.label}, {valueKey, value}, {"value", valueJson(*now)}});
@@ -741,7 +744,37 @@ struct SyncItem {
     std::optional<ClipId> clip;
     AudioSyncService::Angle angle;
     bool hasVideo = false;
+    /// A clip's media time at its start (its sourceIn; a nested or multicam clip: what the recording it plays is at
+    /// there), and whether something on the way to that recording is retimed.
+    Ticks mediaIn;
+    bool retimed = false;
 };
+
+bool isRetimed(const Clip& clip) { return clip.isRemapped() || !clip.speed.isUnity() || clip.reversed; }
+
+/// 0.2: the recording a nested or multicam clip plays (a multicam clip: its active audio angle's; a picture: the shown
+/// media's sound), found at its start or a little later (an angle that starts late), as a sync item.
+std::optional<SyncItem> nestedSyncItem(const ProjectState& state, const Sequence& seq, const Clip& clip) {
+    for (int quarter = 0; quarter < 4; ++quarter) {
+        const Ticks t = clip.start() + Ticks{clip.duration().value * quarter / 4};
+        for (const ResolvedLeaf& leaf : resolveLeaves(state, seq.id, clip, t)) {
+            const MediaItem* item = state.findMedia(leaf.clip->media);
+            if (item == nullptr || item->info.audio.empty()) {
+                continue;
+            }
+            SyncItem s;
+            s.clip = clip.id;
+            s.angle.media = {item->id};
+            s.angle.stream = leaf.clip->stream.kind == StreamKind::Audio ? leaf.clip->stream.index : 0;
+            s.mediaIn = leaf.sourceTime - (t - clip.start());
+            s.retimed = isRetimed(*leaf.clip) || std::ranges::any_of(leaf.path, [](const NestLevel& l) { return isRetimed(*l.clip); });
+            const Sequence* inner = state.findSequence(clip.sequence);
+            s.hasVideo = inner != nullptr && sequenceHasStream(*inner, StreamRef{StreamKind::Video, 0});
+            return s;
+        }
+    }
+    return std::nullopt;
+}
 
 std::vector<SyncItem> syncItems(ExecutionContext& c) {
     std::vector<SyncItem> items;
@@ -753,6 +786,15 @@ std::vector<SyncItem> syncItems(ExecutionContext& c) {
                 fail(ErrorCode::NotFound, "no clip " + std::to_string(id.value) + " in the sequence");
             }
             const Clip& clip = at->clip();
+            if (clip.isNested()) {
+                auto nested = nestedSyncItem(c.state(), seq, clip);
+                if (!nested) {
+                    fail(ErrorCode::InvalidParams, "clip " + std::to_string(id.value) + " plays no recording with audio to sync",
+                         Json{{"path", "/clips"}});
+                }
+                items.push_back(std::move(*nested));
+                continue;
+            }
             const MediaItem* item = c.state().findMedia(clip.media);
             if (item == nullptr || item->info.audio.empty()) {
                 fail(ErrorCode::InvalidParams, "clip " + std::to_string(id.value) + " has no audio to sync", Json{{"path", "/clips"}});
@@ -762,6 +804,7 @@ std::vector<SyncItem> syncItems(ExecutionContext& c) {
             s.angle.media = {clip.media};
             s.angle.stream = clip.stream.kind == StreamKind::Audio ? clip.stream.index : 0;
             s.hasVideo = !item->info.video.empty();
+            s.mediaIn = clip.sourceIn;
             items.push_back(std::move(s));
         }
     } else if (c.has("media")) {
@@ -880,9 +923,10 @@ CommandOutput syncClips(ExecutionContext& c) {
         const auto clipAt = [&](const ProjectState& s, ClipId id) -> const Clip& { return s.findSequence(seqId)->findClip(id)->clip(); };
         const Clip& ref = clipAt(next, *items[reference].clip);
         const Ticks refStart = ref.start();
-        const Ticks refIn = ref.sourceIn;
+        const Ticks refIn = items[reference].mediaIn;
         const LinkGroupId refGroup = ref.linkGroup;
-        // Targets: start_i = start_ref - in_ref + in_i + offset_i (unity-speed, forward clips).
+        // Targets: start_i = start_ref - in_ref + in_i + offset_i (unity-speed, forward clips; `in` is the media time at
+        // the clip's start, through a nested or multicam clip's time maps - such a clip moves whole, angles intact).
         std::vector<std::pair<std::size_t, Ticks>> targets;
         Ticks lowest = refStart;
         for (std::size_t i = 0; i < items.size(); ++i) {
@@ -893,11 +937,11 @@ CommandOutput syncClips(ExecutionContext& c) {
             if (refGroup.isValid() && clip.linkGroup == refGroup) {
                 continue; // already moves with the reference
             }
-            if (clip.isRemapped() || !clip.speed.isUnity() || clip.reversed || ref.isRemapped() || !ref.speed.isUnity() || ref.reversed) {
+            if (isRetimed(clip) || isRetimed(ref) || items[i].retimed || items[reference].retimed) {
                 out.warnings.push_back("clip " + std::to_string(clip.id.value) + " is retimed or reversed: not moved");
                 continue;
             }
-            const Ticks target = refStart - refIn + clip.sourceIn + result->starts[i].front();
+            const Ticks target = refStart - refIn + items[i].mediaIn + result->starts[i].front();
             targets.push_back({i, target});
             lowest = std::min(lowest, target);
         }
@@ -1341,6 +1385,8 @@ void registerAudioCommands(command::CommandRegistry& registry) {
     registerEssentialSoundCommands(registry); // A.7: audio.essentialSound, audio.remix, audio.remixRender
     registerVoiceOverCommands(registry);      // A.8: track.setRecordArm, record.takes, record.useTake
     registerChannelCommands(registry);        // A.9: audio channels, split to mono, track formats, 5.1
+    registerSubmixCommands(registry);         // p02 audio: submix tracks, track outputs and sends
+    registerAutoTagCommands(registry);        // p02 audio: audio.autoTag
 }
 
 } // namespace wabcut::audio::edit

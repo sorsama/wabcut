@@ -213,6 +213,13 @@ double transitionGain(const Transition& t, double p, bool incoming) {
     if (t.effect == "constantGain") {
         return incoming ? p : 1.0 - p;
     }
+    if (t.effect == "exponentialFade") {
+        // 0.2, Premiere's Exponential Fade: each side over a smooth logarithmic curve, g(x) = log10(1 + 9x), x = how far
+        // in the side is (1 at full level): like Constant Power (A falls slowly at first, B rises fast at first) but more
+        // gradual; both are 0.74 (-2.6 dB) at the middle.
+        const double x = incoming ? p : 1.0 - p;
+        return std::log10(1.0 + 9.0 * x);
+    }
     return incoming ? std::sin(p * std::numbers::pi / 2.0) : std::cos(p * std::numbers::pi / 2.0); // constantPower
 }
 
@@ -1117,7 +1124,14 @@ struct TrackRenderer::Impl {
                 voice.primed = false;
             }
             if (!voice.primed) {
-                voice.nextInput = a; // the chain first takes `latency` frames that only fill its delay line
+                // The chain first takes `latency` frames that only fill its delay line. p02 audio: a voice that starts
+                // inside its clip (a seek, an edit's refill, a restart) first hears the clip from up to its effects'
+                // settle time earlier (never before the clip): a reverb or delay starts with the tail it would have had
+                // playing through, so the restart does not click, and preview and export agree from any start.
+                const std::int64_t runStart = frameAtOrAfter(run.outStart);
+                const std::int64_t settle = std::min<std::int64_t>(
+                    voice.chain.settleFrames(), mulDivSaturate(options.maxClipPreroll.value, 1, tpf, Rounding::Ceil));
+                voice.nextInput = a > runStart ? std::max(runStart, a - std::max<std::int64_t>(settle, 0)) : a;
                 voice.primed = true;
             }
             voice.seen = true;

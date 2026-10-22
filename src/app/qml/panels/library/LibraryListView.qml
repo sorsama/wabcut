@@ -41,6 +41,8 @@ FocusScope {
             Library.setComment(key, value)
         else if (column === "description")
             Library.setDescription(key, value)
+        else // 0.2 (P.3): scene, shot, take, logNote, client, tapeName
+            Library.setMetadata([key], column, value)
         table.forceActiveFocus()
     }
     // A click on the name of the item already selected renames it after the double-click interval (a double-click
@@ -269,9 +271,12 @@ FocusScope {
             required property bool generated
             required property var subclip
             required property string binPath
+            required property bool good
+            required property bool searchBin
 
             readonly property bool editing: root.editingKey === key && root.editingColumn === columnId
             readonly property bool isName: columnId === "name"
+            readonly property bool isGood: columnId === "good"
 
             implicitWidth: 120
             implicitHeight: Theme.rowHeight
@@ -287,7 +292,7 @@ FocusScope {
                 x: Theme.space(2)
                 anchors.verticalCenter: parent.verticalCenter
                 size: Theme.iconXs
-                name: cell.kind === "bin" ? "folder" : cell.kind === "sequence" ? "film"
+                name: cell.searchBin ? "folder-search" : cell.kind === "bin" ? "folder" : cell.kind === "sequence" ? "film"
                       : cell.kind === "audio" ? "music" : cell.kind === "title" ? "type"
                       : cell.kind === "subclip" ? "scissors" : cell.kind === "still" ? "image" : "film"
                 color: cell.kind === "bin" ? Theme.accentStroke : Theme.textTertiary
@@ -308,7 +313,7 @@ FocusScope {
                 anchors.right: parent.right
                 anchors.rightMargin: Theme.space(2)
                 anchors.verticalCenter: parent.verticalCenter
-                visible: !cell.editing
+                visible: !cell.editing && !cell.isGood
                 text: cell.isName && cell.binPath !== "" ? cell.display + "  ·  " + cell.binPath : cell.display
                 elide: Text.ElideRight
                 color: cell.isName ? (cell.offline ? Theme.warning : Theme.textPrimary) : Theme.textSecondary
@@ -316,6 +321,32 @@ FocusScope {
                              || cell.columnId === "fps" || cell.columnId === "resolution" ? Theme.fontMono : Theme.fontSans
                 font.pixelSize: cell.isName ? Theme.textSm : Theme.textXs
                 font.weight: cell.isName ? Font.Medium : Font.Normal
+            }
+            // 0.2 (P.3): Good is a check box (a click toggles it, one undo step).
+            Rectangle {
+                objectName: "libraryGoodBox_" + cell.key
+                visible: cell.isGood && cell.kind !== "bin" && cell.kind !== "sequence"
+                x: Theme.space(2)
+                anchors.verticalCenter: parent.verticalCenter
+                width: Theme.space(3.5)
+                height: width
+                radius: Theme.radiusBadge
+                color: cell.good ? Theme.accentFill : "transparent"
+                border.width: Theme.hairline
+                border.color: cell.good ? Theme.accentFill : Theme.borderStrong
+                Accessible.role: Accessible.CheckBox
+                Accessible.name: qsTr("Good")
+                Accessible.checked: cell.good
+                Icon {
+                    anchors.centerIn: parent
+                    visible: cell.good
+                    name: "check"
+                    size: Theme.iconXs
+                    color: Theme.accentOnFill
+                }
+                TapHandler {
+                    onTapped: Library.setMetadata([cell.key], "good", !cell.good)
+                }
             }
             Loader {
                 anchors.fill: parent
@@ -365,7 +396,7 @@ FocusScope {
                 onDoubleTapped: {
                     renameTimer.stop()
                     root.pendingRename = ""
-                    if (cell.editable && !cell.isName)
+                    if (cell.editable && !cell.isName && !cell.isGood)
                         root.startEdit(cell.key, cell.columnId)
                     else
                         root.activated(cell.key, cell.kind)

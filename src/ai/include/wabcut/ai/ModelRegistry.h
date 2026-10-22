@@ -127,6 +127,10 @@ struct GenerationSpec {
     bool lastFrameAlone = false; ///< to an end image without a start image
     bool extendVideo = false;    ///< continues an input clip
     bool audio = false;          ///< can generate sound with the video
+    bool soundEffect = false;    ///< 0.2: makes sound effects from a prompt (GeneratedMediaKind::SoundEffect)
+    bool loop = false;           ///< sound effects: can make a seamless loop
+    double minSeconds = 0.0;     ///< sound effects: the shortest and longest length one can ask for
+    double maxSeconds = 0.0;
     bool cancel = false;         ///< the API can cancel a running job
     std::vector<int> durations;  ///< allowed lengths in seconds (video), ascending
     std::vector<std::string> aspectRatios;

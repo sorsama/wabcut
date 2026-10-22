@@ -221,6 +221,37 @@ TEST_CASE("Premultiplied over-blend of straight and premultiplied alpha", "[rend
     checkPixel(pm, 16, 16, {a, 0.0, 0.0}, 1.01 / 255.0);
 }
 
+TEST_CASE("Interpret Footage alpha: an ignored alpha is opaque and an inverted one flips", "[render][gpu][alpha]") {
+    auto renderer = makeRenderer();
+    const auto solid = [](std::uint8_t r, std::uint8_t g, std::uint8_t b, std::uint8_t a) {
+        return makeRgbaFrame(32, 32, [=](int, int) { return std::array<std::uint8_t, 4>{r, g, b, a}; });
+    };
+    const double a = 128.0 / 255.0;
+    // Ignore Alpha Channel: the half-transparent red covers the blue.
+    CompositeLayer ignored = layerOf(solid(255, 0, 0, 128));
+    ignored.ignoreAlpha = true;
+    ignored.invertAlpha = true; // ignoring wins
+    checkPixel(renderOne(*renderer, compositeOf({32, 32}, {layerOf(solid(0, 0, 255, 255)), ignored})), 16, 16,
+               {1.0, 0.0, 0.0});
+    // Invert Alpha Channel: red at 1 - a over blue (linear light), straight or premultiplied in the file.
+    const Rgb expected{bt709Encode(1.0 - a), 0.0, bt709Encode(a)};
+    CompositeLayer inverted = layerOf(solid(255, 0, 0, 128));
+    inverted.invertAlpha = true;
+    checkPixel(renderOne(*renderer, compositeOf({32, 32}, {layerOf(solid(0, 0, 255, 255)), inverted})), 16, 16, expected);
+    auto premultView = frameViewOf(solid(128, 0, 0, 128));
+    REQUIRE(premultView.has_value());
+    premultView->alpha = AlphaMode::Premultiplied;
+    CompositeLayer invertedPremult = layerOf(*premultView);
+    invertedPremult.invertAlpha = true;
+    checkPixel(renderOne(*renderer, compositeOf({32, 32}, {layerOf(solid(0, 0, 255, 255)), invertedPremult})), 16, 16,
+               expected, 3.0 / 255.0);
+    // A fully opaque alpha channel inverts to transparent.
+    CompositeLayer opaque = layerOf(solid(255, 0, 0, 255));
+    opaque.invertAlpha = true;
+    checkPixel(renderOne(*renderer, compositeOf({32, 32}, {layerOf(solid(0, 0, 255, 255)), opaque})), 16, 16,
+               {0.0, 0.0, 1.0});
+}
+
 TEST_CASE("Layer transform: scale, clockwise rotation, anchor and position", "[render][gpu][transform]") {
     auto renderer = makeRenderer();
     // 64x32 frame: red | green over blue | white quadrants (sRGB, opaque).
@@ -347,4 +378,57 @@ TEST_CASE("Invalid requests fail cleanly", "[render][gpu]") {
     CompositeLayer broken;
     auto partial = compositeOf({16, 16}, {broken});
     CHECK(renderer->render(partial).has_value());
+}
+
+TEST_CASE("Field options: deinterlacing keeps one field and Flicker Removal blends the lines",
+          "[render][gpu][fields]") {
+    // An interlaced picture in miniature: the upper field (even rows) white, the lower field (odd rows) black.
+    auto renderer = makeRenderer();
+    const PixelFormat format = GENERATE(PixelFormat::NV12, PixelFormat::YUV420P, PixelFormat::YUV444P10);
+    INFO("format " << media::pixelFormatName(format));
+    const media::VideoFrame frame =
+        makeFrame(format, 32, 32, kRec709Limited, [](int, int y) { return y % 2 == 0 ? Rgb{1, 1, 1} : Rgb{0, 0, 0}; });
+    const auto shown = [&](std::uint8_t mode) {
+        CompositeLayer layer = layerOf(frame);
+        layer.fieldMode = mode;
+        return renderOne(*renderer, compositeOf({32, 32}, {layer}));
+    };
+    // As it is: the lines alternate (combing).
+    const RenderedImage plain = shown(0);
+    checkPixel(plain, 16, 16, {1, 1, 1});
+    checkPixel(plain, 16, 17, {0, 0, 0});
+    // Keep the upper field: every line is white, the lower field's interpolated from the white lines around it.
+    const RenderedImage upper = shown(1);
+    checkPixel(upper, 16, 16, {1, 1, 1});
+    checkPixel(upper, 16, 17, {1, 1, 1});
+    checkPixel(upper, 5, 31, {1, 1, 1}); // the last line takes the one above it
+    // Keep the lower field: every line black, the top line from the one below.
+    const RenderedImage lower = shown(2);
+    checkPixel(lower, 16, 16, {0, 0, 0});
+    checkPixel(lower, 16, 17, {0, 0, 0});
+    checkPixel(lower, 5, 0, {0, 0, 0});
+    // Flicker Removal: [1 2 1] / 4 makes both fields half grey (in code values, before linearizing).
+    const RenderedImage blended = shown(3);
+    checkPixel(blended, 16, 16, {0.5, 0.5, 0.5}, 3.0 / 255.0);
+    checkPixel(blended, 16, 17, {0.5, 0.5, 0.5}, 3.0 / 255.0);
+}
+
+TEST_CASE("Field options apply to RGBA pictures and nested canvases too", "[render][gpu][fields]") {
+    auto renderer = makeRenderer();
+    const media::VideoFrame stripes = makeRgbaFrame(16, 16, [](int, int y) {
+        return y % 2 == 0 ? std::array<std::uint8_t, 4>{255, 0, 0, 255} : std::array<std::uint8_t, 4>{0, 0, 255, 255};
+    });
+    CompositeLayer layer = layerOf(stripes);
+    layer.fieldMode = 2; // the lower field: blue everywhere
+    const RenderedImage rgba = renderOne(*renderer, compositeOf({16, 16}, {layer}));
+    checkPixel(rgba, 8, 8, {0, 0, 1});
+    checkPixel(rgba, 8, 9, {0, 0, 1});
+    // A nested canvas (a nested clip's picture) with Always Deinterlace on the upper field: red everywhere.
+    auto inner = compositeOf({16, 16}, {layerOf(stripes)});
+    CompositeLayer nested;
+    nested.nested = inner;
+    nested.fieldMode = 1;
+    const RenderedImage canvas = renderOne(*renderer, compositeOf({16, 16}, {nested}));
+    checkPixel(canvas, 8, 8, {1, 0, 0});
+    checkPixel(canvas, 8, 9, {1, 0, 0});
 }

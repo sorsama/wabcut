@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<tt xmlns="http://www.w3.org/ns/ttml" xmlns:ttp="http://www.w3.org/ns/ttml#parameter" xmlns:tts="http://www.w3.org/ns/ttml#styling" xmlns:ttm="http://www.w3.org/ns/ttml#metadata" xml:lang="en" ttp:timeBase="media">
+  <head>
+    <metadata>
+      <ttm:title>Sample</ttm:title>
+    </metadata>
+    <styling>
+      <style xml:id="normal" tts:fontFamily="sansSerif" tts:fontWeight="normal" tts:fontStyle="normal" tts:color="white" tts:fontSize="100%"/>
+    </styling>
+    <layout>
+      <region xml:id="top" tts:origin="10% 10%" tts:extent="80% 20%" tts:textAlign="center" tts:displayAlign="before"/>
+      <region xml:id="bottom" tts:origin="10% 70%" tts:extent="80% 20%" tts:textAlign="center" tts:displayAlign="after"/>
+    </layout>
+  </head>
+  <body style="normal" region="bottom">
+    <div>
+      <p xml:id="caption1" begin="00:00:01.001" end="00:00:03.003">Hello there.</p>
+      <p xml:id="caption2" begin="00:00:04.004" end="00:00:07.007">Second caption,<br/>two lines.</p>
+      <p xml:id="caption3" begin="00:00:08.008" end="00:00:10.010">Café ♪ ¿ Qué pasó?</p>
+      <p xml:id="caption4" begin="00:00:11.011" end="00:00:12.012">&lt;Tags&gt; &amp; &quot;quotes&quot;</p>
+    </div>
+  </body>
+</tt>

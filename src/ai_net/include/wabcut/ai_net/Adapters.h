@@ -13,6 +13,7 @@
 //   deepgram-listen        ITranscriber  POST /v1/listen (raw audio body), words in seconds
 //   elevenlabs-stt         ITranscriber  POST /v1/speech-to-text (multipart), words in seconds
 //   assemblyai             ITranscriber  upload -> submit -> poll, words in milliseconds
+//   elevenlabs-sound-generation  IMediaGenerator  POST /v1/sound-generation -> MP3 (0.2: sound effects)
 //
 // Chat adapters always stream (SSE) and only call the event handler when one is given; the returned
 // ChatResponse is complete either way.
@@ -40,6 +41,8 @@ std::unique_ptr<IChatModel> makeManagedChat(ProviderContext context, PrepareLoca
                                           std::function<void(bool)> busy);
 std::unique_ptr<IMediaGenerator> makeVeoGenerator(ProviderContext context);
 std::unique_ptr<IMediaGenerator> makeRunwayGenerator(ProviderContext context);
+/// 0.2: generated sound effects (elevenlabs-sound-generation: POST /v1/sound-generation, the MP3 in the answer).
+std::unique_ptr<IMediaGenerator> makeElevenLabsSoundEffects(ProviderContext context);
 
 void registerCloudAdapters(ProviderRegistry& registry, AdapterOptions options = {});
 

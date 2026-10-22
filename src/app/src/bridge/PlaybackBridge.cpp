@@ -12,9 +12,11 @@
 #include "ProjectController.h"
 
 #include <wabcut/editor/SourceEdit.h>
+#include <wabcut/model/ImageSequence.h>
 #include <wabcut/model/MediaLocator.h>
 #include <wabcut/model/ProjectOps.h>
 #include <wabcut/model/Timecode.h>
+#include <wabcut/playback/video/MotionAnalysis.h>
 #include <wabcut/playback/video/PlaybackController.h>
 
 #include <QQmlEngine>
@@ -32,6 +34,7 @@ namespace {
 constexpr int kTickMs = 33;          // playhead follow + transport state
 constexpr qint64 kStatsPeriodMs = 500;
 constexpr std::int32_t kMaxLadder = 8;
+constexpr const char* kProgramLoopKey = "monitor/programLoop"; // P.2: the Program Monitor's Loop button
 
 editor::PlaybackSessionOptions sessionOptions() {
     editor::PlaybackSessionOptions options;
@@ -83,6 +86,14 @@ PlaybackBridge::PlaybackBridge(ProjectController* controller, QObject* parent)
     m_captionKaraoke = QSettings().value(QLatin1String(kCaptionKaraokeKey), false).toBool();
     QTimer::singleShot(0, this, &PlaybackBridge::attachCaptions);
     m_statsClock.start();
+    // P.2: Loop follows the marks and the sequence's length.
+    m_loop = QSettings().value(QLatin1String(kProgramLoopKey), false).toBool();
+    connect(controller, &ProjectController::marksChanged, this, [this] { applyLoop(); });
+    connect(controller, &ProjectController::revisionChanged, this, [this] {
+        if (m_loop)
+            applyLoop();
+    });
+    applyLoop();
 }
 
 PlaybackBridge::~PlaybackBridge() {
@@ -136,6 +147,39 @@ std::shared_ptr<const playback::CaptionWordTimings> captionWordTimings(const Cap
     return words;
 }
 
+void PlaybackBridge::attachMirror(QObject* object) {
+    auto* monitor = qobject_cast<ProgramMonitor*>(object);
+    if (!monitor || !m_session) {
+        return;
+    }
+    if (m_mirrorMonitor && m_mirrorMonitor != monitor) {
+        detachMirror(m_mirrorMonitor);
+    }
+    if (!m_mirror) {
+        playback::PlaybackOptions options; // CPU frames: the window's device is not the one decoders share
+        m_mirror = std::make_unique<playback::PlaybackController>(options);
+        m_mirror->scheduler().setPreview(m_preview);
+        m_mirror->scheduler().setCaptions(m_captionSettings);
+        m_mirror->scheduler().setColorPreview(m_colorPreview);
+        m_session->video().addMirror(m_mirror.get());
+    }
+    m_mirrorMonitor = monitor;
+    monitor->setPlaybackController(m_mirror.get());
+}
+
+void PlaybackBridge::detachMirror(QObject* object) {
+    auto* monitor = qobject_cast<ProgramMonitor*>(object);
+    if (!monitor || monitor != m_mirrorMonitor) {
+        return;
+    }
+    monitor->setPlaybackController(nullptr);
+    m_mirrorMonitor = nullptr;
+    if (m_mirror && m_session) {
+        m_session->video().removeMirror(m_mirror.get());
+    }
+    m_mirror.reset();
+}
+
 void PlaybackBridge::applyCaptions() {
     std::optional<playback::CaptionSettings> settings;
     if (m_captions && m_captions->overlay()) {
@@ -158,6 +202,9 @@ void PlaybackBridge::applyCaptions() {
     if (m_session) {
         m_session->video().scheduler().setCaptions(m_captionSettings);
     }
+    if (m_mirror) {
+        m_mirror->scheduler().setCaptions(m_captionSettings);
+    }
     if (shownChanged) {
         emit captionsChanged();
     }
@@ -171,12 +218,18 @@ void PlaybackBridge::setPreviewSettings(playback::PreviewSettings preview) {
     if (m_sourceVideo) {
         m_sourceVideo->scheduler().setPreview(m_preview);
     }
+    if (m_mirror) {
+        m_mirror->scheduler().setPreview(m_preview);
+    }
 }
 
 void PlaybackBridge::setColorPreview(playback::ColorPreview preview) {
     m_colorPreview = std::move(preview);
     if (m_session) {
         m_session->video().scheduler().setColorPreview(m_colorPreview);
+    }
+    if (m_mirror) {
+        m_mirror->scheduler().setColorPreview(m_colorPreview);
     }
 }
 
@@ -190,6 +243,13 @@ void PlaybackBridge::teardown() {
         emit sessionEnding(); // still playable: a voice-over pass places its take now
     }
     m_tick.stop();
+    if (m_mirrorMonitor) {
+        m_mirrorMonitor->setPlaybackController(nullptr);
+    }
+    if (m_mirror && m_session) {
+        m_session->video().removeMirror(m_mirror.get());
+    }
+    m_mirror.reset();
     for (const QPointer<ProgramMonitor>& monitor : std::as_const(m_monitors)) {
         if (monitor) {
             monitor->setPlaybackController(nullptr);
@@ -217,9 +277,8 @@ void PlaybackBridge::startAudio() {
     // files): the transport runs on a free-run clock until then.
     const ProjectSnapshot snap = m_controller->session().snapshot();
     const bool audible = std::ranges::any_of(snap->media, [](const MediaPtr& media) {
-        std::error_code ec;
-        return media->info.hasAudio() && !media->locator.offline &&
-               std::filesystem::is_regular_file(pathFromUtf8(media->locator.path), ec);
+        // 0.2: the file standing for an image sequence, spanned clip or RAW clip with Source Settings.
+        return media->info.hasAudio() && !media->locator.offline && mediaFileExists(pathFromUtf8(media->locator.path));
     });
     if (!audible) {
         return;
@@ -298,6 +357,20 @@ void PlaybackBridge::tick() {
         m_controller->setPlayhead(active->position());
         m_settingPlayhead = false;
     }
+    // Play In to Out (P.2): stop on the last marked frame.
+    if (m_stopAt && !m_sourceVideo && m_controller && m_session) {
+        if (!isPlaying) {
+            m_stopAt.reset();
+        } else if (active->transportSpeed().num > 0 && active->position() >= *m_stopAt) {
+            const Ticks last{std::max<std::int64_t>(0, (*m_stopAt - m_controller->frameTicks()).value)};
+            m_stopAt.reset();
+            m_session->pause();
+            m_controller->setPlayhead(last); // parks there (onPlayheadChanged scrubs)
+            emit transportChanged();
+            m_wasPlaying = false;
+            return;
+        }
+    }
     if (m_sourceVideo && (isPlaying || m_wasPlaying)) {
         emit sourceTimeChanged();
     }
@@ -345,6 +418,9 @@ void PlaybackBridge::updateStats() {
     m_presentedAtLastSample = s.presented;
     m_droppedAtLastSample = s.dropped;
     m_bypassedEffects = s.bypassedEffects;
+    // P.2: the monitor waits for motion, or Morph Cuts / Optical Flow are analysed in the background.
+    const playback::MotionAnalyzer::Stats motion = playback::MotionAnalyzer::shared().stats();
+    m_analyzingMotion = active->scheduler().stats().motionWaits > 0 || motion.queued + motion.running > 0;
     m_decodeBackend = QString::fromStdString(s.decodeBackends);
     const editor::PlaybackSessionStats session = m_session ? m_session->stats() : editor::PlaybackSessionStats{};
     m_audioBackend = session.hasSound ? QString::fromStdString(session.audioBackend) : tr("off");
@@ -391,7 +467,68 @@ void PlaybackBridge::onSequenceChanged() {
     m_session->pause();
     m_session->setSequence(sequence);
     m_session->scrub(m_controller->playhead());
+    m_stopAt.reset();
+    applyLoop();
     updateStats();
+}
+
+// ---- Loop (P.2) -------------------------------------------------------------------------------------
+
+std::optional<TimeRange> PlaybackBridge::loopRange() const {
+    const SequencePtr seq = m_controller ? m_controller->currentSequence() : nullptr;
+    if (!seq) {
+        return std::nullopt;
+    }
+    // In to Out; a missing mark is the sequence's start or end (Premiere's Play In to Out).
+    const Ticks start = seq->markIn.value_or(Ticks{});
+    const Ticks end = seq->markOut.value_or(std::max(seq->duration, seq->contentEnd()));
+    if (end <= start) {
+        return std::nullopt;
+    }
+    return TimeRange::fromStartEnd(start, end);
+}
+
+void PlaybackBridge::applyLoop(bool starting) {
+    if (!m_session) {
+        return;
+    }
+    const std::optional<TimeRange> range = m_loop ? loopRange() : std::nullopt;
+    m_session->setLoop(range);
+    if (starting && range && m_controller) {
+        const Ticks here = m_controller->playhead();
+        if (here < range->start || here >= range->end()) {
+            m_controller->setPlayhead(range->start); // Play with Loop on plays the range
+        }
+    }
+}
+
+void PlaybackBridge::setLoop(bool loop) {
+    if (loop == m_loop) {
+        return;
+    }
+    m_loop = loop;
+    QSettings().setValue(QLatin1String(kProgramLoopKey), loop);
+    m_stopAt.reset();
+    applyLoop();
+    emit loopChanged();
+}
+
+void PlaybackBridge::playInToOut() {
+    if (!m_session || !m_controller || m_sourceVideo) {
+        return;
+    }
+    const std::optional<TimeRange> range = loopRange();
+    if (!range) {
+        return;
+    }
+    m_session->pause();
+    m_controller->setPlayhead(range->start);
+    // Loop on: the range repeats (applyLoop has it); off: playback stops at the Out.
+    m_stopAt = m_loop ? std::nullopt : std::optional<Ticks>(range->end());
+    applyLoop();
+    startAudio();
+    m_session->play();
+    tick();
 }
 
 // ---- Transport --------------------------------------------------------------------------------------
@@ -417,6 +554,10 @@ void PlaybackBridge::attachAll(playback::PlaybackController* controller) {
 void PlaybackBridge::togglePlay() {
     startAudio();
     if (auto* active = activeController()) {
+        if (!active->isPlaying() && !m_sourceVideo) {
+            applyLoop(true);
+        }
+        m_stopAt.reset();
         active->togglePlay();
     }
     tick();
@@ -425,6 +566,9 @@ void PlaybackBridge::togglePlay() {
 void PlaybackBridge::play() {
     startAudio();
     if (auto* active = activeController()) {
+        if (!active->isPlaying() && !m_sourceVideo) {
+            applyLoop(true);
+        }
         active->play();
     }
     tick();
@@ -444,10 +588,14 @@ bool PlaybackBridge::setSpeed(int num, int den) {
     }
     if (num == 0) {
         active->pause();
+        m_stopAt.reset();
         tick();
         return true;
     }
     startAudio();
+    if (!active->isPlaying() && num > 0 && !m_sourceVideo) {
+        applyLoop(true);
+    }
     const bool ok = active->setTransportSpeed({num, std::max(1, den)});
     tick();
     return ok;

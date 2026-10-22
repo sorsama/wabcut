@@ -62,6 +62,10 @@ class AiController : public QObject {
     Q_PROPERTY(QString chatModel READ chatModel WRITE setChatModel NOTIFY modelsChanged)
     Q_PROPERTY(QString transcriptionModel READ transcriptionModel WRITE setTranscriptionModel NOTIFY modelsChanged)
     Q_PROPERTY(bool offlineMode READ offlineMode WRITE setOfflineMode NOTIFY privacyChanged)
+    /// 0.2: the CPU cap of the AI helpers on this computer (transcription, analysis, segmentation, the local
+    /// assistant), percent of the machine: 100 = no limit, 75 (the default), 50, 25. They always run below normal
+    /// priority. Persisted (ai/helperCpuLimit); applies to helpers started afterwards (ai::setHelperCpuPolicy).
+    Q_PROPERTY(int helperCpuLimit READ helperCpuLimit WRITE setHelperCpuLimit NOTIFY helperCpuLimitChanged FINAL)
     /// The open project's "Offline / no-cloud" lock (kept for the session until the project file can store it).
     Q_PROPERTY(bool projectLock READ projectLock WRITE setProjectLock NOTIFY privacyChanged)
     /// [{provider, providerName, capability, capabilityName, grantedAt}]
@@ -112,6 +116,8 @@ public:
     void setTranscriptionModel(const QString& id);
     bool offlineMode() const;
     void setOfflineMode(bool offline);
+    int helperCpuLimit() const;
+    void setHelperCpuLimit(int percent);
     bool projectLock() const;
     void setProjectLock(bool locked);
     QVariantList consents() const;
@@ -170,6 +176,7 @@ signals:
     void providersChanged();
     void modelsChanged();
     void privacyChanged();
+    void helperCpuLimitChanged();
     void spendChanged();
     void requestLogChanged();
     void statusChanged();

@@ -655,3 +655,109 @@ TEST_CASE("The callback never allocates or locks with a 5.1 master downmixed for
     CHECK(audio::rt::lockViolations() == locksBefore);
     CHECK(rig.player->stats().underrunFrames == 0);
 }
+
+TEST_CASE("The callback never allocates or locks with submixes and sends: routing edits, submix effects with latency, live submix faders",
+          "[playback][rt][submix]") {
+    // p02 audio: tracks assigned to submixes, pre- and post-fader sends, a submix chain with a lookahead limiter (latency
+    // compensation delay lines), a mono submix, edits of the routing and of a submix's effects while playing.
+    Project p;
+    SyntheticSignal tone;
+    tone.kind = SyntheticSignal::Kind::Sine;
+    tone.frequency = 330.0;
+    tone.amplitude = 0.5f;
+    p.media('A', tone);
+    SyntheticSignal noise;
+    noise.kind = SyntheticSignal::Kind::Noise;
+    noise.amplitude = 0.3f;
+    p.media('B', noise);
+    auto fx = [&](const char* id, std::vector<EffectParam> params) {
+        EffectInstance e;
+        e.id = p.state.ids.allocate<EffectInstanceId>();
+        e.effect = id;
+        for (EffectParam& param : params) {
+            e.set(std::move(param.key), std::move(param.value));
+        }
+        return e;
+    };
+    p.addTrack({{'A', Ticks{}, ms(3000), Ticks{}}});
+    p.addTrack({{'B', ms(100), ms(3000), Ticks{}, -3.0, 0.3}});
+    TrackId s1;
+    TrackId s2;
+    {
+        Sequence seq = *p.state.sequences.front();
+        Track bus;
+        bus.id = p.state.ids.allocate<TrackId>();
+        bus.kind = TrackKind::Audio;
+        bus.effects = {fx("wabcut.audio.compressor", {{"threshold", ParamValue(-20.0)}}), fx("wabcut.audio.limiter", {})};
+        s1 = bus.id;
+        seq.submixTracks.push_back(std::make_shared<const Track>(bus));
+        Track mono;
+        mono.id = p.state.ids.allocate<TrackId>();
+        mono.kind = TrackKind::Audio;
+        mono.format = ChannelFormat::Mono;
+        mono.effects = {fx("wabcut.audio.reverb", {{"mix", ParamValue(0.5)}})};
+        mono.output = s1;
+        s2 = mono.id;
+        seq.submixTracks.push_back(std::make_shared<const Track>(mono));
+        Track a1 = *seq.audioTracks[0];
+        a1.output = s1;
+        TrackSend send;
+        send.submix = s2;
+        send.level = ParamValue(-6.0);
+        a1.sends.push_back(send);
+        seq.audioTracks[0] = std::make_shared<const Track>(a1);
+        Track a2 = *seq.audioTracks[1];
+        send.preFader = true;
+        a2.sends.push_back(send);
+        seq.audioTracks[1] = std::make_shared<const Track>(a2);
+        p.state = p.state.withSequence(std::make_shared<const Sequence>(std::move(seq)));
+    }
+    Rig rig(p, Rig::Options{ms(2), ms(2), false, ms(30)});
+
+    const std::uint64_t allocationsBefore = g_realtimeAllocations.load();
+    const std::uint64_t locksBefore = audio::rt::lockViolations();
+
+    rig.player->play();
+    rig.pullFor(300);
+    for (int step = 0; step < 4; ++step) {
+        ProjectState next = *rig.session.snapshot();
+        Sequence seq = *next.sequences.front();
+        if (step == 0) { // a submix effect's parameter: same processors
+            Track bus = *seq.submixTracks[0];
+            bus.effects[0].set("threshold", ParamValue(-30.0));
+            seq.submixTracks[0] = std::make_shared<const Track>(bus);
+        } else if (step == 1) { // A2 assigned to the mono submix too
+            Track a2 = *seq.audioTracks[1];
+            a2.output = s2;
+            seq.audioTracks[1] = std::make_shared<const Track>(a2);
+        } else if (step == 2) { // the limiter goes: other latency, other delays
+            Track bus = *seq.submixTracks[0];
+            bus.effects.pop_back();
+            seq.submixTracks[0] = std::make_shared<const Track>(bus);
+        } else { // solo the mono submix
+            Track mono = *seq.submixTracks[1];
+            mono.solo = true;
+            seq.submixTracks[1] = std::make_shared<const Track>(mono);
+        }
+        next.sequences.front() = std::make_shared<const Sequence>(std::move(seq));
+        REQUIRE(rig.session.commit("routing", std::move(next)));
+        rig.pullFor(150);
+    }
+    REQUIRE(rig.player->setLiveTrackMix(s1, -6.0, 0.2));
+    rig.pullFor(100);
+    rig.player->clearLiveMix();
+    rig.player->seek(ms(1200));
+    rig.pullFor(200);
+    rig.player->setLoop(TimeRange{ms(1300), ms(150)});
+    rig.pullFor(300);
+    rig.player->setLoop(std::nullopt);
+    rig.player->setSpeed({2, 1});
+    rig.pullFor(100);
+    rig.player->setSpeed(audio::TransportSpeed::normal());
+    for (const std::size_t size : {std::size_t{37}, std::size_t{1024}, std::size_t{4096}, std::size_t{1}}) {
+        rig.pull(size);
+    }
+    CHECK(g_realtimeAllocations.load() == allocationsBefore);
+    CHECK(audio::rt::lockViolations() == locksBefore);
+    CHECK(rig.player->stats().underrunFrames == 0);
+}

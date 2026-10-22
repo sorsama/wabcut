@@ -4,6 +4,7 @@
 
 #include <wabcut/model/Effects.h>
 #include <wabcut/model/MediaLocator.h>
+#include <wabcut/model/MotionOps.h>
 #include <wabcut/model/Nesting.h>
 #include <wabcut/model/ProjectIO.h>
 #include <wabcut/model/Resolve.h>
@@ -55,8 +56,31 @@ struct Tally {
     bool transition = false;
     bool blend = false;
     bool matte = false;
+    bool opticalFlow = false;   ///< P.2: a retimed clip with Time Interpolation's Optical Flow
+    bool frameBlending = false; ///< P.2: a retimed clip with Frame Blending
+    bool morphCut = false;      ///< P.2: a Morph Cut transition
     std::set<std::string> effects; ///< display names of the evaluated effects that cost something
 };
+
+/// P.2: what a step's motion features cost (Time Interpolation of a retimed clip, Morph Cut).
+void tallyMotion(const ProjectState& state, Rate rate, const CompositeStep& s, Tally& t) {
+    if (s.transition.transition && s.transition.transition->effect == kMorphCutTransition) {
+        t.morphCut = true;
+    }
+    if (!s.clip || s.clip->timeInterpolation() == TimeInterpolation::FrameSampling || s.isAdjustment()) {
+        return;
+    }
+    const MediaItem* item = state.findMedia(s.clip->media);
+    if (!item || !retimesFrames(*s.clip, *item, rate)) {
+        return;
+    }
+    if (s.clip->timeInterpolation() == TimeInterpolation::OpticalFlow) {
+        t.opticalFlow = true;
+    } else {
+        t.frameBlending = true;
+        t.cost += 0.5;
+    }
+}
 
 void tallyStack(const EffectStack& stack, Tally& t) {
     for (const EffectInstance& e : stack) {
@@ -72,7 +96,7 @@ void tallyStack(const EffectStack& stack, Tally& t) {
     }
 }
 
-void tally(const CompositePlan& plan, Tally& t, int depth) {
+void tally(const ProjectState& state, Rate rate, const CompositePlan& plan, Tally& t, int depth) {
     if (depth > 16) {
         return;
     }
@@ -84,6 +108,7 @@ void tally(const CompositePlan& plan, Tally& t, int depth) {
             ++t.layers;
             t.cost += 1.0;
         }
+        tallyMotion(state, rate, s, t);
         tallyStack(s.clip->effects(), t);
         if (s.transition.transition) {
             t.transition = true;
@@ -95,12 +120,12 @@ void tally(const CompositePlan& plan, Tally& t, int depth) {
         }
         if (s.nested) {
             t.nested = true;
-            tally(*s.nested, t, depth + 1);
+            tally(state, rate, *s.nested, t, depth + 1);
         }
         if (s.matte) {
             t.matte = true;
             if (s.matte->plan) {
-                tally(*s.matte->plan, t, depth + 1);
+                tally(state, rate, *s.matte->plan, t, depth + 1);
             }
         }
     }
@@ -113,8 +138,9 @@ RenderSegment classify(const ProjectState& state, SequenceId sequence, TimeRange
     RenderSegment seg;
     seg.range = range;
     const CompositePlan plan = resolveComposite(state, sequence, range.start);
+    const Sequence* seq = state.findSequence(sequence);
     Tally t;
-    tally(plan, t, 0);
+    tally(state, seq ? seq->frameRate : Rate{}, plan, t, 0);
     seg.cost = t.cost;
     std::string effects;
     for (const std::string& name : t.effects) {
@@ -125,10 +151,14 @@ RenderSegment classify(const ProjectState& state, SequenceId sequence, TimeRange
         seg.reason = t.nested && t.adjustment ? "nested sequence and adjustment layer"
                      : t.nested               ? "nested sequence"
                                               : "adjustment layer";
+    } else if (t.opticalFlow || t.morphCut) {
+        // P.2: motion is analysed and every frame synthesised: Premiere shows these red until rendered.
+        seg.status = RenderStatus::Red;
+        seg.reason = t.opticalFlow && t.morphCut ? "optical flow and Morph Cut" : t.opticalFlow ? "optical flow" : "Morph Cut";
     } else if (t.cost > kRealTimeBudget) {
         seg.status = RenderStatus::Red;
         seg.reason = "heavier than real time" + (effects.empty() ? std::string() : ": " + effects);
-    } else if (!t.effects.empty() || t.transition || t.blend || t.matte) {
+    } else if (!t.effects.empty() || t.transition || t.blend || t.matte || t.frameBlending) {
         seg.status = RenderStatus::Yellow;
         std::vector<std::string> why;
         if (!effects.empty()) {
@@ -142,6 +172,9 @@ RenderSegment classify(const ProjectState& state, SequenceId sequence, TimeRange
         }
         if (t.matte) {
             why.push_back("track matte");
+        }
+        if (t.frameBlending) {
+            why.push_back("frame blending");
         }
         for (const std::string& w : why) {
             seg.reason += (seg.reason.empty() ? "" : "; ") + w;

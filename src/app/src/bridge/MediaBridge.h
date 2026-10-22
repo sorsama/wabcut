@@ -9,12 +9,15 @@
 // (a 2-hour VOD decodes for tens of seconds) are drawn while they decode: the service's partial results are the
 // stream's start, exact as far as they go; a range past them stays blank (peaks() returns false) and
 // buildingUntil() says how far they reach. Partial results fire peaksReady() at most every 250 ms for all streams
-// together (each one rebuilds every waveform of the timeline); a finished stream fires it at once. Up to three
+// together; a finished stream fires it at once. Views rebuild only the waveforms of the media that changed since they
+// last looked (mediaChangedSince(), p02 audio); the timeline shades what is still building. Up to three
 // streams decode at once, so the audio tracks of one recording build together.
 //
 // ThumbnailImageProvider ("image://wabcut-thumbnails/<percent-encoded UTF-8 path>"): library thumbnails from
 // media::ThumbnailService (one frame from the middle of the file, scaled to the requested height, cached on disk
-// under <cacheDir>/thumbnails). The URL carries a file path, never an id.
+// under <cacheDir>/thumbnails). The URL carries a file path, never an id. 0.2 Media Browser hover scrub: ".../s<n>"
+// asks for a strip - n frames evenly spaced through the file, side by side in one image (stripUrlFor) - so moving the
+// pointer over a thumbnail only shows another part of it.
 //
 // Threading: both services run their jobs on their own worker threads. MediaPeakSource joins its workers before it
 // is destroyed; a thumbnail response holds only a weak link to its QQuickImageResponse, so a job that finishes after
@@ -72,7 +75,11 @@ public:
     /// While the peaks of `stream` are still being decoded: the source time the decoded part reaches (zero until the
     /// first partial result). nullopt once they are complete or failed, before they are first asked for, and for
     /// media without a file. Any thread.
-    std::optional<Ticks> buildingUntil(MediaId media, StreamRef stream) const;
+    std::optional<Ticks> buildingUntil(MediaId media, StreamRef stream) const override;
+
+    /// p02 audio: the media whose peaks (partial or complete) arrived, or whose file changed, after `serial`; nullopt
+    /// when `serial` is older than the source's history. Any thread.
+    std::optional<std::vector<std::uint64_t>> mediaChangedSince(std::uint64_t serial, std::uint64_t& now) const override;
 
     /// True when every requested stream has finished (tests).
     bool idle() const;
@@ -102,6 +109,10 @@ private:
     mutable std::map<Key, Entry> m_entries;
     mutable std::uint64_t m_nextTicket = 0;
     std::chrono::steady_clock::time_point m_lastPartialNotify{}; // partial results' peaksReady(), coalesced
+    /// p02 audio: a serial per change of a media's peaks (mediaChangedSince), under m_mutex.
+    std::uint64_t m_serial = 1;
+    std::unordered_map<std::uint64_t, std::uint64_t> m_changedAt; // media id -> serial of its last change
+    void markChanged(std::uint64_t media); // m_mutex held
     PlaceholderPeakSource m_placeholder;
     // Created on the first real request; destroyed first (joining its workers) so no callback outlives `this`.
     mutable std::unique_ptr<media::WaveformPeaksService> m_service;
@@ -118,6 +129,8 @@ public:
 
     /// "image://wabcut-thumbnails/…" for a UTF-8 file path.
     static QString urlFor(const std::string& utf8Path);
+    /// 0.2: the strip of `count` (2 .. 32) frames of the file, side by side (hover scrub).
+    static QString stripUrlFor(const std::string& utf8Path, int count);
 
 private:
     media::ThumbnailService& service();

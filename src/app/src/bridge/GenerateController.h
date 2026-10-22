@@ -43,11 +43,12 @@ public:
     /// Renders the boundary frame of `clip` that Extend would upload (head or tail) through the export renderer and
     /// keeps it as the pending upload. Returns an error message, or "" when the preview is ready.
     Q_INVOKABLE QString prepareExtend(const QString& clip, bool head);
-    Q_INVOKABLE QVariantMap estimate(const QString& model, const QString& prompt, int seconds, const QString& aspect) const;
+    /// `seconds` 0 for a sound-effect model: the model picks the length (estimated at its longest). `loop`: sound effects.
+    Q_INVOKABLE QVariantMap estimate(const QString& model, const QString& prompt, int seconds, const QString& aspect, bool loop = false) const;
     // Explicit user action after the displayed estimate. Keys never pass through QML. No agent can call this method.
     Q_INVOKABLE void run(const QString& model, const QString& prompt, int seconds, const QString& aspect,
         double maxDollars, bool consentOnce, double atSeconds = -1, const QString& clip = {}, bool head = false,
-        bool acknowledgeRedactions = false);
+        bool acknowledgeRedactions = false, bool loop = false);
     Q_INVOKABLE void cancel();
     Q_INVOKABLE void accept();
     Q_INVOKABLE void discard();

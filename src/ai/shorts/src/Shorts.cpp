@@ -1,5 +1,7 @@
 #include <wabcut/ai/shorts/Shorts.h>
 
+#include <wabcut/model/Resolve.h>
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -146,6 +148,40 @@ std::vector<std::pair<const Clip*, TimeRange>> videoUnder(const Sequence& seq, T
         if (!out.empty()) {
             return out; // the top track with pictures there
         }
+    }
+    return out;
+}
+
+/// A media stream a clip plays or shows over a part of the timeline, as the media range [lo, hi].
+struct PlayedPart {
+    const MediaItem* media = nullptr;
+    int stream = 0;
+    Ticks lo;
+    Ticks hi;
+};
+
+/// What `clip` plays or shows over the timeline part `part` (inside it): its own media, or (0.2) for a nested or
+/// multicam clip the media of its leaves (resolveLeaves: the active angles, the nest's clips) between the part's ends.
+std::vector<PlayedPart> playedParts(const ProjectState& state, SequenceId sequence, const Clip& clip, TimeRange part) {
+    std::vector<PlayedPart> out;
+    if (!clip.isNested()) {
+        if (const MediaItem* media = state.findMedia(clip.media)) {
+            const Ticks sa = clip.sourceTimeAt(part.start);
+            const Ticks sb = clip.sourceTimeAt(part.end() - Ticks{1});
+            out.push_back({media, clip.stream.index, std::min(sa, sb), std::max(sa, sb)});
+        }
+        return out;
+    }
+    const std::vector<ResolvedLeaf> last = resolveLeaves(state, sequence, clip, part.end() - Ticks{1});
+    for (const ResolvedLeaf& leaf : resolveLeaves(state, sequence, clip, part.start)) {
+        const MediaItem* media = state.findMedia(leaf.clip->media);
+        if (!media || leaf.clip->isFreeze()) {
+            continue;
+        }
+        // The same leaf at the part's end bounds its range; else (another clip there) it plays to its own end.
+        const auto end = std::ranges::find_if(last, [&](const ResolvedLeaf& l) { return l.clip == leaf.clip; });
+        const Ticks other = end != last.end() ? end->sourceTime : leaf.clip->sourceOut() - Ticks{1};
+        out.push_back({media, leaf.clip->stream.index, std::min(leaf.sourceTime, other), std::max(leaf.sourceTime, other)});
     }
     return out;
 }
@@ -625,19 +661,19 @@ ShortsReport findShorts(const ProjectState& state, SequenceId sequence, const ed
                 continue;
             }
             const Clip& clip = at->clip();
-            const MediaItem* media = state.findMedia(clip.media);
             const Ticks a = std::max(clip.start(), range.start);
             const Ticks b = std::min(clip.end(), range.end());
-            if (!media || b <= a || clip.isFreeze()) {
+            if (b <= a || clip.isFreeze()) {
                 continue;
             }
-            const Ticks sa = clip.sourceTimeAt(a);
-            const Ticks sb = clip.sourceTimeAt(b - Ticks{1});
-            const TimeRange source = TimeRange::fromStartEnd(std::min(sa, sb), std::max(sa, sb) + Ticks{1});
-            if (const auto db = inputs.energy->rmsDb(*media, clip.stream.index, source)) {
-                const double wgt = seconds(b - a);
-                sum += std::pow(10.0, *db / 10.0) * wgt; // average the power, not the decibels
-                weight += wgt;
+            // 0.2: a multicam or nested clip (the transcript reads through it) is heard through its recordings.
+            for (const PlayedPart& played : playedParts(state, seq->id, clip, TimeRange::fromStartEnd(a, b))) {
+                const TimeRange source = TimeRange::fromStartEnd(played.lo, played.hi + Ticks{1});
+                if (const auto db = inputs.energy->rmsDb(*played.media, played.stream, source)) {
+                    const double wgt = seconds(b - a);
+                    sum += std::pow(10.0, *db / 10.0) * wgt; // average the power, not the decibels
+                    weight += wgt;
+                }
             }
         }
         if (weight <= 0.0) {
@@ -696,28 +732,29 @@ ShortsReport findShorts(const ProjectState& state, SequenceId sequence, const ed
             bool known = false;
             for (const auto& [clip, part] : videoUnder(*seq, range)) {
                 cuts += part.start > range.start ? 1 : 0;
-                const MediaItem* media = state.findMedia(clip->media);
-                if (!media || media->info.video.empty() || clip->stream.kind != StreamKind::Video) {
+                if (clip->stream.kind != StreamKind::Video) {
                     continue;
                 }
-                const vision::SubjectAnalysis* a = inputs.subjects(*media, clip->stream.index);
-                if (!a) {
-                    continue;
-                }
-                known = true;
-                const Ticks sa = clip->sourceTimeAt(part.start);
-                const Ticks sb = clip->sourceTimeAt(part.end() - Ticks{1});
-                const Ticks lo = std::min(sa, sb);
-                const Ticks hi = std::max(sa, sb);
-                for (const vision::SubjectSample& sample : a->samples) {
-                    if (sample.time >= lo && sample.time <= hi) {
-                        ++samples;
-                        withFaces += sample.faces.empty() ? 0 : 1;
-                        motion += sample.motion;
+                // 0.2: a multicam or nested clip shows its recordings (the active angle).
+                for (const PlayedPart& shown : playedParts(state, seq->id, *clip, part)) {
+                    if (shown.media->info.video.empty()) {
+                        continue;
                     }
-                }
-                for (const Ticks cut : a->cuts) {
-                    cuts += cut > lo && cut < hi ? 1 : 0;
+                    const vision::SubjectAnalysis* a = inputs.subjects(*shown.media, shown.stream);
+                    if (!a) {
+                        continue;
+                    }
+                    known = true;
+                    for (const vision::SubjectSample& sample : a->samples) {
+                        if (sample.time >= shown.lo && sample.time <= shown.hi) {
+                            ++samples;
+                            withFaces += sample.faces.empty() ? 0 : 1;
+                            motion += sample.motion;
+                        }
+                    }
+                    for (const Ticks cut : a->cuts) {
+                        cuts += cut > shown.lo && cut < shown.hi ? 1 : 0;
+                    }
                 }
             }
             if (known && samples > 0) {

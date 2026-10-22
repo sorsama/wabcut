@@ -250,6 +250,9 @@ Json reframeResultJson(const ProjectState& state, const ReframeResult& result, c
                 j["sourceIn"] = rounded(clip.sourceIn.toSeconds(), 1000.0);
                 j["sourceOut"] = rounded(clip.sourceOut().toSeconds(), 1000.0);
                 j["media"] = clip.media.value;
+                if (clip.isNested()) {
+                    j["nested"] = clip.sequence.value; // 0.2: a nested or multicam clip, reframed as one picture
+                }
             }
         }
         if (preview && count++ < kPreviewClips) {

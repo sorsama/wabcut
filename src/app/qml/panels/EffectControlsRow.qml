@@ -79,6 +79,28 @@ Item {
         controls.setValue(rowKey, next)
     }
 
+    // A choice row's pick: the transition's alignment or effect, else a menu parameter (0.2: Premiere's popups, the
+    // option's value in UI units).
+    function chooseOption(value) {
+        if (rowKey === "t:alignment") {
+            controls.setTransitionAlignment(value)
+        } else if (rowKey === "t:effect") {
+            controls.setTransitionEffect(value)
+        } else {
+            controls.setValue(rowKey, Number(value))
+            controls.endEdit()
+        }
+    }
+    readonly property string optionLabel: {
+        if (kind !== "choice" || !options)
+            return ""
+        for (let i = 0; i < options.length; ++i) {
+            if (options[i].value === text)
+                return options[i].label
+        }
+        return text
+    }
+
     // A Bezier handle of the value graph: the line from its key, and the knob at its end.
     component HandleLine: Rectangle {
         property real fromX: 0
@@ -251,6 +273,22 @@ Item {
             border.width: Theme.hairline
             border.color: row.dragging ? Theme.accentStroke : Theme.border
 
+            // 0.2: right-click a clip's effect for Save Preset… (EffectSectionMenu).
+            TapHandler {
+                id: sectionTap
+                acceptedButtons: Qt.RightButton
+                enabled: row.header && row.sectionKind !== "transition"
+                onTapped: point => {
+                    sectionMenu.active = true
+                    (sectionMenu.item as EffectSectionMenu).popupAt(sectionTap.parent, point.position.x, point.position.y, row.section)
+                }
+            }
+            Loader {
+                id: sectionMenu
+                active: false
+                sourceComponent: EffectSectionMenu {}
+            }
+
             RowLayout {
                 anchors.fill: parent
                 anchors.leftMargin: Theme.space(1)
@@ -351,6 +389,15 @@ Item {
                     font.strikeout: !row.effectEnabled
                 }
 
+                // P.2: Warp Stabilizer / Rolling Shutter Repair: analysis state and Analyze.
+                Loader {
+                    id: stabilizerLoader
+                    active: row.header && row.sectionKind === "effect"
+                    // Not item.visible: that is false while this Loader is hidden (a binding loop that never shows it).
+                    visible: status === Loader.Ready && (stabilizerLoader.item as StabilizerStatus).info.stabilizer === true
+                    sourceComponent: StabilizerStatus { section: row.section }
+                }
+
                 PluginBadge {
                     kind: row.pluginInfo.kind ?? ""
                     detail: row.pluginInfo.text ?? ""
@@ -367,6 +414,38 @@ Item {
                     tooltip: row.pluginInfo.hasEditor === true ? qsTr("Edit plugin… (%1)").arg(row.pluginInfo.name ?? row.title)
                                                                : qsTr("%1 has no editor window").arg(row.pluginInfo.name ?? row.title)
                     onClicked: Plugins.openEditor(row.section) // an error shows as Plugins.message
+                }
+
+                // P.2: Motion's direct manipulation in the Program Monitor (Premiere: select Motion).
+                IconButton {
+                    objectName: "motionDirectButton"
+                    visible: row.section === "motion"
+                    compact: true
+                    checkable: true
+                    checked: ProgramMotion.engaged && ProgramMotion.mode === "transform"
+                    iconName: "scaling"
+                    iconSize: Theme.iconSm
+                    tooltip: qsTr("Move, scale and rotate in the Program Monitor")
+                    onClicked: {
+                        ProgramMotion.mode = "transform"
+                        ProgramMotion.engaged = checked
+                        checked = Qt.binding(() => ProgramMotion.engaged && ProgramMotion.mode === "transform")
+                    }
+                }
+                // P.2: Premiere's crop direct manipulation, on a Crop effect.
+                IconButton {
+                    objectName: "cropDirectButton"
+                    visible: row.sectionKind === "effect" && ProgramMotion.isCropSection(row.section)
+                    compact: true
+                    checkable: true
+                    checked: ProgramMotion.engaged && ProgramMotion.mode === "crop"
+                    iconName: "crop"
+                    iconSize: Theme.iconSm
+                    tooltip: qsTr("Crop in the Program Monitor")
+                    onClicked: {
+                        ProgramMotion.toggleCrop()
+                        checked = Qt.binding(() => ProgramMotion.engaged && ProgramMotion.mode === "crop")
+                    }
                 }
 
                 IconButton {
@@ -512,15 +591,47 @@ Item {
                 }
             }
 
+            // 0.2: a text row (Simple Text's text): applied when editing finishes.
+            TextField {
+                id: effectTextField
+                objectName: "effectTextField"
+                visible: row.kind === "text"
+                Layout.fillWidth: true
+                Layout.maximumWidth: Theme.space(70)
+                implicitHeight: Theme.controlHeightSmall
+                text: row.text
+                verticalAlignment: TextInput.AlignVCenter
+                leftPadding: Theme.space(2)
+                rightPadding: Theme.space(2)
+                selectByMouse: true
+                font.pixelSize: Theme.textMd
+                color: Theme.textPrimary
+                selectionColor: Theme.accentFill
+                selectedTextColor: Theme.accentOnFill
+                Accessible.name: row.title
+                onEditingFinished: {
+                    if (text !== row.text)
+                        row.controls.setEffectText(row.rowKey, text)
+                    text = Qt.binding(() => row.text)
+                }
+                background: Rectangle {
+                    radius: Theme.radiusField
+                    color: effectTextField.activeFocus ? Theme.raised : Theme.sunken
+                    border.width: effectTextField.activeFocus ? Theme.focusRingWidth : Theme.hairline
+                    border.color: effectTextField.activeFocus ? Theme.accentStroke : Theme.border
+                }
+            }
+
+            // A few options: pills; more (a transition's effect, eight directions): a menu.
             Flow {
-                visible: row.kind === "choice"
+                visible: row.kind === "choice" && row.options.length <= 4
                 Layout.fillWidth: true
                 Layout.maximumWidth: Theme.space(70)
                 spacing: Theme.space(1)
                 layoutDirection: Qt.RightToLeft
 
                 Repeater {
-                    model: row.kind === "choice" ? row.options : []
+                    model: row.kind === "choice" && row.options.length <= 4 ? row.options : []
                     delegate: PillButton {
                         required property var modelData
                         compact: true
@@ -529,13 +640,24 @@ Item {
                         enabled: modelData.value !== "custom"
                         Accessible.checkable: true
                         Accessible.checked: row.text === modelData.value
-                        onClicked: {
-                            if (row.rowKey === "t:alignment")
-                                row.controls.setTransitionAlignment(modelData.value)
-                            else
-                                row.controls.setTransitionEffect(modelData.value)
-                        }
+                        onClicked: row.chooseOption(modelData.value)
                     }
+                }
+            }
+            PillButton {
+                id: choiceButton
+                objectName: "choiceMenuButton"
+                visible: row.kind === "choice" && row.options.length > 4
+                compact: true
+                text: row.optionLabel + "  ▾"
+                Accessible.name: row.title
+                onClicked: choiceMenu.popup(choiceButton, 0, choiceButton.height)
+
+                ChoiceMenu {
+                    id: choiceMenu
+                    options: row.kind === "choice" && row.options.length > 4 ? row.options : []
+                    current: row.text
+                    onChosen: value => row.chooseOption(value)
                 }
             }
 

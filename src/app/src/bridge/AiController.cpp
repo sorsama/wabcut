@@ -1,5 +1,6 @@
 #include <wabcut/ai/llm/LocalRuntime.h>
 #include <wabcut/ai/llm/Tiers.h>
+#include <wabcut/ai/ChildProcess.h>
 #include <wabcut/ai/HttpDownload.h>
 #include "PlaybackBridge.h"
 #include "ExportController.h"
@@ -406,6 +407,13 @@ AiPlatform& AiController::platform() { return *d->platform; }
 void AiController::load() {
     QSettings settings;
     settings.beginGroup(kGroup);
+    // 0.2: the AI helpers' CPU cap, for every helper this process starts.
+    {
+        HelperCpuPolicy policy = helperCpuPolicy();
+        policy.cpuRatePercent = std::clamp(settings.value(QStringLiteral("helperCpuLimit"), kDefaultHelperCpuPercent).toInt(), 10, 100);
+        policy.lowPriority = true;
+        setHelperCpuPolicy(policy);
+    }
     const QStringList userModels = settings.value(QStringLiteral("userModels")).toStringList();
     for (const QString& entry : userModels) {
         const auto parts = entry.split(QLatin1Char('\t'));
@@ -641,6 +649,20 @@ void AiController::setOfflineMode(bool offline) {
         return;
     }
     d->consent.setOfflineMode(offline); // persisted and signalled through the ledger's callback
+}
+
+int AiController::helperCpuLimit() const { return helperCpuPolicy().cpuRatePercent; }
+
+void AiController::setHelperCpuLimit(int percent) {
+    percent = std::clamp(percent, 10, 100);
+    if (percent == helperCpuLimit()) {
+        return;
+    }
+    HelperCpuPolicy policy = helperCpuPolicy();
+    policy.cpuRatePercent = percent;
+    setHelperCpuPolicy(policy);
+    QSettings().setValue(QStringLiteral("%1/helperCpuLimit").arg(QLatin1String(kGroup)), percent);
+    emit helperCpuLimitChanged();
 }
 
 bool AiController::projectLock() const { return d->consent.projectLock(); }

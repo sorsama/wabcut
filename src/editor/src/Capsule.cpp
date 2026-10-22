@@ -5,6 +5,8 @@
 #include <wabcut/editor/MediaImport.h>
 #include <wabcut/editor/ProjectDocument.h>
 #include <wabcut/export/TrimmedCopy.h>
+#include <wabcut/model/ImageSequence.h>
+#include <wabcut/model/SpannedClip.h>
 #include <wabcut/model/MediaLocator.h>
 #include <wabcut/model/ProjectIO.h>
 #include <wabcut/model/TimeRemap.h>
@@ -190,7 +192,29 @@ struct MediaPlan {
     MediaPtr item;
     std::filesystem::path source;
     std::optional<TimeRange> keep; ///< trimmed copy of this range (source time); nullopt = the whole file
+    /// 0.2: an item whose path names several files (an image sequence's frames, a spanned clip's parts): they are
+    /// copied together into a folder of their own, keeping their names. Empty for one-file items (a layered file's
+    /// item copies its PSD like any file).
+    std::vector<std::filesystem::path> files;
 };
+
+/// 0.2: the files of an image sequence (its frames from the first, up to the first gap) or a spanned clip (its
+/// parts), or nothing for an item of one file.
+std::vector<std::filesystem::path> filesOfMedia(const std::string& path) {
+    std::vector<std::filesystem::path> out;
+    if (const auto sequence = parseImageSequencePath(path)) {
+        if (auto found = findImageSequence(sequence->firstFramePath(), sequence->frameRate)) {
+            for (std::int64_t n = 0; n < found->count; ++n) {
+                out.push_back(found->framePath(found->first + n));
+            }
+        }
+    } else if (const auto spanned = parseSpannedClipPath(path)) {
+        for (std::size_t i = 0; i < spanned->parts.size(); ++i) {
+            out.push_back(spanned->partPath(i));
+        }
+    }
+    return out;
+}
 
 std::optional<TimeRange> keepRange(const MediaItem& item, const TimeRange& used, Ticks handles) {
     const Ticks duration = item.info.duration;
@@ -224,7 +248,12 @@ std::expected<std::vector<MediaPlan>, Error> planMedia(const ProjectState& state
         MediaPlan p;
         p.item = m;
         p.source = *found;
-        if (options.trim && u != used.end() && !m->info.isStillImage && exporter::canTrimCopy(p.source)) {
+        p.files = filesOfMedia(pathToUtf8(*found)); // 0.2: an image sequence or a spanned clip
+        if (p.files.empty() && pathToUtf8(*found).find('?') != std::string::npos) {
+            p.source = mediaFileToCheck(*found); // a layered file's item: its PSD
+        }
+        if (options.trim && p.files.empty() && u != used.end() && !m->info.isStillImage &&
+            exporter::canTrimCopy(p.source)) {
             p.keep = keepRange(*m, u->second, options.handles);
         }
         plan.push_back(std::move(p));
@@ -233,6 +262,13 @@ std::expected<std::vector<MediaPlan>, Error> planMedia(const ProjectState& state
 }
 
 std::int64_t estimate(const MediaPlan& p) {
+    if (!p.files.empty()) {
+        std::int64_t total = 0;
+        for (const std::filesystem::path& f : p.files) {
+            total += sizeOf(f);
+        }
+        return total;
+    }
     const std::int64_t size = sizeOf(p.source);
     if (!p.keep || p.item->info.duration.value <= 0) {
         return size;
@@ -404,6 +440,39 @@ std::expected<CapsuleResult, Error> collectProject(const ProjectState& state, co
         if (stop.stop_requested()) {
             return cancelled();
         }
+        if (!p.files.empty()) {
+            // 0.2: an image sequence's frames or a spanned clip's parts, together in a folder of their own.
+            const std::filesystem::path relativeFolder = names.unique("Media", mediaFileToCheck(p.source).stem());
+            for (const std::filesystem::path& f : p.files) {
+                report("copying", pathToUtf8(f.filename()));
+                const std::filesystem::path relativeFile = relativeFolder / f.filename();
+                if (auto c = copyFile(f, temp.path / relativeFile); !c) {
+                    return std::unexpected(c.error());
+                }
+                result.files.push_back({relativeFile, "media", sizeOf(temp.path / relativeFile),
+                                        fingerprintFile(temp.path / relativeFile).value_or(SourceFingerprint{}).sampleHash,
+                                        pathToUtf8(f), false});
+            }
+            const std::filesystem::path firstFinal = folder / relativeFolder / p.files.front().filename();
+            const std::string finalPath = relinkedMediaPath(pathToUtf8(p.source), firstFinal);
+            const auto fingerprint = fingerprintFile(temp.path / relativeFolder / p.files.front().filename());
+            if (!fingerprint) {
+                return std::unexpected(fingerprint.error());
+            }
+            auto item = std::make_shared<MediaItem>(*p.item);
+            item->locator.path = finalPath;
+            item->locator.relativePath = relativeMediaPath(finalProject, pathFromUtf8(finalPath));
+            item->locator.fingerprint = *fingerprint;
+            item->locator.offline = false;
+            item->locator.proxy.reset();
+            if (p.item->locator.proxy && options.includeProxies) {
+                result.notes.push_back(p.item->name + ": proxy left out (make it again from the collected files)");
+            }
+            ++result.mediaFiles;
+            ++progress.filesDone;
+            replaced[p.item->id.value] = std::move(item);
+            continue;
+        }
         const std::filesystem::path relative = names.unique("Media", p.source.filename());
         const std::filesystem::path staged = temp.path / relative;
         if (std::filesystem::exists(staged, ec)) {
@@ -447,8 +516,9 @@ std::expected<CapsuleResult, Error> collectProject(const ProjectState& state, co
             return std::unexpected(fingerprint.error());
         }
         const std::filesystem::path finalPath = folder / relative;
-        item->locator.path = pathToUtf8(finalPath);
-        item->locator.relativePath = relativeMediaPath(finalProject, finalPath);
+        // 0.2: a layered file's item keeps its layers (its path names the PSD and them).
+        item->locator.path = relinkedMediaPath(p.item->locator.path, finalPath);
+        item->locator.relativePath = relativeMediaPath(finalProject, pathFromUtf8(item->locator.path));
         item->locator.fingerprint = *fingerprint;
         item->locator.offline = false;
         item->locator.proxy.reset();

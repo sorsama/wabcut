@@ -61,6 +61,13 @@ Item {
                         iconName: "plus"
                         onTriggered: Captions.addTrack(qsTr("Captions"), "")
                     }
+                    // 0.2: a caption track from an .srt, .vtt, timed .txt or .docx file (captions.import).
+                    ContextMenuItem {
+                        objectName: "captionsImportFile"
+                        text: qsTr("Import captions…")
+                        iconName: "download"
+                        onTriggered: importDialog.open()
+                    }
                 }
             }
             IconButton {
@@ -114,6 +121,10 @@ Item {
             enabled: Captions.canGenerate
             tooltip: qsTr("Rewrite the captions' text from the corrected transcript; their timing stays")
             onClicked: Captions.updateFromTranscript()
+        }
+        // p02 audio: Hide profanity, its word lists and Bleep profanity.
+        ProfanitySection {
+            Layout.fillWidth: true
         }
         // After a correction on the Transcript tab.
         Rectangle {
@@ -228,6 +239,29 @@ Item {
                 font.family: Theme.fontSans
                 font.pixelSize: Theme.textSm
             }
+            // 0.2: Find and Replace (captions or transcript), Check Spelling and Export transcript (.txt / .csv / .docx).
+            IconButton {
+                objectName: "captionsFindReplace"
+                compact: true
+                iconName: "search"
+                tooltip: qsTr("Find and Replace")
+                onClicked: findReplaceDialog.show()
+            }
+            IconButton {
+                objectName: "captionsCheckSpelling"
+                compact: true
+                iconName: "spell-check"
+                tooltip: Spelling.available ? qsTr("Check Spelling") : qsTr("Check Spelling (no dictionary for this language)")
+                onClicked: spellingDialog.show()
+            }
+            PillButton {
+                objectName: "captionsExportTranscript"
+                compact: true
+                iconName: "upload"
+                text: qsTr("Transcript")
+                tooltip: qsTr("Export the transcript as a text file (.txt), a spreadsheet (.csv) or a Word document (.docx)")
+                onClicked: transcriptDialog.open()
+            }
             PillButton {
                 objectName: "captionsExportSrt"
                 compact: true
@@ -260,5 +294,26 @@ Item {
         defaultSuffix: format
         nameFilters: format === "vtt" ? [qsTr("WebVTT captions (*.vtt)")] : [qsTr("SubRip captions (*.srt)")]
         onAccepted: Captions.exportFile(selectedFile, format)
+    }
+
+    // 0.2: Find and Replace, Check Spelling, Import captions, Export transcript.
+    CaptionsFindReplaceDialog {
+        id: findReplaceDialog
+    }
+    CaptionsSpellingDialog {
+        id: spellingDialog
+    }
+    FileDialog {
+        id: importDialog
+        fileMode: FileDialog.OpenFile
+        nameFilters: [qsTr("Captions or transcripts (*.srt *.vtt *.txt *.docx)")]
+        onAccepted: Captions.importFile(selectedFile)
+    }
+    FileDialog {
+        id: transcriptDialog
+        fileMode: FileDialog.SaveFile
+        defaultSuffix: "txt"
+        nameFilters: [qsTr("Text (*.txt)"), qsTr("CSV (*.csv)"), qsTr("Word document (*.docx)")]
+        onAccepted: Captions.exportTranscript(selectedFile)
     }
 }

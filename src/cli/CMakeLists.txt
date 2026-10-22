@@ -5,7 +5,8 @@ add_executable(wabcut-cli main.cpp Extensions.cpp LocalLlm.cpp Analyze.cpp Scope
 target_link_libraries(wabcut-cli PRIVATE wabcut_model wabcut_media wabcut_interchange wabcut_command wabcut_mcp
     wabcut_export wabcut_editor wabcut_ai_edit_media wabcut_ai_analysis_media wabcut_ai_search_media wabcut_ai_vision_media
     wabcut_audio_edit_media wabcut_ai_audio_media wabcut_ai_transcribe wabcut_ai_net wabcut_ai_llm wabcut_ai_roughcut_media
-    wabcut_ai_autozoom_media wabcut_ai_multicam_media wabcut_ai_segment_media wabcut_ai_highlights_media wabcut_script Qt6::Core)
+    wabcut_ai_autozoom_media wabcut_ai_multicam_media wabcut_ai_segment_media wabcut_ai_highlights_media wabcut_script
+    wabcut_ai_c2pa Qt6::Core)
 # Extensions (C.12): `ext run` starts the wabcut-scripthost helper next to the CLI.
 add_dependencies(wabcut-cli wabcut-scripthost)
 target_compile_definitions(wabcut-cli PRIVATE WABCUT_VERSION="${PROJECT_VERSION}")

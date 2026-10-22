@@ -6,12 +6,15 @@ add_library(wabcut_render STATIC
     src/ColorPipeline.cpp
     src/CompositeMailbox.cpp
     src/Compositor.cpp
+    src/CompositorFlow.cpp
+    src/EffectLibrary.cpp
     src/FrameImporter.cpp
     src/Mask.cpp
     src/Matte.cpp
     src/GpuScopes.cpp
     src/MediaFrameAdapter.cpp
     src/OffscreenRenderer.cpp
+    src/SyntheticPicture.cpp
     src/Title.cpp
     src/GraphicRaster.cpp
     src/Transform.cpp
@@ -19,7 +22,8 @@ add_library(wabcut_render STATIC
 )
 target_include_directories(wabcut_render PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 # GuiPrivate: QRhi is semi-public API (pinned to Qt 6.11 behaviour, see the root CMakeLists.txt).
-target_link_libraries(wabcut_render PUBLIC wabcut_model wabcut_media wabcut_color Qt6::Gui Qt6::GuiPrivate)
+target_link_libraries(wabcut_render PUBLIC wabcut_model wabcut_media wabcut_color wabcut_colorspaces wabcut_motion
+                                           Qt6::Gui Qt6::GuiPrivate)
 wabcut_target_defaults(wabcut_render)
 
 # Resources under :/wabcut/render/shaders/<name>.qsb. GLSL 300 es / 330 (no ES 2: integer uniforms, fwidth),
@@ -35,6 +39,20 @@ qt_add_shaders(wabcut_render "wabcut_render_shaders"
         shaders/fx.frag
         shaders/output.vert
         shaders/output.frag
+)
+
+# 0.2: the transition and effect library's family shaders (with fx.vert's uniform block; Compositor kFxFamilyShaders).
+# PRECOMPILE like the grade: their DXBC is built at build time, so the first transition does not wait for D3D's compiler.
+qt_add_shaders(wabcut_render "wabcut_render_library_shaders"
+    PREFIX "/wabcut/render"
+    GLSL "300es,330"
+    PRECOMPILE
+    FILES
+        shaders/fx_transition.frag
+        shaders/fx_color.frag
+        shaders/fx_distort.frag
+        shaders/fx_stylize.frag
+        shaders/fx_generate.frag
 )
 
 # Masks (I.6): signed distances, coverage, the masked mix, redaction styles. PRECOMPILE like the grade (DXBC at build
@@ -57,6 +75,15 @@ qt_add_shaders(wabcut_render "wabcut_render_grade_shaders"
     FILES
         shaders/grade.vert
         shaders/grade.frag
+)
+
+# The flow mix (P.2: Time Interpolation's Optical Flow, Morph Cut), with fx.vert. PRECOMPILE like the grade.
+qt_add_shaders(wabcut_render "wabcut_render_flow_shaders"
+    PREFIX "/wabcut/render"
+    GLSL "300es,330"
+    PRECOMPILE
+    FILES
+        shaders/flowmix.frag
 )
 
 # Compute shaders (GPU scopes): GLSL ES 3.1 / 4.3 at least.

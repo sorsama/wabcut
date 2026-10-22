@@ -1,6 +1,7 @@
 #include <wabcut/editor/MediaImport.h>
 #include <wabcut/editor/ProjectDocument.h>
 
+#include <wabcut/model/ImageSequence.h>
 #include <wabcut/model/MediaLocator.h>
 #include <wabcut/model/ProjectOps.h>
 
@@ -115,6 +116,10 @@ std::pair<MediaItem, std::string> checkMediaOnDisk(const MediaItem& item, const 
         return {item, {}}; // synthetic (a title): no file, never offline
     }
     MediaItem out = item;
+    if (item.madeOffline) { // P.2: Make Offline keeps it offline until it is linked again
+        out.locator.offline = true;
+        return {std::move(out), "made offline"};
+    }
     std::vector<std::filesystem::path> candidates;
     if (!item.locator.path.empty()) {
         candidates.push_back(pathFromUtf8(item.locator.path));
@@ -125,7 +130,7 @@ std::pair<MediaItem, std::string> checkMediaOnDisk(const MediaItem& item, const 
     }
     std::string reason = candidates.empty() ? "no path" : "not found";
     for (const std::filesystem::path& candidate : candidates) {
-        if (!isFile(candidate)) {
+        if (!mediaFileExists(candidate)) { // an image sequence: its first frame (ImageSequence.h)
             continue;
         }
         if (item.locator.fingerprint.isKnown()) {
@@ -222,6 +227,33 @@ void ProjectDocument::markClean() {
     rememberClean();
 }
 
+ProjectDocument::Identity ProjectDocument::exchangeIdentity(Identity other) {
+    Identity out{std::move(m_file), std::move(m_clean), std::move(m_autosaved), std::move(m_untitledId), std::move(m_retire)};
+    m_file = std::move(other.file);
+    m_clean = std::move(other.clean);
+    m_autosaved = std::move(other.autosaved);
+    m_untitledId = other.untitledId.empty() ? newUntitledId() : std::move(other.untitledId);
+    m_retire = std::move(other.retire);
+    return out;
+}
+
+bool ProjectDocument::isDirty(const Identity& identity, const ProjectSnapshot& state) {
+    return !identity.clean || !state || !isSameRevision(*identity.clean, *state);
+}
+
+void ProjectDocument::removeAutosavesOf(const Identity& identity) const {
+    const std::filesystem::path newest = autosaveFileFor(identity.file, identity.untitledId);
+    if (newest.empty()) {
+        return;
+    }
+    std::filesystem::path projectFile = newest;
+    projectFile.replace_extension();
+    std::error_code ec;
+    for (int n = 1; n <= std::max(1, m_options.autosaveCopies); ++n) {
+        std::filesystem::remove(rotatedAutosave(projectFile, n), ec);
+    }
+}
+
 void ProjectDocument::newProject(ProjectState initial) {
     m_session.reset(std::move(initial));
     m_file.clear();
@@ -267,13 +299,17 @@ std::expected<void, Error> ProjectDocument::saveAs(const std::filesystem::path& 
 // ---- Autosave -----------------------------------------------------------------------------------------
 
 std::filesystem::path ProjectDocument::autosaveFile() const {
-    if (!m_file.empty()) {
-        return io::autosavePath(m_file);
+    return autosaveFileFor(m_file, m_untitledId);
+}
+
+std::filesystem::path ProjectDocument::autosaveFileFor(const std::filesystem::path& file, const std::string& untitledId) const {
+    if (!file.empty()) {
+        return io::autosavePath(file);
     }
-    if (m_options.untitledAutosaveDir.empty()) {
+    if (m_options.untitledAutosaveDir.empty() || untitledId.empty()) {
         return {};
     }
-    return io::autosavePath(m_options.untitledAutosaveDir / ("Untitled-" + m_untitledId + std::string(io::kProjectExtension)));
+    return io::autosavePath(m_options.untitledAutosaveDir / ("Untitled-" + untitledId + std::string(io::kProjectExtension)));
 }
 
 std::expected<bool, Error> ProjectDocument::autosave() {
@@ -551,7 +587,9 @@ std::vector<RelinkCandidate> ProjectDocument::findRelinkCandidates(
     }
     // The file name after the last separator of either kind: a project saved on Windows names "C:\\Media\\a.mov",
     // whose filename() on macOS/Linux would be the whole string (I.7 portability audit).
-    const std::string& recorded = media->locator.path.empty() ? media->name : media->locator.path;
+    // 0.2: the file that stands for an image sequence, spanned clip or layered-file item (its first frame, part, PSD).
+    const std::string recorded = media->locator.path.empty() ? media->name
+                                                             : pathToUtf8(mediaFileToCheck(pathFromUtf8(media->locator.path)));
     const std::size_t separator = recorded.find_last_of("/\\");
     const std::string wanted = lower(separator == std::string::npos ? recorded : recorded.substr(separator + 1));
     std::size_t visited = 0;
@@ -590,7 +628,8 @@ std::expected<void, Error> ProjectDocument::relink(MediaId mediaId, const std::f
     if (media->isGenerator()) {
         return std::unexpected(Error{ErrorCode::InvalidArgument, media->name + " is generated (a title): it has no file"});
     }
-    auto described = describeMediaFile(file, m_file);
+    // 0.2: an image sequence, spanned clip or layered-file item keeps what its path says beyond the file.
+    auto described = describeMediaFile(pathFromUtf8(relinkedMediaPath(media->locator.path, file)), m_file);
     if (!described) {
         return std::unexpected(std::move(described.error()));
     }
@@ -608,6 +647,7 @@ std::expected<void, Error> ProjectDocument::relink(MediaId mediaId, const std::f
                 item->locator.relativePath = described->locator.relativePath;
                 item->locator.fingerprint = described->locator.fingerprint;
                 item->locator.offline = false;
+                item->madeOffline = false; // P.2: linked again
                 item->info = described->info;
                 m = std::move(item);
             }
@@ -656,9 +696,11 @@ std::expected<std::vector<MediaId>, Error> ProjectDocument::relinkAll(
                 continue;
             }
             auto item = std::make_shared<MediaItem>(*m);
-            item->locator.path = pathToUtf8(hit->second);
-            item->locator.relativePath = m_file.empty() ? std::string{} : relativeMediaPath(m_file, hit->second);
+            item->locator.path = relinkedMediaPath(m->locator.path, hit->second); // 0.2: virtual paths keep their query
+            item->locator.relativePath =
+                m_file.empty() ? std::string{} : relativeMediaPath(m_file, pathFromUtf8(item->locator.path));
             item->locator.offline = false;
+            item->madeOffline = false; // P.2: linked again
             m = std::move(item);
             relinked.push_back(m->id);
         }

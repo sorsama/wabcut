@@ -19,6 +19,12 @@ enum class TransferFunction { Unknown, BT709, SRGB, Linear, Gamma22, Gamma28, PQ
 enum class ChromaLocation { Unknown, Left, Center, TopLeft, Top, BottomLeft, Bottom };
 enum class AlphaMode { None, Straight, Premultiplied };
 
+/// P.2 (E5): the field order of a sequence's frames (Premiere's Sequence Settings > Fields), a media item's
+/// interpretation (Interpret Footage > Field Order) or, since 0.2's field options, what a file's video stream says
+/// (VideoStreamInfo::fieldOrder). Wabcut composites progressive frames: interlaced pictures are deinterlaced where
+/// a clip shows them (FieldOptions.h).
+enum class FieldOrder : std::uint8_t { Progressive, UpperFirst, LowerFirst };
+
 struct ColorInfo {
     ColorMatrix matrix = ColorMatrix::Unknown;
     ColorRange range = ColorRange::Unknown;
@@ -46,6 +52,15 @@ struct VideoStreamInfo {
     int rotationDegrees = 0;      // display rotation (0/90/180/270)
     Ticks duration{};
     std::int64_t frameCount = -1; // -1 when unknown
+    /// The camera log the file's metadata names (0.2, colour management's "auto-detected log"): an InputColorSpace id
+    /// ("s-log3-cine", "logc3", ...; ColorManagement.h), empty when the metadata names none. Camera log is never in the
+    /// stream's colour tags: media::probe reads the vendors' metadata (Sony's NonRealTimeMeta XML, QuickTime keys).
+    /// Saved only when set (schema 17).
+    std::string logColorSpace;
+    /// 0.2 (field options): whether the stream's pictures are interlaced and which field comes first, as the file
+    /// says (FFmpeg's field order of the stream; bottom-coded orders count by their first field). Interpret Footage
+    /// can override it (MediaInterpretation::fieldOrder). Saved only when not Progressive (schema 18).
+    FieldOrder fieldOrder = FieldOrder::Progressive;
 
     bool operator==(const VideoStreamInfo&) const = default;
 };

@@ -330,4 +330,36 @@ std::string toJson(const ExportResult& result) {
     return root.dump(2, ' ', false, Json::error_handler_t::replace) + "\n";
 }
 
+std::string formatSummary(const AudioPostResult& result, std::string_view format, const SummaryOptions& options) {
+    std::string out = "Exported " + std::string(format) + " " + detail::utf8FromPath(result.file) + " (" + std::to_string(result.bytes) +
+                      " bytes): " + std::to_string(result.tracks) + (result.tracks == 1 ? " audio track, " : " audio tracks, ") +
+                      std::to_string(result.clips) + (result.clips == 1 ? " clip" : " clips") + "\n";
+    if (!result.audioFiles.empty()) {
+        out += std::to_string(result.audioFiles.size()) + " audio files in " + detail::utf8FromPath(result.audioFiles.front().parent_path()) +
+               "\n";
+    }
+    if (result.referenceVideo) {
+        out += "Reference video: " + detail::utf8FromPath(*result.referenceVideo) + "\n";
+    }
+    out += "\n" + formatReport(result.report, options.listCarried);
+    return out;
+}
+
+std::string toJson(const AudioPostResult& result, std::string_view format) {
+    Json root;
+    root["format"] = std::string(format);
+    root["path"] = detail::utf8FromPath(result.file);
+    root["bytes"] = result.bytes;
+    root["tracks"] = result.tracks;
+    root["clips"] = result.clips;
+    Json files = Json::array();
+    for (const auto& f : result.audioFiles) {
+        files.push_back(detail::utf8FromPath(f));
+    }
+    root["audioFiles"] = std::move(files);
+    root["referenceVideo"] = result.referenceVideo ? Json(detail::utf8FromPath(*result.referenceVideo)) : Json();
+    root["report"] = reportJson(result.report);
+    return root.dump(2, ' ', false, Json::error_handler_t::replace) + "\n";
+}
+
 } // namespace wabcut::interchange

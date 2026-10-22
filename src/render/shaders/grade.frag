@@ -91,6 +91,7 @@ const int F_HSL_CONTRAST = 1048576;
 const int F_HSL_SHARPEN = 2097152;
 const int F_HSL_SAT = 4194304;
 const int F_CURVES = 8388608;
+const int F_ACESCCT = 16777216; // I.9: a colour-managed pipeline: the display-referred stages work in ACEScct
 
 const int CURVE_SIZE = 1024;
 const float REC709_A = 1.09929682680944;
@@ -101,8 +102,21 @@ bool has(int flag) { return (p.mode.z & flag) != 0; }
 
 float encode1(float l) { return l < REC709_B ? 4.5 * l : REC709_A * pow(l, 0.45) - (REC709_A - 1.0); }
 float decode1(float v) { return v < 4.5 * REC709_B ? v / 4.5 : pow((v + (REC709_A - 1.0)) / REC709_A, 1.0 / 0.45); }
-vec3 encode709(vec3 l) { return vec3(encode1(l.r), encode1(l.g), encode1(l.b)); }
-vec3 decode709(vec3 v) { return vec3(decode1(v.r), decode1(v.g), decode1(v.b)); }
+float encodeCct(float l) { return l <= 0.0078125 ? 10.5402377416545 * l + 0.0729055341958355 : (log2(l) + 9.72) / 17.52; }
+float decodeCct(float v) { return v <= 0.155251141552511 ? (v - 0.0729055341958355) / 10.5402377416545 : min(exp2(v * 17.52 - 9.72), 65504.0); }
+// The working encoding of the display-referred stages (color::encodeWorking): BT.709, or ACEScct (F_ACESCCT).
+vec3 encode709(vec3 l)
+{
+    if (has(F_ACESCCT))
+        return vec3(encodeCct(l.r), encodeCct(l.g), encodeCct(l.b));
+    return vec3(encode1(l.r), encode1(l.g), encode1(l.b));
+}
+vec3 decode709(vec3 v)
+{
+    if (has(F_ACESCCT))
+        return vec3(decodeCct(v.r), decodeCct(v.g), decodeCct(v.b));
+    return vec3(decode1(v.r), decode1(v.g), decode1(v.b));
+}
 
 float sstep(float e0, float e1, float x)
 {

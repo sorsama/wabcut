@@ -75,7 +75,15 @@ std::expected<QImage, Error> RenderedReviewFrames::picture(const ProjectState& s
             }
             decoder = std::move(*opened);
         }
-        auto decoded = decoder->frameAt(spec.sourceTime);
+        Ticks wanted = spec.sourceTime;
+        if (spec.interpolationSecond) {
+            // P.2 Time Interpolation: the frame after the group's first one.
+            if (j == 0 || !frames[j - 1].isValid()) {
+                continue;
+            }
+            wanted = playback::interpolationNextTime(frames[j - 1]);
+        }
+        auto decoded = decoder->frameAt(wanted);
         if (!decoded) {
             if (decoded.error().code == ErrorCode::NotFound) {
                 continue; // past the end of the media: the export shows nothing there either
@@ -89,7 +97,8 @@ std::expected<QImage, Error> RenderedReviewFrames::picture(const ProjectState& s
     composite->targetTime = time;
     composite->canvas = {sequence->width, sequence->height};
     composite->color = m_options.color;
-    playback::buildCompositeLayers(specs, frames, composite->layers);
+    composite->color.management = state.colorManagement; // as the monitor shows it (I.9; an HDR project tone-mapped)
+    playback::buildCompositeLayers(specs, frames, composite->layers, &playback::computedMotion(), composite->canvas);
 
     // At most `width` pixels wide, at the sequence's aspect (and never larger than the sequence).
     const int w = std::clamp(width, 16, std::max(16, sequence->width));

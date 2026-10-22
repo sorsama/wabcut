@@ -12,7 +12,16 @@ wabcut_add_test_suite(color
         test_scopes.cpp
         test_color_tools.cpp
         test_color_commands.cpp
-        test_hdr.cpp # I.9 (gaming): PQ / HLG, the BT.2390 tone map of HDR captures
     LIBS wabcut_color wabcut_ai_edit
     PROPERTIES LABELS color)
 target_include_directories(wabcut_color_tests PRIVATE ${CMAKE_SOURCE_DIR}/tests/model ${CMAKE_SOURCE_DIR}/tests/command)
+
+# Colour management (I.9, wabcut_colorspaces, full builds): OpenColorIO's transforms against published reference values
+# (ACEScct, SMPTE ST 2084 PQ, BT.2100 HLG, camera log curves), the baked LUTs against OCIO's own processor, the input
+# and output plans, the tone-mapped SDR preview.
+if(TARGET wabcut_colorspaces)
+    wabcut_add_test_suite(colorspaces
+        SOURCES test_color_spaces.cpp
+        LIBS wabcut_colorspaces
+        PROPERTIES LABELS color)
+endif()

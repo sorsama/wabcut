@@ -1,12 +1,15 @@
 #include "EffectControls.h"
 
 #include "CommandPalette.h"
+#include "EffectPresetsBridge.h"
 #include "ProjectController.h"
 
+#include <wabcut/model/Animations.h>
 #include <wabcut/model/EditOps.h>
 #include <wabcut/model/TitleOps.h>
 
 #include <QCoreApplication>
+#include <QRandomGenerator>
 
 #include <algorithm>
 #include <cmath>
@@ -40,11 +43,12 @@ bool isTransitionKind(EffectKind kind) {
 QString categoryIcon(std::string_view category, EffectKind kind) {
     if (isTransitionKind(kind))
         return category == "Wipe" ? QStringLiteral("fold-horizontal") : QStringLiteral("blend");
-    if (category == "Color")
+    // Premiere's bins (0.2).
+    if (category == "Color Correction" || category == "Adjust" || category == "Image Control" || category == "Channel")
         return QStringLiteral("sun");
-    if (category == "Blur & Sharpen")
+    if (category == "Blur & Sharpen" || category == "Noise & Grain")
         return QStringLiteral("droplet");
-    if (category == "Transform")
+    if (category == "Transform" || category == "Distort")
         return QStringLiteral("crop");
     if (category == "Perspective")
         return QStringLiteral("square");
@@ -416,6 +420,23 @@ QVariantMap EffectControlsModel::graphOf(const Row& r, const Curve& curve, const
             {QStringLiteral("min"), lo},     {QStringLiteral("max"), hi}};
 }
 
+void EffectControlsModel::makeChoice(Row& r, const EffectParamInfo& p) {
+    r.kind = QStringLiteral("choice");
+    r.options.clear();
+    const std::vector<std::string_view> labels = p.optionLabels();
+    for (std::size_t i = 0; i < labels.size(); ++i) {
+        const double value = r.range.toUi(p.minValue + static_cast<double>(i), r.frame);
+        r.options.append(QVariantMap{{QStringLiteral("value"), QString::number(value)},
+                                     {QStringLiteral("label"), tx(std::string(labels[i]).c_str())}});
+    }
+    r.text = QString::number(std::round(r.value));
+}
+
+bool EffectControlsModel::isValueRow(const Row& r) {
+    return r.kind == QLatin1String("param") || r.kind == QLatin1String("toggle") ||
+           (r.kind == QLatin1String("choice") && !r.ref.key.empty());
+}
+
 void EffectControlsModel::addClipSections(std::vector<Row>& rows, const Clip& clip, bool video) {
     const auto header = [&](const QString& section, const QString& sectionKind, const QString& title,
                             const QString& icon) -> Row& {
@@ -479,6 +500,23 @@ void EffectControlsModel::addClipSections(std::vector<Row>& rows, const Clip& cl
                         edit::ParamRef::ofEffect(instance.id, std::string(p.key)), tx(p.displayName.data()), QString(),
                         uiRange(p), p.defaultValue, p.animatable, enabled,
                         std::string(d->displayName) + ": " + std::string(p.displayName));
+            if (p.isChoice())
+                makeChoice(rows.back(), p);
+        }
+        if (instance.effect == "wabcut.video.simpleText") {
+            // 0.2: Simple Text's text is effect data (not keyframable), edited in a text row.
+            Row t;
+            t.key = section + QStringLiteral(":data:text");
+            t.kind = QStringLiteral("text");
+            t.section = section;
+            t.sectionKind = QStringLiteral("effect");
+            t.title = tx("Text");
+            const EffectData* data = instance.findData("text");
+            t.text = data && data->text() ? QString::fromStdString(*data->text()) : QStringLiteral("Simple Text");
+            t.clip = clip.id;
+            t.ref.key = "text";
+            t.undoLabel = "Simple Text: Text";
+            rows.push_back(std::move(t));
         }
     }
 }
@@ -574,6 +612,8 @@ void EffectControlsModel::addTransitionRows(std::vector<Row>& rows, const Track&
         r.resettable = true;
         r.ref.key = std::string(p.key);
         r.undoLabel = std::string(d->displayName) + ": " + std::string(p.displayName);
+        if (p.isChoice())
+            makeChoice(r, p);
         rows.push_back(std::move(r));
     }
 }
@@ -771,7 +811,7 @@ void EffectControlsModel::setNotice(const QString& notice) {
 
 void EffectControlsModel::setValue(const QString& rowKey, double value) {
     const Row* r = findRow(rowKey);
-    if (!r || !m_controller || !std::isfinite(value) || (r->kind != QLatin1String("param") && r->kind != QLatin1String("toggle")))
+    if (!r || !m_controller || !std::isfinite(value) || !isValueRow(*r))
         return;
     const double model = r->range.toModel(std::clamp(value, std::min(r->from, r->to), std::max(r->from, r->to)), r->frame);
     if (r->sectionKind == QLatin1String("transition")) {
@@ -805,6 +845,27 @@ void EffectControlsModel::setValue(const QString& rowKey, double value) {
 void EffectControlsModel::endEdit() {
     if (m_controller)
         m_controller->endPropertyGesture();
+}
+
+void EffectControlsModel::setEffectText(const QString& rowKey, const QString& text) {
+    const Row* r = findRow(rowKey);
+    if (!r || !m_controller || r->kind != QLatin1String("text") || !r->clip || text == r->text)
+        return;
+    const auto effect = parseEffectKey(r->section);
+    if (!effect)
+        return;
+    const QByteArray utf8 = text.toUtf8();
+    if (static_cast<std::size_t>(utf8.size()) > kMaxEffectText) {
+        setNotice(tx("The text is longer than %1 bytes.").arg(static_cast<qulonglong>(kMaxEffectText)));
+        return;
+    }
+    const SequenceId seq = m_controller->currentSequenceId();
+    const ClipId clip = r->clip;
+    edit::EffectChange change;
+    change.data = {EffectData{r->ref.key, utf8.toStdString()}};
+    m_controller->applyEditFn(LABEL("Simple Text: Text"), [&](const ProjectState& state) {
+        return edit::setEffect(state, seq, clip, *effect, change);
+    });
 }
 
 void EffectControlsModel::resetValue(const QString& rowKey) {
@@ -943,7 +1004,7 @@ void EffectControlsModel::resetSection(const QString& section) {
     // Every parameter row of the section back to its default constant (keys deleted), as one step.
     std::vector<std::function<edit::EditOutcome(const ProjectState&)>> steps;
     for (const Row& r : m_rows) {
-        if (r.section != section || !r.clip || (r.kind != QLatin1String("param") && r.kind != QLatin1String("toggle")))
+        if (r.section != section || !r.clip || !isValueRow(r))
             continue;
         const ClipId clip = r.clip;
         const edit::ParamRef ref = r.ref;
@@ -1012,6 +1073,32 @@ QVariantList EffectControlsModel::library(const QString& query) const {
     for (Group& g : groups) {
         if (g.items.empty())
             continue;
+        // 0.2: Premiere's bins (the descriptors' categories) in alphabetical order, effects alphabetical inside, as
+        // Premiere's Effects panel lists them; a search keeps its matches in their bins.
+        const auto text = [](const std::pair<int, QVariantMap>& e, const char* key) {
+            return e.second.value(QLatin1String(key)).toString();
+        };
+        std::stable_sort(g.items.begin(), g.items.end(), [&](const auto& a, const auto& b) {
+            const int bin = QString::compare(text(a, "category"), text(b, "category"), Qt::CaseInsensitive);
+            return bin != 0 ? bin < 0 : QString::compare(text(a, "name"), text(b, "name"), Qt::CaseInsensitive) < 0;
+        });
+        QVariantList bins;
+        QVariantList binItems;
+        QString binTitle;
+        const auto closeBin = [&] {
+            if (!binItems.isEmpty())
+                bins.append(QVariantMap{{QStringLiteral("title"), binTitle}, {QStringLiteral("items"), binItems}});
+            binItems.clear();
+        };
+        for (const auto& entry : g.items) {
+            const QString category = text(entry, "category");
+            if (category != binTitle) {
+                closeBin();
+                binTitle = category;
+            }
+            binItems.append(entry.second);
+        }
+        closeBin();
         if (!q.isEmpty())
             std::stable_sort(g.items.begin(), g.items.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
         QVariantList items;
@@ -1021,7 +1108,25 @@ QVariantList EffectControlsModel::library(const QString& query) const {
         out.append(QVariantMap{{QStringLiteral("title"), g.title},
                                {QStringLiteral("icon"), g.icon},
                                {QStringLiteral("kind"), QString::fromLatin1(kKinds[static_cast<int>(g.kind)])},
-                               {QStringLiteral("items"), items}});
+                               {QStringLiteral("items"), items},
+                               {QStringLiteral("bins"), bins}});
+    }
+    return out;
+}
+
+std::optional<ClipId> EffectControlsModel::sectionClip(const QString& section) const {
+    for (const Row& r : m_rows) {
+        if (r.kind == QLatin1String("header") && r.section == section && r.clip.isValid())
+            return r.clip;
+    }
+    return std::nullopt;
+}
+
+QStringList EffectControlsModel::sectionsOf(ClipId clip) const {
+    QStringList out;
+    for (const Row& r : m_rows) {
+        if (r.kind == QLatin1String("header") && r.clip == clip && r.sectionKind != QLatin1String("transition"))
+            out << r.section;
     }
     return out;
 }
@@ -1034,6 +1139,17 @@ bool EffectControlsModel::isTransition(const QString& effectId) const {
 QString EffectControlsModel::addEffect(const QString& effectId, int stackIndex) {
     if (!m_controller)
         return tx("No project");
+    // 0.2: a preset (Effects panel > Presets) applies to the clip and its linked partner of the preset's kind.
+    if (effectId.startsWith(QLatin1String("preset:"))) {
+        if (!m_controller->primaryClip())
+            return tx("Select a clip first");
+        std::vector<ClipId> clips;
+        for (const StreamKind kind : {StreamKind::Video, StreamKind::Audio}) {
+            if (const auto target = m_controller->propertyTarget(kind))
+                clips.push_back(*target);
+        }
+        return applyEffectPresetToClips(*m_controller, clips, effectId.mid(7));
+    }
     const EffectDescriptor* d = descriptor(effectId.toStdString());
     if (!d || d->intrinsic || d->id == edit::kTitleStyleEffect)
         return tx("Unknown effect");
@@ -1064,6 +1180,10 @@ QString EffectControlsModel::addEffectToClip(const QString& clipId, const QStrin
     const SequencePtr seq = m_controller->currentSequence();
     if (!clip || !seq || !seq->findClip(*clip))
         return tx("Drop the effect on a clip");
+    if (effectId.startsWith(QLatin1String("preset:"))) {
+        m_controller->selectClipById(*clip, ProjectController::Replace);
+        return addEffect(effectId);
+    }
     if (!d || d->intrinsic)
         return tx("Unknown effect");
     if (isTransitionKind(d->kind))
@@ -1554,6 +1674,12 @@ void EffectControlsModel::setTransitionEffect(const QString& effectId) {
     edit::TransitionChange change;
     change.effect = std::string(d->id);
     change.params = std::vector<EffectParam>{};
+    if (d->id == kSurpriseAnimation) {
+        // 0.2 Surprise Me: a new pick each time it is chosen.
+        PickedAnimation picked = surpriseAnimation(QRandomGenerator::global()->generate64());
+        change.effect = std::move(picked.effect);
+        change.params = std::move(picked.params);
+    }
     if (!m_controller->applyEditFn(LABEL("Change Transition"), [&](const ProjectState& state) {
             return edit::setTransition(state, seq, id, change);
         }))

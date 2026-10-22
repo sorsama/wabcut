@@ -33,6 +33,7 @@
 #include <wabcut/model/MediaLocator.h>
 #include <wabcut/model/Nesting.h>
 #include <wabcut/model/ProjectOps.h>
+#include <wabcut/model/SequenceSettings.h>
 
 #include <QCoreApplication>
 #include <QDir>
@@ -40,6 +41,7 @@
 #include <QThread>
 #include <QFile>
 #include <QFileInfo>
+#include <QJSValue>
 #include <QKeyEvent>
 #include <QMouseEvent>
 #include <QPainter>
@@ -1008,6 +1010,213 @@ TEST_CASE("File > Export Timeline: the menu opens the dialog, interchange.export
     CHECK(reportDialog->property("visible").toBool());
     CHECK(reportDialog->property("title").toString() == QStringLiteral("Exported cut.xml"));
     CHECK(project->lastError().isEmpty());
+
+    const QStringList messages = takeMessages();
+    INFO(join(messages));
+    CHECK(messages.isEmpty());
+}
+
+TEST_CASE("File > Export Timeline: several sequences, one file each and one combined report (0.2)",
+          "[app][interchange][qml]") {
+    resetSettings();
+    clearMessages();
+    Shell shell;
+    REQUIRE(shell.window != nullptr);
+    shell.resize(kShotWidth, kShotHeight);
+    REQUIRE_FALSE(shell.grab().isNull());
+    auto* project = shell.engine.singletonInstance<ProjectLifecycle*>("Wabcut", "ProjectFile");
+    auto* controller = shell.engine.singletonInstance<ProjectController*>("Wabcut", "ProjectController");
+    REQUIRE(project);
+    REQUIRE(controller);
+    controller->newSequence(); // a second sequence
+    const QStringList names = controller->sequenceNames();
+    REQUIRE(names.size() >= 2);
+
+    QObject* dialog = shell.object("exportTimelineDialog");
+    REQUIRE(dialog);
+    REQUIRE(QMetaObject::invokeMethod(shell.object("exportTimelineMenuItem"), "triggered"));
+    QCoreApplication::processEvents();
+    CHECK_FALSE(dialog->property("several").toBool());
+    REQUIRE(QMetaObject::invokeMethod(dialog, "selectAllSequences"));
+    CHECK(dialog->property("several").toBool());
+    QTemporaryDir dir;
+    REQUIRE(dir.isValid());
+    dialog->setProperty("folder", QUrl::fromLocalFile(dir.path()));
+    QObject* ok = shell.object("exportTimelineOk");
+    REQUIRE(ok);
+    CHECK(ok->property("enabled").toBool());
+
+    QVariantMap report;
+    bool done = false;
+    const auto wait = [&] {
+        QElapsedTimer timer;
+        timer.start();
+        while (!done && timer.elapsed() < 30000) {
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+            QThread::msleep(5);
+        }
+        return done;
+    };
+    const QMetaObject::Connection connection = QObject::connect(
+        project, &ProjectLifecycle::timelineExported, project, [&](const QVariantMap& r) {
+            report = r;
+            done = true;
+        });
+    REQUIRE(QMetaObject::invokeMethod(ok, "clicked"));
+    REQUIRE(wait());
+    INFO(report.value(QStringLiteral("error")).toString().toStdString());
+    REQUIRE(report.value(QStringLiteral("ok")).toBool());
+    const QVariantList files = report.value(QStringLiteral("files")).toList();
+    REQUIRE(files.size() == names.size());
+    for (int i = 0; i < files.size(); ++i) {
+        const QVariantMap file = files[i].toMap();
+        CHECK(file.value(QStringLiteral("sequence")).toString() == names[i]);
+        CHECK(file.value(QStringLiteral("file")).toString() == names[i] + QStringLiteral(".xml"));
+        QFile written(file.value(QStringLiteral("path")).toString());
+        REQUIRE(written.open(QIODevice::ReadOnly));
+        CHECK(written.readAll().contains("<xmeml"));
+    }
+    CHECK(report.value(QStringLiteral("sequences")).toInt() == names.size());
+    CHECK(report.value(QStringLiteral("summary")).toString().startsWith(QStringLiteral("Final Cut Pro 7 XML")));
+    QCoreApplication::processEvents();
+    QObject* reportDialog = shell.object("importReportDialog");
+    REQUIRE(reportDialog);
+    CHECK(reportDialog->property("visible").toBool());
+    // "Exported 2 timelines" (the plural is a translation: untranslated it reads "2 timeline(s)").
+    CHECK(reportDialog->property("title").toString().startsWith(QStringLiteral("Exported %1 timeline").arg(names.size())));
+
+    // Two sequences of one name get "Name.otio" and "Name (2).otio"; a missing folder is refused at once.
+    for (int i = 0; i < 2; ++i) {
+        const SequenceId id = controller->snapshot()->sequences[static_cast<std::size_t>(i)]->id;
+        REQUIRE(controller->applyEditFn("Rename", [&](const ProjectState& s) {
+            edit::SequenceSettingsChange rename;
+            rename.name = "Cut";
+            return edit::setSequenceSettings(s, id, rename);
+        }));
+    }
+    CHECK_FALSE(project->exportTimelines(QStringLiteral("otio"), {0, 1}, QUrl::fromLocalFile(dir.filePath(QStringLiteral("nope")))));
+    CHECK_FALSE(project->lastError().isEmpty());
+    done = false;
+    REQUIRE(project->exportTimelines(QStringLiteral("otio"), {0, 1}, QUrl::fromLocalFile(dir.path())));
+    REQUIRE(wait());
+    QObject::disconnect(connection);
+    REQUIRE(report.value(QStringLiteral("ok")).toBool());
+    const QVariantList named = report.value(QStringLiteral("files")).toList();
+    REQUIRE(named.size() == 2);
+    CHECK(named[0].toMap().value(QStringLiteral("file")).toString() == QStringLiteral("Cut.otio"));
+    CHECK(named[1].toMap().value(QStringLiteral("file")).toString() == QStringLiteral("Cut (2).otio"));
+    CHECK(QFileInfo::exists(dir.filePath(QStringLiteral("Cut (2).otio"))));
+
+    const QStringList messages = takeMessages();
+    INFO(join(messages));
+    CHECK(messages.isEmpty());
+}
+
+namespace {
+/// A QML object value as a map (JS objects come back as QJSValue).
+QVariantMap jsMap(const QVariant& value) {
+    if (value.metaType() == QMetaType::fromType<QJSValue>())
+        return value.value<QJSValue>().toVariant().toMap();
+    return value.toMap();
+}
+} // namespace
+
+TEST_CASE("File > Export Timeline: AAF with the audio post settings; a caption file imports as a caption track (P.2)",
+          "[app][interchange][qml]") {
+    resetSettings();
+    clearMessages();
+    Shell shell;
+    REQUIRE(shell.window != nullptr);
+    shell.resize(kShotWidth, kShotHeight);
+    REQUIRE_FALSE(shell.grab().isNull());
+    auto* project = shell.engine.singletonInstance<ProjectLifecycle*>("Wabcut", "ProjectFile");
+    REQUIRE(project);
+    QObject* dialog = shell.object("exportTimelineDialog");
+    REQUIRE(dialog);
+    REQUIRE(QMetaObject::invokeMethod(shell.object("exportTimelineMenuItem"), "triggered"));
+    QCoreApplication::processEvents();
+
+    // AAF (the fifth format): its settings show, OMF's title does not.
+    QObject* formats = shell.object("exportTimelineFormat");
+    QObject* options = shell.object("audioPostOptions");
+    REQUIRE(formats);
+    REQUIRE(options);
+    CHECK_FALSE(options->property("visible").toBool());
+    formats->setProperty("currentIndex", 4);
+    QCoreApplication::processEvents();
+    CHECK(jsMap(dialog->property("format")).value(QStringLiteral("id")).toString() == QStringLiteral("aaf"));
+    CHECK(options->property("visible").toBool());
+    CHECK_FALSE(options->property("omf").toBool());
+    QVariant values;
+    REQUIRE(QMetaObject::invokeMethod(options, "values", Q_RETURN_ARG(QVariant, values)));
+    const QVariantMap v = jsMap(values);
+    CHECK(v.value(QStringLiteral("sampleRate")).toInt() == 48000);
+    CHECK(v.value(QStringLiteral("bitsPerSample")).toInt() == 24);
+    CHECK(v.value(QStringLiteral("files")).toString() == QStringLiteral("embed"));
+    CHECK(v.value(QStringLiteral("handleFrames")).toInt() == 24);
+    CHECK(v.value(QStringLiteral("breakoutToMono")).toBool());
+    CHECK_FALSE(v.contains(QStringLiteral("omfTitle")));
+
+    QTemporaryDir dir;
+    REQUIRE(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("mix.aaf"));
+    dialog->setProperty("file", QUrl::fromLocalFile(path));
+    QVariantMap report;
+    bool done = false;
+    const QMetaObject::Connection connection = QObject::connect(
+        project, &ProjectLifecycle::timelineExported, project, [&](const QVariantMap& r) {
+            report = r;
+            done = true;
+        });
+    REQUIRE(QMetaObject::invokeMethod(shell.object("exportTimelineOk"), "clicked"));
+    QElapsedTimer timer;
+    timer.start();
+    while (!done && timer.elapsed() < 60000) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+        QThread::msleep(5);
+    }
+    QObject::disconnect(connection);
+    REQUIRE(done);
+    INFO(report.value(QStringLiteral("error")).toString().toStdString());
+    REQUIRE(report.value(QStringLiteral("ok")).toBool());
+    CHECK(report.value(QStringLiteral("format")).toString() == QStringLiteral("AAF"));
+    CHECK(report.value(QStringLiteral("summary")).toString().startsWith(QStringLiteral("AAF")));
+    QFile file(path);
+    REQUIRE(file.open(QIODevice::ReadOnly));
+    CHECK(file.read(8) == QByteArray("\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1", 8)); // a compound file
+
+    // OMF: the title field and Include Pan.
+    formats->setProperty("currentIndex", 5);
+    QCoreApplication::processEvents();
+    CHECK(options->property("omf").toBool());
+    REQUIRE(QMetaObject::invokeMethod(options, "values", Q_RETURN_ARG(QVariant, values)));
+    CHECK(jsMap(values).value(QStringLiteral("includePan")).toBool());
+    CHECK_FALSE(jsMap(values).contains(QStringLiteral("breakoutToMono")));
+    QMetaObject::invokeMethod(dialog, "close");
+
+    // File > Import of an SRT: a new caption track of the current sequence, and its report.
+    const QString srt = dir.filePath(QStringLiteral("Subtitles.srt"));
+    QFile out(srt);
+    REQUIRE(out.open(QIODevice::WriteOnly));
+    out.write("1\n00:00:00,000 --> 00:00:01,000\nHello\n\n2\n00:00:01,500 --> 00:00:02,000\n<b>World</b>\n\n");
+    out.close();
+    QVariantMap imported;
+    const QMetaObject::Connection importConnection =
+        QObject::connect(project, &ProjectLifecycle::importReport, project, [&](const QVariantMap& r) { imported = r; });
+    const QVariantMap summary = project->importFiles({QUrl::fromLocalFile(srt)});
+    QObject::disconnect(importConnection);
+    CHECK(summary.value(QStringLiteral("captionTracks")).toInt() == 1);
+    CHECK(summary.value(QStringLiteral("failed")).toList().isEmpty());
+    CHECK(imported.value(QStringLiteral("file")).toString() == QStringLiteral("Subtitles.srt"));
+    CHECK(imported.value(QStringLiteral("approximated")).toInt() >= 1); // the bold
+    auto* controller = shell.engine.singletonInstance<ProjectController*>("Wabcut", "ProjectController");
+    REQUIRE(controller);
+    const SequencePtr current = controller->currentSequence();
+    REQUIRE(current);
+    REQUIRE_FALSE(current->captionTracks.empty());
+    CHECK(current->captionTracks.back().name == "Subtitles");
+    CHECK(current->captionTracks.back().cues.size() == 2);
+    CHECK(project->detectImport(QUrl::fromLocalFile(srt)).value(QStringLiteral("kind")).toString() == QStringLiteral("captions"));
 
     const QStringList messages = takeMessages();
     INFO(join(messages));

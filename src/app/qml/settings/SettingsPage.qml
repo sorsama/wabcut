@@ -11,7 +11,7 @@ Item {
     property string title: ""
     property string description: ""
     default property alias content: sections.data
-    /// "media", "plugins", "audio", "extensions" or "shortcuts" (SettingsWindow.runAction).
+    /// "media", "plugins", "audio", "extensions", "shortcuts" or "editing" (SettingsWindow.runAction).
     signal actionRequested(string what)
 
     /// Scrolls so that `item` (anything on this page) is in view.

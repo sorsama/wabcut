@@ -3,6 +3,7 @@
 #include <wabcut/model/Merge.h>
 
 #include <wabcut/model/Nesting.h>
+#include <wabcut/model/SubmixOps.h>
 #include <wabcut/model/Timecode.h>
 
 #include <algorithm>
@@ -84,6 +85,20 @@ void visitIds(ProjectState& s, F&& f) {
     for (ProjectAsset& a : s.assets) {
         f(a.id.value);
     }
+    // 0.2 (P.3): Freeform views name a bin and place bins, sequences and media items (weak references, renumbered too).
+    for (FreeformView& v : s.freeform) {
+        f(v.bin.value);
+        for (FreeformArrangement* a : {&v.current}) {
+            for (FreeformPlacement& p : a->items) {
+                f(p.id);
+            }
+        }
+        for (FreeformLayout& l : v.layouts) {
+            for (FreeformPlacement& p : l.arrangement.items) {
+                f(p.id);
+            }
+        }
+    }
     for (Redaction& r : s.redactions) {
         f(r.id.value);
         f(r.media.value);
@@ -143,10 +158,14 @@ void visitIds(ProjectState& s, F&& f) {
         }
         visitEffects(seq->effects, f);
         visitEffects(seq->audioEffects, f);
-        for (auto* list : {&seq->videoTracks, &seq->audioTracks}) {
+        for (auto* list : {&seq->videoTracks, &seq->audioTracks, &seq->submixTracks}) {
             for (TrackPtr& tp : *list) {
                 auto t = std::make_shared<Track>(*tp);
                 f(t->id.value);
+                f(t->output.value); // p02 audio: the output assignment and the sends name submix tracks
+                for (TrackSend& send : t->sends) {
+                    f(send.submix.value);
+                }
                 visitEffects(t->effects, f);
                 for (Transition& tr : t->transitions) {
                     f(tr.id.value);
@@ -158,6 +177,7 @@ void visitIds(ProjectState& s, F&& f) {
                     f(c.id.value);
                     f(c.media.value);
                     f(c.linkGroup.value);
+                    f(c.group.value); // 0.2 clip groups come from the same id generator
                     f(c.sequence.value);
                     if (!c.effects().empty()) {
                         ClipContent content = c.content();
@@ -304,7 +324,9 @@ bool sequenceHeaderEq(const Sequence& a, const Sequence& b) {
            a.markIn == b.markIn && a.markOut == b.markOut &&
            a.workArea == b.workArea && a.effects == b.effects && a.audioEffects == b.audioEffects &&
            a.masterVolume == b.masterVolume && a.beatGrid == b.beatGrid && a.derivedFrom == b.derivedFrom &&
-           a.multicam == b.multicam;
+           a.multicam == b.multicam &&
+           std::equal(a.submixTracks.begin(), a.submixTracks.end(), b.submixTracks.begin(), b.submixTracks.end(),
+                      [](const TrackPtr& x, const TrackPtr& y) { return x == y || (x && y && *x == *y); });
 }
 
 void copySequenceHeader(const Sequence& from, Sequence& to) {
@@ -325,12 +347,14 @@ void copySequenceHeader(const Sequence& from, Sequence& to) {
     to.beatGrid = from.beatGrid;
     to.derivedFrom = from.derivedFrom;
     to.multicam = from.multicam;
+    to.submixTracks = from.submixTracks; // p02 audio: the submix buses go with the sequence's settings
 }
 
 bool trackHeaderEq(const Track& a, const Track& b) {
     return a.kind == b.kind && a.name == b.name && a.enabled == b.enabled && a.locked == b.locked &&
            a.syncLocked == b.syncLocked && a.muted == b.muted && a.solo == b.solo && a.targeted == b.targeted &&
-           a.role == b.role && a.effects == b.effects && a.volume == b.volume && a.pan == b.pan;
+           a.role == b.role && a.effects == b.effects && a.volume == b.volume && a.pan == b.pan && a.output == b.output &&
+           a.sends == b.sends;
 }
 
 void copyTrackHeader(const Track& from, Track& to) {
@@ -345,6 +369,8 @@ void copyTrackHeader(const Track& from, Track& to) {
     to.effects = from.effects;
     to.volume = from.volume;
     to.pan = from.pan;
+    to.output = from.output;
+    to.sends = from.sends;
 }
 
 bool trackEq(const Track& a, const Track& b) { return &a == &b || a == b; }
@@ -607,6 +633,26 @@ SequencePtr tidySequence(const ProjectState& state, SequencePtr seq, std::vector
             changed = true;
         }
     }
+    // p02 audio: outputs and sends that name a submix the merge left out go to the Mix; a loop opens at the Mix.
+    if (audioRoutingProblem(*out)) {
+        const auto keep = [&](TrackId submix) { return out->findSubmix(submix) != nullptr; };
+        const bool loop = !submixProcessingOrder(*out);
+        for (auto* list : {&out->audioTracks, &out->submixTracks}) {
+            for (TrackPtr& tp : *list) {
+                auto t = std::make_shared<Track>(*tp);
+                if (t->output.isValid() && (!keep(t->output) || (loop && list == &out->submixTracks))) {
+                    t->output = TrackId{};
+                }
+                std::erase_if(t->sends, [&](const TrackSend& s) { return !keep(s.submix); });
+                if (t->sends.size() > kMaxTrackSends) {
+                    t->sends.resize(kMaxTrackSends);
+                }
+                tp = std::move(t);
+            }
+        }
+        adjustments.push_back("'" + seq->name + "': audio routing to a submix that was removed now goes to the Mix");
+        changed = true;
+    }
     out->duration = std::max(out->duration, out->contentEnd());
     if (!changed && out->duration == seq->duration) {
         return seq;
@@ -780,6 +826,403 @@ std::expected<Created<SequenceId>, Error> copySequenceFrom(const ProjectState& s
     return out;
 }
 
+namespace {
+
+/// Whether `bin` is `ancestor` or lies inside it, in `state`.
+bool binInside(const ProjectState& state, BinId bin, BinId ancestor) {
+    std::size_t guard = 0;
+    while (bin.isValid() && guard++ <= state.bins.size()) {
+        if (bin == ancestor) {
+            return true;
+        }
+        const Bin* b = state.findBin(bin);
+        bin = b ? b->parent : BinId{};
+    }
+    return false;
+}
+
+/// An item of `state` playing the same file as `item` (same path, content not known to differ): the copy can play it
+/// instead. Generated items and subclips are always copied.
+const MediaItem* sameFileIn(const ProjectState& state, const MediaItem& item) {
+    if (item.isGenerator() || item.isSubclip() || item.locator.path.empty()) {
+        return nullptr;
+    }
+    // The same file: the same normal path (on Windows whatever the case: its file systems ignore case).
+    const auto key = [](const std::string& path) {
+        std::string out = pathToUtf8(pathFromUtf8(path).lexically_normal());
+#ifdef _WIN32
+        std::replace(out.begin(), out.end(), '\\', '/');
+        std::transform(out.begin(), out.end(), out.begin(), [](char c) { return c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c; });
+#endif
+        return out;
+    };
+    const std::string wanted = key(item.locator.path);
+    for (const MediaPtr& m : state.media) {
+        if (m->isGenerator() || m->isSubclip() || m->locator.path.empty()) {
+            continue;
+        }
+        if (key(m->locator.path) != wanted) {
+            continue;
+        }
+        const SourceFingerprint& a = m->locator.fingerprint;
+        const SourceFingerprint& b = item.locator.fingerprint;
+        if (a.isKnown() && b.isKnown() && !a.sameContentAs(b)) {
+            continue;
+        }
+        return m.get();
+    }
+    return nullptr;
+}
+
+} // namespace
+
+std::expected<ProjectImportResult, Error> importProjectItems(const ProjectState& state, const ProjectState& source,
+                                                             const ProjectImportSelection& selection,
+                                                             const ProjectImportOptions& options) {
+    if (options.into.isValid()) {
+        const Bin* into = state.findBin(options.into);
+        if (!into) {
+            return std::unexpected(Error{ErrorCode::NotFound, "bin " + std::to_string(options.into.value) + " does not exist"});
+        }
+        if (into->isSearch()) {
+            return std::unexpected(Error{ErrorCode::InvalidArgument, "a search bin cannot hold imported items"});
+        }
+    }
+    // ---- What comes: the selection, what is inside the selected bins, and (to a fixed point) what that plays. ----
+    std::set<std::uint64_t> bins;
+    std::set<std::uint64_t> sequences;
+    std::set<std::uint64_t> media;
+    const auto addBin = [&](BinId root) {
+        for (const Bin& b : source.bins) {
+            if (binInside(source, b.id, root)) {
+                bins.insert(b.id.value);
+            }
+        }
+    };
+    if (selection.everything) {
+        for (const Bin& b : source.bins) {
+            bins.insert(b.id.value);
+        }
+        for (const SequencePtr& s : source.sequences) {
+            sequences.insert(s->id.value);
+        }
+        for (const MediaPtr& m : source.media) {
+            media.insert(m->id.value);
+        }
+    }
+    for (const BinId b : selection.bins) {
+        if (!source.findBin(b)) {
+            return std::unexpected(Error{ErrorCode::NotFound, "bin " + std::to_string(b.value) + " is not in that project"});
+        }
+        addBin(b);
+    }
+    for (const SequenceId s : selection.sequences) {
+        if (!source.findSequence(s)) {
+            return std::unexpected(Error{ErrorCode::NotFound, "sequence " + std::to_string(s.value) + " is not in that project"});
+        }
+        sequences.insert(s.value);
+    }
+    for (const MediaId m : selection.media) {
+        if (!source.findMedia(m)) {
+            return std::unexpected(Error{ErrorCode::NotFound, "media " + std::to_string(m.value) + " is not in that project"});
+        }
+        media.insert(m.value);
+    }
+    for (const SequencePtr& s : source.sequences) {
+        if (s->bin.isValid() && bins.contains(s->bin.value)) {
+            sequences.insert(s->id.value);
+        }
+    }
+    for (const MediaPtr& m : source.media) {
+        if (m->bin.isValid() && bins.contains(m->bin.value)) {
+            media.insert(m->id.value);
+        }
+    }
+    if (bins.empty() && sequences.empty() && media.empty()) {
+        return std::unexpected(Error{ErrorCode::InvalidArgument, "nothing to import"});
+    }
+    std::set<std::uint64_t> assets;
+    std::set<std::uint64_t> speakers;
+    for (bool grew = true; grew;) {
+        grew = false;
+        ProjectState probe;
+        for (const std::uint64_t id : sequences) {
+            probe.sequences.push_back(source.sequencePtr(SequenceId{id}));
+        }
+        std::set<std::uint64_t> seen;
+        visitIds(probe, [&](std::uint64_t& v) {
+            if (v != 0) {
+                seen.insert(v);
+            }
+        });
+        for (const std::uint64_t v : seen) {
+            if (source.findSequence(SequenceId{v}) && sequences.insert(v).second) {
+                grew = true; // a nested or multicam source: look into it too
+            } else if (source.findMedia(MediaId{v})) {
+                media.insert(v);
+            } else if (source.findAsset(AssetId{v})) {
+                assets.insert(v);
+            } else if (source.findSpeaker(SpeakerId{v})) {
+                speakers.insert(v);
+            }
+        }
+    }
+
+    ProjectImportResult out{state, {}, {}, {}, {}, 0, {}};
+    // ---- Media the project already has: the copies play its item. ----
+    std::unordered_map<std::uint64_t, std::uint64_t> to; // source id -> id here
+    std::set<std::uint64_t> copiedMedia;
+    for (const std::uint64_t id : media) {
+        const MediaItem* item = source.findMedia(MediaId{id});
+        const MediaItem* here = options.reuseMedia ? sameFileIn(state, *item) : nullptr;
+        if (here) {
+            to.emplace(id, here->id.value);
+            ++out.reusedMedia;
+        } else {
+            copiedMedia.insert(id);
+        }
+    }
+
+    // ---- The copy, still with the other project's ids. ----
+    ProjectState mini;
+    for (const Bin& b : source.bins) {
+        if (bins.contains(b.id.value)) {
+            mini.bins.push_back(b);
+        }
+    }
+    for (const std::uint64_t id : copiedMedia) {
+        mini.media.push_back(std::make_shared<const MediaItem>(*source.findMedia(MediaId{id})));
+    }
+    for (const std::uint64_t id : sequences) {
+        mini.sequences.push_back(source.sequencePtr(SequenceId{id}));
+    }
+    for (const std::uint64_t id : assets) {
+        mini.assets.push_back(*source.findAsset(AssetId{id}));
+    }
+    for (const Redaction& r : source.redactions) {
+        if (copiedMedia.contains(r.media.value)) {
+            Redaction copy = r;
+            std::erase_if(copy.exceptions, [&](ClipId c) {
+                bool present = false;
+                for (const SequencePtr& s : mini.sequences) {
+                    s->forEachTrack([&](const Track& t) { present = present || t.findClip(c) != nullptr; });
+                }
+                return !present;
+            });
+            mini.redactions.push_back(std::move(copy));
+        }
+    }
+    for (const TranscriptEdits& e : source.transcriptEdits) {
+        if (copiedMedia.contains(e.media.value)) {
+            mini.transcriptEdits.push_back(e);
+            for (const SpeakerLabel& l : e.labels) {
+                speakers.insert(l.speaker.value);
+            }
+            for (const SpeakerSpan& span : e.speakerSpans) {
+                speakers.insert(span.speaker.value);
+            }
+        }
+    }
+    for (const Speaker& sp : source.speakers) {
+        if (speakers.contains(sp.id.value)) {
+            mini.speakers.push_back(sp);
+        }
+    }
+    for (const ReviewNote& n : source.reviewNotes) {
+        if (sequences.contains(n.sequence.value)) {
+            mini.reviewNotes.push_back(n);
+        }
+    }
+    for (const FreeformView& v : source.freeform) {
+        if (v.bin.isValid() && bins.contains(v.bin.value)) {
+            mini.freeform.push_back(v);
+        }
+    }
+    // 0.2 (P.3): the copies remember where they came from (ids of the other project: the id walk does not visit them).
+    if (!options.sourceProject.empty() && options.sourceProject.size() <= ImportSource::kMaxPathBytes) {
+        for (MediaPtr& m : mini.media) {
+            MediaItem item = *m;
+            item.importSource = ImportSource{options.sourceProject, item.id.value};
+            m = std::make_shared<const MediaItem>(std::move(item));
+        }
+        for (SequencePtr& s : mini.sequences) {
+            auto seq = std::make_shared<Sequence>(*s);
+            seq->importSource = ImportSource{options.sourceProject, seq->id.value};
+            s = std::move(seq);
+        }
+    }
+    // A subclip's master is a weak reference the id walk does not follow: kept when the master comes too.
+    std::vector<std::pair<std::size_t, std::uint64_t>> masters;
+    for (std::size_t i = 0; i < mini.media.size(); ++i) {
+        if (mini.media[i]->subclip && mini.media[i]->subclip->master.isValid()) {
+            masters.emplace_back(i, mini.media[i]->subclip->master.value);
+        }
+    }
+
+    // ---- New ids, in the other project's id order; reused media keep this project's. ----
+    std::set<std::uint64_t> found;
+    visitIds(mini, [&](std::uint64_t& v) {
+        if (v != 0 && !to.contains(v)) {
+            found.insert(v);
+        }
+    });
+    std::uint64_t next = state.ids.next;
+    for (const std::uint64_t v : found) {
+        to.emplace(v, next++);
+    }
+    visitIds(mini, [&](std::uint64_t& v) {
+        if (const auto it = to.find(v); it != to.end()) {
+            v = it->second;
+        }
+    });
+    // References that did not come along (weak ones: a stem's source, a recording's sequence, a reframe's source)
+    // now name fresh ids nothing has: they dangle, as weak references may.
+    for (const auto& [index, master] : masters) {
+        MediaItem item = *mini.media[index];
+        const auto it = to.find(master);
+        item.subclip->master = it != to.end() && copiedMedia.contains(master) ? MediaId{it->second} : MediaId{};
+        mini.media[index] = std::make_shared<const MediaItem>(std::move(item));
+    }
+
+    // ---- Where it goes. ----
+    BinId into = options.into;
+    if (!options.binName.empty()) {
+        out.bin = BinId{next++};
+        out.state.bins.push_back(Bin{out.bin, into, options.binName, std::nullopt});
+        into = out.bin;
+    }
+    std::set<std::uint64_t> copiedBins;
+    for (const Bin& b : mini.bins) {
+        copiedBins.insert(b.id.value);
+    }
+    for (Bin b : mini.bins) {
+        if (!b.parent.isValid() || !copiedBins.contains(b.parent.value)) {
+            b.parent = into;
+        }
+        out.bins.push_back(b.id);
+        out.state.bins.push_back(std::move(b));
+    }
+    for (MediaPtr& m : mini.media) {
+        if (!m->bin.isValid() || !copiedBins.contains(m->bin.value)) {
+            MediaItem item = *m;
+            item.bin = into;
+            m = std::make_shared<const MediaItem>(std::move(item));
+        }
+        // Content new clips start with (not saved; addMedia and loading make it).
+        if (!m->clipDefaults) {
+            MediaItem item = *m;
+            item.clipDefaults = std::make_shared<const ClipContent>(ClipContent{item.name, {}});
+            m = std::make_shared<const MediaItem>(std::move(item));
+        }
+        out.media.push_back(m->id);
+        out.state.media.push_back(m); // new ids are above every id here: the list stays sorted
+    }
+    for (SequencePtr& s : mini.sequences) {
+        if (!s->bin.isValid() || !copiedBins.contains(s->bin.value)) {
+            auto seq = std::make_shared<Sequence>(*s);
+            seq->bin = into;
+            s = std::move(seq);
+        }
+        out.sequences.push_back(s->id);
+        out.state.sequences.push_back(s);
+    }
+    for (ProjectAsset& a : mini.assets) {
+        out.state.assets.push_back(std::move(a));
+    }
+    for (Redaction& r : mini.redactions.edit()) {
+        out.state.redactions.edit().push_back(std::move(r));
+    }
+    for (Speaker& sp : mini.speakers) {
+        out.state.speakers.push_back(std::move(sp));
+    }
+    std::vector<TranscriptEdits>& edits = out.state.transcriptEdits.edit();
+    for (TranscriptEdits& e : mini.transcriptEdits.edit()) {
+        edits.push_back(std::move(e));
+    }
+    std::sort(edits.begin(), edits.end(), [](const TranscriptEdits& a, const TranscriptEdits& b) {
+        return std::pair{a.media, a.audioStream} < std::pair{b.media, b.audioStream};
+    });
+    for (ReviewNote& n : mini.reviewNotes.edit()) {
+        out.state.reviewNotes.edit().push_back(std::move(n));
+    }
+    for (FreeformView& v : mini.freeform) {
+        out.state.freeform.push_back(std::move(v));
+    }
+    std::sort(out.state.freeform.begin(), out.state.freeform.end(),
+              [](const FreeformView& a, const FreeformView& b) { return a.bin < b.bin; });
+
+    // ---- Library items graphics and captions name: the ones this project has no item of that name for. ----
+    std::set<std::string> templateIds;
+    std::set<std::string> textStyles;
+    std::set<std::string> captionStyles;
+    const std::function<void(const std::vector<GraphicLayer>&)> layers = [&](const std::vector<GraphicLayer>& list) {
+        for (const GraphicLayer& l : list) {
+            if (!l.textStyle.empty()) {
+                textStyles.insert(l.textStyle);
+            }
+            layers(l.children);
+        }
+    };
+    for (const SequencePtr& s : mini.sequences) {
+        for (const CaptionTrack& ct : s->captionTracks) {
+            if (!ct.trackStyle.empty()) {
+                captionStyles.insert(ct.trackStyle);
+            }
+        }
+        s->forEachTrack([&](const Track& t) {
+            for (const Clip& c : t.clips) {
+                if (const Graphic* g = c.graphic()) {
+                    layers(g->layers);
+                    if (g->instance) {
+                        templateIds.insert(g->instance->templateId);
+                    }
+                }
+            }
+        });
+    }
+    for (const std::string& id : templateIds) {
+        const GraphicTemplate* t = source.findTemplate(id);
+        if (t && !out.state.findTemplate(id)) {
+            std::vector<GraphicTemplate>& list = out.state.templates.edit();
+            list.insert(std::lower_bound(list.begin(), list.end(), id,
+                                         [](const GraphicTemplate& x, const std::string& v) { return x.id < v; }),
+                        *t);
+        } else if (t && !(*out.state.findTemplate(id) == *t)) {
+            out.notes.push_back("graphic template '" + id + "' keeps this project's version");
+        }
+    }
+    for (const std::string& name : textStyles) {
+        const ProjectTextStyle* s = source.findTextStyle(name);
+        if (s && !out.state.findTextStyle(name)) {
+            out.state.textStyles.edit().push_back(*s);
+        } else if (s && !(*out.state.findTextStyle(name) == *s)) {
+            out.notes.push_back("text style '" + name + "' keeps this project's version");
+        }
+    }
+    for (const std::string& name : captionStyles) {
+        const CaptionPreset* p = source.findCaptionPreset(name);
+        if (p && !out.state.findCaptionPreset(name)) {
+            out.state.captionPresets.edit().push_back(*p);
+        } else if (p && !(*out.state.findCaptionPreset(name) == *p)) {
+            out.notes.push_back("caption preset '" + name + "' keeps this project's version");
+        }
+    }
+    if (source.brandKit && !(source.brandKit == state.brandKit)) {
+        out.notes.push_back("the other project's brand kit was not imported (graphics use this project's)");
+    }
+    out.state.ids.next = next;
+    // Merged as wholes elsewhere: tidy what a partial copy can leave (a link group with one member, routing).
+    for (SequencePtr& s : out.state.sequences) {
+        if (std::find(out.sequences.begin(), out.sequences.end(), s->id) != out.sequences.end()) {
+            s = tidySequence(out.state, s, out.notes);
+        }
+    }
+    if (auto valid = validate(out.state, Validation::Structure); !valid) {
+        return std::unexpected(Error{ErrorCode::InvalidArgument, "the imported items are not valid here: " + valid.error().message});
+    }
+    return out;
+}
+
 } // namespace edit
 
 std::expected<MergeResult, Error> mergeProjects(const ProjectState& base, const ProjectState& mine,
@@ -854,6 +1297,21 @@ std::expected<MergeResult, Error> mergeProjects(const ProjectState& base, const 
         [](const std::string& id) { return std::pair{"template:" + id, "graphic template '" + id + "' changed on both sides"}; });
     std::vector<GraphicTemplate>& templates = merged.templates.edit();
     std::sort(templates.begin(), templates.end(), [](const GraphicTemplate& x, const GraphicTemplate& y) { return x.id < y.id; });
+    // 0.2: text styles by name.
+    merged.textStyles = mergeList<ProjectTextStyle, std::string>(
+        merger, base.textStyles, mine.textStyles, theirs.textStyles, [](const ProjectTextStyle& x) { return x.name; }, same,
+        [](const std::string& name) { return std::pair{"textStyle:" + name, "text style '" + name + "' changed on both sides"}; });
+    // 0.2 (P.3): each bin's Freeform view as a whole; views of bins the merge removed go.
+    merged.freeform = mergeList<FreeformView, std::uint64_t>(
+        merger, base.freeform, mine.freeform, theirs.freeform, [](const FreeformView& x) { return x.bin.value; }, same,
+        [](const std::uint64_t& bin) {
+            return std::pair{"freeform:" + std::to_string(bin), std::string("a bin's Freeform view changed on both sides")};
+        });
+    std::sort(merged.freeform.begin(), merged.freeform.end(),
+              [](const FreeformView& x, const FreeformView& y) { return x.bin < y.bin; });
+    std::erase_if(merged.freeform, [&](const FreeformView& v) {
+        return v.bin.isValid() && (!merged.findBin(v.bin) || merged.findBin(v.bin)->isSearch());
+    });
     {
         const auto ptr = [](const ProjectState& s) { return s.brandKit ? &*s.brandKit : nullptr; };
         const Three<BrandKit> kit{ptr(base), ptr(mine), ptr(theirs)};
@@ -861,6 +1319,12 @@ std::expected<MergeResult, Error> mergeProjects(const ProjectState& base, const 
             return std::pair{std::string("brandKit"), std::string("the brand kit changed on both sides")};
         });
         merged.brandKit = chosen ? std::optional<BrandKit>(*chosen) : std::nullopt;
+    }
+    {
+        const Three<ColorManagement> cm{&base.colorManagement, &mine.colorManagement, &theirs.colorManagement};
+        merged.colorManagement = *merger.pick<ColorManagement>(cm, std::equal_to<>{}, [] {
+            return std::pair{std::string("colorManagement"), std::string("the colour management changed on both sides")};
+        }).first;
     }
 
     // Clips that moved to another track or sequence on a side are matched across the project and placed once

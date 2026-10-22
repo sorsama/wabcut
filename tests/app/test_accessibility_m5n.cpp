@@ -738,8 +738,11 @@ TEST_CASE("What's new M5n: this build's highlights, each one spoken; screenshot"
         CHECK_FALSE(h.toMap().value(QStringLiteral("title")).toString().isEmpty());
         CHECK_FALSE(h.toMap().value(QStringLiteral("text")).toString().isEmpty());
     }
-    CHECK(keys == QStringList{QStringLiteral("gamingStart"), QStringLiteral("highlights"), QStringLiteral("layouts"),
-                              QStringLiteral("callouts"), QStringLiteral("moments"), QStringLiteral("gamingExport"),
+    CHECK(keys == QStringList{QStringLiteral("premiereTools"), QStringLiteral("exportQueue"),
+                              QStringLiteral("monitorMotion"), QStringLiteral("projectPanel"), QStringLiteral("audioPost"),
+                              QStringLiteral("aiNested"), QStringLiteral("gamingStart"), QStringLiteral("highlights"),
+                              QStringLiteral("layouts"), QStringLiteral("callouts"), QStringLiteral("moments"),
+                              QStringLiteral("gamingExport"),
                               QStringLiteral("multicam"), QStringLiteral("library"), QStringLiteral("captions"),
                               QStringLiteral("essentialSound"), QStringLiteral("mixer"), QStringLiteral("voiceOver"),
                               QStringLiteral("channels"), QStringLiteral("history"), QStringLiteral("paste"),

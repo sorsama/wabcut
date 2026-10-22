@@ -45,7 +45,8 @@ bool ChangeSet::empty() const {
     return sequences.empty() && addedSequences.empty() && removedSequences.empty() && addedMedia.empty() &&
            removedMedia.empty() && modifiedMedia.empty() && !binsChanged && !aiLockChanged && !assetsChanged &&
            !redactionsChanged && !speakersChanged && !transcriptEditsChanged && !captionPresetsChanged &&
-           !reviewNotesChanged && !brandKitChanged && !templatesChanged;
+           !reviewNotesChanged && !brandKitChanged && !templatesChanged && !colorManagementChanged &&
+           !textStylesChanged && !freeformChanged;
 }
 
 namespace {
@@ -66,7 +67,7 @@ PropertyRoles compareClips(const Clip& a, const Clip& b) {
     if (a.enabled != b.enabled) {
         roles |= PropertyRole::Enabled;
     }
-    if (a.linkGroup != b.linkGroup) {
+    if (a.linkGroup != b.linkGroup || a.group != b.group) { // 0.2: a clip group (Clip > Group) as a link
         roles |= PropertyRole::Link;
     }
     if (!a.sharesContentWith(b)) {
@@ -80,7 +81,8 @@ PropertyRoles compareClips(const Clip& a, const Clip& b) {
         if (a.effects() != b.effects()) {
             roles |= PropertyRole::Effects;
         }
-        if (a.content().timeRemap != b.content().timeRemap || a.content().unknownSource != b.content().unknownSource) {
+        if (a.content().timeRemap != b.content().timeRemap || a.content().unknownSource != b.content().unknownSource ||
+            a.content().timeInterpolation != b.content().timeInterpolation) { // P.2: how retimed frames are made
             roles |= PropertyRole::Source; // time remapping changes the source shown
         }
         if (a.content().channels != b.content().channels) {
@@ -90,6 +92,18 @@ PropertyRoles compareClips(const Clip& a, const Clip& b) {
         const Graphic* gb = b.graphic();
         if (!(ga == gb || (ga && gb && *ga == *gb))) {
             roles |= PropertyRole::Source; // C.13: the graphic is the picture the clip shows
+        }
+        if (a.content().inputColorSpace != b.content().inputColorSpace) {
+            roles |= PropertyRole::Effects; // I.9: the input transform changes the picture, not the decoded frames
+        }
+        if (a.content().scaleToFrame != b.content().scaleToFrame) {
+            roles |= PropertyRole::Motion; // P.2: Scale to Frame Size sizes the picture before Motion
+        }
+        if (a.content().holdFilters != b.content().holdFilters) {
+            roles |= PropertyRole::Source; // P.2: Hold Filters changes the curve time a frame hold shows (as a remap)
+        }
+        if (a.content().fieldOptions != b.content().fieldOptions) {
+            roles |= PropertyRole::Effects; // 0.2: Field Options change how the decoded frames are shown, not the frames
         }
     } else if (a.colorIndex != b.colorIndex) {
         roles |= PropertyRole::Label;
@@ -293,7 +307,7 @@ private:
 };
 
 const TrackPtr* findTrackPtr(const Sequence& s, TrackId id) {
-    for (const auto* list : {&s.videoTracks, &s.audioTracks}) {
+    for (const auto* list : {&s.videoTracks, &s.audioTracks, &s.submixTracks}) {
         for (const TrackPtr& t : *list) {
             if (t->id == id) {
                 return &t;
@@ -303,9 +317,13 @@ const TrackPtr* findTrackPtr(const Sequence& s, TrackId id) {
     return nullptr;
 }
 
+/// V1..Vn, A1..An, then the submix tracks (p02 audio).
 std::vector<TrackId> trackOrder(const Sequence& s) {
     std::vector<TrackId> out;
     s.forEachTrack([&](const Track& t) { out.push_back(t.id); });
+    for (const TrackPtr& t : s.submixTracks) {
+        out.push_back(t->id);
+    }
     return out;
 }
 
@@ -323,7 +341,13 @@ SequenceChange diffSequence(const Sequence& before, const Sequence& after) {
                           before.startTimecode != after.startTimecode ||
                           before.effects != after.effects || before.audioEffects != after.audioEffects ||
                           before.derivedFrom != after.derivedFrom || before.masterVolume != after.masterVolume ||
-                          before.masterFormat != after.masterFormat || before.multicam != after.multicam;
+                          before.importSource != after.importSource ||
+                          before.masterFormat != after.masterFormat || before.multicam != after.multicam ||
+                          // P.2: the rest of Sequence Settings
+                          !(before.pixelAspect == after.pixelAspect) || before.fields != after.fields ||
+                          before.previewFormat != after.previewFormat || before.videoDisplay != after.videoDisplay ||
+                          before.audioDisplay != after.audioDisplay ||
+                          before.colorIndex != after.colorIndex; // 0.2: the sequence's label
     out.marksChanged = before.markIn != after.markIn || before.markOut != after.markOut;
     out.markersChanged = before.markers != after.markers;
     out.captionsChanged = before.captionTracks != after.captionTracks;
@@ -332,7 +356,8 @@ SequenceChange diffSequence(const Sequence& before, const Sequence& after) {
 
     const std::vector<TrackId> beforeOrder = trackOrder(before);
     const std::vector<TrackId> afterOrder = trackOrder(after);
-    out.trackListChanged = beforeOrder != afterOrder || before.videoTracks.size() != after.videoTracks.size();
+    out.trackListChanged = beforeOrder != afterOrder || before.videoTracks.size() != after.videoTracks.size() ||
+                           before.submixTracks.size() != after.submixTracks.size();
 
     SequenceDiff d(out);
     std::vector<TrackId> all = beforeOrder;
@@ -382,6 +407,9 @@ ChangeSet diff(const ProjectState& before, const ProjectState& after) {
     out.reviewNotesChanged = before.reviewNotes != after.reviewNotes;
     out.brandKitChanged = before.brandKit != after.brandKit;
     out.templatesChanged = before.templates != after.templates;
+    out.colorManagementChanged = before.colorManagement != after.colorManagement;
+    out.textStylesChanged = before.textStyles != after.textStyles;
+    out.freeformChanged = before.freeform != after.freeform;
 
     std::size_t i = 0;
     std::size_t j = 0;

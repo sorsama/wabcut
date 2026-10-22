@@ -8,6 +8,24 @@ will change as people use the editor and tell us what matters to them.
 
 ## Shipped
 
+### 0.2.0 (22 October 2026)
+Most of what Premiere Pro has for gaming videos, video essays and documentaries ([how it compares](premiere-parity.md)):
+- Premiere's editing and sequence commands, Group / Ungroup, fade handles, the Pen on video opacity and Selection
+  Follows Playhead.
+- Premiere's 41 video transitions and about 70 video effects, Optical Flow slow motion, Morph Cut, Warp Stabilizer and
+  effect presets.
+- Colour management with ACES / OpenColorIO and HDR masters; Content Credentials on exports made on Windows.
+- Move, scale and rotate in the Program Monitor, rulers and guides, loop playback and a full-screen output.
+- Quick Export, your own presets, alpha and image sequences, and a Media Encoder-style queue with watch folders.
+- Submixes, sends, the Audio Clip Mixer and Premiere's audio effects; AAF and OMF for audio post; nine caption file
+  formats in and out.
+- The Project panel: metadata with XMP, search bins, the freeform view, productions, several open projects, the Media
+  Browser with camera cards and Ingest, Photoshop layers and camera RAW.
+- AI that reads through multicam and nested clips, automatic face redaction, and sound effects generated with your
+  own key.
+
+The full list is in the [0.2 release notes](release-notes-0.2.md).
+
 ### 0.1.3 (16 October 2026)
 - A new look ("Echo") and a new logo: rounded panels, pill controls, browser-style panel tabs, violet and lime.
 - Workspaces you make yourself, and panels you dock as tabs, side by side, along an edge or in their own windows.
@@ -45,29 +63,23 @@ The full list is in the [release notes](release-notes-0.1.md).
 ## Next: toward a beta
 
 Make Wabcut safe to trust with real projects:
-- Fix what people find in real projects. 0.1 was tested with a demo project and scripted test media, not yet with
-  real users' projects.
+- Fix what people find in real projects. 0.1 and 0.2 were tested with a demo project and scripted test media, not yet
+  with real users' projects.
+- Check AAF, OMF and broadcast caption files in Pro Tools, Media Composer and Resolve.
 - Code-signed installers, so Windows SmartScreen stops warning, and automatic updates.
 - Measure local AI quality and live cloud providers on real footage.
 - Manual screen-reader checks (NVDA) on top of the automated keyboard and accessibility tests.
-- Pen tool for video opacity keyframes (today it edits audio volume only; opacity keys are set in Effect Controls).
-
-## Started, parked for after 0.1
-
-Work begun on side branches and held back from 0.1 to keep the release focused:
-- Content Credentials (signed C2PA) on export.
-- ACES/OCIO colour management and HDR grading. Today HDR captures are tone-mapped to SDR.
-- A warp stabilizer.
 
 ## Wanted, not scheduled
 
 - macOS and Linux beyond the preview builds: local transcription, audio plug-ins and the managed local assistant
   there, testing on real machines, and Intel Macs. Windows comes first.
-- Optical Flow / frame-blended slow motion (today slow motion uses the nearest frame).
 - OpenFX video plug-ins (CLAP and VST3 audio plug-ins already work).
-- AAF and OMF export; caption file import and broadcast caption formats.
-- Generated sound effects and Morph Cut.
-- Shared review links and cloud projects (version history, review notes and merge are local today).
+- Face-aware Morph Cut, and Warp Stabilizer's mesh warp.
+- Live references between open projects (items imported from another project are copies today).
+- R3D, BRAW and ARRIRAW decoding (each needs a decoder helper built with the camera maker's SDK).
+- Shared review links, cloud projects and stock media (version history, review notes and merge are local today).
+- VR / 360 video.
 
 ## Not planned for now
 

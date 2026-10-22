@@ -5,6 +5,7 @@
 // (WABCUT_TEST_SAM2_DIR = a directory with its six files): IoU against the synthetic ground truth and frames per
 // second at a 1080p working resolution on DirectML and on the CPU.
 
+#include "NestedTestUtil.h"
 #include "SegmentTestUtil.h"
 
 #include <wabcut/ai/analysis/AnalysisCommands.h>
@@ -560,4 +561,112 @@ TEST_CASE("CacheMatteSource serves the current version of a track and caps the f
     REQUIRE(ten);
     CHECK(ten != before);
     CHECK(ten != after);
+}
+
+// 0.2: the pictures of a nested or multicam clip for the model (NestedFrameSource): the nested sequence rendered with
+// only the tracks the clip shows, at nested time; forward in one renderer run, backward in blocks.
+namespace {
+
+/// A renderer that draws the scripted scene at each output time and records its runs.
+struct ScriptedRenderer {
+    struct Run {
+        Ticks start{};
+        std::int64_t frames = 0;
+        std::size_t videoClips = 0; ///< clips on the rendered sequence's video tracks
+    };
+    std::vector<Run> runs;
+
+    exporter::VideoSourceFactory factory() {
+        return [this](const ProjectState&, const Sequence& sequence,
+                      const exporter::VideoSourceFormat& format) -> std::expected<std::unique_ptr<exporter::IVideoFrameSource>, Error> {
+            std::size_t clips = 0;
+            for (const TrackPtr& t : sequence.videoTracks) {
+                clips += t->clips.size();
+            }
+            runs.push_back({format.start, format.frameCount, clips});
+            return std::unique_ptr<exporter::IVideoFrameSource>(std::make_unique<Source>(format));
+        };
+    }
+
+    class Source final : public exporter::IVideoFrameSource {
+    public:
+        explicit Source(exporter::VideoSourceFormat format) : m_format(format) {}
+        std::string description() const override { return "scripted"; }
+        int maxInFlight() const override { return 2; }
+        std::expected<void, Error> request(std::int64_t index) override {
+            m_requested.push_back(index);
+            return {};
+        }
+        std::expected<media::FrameHandle, Error> next() override {
+            const std::int64_t index = m_requested.at(m_next++);
+            const Ticks t = m_format.start + framesToTicks(index, m_format.frameRate);
+            const int n = static_cast<int>(t.value / frameTicks(1).value);
+            const search::Image rgb = ScriptedVideo().draw(n, m_format.width, m_format.height);
+            auto pixels = std::shared_ptr<std::uint8_t[]>(new std::uint8_t[static_cast<std::size_t>(m_format.width) * m_format.height * 4]);
+            for (std::size_t i = 0; i < static_cast<std::size_t>(m_format.width) * m_format.height; ++i) {
+                pixels[i * 4] = rgb.rgb[i * 3];
+                pixels[i * 4 + 1] = rgb.rgb[i * 3 + 1];
+                pixels[i * 4 + 2] = rgb.rgb[i * 3 + 2];
+                pixels[i * 4 + 3] = 255;
+            }
+            media::FrameHandle f;
+            f.pts = t;
+            f.width = m_format.width;
+            f.height = m_format.height;
+            f.format = media::PixelFormat::RGBA8;
+            media::CpuPlanes cpu;
+            cpu.planes[0] = media::Plane{pixels.get(), m_format.width * 4, m_format.width, m_format.height};
+            cpu.owner = std::shared_ptr<const void>(pixels, pixels.get());
+            f.payload = std::move(cpu);
+            return f;
+        }
+        void stop() override {}
+
+    private:
+        exporter::VideoSourceFormat m_format;
+        std::vector<std::int64_t> m_requested;
+        std::size_t m_next = 0;
+    };
+};
+
+} // namespace
+
+TEST_CASE("NestedFrameSource: a multicam clip's active angle at nested time, forward in one run, backward in blocks (0.2)",
+          "[ai][segment][media][multicam]") {
+    using wabcut::test::Timeline;
+    Timeline tl("V1 tgt |Aaaaaaaaaaaaaaaaaaaa|\nV2     |Bbbbbbbbbbbbbbbbbbbb|");
+    const auto mc = wabcut::test::placeMulticam(tl.state, tl.seq, {tl.media('A'), tl.media('B')}, {Ticks{}, Ticks{}},
+                                                TimeRange{Ticks{}, frameTicks(20)}, Ticks{}, 1, 0);
+    const Clip& clip = mc.state.findSequence(tl.seq)->findClip(mc.video)->clip();
+    ScriptedRenderer renderer;
+    auto opened = NestedFrameSource::open(mc.state, clip, {}, renderer.factory());
+    REQUIRE(opened);
+    NestedFrameSource& source = **opened;
+    // Only angle 1's track is drawn: the other angle's clips are gone from what the renderer gets.
+    const Sequence& shown = *source.shown().findSequence(mc.multicam);
+    REQUIRE(shown.videoTracks.size() == 2);
+    CHECK(shown.videoTracks[0]->clips.empty());
+    CHECK(shown.videoTracks[1]->clips.size() == 1);
+    CHECK(source.frameDuration() == frameTicks(1));
+    CHECK(source.aspect() == Approx(16.0 / 9.0));
+
+    const ScriptedVideo truth;
+    for (int n = 3; n < 9; ++n) { // forward: one run
+        auto p = source.pictureAt(frameTicks(n), 128);
+        REQUIRE(p);
+        CHECK(iouOf(RedSegmenter::segment(*p, 64, 36).matte, RedSegmenter::segment(truth.draw(n, 128, 128), 64, 36).matte) > 0.8);
+    }
+    CHECK(source.runs() == 1);
+    REQUIRE(renderer.runs.size() == 1);
+    CHECK(renderer.runs.front().start == frameTicks(3));
+    CHECK(renderer.runs.front().videoClips == 1);
+    for (int n = 18; n > 4; --n) { // backward: blocks of frames, not a run per frame
+        auto p = source.pictureAt(frameTicks(n), 128);
+        REQUIRE(p);
+        CHECK(iouOf(RedSegmenter::segment(*p, 64, 36).matte, RedSegmenter::segment(truth.draw(n, 128, 128), 64, 36).matte) > 0.8);
+    }
+    CHECK(source.runs() <= 4);
+    // A clip that is not nested has no nested pictures.
+    const Clip& plain = tl.state.findSequence(tl.seq)->videoTracks.front()->clips.front();
+    CHECK(NestedFrameSource::open(tl.state, plain, {}, renderer.factory()).error().code == ErrorCode::InvalidArgument);
 }

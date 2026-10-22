@@ -108,6 +108,24 @@ public:
     /// Marks the current snapshot as clean (e.g. after the app built a default project).
     void markClean();
 
+    /// 0.2 (P.3): what makes this document one project (its file, the revisions last saved and autosaved, its untitled
+    /// autosave name), apart from the session. Several projects open at once: the others keep theirs here while
+    /// their state and history are parked out of the session (EditSession::Parked).
+    struct Identity {
+        std::filesystem::path file;
+        ProjectSnapshot clean;
+        ProjectSnapshot autosaved;
+        std::string untitledId;
+        std::filesystem::path retire;
+    };
+    /// Makes this document about `other` and returns what it was about. The session is not touched: exchange its
+    /// state too (EditSession::exchange). An empty Identity is an untitled project with a new autosave name.
+    Identity exchangeIdentity(Identity other);
+    /// Whether a parked project's state differs from what it last opened, saved or reset.
+    static bool isDirty(const Identity& identity, const ProjectSnapshot& state);
+    /// Deletes a parked project's autosave files (as removeAutosaves() does for this one).
+    void removeAutosavesOf(const Identity& identity) const;
+
     /// Replaces the session's project with `initial` (untitled, clean).
     void newProject(ProjectState initial);
     /// Loads `file` into the session (clean), checking every media file (see the file comment). Nothing changes
@@ -197,6 +215,7 @@ public:
 
 private:
     void rememberClean();
+    std::filesystem::path autosaveFileFor(const std::filesystem::path& file, const std::string& untitledId) const;
 
     EditSession& m_session;
     ProjectDocumentOptions m_options;

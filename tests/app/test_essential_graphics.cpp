@@ -534,7 +534,8 @@ TEST_CASE("Essential Graphics: presets write keyframes; a pin keeps the bar arou
     QStringList targets;
     for (const QVariant& t : r.graphics.pinTargets(1))
         targets << t.toMap().value(QStringLiteral("id")).toString();
-    CHECK(targets == QStringList{QStringLiteral("3"), QStringLiteral("2")});
+    // 0.2: a top-level layer can also be pinned to the video frame (id -1), listed first.
+    CHECK(targets == QStringList{QStringLiteral("-1"), QStringLiteral("3"), QStringLiteral("2")});
     const QStringList all{QStringLiteral("left"), QStringLiteral("top"), QStringLiteral("right"), QStringLiteral("bottom")};
     const double widthBefore = shapeWidth(*r.controller.snapshot(), r.clipOf(r.clip), 1, seconds(1));
     before = r.undo();

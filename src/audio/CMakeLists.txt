@@ -33,6 +33,7 @@ add_library(wabcut_audio STATIC
     src/dsp/Compressor.cpp
     src/dsp/Denoiser.cpp
     src/dsp/Equalizer.cpp
+    src/dsp/Fft.cpp
     src/dsp/Limiter.cpp
     src/dsp/Loudness.cpp
     src/dsp/Repair.cpp
@@ -40,6 +41,11 @@ add_library(wabcut_audio STATIC
     src/dsp/SpeedRender.cpp
     src/dsp/TimeStretch.cpp
     src/effects/EffectChain.cpp
+    # p02 audio: Premiere Pro's audio effects (src/effects/PremiereEffects.h).
+    src/effects/PremiereEffects.h
+    src/effects/AmplitudeEffects.cpp
+    src/effects/FilterEffects.cpp
+    src/effects/TimeEffects.cpp
 )
 target_include_directories(wabcut_audio PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_include_directories(wabcut_audio SYSTEM PRIVATE ${MINIAUDIO_INCLUDE_DIR} ${EBUR128_INCLUDE_DIR})

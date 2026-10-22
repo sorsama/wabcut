@@ -1,8 +1,9 @@
 #version 440
 
-// Effect and transition passes on canvas-size intermediates: linear Rec.709, premultiplied alpha, RGBA16F.
-// One shader, one pass per mode (mode.x). Every formula here has a CPU twin in tests/render/EffectsReference.cpp,
-// which the golden-image tests (tests/render/test_effects.cpp) compare against: change both together.
+// Effect passes on canvas-size intermediates: linear Rec.709, premultiplied alpha, RGBA16F. One shader, one pass per
+// mode (mode.x). Every formula here has a CPU twin in tests/render/EffectsReference.cpp, which the golden-image tests
+// (tests/render/test_effects.cpp) compare against: change both together. Transitions are fx_transition.frag (0.2); the
+// effect library's families are fx_*.frag, with the same uniform block.
 
 layout(location = 0) in vec2 v_uv;
 layout(location = 1) in vec2 v_pos;
@@ -19,6 +20,11 @@ layout(std140, binding = 0) uniform FxParams {
     vec4 toFrame1; //                                       y' = dot(xyz, (x, y, 1))
     vec4 frame;    // xy = layer frame size (source px), zw = canvas size (sequence px)
     ivec4 mode;    // x = mode, y = 1 when textures are stored bottom-up
+    vec4 p3;       // 0.2: more parameters (the family shaders, fx_*.frag)
+    vec4 p4;
+    vec4 p5;
+    vec4 p6;
+    vec4 p7;
 } p;
 
 layout(binding = 1) uniform sampler2D tex0;
@@ -32,8 +38,7 @@ const int MODE_VIGNETTE = 4;
 const int MODE_SHARPEN = 5;
 const int MODE_SHADOW = 6;
 const int MODE_OVER = 7;
-const int MODE_TRANSITION = 8;
-const int MODE_BORDER = 9;
+const int MODE_BORDER = 9; // 8 was the transition mix: fx_transition.frag since 0.2
 const int MODE_KEY_MATTE = 10;
 const int MODE_KEY_CHOKE = 11;
 const int MODE_KEY_APPLY = 12;
@@ -565,28 +570,6 @@ void main()
         // tex0 over tex1.
         vec4 under = textureLod(tex1, v_uv, 0.0);
         fragColor = c + under * (1.0 - c.a);
-    } else if (mode == MODE_TRANSITION) {
-        // tex0 = A, tex1 = B; p0 = progress, kind, angle (radians), feather (fraction); p1.rgb = dip colour.
-        vec4 b = textureLod(tex1, v_uv, 0.0);
-        float t = p.p0.x;
-        int kind = int(p.p0.y + 0.5);
-        if (kind == 1) { // dip to colour
-            vec4 color = vec4(p.p1.rgb, 1.0);
-            fragColor = t < 0.5 ? mix(c, color, 2.0 * t) : mix(color, b, 2.0 * t - 1.0);
-        } else if (kind == 2) { // wipe
-            vec2 dir = vec2(cos(p.p0.z), sin(p.p0.z));
-            vec2 size = p.frame.zw;
-            float s0 = min(0.0, dir.x * size.x) + min(0.0, dir.y * size.y);
-            float s1 = max(0.0, dir.x * size.x) + max(0.0, dir.y * size.y);
-            float len = s1 - s0;
-            float w = p.p0.w * len;
-            float e = s0 - 0.5 * w + t * (len + w);
-            float s = dot(v_pos * size, dir);
-            float m = w > 0.0 ? clamp((e - s) / w + 0.5, 0.0, 1.0) : clamp((e - s) / p.p1.w + 0.5, 0.0, 1.0);
-            fragColor = mix(c, b, m);
-        } else { // cross dissolve
-            fragColor = mix(c, b, t);
-        }
     } else {
         fragColor = c;
     }

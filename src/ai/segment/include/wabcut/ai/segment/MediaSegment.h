@@ -6,6 +6,10 @@
 //   MediaFrameSource      a video's pictures for the model: decoded (hardware when available), as STORED (masks and
 //                         mattes live in stored-frame coordinates), stretched to the model's square input. Backward
 //                         runs decode a block of frames ahead and keep it, so they do not seek at every frame.
+//   NestedFrameSource     (0.2) what a nested or multicam clip shows, for the model: its nested sequence rendered by
+//                         the export renderer at nested time, only the tracks the clip shows (a multicam clip's active
+//                         angle), stretched to the model's square input. Runs ahead in order; backward runs render a
+//                         block of frames at once.
 //   mediaSegmentServices  the object-mask commands' services for a project file: the pictures through the media's
 //                         locator, source fingerprints, SAM 2.1 in wabcut-embed (one model kept loaded per services and
 //                         lent to one run at a time, so a refining click does not reload it), the subject detector
@@ -16,6 +20,7 @@
 #include <wabcut/ai/segment/HelperSegmenter.h>
 #include <wabcut/ai/segment/MatteCache.h>
 #include <wabcut/ai/segment/ObjectMask.h>
+#include <wabcut/export/ExportJob.h>
 
 #include <filesystem>
 #include <memory>
@@ -42,6 +47,30 @@ private:
     std::unique_ptr<Impl> m;
 };
 
+class NestedFrameSource final : public FrameSource {
+public:
+    /// Errors: InvalidArgument (`clip` is not a nested or multicam clip of `state`). `factory`: the renderer (default
+    /// exporter::renderedVideoSourceFactory, which needs a QGuiApplication); tests pass a synthetic one.
+    static std::expected<std::unique_ptr<NestedFrameSource>, Error> open(const ProjectState& state, const Clip& clip,
+                                                                         const std::filesystem::path& projectFile = {},
+                                                                         exporter::VideoSourceFactory factory = {});
+    ~NestedFrameSource() override;
+
+    std::expected<search::Image, Error> pictureAt(Ticks nestedTime, int size) override;
+    Ticks frameDuration() const override;
+    TimeRange frames() const override;
+    double aspect() const override;
+    /// Renderer runs started so far (tests: forward runs keep one going).
+    int runs() const;
+    /// The state the renderer draws: the nested sequence alone, with only the tracks the clip shows (tests).
+    const ProjectState& shown() const;
+
+private:
+    NestedFrameSource();
+    struct Impl;
+    std::unique_ptr<Impl> m;
+};
+
 struct MediaSegmentOptions {
     std::filesystem::path projectFile; ///< resolves relative media paths
     std::filesystem::path cacheRoot;   ///< the analysis cache; empty = AnalysisCache::defaultRoot()
@@ -49,6 +78,8 @@ struct MediaSegmentOptions {
     std::filesystem::path helper;      ///< wabcut-embed; empty = next to the running executable
     std::vector<std::string> helperArguments; ///< tests script a fake helper with them
     bool detector = true;              ///< offer "subject" prompts when the detectors are downloaded
+    /// 0.2: renders nested and multicam clips' pictures (NestedFrameSource); empty = the export renderer.
+    exporter::VideoSourceFactory nestedRenderer;
 };
 
 /// The services of mask.objectSelect / refine / propagate for a project. Remembers new tracks in the installed matte

@@ -491,6 +491,31 @@ TEST_CASE("interchange: FCP7 XML: audio cross fades map to constant gain or powe
     }
 }
 
+TEST_CASE("interchange: FCP7 XML: Premiere's transitions and Exponential Fade map by name (0.2)",
+          "[interchange][fcp7][fidelity]") {
+    for (const auto& [name, effect] : {std::pair{std::string("Iris Round"), std::string("irisRound")},
+                                       std::pair{std::string("Additive Dissolve (Legacy)"), std::string("additiveDissolve")},
+                                       std::pair{std::string("Page Peel"), std::string("pagePeel")},
+                                       std::pair{std::string("Zig-Zag Blocks"), std::string("zigZagBlocks")}}) {
+        INFO(name);
+        std::string item = transition(90, 110, "center");
+        item.replace(item.find("<name>Cross Dissolve</name><effectid>Cross Dissolve</effectid>"),
+                     std::string("<name>Cross Dissolve</name><effectid>Cross Dissolve</effectid>").size(),
+                     "<name>" + name + "</name><effectid>" + name + "</effectid>");
+        const auto r = importText(xmeml(clipitem("A", 0, 100, 100, 200) + item + clipitem("B", 100, 200, 300, 400)),
+                                  Format::Fcp7Xml);
+        const Track& v1 = track(sequenceAt(r, 0), "V1");
+        REQUIRE(v1.transitions.size() == 1);
+        CHECK(v1.transitions[0].effect == effect);
+    }
+    const auto r = importText(audioXmeml(audioClip("a", 0, -1, 0, 115) + audioTransition(90, 115, "Exponential Fade") +
+                                         audioClip("b", -1, 200, 40, 150)),
+                              Format::Fcp7Xml);
+    const Track& a1 = track(sequenceAt(r, 0), "A1");
+    REQUIRE(a1.transitions.size() == 1);
+    CHECK(a1.transitions[0].effect == "exponentialFade");
+}
+
 TEST_CASE("interchange: FCP7 XML: a transition without clips at its edit point stays a cut",
           "[interchange][fcp7][fidelity]") {
     // The clips leave a gap where the transition says the cut is.

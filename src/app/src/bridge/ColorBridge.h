@@ -13,6 +13,7 @@
 //     PlaybackBridge::setColorPreview - preview only, never exported.
 
 #include <wabcut/color/Grade.h>
+#include <wabcut/model/ColorManagement.h>
 #include <wabcut/model/Ids.h>
 #include <wabcut/render/StillImage.h>
 
@@ -31,6 +32,9 @@ class QQmlEngine;
 
 namespace wabcut {
 struct Clip;
+}
+namespace wabcut::color {
+class FaceFinder;
 }
 
 namespace wabcut::app {
@@ -71,6 +75,20 @@ class ColorBridge : public QObject {
     Q_PROPERTY(bool busy READ busy NOTIFY busyChanged FINAL)
     /// What the last tool did ("Auto: temperature -12, ..."), or why it could not.
     Q_PROPERTY(QString status READ status NOTIFY busyChanged FINAL)
+    // Colour management (I.9, 0.2; docs/color.md "Colour management"): the Color Management settings dialog and the
+    // Color panel's Media Color Space menu.
+    /// The project's: { mode: "rec709" | "hdr-hlg" | "hdr-pq" | "aces" | "wide-gamut" | "off", name (Premiere's preset
+    /// name), description, hdr, managed, peakNits, referenceWhiteNits (the graphics white), autoDetectLog }.
+    Q_PROPERTY(QVariantMap colorManagement READ colorManagement NOTIFY stateChanged FINAL)
+    /// [{ id, name, description }] of the modes, [{ id, name }] of the input colour spaces (menu order).
+    Q_PROPERTY(QVariantList colorManagementModes READ colorManagementModes CONSTANT FINAL)
+    Q_PROPERTY(QVariantList inputColorSpaces READ inputColorSpaces CONSTANT FINAL)
+    /// The targeted clip's: { override: id or "" (Auto), auto: what Auto reads (tags, or the detected log), autoName,
+    /// detected: the camera log its metadata names or "", effective, name } (empty: no clip).
+    Q_PROPERTY(QVariantMap inputColorSpace READ inputColorSpace NOTIFY stateChanged FINAL)
+    /// What the program monitor shows when it is not the plain picture: "HDR · tone-mapped SDR preview",
+    /// "ACES 1.0 SDR Video", "Wide Gamut · no tone mapping", "Color management off"; empty for Direct Rec.709.
+    Q_PROPERTY(QString monitorLabel READ monitorLabel NOTIFY stateChanged FINAL)
 
 public:
     explicit ColorBridge(QObject* parent = nullptr);
@@ -100,6 +118,11 @@ public:
     void setEyedropper(bool on);
     bool busy() const { return m_busy; }
     QString status() const { return m_status; }
+    QVariantMap colorManagement() const { return m_colorManagement; }
+    QVariantList colorManagementModes() const;
+    QVariantList inputColorSpaces() const;
+    QVariantMap inputColorSpace() const { return m_inputColorSpace; }
+    QString monitorLabel() const { return m_monitorLabel; }
 
     /// A parameter's registry facts: { name, from, to, default, unit } (the panel builds its sliders from them).
     Q_INVOKABLE QVariantMap paramInfo(const QString& key) const;
@@ -124,16 +147,28 @@ public:
     Q_INVOKABLE QString importLut(const QUrl& file, const QString& slot);
     /// Auto (white balance and levels), Color Match against the reference frame, Match Scene (C.5 shots of one take).
     Q_INVOKABLE bool autoColor();
-    Q_INVOKABLE bool matchToReference(double strength, bool skinPriority);
-    Q_INVOKABLE bool matchScene(double strength, bool skinPriority);
+    /// `faceDetection` (0.2, Premiere's Face Detection): the faces' skin tones are matched first (needs the face
+    /// detector, Settings > AI > Local models).
+    Q_INVOKABLE bool matchToReference(double strength, bool skinPriority, bool faceDetection = false);
+    Q_INVOKABLE bool matchScene(double strength, bool skinPriority, bool faceDetection = false);
     /// The program at the playhead becomes the reference frame (side by side, Color Match).
     Q_INVOKABLE bool setReference();
     Q_INVOKABLE void clearReference();
     /// ASC CDL of the wheels (.cc/.ccc/.cdl). Return the error ("" = done).
     Q_INVOKABLE QString exportCdl(const QUrl& file);
     Q_INVOKABLE QString importCdl(const QUrl& file);
+    /// 0.2, Lumetri's Export .cube: the grade at the playhead as a 33-point 3D LUT (lut.export). The error ("" = done).
+    Q_INVOKABLE QString exportCube(const QUrl& file);
+    /// The grade's effect instance id as text ("" = none): Save Preset of the grade (EffectPresets.saveEffectOfClip).
+    Q_INVOKABLE QString gradeId() const { return m_grade.isValid() ? QString::number(m_grade.value) : QString(); }
     /// The eyedropper: the program's colour at (nx, ny) in [0, 1] of the picture sets the HSL qualifier around it.
     Q_INVOKABLE bool pickColor(double nx, double ny);
+
+    /// I.9: sets the project's colour management (keys of colorManagement: mode, peakNits, referenceWhiteNits,
+    /// autoDetectLog; only those given change). One undo step (color.management.set).
+    Q_INVOKABLE bool setColorManagement(const QVariantMap& values);
+    /// I.9: the targeted clip's input colour space by id, or "auto". One undo step (color.inputSpace.set).
+    Q_INVOKABLE bool setInputColorSpace(const QString& space);
 
     // ---- C++ ----
     ClipId targetClip() const { return m_clip; }
@@ -160,6 +195,8 @@ private:
     bool runCommand(const char* name, const QVariantMap& params, QString* summary);
     void setStatus(const QString& status);
 
+    /// 0.2: Color Match's face detector, made the first time a match asks for it (null while not downloaded).
+    std::shared_ptr<color::FaceFinder> m_faces;
     ClipId m_clip;
     /// m_clip is a selected clip (else the clip under the playhead, or none).
     bool m_targetFromSelection = false;
@@ -181,6 +218,10 @@ private:
     QString m_referenceLabel;
     bool m_busy = false;
     QString m_status;
+    QVariantMap m_colorManagement;
+    ColorManagement m_management; ///< what m_colorManagement and m_monitorLabel describe
+    QVariantMap m_inputColorSpace;
+    QString m_monitorLabel;
     int m_gesture = 0;
     bool m_inGesture = false;
     bool m_refreshing = false;

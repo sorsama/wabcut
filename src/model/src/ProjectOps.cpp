@@ -3,6 +3,7 @@
 #include <wabcut/model/ProjectOps.h>
 
 #include <wabcut/model/Nesting.h>
+#include <wabcut/model/SubmixOps.h>
 
 #include "SequenceEditor.h"
 
@@ -25,11 +26,20 @@ namespace {
 
 bool binExists(const ProjectState& state, BinId bin) { return !bin.isValid() || state.findBin(bin) != nullptr; }
 
+/// 0.2 (P.3): a search bin holds nothing.
+bool isSearchBin(const ProjectState& state, BinId bin) {
+    const Bin* b = bin.isValid() ? state.findBin(bin) : nullptr;
+    return b && b->isSearch();
+}
+
 } // namespace
 
 std::expected<Created<BinId>, Error> addBin(const ProjectState& state, std::string name, BinId parent) {
     if (!binExists(state, parent)) {
         return std::unexpected(notFound("parent bin does not exist"));
+    }
+    if (isSearchBin(state, parent)) {
+        return std::unexpected(invalidArgument("a search bin cannot hold bins"));
     }
     Created<BinId> out{state, {}};
     out.id = out.state.ids.allocate<BinId>();
@@ -40,6 +50,9 @@ std::expected<Created<BinId>, Error> addBin(const ProjectState& state, std::stri
 std::expected<Created<MediaId>, Error> addMedia(const ProjectState& state, MediaItem item) {
     if (!binExists(state, item.bin)) {
         return std::unexpected(notFound("bin does not exist"));
+    }
+    if (isSearchBin(state, item.bin)) {
+        return std::unexpected(invalidArgument("a search bin cannot hold media"));
     }
     Created<MediaId> out{state, {}};
     out.id = out.state.ids.allocate<MediaId>();
@@ -407,6 +420,9 @@ EditOutcome removeTrack(const ProjectState& state, SequenceId sequence, TrackId 
         return std::unexpected(seq.error());
     }
     const Track* track = (*seq)->findTrack(trackId);
+    if (!track && (*seq)->findSubmix(trackId)) {
+        return removeSubmixTrack(state, sequence, trackId); // p02 audio: its tracks go to the Mix, its sends go
+    }
     if (!track) {
         return std::unexpected(notFound("track " + std::to_string(trackId.value) + " does not exist"));
     }
@@ -448,18 +464,28 @@ EditOutcome setTrackState(const ProjectState& state, SequenceId sequence, TrackI
     if (!seq) {
         return std::unexpected(seq.error());
     }
-    if (!(*seq)->findTrack(trackId)) {
+    if (const Track* submix = (*seq)->findSubmix(trackId)) {
+        // p02 audio: a submix track has a name, an output switch, a lock, mute and solo; it holds no clips, so it has no
+        // targeting, role or record arm, and it keeps the channel format it was made with (as in Premiere).
+        if ((change.role && *change.role != TrackRole::None) || (change.recordArmed && *change.recordArmed) ||
+            (change.targeted && *change.targeted) || change.surround ||
+            (change.format && *change.format != submix->format)) {
+            return std::unexpected(detail::invalidArgument(detail::trackLabel(**seq, trackId) +
+                                                           " is a submix track: it has no targeting, role, record arm "
+                                                           "or 5.1 panner, and keeps the channel format it was made with"));
+        }
+    } else if (!(*seq)->findTrack(trackId)) {
         return std::unexpected(notFound("track " + std::to_string(trackId.value) + " does not exist"));
-    }
-    if (change.role && *change.role != TrackRole::None && (*seq)->findTrack(trackId)->kind != TrackKind::Audio) {
+    } else if (change.role && *change.role != TrackRole::None && (*seq)->findTrack(trackId)->kind != TrackKind::Audio) {
         return std::unexpected(detail::invalidArgument("only audio tracks have a role; " +
                                                        detail::trackLabel(**seq, trackId) + " is a video track"));
     }
-    if (change.recordArmed && *change.recordArmed && (*seq)->findTrack(trackId)->kind != TrackKind::Audio) {
+    const bool isSubmix = (*seq)->findSubmix(trackId) != nullptr; // checked above
+    if (!isSubmix && change.recordArmed && *change.recordArmed && (*seq)->findTrack(trackId)->kind != TrackKind::Audio) {
         return std::unexpected(detail::invalidArgument("only audio tracks record; " + detail::trackLabel(**seq, trackId) +
                                                        " is a video track"));
     }
-    if ((change.format && *change.format != ChannelFormat::Stereo) || change.surround) {
+    if (!isSubmix && ((change.format && *change.format != ChannelFormat::Stereo) || change.surround)) {
         if ((*seq)->findTrack(trackId)->kind != TrackKind::Audio) {
             return std::unexpected(detail::invalidArgument("only audio tracks have a channel format or a 5.1 panner; " +
                                                            detail::trackLabel(**seq, trackId) + " is a video track"));
@@ -665,6 +691,10 @@ std::expected<ProjectState, Error> moveToBin(const ProjectState& state, BinId ta
     if (!binExists(state, target)) {
         return std::unexpected(notFound("bin " + std::to_string(target.value) + " does not exist"));
     }
+    if (isSearchBin(state, target)) {
+        return std::unexpected(invalidArgument("search bin '" + state.findBin(target)->name +
+                                               "' lists what it finds: items cannot move into it"));
+    }
     for (const BinId bin : bins) {
         const Bin* b = state.findBin(bin);
         if (!b) {
@@ -763,6 +793,8 @@ std::expected<ProjectState, Error> removeBins(const ProjectState& state, std::sp
                     [&](const ReviewNote& n) { return removedSequence(n.sequence); })) {
         std::erase_if(out.reviewNotes.edit(), [&](const ReviewNote& n) { return removedSequence(n.sequence); });
     }
+    // 0.2 (P.3): and their Freeform views.
+    std::erase_if(out.freeform, [&](const FreeformView& v) { return v.bin.isValid() && removedBin(v.bin); });
     return out;
 }
 
@@ -778,6 +810,22 @@ std::expected<ProjectState, Error> setMediaAttributes(const ProjectState& state,
         (change.description && change.description->size() > MediaItem::kMaxTextBytes)) {
         return std::unexpected(invalidArgument("a comment or description is longer than " +
                                                std::to_string(MediaItem::kMaxTextBytes) + " bytes"));
+    }
+    // 0.2 (P.3): clip metadata, bounded UTF-8.
+    for (const auto* field : {&change.scene, &change.shot, &change.take, &change.client, &change.status, &change.cameraAngle,
+                              &change.cameraLabel, &change.cameraModel, &change.shotDate, &change.shotLocation}) {
+        if (*field && ((*field)->size() > ClipMetadata::kMaxFieldBytes || !isValidUtf8(**field))) {
+            return std::unexpected(invalidArgument("a clip metadata field must be UTF-8 of at most " +
+                                                   std::to_string(ClipMetadata::kMaxFieldBytes) + " bytes"));
+        }
+    }
+    if (change.logNote && (change.logNote->size() > MediaItem::kMaxTextBytes || !isValidUtf8(*change.logNote))) {
+        return std::unexpected(invalidArgument("a log note must be UTF-8 of at most " +
+                                               std::to_string(MediaItem::kMaxTextBytes) + " bytes"));
+    }
+    if (change.tapeName && (change.tapeName->size() > MediaTimecode::kMaxReelNameBytes || !isValidUtf8(*change.tapeName))) {
+        return std::unexpected(invalidArgument("a tape name must be UTF-8 of at most " +
+                                               std::to_string(MediaTimecode::kMaxReelNameBytes) + " bytes"));
     }
     ProjectState out = state;
     bool changed = false;
@@ -810,6 +858,45 @@ std::expected<ProjectState, Error> setMediaAttributes(const ProjectState& state,
         }
         if (change.posterFrame) {
             item.posterFrame = *change.posterFrame;
+        }
+        if (change.scene) {
+            item.metadata.scene = *change.scene;
+        }
+        if (change.shot) {
+            item.metadata.shot = *change.shot;
+        }
+        if (change.take) {
+            item.metadata.take = *change.take;
+        }
+        if (change.logNote) {
+            item.metadata.logNote = *change.logNote;
+        }
+        if (change.client) {
+            item.metadata.client = *change.client;
+        }
+        if (change.good) {
+            item.metadata.good = *change.good;
+        }
+        for (const auto& [from, into] : {std::pair{&change.status, &item.metadata.status},
+                                         std::pair{&change.cameraAngle, &item.metadata.cameraAngle},
+                                         std::pair{&change.cameraLabel, &item.metadata.cameraLabel},
+                                         std::pair{&change.cameraModel, &item.metadata.cameraModel},
+                                         std::pair{&change.shotDate, &item.metadata.shotDate},
+                                         std::pair{&change.shotLocation, &item.metadata.shotLocation}}) {
+            if (*from) {
+                *into = **from;
+            }
+        }
+        if (change.tapeName) {
+            if (!item.timecode && !change.tapeName->empty()) {
+                item.timecode = MediaTimecode{};
+            }
+            if (item.timecode) {
+                item.timecode->reelName = *change.tapeName;
+                if (!item.timecode->start && item.timecode->reelName.empty()) {
+                    item.timecode.reset(); // nothing left of Modify > Timecode
+                }
+            }
         }
         if (!(item == **slot)) {
             *slot = std::make_shared<const MediaItem>(std::move(item));
@@ -918,6 +1005,281 @@ std::expected<ProjectState, Error> setSubclip(const ProjectState& state, MediaId
                 return std::unexpected(invalidArgument(*problem + " in sequence '" + seq->name + "'"));
             }
         }
+    }
+    return out;
+}
+
+// --- Search Bins (0.2, P.3) ------------------------------------------------------------------------------
+
+std::expected<Created<BinId>, Error> addSearchBin(const ProjectState& state, std::string name, BinSearch search,
+                                                  BinId parent) {
+    if (name.empty() || name.size() > BinSearch::kMaxTextBytes || !isValidUtf8(name)) {
+        return std::unexpected(invalidArgument("a search bin needs a name"));
+    }
+    if (const auto problem = binSearchProblem(search)) {
+        return std::unexpected(invalidArgument(*problem));
+    }
+    auto created = addBin(state, std::move(name), parent);
+    if (!created) {
+        return created;
+    }
+    for (Bin& b : created->state.bins) {
+        if (b.id == created->id) {
+            b.search = std::move(search);
+        }
+    }
+    return created;
+}
+
+std::expected<ProjectState, Error> setBinSearch(const ProjectState& state, BinId bin, BinSearch search) {
+    const Bin* found = state.findBin(bin);
+    if (!found) {
+        return std::unexpected(notFound("bin " + std::to_string(bin.value) + " does not exist"));
+    }
+    if (!found->isSearch()) {
+        return std::unexpected(invalidArgument("bin '" + found->name + "' is not a search bin"));
+    }
+    if (const auto problem = binSearchProblem(search)) {
+        return std::unexpected(invalidArgument(*problem));
+    }
+    if (*found->search == search) {
+        return state;
+    }
+    ProjectState out = state;
+    for (Bin& b : out.bins) {
+        if (b.id == bin) {
+            b.search = std::move(search);
+        }
+    }
+    return out;
+}
+
+// --- Freeform view (0.2, P.3) ----------------------------------------------------------------------------
+
+namespace {
+
+bool sameLayoutName(std::string_view a, std::string_view b) {
+    return a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin(), [](char x, char y) {
+               const auto lower = [](char c) { return c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c; };
+               return lower(x) == lower(y);
+           });
+}
+
+/// Whether the item a placement names is in `bin` now.
+bool placedInBin(const ProjectState& state, const FreeformPlacement& p, BinId bin) {
+    switch (p.kind) {
+    case FreeformPlacement::Kind::Media: {
+        const MediaItem* m = state.findMedia(MediaId{p.id});
+        return m && m->bin == bin;
+    }
+    case FreeformPlacement::Kind::Sequence: {
+        const Sequence* s = state.findSequence(SequenceId{p.id});
+        return s && s->bin == bin;
+    }
+    case FreeformPlacement::Kind::Bin: {
+        const Bin* b = state.findBin(BinId{p.id});
+        return b && b->parent == bin;
+    }
+    }
+    return false;
+}
+
+std::optional<std::string> arrangementProblem(const FreeformArrangement& a) {
+    if (!(a.scale >= kFreeformMinSize && a.scale <= kFreeformMaxSize)) {
+        return std::string("the clip size must be 0.25 .. 4");
+    }
+    if (a.items.size() > kMaxFreeformItems) {
+        return "a Freeform view places at most " + std::to_string(kMaxFreeformItems) + " items";
+    }
+    for (const FreeformPlacement& p : a.items) {
+        if (p.id == 0 || !std::isfinite(p.x) || !std::isfinite(p.y) || std::abs(p.x) > kFreeformMaxCoordinate ||
+            std::abs(p.y) > kFreeformMaxCoordinate || !(p.size >= kFreeformMinSize && p.size <= kFreeformMaxSize)) {
+            return std::string("a placement is out of range");
+        }
+    }
+    return std::nullopt;
+}
+
+/// The checks every Freeform edit shares: the bin exists and is a plain bin.
+std::optional<Error> freeformBinProblem(const ProjectState& state, BinId bin) {
+    if (!binExists(state, bin)) {
+        return notFound("bin " + std::to_string(bin.value) + " does not exist");
+    }
+    if (isSearchBin(state, bin)) {
+        return invalidArgument("a search bin has no Freeform view");
+    }
+    return std::nullopt;
+}
+
+/// The bin's view in `out` (made when missing), kept sorted by bin.
+FreeformView& freeformSlot(ProjectState& out, BinId bin) {
+    auto it = std::lower_bound(out.freeform.begin(), out.freeform.end(), bin,
+                               [](const FreeformView& v, BinId b) { return v.bin < b; });
+    if (it == out.freeform.end() || it->bin != bin) {
+        it = out.freeform.insert(it, FreeformView{bin, {}, {}});
+    }
+    return *it;
+}
+
+/// `a` without placements of items that are not in `bin`, each item once (its last placement).
+FreeformArrangement pruned(const ProjectState& state, BinId bin, FreeformArrangement a) {
+    std::vector<FreeformPlacement> items;
+    items.reserve(a.items.size());
+    for (auto it = a.items.rbegin(); it != a.items.rend(); ++it) {
+        const bool seen = std::any_of(items.begin(), items.end(), [&](const FreeformPlacement& p) {
+            return p.kind == it->kind && p.id == it->id;
+        });
+        if (!seen && placedInBin(state, *it, bin)) {
+            items.push_back(*it);
+        }
+    }
+    std::reverse(items.begin(), items.end());
+    a.items = std::move(items);
+    return a;
+}
+
+} // namespace
+
+std::expected<ProjectState, Error> setFreeformArrangement(const ProjectState& state, BinId bin,
+                                                          FreeformArrangement arrangement) {
+    if (auto problem = freeformBinProblem(state, bin)) {
+        return std::unexpected(std::move(*problem));
+    }
+    if (const auto problem = arrangementProblem(arrangement)) {
+        return std::unexpected(invalidArgument(*problem));
+    }
+    arrangement = pruned(state, bin, std::move(arrangement));
+    const FreeformView* current = state.findFreeform(bin);
+    if (current && current->current == arrangement) {
+        return state;
+    }
+    ProjectState out = state;
+    freeformSlot(out, bin).current = std::move(arrangement);
+    return out;
+}
+
+std::expected<ProjectState, Error> saveFreeformLayout(const ProjectState& state, BinId bin, std::string name) {
+    if (auto problem = freeformBinProblem(state, bin)) {
+        return std::unexpected(std::move(*problem));
+    }
+    if (name.empty() || name.size() > FreeformLayout::kMaxNameBytes || !isValidUtf8(name)) {
+        return std::unexpected(invalidArgument("a layout needs a name of at most " +
+                                               std::to_string(FreeformLayout::kMaxNameBytes) + " bytes"));
+    }
+    ProjectState out = state;
+    FreeformView& view = freeformSlot(out, bin);
+    view.current = pruned(state, bin, view.current);
+    const auto it = std::find_if(view.layouts.begin(), view.layouts.end(),
+                                 [&](const FreeformLayout& l) { return sameLayoutName(l.name, name); });
+    if (it != view.layouts.end()) {
+        it->name = std::move(name);
+        it->arrangement = view.current;
+    } else {
+        if (view.layouts.size() >= FreeformView::kMaxLayouts) {
+            return std::unexpected(invalidArgument("a bin keeps at most " + std::to_string(FreeformView::kMaxLayouts) +
+                                                   " saved layouts"));
+        }
+        view.layouts.push_back(FreeformLayout{std::move(name), view.current});
+    }
+    return out;
+}
+
+std::expected<ProjectState, Error> restoreFreeformLayout(const ProjectState& state, BinId bin, std::string_view name) {
+    if (auto problem = freeformBinProblem(state, bin)) {
+        return std::unexpected(std::move(*problem));
+    }
+    const FreeformView* view = state.findFreeform(bin);
+    const auto it = view ? std::find_if(view->layouts.begin(), view->layouts.end(),
+                                        [&](const FreeformLayout& l) { return sameLayoutName(l.name, name); })
+                         : std::vector<FreeformLayout>::const_iterator{};
+    if (!view || it == view->layouts.end()) {
+        return std::unexpected(notFound("no saved layout named '" + std::string(name) + "'"));
+    }
+    return setFreeformArrangement(state, bin, it->arrangement);
+}
+
+std::expected<ProjectState, Error> removeFreeformLayout(const ProjectState& state, BinId bin, std::string_view name) {
+    if (auto problem = freeformBinProblem(state, bin)) {
+        return std::unexpected(std::move(*problem));
+    }
+    const FreeformView* view = state.findFreeform(bin);
+    const bool has = view && std::any_of(view->layouts.begin(), view->layouts.end(),
+                                         [&](const FreeformLayout& l) { return sameLayoutName(l.name, name); });
+    if (!has) {
+        return std::unexpected(notFound("no saved layout named '" + std::string(name) + "'"));
+    }
+    ProjectState out = state;
+    std::erase_if(freeformSlot(out, bin).layouts, [&](const FreeformLayout& l) { return sameLayoutName(l.name, name); });
+    return out;
+}
+
+FreeformArrangement freeformGrid(std::span<const FreeformPlacement> items, int columns, double scale) {
+    FreeformArrangement out;
+    out.scale = std::clamp(std::isfinite(scale) ? scale : 1.0, kFreeformMinSize, kFreeformMaxSize);
+    const int perRow = std::max(1, columns);
+    out.items.reserve(items.size());
+    for (std::size_t i = 0; i < items.size(); ++i) {
+        FreeformPlacement p = items[i];
+        p.x = static_cast<double>(static_cast<int>(i) % perRow) * kFreeformCellWidth * out.scale;
+        p.y = static_cast<double>(static_cast<int>(i) / perRow) * kFreeformCellHeight * out.scale;
+        p.size = 1.0;
+        out.items.push_back(p);
+    }
+    return out;
+}
+
+FreeformArrangement alignFreeformToGrid(FreeformArrangement arrangement, std::span<const FreeformPlacement> selected) {
+    const double cellW = kFreeformCellWidth * arrangement.scale;
+    const double cellH = kFreeformCellHeight * arrangement.scale;
+    for (FreeformPlacement& p : arrangement.items) {
+        const bool chosen = selected.empty() || std::any_of(selected.begin(), selected.end(), [&](const FreeformPlacement& s) {
+                                return s.kind == p.kind && s.id == p.id;
+                            });
+        if (chosen) {
+            p.x = std::round(p.x / cellW) * cellW;
+            p.y = std::round(p.y / cellH) * cellH;
+        }
+    }
+    return arrangement;
+}
+
+std::vector<FreeformPlacement> freeformItemsOf(const ProjectState& state, BinId bin) {
+    std::vector<FreeformPlacement> out;
+    if (isSearchBin(state, bin)) {
+        return out;
+    }
+    const auto byName = [](auto& list) {
+        std::stable_sort(list.begin(), list.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+    };
+    std::vector<std::pair<std::string, std::uint64_t>> bins;
+    std::vector<std::pair<std::string, std::uint64_t>> sequences;
+    std::vector<std::pair<std::string, std::uint64_t>> media;
+    for (const Bin& b : state.bins) {
+        if (b.parent == bin) {
+            bins.emplace_back(b.name, b.id.value);
+        }
+    }
+    for (const SequencePtr& s : state.sequences) {
+        if (s->bin == bin) {
+            sequences.emplace_back(s->name, s->id.value);
+        }
+    }
+    for (const MediaPtr& m : state.media) {
+        if (m->bin == bin) {
+            media.emplace_back(m->name, m->id.value);
+        }
+    }
+    byName(bins);
+    byName(sequences);
+    byName(media);
+    for (const auto& [name, id] : bins) {
+        out.push_back(FreeformPlacement{FreeformPlacement::Kind::Bin, id});
+    }
+    for (const auto& [name, id] : sequences) {
+        out.push_back(FreeformPlacement{FreeformPlacement::Kind::Sequence, id});
+    }
+    for (const auto& [name, id] : media) {
+        out.push_back(FreeformPlacement{FreeformPlacement::Kind::Media, id});
     }
     return out;
 }

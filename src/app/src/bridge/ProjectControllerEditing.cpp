@@ -5,6 +5,7 @@
 
 #include <wabcut/command/Engine.h>
 #include <wabcut/command/ExecutionContext.h>
+#include <wabcut/model/ClipGroups.h>
 #include <wabcut/model/Clipboard.h>
 #include <wabcut/model/FinishingOps.h>
 #include <wabcut/model/ProjectOps.h>
@@ -575,6 +576,62 @@ void ProjectController::selectAdjacentClip(int direction) {
     }
     if (target)
         selectClipById(*target, Replace, true);
+}
+
+void ProjectController::selectNextClip(int direction) {
+    const SequencePtr seq = currentSequence();
+    if (!seq || direction == 0)
+        return;
+    // Premiere's Select Next / Previous Clip (0.2): the next (previous) clip on the targeted tracks - every track when
+    // none is targeted - after (before) the selected clip: every targeted track's clip that starts there, with its links
+    // and its group. With nothing selected: the clips under the playhead, else the first ones after it.
+    std::vector<const Track*> tracks;
+    for (const Track* track : displayTracks(*seq)) {
+        if (track->targeted)
+            tracks.push_back(track);
+    }
+    if (tracks.empty())
+        tracks = displayTracks(*seq);
+    std::vector<ClipId> picked;
+    std::optional<Ticks> target;
+    const auto loc = m_primary ? seq->findClip(m_primary) : std::nullopt;
+    if (loc) {
+        const Ticks from = loc->clip().start();
+        for (const Track* track : tracks) {
+            if (direction > 0) {
+                const std::size_t i = track->clips.upperBoundStart(from);
+                if (i < track->clips.size() && (!target || track->clips[i].start() < *target))
+                    target = track->clips[i].start();
+            } else {
+                const std::size_t i = track->clips.lowerBoundStart(from);
+                if (i > 0 && (!target || track->clips[i - 1].start() > *target))
+                    target = track->clips[i - 1].start();
+            }
+        }
+    } else {
+        for (const Track* track : tracks) {
+            if (const auto under = track->clipIndexAt(m_playhead))
+                picked.push_back(track->clips[*under].id);
+        }
+        if (picked.empty()) {
+            for (const Track* track : tracks) {
+                const std::size_t i = track->clips.lowerBoundStart(m_playhead);
+                if (i < track->clips.size() && (!target || track->clips[i].start() < *target))
+                    target = track->clips[i].start();
+            }
+        }
+    }
+    if (target) {
+        for (const Track* track : tracks) {
+            const std::size_t i = track->clips.lowerBoundStart(*target);
+            if (i < track->clips.size() && track->clips[i].start() == *target)
+                picked.push_back(track->clips[i].id);
+        }
+    }
+    if (picked.empty())
+        return;
+    const ClipId primary = picked.front(); // the topmost targeted track's (display order)
+    setSelection(edit::withGroupedClips(*seq, picked), primary);
 }
 
 void ProjectController::selectClipOnAdjacentTrack(int direction) {

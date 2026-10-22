@@ -19,6 +19,7 @@ add_custom_command(
     VERBATIM)
 
 add_library(wabcut_model STATIC
+    src/Animations.cpp
     src/BeatGrid.cpp
     src/Blend.cpp
     src/BuiltinTemplates.cpp
@@ -28,11 +29,19 @@ add_library(wabcut_model STATIC
     src/CaptionText.cpp
     src/ChangeSet.cpp
     src/Clip.cpp
+    src/ClipGroupOps.cpp
+    src/FadeOps.cpp
+    src/SelectionOps.cpp
     src/Clipboard.cpp
     src/ClipList.cpp
+    src/ColorManagement.cpp
+    src/ColorManagementOps.cpp
     src/DeadTime.cpp
     src/EditOps.cpp
+    src/EditingOps.cpp
     src/EditSession.cpp
+    src/FieldOptions.cpp
+    src/FrameScaling.cpp
     src/GamingOps.cpp
     src/GamingVersions.cpp
     src/GraphicJson.cpp
@@ -40,12 +49,19 @@ add_library(wabcut_model STATIC
     src/GraphicResolve.cpp
     src/Graphics.cpp
     src/Effects.cpp
+    src/EffectPresets.cpp
+    src/EffectsLibrary.cpp
+    src/EffectsAudioAmplitude.cpp
+    src/EffectsAudioFilter.cpp
+    src/EffectsAudioTime.cpp
     src/History.cpp
     src/JsonIo.h
     src/KeyframeOps.cpp
     src/Layouts.cpp
     src/MaskOps.cpp
     src/Masks.cpp
+    src/ImageSequence.cpp
+    src/LayeredFile.cpp
     src/MediaLocator.cpp
     src/Merge.cpp
     src/MoveOps.cpp
@@ -58,19 +74,28 @@ add_library(wabcut_model STATIC
     src/AudioChannels.cpp
     src/ProjectOps.cpp
     src/ProjectState.cpp
+    src/RawSourceSettings.cpp
     src/RedactedSpeech.cpp
     src/RedactionMedia.cpp
     src/Resolve.cpp
     src/SequencePresets.cpp
+    src/SequenceSettings.cpp
     src/ReviewNotes.cpp
     src/SequenceEditor.cpp
     src/SourceMarkOps.cpp
     src/MarkerOps.cpp
     src/SequenceEditor.h
     src/Snap.cpp
+    src/SpannedClip.cpp
     src/SnapshotReleaser.cpp
+    src/Spelling.cpp
     src/Synthetic.cpp
+    src/CaseFolding.inc
+    src/TextFind.cpp
     src/SpeedOps.cpp
+    src/EffectsMotion.cpp
+    src/TimeInterpolation.cpp
+    src/SubmixOps.cpp
     src/TimeRemap.cpp
     src/TimeRemapOps.cpp
     src/Timecode.cpp
@@ -86,3 +111,7 @@ target_compile_features(wabcut_model PUBLIC cxx_std_23)
 find_package(ZLIB REQUIRED)
 target_link_libraries(wabcut_model PRIVATE nlohmann_json::nlohmann_json ZLIB::ZLIB)
 wabcut_target_defaults(wabcut_model)
+
+# P.2 (E6, monitors): Motion set as one edit (Position, Scale, Rotation, Anchor Point at one curve time): the Program
+# Monitor's direct manipulation and clip.setMotion.
+target_sources(wabcut_model PRIVATE src/MotionOps.cpp)

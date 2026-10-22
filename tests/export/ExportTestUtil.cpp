@@ -24,6 +24,7 @@ extern "C" {
 #include <catch2/reporters/catch_reporter_registrars.hpp>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <limits>
 #include <map>
@@ -468,6 +469,7 @@ TestProject motionTimeline(int width, int height, Rate rate) {
 // ---- PreviewRenderer --------------------------------------------------------------------------------------
 
 struct PreviewRenderer::Impl {
+    PreviewOutput output = PreviewOutput::Monitor;
     ProjectState project;
     Sequence sequence;
     std::optional<playback::CaptionSettings> captions;
@@ -475,11 +477,13 @@ struct PreviewRenderer::Impl {
     std::map<std::uint64_t, std::unique_ptr<media::VideoDecoder>> decoders;
 };
 
-PreviewRenderer::PreviewRenderer(const TestProject& project) : m_impl(std::make_unique<Impl>()) {
+PreviewRenderer::PreviewRenderer(const TestProject& project, PreviewOutput output) : m_impl(std::make_unique<Impl>()) {
+    m_impl->output = output;
     m_impl->project = project.state;
     m_impl->sequence = project.seq();
     render::OffscreenOptions options; // like the program monitor: display role, preview pool
-    options.role = render::OutputRole::Display;
+    options.role = output == PreviewOutput::HdrExport ? render::OutputRole::Export : render::OutputRole::Display;
+    options.tenBit = output == PreviewOutput::HdrExport;
     options.alpha = render::OutputAlpha::Opaque;
     options.compositor = render::CompositorOptions{render::TexturePool::Preview, 1, 48};
     auto renderer = render::OffscreenRenderer::create(options);
@@ -512,6 +516,12 @@ std::vector<std::uint8_t> PreviewRenderer::render(Ticks time, Ticks frameDuratio
     composite->frameDuration = frameDuration;
     composite->canvas = {m_impl->sequence.width, m_impl->sequence.height};
     composite->color = render::ColorPipeline{};
+    composite->color.management = m_impl->project.colorManagement; // as the Scheduler does (I.9)
+    if (m_impl->output == PreviewOutput::HdrExport) { // as the exporter does for a PQ / HLG export
+        composite->color.exportTarget = m_impl->project.colorManagement.mode == ColorManagementMode::HdrHlg
+                                            ? color::OutputTarget::Hlg
+                                            : color::OutputTarget::Pq;
+    }
     // As the Scheduler assembles it (playback::buildCompositeLayers); titles are drawn, not decoded.
     std::vector<media::VideoFrame> frames(specs.size());
     for (std::size_t j = 0; j < specs.size(); ++j) {
@@ -565,6 +575,40 @@ const std::map<std::string, std::string>* ProbeResult::stream(std::string_view t
         }
     }
     return nullptr;
+}
+
+std::optional<std::string> ffprobeText(const std::filesystem::path& file, const std::string& arguments, std::string* error) {
+    const std::string probeLine = "\"" + utf8(std::filesystem::path(WABCUT_FFPROBE_EXECUTABLE)) + "\" -v error " + arguments +
+                                  " \"" + utf8(file) + "\"";
+#if defined(_WIN32)
+    const std::string command = "\"" + probeLine + "\""; // cmd.exe strips one pair of outer quotes
+    FILE* pipe = _popen(command.c_str(), "r");
+#else
+    FILE* pipe = popen(probeLine.c_str(), "r");
+#endif
+    if (!pipe) {
+        if (error) {
+            *error = "cannot run ffprobe";
+        }
+        return std::nullopt;
+    }
+    std::string text;
+    char buf[4096];
+    while (const std::size_t n = std::fread(buf, 1, sizeof buf, pipe)) {
+        text.append(buf, n);
+    }
+#if defined(_WIN32)
+    const int status = _pclose(pipe);
+#else
+    const int status = pclose(pipe);
+#endif
+    if (status != 0) {
+        if (error) {
+            *error = "ffprobe failed: " + text;
+        }
+        return std::nullopt;
+    }
+    return text;
 }
 
 std::optional<ProbeResult> ffprobe(const std::filesystem::path& file, std::string* error) {
@@ -736,6 +780,50 @@ YuvFrame yuvFromRgba(const std::vector<std::uint8_t>& rgba, int width, int heigh
         throw std::runtime_error("reference conversion failed");
     }
     return toYuv(converted.get(), like.seconds);
+}
+
+YuvFrame yuvFromRgb10(const std::vector<std::uint8_t>& words, int width, int height, const YuvFrame& like) {
+    // As the export does: BT.2020 Y'CbCr 4:4:4, 10 bits, limited range on the CPU, then swscale to the file's layout
+    // with the FrameConverter's flags.
+    constexpr double kr = 0.2627, kb = 0.0593, kg = 1.0 - kr - kb; // BT.2020 non-constant luminance
+    const auto px = static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
+    std::vector<std::uint16_t> planes(px * 3);
+    for (std::size_t i = 0; i < px; ++i) {
+        std::uint32_t w = 0;
+        std::memcpy(&w, words.data() + i * 4, 4);
+        const double r = static_cast<double>(w & 1023u) / 1023.0;
+        const double g = static_cast<double>((w >> 10) & 1023u) / 1023.0;
+        const double b = static_cast<double>((w >> 20) & 1023u) / 1023.0;
+        const double y = kr * r + kg * g + kb * b;
+        const auto code = [](double v) { return static_cast<std::uint16_t>(std::clamp(std::lround(v * 4.0), 0L, 1023L)); };
+        planes[i] = code(16.0 + 219.0 * y);
+        planes[px + i] = code(128.0 + 224.0 * (b - y) / (2.0 * (1.0 - kb)));
+        planes[2 * px + i] = code(128.0 + 224.0 * (r - y) / (2.0 * (1.0 - kr)));
+    }
+    std::unique_ptr<SwsContext, SwsFreer> sws(sws_alloc_context());
+    sws->flags = SWS_BICUBIC | SWS_ACCURATE_RND | SWS_FULL_CHR_H_INP;
+    sws->threads = 1;
+    std::unique_ptr<AVFrame, FrameFreer> src(av_frame_alloc());
+    std::unique_ptr<AVFrame, FrameFreer> out(av_frame_alloc());
+    for (AVFrame* f : {src.get(), out.get()}) {
+        f->width = width;
+        f->height = height;
+        f->colorspace = AVCOL_SPC_BT2020_NCL;
+        f->color_range = AVCOL_RANGE_MPEG;
+        f->color_primaries = AVCOL_PRI_BT2020;
+        f->color_trc = AVCOL_TRC_SMPTE2084;
+        f->chroma_location = AVCHROMA_LOC_LEFT;
+    }
+    src->format = AV_PIX_FMT_YUV444P10LE;
+    for (int p = 0; p < 3; ++p) {
+        src->data[p] = reinterpret_cast<std::uint8_t*>(planes.data() + static_cast<std::size_t>(p) * px);
+        src->linesize[p] = width * 2;
+    }
+    out->format = av_get_pix_fmt(like.pixelFormat.c_str());
+    if (av_frame_get_buffer(out.get(), 0) < 0 || sws_scale_frame(sws.get(), out.get(), src.get()) < 0) {
+        throw std::runtime_error("10-bit reference conversion failed");
+    }
+    return toYuv(out.get(), like.seconds);
 }
 
 double psnr(const YuvFrame& a, const YuvFrame& b) {

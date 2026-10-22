@@ -144,8 +144,8 @@ TEST_CASE("Synthetic items are made for the sequence with checked parameters (C.
         CHECK(item.info.video[0].width == tl.sequence().width);
         CHECK(item.info.video[0].height == tl.sequence().height);
         CHECK(item.info.video[0].frameRate == tl.sequence().frameRate);
-        CHECK(item.info.audio.empty());
-        CHECK(item.info.isStillImage);
+        CHECK(item.info.audio.size() == (d.hasAudio ? 1u : 0u));              // P.2: bars and tone, the leader
+        CHECK(item.info.isStillImage == (d.kind != SyntheticKind::CountingLeader)); // P.2: the leader lasts 8 s
         CHECK(item.info.video[0].alpha == (d.kind == SyntheticKind::TransparentVideo ? AlphaMode::Straight : AlphaMode::None));
         CHECK_FALSE(syntheticProblem(item).has_value());
         requireValid(added->state);

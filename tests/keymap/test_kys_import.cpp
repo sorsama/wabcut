@@ -83,7 +83,8 @@ TEST_CASE("A Windows .kys imports as overrides", "[keymap][kys]") {
         return std::ranges::find(all, o.command, &CommandInfo::id) - all.begin();
     }));
 
-    CHECK(import->unmappedCommands == std::vector<std::string>{"context.global/cmd.export.frame"});
+    // P.2: Export Frame is mapped now (file.exportFrame); the fixture keeps a Premiere command Wabcut does not have.
+    CHECK(import->unmappedCommands == std::vector<std::string>{"context.global/cmd.multicam.transmit.gridview"});
     REQUIRE(import->warnings.size() == 1);
     CHECK(contains(import->warnings, "cmd.transport.toggleplay"));
     CHECK(contains(import->warnings, "'19'"));

@@ -204,7 +204,7 @@ TextSpec specOf(const DrawText& text) {
         spec.runs.push_back(TextRunSpec{r.byteStart, r.text, r.fontFamily, r.fontStyle, r.fontWeight, r.fontSize, r.italic,
                                         r.underline, r.tracking, r.leading, r.baselineShift, r.fill});
     }
-    spec.align = text.align;
+    spec.align = text.path.empty() ? text.align : TextAlign::Left; // on a path: aligned along it (placeOnPath)
     spec.boxWidth = text.boxWidth;
     spec.boxHeight = text.boxHeight;
     return spec;
@@ -309,6 +309,76 @@ QRectF addGlyphs(const TextBlock& block, int from, int length, std::vector<Glyph
         }
     }
     return bounds;
+}
+
+/// 0.2, type on a path: a cluster's glyph outlines (item pixels as laid out) and the transform that puts them on the
+/// path, with its animator adjustments applied first.
+struct PlacedCluster {
+    std::vector<GlyphPiece> pieces;
+    QRectF bounds;
+    QTransform transform;
+    double opacity = 1.0;
+};
+
+/// Every cluster of `t` placed along its path: the cluster's advance centre goes to its distance along the path (the
+/// line's start between the margins plus its x, spread by Force Alignment), its baseline onto the path (later lines
+/// below it), turned with the path when Perpendicular.
+std::vector<PlacedCluster> placeOnPath(const TextBlock& block, const DrawText& t) {
+    std::vector<PlacedCluster> out;
+    const QTextLayout& layout = *block.layout;
+    if (layout.lineCount() == 0 || t.path.empty()) {
+        return out;
+    }
+    const TextPathWalker walker(t.path, t.pathClosed, t.pathReverse);
+    const QTextLine first = layout.lineAt(0);
+    const double baseline0 = first.y() + first.ascent();
+    std::vector<std::array<double, 2>> starts;
+    for (int i = 0; i < layout.lineCount(); ++i) {
+        starts.push_back(walker.lineStart(layout.lineAt(i).naturalTextWidth(), t.align, t.firstMargin, t.lastMargin,
+                                          t.pathForceAlignment));
+    }
+    for (const DrawCluster& c : t.clusters) {
+        const std::size_t a = std::min(c.byteStart, block.utf16.size() - 1);
+        const std::size_t b = std::min(c.byteEnd, block.utf16.size() - 1);
+        int from = block.utf16[a];
+        int to = block.utf16[b];
+        if (to <= from || c.opacity <= 0.0) {
+            continue;
+        }
+        PlacedCluster p;
+        p.bounds = addGlyphs(block, from, to - from, p.pieces);
+        if (p.pieces.empty()) {
+            continue; // a space: its advance is in the others' positions
+        }
+        const QTextLine line = layout.lineForTextPosition(from);
+        if (!line.isValid()) {
+            continue;
+        }
+        const double xa = line.cursorToX(&from);
+        const double xb = line.cursorToX(&to);
+        const double along = (xa + xb) / 2.0 - line.x();       // the advance centre along its line
+        const double mid = (xa + xb) / 2.0 + block.origin.x(); // the same in the item's pixels
+        const auto [start, spread] = starts[static_cast<std::size_t>(line.lineNumber())];
+        const auto [px, py, angle] = walker.at(start + along * spread);
+        const double lineOffset = line.y() + line.ascent() - baseline0;
+        // The animators' adjustments about the cluster's own centre, as on lines.
+        const QPointF centre = p.bounds.center();
+        QTransform local;
+        local.translate(centre.x() + c.offsetX, centre.y() + c.offsetY);
+        local.rotate(c.rotation);
+        local.scale(c.scale, c.scale);
+        local.translate(-centre.x(), -centre.y());
+        QTransform place;
+        place.translate(px, py);
+        if (t.pathPerpendicular) {
+            place.rotate(angle);
+        }
+        place.translate(-mid, lineOffset - baseline0 - block.origin.y());
+        p.transform = local * place;
+        p.opacity = std::clamp(c.opacity, 0.0, 1.0);
+        out.push_back(std::move(p));
+    }
+    return out;
 }
 
 // ---- Shapes ------------------------------------------------------------------------------------------------------------
@@ -595,6 +665,20 @@ void drawContent(QPainter& painter, const DrawItem& item, const TextBlock* text,
         }
         ++info.texts;
         const DrawText& t = item.text;
+        if (!t.path.empty()) {
+            // Type on a path (0.2): no box, no background; every cluster on its own along the path.
+            for (const PlacedCluster& p : placeOnPath(*text, t)) {
+                painter.save();
+                painter.setTransform(p.transform * painter.transform());
+                painter.setOpacity(painter.opacity() * p.opacity);
+                for (const GlyphPiece& g : p.pieces) {
+                    painter.fillPath(g.path, g.color);
+                }
+                painter.restore();
+                ++info.animatedClusters;
+            }
+            return;
+        }
         if (t.background && text->width > 0.0) {
             const double pad = std::max(t.backgroundPadding, 0.0);
             const QRectF box(text->origin.x() - pad, text->origin.y() - pad, text->width + 2 * pad, text->height + 2 * pad);
@@ -693,7 +777,11 @@ QRectF deviceBounds(const DrawItem& item, const TextBlock* text, const QTransfor
         break;
     }
     case DrawKind::Text:
-        if (text) {
+        if (text && !item.text.path.empty()) {
+            for (const PlacedCluster& p : placeOnPath(*text, item.text)) {
+                local = local.united(p.transform.mapRect(p.bounds));
+            }
+        } else if (text) {
             std::vector<GlyphPiece> pieces;
             local = addGlyphs(*text, 0, static_cast<int>(text->text.size()), pieces);
             local = local.united(QRectF(text->origin, QSizeF(text->width, text->height)));

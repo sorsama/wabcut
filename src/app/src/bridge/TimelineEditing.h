@@ -48,6 +48,10 @@ struct GestureSpec {
     edit::TrackShift tracks;
     /// Move only: audio tracks to add below the last one first (dropping below the last track creates one).
     int newAudioTracks = 0;
+    /// 0.2, Trim or Ripple Trim of a clip group's outer edge (Premiere's groups): the other members whose same edge is
+    /// the group's outer edge; every one is trimmed by the same delta (the smallest any of them can take), a ripple
+    /// shifting what follows on their tracks and the sync-locked ones (edit::rippleTrimEdges).
+    std::vector<ClipId> groupTrim;
 };
 
 /// The model edit for a gesture (pure; the state is not changed).

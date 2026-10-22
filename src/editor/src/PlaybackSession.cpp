@@ -64,6 +64,10 @@ public:
         std::lock_guard lock(m_commands);
         m_player.seek(Ticks{std::max<std::int64_t>(0, target.value)});
     }
+    void setLoop(std::optional<TimeRange> range) override {
+        std::lock_guard lock(m_commands);
+        m_player.setLoop(range); // the engine wraps, and the feeder's read-ahead with it
+    }
     std::string name() const override {
         const std::string backend = m_engine.backendName();
         return backend.empty() ? std::string("timeline audio") : "timeline audio (" + backend + ")";
@@ -169,6 +173,12 @@ void PlaybackSession::scrub(Ticks position) {
 }
 Ticks PlaybackSession::position() const {
     return m_video->position();
+}
+void PlaybackSession::setLoop(std::optional<TimeRange> range) {
+    m_video->setLoop(range); // and the transport: the audio player when sound runs
+}
+std::optional<TimeRange> PlaybackSession::loop() const {
+    return m_video->loop();
 }
 
 PlaybackSessionStats PlaybackSession::stats() const {

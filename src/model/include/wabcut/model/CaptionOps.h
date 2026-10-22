@@ -73,9 +73,17 @@ EditOutcome setCaptionTrackInfo(const ProjectState& state, SequenceId sequence, 
 
 /// The style of a preset: the project's (ProjectState::captionPresets) or a built-in one, by name (case-insensitive).
 std::optional<CaptionStyle> captionPresetStyle(const ProjectState& state, std::string_view name);
-/// Adds a project preset, or replaces the one with that name. Built-in names are refused.
+/// Adds a project preset, or replaces the one with that name. Built-in names are refused. 0.2: replacing one restyles
+/// every caption track that follows it (CaptionTrack::trackStyle, Premiere's Track Style), in every sequence.
 std::expected<ProjectState, Error> saveCaptionPreset(const ProjectState& state, CaptionPreset preset);
+/// Removes a project preset; tracks that followed it keep their look and follow nothing.
 std::expected<ProjectState, Error> removeCaptionPreset(const ProjectState& state, std::string_view name);
+/// 0.2, Premiere's Track Style menu: the track takes the preset's style and follows it (`name` "" = follows nothing; the
+/// look stays). Errors: NotFound (track, preset).
+EditOutcome setCaptionTrackStyle(const ProjectState& state, SequenceId sequence, CaptionTrackId track, std::string_view name);
+/// Premiere's Push to Track Style: the track's style becomes its project preset's, and every track that follows that
+/// preset takes it. Errors: InvalidArgument (the track follows no preset, or a built-in one), NotFound.
+std::expected<ProjectState, Error> pushCaptionTrackStyle(const ProjectState& state, SequenceId sequence, CaptionTrackId track);
 
 // ---------------------------------------------------------------------------------------------------
 // Speakers and transcript edits (Transcripts.h)

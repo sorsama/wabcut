@@ -237,7 +237,7 @@ else()
     set(doc_dir "${PREFIX}/share/doc/Wabcut")
 endif()
 foreach(required LICENSE.txt THIRD-PARTY-NOTICES.txt licenses/ffmpeg.txt licenses/x264.txt licenses/x265.txt
-                 licenses/qt-LGPL-3.0.txt licenses/boxicons.txt)
+                 licenses/qt-LGPL-3.0.txt licenses/boxicons.txt licenses/opencolorio.txt)
     if(NOT EXISTS "${doc_dir}/${required}")
         message(FATAL_ERROR "the install tree lacks ${required}")
     endif()
