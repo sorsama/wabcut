@@ -17,6 +17,10 @@
 #include <string>
 #include <vector>
 
+#ifdef _WIN32
+#include <windows.h> // GetPriorityClass
+#endif
+
 using namespace wabcut;
 using namespace wabcut::ai;
 using namespace std::chrono_literals;
@@ -143,5 +147,55 @@ TEST_CASE("Helper environment: system locale Qt and Wabcut variables pass but cr
     CHECK(entries == expected); // sorted by name, case-insensitively
     CHECK_FALSE(platform::helperMayInherit(L"wabcut_anthropic_api_key"));
     CHECK(platform::helperMayInherit(L"LocalAppData"));
+}
+#endif
+
+#ifdef _WIN32
+// 0.2 (review follow-up): AI helpers ran at normal priority with no CPU cap, so a transcription in the background took
+// every core playback needed. They now run below normal priority under the helper policy's hard CPU rate cap (Settings >
+// AI > "AI helpers' CPU", 75 % by default); an explicit cap wins, and other children (the script host) are untouched.
+TEST_CASE("ChildProcess: AI helpers run below normal priority under the helper policy's CPU cap", "[ai][process]") {
+    const HelperCpuPolicy saved = helperCpuPolicy();
+    CHECK(saved.cpuRatePercent == kDefaultHelperCpuPercent);
+    CHECK(saved.lowPriority);
+
+    ChildProcessOptions options;
+    options.executable = WABCUT_FAKE_INFER;
+    options.aiHelper = true;
+    setHelperCpuPolicy(HelperCpuPolicy{true, 40});
+    auto helper = ChildProcess::spawn(options);
+    REQUIRE(helper);
+    CHECK((*helper)->cpuRateLimitPercent() == 40);
+    CHECK((*helper)->belowNormalPriority());
+    // The policy applies to helpers started afterwards; one already running keeps its cap.
+    setHelperCpuPolicy(HelperCpuPolicy{true, 100});
+    CHECK((*helper)->cpuRateLimitPercent() == 40);
+    auto unlimited = ChildProcess::spawn(options);
+    REQUIRE(unlimited);
+    CHECK_FALSE((*unlimited)->cpuRateLimitPercent());
+    CHECK((*unlimited)->belowNormalPriority());
+
+    // An explicit cap wins over the policy's.
+    options.cpuRatePercent = 25;
+    auto explicitCap = ChildProcess::spawn(options);
+    REQUIRE(explicitCap);
+    CHECK((*explicitCap)->cpuRateLimitPercent() == 25);
+
+    // A child that is not an AI helper gets neither.
+    setHelperCpuPolicy(HelperCpuPolicy{true, 50});
+    ChildProcessOptions plain;
+    plain.executable = WABCUT_FAKE_INFER;
+    auto other = ChildProcess::spawn(plain);
+    REQUIRE(other);
+    CHECK_FALSE((*other)->cpuRateLimitPercent());
+    // Untouched: it runs at the test's own priority (a CI runner may start the tests below normal already).
+    if (GetPriorityClass(GetCurrentProcess()) != BELOW_NORMAL_PRIORITY_CLASS)
+        CHECK_FALSE((*other)->belowNormalPriority());
+
+    for (auto* child : {&*helper, &*unlimited, &*explicitCap, &*other}) {
+        (*child)->closeInput();
+        CHECK((*child)->wait(10s) == 0);
+    }
+    setHelperCpuPolicy(saved);
 }
 #endif

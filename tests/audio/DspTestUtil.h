@@ -1,12 +1,18 @@
 #pragma once
 
-// Signal helpers for the DSP tests: tones, noise and level measurements.
+// Signal helpers for the DSP tests: tones, noise and level measurements, and (p02) running an effect of the registry
+// through an EffectChain.
+
+#include <wabcut/audio/effects/EffectChain.h>
+
+#include <wabcut/model/Effects.h>
 
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <numbers>
+#include <string>
 #include <vector>
 
 namespace wabcut::audio::test {
@@ -65,6 +71,81 @@ inline double rms(const std::vector<float>& x, int channels, std::size_t first, 
         sum += v * v;
     }
     return std::sqrt(sum / static_cast<double>(std::max<std::size_t>(last - first, 1)));
+}
+
+/// RMS of `channel` over frames [first, last).
+inline double rmsOf(const std::vector<float>& x, int channels, int channel, std::size_t first, std::size_t last) {
+    double sum = 0.0;
+    const std::size_t frames = x.size() / static_cast<std::size_t>(channels);
+    last = std::min(last, frames);
+    for (std::size_t i = first; i < last; ++i) {
+        const double v = x[i * static_cast<std::size_t>(channels) + static_cast<std::size_t>(channel)];
+        sum += v * v;
+    }
+    return std::sqrt(sum / static_cast<double>(std::max<std::size_t>(last - first, 1)));
+}
+
+/// Amplitude of the `frequency` component of `channel` over frames [first, last) (one DFT bin, Hann-free: use whole
+/// periods or long spans).
+inline double toneAmplitude(const std::vector<float>& x, int channels, double frequency, std::size_t first, std::size_t last,
+                            int channel = 0, int rate = 48000) {
+    double re = 0.0;
+    double im = 0.0;
+    const std::size_t frames = x.size() / static_cast<std::size_t>(channels);
+    last = std::min(last, frames);
+    for (std::size_t i = first; i < last; ++i) {
+        const double v = x[i * static_cast<std::size_t>(channels) + static_cast<std::size_t>(channel)];
+        const double a = 2.0 * std::numbers::pi * frequency * static_cast<double>(i) / rate;
+        re += v * std::cos(a);
+        im -= v * std::sin(a);
+    }
+    const double n = static_cast<double>(std::max<std::size_t>(last - first, 1));
+    return 2.0 * std::sqrt(re * re + im * im) / n;
+}
+
+/// A unit impulse (amplitude at frame `at`, every channel) in `frames` frames of silence.
+inline std::vector<float> impulse(std::size_t frames, int channels, std::size_t at = 0, float amplitude = 1.0f) {
+    std::vector<float> out(frames * static_cast<std::size_t>(channels), 0.0f);
+    for (int c = 0; c < channels; ++c) {
+        out[at * static_cast<std::size_t>(channels) + static_cast<std::size_t>(c)] = amplitude;
+    }
+    return out;
+}
+
+/// An effect instance of the built-in registry (id 1, enabled) with `params` (sorted here).
+inline EffectInstance effectOf(std::string id, std::vector<EffectParam> params = {}) {
+    EffectInstance e;
+    e.id = EffectInstanceId{1};
+    e.effect = std::move(id);
+    std::sort(params.begin(), params.end(), [](const EffectParam& a, const EffectParam& b) { return a.key < b.key; });
+    e.params = std::move(params);
+    return e;
+}
+
+/// Runs `effect` over interleaved `x` through an EffectChain (the path preview and export take), in blocks of `block`
+/// frames from chain frame 0 at timeline 0. The output is as long as the input (an effect with latency delays it).
+inline std::vector<float> runEffect(const EffectInstance& effect, std::vector<float> x, int channels, int rate = 48000,
+                                    int block = 512) {
+    const EffectStack stack{effect};
+    EffectChain chain(channels, rate);
+    chain.bind(stack);
+    const std::size_t frames = x.size() / static_cast<std::size_t>(channels);
+    const CurveClock clock{Ticks{}, Rate{rate, 1}.ticksPerUnit(), nullptr};
+    for (std::size_t done = 0; done < frames;) {
+        const std::size_t n = std::min(frames - done, static_cast<std::size_t>(block));
+        chain.process(x.data() + done * static_cast<std::size_t>(channels), static_cast<int>(n),
+                      static_cast<std::int64_t>(done), clock);
+        done += n;
+    }
+    return x;
+}
+
+/// The latency an effect's processor reports (frames), as a bound chain sees it.
+inline int effectLatency(const EffectInstance& effect, int channels, int rate = 48000) {
+    const EffectStack stack{effect};
+    EffectChain chain(channels, rate);
+    chain.bind(stack);
+    return chain.latencyFrames();
 }
 
 } // namespace wabcut::audio::test

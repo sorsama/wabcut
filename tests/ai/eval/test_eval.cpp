@@ -99,7 +99,8 @@ TEST_CASE("Every eval case is solvable through routing and the constrained envel
 
 TEST_CASE("The oracle passes with native tool calls too except where the schemas overflow the context", "[ai][eval]") {
     // Native tool calls put every offered tool's full JSON schema into the prompt: on an 8k context some requests'
-    // tools no longer fit (why the local tiers use the envelope's compact signatures).
+    // tools no longer fit (why the local tiers use the envelope's compact signatures). The agent leaves the lowest-ranked
+    // routed tools out until the first call fits (p02 integration).
     const EvalSummary s = oracleRun("qwen3-4b-instruct-2507", OracleStyle::Clean, false);
     INFO(failures(s));
     CHECK(s.mode == "native");

@@ -1,6 +1,6 @@
 #include <wabcut/render/ColorPipeline.h>
 
-#include <wabcut/color/Hdr.h>
+#include <wabcut/color/ColorSpaces.h>
 
 #include <algorithm>
 #include <cmath>

@@ -5,6 +5,7 @@ wabcut_add_test_suite(keymap
         test_default_tables.cpp
         test_key_chord.cpp
         test_keymap_manager.cpp
+        test_kys_export.cpp
         test_kys_import.cpp
         test_registry.cpp
         test_transport_gesture.cpp

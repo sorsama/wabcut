@@ -239,6 +239,9 @@ std::expected<StackSite, Error> stackSite(const Sequence& seq, const EffectTarge
     case EffectTarget::Kind::Track: {
         const Track* t = seq.findTrack(target.track);
         if (!t) {
+            t = seq.findSubmix(target.track); // p02 audio: a submix track's effects are a track stack too
+        }
+        if (!t) {
             return std::unexpected(detail::notFound("track " + std::to_string(target.track.value) + " does not exist"));
         }
         const std::string label = detail::trackLabel(seq, t->id);
@@ -316,6 +319,9 @@ EditOutcome editFaderParam(const ProjectState& state, SequenceId sequenceId, con
     ParamValue current = (*seq)->masterVolume;
     if (target.kind == EffectTarget::Kind::Track) {
         const Track* t = (*seq)->findTrack(target.track);
+        if (!t) {
+            t = (*seq)->findSubmix(target.track); // p02 audio: a submix track's fader and panner
+        }
         if (!t) {
             return std::unexpected(detail::notFound("track " + std::to_string(target.track.value) + " does not exist"));
         }
@@ -820,6 +826,9 @@ const EffectStack* effectStackOf(const Sequence& sequence, const EffectTarget& t
     }
     case EffectTarget::Kind::Track: {
         const Track* track = sequence.findTrack(target.track);
+        if (track == nullptr) {
+            track = sequence.findSubmix(target.track);
+        }
         return track ? &track->effects : nullptr;
     }
     case EffectTarget::Kind::MasterVideo:

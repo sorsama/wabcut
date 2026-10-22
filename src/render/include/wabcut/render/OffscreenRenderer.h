@@ -59,13 +59,17 @@ struct OffscreenOptions {
     bool shareDeviceWithDecoders = false;
     OutputAlpha alpha = OutputAlpha::Opaque;
     CompositorOptions compositor{TexturePool::Export, 1, 48};
+    /// I.9: render into and read back 10 bits per channel (RGB10A2: R in bits 0-9, G 10-19, B 20-29, alpha 30-31 of
+    /// each little-endian 32-bit word), for HDR and 10-bit colour-managed exports. RenderedImage::tenBit says so.
+    bool tenBit = false;
 };
 
-/// RGBA8 pixels, top row first, tightly packed (stride = 4 * width).
+/// RGBA8 pixels (or RGB10A2 words with OffscreenOptions::tenBit), top row first, tightly packed (stride = 4 * width).
 struct RenderedImage {
     int width = 0;
     int height = 0;
     std::vector<std::uint8_t> rgba;
+    bool tenBit = false; ///< `rgba` holds RGB10A2 words (I.9)
     std::uint64_t revision = 0;
     Ticks targetTime{};
 

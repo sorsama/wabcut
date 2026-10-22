@@ -40,7 +40,26 @@ struct ChildProcessOptions {
     std::size_t memoryLimitBytes = 0;
     bool noChildProcesses = false;
     bool restrictUi = false;
+    /// 0.2: an AI helper (inference, transcription, segmentation, detection, the local model server): it runs under the
+    /// process-wide helper policy (setHelperCpuPolicy, Settings > AI > "AI helpers' CPU"): below normal priority and a
+    /// hard CPU rate cap, so background analysis never takes the CPU that playback and the UI need.
+    bool aiHelper = false;
+    /// A hard cap on the child's CPU use in percent of the whole machine (1..99; 0 = the helper policy's for an AI
+    /// helper, else none). Windows: the job object's CPU rate control (JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP); POSIX:
+    /// not enforced (the child is niced instead).
+    int cpuRatePercent = 0;
 };
+
+/// How AI helper processes run (ChildProcessOptions::aiHelper). Process-wide, thread-safe; applies to helpers started
+/// after the change.
+struct HelperCpuPolicy {
+    bool lowPriority = true;     ///< below normal priority (POSIX: nice +10)
+    int cpuRatePercent = 75;     ///< hard cap, percent of the machine; 100 = no cap
+    bool operator==(const HelperCpuPolicy&) const = default;
+};
+inline constexpr int kDefaultHelperCpuPercent = 75;
+void setHelperCpuPolicy(HelperCpuPolicy policy);
+HelperCpuPolicy helperCpuPolicy();
 
 /// Directory of the running executable (helpers ship next to it).
 std::filesystem::path currentExecutableDir();
@@ -80,6 +99,11 @@ public:
     /// The most memory the child has committed so far (Windows job accounting; also after it exited); nullopt where
     /// the platform does not report it.
     std::optional<std::size_t> peakMemoryBytes() const;
+    /// The CPU rate cap the child runs under, in percent of the machine (Windows job accounting); nullopt when none or
+    /// where the platform has none.
+    std::optional<int> cpuRateLimitPercent() const;
+    /// Whether the child runs below normal priority (Windows priority class; POSIX: niced by this class).
+    bool belowNormalPriority() const;
 
     /// Human-readable description of an exit code ("exit code 3", "crashed (0xC0000005 access violation)",
     /// "killed by signal 9").

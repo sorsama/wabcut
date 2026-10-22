@@ -5,6 +5,7 @@
 #include "Catalog.h"
 
 #include <wabcut/model/FinishingOps.h>
+#include <wabcut/model/MotionOps.h>
 #include <wabcut/model/Timecode.h>
 #include <wabcut/model/TitleOps.h>
 
@@ -124,6 +125,26 @@ std::vector<EffectParam> effectParams(ExecutionContext& c, const char* key) {
 
 Json paramsObject(std::string description) {
     return Json{{"type", "object"}, {"description", std::move(description)}};
+}
+
+/// 0.2: an effect's text data by key (Simple Text's "text", Image Matte Key's "image" = "media:<id>"); an empty string
+/// removes the key.
+std::vector<EffectData> effectTextData(ExecutionContext& c, const char* key) {
+    std::vector<EffectData> out;
+    if (!c.has(key)) {
+        return out;
+    }
+    for (const auto& item : c.params()[key].items()) {
+        if (!item.value().is_string()) {
+            fail(ErrorCode::InvalidParams, "effect data values are strings", Json{{"path", "/" + std::string(key) + "/" + item.key()}});
+        }
+        EffectData entry{item.key(), item.value().get<std::string>()};
+        if (const auto problem = effectDataProblem(entry)) {
+            fail(ErrorCode::InvalidParams, *problem, Json{{"path", "/" + std::string(key) + "/" + item.key()}});
+        }
+        out.push_back(std::move(entry));
+    }
+    return out;
 }
 
 /// Speed from a percentage: exact for up to three decimals (50 -> 1/2, 33.333 -> 33333/100000).
@@ -307,7 +328,12 @@ CommandOutput speedDuration(ExecutionContext& c) {
     const SequenceId seq = c.sequenceId();
     ProjectState state = c.state();
     const std::vector<ClipId> clips = c.clips("clips");
-    if (hasDuration) {
+    // P.2: only the dialog's Time Interpolation changed (also on a time-remapped clip, whose speed cannot be set).
+    const bool interpolationOnly = c.has("timeInterpolation") && !hasSpeed && !hasDuration && !c.has("reverse") &&
+                                   !pitchGiven && !change.keepDuration && !change.ripple;
+    if (interpolationOnly) {
+        // The speed is left as it is.
+    } else if (hasDuration) {
         // Each clip gets the speed that fits its own material into the duration.
         const Ticks duration = c.time("duration");
         for (const ClipId id : clips) {
@@ -327,6 +353,24 @@ CommandOutput speedDuration(ExecutionContext& c) {
             }
             change.maintainPitch = change.speed.isUnity() && !pitchGiven ? std::nullopt : pitchFor(id);
             state = c.take(edit::setSpeed(state, seq, std::vector<ClipId>{id}, change, c.linkMode())).state;
+        }
+    }
+    if (c.has("timeInterpolation")) {
+        // The video clips among them (and their linked video partners): one undo step with the speed change.
+        const TimeInterpolation mode = timeInterpolationValue(c, "timeInterpolation");
+        std::vector<ClipId> video;
+        const Sequence* now = state.findSequence(seq);
+        for (const ClipId id : clips) {
+            const auto at = now ? now->findClip(id) : std::nullopt;
+            if (at && at->clip().stream.kind == StreamKind::Video) {
+                video.push_back(id);
+            }
+        }
+        if (!video.empty()) {
+            state = c.take(edit::setTimeInterpolation(state, seq, video, mode, c.linkMode())).state;
+        } else if (interpolationOnly) {
+            fail(ErrorCode::InvalidParams, "Time Interpolation applies to video clips; none was given",
+                 Json{{"path", "/timeInterpolation"}});
         }
     }
     CommandOutput out;
@@ -761,12 +805,14 @@ void registerFinishingCommands(CommandRegistry& registry) {
     addBuiltin(registry,
                {"clip.setEffect", 1, "Set Effect",
                 "Turns an effect on or off or sets its parameters (constants; animate them with clip.addKeyframe and "
-                "\"effect\").",
+                "\"effect\") or its text data (\"data\": Simple Text's {\"text\": \"...\"}, Image Matte Key's "
+                "{\"image\": \"media:<id>\"} naming a still image in the project; an empty string removes it).",
                 Capability::EditSequence,
                 withSequence({{"clip", clipParam("The clip.")},
                               {"effect", effectInstanceParam("The effect.")},
                               {"enabled", schema::boolean("On or off.")},
-                              {"params", paramsObject("Parameter values by key.")}},
+                              {"params", paramsObject("Parameter values by key.")},
+                              {"data", paramsObject("Text data by key (strings, at most 1024 bytes each).")}},
                              {"clip", "effect"}),
                 Json{{"clip", 42}, {"effect", 77}, {"params", Json{{"saturation", 0}}}}, {},
                 [](ExecutionContext& c) {
@@ -775,6 +821,7 @@ void registerFinishingCommands(CommandRegistry& registry) {
                         change.enabled = c.boolean("enabled", true);
                     }
                     change.params = effectParams(c, "params");
+                    change.data = effectTextData(c, "data");
                     return edited(c.take(edit::setEffect(c.state(), c.sequenceId(), c.clip("clip"),
                                                          EffectInstanceId{static_cast<std::uint64_t>(c.integer("effect"))},
                                                          change)));
@@ -947,6 +994,10 @@ void registerFinishingCommands(CommandRegistry& registry) {
                         schema::boolean("Speed and duration unlinked: keep each clip's length and play more or less "
                                         "of its media (the source Out moves). Default false.",
                                         false)},
+                       {"timeInterpolation",
+                        timeInterpolationParam("The dialog's Time Interpolation (P.2, as clip.setTimeInterpolation): "
+                                               "Frame Sampling, Frame Blending or Optical Flow for the video clips. "
+                                               "Default: unchanged.")},
                        {"linked", linkedParam(true)}},
                       {"clips"}),
          Json{{"clips", Json::array({42})}, {"speed", 50}, {"ripple", true}}, {"clip.speed"}, speedDuration});

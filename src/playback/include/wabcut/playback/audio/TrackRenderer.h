@@ -75,6 +75,10 @@ struct TrackRendererOptions {
     Ticks maxPreroll{kTicksPerSecond / 2};
     /// C.8: the crossfade where a multicam clip switches angle (centred on the cut); Ticks{} cuts with edge fades.
     Ticks angleCrossfade{kTicksPerSecond / 100};
+    /// p02 audio: the most of a clip a voice hears again before it starts inside the clip (a seek, a refill, a
+    /// restart), up to its effects' settle time (EffectChain::settleFrames: a reverb's tail, a delay's echoes), so
+    /// time-based clip effects carry on without a click. Preview and export must use the same value.
+    Ticks maxClipPreroll{kTicksPerSecond * 2};
     /// The track's fader and panner (Track::volume / Track::pan) end the render. false leaves them to the caller:
     /// the live player applies them in its audio callback, where an automation pass can override them at once
     /// (TimelineAudioPlayer::setLiveTrackMix). Nested sequences always apply their own tracks' faders.

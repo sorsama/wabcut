@@ -55,6 +55,13 @@ class ProgramMonitor : public QQuickRhiItem {
     /// This monitor feeds the Scopes panel (I.5): while scopes are wanted (ScopeHub) it computes them on the GPU after
     /// a frame, at most about 30 times a second. The program monitor sets it.
     Q_PROPERTY(bool scopes READ scopes WRITE setScopes NOTIFY scopesChanged FINAL)
+    /// Zero-copy: decoders opened after this monitor's first frame decode on its GPU device (default). P.2: a second
+    /// output in another window (full screen, transmit) sets it off, so the main monitor keeps the decoders' device.
+    Q_PROPERTY(bool shareDecoderDevice READ shareDecoderDevice WRITE setShareDecoderDevice NOTIFY
+                   shareDecoderDeviceChanged FINAL)
+    /// P.2, Premiere's Transparency Grid: the frame keeps its alpha (premultiplied), so what lies under the item (a
+    /// checkerboard) shows where nothing covers the canvas; off, the canvas is composited over black.
+    Q_PROPERTY(bool transparencyGrid READ transparencyGrid WRITE setTransparencyGrid NOTIFY transparencyGridChanged FINAL)
 
 public:
     explicit ProgramMonitor(QQuickItem* parent = nullptr);
@@ -68,6 +75,10 @@ public:
     QString renderBackend() const { return m_renderBackend; }
     bool scopes() const { return m_scopes; }
     void setScopes(bool scopes);
+    bool shareDecoderDevice() const { return m_shareDecoderDevice; }
+    void setShareDecoderDevice(bool share);
+    bool transparencyGrid() const { return m_transparencyGrid; }
+    void setTransparencyGrid(bool on);
 
     /// The composites to show (null detaches). GUI thread. The mailbox's publish callback is taken over to
     /// wake the monitor when it is idle.
@@ -83,6 +94,8 @@ signals:
     void previewDivisorChanged();
     void renderBackendChanged();
     void scopesChanged();
+    void shareDecoderDeviceChanged();
+    void transparencyGridChanged();
 
 protected:
     QQuickRhiItemRenderer* createRenderer() override;
@@ -105,6 +118,8 @@ private:
     int m_previewDivisor = 1;
     bool m_hasFrame = false; // GUI-thread view; written in synchronize() while the GUI thread is blocked
     bool m_scopes = false;
+    bool m_shareDecoderDevice = true;
+    bool m_transparencyGrid = false;
     QString m_renderBackend;
 };
 

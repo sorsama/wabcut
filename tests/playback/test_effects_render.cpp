@@ -299,7 +299,7 @@ TEST_CASE("A through edit keeps the effect state flowing; a real cut restarts it
 }
 
 TEST_CASE("Audio transitions crossfade with the transition's law", "[playback][effects][transitions]") {
-    for (const std::string law : {"constantPower", "constantGain"}) {
+    for (const std::string law : {"constantPower", "constantGain", "exponentialFade"}) {
         INFO(law);
         Project p;
         p.media('A', level(0.5f));
@@ -318,8 +318,13 @@ TEST_CASE("Audio transitions crossfade with the transition's law", "[playback][e
         for (const double at : {400.0, 450.0, 500.0, 550.0, 599.0}) {
             const auto k = static_cast<std::size_t>(at * 48.0);
             const double prog = (at - 400.0) / 200.0;
-            const double gIn = law == "constantGain" ? prog : std::sin(prog * std::numbers::pi / 2.0);
-            const double gOut = law == "constantGain" ? 1.0 - prog : std::cos(prog * std::numbers::pi / 2.0);
+            // 0.2: Exponential Fade, each side over log10(1 + 9x).
+            const double gIn = law == "constantGain"      ? prog
+                               : law == "exponentialFade" ? std::log10(1.0 + 9.0 * prog)
+                                                          : std::sin(prog * std::numbers::pi / 2.0);
+            const double gOut = law == "constantGain"      ? 1.0 - prog
+                                : law == "exponentialFade" ? std::log10(1.0 + 9.0 * (1.0 - prog))
+                                                           : std::cos(prog * std::numbers::pi / 2.0);
             INFO("at " << at << " ms");
             CHECK(out[k * 2] == Approx(0.5 * gOut + 0.25 * gIn).margin(1e-4));
         }

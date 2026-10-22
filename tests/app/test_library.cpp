@@ -34,6 +34,7 @@
 #include <QTemporaryDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QImage>
 #include <QQmlComponent>
 #include <QQmlContext>
 #include <QQmlEngine>
@@ -41,6 +42,7 @@
 #include <QPointer>
 
 #include <algorithm>
+#include <limits>
 #include <numeric>
 
 using namespace wabcut;
@@ -892,4 +894,55 @@ TEST_CASE("Library keys: Premiere's Project panel commands", "[app][library][key
     r.library.select(key(r.media('B')), LibraryBridge::Replace);
     REQUIRE(r.library.runCommand(QStringLiteral("project.openInSourceMonitor")));
     CHECK(source.mediaKeyText() == key(r.media('B')));
+}
+
+// 0.2: Import Image Sequence from the Library (media.importImageSequence through the bridge's own reader) lands in the
+// current bin as one undo step; Premiere's Project panel zoom steps the thumbnails in quarters between 0.5 and 2.
+TEST_CASE("Library: Import Image Sequence adds numbered stills as one clip in the current bin", "[app][library]") {
+    LibraryRig r;
+    QTemporaryDir dir;
+    REQUIRE(dir.isValid());
+    for (int i = 1; i <= 6; ++i) {
+        QImage still(32, 18, QImage::Format_RGB32);
+        still.fill(qRgb(30 * i, 30 * i, 30 * i));
+        REQUIRE(still.save(dir.filePath(QStringLiteral("render_%1.png").arg(i, 3, 10, QLatin1Char('0'))), "PNG"));
+    }
+    const QString bin = r.library.newBin(QStringLiteral("Renders"));
+    REQUIRE_FALSE(bin.isEmpty());
+    r.library.openBin(bin);
+    const auto before = r.undo();
+    const QString added = r.library.importImageSequence(QUrl::fromLocalFile(dir.filePath(QStringLiteral("render_001.png"))), 25.0);
+    REQUIRE_FALSE(added.isEmpty());
+    CHECK(r.undo() == before + 1);
+    const auto id = parseMediaKey(added);
+    REQUIRE(id);
+    const MediaItem& item = r.item(*id);
+    CHECK(item.name == "render_001.png");
+    CHECK_FALSE(item.info.isStillImage);
+    REQUIRE(item.info.video.size() == 1);
+    CHECK(item.info.video.front().frameRate == Rate{25, 1});
+    CHECK(item.info.video.front().frameCount == 6);
+    CHECK(item.bin == r.library.bin());
+    CHECK(r.library.isSelected(added));
+
+    // A file without a frame number is refused with a message and changes nothing.
+    QImage plain(8, 8, QImage::Format_RGB32);
+    plain.fill(Qt::black);
+    REQUIRE(plain.save(dir.filePath(QStringLiteral("poster.png")), "PNG"));
+    CHECK(r.library.importImageSequence(QUrl::fromLocalFile(dir.filePath(QStringLiteral("poster.png"))), 25.0).isEmpty());
+    CHECK_FALSE(r.library.message().isEmpty());
+    CHECK(r.undo() == before + 1);
+}
+
+TEST_CASE("Library: thumbnail zoom steps in quarters between half and double size", "[app][library]") {
+    LibraryRig r;
+    CHECK(r.library.thumbnailScale() == 1.0);
+    r.library.setThumbnailScale(1.3);
+    CHECK(r.library.thumbnailScale() == 1.25);
+    r.library.setThumbnailScale(9.0);
+    CHECK(r.library.thumbnailScale() == 2.0);
+    r.library.setThumbnailScale(0.1);
+    CHECK(r.library.thumbnailScale() == 0.5);
+    r.library.setThumbnailScale(std::numeric_limits<double>::quiet_NaN());
+    CHECK(r.library.thumbnailScale() == 1.0);
 }

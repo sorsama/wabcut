@@ -22,6 +22,7 @@
 #include <QUrl>
 
 #include <wabcut/model/ProjectState.h>
+#include <wabcut/model/Resolve.h>
 
 #include <algorithm>
 #include <array>
@@ -100,11 +101,21 @@ std::optional<std::pair<MediaId, Ticks>> pictureAt(const ProjectState& state, co
         if (!(*it)->enabled)
             continue;
         for (const Clip& clip : (*it)->clips) {
-            if (clip.enabled && !clip.isNested() && clip.start() <= t && t < clip.end()) {
-                const MediaItem* media = state.findMedia(clip.media);
-                if (media && !media->isGenerator() && !media->info.video.empty())
-                    return std::pair{clip.media, clip.sourceTimeAt(t)};
+            if (!clip.enabled || t < clip.start() || clip.end() <= t)
+                continue;
+            if (clip.isNested()) {
+                // 0.2: a nested or multicam clip (a gaming nest) shows its top leaf: the active angle, the nest's top clip.
+                const std::vector<ResolvedLeaf> leaves = resolveLeaves(state, seq.id, clip, t);
+                for (auto leaf = leaves.rbegin(); leaf != leaves.rend(); ++leaf) {
+                    const MediaItem* media = state.findMedia(leaf->clip->media);
+                    if (media && !media->isGenerator() && !media->info.video.empty())
+                        return std::pair{leaf->clip->media, leaf->sourceTime};
+                }
+                continue;
             }
+            const MediaItem* media = state.findMedia(clip.media);
+            if (media && !media->isGenerator() && !media->info.video.empty())
+                return std::pair{clip.media, clip.sourceTimeAt(t)};
         }
     }
     return std::nullopt;

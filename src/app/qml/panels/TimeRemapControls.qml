@@ -254,13 +254,22 @@ ColumnLayout {
             }
         }
         PillButton {
+            // P.2 (docs/motion.md): the ramp's Time Interpolation (Frame Sampling, Frame Blending, Optical Flow).
+            objectName: "timeRemapInterpolation"
             Layout.fillWidth: true
-            text: qsTr("Frame sampling · implemented")
-            onClicked: sampling.popup()
-            ContextMenu {
-                id: sampling
-                ContextMenuItem { text: qsTr("Frame sampling · implemented"); checkable: true; checked: true }
-                ContextMenuItem { text: qsTr("Frame blending · not implemented"); enabled: false }
+            text: interpolationMenu.current === "opticalFlow" ? qsTr("Time Interpolation: Optical Flow")
+                : interpolationMenu.current === "frameBlending" ? qsTr("Time Interpolation: Frame Blending")
+                : qsTr("Time Interpolation: Frame Sampling")
+            Component.onCompleted: interpolationMenu.refresh()
+            onClicked: {
+                interpolationMenu.refresh()
+                interpolationMenu.popup()
+            }
+            TimeInterpolationSubmenu { id: interpolationMenu }
+            Connections {
+                target: ProjectController
+                function onRevisionChanged() { interpolationMenu.refresh() }
+                function onSelectionChanged() { interpolationMenu.refresh() }
             }
         }
         Text {

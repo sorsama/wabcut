@@ -152,3 +152,146 @@ TEST_CASE("Generated downloads are checked by content type and signature", "[ai]
         }
     }
 }
+
+// 0.2: generated sound effects (gen.sfx) through the user's ElevenLabs key: the request's fields, the MP3 checked and
+// written, the price per minute of sound (30 s assumed when the model picks the length), the request log, and the
+// same refusals as video and images.
+namespace {
+const std::string kMp3("ID3\x04\x00\x00\x00\x00\x00\x00" "\xff\xfb\x90\x64", 14);
+MediaGenerationRequest sound(std::optional<double> seconds = 4.0) {
+    MediaGenerationRequest r;
+    r.kind = GeneratedMediaKind::SoundEffect;
+    r.prompt = "footsteps on gravel";
+    r.aspectRatio.clear();
+    r.resolution.clear();
+    if (seconds) {
+        r.duration = Ticks{static_cast<std::int64_t>(*seconds * kTicksPerSecond)};
+    }
+    return r;
+}
+} // namespace
+
+TEST_CASE("Sound effects: ElevenLabs sound generation through the user's key, priced per minute (0.2)", "[ai][generation][net][sfx]") {
+    Fixture f;
+    (void)f.keys.save(*f.models.provider("elevenlabs"), Secret("fixture-only-elevenlabs-key"));
+    const ModelSpec* model = f.models.model("eleven_text_to_sound_v2");
+    REQUIRE(model);
+    CHECK(model->generation.soundEffect);
+    CHECK(model->caps.has(Capability::GenerateMedia));
+    // The estimate: $0.12 a minute; 4 s = $0.008; the model's own length is estimated at 30 s = $0.06.
+    CHECK(estimateGenerationCost(*model, sound(4.0), todayUtc()).ceiling == 8000);
+    CHECK(estimateGenerationCost(*model, sound(std::nullopt), todayUtc()).ceiling == 60000);
+    CHECK(soundEffectSeconds(*model, sound(std::nullopt)) == 30.0);
+    // What the model takes.
+    CHECK(checkGenerationRequest(*model, sound(0.5)));
+    CHECK_FALSE(checkGenerationRequest(*model, sound(0.2)));
+    CHECK_FALSE(checkGenerationRequest(*model, sound(31.0)));
+    auto empty = sound();
+    empty.prompt.clear();
+    CHECK_FALSE(checkGenerationRequest(*model, empty));
+    auto influence = sound();
+    influence.promptInfluence = 1.5;
+    CHECK_FALSE(checkGenerationRequest(*model, influence));
+    // A video model does not make sound effects, nor this one video.
+    CHECK(checkGenerationRequest(*f.models.model("gen4.5"), sound()).error().code == AiErrorCode::Unsupported);
+    auto video = f.request();
+    CHECK(checkGenerationRequest(*model, video).error().code == AiErrorCode::Unsupported);
+
+    auto request = sound(4.0);
+    request.loop = true;
+    request.promptInfluence = 0.6;
+    f.fake.push(asset(kMp3, "audio/mpeg"));
+    auto result = f.ai.generate(model->id, request, f.directory, {}, {}, {true, 8000});
+    REQUIRE(result);
+    CHECK(result->cost == 8000);
+    CHECK(result->usage.audioMilliseconds == 4000);
+    REQUIRE(result->files.size() == 1);
+    CHECK(result->files.front().extension() == ".mp3");
+    CHECK(std::filesystem::file_size(result->files.front()) == kMp3.size());
+    const auto requests = f.fake.requests();
+    REQUIRE(requests.size() == 1); // the answer is the file: no polling, no second download
+    CHECK(requests[0].method == "POST");
+    CHECK(requests[0].url == "https://api.elevenlabs.io/v1/sound-generation?output_format=mp3_44100_128");
+    CHECK_FALSE(requests[0].retrySafe); // a network ambiguity must not bill a sound twice
+    CHECK(findHeader(requests[0].headers, "xi-api-key") == "fixture-only-elevenlabs-key");
+    const auto body = Json::parse(requests[0].body);
+    CHECK(body["text"] == "footsteps on gravel");
+    CHECK(body["model_id"] == "eleven_text_to_sound_v2");
+    CHECK(body["duration_seconds"] == 4.0);
+    CHECK(body["loop"] == true);
+    CHECK(body["prompt_influence"] == 0.6);
+    // The redacted request log has the call (provider, model, cost), never the key.
+    bool logged = false;
+    for (const RequestLogEntry& e : f.log.entries()) {
+        logged = logged || (e.provider == "elevenlabs" && e.model == "eleven_text_to_sound_v2" && e.cost == 8000);
+        CHECK(e.requestSummary.find("fixture-only-elevenlabs-key") == std::string::npos);
+        CHECK(e.detail.find("fixture-only-elevenlabs-key") == std::string::npos);
+    }
+    CHECK(logged);
+
+    // The model picks the length: no duration sent, the 30 s estimate must be approved.
+    f.fake.push(asset(kMp3, "audio/mpeg"));
+    CHECK_FALSE(f.ai.generate(model->id, sound(std::nullopt), f.directory, {}, {}, {true, 8000})); // above the run's limit
+    auto picked = f.ai.generate(model->id, sound(std::nullopt), f.directory, {}, {}, {true, 60000});
+    REQUIRE(picked);
+    CHECK_FALSE(Json::parse(f.fake.requests().back().body).contains("duration_seconds"));
+
+    // Something that is not an MP3 (an error page with a 200) is refused, nothing written.
+    f.fake.push(asset("<html>busy</html>", "text/html"));
+    CHECK_FALSE(f.ai.generate(model->id, sound(), f.directory, {}, {}, {true, 8000}));
+}
+
+namespace {
+/// An MP3 of `frames` MPEG-1 Layer III frames (128 kbit/s, 44.1 kHz: 417 bytes and 1152 samples each) after an empty
+/// ID3v2 tag.
+std::string mp3Frames(int frames) {
+    std::string out("ID3\x04\x00\x00\x00\x00\x00\x00", 10);
+    for (int i = 0; i < frames; ++i) {
+        std::string frame(417, '\0');
+        frame[0] = '\xff', frame[1] = '\xfb', frame[2] = '\x90', frame[3] = '\x64';
+        out += frame;
+    }
+    return out;
+}
+} // namespace
+
+// 0.2 follow-up: the estimate assumes the longest sound (or the length asked for); the ledger is settled at the length
+// that came back, measured from the MP3's frames, and never above the approved estimate.
+TEST_CASE("A sound effect is booked at the length that came back, never above the estimate (0.2)", "[ai][generation][net][sfx]") {
+    Fixture f;
+    (void)f.keys.save(*f.models.provider("elevenlabs"), Secret("fixture-only-elevenlabs-key"));
+    const std::string id = "eleven_text_to_sound_v2";
+    const auto month = [] {
+        const auto t = todayUtc();
+        return std::chrono::year_month{t.year(), t.month()};
+    }();
+    // The model picked the length: estimated at 30 s ($0.06), 77 frames came back (2.011 s): booked at that.
+    f.fake.push(asset(mp3Frames(77), "audio/mpeg"));
+    auto picked = f.ai.generate(id, sound(std::nullopt), f.directory, {}, {}, {true, 60000});
+    REQUIRE(picked);
+    CHECK(picked->usage.audioMilliseconds == 2011); // 77 x 1152 / 44100 s
+    CHECK(picked->cost == 4022);                     // 2.011 s at $0.12 a minute, rounded up
+    CHECK(f.spend.spent("elevenlabs", month) == 4022);
+    CHECK(f.spend.reserved("elevenlabs") == 0);
+    // Asked for 4 s, a little more came back (the last frame): booked at the approved 4 s, not above.
+    f.fake.push(asset(mp3Frames(154), "audio/mpeg")); // 4.023 s
+    auto asked = f.ai.generate(id, sound(4.0), f.directory, {}, {}, {true, 8000});
+    REQUIRE(asked);
+    CHECK(asked->usage.audioMilliseconds == 4000);
+    CHECK(asked->cost == 8000);
+    CHECK(f.spend.spent("elevenlabs", month) == 4022 + 8000);
+    // The file on disk is the whole answer.
+    CHECK(std::filesystem::file_size(asked->files.front()) == 10 + 154 * 417);
+}
+
+TEST_CASE("Sound effects respect consent, offline, the no-cloud lock and caps before anything is sent (0.2)", "[ai][generation][security][sfx]") {
+    Fixture f;
+    (void)f.keys.save(*f.models.provider("elevenlabs"), Secret("fixture-only-elevenlabs-key"));
+    const std::string id = "eleven_text_to_sound_v2";
+    SECTION("consent") { CHECK(f.ai.generate(id, sound(), f.directory, {}, {}, {false, 8000}).error().code == AiErrorCode::ConsentRequired); }
+    SECTION("offline") { f.consent.setOfflineMode(true); CHECK_FALSE(f.ai.generate(id, sound(), f.directory, {}, {}, {true, 8000})); }
+    SECTION("no-cloud lock") { f.consent.setProjectLock(true); CHECK_FALSE(f.ai.generate(id, sound(), f.directory, {}, {}, {true, 8000})); }
+    SECTION("cap") { CHECK_FALSE(f.ai.generate(id, sound(), f.directory, {}, {}, {true, 7999})); }
+    SECTION("no cap") { CHECK_FALSE(f.ai.generate(id, sound(), f.directory, {}, {}, {true})); }
+    CHECK(f.fake.requests().empty());
+}

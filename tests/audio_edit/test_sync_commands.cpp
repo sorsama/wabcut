@@ -4,6 +4,7 @@
 // multicam.create's audio sync through MulticamAudioSync (A.5 part 3), stopped at its checkpoints.
 
 #include "CommandHarness.h"
+#include "NestedTestUtil.h"
 #include "SyncTestSignals.h"
 
 #include <wabcut/ai/edit/TranscriptCommands.h>
@@ -144,6 +145,58 @@ TEST_CASE("audio.syncClips reports offsets and confidence; the dry run and Synch
     f.h.session.undo();
     CHECK(f.clip(recorderClip).start() == Ticks{});
     CHECK_FALSE(f.clip(recorderClip).linkGroup.isValid());
+}
+
+TEST_CASE("audio.syncClips syncs a multicam clip and a nested clip by the recording they play (0.2)", "[audio][edit][sync][commands][multicam]") {
+    Fixture f;
+    const ClipId recorderClip = f.h.clip("A2@0");
+    const SequenceId seq = f.h.tl.seq;
+
+    SECTION("a two-angle multicam clip of the camera (and another event) playing the camera from its 2 s") {
+        PlacedMulticam mc;
+        REQUIRE(f.h.session.apply("Multicam", [&](const ProjectState& s) -> std::expected<ProjectState, Error> {
+            mc = placeMulticam(s, seq, {f.h.tl.media('A'), f.h.tl.media('U')}, {Ticks{}, Ticks{}},
+                               TimeRange::fromStartEnd(Ticks::fromSeconds(2), Ticks::fromSeconds(20)), Ticks{});
+            return mc.state;
+        }));
+        const Json params{{"sequence", seq.value}, {"clips", Json::array({mc.video.value, recorderClip.value})}, {"apply", true}};
+        const ProjectSnapshot before = f.h.state();
+        const auto preview = f.h.run(Json{{"command", "audio.syncClips"}, {"params", params}, {"dryRun", true}});
+        REQUIRE(preview.ok());
+        CHECK(*f.h.state() == *before);
+        const std::size_t undo = f.h.session.undoCount();
+        const auto r = f.h.ok("audio.syncClips", params);
+        CHECK(f.h.session.undoCount() == undo + 1);
+        CHECK(r.data["reference"] == 0); // the multicam clip has the picture
+        CHECK(r.data["recordings"][0]["media"][0]["media"] == f.h.tl.media('A').value);
+        // The recorder starts 3.2 s into the event; the clip shows the camera from its 2 s: 1.2 s in.
+        CHECK(std::llabs(f.clip(recorderClip).start().value - (k32 - Ticks::fromSeconds(2)).value) <= kTicksPerSample);
+        const Clip& camera = f.clip(mc.video);
+        CHECK(camera.start() == Ticks{});
+        CHECK(camera.sequence == mc.multicam); // still the multicam clip, its angle kept
+        CHECK(camera.angles == AngleSet::of(0));
+        CHECK(f.clip(recorderClip).linkGroup == camera.linkGroup);
+        f.h.session.undo();
+        CHECK(*f.h.state() == *before);
+    }
+
+    SECTION("a nested clip of the camera") {
+        edit::NestResult nest;
+        REQUIRE(f.h.session.apply("Nest", [&](const ProjectState& s) -> std::expected<ProjectState, Error> {
+            const std::vector<ClipId> camera{f.h.clip("V1@0"), f.h.clip("A1@0")};
+            auto nested = edit::nestClips(s, seq, camera, "Camera");
+            if (!nested) {
+                return std::unexpected(nested.error());
+            }
+            nest = *nested;
+            return nest.edit.state;
+        }));
+        REQUIRE(f.clip(nest.clips.front()).isNested());
+        const auto r = f.h.ok("audio.syncClips", {{"sequence", seq.value}, {"clips", Json::array({nest.clips.front().value, recorderClip.value})}, {"apply", true}});
+        CHECK(r.data["recordings"][1]["synced"] == true);
+        CHECK(std::llabs(f.clip(recorderClip).start().value - k32.value) <= kTicksPerSample);
+        CHECK(f.clip(nest.clips.front()).sequence == nest.nested);
+    }
 }
 
 TEST_CASE("audio.syncClips: the recorder as the reference moves the camera, earlier audio shifts everything, failures",

@@ -101,8 +101,33 @@ Rectangle {
             }
         }
         onActiveFocusChanged: {
-            if (!activeFocus)
+            if (!activeFocus && !editSpelling.visible)
                 root.finish(true)
+        }
+
+        // 0.2: misspelled words underlined; right-click one for suggestions (the editor stays open).
+        SpellHighlighter {
+            objectName: "graphicTextEditSpelling"
+            document: edit.textDocument
+            language: root.info.language ?? ""
+            color: Theme.danger
+        }
+        TapHandler {
+            acceptedButtons: Qt.RightButton
+            onTapped: eventPoint => editSpelling.openAt(eventPoint.position.x, eventPoint.position.y)
+        }
+        SpellingMenu {
+            id: editSpelling
+            target: edit
+            language: root.info.language ?? ""
+            onCorrected: text => {
+                edit.text = text
+                edit.forceActiveFocus()
+            }
+            onClosed: {
+                if (root.visible)
+                    edit.forceActiveFocus()
+            }
         }
     }
 }

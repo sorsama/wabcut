@@ -13,11 +13,14 @@
 //                 0.5..2 and the mean shift to sane limits), by fitting exposure, contrast, temperature, tint and
 //                 saturation. Skin priority weighs skin-hued pixels 4x in both pictures; `currentWeights` /
 //                 `referenceWeights` are the seam for face-region weighting (a face detector can fill them).
+//   faceWeights   0.2 face priority (Premiere's Color Match "Face Detection"): per-pixel weights that make the
+//                 faces' skin count most in both pictures, so the match brings the skin tones together first.
 
 #include <wabcut/color/Grade.h>
 
 #include <array>
 #include <functional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -38,6 +41,19 @@ struct ColorSample {
 /// Up to `maxSamples` pixels on a regular grid (alpha weights; transparent pixels skipped). `weights` (one per pixel,
 /// optional) multiply in.
 std::vector<ColorSample> samplePixels(const ColorImage& image, int maxSamples = 4096, const std::vector<float>* weights = nullptr);
+
+/// A face on a picture: a box in normalised picture coordinates (0..1).
+struct FaceBox {
+    double x = 0.0;
+    double y = 0.0;
+    double width = 0.0;
+    double height = 0.0;
+};
+
+/// Per-pixel weights of `image` (row-major, one per pixel) for face priority: 1 outside the faces; inside the ellipse
+/// inscribed in each box 1 + (faceWeight - 1) x (0.25 + 0.75 x the pixel's skin likelihood), so hair, eyes and the
+/// background in a box count less than skin. Empty when `faces` is.
+std::vector<float> faceWeights(const ColorImage& image, std::span<const FaceBox> faces, double faceWeight = 12.0);
 
 struct OklabStats {
     Rgb mean{0, 0, 0};

@@ -35,11 +35,11 @@ class ProjectController;
 
 class SequenceTabsBridge : public QObject {
     Q_OBJECT
-    /// [{ id: "s…", name, current }] in tab order.
+    /// [{ id: "s…", name, current, label (0.2: the label colour index, 0..15) }] in tab order.
     Q_PROPERTY(QVariantList tabs READ tabs NOTIFY tabsChanged FINAL)
     Q_PROPERTY(QString current READ current NOTIFY tabsChanged FINAL)
     Q_PROPERTY(int count READ count NOTIFY tabsChanged FINAL)
-    /// Every sequence of the project: [{ id, name, durationText, open }] in project order.
+    /// Every sequence of the project: [{ id, name, durationText, open, label }] in project order.
     Q_PROPERTY(QVariantList sequences READ sequences NOTIFY tabsChanged FINAL)
 
 public:
@@ -62,6 +62,9 @@ public:
     Q_INVOKABLE void move(int from, int to);
     /// Focuses the next (+1) or previous (-1) tab, wrapping around.
     Q_INVOKABLE void cycle(int delta);
+    /// 0.2, Premiere's Label on a sequence tab: the sequence's label colour (0..15), one undo step. False when the
+    /// sequence or the index is not valid.
+    Q_INVOKABLE bool setLabel(const QString& sequenceId, int colorIndex);
 
 signals:
     void tabsChanged();

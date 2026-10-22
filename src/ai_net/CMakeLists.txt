@@ -12,6 +12,7 @@ add_library(wabcut_ai_adapters STATIC
     src/GeminiInteractionsChat.cpp
     src/OpenAiResponsesChat.cpp
     src/MediaGenerators.cpp
+    src/SoundEffects.cpp
     src/SpeechSynths.cpp # AI-12: ElevenLabs, OpenAI and Gemini text-to-speech
     src/Transcribers.cpp)
 target_include_directories(wabcut_ai_adapters PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)

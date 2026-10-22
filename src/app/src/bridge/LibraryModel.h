@@ -72,15 +72,30 @@ enum class LibraryColumn : std::uint8_t {
     Path,
     Comment,
     Description,
+    // 0.2 (P.3): Premiere's clip metadata columns (hidden until chosen, like the other optional columns).
+    Scene,
+    Shot,
+    Take,
+    LogNote,
+    Good,
+    Client,
+    TapeName,
+    // Premiere's Status and the camera fields (0.2, P.3).
+    Status,
+    CameraAngle,
+    CameraLabel,
+    CameraModel,
+    ShotDate,
+    ShotLocation,
 };
-inline constexpr std::size_t kLibraryColumnCount = 17;
+inline constexpr std::size_t kLibraryColumnCount = 30;
 
 struct LibraryColumnInfo {
     LibraryColumn column;
     const char* id;    ///< stable key ("name", "fps", ...): saved in the settings and used by QML
     int defaultWidth;  ///< logical pixels
     bool defaultVisible;
-    bool editable;     ///< inline editing in the list (name, comment, description)
+    bool editable;     ///< inline editing in the list (name, comment, description, clip metadata; Good is a check box)
 };
 const std::array<LibraryColumnInfo, kLibraryColumnCount>& libraryColumns();
 std::optional<LibraryColumn> libraryColumnFromId(const QString& id);
@@ -113,6 +128,14 @@ struct LibraryFilter {
     QString to;
     /// The panel's Audio tab: only bins and audio-only media (not a Find filter: active() ignores it).
     bool audioOnly = false;
+    /// 0.2 (P.3, Search Bins): where `text` is looked for - "" (name, comment, description, clip metadata, tape name,
+    /// path) or one of kBinSearchFields; and only media marked Good.
+    QString field;
+    bool good = false;
+    /// 0.2 (P.3): a search bin's query as a filter (its text, field and filters).
+    static LibraryFilter fromSearch(const BinSearch& search);
+    /// The filter as a search bin's query (Create Search Bin from the Find bar).
+    BinSearch toSearch() const;
 
     bool active() const;
     bool operator==(const LibraryFilter&) const = default;
@@ -146,8 +169,10 @@ public:
         FilmstripRole,              ///< hover scrub can show its filmstrip (video with a file)
         BinPathRole,                ///< where it lives ("Footage › Day 1"), shown while filtering
         CommentRole,
-        CountRole,                  ///< bins: items inside (direct children)
+        CountRole,                  ///< bins: items inside (direct children); search bins: the items they find
         DerivedRole,                ///< M5l: the source a stem was separated from (its name), or ""
+        SearchBinRole,              ///< 0.2 (P.3): a search bin
+        GoodRole,                   ///< 0.2 (P.3): media marked Good (the Good column's check box)
     };
 
     explicit LibraryModel(QObject* parent = nullptr);
@@ -180,8 +205,11 @@ public:
     };
 
     /// Lists `bin`'s contents (or, with an active `filter`, every matching item of the project) from `snapshot`.
+    /// A search bin (0.2, P.3) lists what its query finds in the whole project, narrowed by an active `filter`.
     /// Keeps delegates (dataChanged) when the rows are the same items in the same order.
     void refresh(ProjectSnapshot snapshot, BinId bin, const LibraryFilter& filter, const Context& context);
+    /// How many items of the last snapshot `search` finds (a search bin's count).
+    int searchCount(const BinSearch& search) const;
     /// Row text of one cell (tests, the bench, data()).
     QString cellText(int row, LibraryColumn column) const;
     /// Whether `row` passes `filter` (and its Audio scope) with the last refresh's context (status, used, duplicates).

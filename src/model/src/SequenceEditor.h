@@ -87,6 +87,7 @@ public:
 
     ClipId newClipId() { return m_ids.allocate<ClipId>(); }
     LinkGroupId newLinkGroup() { return m_ids.allocate<LinkGroupId>(); }
+    ClipGroupId newClipGroup() { return m_ids.allocate<ClipGroupId>(); }
     TransitionId newTransitionId() {
         const auto id = m_ids.allocate<TransitionId>();
         m_createdTransitions.push_back(id);
@@ -149,6 +150,9 @@ public:
     /// Adds an empty track above the top video track or below the last audio track, with ProjectOps' addTrack defaults
     /// and `role` (audio tracks only). Reported in EditResult::createdTracks.
     TrackId addTrack(TrackKind kind, std::string name, TrackRole role = TrackRole::None);
+    /// p02 audio: adds a submix track of `format` after the last one (Sequence::submixTracks). Reported in
+    /// EditResult::createdTracks.
+    TrackId addSubmixTrack(ChannelFormat format, std::string name);
     /// Marks a link group whose membership changed, so finish() can dissolve it if one clip is left.
     void touchGroup(LinkGroupId group) {
         if (group.isValid()) {

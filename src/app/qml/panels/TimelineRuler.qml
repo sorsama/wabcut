@@ -8,7 +8,8 @@ import QtQuick
 // colours with a bar to their end when they have a duration (M5i: drag a flag to move it, Alt-drag to set its
 // duration, double-click to edit it), the
 // sequence In/Out marks as an accent band along the bottom edge (I/O/X keys) and the playhead as a round white knob.
-// Press/drag scrubs the playhead.
+// Press/drag scrubs the playhead. 0.2: the render bar along the top edge; with Show Audio Time Units the labels
+// count audio samples.
 Item {
     id: root
 
@@ -71,6 +72,36 @@ Item {
                 color: Theme.textTertiary
                 font.family: Theme.fontMono
                 font.pixelSize: Theme.textXs
+            }
+        }
+    }
+
+    // 0.2, the render bar (Premiere's red / yellow / green bar, render.status) along the ruler's top edge: red segments
+    // must be rendered to play in real time, yellow ones may play in real time, green ones are rendered (Render In to
+    // Out). TimelineView recomputes it after edits; plain segments draw nothing.
+    Item {
+        id: renderBar
+        objectName: "renderBar"
+        anchors.left: parent.left
+        anchors.right: parent.right
+        height: Theme.renderBarHeight
+        Accessible.role: Accessible.Indicator
+        Accessible.name: qsTr("Render bar")
+
+        Repeater {
+            model: root.view.renderBarItems
+
+            delegate: Rectangle {
+                required property var modelData
+                readonly property real x0: modelData.start * root.view.pixelsPerSecond - root.view.scrollX
+                readonly property real x1: modelData.end * root.view.pixelsPerSecond - root.view.scrollX
+                objectName: "renderBarSegment_" + modelData.status
+                x: Math.round(Math.max(-1, x0))
+                width: Math.max(Theme.hairline, Math.round(Math.min(root.width + 1, x1)) - x)
+                height: renderBar.height
+                visible: x1 > 0 && x0 < root.width
+                color: modelData.status === "red" ? Theme.renderRed
+                       : modelData.status === "rendered" ? Theme.renderGreen : Theme.renderYellow
             }
         }
     }

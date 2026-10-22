@@ -3,6 +3,8 @@
 
 #include <wabcut/model/EditOps.h>
 
+#include <wabcut/model/EditingOps.h>
+#include <wabcut/model/FrameScaling.h>
 #include <wabcut/model/Nesting.h>
 
 #include "SequenceEditor.h"
@@ -379,19 +381,26 @@ std::expected<ThreePointEdit, Error> resolveThreePointEdit(const ProjectState& s
     } else if (defaultOut) {
         sourceOut = *defaultOut;
     } else {
-        sourceOut = sourceIn + kDefaultStillDuration;
+        sourceOut = sourceIn + media->stillDuration.value_or(kDefaultStillDuration); // P.2: the still's own default
     }
     if (sourceIn < start || sourceOut <= sourceIn || (extent && sourceOut > *extent)) {
         return std::unexpected(invalidArgument("the source In/Out marks are outside the media"));
     }
 
     const Sequence& s = **seq;
+    // P.2: footage interpreted at another frame rate plays at its conform speed (EditingOps.h), so its source and
+    // timeline lengths differ by it.
+    const Speed conform = conformSpeed(*media);
+    const auto timelineLength = [&](Ticks sourceLength) {
+        return conform.isUnity() ? sourceLength : snapToFrame(toTimelineTicks(sourceLength, conform), s.frameRate);
+    };
     ThreePointEdit edit;
     if (s.markIn && s.markOut) {
         const Ticks duration = *s.markOut - *s.markIn;
+        const Ticks sourceDuration = conform.isUnity() ? duration : toSourceTicks(duration, conform);
         edit.at = *s.markIn;
-        edit.sourceRange = (marks.out && !marks.in) ? TimeRange{sourceOut - duration, duration}
-                                                    : TimeRange{sourceIn, duration};
+        edit.sourceRange = (marks.out && !marks.in) ? TimeRange{sourceOut - sourceDuration, sourceDuration}
+                                                    : TimeRange{sourceIn, sourceDuration};
         if (edit.sourceRange.start < start || (extent && edit.sourceRange.end() > *extent)) {
             return std::unexpected(invalidArgument("the source is too short for the marked sequence range"));
         }
@@ -401,9 +410,10 @@ std::expected<ThreePointEdit, Error> resolveThreePointEdit(const ProjectState& s
     } else if (s.markOut) {
         // Back-timed: the edit ends at the sequence Out; drop source frames that would land before 0.
         edit.sourceRange = TimeRange::fromStartEnd(sourceIn, sourceOut);
-        edit.at = *s.markOut - edit.sourceRange.duration;
+        edit.at = *s.markOut - timelineLength(edit.sourceRange.duration);
         if (edit.at.value < 0) {
-            edit.sourceRange = TimeRange::fromStartEnd(sourceIn - edit.at, sourceOut);
+            const Ticks drop = conform.isUnity() ? -edit.at : toSourceTicks(-edit.at, conform);
+            edit.sourceRange = TimeRange::fromStartEnd(std::min(sourceIn + drop, sourceOut - Ticks{1}), sourceOut);
             edit.at = Ticks{};
         }
     } else {
@@ -516,7 +526,12 @@ EditOutcome sourceEdit(const ProjectState& state, SequenceId sequenceId, const S
             }
         }
     }
-    const Ticks duration = source.sourceRange.duration; // 1/1 speed: timeline length == source length
+    // 1/1 speed: timeline length == source length. P.2: interpreted footage runs at its conform speed (EditingOps.h).
+    const Speed conform = media ? conformSpeed(*media) : Speed{1, 1};
+    const Ticks duration = conform.isUnity()
+                               ? source.sourceRange.duration
+                               : std::max(snapToFrame(toTimelineTicks(source.sourceRange.duration, conform), (*seq)->frameRate),
+                                          framesToTicks(1, (*seq)->frameRate));
     if (insert) {
         for (const TrackId id : ed.trackIds()) {
             const Track& t = ed.track(id);
@@ -542,6 +557,15 @@ EditOutcome sourceEdit(const ProjectState& state, SequenceId sequenceId, const S
     }
     // A multicam clip's angles: the ones asked for, else the first angle with that kind of track.
     const auto firstAngle = [&](StreamKind kind) {
+        if (kind == StreamKind::Audio && nested && nested->multicam && nested->multicam->merged) {
+            AngleSet all; // P.2: a merged clip plays every angle's sound
+            for (std::size_t i = 0; i < nested->multicam->angles.size(); ++i) {
+                if (!nested->multicam->angles[i].audio.empty()) {
+                    all.bits |= AngleSet::of(i).bits;
+                }
+            }
+            return all;
+        }
         for (std::size_t i = 0; nested && nested->multicam && i < nested->multicam->angles.size(); ++i) {
             const MulticamAngle& a = nested->multicam->angles[i];
             if (kind == StreamKind::Video ? a.video.isValid() : !a.audio.empty()) {
@@ -566,7 +590,11 @@ EditOutcome sourceEdit(const ProjectState& state, SequenceId sequenceId, const S
         }
         clip.timelineRange = {at, duration};
         clip.sourceIn = source.sourceRange.start;
-        clip.setContent(content);
+        if (!conform.isUnity()) {
+            clip.speed = conform; // P.2: interpreted footage
+        }
+        // P.2 (E5): the item's default media scaling sizes its video clips for this sequence's frame.
+        clip.setContent(media ? scaledClipContent(*media, p.source, ed.sequence(), content) : content);
         clip.linkGroup = group;
         if (media) {
             clip.colorIndex = media->colorIndex; // the item's label (M5k)

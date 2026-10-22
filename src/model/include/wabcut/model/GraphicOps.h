@@ -9,10 +9,12 @@
 // over the whole clip. Keys a preset writes replace the keys already inside its time window; others stay.
 
 #include <wabcut/model/EditOps.h>
+#include <wabcut/model/GraphicResolve.h>
 #include <wabcut/model/Graphics.h>
 #include <wabcut/model/ProjectState.h>
 
 #include <optional>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -82,6 +84,81 @@ std::expected<GraphicLayer, Error> applyPresetToLayer(const GraphicLayer& layer,
 EditOutcome applyGraphicPreset(const ProjectState& state, SequenceId sequence, ClipId clip, std::uint32_t layerId,
                                const PresetOptions& options);
 
+// ---- Type on a path (0.2) ---------------------------------------------------------------------------------------------
+
+/// The paths the Essential Graphics panel offers for type on a path (TextPath), each centred on the layer's origin:
+/// Line (a straight line `width` wide), Arc (the top half of an ellipse `width` wide and `height` tall: text over a
+/// rainbow), Circle (`width` across, clockwise from its left: text round the outside), Wave (two periods of a sine
+/// `width` wide and `height` from crest to trough).
+enum class TextPathShape : std::uint8_t { Line, Arc, Circle, Wave };
+
+std::string_view toString(TextPathShape shape);
+std::optional<TextPathShape> textPathShapeFromString(std::string_view text);
+
+/// The vertices of a TextPathShape (cubic Bezier, tangents relative to their vertex); `closed` is set for a circle.
+std::vector<MaskVertex> textPathVertices(TextPathShape shape, double width, double height, bool* closed = nullptr);
+
+/// Puts text layer `layerId` of a graphic clip on `path` (nullopt: back on straight lines). Errors: NotFound,
+/// InvalidArgument (not a text layer, locked track, graphicProblem of the result).
+EditOutcome setTextPath(const ProjectState& state, SequenceId sequence, ClipId clip, std::uint32_t layerId,
+                        std::optional<TextPath> path);
+
+// ---- Align and Distribute (0.2) ---------------------------------------------------------------------------------------
+
+/// Premiere's Essential Graphics Align and Distribute buttons.
+enum class LayerAlign : std::uint8_t {
+    Left,
+    HorizontalCenter,
+    Right,
+    Top,
+    VerticalCenter,
+    Bottom,
+    DistributeHorizontal, ///< three or more layers: their centres evenly spaced between the outermost two
+    DistributeVertical,
+};
+/// Premiere's "Align to Video Frame" / "Align to Selection" toggle (distributing is always within the selection).
+enum class AlignTo : std::uint8_t { VideoFrame, Selection };
+
+std::string_view toString(LayerAlign align);
+std::optional<LayerAlign> layerAlignFromString(std::string_view text);
+
+/// `graphic` with `layers` aligned (or distributed) as drawn at graphic time `time`: each layer's box on the canvas (a
+/// group: its children's) moves to the video frame's (the design canvas) or the selection's edge or centre. A layer
+/// moves by its Position; an animated Position moves with all its keys, so the animation keeps its shape. Errors:
+/// InvalidArgument (no layers, an unknown or repeated id, fewer than three to distribute, a layer that shows nothing at
+/// that time, a layer whose Position does not move it - pinned on that axis).
+std::expected<Graphic, Error> alignGraphicLayers(const Graphic& graphic, std::span<const std::uint32_t> layers,
+                                                 LayerAlign align, AlignTo to, Ticks time,
+                                                 const ResolveOptions& options);
+/// The same on a graphic clip, at the clip's graphic time `time` (GraphicResolve.h graphicTimeAt).
+EditOutcome alignLayers(const ProjectState& state, SequenceId sequence, ClipId clip, std::span<const std::uint32_t> layers,
+                        LayerAlign align, AlignTo to, Ticks time, const ResolveOptions& options);
+
+// ---- Text styles (0.2) ------------------------------------------------------------------------------------------------
+
+/// The text style a text layer shows: its first run's style, its alignment, background and shadow, named `name`.
+ProjectTextStyle textStyleOf(const GraphicLayer& layer, std::string name);
+/// `layer` (a text layer) in `style`: every run takes the run style, the layer the alignment, background and shadow, and
+/// it follows the style (GraphicLayer::textStyle).
+GraphicLayer withTextStyle(GraphicLayer layer, const ProjectTextStyle& style);
+/// Adds a text style to the project, or replaces the one with its name (case-insensitive): every text layer that follows
+/// it, in every graphic clip of the project (clips on locked tracks excepted), is restyled - Premiere's Push to Text
+/// Style. Errors: InvalidArgument (textStyleProblem, more than kMaxProjectTextStyles).
+EditOutcome saveTextStyle(const ProjectState& state, ProjectTextStyle style);
+/// Premiere's Create Text Style: a text layer's look saved under `name`, the layer following it. Errors: NotFound,
+/// InvalidArgument (not a text layer, a name in use).
+EditOutcome createTextStyle(const ProjectState& state, SequenceId sequence, ClipId clip, std::uint32_t layer, std::string name);
+/// Text layers of a graphic clip take a project text style and follow it. Errors: NotFound (the style, a layer),
+/// InvalidArgument (not a text layer).
+EditOutcome applyTextStyle(const ProjectState& state, SequenceId sequence, ClipId clip, std::span<const std::uint32_t> layers,
+                           std::string_view name);
+/// The ids of a graphic's text layers, those inside groups too, in drawing order (what a text style dropped on a whole
+/// graphic clip styles).
+std::vector<std::uint32_t> textLayerIds(const Graphic& graphic);
+/// Renames a text style; the layers that follow it follow the new name. Errors: NotFound, InvalidArgument (taken, bad).
+EditOutcome renameTextStyle(const ProjectState& state, std::string_view from, std::string to);
+/// Removes a text style: the layers keep their look and follow nothing. Errors: NotFound.
+EditOutcome removeTextStyle(const ProjectState& state, std::string_view name);
 // ---- Templates --------------------------------------------------------------------------------------------------------
 
 /// The value `field` shows now in `graphic` (a clip duration field: `clipDuration`).

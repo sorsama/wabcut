@@ -4,8 +4,11 @@
 #include <wabcut/color/Looks.h>
 #include <wabcut/color/Scopes.h>
 #include <wabcut/command/Schema.h>
+#include <wabcut/model/ColorManagement.h>
+#include <wabcut/model/ColorManagementOps.h>
 #include <wabcut/model/FinishingOps.h>
 #include <wabcut/model/MediaLocator.h>
+#include <wabcut/model/ProjectIO.h>
 #include <wabcut/model/ProjectOps.h>
 
 #include <algorithm>
@@ -177,13 +180,39 @@ Ticks sampleTime(ExecutionContext& c, const Clip& clip, const char* key = "time"
     return std::max(clip.start(), snapToFrame(mid, c.sequence().frameRate));
 }
 
-std::vector<ColorSample> samplesOf(ExecutionContext& c, const ProjectState& state, const FrameRequest& request, const char* what) {
+/// 0.2 face priority: what the match looked at - the faces found on each picture.
+struct FaceReport {
+    bool asked = false;
+    int found = -1; ///< faces on the picture (-1: not asked)
+};
+
+std::vector<ColorSample> samplesOf(ExecutionContext& c, const ProjectState& state, const FrameRequest& request, const char* what,
+                                   FaceReport* faces = nullptr, std::vector<std::string>* warnings = nullptr) {
     auto image = servicesOf(c).frame(state, c.sequenceId(), request);
     if (!image) {
         fail(image.error().code == wabcut::ErrorCode::Cancelled ? ErrorCode::Cancelled : ErrorCode::EditRejected,
              std::string("cannot render ") + what + ": " + image.error().message);
     }
-    auto samples = samplePixels(*image, 4096);
+    std::vector<float> weights;
+    if (faces && faces->asked) {
+        // Face Detection: the faces' skin counts most, so the skin tones match first (Premiere's Color Match).
+        auto* finder = command::findService<FaceFinder>(c.services());
+        if (!finder) {
+            fail(ErrorCode::EditRejected, "Face Detection needs the face detector (Settings > AI > Local models): match without it, or "
+                                          "with \"skinPriority\"");
+        }
+        auto found = finder->faces(*image);
+        if (!found) {
+            fail(found.error().code == wabcut::ErrorCode::Cancelled ? ErrorCode::Cancelled : ErrorCode::EditRejected,
+                 std::string("cannot find the faces on ") + what + ": " + found.error().message);
+        }
+        faces->found = static_cast<int>(found->size());
+        weights = faceWeights(*image, *found);
+        if (found->empty() && warnings) {
+            warnings->push_back(std::string("no face on ") + what + ": it was matched as a whole");
+        }
+    }
+    auto samples = samplePixels(*image, 4096, weights.empty() ? nullptr : &weights);
     if (samples.empty()) {
         fail(ErrorCode::EditRejected, std::string(what) + " shows nothing at that time");
     }
@@ -408,11 +437,14 @@ CommandOutput autoCommand(ExecutionContext& c) {
 struct Reference {
     std::vector<ColorSample> samples;
     std::string what;
+    FaceReport faces;
 };
 
 /// The reference frame: {"clip", "time"} (that clip as it looks, alone) or a sequence time (the whole picture).
-Reference referenceOf(ExecutionContext& c, const ProjectState& state, const Json& ref) {
+Reference referenceOf(ExecutionContext& c, const ProjectState& state, const Json& ref, bool faceDetection = false,
+                      std::vector<std::string>* warnings = nullptr) {
     Reference r;
+    r.faces.asked = faceDetection;
     if (ref.is_object() && ref.contains("clip")) {
         const ClipId clip = c.clipValue(ref["clip"], "/reference/clip");
         const Clip& cl = clipIn(state, c.sequenceId(), clip);
@@ -425,24 +457,27 @@ Reference referenceOf(ExecutionContext& c, const ProjectState& state, const Json
         } else {
             t = std::max(cl.start(), snapToFrame(cl.start() + Ticks{(cl.end() - cl.start()).value / 2}, c.sequence().frameRate));
         }
-        r.samples = samplesOf(c, state, FrameRequest{t, clip, {}}, "the reference clip");
+        r.samples = samplesOf(c, state, FrameRequest{t, clip, {}}, "the reference clip", &r.faces, warnings);
         r.what = "clip " + std::to_string(clip.value) + " at " + c.timecode(t);
         return r;
     }
     const Ticks t = ref.is_object() && ref.contains("time") ? c.timeValue(ref["time"], "/reference/time") : c.timeValue(ref, "/reference");
-    r.samples = samplesOf(c, state, FrameRequest{t, {}, {}}, "the reference frame");
+    r.samples = samplesOf(c, state, FrameRequest{t, {}, {}}, "the reference frame", &r.faces, warnings);
     r.what = "the sequence at " + c.timecode(t);
     return r;
 }
 
 Json matchOne(ExecutionContext& c, ProjectState& state, ClipId clip, EffectInstanceId preferred, const Reference& reference,
-              const MatchOptions& options, std::vector<std::string>& warnings) {
+              const MatchOptions& options, std::vector<std::string>& warnings, bool faceDetection = false) {
     auto [next, effect] = ensureGrade(c, std::move(state), clip, preferred);
     state = std::move(next);
     const Clip& cl = clipIn(state, c.sequenceId(), clip);
     const Ticks t = sampleTime(c, cl, "__none");
     c.checkpoint("matching clip " + std::to_string(clip.value));
-    const auto samples = samplesOf(c, state, FrameRequest{t, clip, effect}, "the clip");
+    FaceReport faces;
+    faces.asked = faceDetection;
+    const std::string what = "clip " + std::to_string(clip.value);
+    const auto samples = samplesOf(c, state, FrameRequest{t, clip, effect}, what.c_str(), &faces, &warnings);
     const GradeSpec base = gradeSpecAt(state, cl, effect, t);
     const MatchResult result = colorMatch(samples, reference.samples, base, options);
     state = setGrade(c, std::move(state), clip, effect,
@@ -453,17 +488,21 @@ Json matchOne(ExecutionContext& c, ProjectState& state, ClipId clip, EffectInsta
         return Json{{"L", rounded(s.mean[0], 0.0001)}, {"a", rounded(s.mean[1], 0.0001)}, {"b", rounded(s.mean[2], 0.0001)},
                     {"sdL", rounded(s.deviation[0], 0.0001)}, {"sdA", rounded(s.deviation[1], 0.0001)}, {"sdB", rounded(s.deviation[2], 0.0001)}};
     };
-    return Json{{"clip", clip.value},
-                {"effect", effect.value},
-                {"params", Json{{"basic.exposure", result.params.exposure},
-                                {"basic.contrast", result.params.contrast},
-                                {"basic.temperature", result.params.temperature},
-                                {"basic.tint", result.params.tint},
-                                {"basic.saturation", result.params.saturation}}},
-                {"before", stats(result.current)},
-                {"after", stats(result.achieved)},
-                {"reference", stats(result.reference)},
-                {"summary", result.summary}};
+    Json out{{"clip", clip.value},
+             {"effect", effect.value},
+             {"params", Json{{"basic.exposure", result.params.exposure},
+                             {"basic.contrast", result.params.contrast},
+                             {"basic.temperature", result.params.temperature},
+                             {"basic.tint", result.params.tint},
+                             {"basic.saturation", result.params.saturation}}},
+             {"before", stats(result.current)},
+             {"after", stats(result.achieved)},
+             {"reference", stats(result.reference)},
+             {"summary", result.summary}};
+    if (faceDetection) {
+        out["faces"] = faces.found;
+    }
+    return out;
 }
 
 MatchOptions matchOptions(ExecutionContext& c) {
@@ -477,17 +516,21 @@ MatchOptions matchOptions(ExecutionContext& c) {
 
 CommandOutput matchCommand(ExecutionContext& c) {
     ProjectState state = c.state();
-    const Reference reference = referenceOf(c, state, c.params()["reference"]);
+    const bool faceDetection = c.boolean("faceDetection", false);
+    CommandOutput out;
+    const Reference reference = referenceOf(c, state, c.params()["reference"], faceDetection, &out.warnings);
     const MatchOptions options = matchOptions(c);
     const EffectInstanceId preferred{static_cast<std::uint64_t>(c.integer("effect", 0))};
-    CommandOutput out;
     Json results = Json::array();
     for (const ClipId clip : clipsOf(c)) {
-        results.push_back(matchOne(c, state, clip, preferred, reference, options, out.warnings));
+        results.push_back(matchOne(c, state, clip, preferred, reference, options, out.warnings, faceDetection));
         out.createdIds.push_back(results.back()["effect"].get<std::uint64_t>());
     }
     out.state = std::move(state);
     out.data = Json{{"reference", reference.what}, {"clips", std::move(results)}};
+    if (faceDetection) {
+        out.data["referenceFaces"] = reference.faces.found;
+    }
     return out;
 }
 
@@ -528,15 +571,19 @@ CommandOutput matchSceneCommand(ExecutionContext& c) {
                                           : "no other clips to match");
     }
     Json ref{{"clip", refClip.value}};
-    const Reference reference = referenceOf(c, state, ref);
-    const MatchOptions options = matchOptions(c);
+    const bool faceDetection = c.boolean("faceDetection", false);
     CommandOutput out;
+    const Reference reference = referenceOf(c, state, ref, faceDetection, &out.warnings);
+    const MatchOptions options = matchOptions(c);
     Json results = Json::array();
     for (const ClipId clip : clips) {
-        results.push_back(matchOne(c, state, clip, {}, reference, options, out.warnings));
+        results.push_back(matchOne(c, state, clip, {}, reference, options, out.warnings, faceDetection));
     }
     out.state = std::move(state);
     out.data = Json{{"reference", reference.what}, {"scope", c.has("clips") ? "clips" : scope}, {"clips", std::move(results)}};
+    if (faceDetection) {
+        out.data["referenceFaces"] = reference.faces.found;
+    }
     return out;
 }
 
@@ -627,6 +674,52 @@ CommandOutput lutList(ExecutionContext& c) {
     CommandOutput out;
     out.state = c.state();
     out.data = Json{{"builtins", std::move(builtins)}, {"assets", std::move(assets)}};
+    return out;
+}
+
+// ---- Export .cube (0.2) ------------------------------------------------------------------------------------------
+
+CommandOutput lutExport(ExecutionContext& c) {
+    const std::filesystem::path file = pathFromUtf8(c.string("path"));
+    std::string ext = pathToUtf8(file.extension());
+    std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    if (ext != ".cube") {
+        fail(ErrorCode::InvalidParams, "the file ends in .cube", Json{{"path", "/path"}});
+    }
+    std::error_code ec;
+    if (std::filesystem::exists(file, ec) && !c.boolean("overwrite", false)) {
+        fail(ErrorCode::EditRejected, "the file exists; pass \"overwrite\": true to replace it", Json{{"path", "/path"}});
+    }
+    const ClipId id = c.clip("clip");
+    const Clip& cl = clipIn(c.state(), c.sequenceId(), id);
+    const EffectInstance* g = gradeOf(cl, EffectInstanceId{static_cast<std::uint64_t>(c.integer("effect", 0))});
+    if (!g) {
+        fail(ErrorCode::NotFound, "clip " + std::to_string(id.value) + " has no colour grade", Json{{"path", "/clip"}});
+    }
+    const Ticks t = sampleTime(c, cl);
+    const GradeSpec spec = evaluateGrade(*g, cl.curveTimeAt(t), LutLibrary::shared().resolver(c.state()));
+    const int size = static_cast<int>(c.integer("size", 33));
+    std::string title = c.string("title");
+    if (title.empty()) {
+        title = cl.name().empty() ? std::string("Wabcut grade") : cl.name();
+    }
+    const Lut lut = gradeToLut(spec, size, title);
+    if (!c.dryRun()) {
+        if (auto written = io::writeFileAtomically(file, writeCube(lut)); !written) {
+            fail(ErrorCode::EditRejected, "cannot write the LUT: " + written.error().message, Json{{"path", "/path"}});
+        }
+    }
+    CommandOutput out;
+    out.state = c.state();
+    out.data = Json{{"path", pathToUtf8(file)},
+                    {"size", lut.size3d},
+                    {"title", lut.title},
+                    {"time", t.value},
+                    {"enabled", g->enabled},
+                    {"leftOut", gradeLutOmissions(spec, *g)}};
+    if (!g->enabled) {
+        out.warnings.push_back("the grade is turned off; the LUT holds it as if it were on");
+    }
     return out;
 }
 
@@ -770,6 +863,139 @@ CommandOutput scopesRead(ExecutionContext& c) {
     return out;
 }
 
+// ---- Colour management (I.9, docs/color.md "Colour management") ----
+
+Json managementJson(const ColorManagement& m) {
+    return Json{{"mode", std::string(toString(m.mode))},
+                {"name", std::string(displayName(m.mode))},
+                {"hdr", m.isHdr()},
+                {"managed", m.managed()},
+                {"peakNits", m.peakNits},
+                {"referenceWhiteNits", m.referenceWhiteNits},
+                {"autoDetectLog", m.autoDetectLog}};
+}
+
+std::vector<std::string> modeIds() {
+    std::vector<std::string> ids;
+    for (const ColorManagementMode m : allColorManagementModes()) {
+        ids.emplace_back(toString(m));
+    }
+    return ids;
+}
+
+std::vector<std::string> inputSpaceIds() {
+    std::vector<std::string> ids{"auto"};
+    for (const InputColorSpace s : allInputColorSpaces()) {
+        ids.emplace_back(toString(s));
+    }
+    return ids;
+}
+
+CommandOutput managementGet(ExecutionContext& c) {
+    CommandOutput out;
+    out.state = c.state();
+    out.data = managementJson(c.state().colorManagement);
+    Json modes = Json::array();
+    for (const ColorManagementMode m : allColorManagementModes()) {
+        modes.push_back(Json{{"id", std::string(toString(m))},
+                             {"name", std::string(displayName(m))},
+                             {"description", std::string(description(m))}});
+    }
+    Json spaces = Json::array();
+    for (const InputColorSpace s : allInputColorSpaces()) {
+        spaces.push_back(Json{{"id", std::string(toString(s))}, {"name", std::string(displayName(s))}});
+    }
+    out.data["modes"] = std::move(modes);
+    out.data["inputSpaces"] = std::move(spaces);
+    return out;
+}
+
+CommandOutput managementSet(ExecutionContext& c) {
+    ColorManagement m = c.state().colorManagement;
+    if (c.has("mode")) {
+        const auto mode = colorManagementModeFromString(c.string("mode"));
+        if (!mode) {
+            fail(ErrorCode::InvalidParams, "unknown colour management \"" + c.string("mode") + "\"", Json{{"path", "/mode"}});
+        }
+        m.mode = *mode;
+    }
+    if (c.has("peakNits")) {
+        m.peakNits = c.number("peakNits");
+    }
+    if (c.has("referenceWhiteNits")) {
+        m.referenceWhiteNits = c.number("referenceWhiteNits");
+    }
+    if (c.has("autoDetectLog")) {
+        m.autoDetectLog = c.boolean("autoDetectLog", true);
+    }
+    CommandOutput out;
+    out.state = c.take(edit::setColorManagement(c.state(), m));
+    out.data = managementJson(m);
+    return out;
+}
+
+/// A video clip's input colour space: its override, what Auto reads (the stream's tags, or the camera log its metadata
+/// names when the project auto-detects log), the detected log, and the one in effect.
+Json inputSpaceJson(const ProjectState& state, const Clip& clip) {
+    const MediaItem* media = state.findMedia(clip.media);
+    const VideoStreamInfo* stream = media && clip.stream.kind == StreamKind::Video && clip.stream.index >= 0 &&
+                                            static_cast<std::size_t>(clip.stream.index) < media->info.video.size()
+                                        ? &media->info.video[static_cast<std::size_t>(clip.stream.index)]
+                                        : nullptr;
+    const ColorManagement& m = state.colorManagement;
+    const bool detect = m.autoDetectLog && m.mode != ColorManagementMode::Disabled;
+    const InputColorSpace automatic = stream ? autoInputColorSpace(*stream, detect) : InputColorSpace::Rec709;
+    const std::optional<InputColorSpace> detected = stream ? detectedLogSpace(*stream) : std::nullopt;
+    const InputColorSpace effective = clip.inputColorSpace().value_or(automatic);
+    return Json{{"clip", clip.id.value},
+                {"override", clip.inputColorSpace() ? Json(std::string(toString(*clip.inputColorSpace()))) : Json(nullptr)},
+                {"auto", std::string(toString(automatic))},
+                {"detected", detected ? Json(std::string(toString(*detected))) : Json(nullptr)},
+                {"effective", std::string(toString(effective))},
+                {"name", std::string(displayName(effective))}};
+}
+
+CommandOutput inputSpaceSet(ExecutionContext& c) {
+    const std::vector<ClipId> clips = clipsOf(c);
+    const std::string name = c.string("space");
+    std::optional<InputColorSpace> space;
+    if (name != "auto") {
+        space = inputColorSpaceFromString(name);
+        if (!space) {
+            fail(ErrorCode::InvalidParams, "unknown input colour space \"" + name + "\"", Json{{"path", "/space"}});
+        }
+    }
+    edit::EditResult r = c.take(edit::setClipInputColorSpace(c.state(), c.sequenceId(), clips, space));
+    CommandOutput out;
+    out.state = std::move(r.state);
+    Json list = Json::array();
+    for (const ClipId id : clips) {
+        list.push_back(inputSpaceJson(out.state, clipIn(out.state, c.sequenceId(), id)));
+    }
+    out.data = Json{{"clips", std::move(list)}};
+    if (out.state.colorManagement.mode == ColorManagementMode::Disabled) {
+        out.warnings.push_back("colour management is disabled, which reads every clip as it is: input colour spaces apply "
+                               "once a colour setup is chosen (color.management.set)");
+    }
+    return out;
+}
+
+CommandOutput inputSpaceGet(ExecutionContext& c) {
+    const std::vector<ClipId> clips = clipsOf(c);
+    CommandOutput out;
+    out.state = c.state();
+    Json list = Json::array();
+    for (const ClipId id : clips) {
+        const Clip& clip = clipIn(c.state(), c.sequenceId(), id);
+        if (clip.stream.kind != StreamKind::Video || clip.isNested()) {
+            fail(ErrorCode::InvalidParams, "clip " + std::to_string(id.value) + " is not a video clip of a media item");
+        }
+        list.push_back(inputSpaceJson(c.state(), clip));
+    }
+    out.data = Json{{"clips", std::move(list)}, {"management", managementJson(c.state().colorManagement)}};
+    return out;
+}
+
 } // namespace
 
 const EffectInstance* gradeOf(const Clip& clip, EffectInstanceId preferred) {
@@ -854,7 +1080,7 @@ void registerColorCommands(command::CommandRegistry& registry) {
          "Makes clips look like a reference frame: \"reference\" is {\"clip\", \"time\"} (that clip as it looks, alone) or a "
          "sequence time (the whole picture). Fits the grade's exposure, contrast, temperature, tint and saturation so the "
          "clip's colour statistics (Oklab mean and spread) move to the reference's, by \"strength\"; \"skinPriority\" weighs "
-         "skin tones more. Editable parameters, one undo step.",
+         "skin tones more, \"faceDetection\" (Premiere's Face Detection) the faces' skin. Editable parameters, one undo step.",
          Capability::EditSequence,
          withSequence({{"clip", clipParam("The clip to change.")},
                        {"clips", clipRefs},
@@ -862,7 +1088,9 @@ void registerColorCommands(command::CommandRegistry& registry) {
                        {"reference", Json{{"type", Json::array({"object", "integer", "string"})},
                                           {"description", "{\"clip\": ..., \"time\": ...} or a sequence time."}}},
                        {"strength", strengthParam()},
-                       {"skinPriority", schema::boolean("Weigh skin tones 4x. Default false.")}},
+                       {"skinPriority", schema::boolean("Weigh skin tones 4x. Default false.")},
+                       {"faceDetection", schema::boolean("Face Detection: find the faces on both pictures and match their skin "
+                                                         "tones first (needs the face detector). Default false.")}},
                       {"reference"}),
          Json{{"clips", Json::array({44, 45})}, {"reference", Json{{"clip", 43}}}}, {}, matchCommand});
     add(registry,
@@ -876,7 +1104,9 @@ void registerColorCommands(command::CommandRegistry& registry) {
                        {"scope", schema::enumeration({"scene", "track", "media"}, "Which clips. Default scene.")},
                        {"clips", clipsParam("Or exactly these clips.")},
                        {"strength", strengthParam()},
-                       {"skinPriority", schema::boolean("Weigh skin tones 4x. Default false.")}},
+                       {"skinPriority", schema::boolean("Weigh skin tones 4x. Default false.")},
+                       {"faceDetection", schema::boolean("Face Detection: find the faces on both pictures and match their skin "
+                                                         "tones first (needs the face detector). Default false.")}},
                       {"reference"}),
          Json{{"reference", Json{{"track", "V1"}, {"time", "00:00:12:00"}}}}, {}, matchSceneCommand});
     add(registry,
@@ -890,6 +1120,24 @@ void registerColorCommands(command::CommandRegistry& registry) {
               {"required", Json::array({"path"})},
               {"additionalProperties", false}},
          Json{{"path", "C:/LUTs/FilmLook.cube"}}, {}, lutImport}, {"path"}));
+    add(registry,
+        command::touchesFiles({"lut.export", 1, "Export .cube",
+         "Writes a clip's colour grade as a 3D LUT .cube file (Premiere's Lumetri panel > Export .cube): \"size\" points per "
+         "side (default 33, as Premiere), display-referred Rec.709 in and out, evaluated at \"time\" (default the clip's "
+         "middle). Every pixel-local part of the grade goes in - input LUT, Basic, Creative, Curves, Color Wheels, the HSL "
+         "secondary through its qualifier; the vignette, the secondary's denoise / blur / sharpen and masks cannot and are "
+         "listed in \"leftOut\". Outputs are clamped to 0..1. Refuses to replace a file unless \"overwrite\"; a dry run writes "
+         "nothing.",
+         Capability::Read,
+         withSequence({{"clip", clipParam("The clip.")},
+                       {"effect", gradeEffectParam()},
+                       {"time", timeParam("When (inside the clip). Default its middle.")},
+                       {"path", schema::string("The .cube file to write.")},
+                       {"size", schema::integer("Lattice points per side, 2..65. Default 33.", 2, kMaxLut3dSize)},
+                       {"title", schema::string("The TITLE line. Default the clip's name.")},
+                       {"overwrite", schema::boolean("Replace an existing file. Default false.")}},
+                      {"clip", "path"}),
+         Json{{"clip", 42}, {"path", "C:/grades/shot42.cube"}}, {}, lutExport}, {"path"}));
     add(registry,
         {"lut.list", 1, "List LUTs",
          "The built-in looks and camera input LUTs (with where their math comes from) and the project's LUT assets (path, "
@@ -927,6 +1175,55 @@ void registerColorCommands(command::CommandRegistry& registry) {
          Capability::Read,
          withSequence({{"time", timeParam("Sequence time. Default 0.")}, {"clip", clipParam("Only this clip, at \"time\" or its middle.")}}),
          Json{{"time", "00:00:10:00"}}, {}, scopesRead});
+    add(registry,
+        {"color.management.get", 1, "Get Colour Management",
+         "The project's colour management, Premiere Pro's sequence Color Setup: \"mode\" (rec709 = Direct Rec.709 (SDR), "
+         "the default; hdr-hlg = Direct HLG (HDR); hdr-pq = Direct PQ (HDR); aces = Wide Gamut (Tone Mapped), ACES 1.3 "
+         "with the grade in ACEScct; wide-gamut = Wide Gamut (No Tone Mapping); off = Disable Color Management), the HDR "
+         "peak and graphics (reference) white in nits, whether log media is auto-detected, and the modes and input colour "
+         "spaces there are (ids, names and descriptions, for color.management.set and color.inputSpace.set).",
+         Capability::Read, Json{{"type", "object"}, {"properties", Json::object()}, {"additionalProperties", false}}, Json::object(),
+         {}, managementGet});
+    add(registry,
+        {"color.management.set", 1, "Set Colour Management",
+         "Sets the project's colour management (Premiere Pro's sequence Color Setup): \"mode\" rec709 (Direct Rec.709 "
+         "(SDR), the default: SDR media as it is, HDR media and log clips tone-mapped into SDR on input), hdr-hlg or hdr-pq "
+         "(Direct HLG / PQ (HDR): a linear Rec.2020 working space, SDR clips and titles at the graphics white; the monitor "
+         "shows a tone-mapped SDR preview, HDR exports carry HLG or PQ), aces (Wide Gamut (Tone Mapped): ACES 1.3, clips "
+         "read through their input colour space into ACEScg, the grade works in ACEScct, the ACES output transforms), "
+         "wide-gamut (Wide Gamut (No Tone Mapping): ACEScg, clipped at the output's white) or off (Disable Color "
+         "Management: no conversion at all). \"peakNits\" (100..10000, default 1000) is the HDR mastering peak, "
+         "\"referenceWhiteNits\" (80..400, default 203) the graphics white where SDR white lands, \"autoDetectLog\" "
+         "(default true) reads clips as the camera log their metadata names. Only the given fields change. One undo step.",
+         Capability::EditProject,
+         Json{{"type", "object"},
+              {"properties", Json{{"mode", schema::enumeration(modeIds(), "The colour setup.")},
+                                  {"peakNits", schema::number("HDR mastering peak in nits, 100..10000.", 100.0, 10000.0)},
+                                  {"referenceWhiteNits", schema::number("HDR graphics (reference) white in nits, 80..400.", 80.0, 400.0)},
+                                  {"autoDetectLog", schema::boolean("Read clips as the camera log their metadata names.")}}},
+              {"additionalProperties", false}},
+         Json{{"mode", "hdr-pq"}, {"peakNits", 1000}}, {}, managementSet});
+    add(registry,
+        {"color.inputSpace.set", 1, "Set Input Colour Space",
+         "Sets how video clips' pictures are read into the working space (Premiere Pro's Override Media Color Space): "
+         "\"auto\" follows the stream's colour tags (BT.709, BT.2020, PQ, HLG, sRGB, linear) and the camera log the "
+         "media's metadata names, or a space by id - camera log formats are chosen here when the metadata does not say "
+         "(s-log3, s-log3-cine, v-log, logc3, logc4, canon-log3, canon-log2, red-log3g10, apple-log, acescct; "
+         "color.management.get lists them all). Direct Rec.709 tone-maps log and HDR clips into SDR. One undo step for "
+         "every clip.",
+         Capability::EditSequence,
+         withSequence({{"clip", clipParam("The clip.")}, {"clips", clipRefs},
+                       {"space", schema::enumeration(inputSpaceIds(), "The input colour space, or \"auto\".")}},
+                      {"space"}),
+         Json{{"clips", Json::array({42, 43})}, {"space", "s-log3-cine"}}, {}, inputSpaceSet});
+    add(registry,
+        {"color.inputSpace.get", 1, "Get Input Colour Space",
+         "Video clips' input colour spaces: the override (null = auto), what auto reads (the stream's tags or the detected "
+         "camera log), the log the media's metadata names (null = none), and the one in effect, with the project's colour "
+         "management. Read only.",
+         Capability::Read,
+         withSequence({{"clip", clipParam("The clip.")}, {"clips", clipRefs}}),
+         Json{{"clip", 42}}, {}, inputSpaceGet});
 }
 
 } // namespace wabcut::color

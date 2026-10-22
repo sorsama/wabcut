@@ -10,6 +10,8 @@
 #include <wabcut/render/ColorPipeline.h>
 #include <wabcut/render/OffscreenRenderer.h>
 #include <wabcut/render/PreparedComposite.h>
+#include <wabcut/render/reference/Image.h>
+#include <wabcut/render/reference/Transitions.h>
 
 #include <array>
 #include <cstdint>
@@ -40,8 +42,22 @@ LinearImage linearFromRgba8(int width, int height, const std::function<std::arra
 
 /// One stack effect, as the compositor runs it on a full-canvas layer with an identity transform.
 LinearImage referenceEffect(const LinearImage& in, const LayerEffect& effect);
-/// A transition mix of A and B (null = transparent, a one-sided transition).
+/// A transition mix of A and B (null = transparent, a one-sided transition): render/reference/Transitions.h.
 LinearImage referenceTransition(const LinearImage* a, const LinearImage* b, const LayerTransition& mix);
+
+/// Pictures and transitions in the reference library's types (render/reference).
+reference::Image toReference(const LinearImage& in);
+LinearImage fromReference(const reference::Image& in);
+reference::TransitionSpec referenceSpec(const LayerTransition& mix);
+
+/// How a rendered picture matches its reference's encoded RGB24 (0.2 library tests): the PSNR, and the fraction of pixels
+/// with a channel more than `tolerance` (of 255) off - a few pixels on either side of a hard threshold may flip between
+/// the GPU's floats and the reference's doubles.
+struct RenderMatch {
+    double psnr = 0.0;
+    double mismatched = 0.0;
+};
+RenderMatch compareToReference(const RenderedImage& image, const std::vector<std::uint8_t>& rgb24, int tolerance = 6);
 /// `top` over `bottom` (premultiplied).
 LinearImage referenceOver(const LinearImage& top, const LinearImage& bottom);
 

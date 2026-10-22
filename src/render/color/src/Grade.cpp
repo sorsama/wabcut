@@ -571,10 +571,12 @@ double toneCurve(const GradeParams& p, double x) {
 }
 
 Rgb gradeMain(const GradeSpec& spec, const Rgb& linear) {
+    const auto encodeW = [&](const Rgb& l) { return encodeWorking(l, spec.encoding); };
+    const auto decodeW = [&](const Rgb& v) { return decodeWorking(v, spec.encoding); };
     const GradeParams& p = spec.params;
     Rgb c = linear;
     if (spec.inputLutActive()) {
-        c = decode709(applyLut(*spec.inputLut, encode709(c), spec.interpolation));
+        c = decodeW(applyLut(*spec.inputLut, encodeW(c), spec.interpolation));
     }
     if (spec.basicActive()) {
         if (p.temperature != 0 || p.tint != 0) {
@@ -588,16 +590,16 @@ Rgb gradeMain(const GradeSpec& spec, const Rgb& linear) {
             }
         }
         if (p.highlights != 0 || p.shadows != 0 || p.whites != 0 || p.blacks != 0) {
-            Rgb e = encode709(c);
+            Rgb e = encodeW(c);
             const double y = luma(e);
             const double d = toneCurve(p, y) - y;
-            c = decode709({e[0] + d, e[1] + d, e[2] + d});
+            c = decodeW({e[0] + d, e[1] + d, e[2] + d});
         }
         if (p.saturation != 100 || p.vibrance != 0) {
-            c = saturate(c, encode709(c), p.saturation, p.vibrance);
+            c = saturate(c, encodeW(c), p.saturation, p.vibrance);
         }
     }
-    Rgb e = encode709(c);
+    Rgb e = encodeW(c);
     if (spec.creativeActive()) {
         if (spec.look && !spec.look->empty()) {
             const Rgb l = applyLut(*spec.look, e, spec.interpolation);
@@ -683,10 +685,10 @@ double denoiseThreshold(double matte) { return smoothstep(0.25, 0.75, matte); }
 double denoiseSigma(const GradeParams& p) { return std::max(0.0, p.denoise) / 10.0; }
 double refineBlurSigma(const GradeParams& p) { return std::max(0.0, p.blur) / 3.0; }
 
-Rgb applySecondary(const GradeParams& p, const Rgb& display, double matte, const Rgb& blurred) {
+Rgb applySecondary(const GradeParams& p, const Rgb& display, double matte, const Rgb& blurred, GradeEncoding encoding) {
     Rgb c = display;
     if (p.hslTemperature != 0 || p.hslTint != 0) {
-        c = encode709(mul(cachedWhiteBalance(p.hslTemperature, p.hslTint), decode709(c)));
+        c = encodeWorking(mul(cachedWhiteBalance(p.hslTemperature, p.hslTint), decodeWorking(c, encoding)), encoding);
     }
     if (p.hslContrast != 0) {
         const double k = 1.0 + p.hslContrast / 100.0;
@@ -720,9 +722,9 @@ Rgb applyVignette(const GradeParams& p, const Rgb& linear, double qx, double qy,
 Rgb gradePixel(const GradeSpec& spec, const Rgb& linear, double qx, double qy, double aspect) {
     Rgb e = gradeMain(spec, linear);
     if (spec.hslActive()) {
-        e = applySecondary(spec.params, e, qualifierMatte(spec.params, e), e);
+        e = applySecondary(spec.params, e, qualifierMatte(spec.params, e), e, spec.encoding);
     }
-    Rgb c = decode709(e);
+    Rgb c = decodeWorking(e, spec.encoding);
     if (spec.vignetteActive()) {
         c = applyVignette(spec.params, c, qx, qy, aspect);
     }

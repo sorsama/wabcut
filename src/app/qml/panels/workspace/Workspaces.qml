@@ -41,6 +41,7 @@ QtObject {
     // on its tab (design language v3; Theme.hue, "accent" follows the accent).
     readonly property var catalog: [
         { key: "library", label: qsTr("Library"), icon: "library", browser: true, column: "left", hue: "blue" },
+        { key: "mediaBrowser", label: qsTr("Media Browser"), icon: "folder-open", browser: true, column: "left", hue: "blue" },
         { key: "effects", label: qsTr("Effects"), icon: "sparkles", browser: true, column: "left", hue: "lime" },
         { key: "captions", label: qsTr("Transcript"), icon: "captions", browser: true, column: "left", hue: "pink" },
         { key: "audio", label: qsTr("Audio Tools"), icon: "audio-lines", browser: true, column: "left", hue: "mint" },
@@ -48,6 +49,8 @@ QtObject {
         { key: "graphics", label: qsTr("Callouts"), icon: "layers", browser: true, column: "left", hue: "pink" },
         { key: "highlights", label: qsTr("Highlights"), icon: "zap", browser: true, column: "left", hue: "orange" },
         { key: "markers", label: qsTr("Markers"), icon: "bookmark", browser: true, column: "left", hue: "pink" },
+        { key: "metadata", label: qsTr("Metadata"), icon: "tag", browser: true, column: "left", hue: "blue" },
+        { key: "production", label: qsTr("Production"), icon: "folders", browser: true, column: "left", hue: "violet" },
         { key: "review", label: qsTr("Review"), icon: "message-square", browser: true, column: "left", hue: "blue" },
         { key: "shorts", label: qsTr("Shorts"), icon: "clapperboard", browser: true, column: "left", hue: "orange" },
         { key: "takes", label: qsTr("Takes"), icon: "repeat", browser: true, column: "left", hue: "violet" },

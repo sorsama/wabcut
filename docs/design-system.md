@@ -913,6 +913,12 @@ unlocked sync-locked track.
   along the bottom of video that reuses another clip's frames, one colour per source), clip markers, the snap
   indicator.
 - **Selection:** linked selection; Alt inverts it for one click. The chain button in the Tracks header toggles it too.
+- **0.2:** Video fade handles and Audio fade handles (Premiere's Show Video / Audio Fade Handles; the handles show on
+  selected clips and the clip under the pointer), Sequence label colour (a swatch of the label on each sequence tab,
+  off by default; the tab's right-click Label menu), Audio time units (`Monitors.audioTimeUnits`, shared with the
+  Program Monitor's menu).
+- **Render bar (0.2):** a 3 px bar along the ruler's top edge in `Theme.renderRed` / `renderYellow` / `renderGreen`
+  (render.status's segments), redrawn a moment after edits and when Render In to Out finishes.
 - **Track heights:** expand all, minimise all, reset, and the presets.
 - **Persistence:** all of it is saved in `Preferences` (timeline/*).
 
@@ -926,7 +932,8 @@ unlocked sync-locked track.
 - Effect Controls has a collapsible Time remapping section with source-time and speed graphs, key interpolation,
   and presets for ramp in, ramp out, ramp in-out, hold and reverse at the playhead. Up/Down chooses a graph key,
   Left/Right moves it, Insert adds at the playhead and Delete removes it.
-- Frame sampling is implemented. Frame blending is shown disabled. Audio plays only in straight forward 100%
+- Time Interpolation (Frame Sampling, Frame Blending, Optical Flow; P.2, docs/motion.md) is the section's menu button,
+  the clip menu's submenu and the Speed/Duration dialog's segmented control. Audio plays only in straight forward 100%
   segments; ramps, holds, reverse and other speeds are silent under C.6's policy.
 - The timeline keeps its batched scene graph: speed bands add mesh geometry only while enabled.
 
@@ -1042,7 +1049,9 @@ unlocked sync-locked track.
   (type, label, transcribed, offline, with proxy, AI-generated, unused, duplicates, file date) are chips, the active
   ones on the accent fill. Any of them lists matches from every bin, each with its bin path. With Smart on (AI-8) the
   smart results replace the grid and the same filters narrow them.
-- **Housekeeping (the tools menu):** hover scrub; Show unused media / Remove unused media (a confirmation popover; one
+- **Housekeeping (the tools menu):** Import image sequence… (0.2: ImageSequenceDialog, the first still and a frame rate
+  as pill tabs, 29.97 selected); Larger / Smaller thumbnails (0.2, Premiere's Project panel zoom: the card size, 0.5x to 2x
+  in quarter steps, also Ctrl+wheel over the grid; per user); hover scrub; Show unused media / Remove unused media (a confirmation popover; one
   undo step; the files stay on disk); Show duplicate media (the same file content imported twice; subclips do not
   count); Make subclip. Reveal in File Explorer (Finder on macOS) is in the item menu.
 - **Proxies (I.3) and analysis:** proxy state from MediaReadiness; transcript, search index and shot detection from a
@@ -1058,7 +1067,10 @@ unlocked sync-locked track.
   reverse, freeze frame, or the time-remap segment "segment 2 of 3, 200 % forward"), a transition in progress with
   its side and progress, opacity and motion, the effect stack (applied, off in the project, bypassed because this
   version cannot run it, bypassed for the preview) with each effect's masks, the grade's active stages (input LUT →
-  basic → creative → curves → wheels → HSL → vignette), redactions, and "covered by an opaque layer above".
+  basic → creative → curves → wheels → HSL → vignette), redactions, and "covered by an opaque layer above". 0.2: what
+  a Border (width, colour, opacity), an Ultra Key (key colour, output, matte generation and cleanup, spill) and a Track
+  Matte Key (the matte track, alpha or luma, reversed, or why the layer shows nothing) do at the frame, the blend mode,
+  and a layer that is another layer's Track Matte or second picture (not drawn itself).
 - **Sound, A1 first:** the source timecode and sample, why a clip is silent (track off or muted, another soloed, the
   clip disabled, offline, or not 100 % forward under C.6), the gain chain (clip volume and pan, the A.3 track fader
   and pan, the master fader),

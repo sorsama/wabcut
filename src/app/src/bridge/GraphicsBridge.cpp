@@ -142,6 +142,11 @@ ParamValue* paramAt(GraphicLayer& l, std::string_view path) {
         return &l.shape.trimOffset;
     if (path == "stroke.width")
         return &l.shape.stroke.width;
+    // 0.2, type on a path: its margins (keyframe the first to send the text along the path).
+    if (path == "text.onPath.firstMargin" && l.text.path)
+        return &l.text.path->firstMargin;
+    if (path == "text.onPath.lastMargin" && l.text.path)
+        return &l.text.path->lastMargin;
     return nullptr;
 }
 
@@ -1138,11 +1143,47 @@ void GraphicsBridge::rebuild() {
 
 void GraphicsBridge::setSelectedLayer(int id) {
     const auto value = static_cast<std::uint32_t>(std::max(0, id));
-    if (value == m_selectedLayer)
+    if (value == m_selectedLayer && m_extraLayers.empty())
         return;
     m_selectedLayer = value;
+    m_extraLayers.clear();
     emit selectedLayerChanged();
     rebuildLayer();
+}
+
+QVariantList GraphicsBridge::selectedLayers() const {
+    QVariantList out;
+    if (m_selectedLayer == 0)
+        return out;
+    out << static_cast<int>(m_selectedLayer);
+    for (const std::uint32_t id : m_extraLayers)
+        out << static_cast<int>(id);
+    return out;
+}
+
+void GraphicsBridge::toggleLayerSelected(int id) {
+    const auto value = static_cast<std::uint32_t>(std::max(0, id));
+    if (value == 0)
+        return;
+    if (m_selectedLayer == 0) {
+        setSelectedLayer(id);
+        return;
+    }
+    if (value == m_selectedLayer) {
+        if (m_extraLayers.empty())
+            return;
+        m_selectedLayer = m_extraLayers.front();
+        m_extraLayers.erase(m_extraLayers.begin());
+        emit selectedLayerChanged();
+        rebuildLayer();
+        return;
+    }
+    const auto it = std::find(m_extraLayers.begin(), m_extraLayers.end(), value);
+    if (it != m_extraLayers.end())
+        m_extraLayers.erase(it);
+    else
+        m_extraLayers.push_back(value);
+    emit selectedLayerChanged();
 }
 
 void GraphicsBridge::rebuildLayer() {
@@ -1187,7 +1228,9 @@ void GraphicsBridge::rebuildLayer() {
                 edges << QStringLiteral("right");
             if (l->pin->edges & LayerPin::kBottom)
                 edges << QStringLiteral("bottom");
-            out.insert(QStringLiteral("pin"), QVariantMap{{QStringLiteral("target"), static_cast<int>(l->pin->target)}, {QStringLiteral("edges"), edges}});
+            // 0.2: -1 = the video frame (pinTargets).
+            const int target = l->pin->target == LayerPin::kVideoFrame ? -1 : static_cast<int>(l->pin->target);
+            out.insert(QStringLiteral("pin"), QVariantMap{{QStringLiteral("target"), target}, {QStringLiteral("edges"), edges}});
         }
         if (l->kind == LayerKind::Text) {
             const TextContent& text = l->text;
@@ -1220,7 +1263,16 @@ void GraphicsBridge::rebuildLayer() {
                                                                               {QStringLiteral("padding"), text.background.padding},
                                                                               {QStringLiteral("radius"), text.background.radius}}},
                                    {QStringLiteral("runs"), runs},
-                                   {QStringLiteral("animators"), animators}});
+                                   {QStringLiteral("animators"), animators},
+                                   {QStringLiteral("onPath"),
+                                    text.path ? QVariantMap{{QStringLiteral("enabled"), true},
+                                                            {QStringLiteral("closed"), text.path->closed},
+                                                            {QStringLiteral("reverse"), text.path->reverse},
+                                                            {QStringLiteral("perpendicular"), text.path->perpendicular},
+                                                            {QStringLiteral("forceAlignment"), text.path->forceAlignment},
+                                                            {QStringLiteral("firstMargin"), paramMap(text.path->firstMargin, time)},
+                                                            {QStringLiteral("lastMargin"), paramMap(text.path->lastMargin, time)}}
+                                              : QVariantMap{{QStringLiteral("enabled"), false}}}});
         } else if (l->kind == LayerKind::Shape) {
             const ShapeContent& s = l->shape;
             QVariantList stops;
@@ -1410,7 +1462,7 @@ QString GraphicsBridge::setField(const QString& fieldId, const QVariant& value) 
     return {};
 }
 
-QString GraphicsBridge::addLayer(const QString& kind) {
+QString GraphicsBridge::addLayer(const QString& kind, const QVariantMap& properties) {
     const auto t = target();
     const int width = t ? t->graphic.width : (m_controller && m_controller->currentSequence() ? m_controller->currentSequence()->width : 1920);
     const int height = t ? t->graphic.height : (m_controller && m_controller->currentSequence() ? m_controller->currentSequence()->height : 1080);
@@ -1443,6 +1495,14 @@ QString GraphicsBridge::addLayer(const QString& kind) {
         layer = Json{{"kind", "group"}, {"name", tr("Group").toStdString()}};
     } else {
         return setError(tr("Unknown layer kind"));
+    }
+    // 0.2: the caller's fields (a JSON merge patch over the new layer: the Type tool's click position) go into the same
+    // edit, so creating and placing it is one undo step.
+    if (!properties.isEmpty()) {
+        const Json patch = toJson(properties);
+        if (!patch.is_object())
+            return setError(tr("Not a layer change"));
+        layer.merge_patch(patch);
     }
     if (!t) {
         // Premiere's New Layer: a new graphic clip at the playhead, on the first free video track from the targeted one.
@@ -1653,6 +1713,45 @@ QString GraphicsBridge::setText(int layerId, const QString& text) {
             return std::nullopt;
         },
         "graphicText:" + std::to_string(layerId));
+}
+
+QString GraphicsBridge::setTextPath(int layerId, const QString& shape) {
+    return editLayer(
+        layerId, "Type on a Path",
+        [&](GraphicLayer& l, const Graphic& g) -> std::optional<QString> {
+            if (l.kind != LayerKind::Text)
+                return tr("Not a text layer");
+            if (shape == QLatin1String("none")) {
+                l.text.path.reset();
+                return std::nullopt;
+            }
+            const auto kind = edit::textPathShapeFromString(shape.toStdString());
+            if (!kind)
+                return tr("Unknown path");
+            // Sized to the design canvas: 60 % of its width (a circle: 30 %), an arc a quarter of its height.
+            const double width = (*kind == edit::TextPathShape::Circle ? 0.3 : 0.6) * g.width;
+            const double height = (*kind == edit::TextPathShape::Wave ? 0.1 : 0.25) * g.height;
+            TextPath path = l.text.path.value_or(TextPath{});
+            path.path = {MaskPathKey{Ticks{}, edit::textPathVertices(*kind, width, height, &path.closed), Interpolation::Linear}};
+            l.text.path = std::move(path);
+            return std::nullopt;
+        });
+}
+
+QString GraphicsBridge::setTextPathOption(int layerId, const QString& key, bool on) {
+    return editLayer(layerId, "Type on a Path", [&](GraphicLayer& l, const Graphic&) -> std::optional<QString> {
+        if (l.kind != LayerKind::Text || !l.text.path)
+            return tr("The text is not on a path");
+        if (key == QLatin1String("reverse"))
+            l.text.path->reverse = on;
+        else if (key == QLatin1String("perpendicular"))
+            l.text.path->perpendicular = on;
+        else if (key == QLatin1String("forceAlignment"))
+            l.text.path->forceAlignment = on;
+        else
+            return tr("Unknown path option");
+        return std::nullopt;
+    });
 }
 
 QString GraphicsBridge::setRun(int layerId, int run, const QString& key, const QVariant& value) {
@@ -1913,6 +2012,9 @@ QVariantList GraphicsBridge::pinTargets(int layerId) const {
     auto [list, index] = containerOf(t->graphic.layers, static_cast<std::uint32_t>(layerId));
     if (!list)
         return out;
+    // 0.2: a top-level layer can be pinned to the video frame (Premiere's Pin To: Video Frame; id -1 here).
+    if (list == &t->graphic.layers)
+        out.append(QVariantMap{{QStringLiteral("id"), -1}, {QStringLiteral("name"), tr("Video Frame")}});
     for (std::size_t i = list->size(); i-- > 0;) {
         if (i == index)
             continue;
@@ -1936,7 +2038,8 @@ QString GraphicsBridge::setPin(int layerId, int pinTo, const QStringList& edges)
                                                : 0;
     }
     std::array<double, 4> offsets{0.0, 0.0, 0.0, 0.0};
-    if (pinTo > 0 && mask != 0) {
+    const bool toFrame = pinTo == -1; // 0.2: the video frame
+    if ((pinTo > 0 || toFrame) && mask != 0) {
         // Where both are now (canvas pixels at the playhead): the pin keeps the layer there.
         const ProjectSnapshot snap = m_controller->snapshot();
         ResolveOptions options;
@@ -1953,17 +2056,17 @@ QString GraphicsBridge::setPin(int layerId, int pinTo, const QStringList& edges)
         if (const GraphicLayer* l = t->graphic.findLayer(static_cast<std::uint32_t>(pinTo)))
             collectIds(*l, theirs);
         const auto a = canvasBox(list, mine);
-        const auto b = canvasBox(list, theirs);
+        const auto b = toFrame ? std::optional<QRectF>(QRectF(0, 0, t->graphic.width, t->graphic.height)) : canvasBox(list, theirs);
         if (a && b)
             offsets = {a->left() - b->left(), a->top() - b->top(), a->right() - b->right(), a->bottom() - b->bottom()};
     }
-    return editLayer(layerId, pinTo > 0 && mask != 0 ? "Pin Graphic Layer" : "Unpin Graphic Layer",
+    return editLayer(layerId, (pinTo > 0 || toFrame) && mask != 0 ? "Pin Graphic Layer" : "Unpin Graphic Layer",
                      [&](GraphicLayer& l, const Graphic&) -> std::optional<QString> {
-                         if (pinTo <= 0 || mask == 0) {
+                         if ((pinTo <= 0 && !toFrame) || mask == 0) {
                              l.pin.reset();
                          } else {
                              LayerPin pin;
-                             pin.target = static_cast<std::uint32_t>(pinTo);
+                             pin.target = toFrame ? LayerPin::kVideoFrame : static_cast<std::uint32_t>(pinTo);
                              pin.edges = mask;
                              pin.offsets = offsets;
                              l.pin = pin;

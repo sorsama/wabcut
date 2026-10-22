@@ -6,7 +6,10 @@
 #include <wabcut/command/Registry.h>
 #include <wabcut/command/Schema.h>
 #include <wabcut/model/Graphics.h>
+#include <wabcut/model/Sequence.h>
+#include <wabcut/model/TimeInterpolation.h>
 
+#include <filesystem>
 #include <functional>
 #include <initializer_list>
 #include <optional>
@@ -27,6 +30,14 @@ void registerSourceCommands(CommandRegistry& registry);
 void registerMarkerCommands(CommandRegistry& registry);
 /// Caption workshop (C.7): caption tracks and cues, styles and presets, speakers.
 void registerCaptionCommands(CommandRegistry& registry);
+/// captions.import (one command, CatalogInterchange.cpp; 0.2 graphics folded in): a .srt, .vtt or timed .txt file
+/// read leniently into a new caption track (nullopt: none of them, or no cue in it), and the placing of a
+/// reader's cues by the same rules: "offset", overlaps trimmed to the next cue, 4096-byte cues, at most
+/// kMaxCaptionCues, "name" / "language" / "preset" (CatalogCaptions.cpp). `extra` joins the result's data.
+std::optional<CommandOutput> importCaptionFileCues(ExecutionContext& c);
+CommandOutput placeImportedCaptions(ExecutionContext& c, const std::filesystem::path& file,
+                                    const std::vector<CaptionCue>& cues, std::string language,
+                                    std::optional<CaptionStyle> style, Json extra);
 /// Nested sequences and multicam (C.8): sequence.nest / unnest, clip.openNested, multicam.*.
 void registerNestingCommands(CommandRegistry& registry);
 /// Version history, review notes and packages, project merge (C.9): history.*, review.*, project.merge.
@@ -35,6 +46,9 @@ void registerCollaborationCommands(CommandRegistry& registry);
 void registerClipboardCommands(CommandRegistry& registry);
 /// Library organisation (C.11, over the M5k ops): bin.*, media.setAttributes / makeSubclip / setSubclip.
 void registerLibraryCommands(CommandRegistry& registry);
+/// 0.2 (P.3): the Project panel - Search Bins, the Freeform view, XMP, importing from another project
+/// (CatalogProjectPanel.cpp).
+void registerProjectPanelCommands(CommandRegistry& registry);
 /// Motion graphics (C.13): graphic.*, template.*, brand.* and lottie.import.
 void registerGraphicsCommands(CommandRegistry& registry);
 /// Interchange (X.1): interchange.export.
@@ -46,6 +60,23 @@ void registerLayoutCommands(CommandRegistry& registry);
 /// C.16 (gaming): clip.instantReplay, clip.zoomPunch, clip.shake, sequence.removeDeadTime, sequence.makeVersion
 /// (CatalogGaming.cpp).
 void registerGamingCommands(CommandRegistry& registry);
+/// P.2 (E5): Premiere's editing and sequence commands - frame scaling, duplicates, sequence settings, replace edits,
+/// subsequences, through edits, gaps, frame hold options, merged clips, footage interpretation (CatalogEditing.cpp).
+void registerEditingCommands(CommandRegistry& registry);
+/// P.2: clip.setTimeInterpolation (CatalogMotion.cpp).
+void registerMotionCommands(CommandRegistry& registry);
+/// P.2: the Time Interpolation "method" param ("frameSampling", "frameBlending", "opticalFlow") and its value (fails
+/// with InvalidParams on another name).
+Json timeInterpolationParam(std::string description);
+TimeInterpolation timeInterpolationValue(ExecutionContext& context, std::string_view key);
+/// 0.2: export.* - Quick Export, the export queue, user presets, watch folders (CatalogExport.cpp, ExportServices.h).
+void registerExportCommands(CommandRegistry& registry);
+/// P.2 (E6): the Source and Program Monitors: clip.setMotion, sequence.exportFrame, source.exportFrame (CatalogMonitor.cpp).
+void registerMonitorCommands(CommandRegistry& registry);
+/// 0.2: effect presets, custom bins and favourites, effects.* (CatalogEffects.cpp).
+void registerEffectsLibraryCommands(CommandRegistry& registry);
+/// 0.2 timeline parity: clip.group, clip.ungroup, clip.setFade (CatalogTimeline.cpp).
+void registerTimelineCommands(CommandRegistry& registry);
 
 /// Adds a built-in command; a failure is a programming error caught by the catalog tests.
 void addBuiltin(CommandRegistry& registry, CommandSpec spec);

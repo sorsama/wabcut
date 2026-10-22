@@ -81,7 +81,34 @@ const ProjectState& editedState(const Result& result) {
 } // namespace detail
 
 class EditSession {
+private:
+    struct Step {
+        std::string label;
+        ProjectSnapshot state; // undo stack: state before the step; redo stack: state after it
+        std::string mergeKey;
+        std::size_t bytes = 0; // undo stack: estimated bytes `state` keeps alive beyond its successor
+    };
+
 public:
+    /// 0.2 (P.3): a project taken out of the session with its undo and redo history (park), to put back later
+    /// (restore): several projects open at once, one of them in the session. Opaque; movable.
+    class Parked {
+    public:
+        Parked() = default;
+        /// The project as it was parked (its current state).
+        const ProjectSnapshot& snapshot() const { return m_state; }
+        std::size_t undoCount() const { return m_undo.size(); }
+        std::size_t redoCount() const { return m_redo.size(); }
+
+    private:
+        friend class EditSession;
+        ProjectSnapshot m_state;
+        std::deque<Step> m_undo;
+        std::vector<Step> m_redo;
+        std::size_t m_undoBytes = 0;
+        std::uint64_t m_idHighWater = 1;
+    };
+
     explicit EditSession(ProjectState initial = {}, EditSessionOptions options = {});
     ~EditSession();
     EditSession(const EditSession&) = delete;
@@ -137,6 +164,10 @@ public:
     std::optional<std::string> redoLabel() const;
     std::size_t undoCount() const noexcept { return m_undo.size(); }
     std::size_t redoCount() const noexcept { return m_redo.size(); }
+    /// P.2 (E5, the History panel): the labels of the undo steps, oldest first (the last one is undoLabel()), and of the
+    /// redo steps, next first (the first one is redoLabel()).
+    std::vector<std::string> undoLabels() const;
+    std::vector<std::string> redoLabels() const;
     /// Estimated bytes the undo history keeps alive.
     std::size_t undoMemoryBytes() const noexcept { return m_undoBytes; }
 
@@ -153,6 +184,15 @@ public:
 
     /// Replaces the state (new/opened project) and clears the history.
     void reset(ProjectState state);
+
+    /// 0.2 (P.3): takes the current project out with its undo and redo history and leaves `replacement` in its place
+    /// (no history), like reset(): listeners see a Reset change. Ends an open gesture first (it is kept as it is).
+    Parked park(ProjectState replacement = {});
+    /// Puts a parked project back: its state becomes current (listeners see a Reset change), its undo and redo history
+    /// and its id high-water mark return. The session's own history is dropped: park it first to keep it.
+    void restore(Parked parked);
+    /// park() and restore(`other`) in one step: listeners see one Reset change, from this project to the other.
+    Parked exchange(Parked other);
 
     /// The lowest id the next edit may hand out (the high-water mark, never lowered by undo).
     std::uint64_t idHighWater() const noexcept { return m_idHighWater; }
@@ -172,13 +212,6 @@ public:
     void removeListener(ListenerId id);
 
 private:
-    struct Step {
-        std::string label;
-        ProjectSnapshot state; // undo stack: state before the step; redo stack: state after it
-        std::string mergeKey;
-        std::size_t bytes = 0; // undo stack: estimated bytes `state` keeps alive beyond its successor
-    };
-
     std::expected<ChangeSet, Error> commitFrom(const ProjectState& base, std::string_view label,
                                                const ProjectState& next, std::string_view mergeKey);
     void publish(ProjectSnapshot state, ChangeKind kind, std::string_view label, const ChangeSet& changes);

@@ -58,8 +58,11 @@ TEST_CASE("Every command is well formed", "[command][registry]") {
         // The example is valid input (docs and tool definitions show it).
         const auto issues = validateAgainstSchema(spec.params, spec.example);
         CHECK(issues.empty());
-        // Everything that works on a sequence takes the same optional "sequence" parameter.
-        if (spec.name != "media.list" && spec.name != "project.summary" && spec.name != "effect.list") {
+        // Everything that works on a sequence takes the same optional "sequence" parameter. 0.2: the export presets, queue
+        // and watch folders are the host's, not a sequence's.
+        const bool hostExport = spec.name.starts_with("export.preset") || spec.name.starts_with("export.queue.") ||
+                                spec.name.starts_with("export.watchFolder.");
+        if (spec.name != "media.list" && spec.name != "project.summary" && spec.name != "effect.list" && !hostExport) {
             CHECK(spec.params["properties"].contains("sequence"));
         }
         CHECK(toolNameFor(spec.name).size() <= 64);

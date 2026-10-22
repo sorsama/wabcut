@@ -2,9 +2,11 @@
 #include <wabcut/media/VideoDecoder.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cstdlib>
 #include <mutex>
 #include <optional>
+#include <thread>
 
 namespace wabcut::exporter {
 
@@ -36,14 +38,25 @@ std::string_view codecPrefix(VideoCodec codec) {
         return "gif_";
     case VideoCodec::Vp9:
         return "vp9_";
+    case VideoCodec::Png:
+    case VideoCodec::Tiff:
+    case VideoCodec::Dpx:
+    case VideoCodec::Jpeg:
+    case VideoCodec::Targa:
+    case VideoCodec::Exr:
+    case VideoCodec::Animation:
+    case VideoCodec::CineForm:
+        break; // 0.2: software only
     }
-    return "h264_";
+    return "none_";
 }
 
 bool isSoftware(std::string_view name) {
     return name == "libx264" || name == "libx265" || name == "prores_ks" || name == "prores_aw" ||
            name == "prores" || name == "dnxhd" || name == "libx264rgb" || name == "libsvtav1" || name == "libaom-av1" ||
-           name == "librav1e" || name == "gif" || name == "libvpx-vp9" || name == "libvpx";
+           name == "librav1e" || name == "gif" || name == "libvpx-vp9" || name == "libvpx" || name == "png" ||
+           name == "tiff" || name == "dpx" || name == "mjpeg" || name == "targa" || name == "exr" || name == "qtrle" ||
+           name == "cfhd";
 }
 
 /// Hardware encoder names that belong to `codec` ("h264_nvenc" for H264 …); software names are dropped.
@@ -95,7 +108,7 @@ std::optional<std::string> environment(const char* name) {
 }
 
 std::vector<std::string> policy(VideoCodec codec) {
-    if (codec == VideoCodec::DnxHR) {
+    if (codec == VideoCodec::DnxHR || codecPrefix(codec) == "none_") {
         return {};
     }
 #if defined(__APPLE__)
@@ -169,8 +182,44 @@ std::string_view softwareEncoder(VideoCodec codec) {
         return "gif";
     case VideoCodec::Vp9:
         return "libvpx-vp9";
+    case VideoCodec::Png:
+        return "png";
+    case VideoCodec::Tiff:
+        return "tiff";
+    case VideoCodec::Dpx:
+        return "dpx";
+    case VideoCodec::Jpeg:
+        return "mjpeg";
+    case VideoCodec::Targa:
+        return "targa";
+    case VideoCodec::Exr:
+        return "exr";
+    case VideoCodec::Animation:
+        return "qtrle";
+    case VideoCodec::CineForm:
+        return "cfhd";
     }
     return "libx264";
+}
+
+namespace {
+std::atomic<int> g_threadLimit{0};
+} // namespace
+
+void setExportThreadLimit(int threads) {
+    g_threadLimit = std::clamp(threads, 0, 256);
+}
+
+int exportThreadLimit() {
+    return g_threadLimit.load();
+}
+
+int threadLimitForPercent(int percent) {
+    if (percent >= 100 || percent <= 0) {
+        return 0;
+    }
+    const int cores = static_cast<int>(std::max(1u, std::thread::hardware_concurrency()));
+    return std::max(1, cores * percent / 100);
 }
 
 std::vector<std::string> encoderCandidates(VideoCodec codec) {

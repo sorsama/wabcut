@@ -8,6 +8,7 @@
 #include <wabcut/ai/edit/TranscriptCommands.h>
 #include <wabcut/ai/edit/TranscriptEditing.h>
 #include <wabcut/command/ExecutionContext.h>
+#include <wabcut/interchange/Docx.h>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -195,4 +196,139 @@ TEST_CASE("Transcript deletes take the captions with them, in one undo step", "[
           fx.h.sequence(before).captionTracks.front().cues[0].duration);
     fx.h.session.undo();
     CHECK(*fx.h.state() == *before);
+}
+
+#include <filesystem>
+#include <fstream>
+#include <sstream>
+
+TEST_CASE("transcript.export writes text and CSV with timecodes and captions.import reads the text back", "[ai][edit][captions][transcriptExport]") {
+    namespace fs = std::filesystem;
+    Fixture fx;
+    const Json paragraphs = fx.h.ok("transcript.text").data["paragraphs"];
+    REQUIRE(paragraphs.size() == 2);
+    const std::string s0 = paragraphs[0][2];
+    const std::string e0 = paragraphs[0][3];
+    const std::string s1 = paragraphs[1][2];
+    const std::string e1 = paragraphs[1][3];
+    // Without a path the text comes back: Premiere's layout, unnamed speakers numbered from 1.
+    const auto text = fx.h.ok("transcript.export");
+    CHECK(text.data["paragraphs"] == 2);
+    CHECK(text.data["text"] == s0 + " - " + e0 + "\nSpeaker 1\nSo welcome to teh show.\n\n" + s1 + " - " + e1 +
+                                   "\nSpeaker 2\nThanks for having me.\n");
+    CHECK(fx.h.ok("transcript.export", Json{{"speakers", false}}).data["text"] ==
+          s0 + " - " + e0 + "\nSo welcome to teh show.\n\n" + s1 + " - " + e1 + "\nThanks for having me.\n");
+
+    const fs::path dir = fs::path(WABCUT_TEST_OUTPUT_DIR) / "transcript-export";
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+    const auto readAll = [](const fs::path& file) {
+        std::ifstream in(file, std::ios::binary);
+        std::stringstream ss;
+        ss << in.rdbuf();
+        return ss.str();
+    };
+    // CSV, quoted where needed; a dry run writes nothing; an existing file needs "overwrite".
+    fx.h.ok("transcript.correctWord", Json{{"word", 3}, {"text", "the, \"live\""}});
+    const fs::path csv = dir / "talk.csv";
+    REQUIRE(fx.h.run(Json{{"command", "transcript.export"}, {"params", Json{{"path", csv.generic_string()}}}, {"dryRun", true}}).ok());
+    CHECK_FALSE(fs::exists(csv));
+    const auto written = fx.h.ok("transcript.export", Json{{"path", csv.generic_string()}});
+    CHECK(written.data["format"] == "csv");
+    CHECK(readAll(csv) == "Start,End,Speaker,Text\n" + s0 + "," + e0 + ",Speaker 1,\"So welcome to the, \"\"live\"\" show.\"\n" + s1 +
+                              "," + e1 + ",Speaker 2,Thanks for having me.\n");
+    CHECK(fx.h.errorOf("transcript.export", Json{{"path", csv.generic_string()}}) == "EditRejected");
+    CHECK(fx.h.errorOf("transcript.export", Json{{"path", (dir / "talk.doc").generic_string()}}) == "InvalidParams");
+
+    // The text file comes back as a caption track, cue per paragraph.
+    const fs::path txt = dir / "talk.txt";
+    fx.h.ok("transcript.export", Json{{"path", txt.generic_string()}});
+    const auto imported = fx.h.ok("captions.import", Json{{"path", txt.generic_string()}});
+    CHECK(imported.data["cues"] == 2);
+    const auto got = fx.h.ok("captions.get", Json{{"captionTrack", imported.data["captionTrack"]}});
+    REQUIRE(got.data["cues"].size() == 2);
+    CHECK(got.data["cues"][1][2] == "Thanks for having me.");
+}
+
+TEST_CASE("transcript.findReplace corrects every match in one undo step", "[ai][edit][captions][findReplace]") {
+    Fixture fx;
+    const auto fixed = fx.h.ok("transcript.findReplace", Json{{"find", "teh"}, {"replace", "the"}, {"wholeWord", true}});
+    CHECK(fixed.data["replaced"] == 1);
+    CHECK(fx.h.session.undoCount() == 1);
+    CHECK(fx.words() == std::vector<std::string>{"So", "welcome", "to", "the", "show.", "Thanks", "for", "having", "me."});
+    // Across words, any case.
+    fx.h.ok("transcript.findReplace", Json{{"find", "THANKS FOR"}, {"replace", "Thank you for"}});
+    CHECK(fx.words() == std::vector<std::string>{"So", "welcome", "to", "the", "show.", "Thank", "you", "for", "having", "me."});
+    CHECK(fx.h.session.undoCount() == 2);
+    // Match Case and Whole Word.
+    CHECK(fx.h.ok("transcript.findReplace", Json{{"find", "so"}, {"replace", "Well"}, {"matchCase", true}}).data["replaced"] == 0);
+    const auto me = fx.h.ok("transcript.findReplace", Json{{"find", "me"}, {"replace", "us"}, {"wholeWord", true}});
+    CHECK(me.data["replaced"] == 1);
+    CHECK(fx.words().back() == "us.");
+    CHECK(fx.words()[1] == "welcome");
+    // A dry run changes nothing.
+    const ProjectSnapshot before = fx.h.state();
+    REQUIRE(fx.h.run(Json{{"command", "transcript.findReplace"}, {"params", Json{{"find", "the"}, {"replace", "a"}}}, {"dryRun", true}}).ok());
+    CHECK(*fx.h.state() == *before);
+}
+
+TEST_CASE("transcript.export writes a Word document and captions.import reads it back", "[ai][edit][captions][transcriptExport][docx]") {
+    namespace fs = std::filesystem;
+    Fixture fx;
+    const fs::path dir = fs::path(WABCUT_TEST_OUTPUT_DIR) / "transcript-export-docx";
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+    const fs::path docx = dir / "talk.docx";
+    const auto written = fx.h.ok("transcript.export", Json{{"path", docx.generic_string()}});
+    CHECK(written.data["format"] == "docx");
+    std::ifstream in(docx, std::ios::binary);
+    std::stringstream ss;
+    ss << in.rdbuf();
+    const std::string bytes = ss.str();
+    CHECK(bytes.starts_with("PK"));
+    // The document reads as the .txt layout: timecodes, the speaker, the text, a blank paragraph between blocks.
+    const auto text = interchange::readDocxText(bytes);
+    REQUIRE(text);
+    const std::string plain = fx.h.ok("transcript.export").data["text"];
+    CHECK(*text == plain);
+    // Without a path there is nothing to return a Word document in.
+    CHECK(fx.h.errorOf("transcript.export", Json{{"format", "docx"}}) == "InvalidParams");
+    // captions.import reads it into a caption track, speakers included.
+    const auto imported = fx.h.ok("captions.import", Json{{"path", docx.generic_string()}});
+    CHECK(imported.data["cues"] == 2);
+    const auto got = fx.h.ok("captions.get", Json{{"captionTrack", imported.data["captionTrack"]}});
+    REQUIRE(got.data["cues"].size() == 2);
+    CHECK(got.data["cues"][0][2] == "So welcome to teh show.");
+    CHECK(got.data["cues"][1][2] == "Thanks for having me.");
+    // A Word document without timed blocks is refused.
+    const std::vector<interchange::DocxParagraph> notes{{{{"Just some notes", false, false}}}};
+    {
+        std::ofstream out(dir / "notes.docx", std::ios::binary);
+        out << interchange::writeDocx(notes, "notes");
+    }
+    CHECK(fx.h.errorOf("captions.import", Json{{"path", (dir / "notes.docx").generic_string()}}) == "InvalidParams");
+}
+
+TEST_CASE("transcript.find lists the matches and transcript.findReplace replaces one", "[ai][edit][captions][findReplace]") {
+    Fixture fx;
+    // Two matches of "o" ... as words: "so" and "to" contain it; find "o" within words.
+    const auto found = fx.h.ok("transcript.find", Json{{"find", "TO"}, {"wholeWord", true}});
+    REQUIRE(found.data["count"] == 1);
+    CHECK(found.data["matches"][0]["words"] == Json::array({2, 2}));
+    const auto across = fx.h.ok("transcript.find", Json{{"find", "for having"}});
+    REQUIRE(across.data["count"] == 1);
+    CHECK(across.data["matches"][0]["words"] == Json::array({6, 7}));
+    CHECK(across.data["matches"][0]["text"] == "for having");
+    // Replace only the match on word 3; the other "e"s stay.
+    const auto ones = fx.h.ok("transcript.find", Json{{"find", "e"}});
+    CHECK(ones.data["count"].get<int>() >= 3);
+    fx.h.ok("transcript.findReplace", Json{{"find", "teh"}, {"replace", "the"}, {"words", Json::array({3, 3})}});
+    CHECK(fx.words()[3] == "the");
+    CHECK(fx.h.session.undoCount() == 1);
+    // A stale match (the words changed) is refused.
+    CHECK(fx.h.errorOf("transcript.findReplace", Json{{"find", "teh"}, {"replace", "the"}, {"words", Json::array({3, 3})}}) ==
+          "NotFound");
+    // Without Match Case the fold is Unicode's.
+    fx.h.ok("transcript.correctWord", Json{{"word", 1}, {"text", "\xC3\x89""cole"}});
+    CHECK(fx.h.ok("transcript.find", Json{{"find", "\xC3\xA9""COLE"}}).data["count"] == 1);
 }

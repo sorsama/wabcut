@@ -1,0 +1,1 @@
+1{"format":"wabcut-effect-presets","version":1,"presets":[{"name":"Look","duration":254016000000,"effects":[{"id":1,"effect":"wabcut.color.grade","params":{"basic.exposure":{"value":0.5}},"data":{"creative.look":{"text":"file:C:/Looks/a.cube"}}}]}]}

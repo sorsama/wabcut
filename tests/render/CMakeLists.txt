@@ -10,11 +10,15 @@ wabcut_add_test_suite(render
         test_color_math.cpp
         test_compositor.cpp
         test_effects.cpp
+        test_flowmix.cpp # P.2: the flow mix (Optical Flow, Morph Cut) and the stabilizers' layer warp
+        test_transitions.cpp # 0.2: Premiere's transition library
+        test_library_effects.cpp # 0.2: Premiere's video effect library
         test_grade.cpp
         test_masks.cpp
         test_nested.cpp
         test_matte_masks.cpp # AI-14: matte masks (render/Matte.h)
         test_scopes_gpu.cpp
+        test_color_management.cpp # I.9: colour management (ACES, HDR) against the CPU plans
         test_decoded_clip.cpp
         test_mailbox.cpp
         test_offscreen_async.cpp

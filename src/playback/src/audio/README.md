@@ -14,6 +14,7 @@ needs to change for that.
 | `OfflineMixdown.h` | The player's whole mix offline (TrackRenderer per track, mute/solo, mixer, master bus): export and the loudness jobs. Same samples as preview from the same start. |
 | `TimelineAudioPlayer.h` | Plays a sequence's audio tracks through the `AudioEngine`. |
 | `src/audio/NestedMix.h` (internal) | C.8: the sound of a nested or multicam clip, TrackRenderer's source for it: the nested tracks' renderers summed, the nested master stage (not for multicam), silence outside the nested sequence. |
+| `src/audio/SubmixGraph.h` (internal) | p02 (docs/audio.md): submix tracks and sends, shared by the callback and OfflineMixdown: pre/post-fader sends, track outputs, the submixes' chains, faders and panners in processing order, delay compensation of their latency. |
 
 ## Pipeline
 
@@ -36,6 +37,16 @@ audio::Mixer (mute / solo / enable, meters)  →  master bus (Sequence::audioEff
   master stack runs in the callback (the mix only exists there): the feeder publishes it as an immutable program
   (stack copy + EffectChain sharing the processors of unchanged instances) through one atomic pointer, and frees
   retired programs once a render-sequence counter shows the callback is done with them.
+* **Submixes and sends** (p02, docs/audio.md). With routing (`usesSubmixRouting`), the callback runs the track buses
+  through a `SubmixGraph`: each track's pre-fader audio feeds its pre-fader sends, the track fader is applied (in the
+  callback, as always), the post-fader audio feeds the post-fader sends and the
+  track's output (the Mix or a submix), then the submixes run (effects, fader, panner, bus) after everything that feeds
+  them. The graph's program is published like the master stack's; its latency (submix effects, delay-compensated per
+  path) is added to the master read-ahead. OfflineMixdown takes the same path, so export routes like preview. A
+  sequence without routing takes the path above unchanged.
+* **Clip pre-roll** (p02). A voice that starts inside its clip (play, seek, export from mid-clip) first hears the clip
+  from up to its effects' settle time earlier (at most `TrackRendererOptions::maxClipPreroll`, 2 s), so a clip reverb or
+  delay carries on as if playback had run through.
 
 * **Timeline tags, not positions.** Every chunk carries the timeline time of its first frame. The callback
   asks for time `t` (the engine's TransportMap piece) and the stream serves exactly that: it drops stale data

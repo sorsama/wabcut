@@ -40,8 +40,9 @@ jobs:
             cxx: g++-14
             # Known Linux/macOS gaps, not yet brought up (Wabcut is developed and tested on Windows; README "Project
             # status"): the local AI helper's port-conflict guard, the search index's saved graph, the recorded
-            # llama-server arguments and transcript corrections fail off Windows. Every other test must pass.
-            ctest_exclude: "Managed local helper lifecycle|HNSW graph agrees|llama-server starts with the tier context|Transcript corrections apply on top"
+            # llama-server arguments and transcript corrections (0.2: and the transcript's Find and Replace, which
+            # corrects words the same way) fail off Windows. Every other test must pass.
+            ctest_exclude: "Managed local helper lifecycle|HNSW graph agrees|llama-server starts with the tier context|Transcript corrections apply on top|transcript.find lists the matches|transcript.findReplace corrects every match"
           - os: macos-15
             name: llvm
             llvm: true

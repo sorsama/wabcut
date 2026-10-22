@@ -1,5 +1,9 @@
 #include <wabcut/model/Effects.h>
 
+#include "EffectsLibrary.h"
+#include "EffectsMotion.h"
+#include "AudioEffectCatalog.h"
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -278,17 +282,14 @@ constexpr std::array<EffectParamInfo, 2> kWidthParams{{
 }};
 constexpr std::array<EffectParamInfo, 0> kEssentialSoundParams{};
 
-// --- Transitions ---------------------------------------------------------------------------------------
+// --- Audio transitions ---------------------------------------------------------------------------------
 
-constexpr std::array<EffectParamInfo, 2> kWipeParams{{
-    {"angle", "Angle", U::Degrees, 0.0, 0.0, 360.0, false},
-    {"feather", "Border Feather", U::Fraction, 0.0, 0.0, 1.0, false},
-}};
+constexpr std::array<EffectParamInfo, 0> kAudioTransitionParams{};
 
 std::vector<EffectDescriptor> builtinDescriptors() {
     const auto video = EffectKind::Video;
     const auto audio = EffectKind::Audio;
-    return {
+    std::vector<EffectDescriptor> out{
         // Intrinsic (every clip): parameters in ClipProperties.
         {"wabcut.motion", 1, "Transform", "Built-in", video, true, kMotionParams, C::PixelLocal | C::UsesAlpha,
          "Position, scale, rotation and anchor point of the clip (Premiere's Motion)."},
@@ -298,12 +299,12 @@ std::vector<EffectDescriptor> builtinDescriptors() {
          "Clip level in dB. Audio fades are keyframes on it (or audio transitions)."},
         {"wabcut.panner", 1, "Panner", "Built-in", audio, true, kPannerParams, C::None, "Stereo balance."},
         // Video stack.
-        {"wabcut.color.basic", 1, "Basic Correction", "Color", video, false, kBasicCorrectionParams,
+        {"wabcut.color.basic", 1, "Basic Correction", "Color Correction", video, false, kBasicCorrectionParams,
          C::PixelLocal | C::LinearLight,
          "SDR correction: exposure (stops), contrast, saturation (100 = unchanged), temperature and tint."},
-        {"wabcut.vignette", 1, "Vignette", "Color", video, false, kVignetteParams, C::PixelLocal,
+        {"wabcut.vignette", 1, "Vignette", "Color Correction", video, false, kVignetteParams, C::PixelLocal,
          "Darkens (negative amount) or lightens the edges of the frame."},
-        {"wabcut.color.grade", 1, "Color Grade", "Color", video, false, kGradeParams,
+        {"wabcut.color.grade", 1, "Color Grade", "Color Correction", video, false, kGradeParams,
          C::Neighborhood | C::LinearLight,
          "A full grade in one effect, in a fixed order: Basic (input LUT, white balance, exposure, contrast, highlights, "
          "shadows, whites, blacks, saturation, vibrance), Creative (look LUT, faded film, tints, vibrance), Curves (RGB "
@@ -342,6 +343,12 @@ std::vector<EffectDescriptor> builtinDescriptors() {
          "Chroma key (Premiere's Ultra Key): a matte from the distance to the key colour in YCbCr, with matte cleanup "
          "(choke, soften, contrast), spill suppression and colour correction of the foreground. Output the composite, "
          "the alpha channel or the colour channel."},
+    };
+    // 0.2: Premiere's video effect library (EffectsLibrary.cpp), then the audio effects.
+    for (EffectDescriptor& d : detail::libraryVideoEffectDescriptors()) {
+        out.push_back(d);
+    }
+    std::vector<EffectDescriptor> audioAndTransitions{
         // Audio stack.
         {"wabcut.audio.gain", 1, "Gain", "Amplitude", audio, false, kGainParams, C::None, "Gain in dB."},
         {"wabcut.audio.eq3", 1, "Parametric EQ (3-band)", "Filter and EQ", audio, false, kEqParams, C::AudioStateful,
@@ -381,20 +388,28 @@ std::vector<EffectDescriptor> builtinDescriptors() {
          "The Essential Sound panel's record of the clip: its type (data \"type\": dialogue, music, sfx or ambience), the "
          "preset and options applied (\"preset\", \"options\"). It does nothing to the sound; the effects the preset "
          "built follow it in the stack, each marked with its panel section (data \"essentialSound\")."},
-        // Transitions (constant parameters, Transition::params).
-        {"crossDissolve", 1, "Cross Dissolve", "Dissolve", EffectKind::VideoTransition, false, {}, C::TwoInputs,
-         "Blends the outgoing clip into the incoming one."},
-        {"dipToBlack", 1, "Dip to Black", "Dissolve", EffectKind::VideoTransition, false, {}, C::TwoInputs,
-         "Fades the outgoing clip to black, then the incoming clip up from black."},
-        {"dipToWhite", 1, "Dip to White", "Dissolve", EffectKind::VideoTransition, false, {}, C::TwoInputs,
-         "Fades through white."},
-        {"wipe", 1, "Wipe", "Wipe", EffectKind::VideoTransition, false, kWipeParams, C::TwoInputs | C::UsesAlpha,
-         "A straight wipe at an angle (0 = left to right), optionally feathered. Placeholder for the wipe family."},
-        {"constantPower", 1, "Constant Power", "Crossfade", EffectKind::AudioTransition, false, {}, C::TwoInputs,
-         "Equal-power crossfade (Premiere's default audio transition)."},
-        {"constantGain", 1, "Constant Gain", "Crossfade", EffectKind::AudioTransition, false, {}, C::TwoInputs,
-         "Linear-gain crossfade."},
     };
+    for (EffectDescriptor& d : audioAndTransitions) {
+        out.push_back(d);
+    }
+    // Video transitions (constant parameters, Transition::params): Premiere's bins (EffectsLibrary.cpp).
+    for (EffectDescriptor& d : detail::libraryTransitionDescriptors()) {
+        out.push_back(d);
+    }
+    // Audio transitions.
+    out.push_back({"constantPower", 1, "Constant Power", "Crossfade", EffectKind::AudioTransition, false,
+                   kAudioTransitionParams, C::TwoInputs, "Equal-power crossfade (Premiere's default audio transition)."});
+    out.push_back({"constantGain", 1, "Constant Gain", "Crossfade", EffectKind::AudioTransition, false,
+                   kAudioTransitionParams, C::TwoInputs, "Linear-gain crossfade."});
+    out.push_back({"exponentialFade", 1, "Exponential Fade", "Crossfade", EffectKind::AudioTransition, false,
+                   kAudioTransitionParams, C::TwoInputs,
+                   "Fades the outgoing clip out and the incoming clip in, each over a smooth logarithmic curve "
+                   "(log10(1 + 9x)): like Constant Power, but more gradual."});
+    // p02 audio: Premiere Pro's audio effects (AudioEffectCatalog.h; the DSP is wabcut_audio's).
+    audiocatalog::appendAmplitudeEffects(out);
+    audiocatalog::appendFilterEffects(out);
+    audiocatalog::appendTimeEffects(out);
+    return out;
 }
 
 constexpr std::array<std::pair<EffectCapability, std::string_view>, 8> kCapabilityNames{{
@@ -497,6 +512,26 @@ void EffectInstance::setData(EffectData entry) {
     }
 }
 
+std::vector<std::string_view> EffectParamInfo::optionLabels() const {
+    std::vector<std::string_view> out;
+    std::string_view rest = options;
+    while (!rest.empty()) {
+        const std::size_t bar = rest.find('|');
+        out.push_back(rest.substr(0, bar));
+        rest = bar == std::string_view::npos ? std::string_view{} : rest.substr(bar + 1);
+    }
+    return out;
+}
+
+std::string_view EffectParamInfo::optionLabel(double value) const {
+    const double index = value - minValue;
+    if (!isChoice() || !std::isfinite(index) || index < 0.0 || index != std::floor(index)) {
+        return {};
+    }
+    const std::vector<std::string_view> labels = optionLabels();
+    return index < static_cast<double>(labels.size()) ? labels[static_cast<std::size_t>(index)] : std::string_view{};
+}
+
 const EffectParamInfo* EffectDescriptor::param(std::string_view key) const {
     for (const EffectParamInfo& p : params) {
         if (p.key == key) {
@@ -507,7 +542,11 @@ const EffectParamInfo* EffectDescriptor::param(std::string_view key) const {
 }
 
 const EffectRegistry& EffectRegistry::builtin() {
-    static const EffectRegistry registry(builtinDescriptors());
+    static const EffectRegistry registry([] {
+        std::vector<EffectDescriptor> all = builtinDescriptors();
+        detail::appendMotionDescriptors(all); // P.2: Morph Cut, Warp Stabilizer, Rolling Shutter Repair
+        return all;
+    }());
     return registry;
 }
 
@@ -617,6 +656,9 @@ std::optional<std::string> effectStackProblem(const EffectStack& stack, EffectKi
                 }
                 if (!info->animatable && p.value.isCurve()) {
                     return what + " animates parameter " + p.key + ", which cannot be animated";
+                }
+                if (info->isChoice() && p.value.isConstant() && info->optionLabel(p.value.constant()).empty()) {
+                    return what + " has parameter " + p.key + " that is not one of its options";
                 }
             } else if (!p.value.isValid(-1e300, 1e300)) {
                 return what + " has parameter " + p.key + " that is not finite";

@@ -160,6 +160,22 @@ struct MediaAttributeChange {
     std::optional<std::string> description; ///< at most MediaItem::kMaxTextBytes
     /// Poster frame, media time inside the media; an inner nullopt clears it.
     std::optional<std::optional<Ticks>> posterFrame;
+    /// 0.2 (P.3), clip metadata (ClipMetadata): the log note at most MediaItem::kMaxTextBytes, the other fields at most
+    /// ClipMetadata::kMaxFieldBytes.
+    std::optional<std::string> scene;
+    std::optional<std::string> shot;
+    std::optional<std::string> take;
+    std::optional<std::string> logNote;
+    std::optional<std::string> client;
+    std::optional<bool> good;
+    std::optional<std::string> status;
+    std::optional<std::string> cameraAngle;
+    std::optional<std::string> cameraLabel;
+    std::optional<std::string> cameraModel;
+    std::optional<std::string> shotDate;
+    std::optional<std::string> shotLocation;
+    /// Premiere's Tape Name column: the reel name of Modify > Timecode (MediaTimecode::reelName); empty clears it.
+    std::optional<std::string> tapeName;
 };
 /// One undo step for any number of items (rename one, label many). NotFound for unknown ids.
 std::expected<ProjectState, Error> setMediaAttributes(const ProjectState& state, std::span<const MediaId> media,
@@ -175,5 +191,47 @@ std::expected<Created<MediaId>, Error> makeSubclip(const ProjectState& state, Me
 /// clip of it uses media outside the new range. Marks outside the new range are clamped into it.
 std::expected<ProjectState, Error> setSubclip(const ProjectState& state, MediaId subclip, TimeRange range,
                                               bool restricted);
+
+// ---- Search Bins (0.2, P.3) ----
+
+/// Premiere's Create Search Bin: a bin named `name` in `parent` that lists what `search` finds. Errors: InvalidArgument
+/// (empty name, a field, type, label or date the query does not know, text over BinSearch::kMaxTextBytes, a search bin
+/// as the parent), NotFound (no such parent).
+std::expected<Created<BinId>, Error> addSearchBin(const ProjectState& state, std::string name, BinSearch search,
+                                                  BinId parent = {});
+/// Edit Search Bin: replaces the query of search bin `bin` (InvalidArgument for a plain bin or a query addSearchBin
+/// refuses).
+std::expected<ProjectState, Error> setBinSearch(const ProjectState& state, BinId bin, BinSearch search);
+
+// ---- Freeform view (0.2, P.3) ----
+
+/// A Freeform grid cell at clip size 1, in view units (FreeformPlacement): Reset to Grid and Align to Grid place items on
+/// it. The Library draws a card kFreeformCardWidth wide (its thumbnail 16:9 and two lines of text below).
+inline constexpr double kFreeformCellWidth = 216.0;
+inline constexpr double kFreeformCellHeight = 176.0;
+inline constexpr double kFreeformCardWidth = 200.0;
+
+/// Replaces the Freeform view of `bin` (invalid = root) with `arrangement` (a drag that moved items, a new clip size).
+/// Placements of items that are not in that bin are dropped, an item placed twice keeps its last place. Errors:
+/// NotFound (no such bin), InvalidArgument (a search bin, a value out of range, more than kMaxFreeformItems).
+std::expected<ProjectState, Error> setFreeformArrangement(const ProjectState& state, BinId bin,
+                                                          FreeformArrangement arrangement);
+/// Save as New Layout: the bin's current arrangement under `name` (replacing a layout of that name, case-insensitive).
+/// Errors: InvalidArgument (empty or too long a name, more than FreeformView::kMaxLayouts), NotFound (no such bin).
+std::expected<ProjectState, Error> saveFreeformLayout(const ProjectState& state, BinId bin, std::string name);
+/// Restore Layout: the saved layout `name` becomes the current arrangement (NotFound when there is none).
+std::expected<ProjectState, Error> restoreFreeformLayout(const ProjectState& state, BinId bin, std::string_view name);
+/// Deletes saved layout `name` (NotFound when there is none).
+std::expected<ProjectState, Error> removeFreeformLayout(const ProjectState& state, BinId bin, std::string_view name);
+
+/// Reset to Grid: `items` (the bin's items in the chosen order) placed row by row, `columns` per row (at least 1), on
+/// the grid of the view's clip size; every item gets size 1.
+FreeformArrangement freeformGrid(std::span<const FreeformPlacement> items, int columns, double scale);
+/// Align to Grid: the placements of `selected` (all when empty) moved to the nearest grid cell of the view's clip size.
+/// Items that land on one cell stack there in their order.
+FreeformArrangement alignFreeformToGrid(FreeformArrangement arrangement, std::span<const FreeformPlacement> selected = {});
+/// What is in `bin` (invalid = root), as placements in the order the Library lists a bin without sorting (bins, then
+/// sequences, then media, each by name): the order Reset to Grid uses by name. Search bins hold nothing.
+std::vector<FreeformPlacement> freeformItemsOf(const ProjectState& state, BinId bin);
 
 } // namespace wabcut::edit

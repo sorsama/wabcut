@@ -91,6 +91,13 @@ std::vector<ResolvedLeaf> resolveSequenceLeaves(const ProjectState& state, Seque
 /// that is not nested.
 std::vector<std::size_t> nestedTracksRead(const Sequence& nested, const Clip& clip);
 
+/// The media `clip` plays: its own media, or for a nested / multicam clip the media of the enabled clips on the tracks
+/// nestedTracksRead() gives, through every level (a multicam clip: its active angles only); each once, first seen
+/// first. Analyses that measure media (highlights, dead time, subjects, audio sync) measure these, then read the result
+/// back through resolveLeaves() at each time. Bounded (kMaxNestingDepth; each nested sequence and angle set is walked
+/// once).
+std::vector<MediaId> mediaPlayedBy(const ProjectState& state, const Clip& clip);
+
 // ---- The composite plan (C.15: adjustment layers, blend modes, track mattes) ----------------------------------------
 //
 // resolveComposite() says, for one time of a sequence, what the compositor does, in order: start from a transparent

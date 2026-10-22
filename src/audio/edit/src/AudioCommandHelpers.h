@@ -316,5 +316,9 @@ void registerEssentialSoundCommands(command::CommandRegistry& registry);
 void registerVoiceOverCommands(command::CommandRegistry& registry);
 /// A.9 (AudioChannelCommands.cpp): channel maps, split to mono, track formats, the 5.1 panner and master.
 void registerChannelCommands(command::CommandRegistry& registry);
+/// p02 audio (SubmixCommands.cpp): submix tracks, track output assignment and sends.
+void registerSubmixCommands(command::CommandRegistry& registry);
+/// p02 audio (AutoTagCommands.cpp): audio.autoTag, Essential Sound's automatic tagging.
+void registerAutoTagCommands(command::CommandRegistry& registry);
 
 } // namespace wabcut::audio::edit

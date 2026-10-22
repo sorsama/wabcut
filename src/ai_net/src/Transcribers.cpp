@@ -450,6 +450,7 @@ std::unique_ptr<ITranscriber> makeAssemblyAiTranscriber(ProviderContext context,
 void registerCloudAdapters(ProviderRegistry& registry, AdapterOptions options) {
     registry.registerMediaGenerator("gemini-veo", makeVeoGenerator);
     registry.registerMediaGenerator("runway-generation", makeRunwayGenerator);
+    registry.registerMediaGenerator("elevenlabs-sound-generation", makeElevenLabsSoundEffects);
     registry.registerChat("anthropic-messages", [](ProviderContext c) { return makeAnthropicChat(std::move(c)); });
     registry.registerChat("openai-responses", [](ProviderContext c) { return makeOpenAiResponsesChat(std::move(c)); });
     registry.registerChat("chat-completions", [](ProviderContext c) { return makeChatCompletionsChat(std::move(c)); });

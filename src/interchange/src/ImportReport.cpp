@@ -40,6 +40,8 @@ std::string_view toString(ReportCategory category) {
         return "media";
     case ReportCategory::Graphic:
         return "graphic";
+    case ReportCategory::Caption:
+        return "caption";
     }
     return "unknown";
 }

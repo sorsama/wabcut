@@ -18,17 +18,39 @@ Panel {
     property string hueCurveName: "hueSat"
     property real matchStrength: 1.0
     property bool skinPriority: false
+    property bool faceDetection: false
     property string lutSlot: "look"
 
     trailing: [
+        // 0.2 (I.9): the sequence's Color Setup (Premiere's Sequence Settings > Color).
+        IconButton {
+            objectName: "colorManagementButton"
+            iconName: "settings"
+            compact: true
+            tooltip: qsTr("Color management: %1").arg(Color.colorManagement.name ?? "")
+            onClicked: colorManagementDialog.openFromProject()
+        },
         Toggle {
             objectName: "gradeEnabledToggle"
             visible: Color.hasGrade
             checked: Color.gradeEnabled
             tooltip: Color.gradeEnabled ? qsTr("Turn the grade off") : qsTr("Turn the grade on")
             onToggled: Color.setGradeEnabled(checked)
+        },
+        // 0.2: the Lumetri panel menu (Export .cube…, Save Preset…).
+        IconButton {
+            id: colorMenuButton
+            objectName: "colorPanelMenuButton"
+            compact: true
+            iconName: "ellipsis"
+            tooltip: qsTr("Color panel menu")
+            onClicked: colorMenu.popupAt(colorMenuButton, 0, colorMenuButton.height)
         }
     ]
+
+    ColorPanelMenu {
+        id: colorMenu
+    }
 
     ColumnLayout {
         anchors.fill: parent
@@ -85,6 +107,29 @@ Panel {
                     title: qsTr("Basic Correction")
                     stage: "basic"
 
+                    // 0.2 (I.9): how the clip's pictures are read (Premiere's Override Media Color Space).
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Text {
+                            Layout.preferredWidth: Theme.propLabelWidth
+                            text: qsTr("Media color space")
+                            color: Theme.textSecondary
+                            font.family: Theme.fontSans
+                            font.pixelSize: Theme.textMd
+                            elide: Text.ElideRight
+                        }
+                        PillButton {
+                            id: mediaSpaceButton
+                            objectName: "mediaColorSpaceButton"
+                            Layout.fillWidth: true
+                            compact: true
+                            text: (Color.inputColorSpace.override ?? "") === ""
+                                  ? qsTr("Auto (%1)").arg(Color.inputColorSpace.autoName ?? "")
+                                  : (Color.inputColorSpace.name ?? "")
+                            iconName: "chevron-down"
+                            onClicked: mediaSpaceMenu.openAt(mediaSpaceButton)
+                        }
+                    }
                     RowLayout {
                         Layout.fillWidth: true
                         Text {
@@ -418,6 +463,23 @@ Panel {
                             onToggled: root.skinPriority = checked
                         }
                     }
+                    // 0.2: Premiere's Color Match "Face Detection" - the faces' skin tones are matched first.
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Text {
+                            Layout.fillWidth: true
+                            text: qsTr("Face detection")
+                            color: Theme.textSecondary
+                            font.family: Theme.fontSans
+                            font.pixelSize: Theme.textMd
+                        }
+                        Toggle {
+                            objectName: "matchFaceDetection"
+                            checked: root.faceDetection
+                            Accessible.name: qsTr("Face detection: match the faces' skin tones first")
+                            onToggled: root.faceDetection = checked
+                        }
+                    }
                     RowLayout {
                         Layout.fillWidth: true
                         spacing: Theme.space(2)
@@ -429,7 +491,7 @@ Panel {
                             compact: true
                             enabled: Color.hasReference && !Color.busy
                             tooltip: qsTr("Make this clip look like the reference frame")
-                            onClicked: Color.matchToReference(root.matchStrength, root.skinPriority)
+                            onClicked: Color.matchToReference(root.matchStrength, root.skinPriority, root.faceDetection)
                         }
                         PillButton {
                             text: qsTr("Match scene")
@@ -437,7 +499,7 @@ Panel {
                             compact: true
                             enabled: !Color.busy
                             tooltip: qsTr("Match the other shots of this take (split at its shots) to this clip")
-                            onClicked: Color.matchScene(root.matchStrength, root.skinPriority)
+                            onClicked: Color.matchScene(root.matchStrength, root.skinPriority, root.faceDetection)
                         }
                     }
                 }
@@ -466,6 +528,12 @@ Panel {
     LutMenu {
         id: lutMenu
         onBrowse: lutDialog.open()
+    }
+    MediaColorSpaceMenu {
+        id: mediaSpaceMenu
+    }
+    ColorManagementDialog {
+        id: colorManagementDialog
     }
 
     FileDialog {

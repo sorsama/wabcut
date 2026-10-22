@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 #include <thread>
 
 namespace wabcut::app {
@@ -96,7 +97,31 @@ void MediaPeakSource::setMediaFiles(std::unordered_map<std::uint64_t, MediaFile>
             it = m_entries.erase(it);
         }
     }
+    // p02 audio: a media gaining, losing or changing its file draws other peaks (placeholder or decoded).
+    for (const auto& [id, file] : files) {
+        if (const auto old = m_files.find(id); old == m_files.end() || old->second.path != file.path)
+            markChanged(id);
+    }
+    for (const auto& [id, file] : m_files) {
+        if (!files.contains(id))
+            markChanged(id);
+    }
     m_files = std::move(files);
+}
+
+void MediaPeakSource::markChanged(std::uint64_t media) {
+    m_changedAt[media] = ++m_serial;
+}
+
+std::optional<std::vector<std::uint64_t>> MediaPeakSource::mediaChangedSince(std::uint64_t serial, std::uint64_t& now) const {
+    std::lock_guard lock(m_mutex);
+    now = m_serial;
+    std::vector<std::uint64_t> out;
+    for (const auto& [media, at] : m_changedAt) {
+        if (at > serial)
+            out.push_back(media);
+    }
+    return out;
 }
 
 media::WaveformPeaksService& MediaPeakSource::service() const {
@@ -157,8 +182,9 @@ bool MediaPeakSource::peaks(MediaId media, StreamRef stream, Ticks sourceStart, 
                 return; // the file changed meanwhile
             // The previous snapshot (megabytes for a long stream) is released below, outside the lock.
             std::swap(it->second.peaks, snapshot);
-            // Every peaksReady() rebuilds all the timeline's waveforms: partial results of every stream share one
-            // notification per interval (the next snapshot or the final result brings the rest).
+            self->markChanged(key.first);
+            // Partial results of every stream share one peaksReady() per interval (the next snapshot or the final
+            // result brings the rest; mediaChangedSince() remembers which media changed meanwhile).
             const auto now = std::chrono::steady_clock::now();
             if (now - self->m_lastPartialNotify >= kPartialInterval) {
                 self->m_lastPartialNotify = now;
@@ -188,6 +214,7 @@ bool MediaPeakSource::peaks(MediaId media, StreamRef stream, Ticks sourceStart, 
                     return; // the file changed meanwhile
                 it->second.state = result ? State::Ready : State::Failed;
                 std::swap(it->second.peaks, ready);
+                self->markChanged(key.first);
                 std::swap(it->second.job, finished); // the job holds its own copy of the result: not kept
             }
             ready.reset();
@@ -225,19 +252,37 @@ namespace {
 
 class ThumbnailResponse final : public QQuickImageResponse {
 public:
-    ThumbnailResponse(media::ThumbnailService& service, const std::string& path, int height)
+    ThumbnailResponse(media::ThumbnailService& service, const std::string& path, int height, int count)
         : m_link(std::make_shared<Link>()) {
         m_link->target = this;
         media::ThumbnailOptions options;
-        options.count = 1; // the frame in the middle of the file
+        options.count = count; // 1: the frame in the middle of the file; more: a strip (hover scrub)
         options.height = std::clamp(height, 8, 2160);
-        m_job = service.request(path, options, [link = m_link, path](const std::expected<media::ThumbnailStrip, Error>& result) {
+        m_job = service.request(path, options, [link = m_link, path, count](const std::expected<media::ThumbnailStrip, Error>& result) {
             QImage image;
             QString error;
-            if (result && !result->thumbnails.empty()) {
+            if (result && !result->thumbnails.empty() && count == 1) {
                 const media::Thumbnail& t = result->thumbnails.front();
                 image = QImage(t.rgba.data(), t.width, t.height, t.width * 4, QImage::Format_RGBA8888).copy();
                 redacted::applyToFile(image, path, t.time); // source redactions (Codex wave-4 P2-9)
+            } else if (result && !result->thumbnails.empty()) {
+                // The strip: `count` tiles of the first frame's size side by side (a short clip or a still repeats
+                // its last frame, so the tiles always divide the strip evenly).
+                const media::Thumbnail& first = result->thumbnails.front();
+                const int tiles = count;
+                image = QImage(first.width * tiles, first.height, QImage::Format_RGBA8888);
+                image.fill(Qt::transparent);
+                for (int i = 0; i < tiles; ++i) {
+                    const media::Thumbnail& t =
+                        result->thumbnails[std::min(static_cast<std::size_t>(i), result->thumbnails.size() - 1)];
+                    QImage tile(t.rgba.data(), t.width, t.height, t.width * 4, QImage::Format_RGBA8888);
+                    QImage frame = tile.copy();
+                    redacted::applyToFile(frame, path, t.time);
+                    for (int y = 0; y < std::min(frame.height(), first.height); ++y) {
+                        std::memcpy(image.scanLine(y) + static_cast<std::size_t>(i * first.width) * 4, frame.constScanLine(y),
+                                    static_cast<std::size_t>(std::min(frame.width(), first.width)) * 4);
+                    }
+                }
             } else {
                 error = result ? QStringLiteral("no frame") : QString::fromStdString(result.error().message);
             }
@@ -292,13 +337,21 @@ media::ThumbnailService& ThumbnailImageProvider::service() {
 }
 
 QQuickImageResponse* ThumbnailImageProvider::requestImageResponse(const QString& id, const QSize& requestedSize) {
-    // "<percent-encoded path>[/r<redaction key>]": the path has its '/' encoded, so a raw '/' starts the cache-busting
-    // key urlFor() adds while the file has redactions.
-    const qsizetype slash = id.lastIndexOf(QLatin1Char('/'));
-    const QString encoded = slash >= 0 ? id.left(slash) : id;
-    const std::string path = QUrl::fromPercentEncoding(encoded.toUtf8()).toStdString();
+    // "<percent-encoded path>[/r<redaction key>][/s<count>]": the path has its '/' encoded, so a raw '/' starts the
+    // cache-busting key urlFor() adds while the file has redactions, or a strip's frame count (stripUrlFor).
+    const QStringList parts = id.split(QLatin1Char('/'));
+    const std::string path = QUrl::fromPercentEncoding(parts.front().toUtf8()).toStdString();
+    int count = 1;
+    for (qsizetype i = 1; i < parts.size(); ++i) {
+        if (parts[i].startsWith(QLatin1Char('s'))) {
+            bool ok = false;
+            const int n = parts[i].mid(1).toInt(&ok);
+            if (ok)
+                count = std::clamp(n, 1, 32);
+        }
+    }
     const int height = requestedSize.height() > 0 ? requestedSize.height() : 180;
-    return new ThumbnailResponse(service(), path, height);
+    return new ThumbnailResponse(service(), path, height, count);
 }
 
 QString ThumbnailImageProvider::urlFor(const std::string& utf8Path) {
@@ -310,6 +363,10 @@ QString ThumbnailImageProvider::urlFor(const std::string& utf8Path) {
         url += QStringLiteral("/r") + QString::number(key, 16);
     }
     return url;
+}
+
+QString ThumbnailImageProvider::stripUrlFor(const std::string& utf8Path, int count) {
+    return urlFor(utf8Path) + QStringLiteral("/s") + QString::number(std::clamp(count, 2, 32));
 }
 
 } // namespace wabcut::app

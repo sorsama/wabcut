@@ -40,6 +40,15 @@ public:
     virtual std::expected<ColorImage, Error> frame(const ProjectState& state, SequenceId sequence, const FrameRequest& request) = 0;
 };
 
+/// 0.2: the faces on a picture, for Color Match's face priority ("faceDetection", Premiere's Face Detection), provided by
+/// the host when a face detector is installed (the AI subject detector, ai::vision::detectorFaceFinder). Without it a
+/// match that asks for face detection fails with the reason.
+class FaceFinder : public command::CommandServices {
+public:
+    /// The faces on `image` (display-referred), as normalised boxes. Errors: the detector's.
+    virtual std::expected<std::vector<FaceBox>, Error> faces(const ColorImage& image) = 0;
+};
+
 /// Adds the commands above.
 void registerColorCommands(command::CommandRegistry& registry);
 

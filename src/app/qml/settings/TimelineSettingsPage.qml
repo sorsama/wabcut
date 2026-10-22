@@ -4,7 +4,8 @@ import QtQuick
 // Settings > Timeline & editing (0.1.3): the editing preferences (linked selection, the snap line, trim offsets and
 // play-around, the Fit Clip answer) and the display ones the Tracks panel's display popover also shows (thumbnails,
 // waveforms, markers, keyframe lanes), plus Effect Controls' keyframe lane and the monitors' safe margins. Every
-// value is Preferences', so both places stay in step.
+// value is Preferences', so both places stay in step. 0.2: Premiere's Preferences > Media and > Timeline (media scaling,
+// still and transition durations, project locking) open in their own dialog (EditingPreferencesDialog).
 SettingsPage {
     id: page
     objectName: "timelineSettingsPage"
@@ -189,6 +190,21 @@ SettingsPage {
                 tooltip: qsTr("Safe margins")
                 checked: Preferences.safeMargins
                 onToggled: Preferences.safeMargins = checked
+            }
+        }
+    }
+
+    SettingsSection {
+        title: qsTr("Media and timeline defaults")
+
+        SettingsRow {
+            label: qsTr("Media scaling, durations and project locking")
+            description: qsTr("How imported media is sized in a sequence of another frame size, how long stills and default transitions last, and whether open projects are locked for other sessions.")
+            PillButton {
+                objectName: "editingPreferencesButton"
+                iconName: "sliders-horizontal"
+                text: qsTr("Open…")
+                onClicked: page.actionRequested("editing")
             }
         }
     }

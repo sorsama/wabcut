@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cmath>
 #include <functional>
 #include <map>
@@ -988,6 +989,557 @@ EditOutcome setBrandKit(const ProjectState& state, std::optional<BrandKit> kit) 
     result.state.brandKit = std::move(kit);
     result.changes = diff(state, result.state);
     return result;
+}
+
+// ---- Align and Distribute (0.2) ---------------------------------------------------------------------------------------
+
+namespace {
+
+constexpr std::array<std::pair<LayerAlign, std::string_view>, 8> kAligns{{
+    {LayerAlign::Left, "left"},
+    {LayerAlign::HorizontalCenter, "horizontalCenter"},
+    {LayerAlign::Right, "right"},
+    {LayerAlign::Top, "top"},
+    {LayerAlign::VerticalCenter, "verticalCenter"},
+    {LayerAlign::Bottom, "bottom"},
+    {LayerAlign::DistributeHorizontal, "distributeHorizontal"},
+    {LayerAlign::DistributeVertical, "distributeVertical"},
+}};
+
+GraphicLayer* findMutable(std::vector<GraphicLayer>& layers, std::uint32_t id) {
+    for (GraphicLayer& l : layers) {
+        if (l.id == id) {
+            return &l;
+        }
+        if (GraphicLayer* inner = findMutable(l.children, id)) {
+            return inner;
+        }
+    }
+    return nullptr;
+}
+
+/// A value moved by `delta`: a constant, or every key of a curve.
+ParamValue shifted(const ParamValue& value, double delta) {
+    if (const Curve* curve = value.curve()) {
+        Curve out = *curve;
+        for (Keyframe& k : out.keys) {
+            k.value += delta;
+        }
+        return ParamValue(std::move(out));
+    }
+    return ParamValue(value.constant() + delta);
+}
+
+/// The canvas box of a layer as drawn (a group: its descendants'), or nullopt when it draws nothing.
+std::optional<Box> drawnBox(const DrawList& list, const GraphicLayer& layer) {
+    std::set<std::uint32_t> ids;
+    collectIds({layer}, ids);
+    std::optional<Box> box;
+    for (const DrawItem& item : list.items) {
+        if (!ids.contains(item.layer)) {
+            continue;
+        }
+        Box b;
+        bool first = true;
+        for (const auto& [px, py] : {std::pair{item.bounds.x, item.bounds.y}, std::pair{item.bounds.x + item.bounds.width, item.bounds.y},
+                                     std::pair{item.bounds.x, item.bounds.y + item.bounds.height},
+                                     std::pair{item.bounds.x + item.bounds.width, item.bounds.y + item.bounds.height}}) {
+            const auto p = item.transform.map(px, py);
+            if (first) {
+                b = {p[0], p[1], 0.0, 0.0};
+                first = false;
+            } else {
+                const double x1 = std::max(b.x + b.width, p[0]);
+                const double y1 = std::max(b.y + b.height, p[1]);
+                b.x = std::min(b.x, p[0]);
+                b.y = std::min(b.y, p[1]);
+                b.width = x1 - b.x;
+                b.height = y1 - b.y;
+            }
+        }
+        if (!box) {
+            box = b;
+        } else {
+            const double x1 = std::max(box->x + box->width, b.x + b.width);
+            const double y1 = std::max(box->y + box->height, b.y + b.height);
+            box->x = std::min(box->x, b.x);
+            box->y = std::min(box->y, b.y);
+            box->width = x1 - box->x;
+            box->height = y1 - box->y;
+        }
+    }
+    return box;
+}
+
+} // namespace
+
+std::string_view toString(LayerAlign align) {
+    for (const auto& [a, name] : kAligns) {
+        if (a == align) {
+            return name;
+        }
+    }
+    return "left";
+}
+
+std::optional<LayerAlign> layerAlignFromString(std::string_view text) {
+    for (const auto& [a, name] : kAligns) {
+        if (name == text) {
+            return a;
+        }
+    }
+    return std::nullopt;
+}
+
+std::expected<Graphic, Error> alignGraphicLayers(const Graphic& graphic, std::span<const std::uint32_t> layers,
+                                                 LayerAlign align, AlignTo to, Ticks time, const ResolveOptions& options) {
+    if (layers.empty()) {
+        return std::unexpected(detail::invalidArgument("choose the layers to align"));
+    }
+    const bool distribute = align == LayerAlign::DistributeHorizontal || align == LayerAlign::DistributeVertical;
+    if (distribute && layers.size() < 3) {
+        return std::unexpected(detail::invalidArgument("distributing needs three or more layers"));
+    }
+    const DrawList drawn = resolveGraphic(graphic, time, options);
+    struct Target {
+        std::uint32_t id;
+        Box box;
+    };
+    std::vector<Target> targets;
+    for (const std::uint32_t id : layers) {
+        const GraphicLayer* layer = graphic.findLayer(id);
+        if (!layer || std::any_of(targets.begin(), targets.end(), [&](const Target& t) { return t.id == id; })) {
+            return std::unexpected(detail::invalidArgument("layer " + std::to_string(id) + " is not in the graphic, or named twice"));
+        }
+        const auto box = drawnBox(drawn, *layer);
+        if (!box) {
+            return std::unexpected(detail::invalidArgument("layer '" + layer->name + "' shows nothing at this time"));
+        }
+        targets.push_back({id, *box});
+    }
+    Box reference{0.0, 0.0, static_cast<double>(graphic.width), static_cast<double>(graphic.height)};
+    if (to == AlignTo::Selection || distribute) {
+        reference = targets.front().box;
+        for (const Target& t : targets) {
+            const double x1 = std::max(reference.x + reference.width, t.box.x + t.box.width);
+            const double y1 = std::max(reference.y + reference.height, t.box.y + t.box.height);
+            reference.x = std::min(reference.x, t.box.x);
+            reference.y = std::min(reference.y, t.box.y);
+            reference.width = x1 - reference.x;
+            reference.height = y1 - reference.y;
+        }
+    }
+    // Where each layer's box goes, as a canvas move.
+    std::vector<std::array<double, 2>> moves(targets.size(), {0.0, 0.0});
+    if (distribute) {
+        const bool horizontal = align == LayerAlign::DistributeHorizontal;
+        const auto centre = [&](const Box& b) { return horizontal ? b.x + b.width / 2.0 : b.y + b.height / 2.0; };
+        std::vector<std::size_t> order(targets.size());
+        for (std::size_t i = 0; i < order.size(); ++i) {
+            order[i] = i;
+        }
+        std::stable_sort(order.begin(), order.end(), [&](std::size_t a, std::size_t b) { return centre(targets[a].box) < centre(targets[b].box); });
+        const double first = centre(targets[order.front()].box);
+        const double last = centre(targets[order.back()].box);
+        for (std::size_t k = 1; k + 1 < order.size(); ++k) {
+            const double want = first + (last - first) * static_cast<double>(k) / static_cast<double>(order.size() - 1);
+            moves[order[k]][horizontal ? 0 : 1] = want - centre(targets[order[k]].box);
+        }
+    } else {
+        for (std::size_t i = 0; i < targets.size(); ++i) {
+            const Box& b = targets[i].box;
+            switch (align) {
+            case LayerAlign::Left:
+                moves[i][0] = reference.x - b.x;
+                break;
+            case LayerAlign::HorizontalCenter:
+                moves[i][0] = (reference.x + reference.width / 2.0) - (b.x + b.width / 2.0);
+                break;
+            case LayerAlign::Right:
+                moves[i][0] = (reference.x + reference.width) - (b.x + b.width);
+                break;
+            case LayerAlign::Top:
+                moves[i][1] = reference.y - b.y;
+                break;
+            case LayerAlign::VerticalCenter:
+                moves[i][1] = (reference.y + reference.height / 2.0) - (b.y + b.height / 2.0);
+                break;
+            case LayerAlign::Bottom:
+                moves[i][1] = (reference.y + reference.height) - (b.y + b.height);
+                break;
+            default:
+                break;
+            }
+        }
+    }
+    // A canvas move -> a Position change in the layer's parent: measured, so groups, rotations, scales and pins are all
+    // taken into account (one more resolve per axis).
+    Graphic out = graphic;
+    for (std::size_t i = 0; i < targets.size(); ++i) {
+        const double dx = moves[i][0];
+        const double dy = moves[i][1];
+        if (std::abs(dx) < 1e-9 && std::abs(dy) < 1e-9) {
+            continue;
+        }
+        const GraphicLayer* layer = graphic.findLayer(targets[i].id);
+        const auto probe = [&](bool xAxis) -> std::array<double, 2> {
+            Graphic g = graphic;
+            GraphicLayer* l = findMutable(g.layers, targets[i].id);
+            if (xAxis) {
+                l->transform.x = shifted(l->transform.x, 1.0);
+            } else {
+                l->transform.y = shifted(l->transform.y, 1.0);
+            }
+            const auto moved = drawnBox(resolveGraphic(g, time, options), *l);
+            if (!moved) {
+                return {0.0, 0.0};
+            }
+            return {moved->x - targets[i].box.x, moved->y - targets[i].box.y};
+        };
+        const auto ex = probe(true);
+        const auto ey = probe(false);
+        const double det = ex[0] * ey[1] - ey[0] * ex[1];
+        if (std::abs(det) < 1e-9) {
+            return std::unexpected(detail::invalidArgument("layer '" + layer->name + "' does not move with its position (it is pinned)"));
+        }
+        const double px = (dx * ey[1] - ey[0] * dy) / det;
+        const double py = (ex[0] * dy - dx * ex[1]) / det;
+        GraphicLayer* target = findMutable(out.layers, targets[i].id);
+        target->transform.x = shifted(target->transform.x, px);
+        target->transform.y = shifted(target->transform.y, py);
+    }
+    if (const auto problem = graphicProblem(out)) {
+        return std::unexpected(detail::invalidArgument("the aligned graphic " + *problem));
+    }
+    return out;
+}
+
+EditOutcome alignLayers(const ProjectState& state, SequenceId sequence, ClipId clip, std::span<const std::uint32_t> layers,
+                        LayerAlign align, AlignTo to, Ticks time, const ResolveOptions& options) {
+    const auto at = locate(state, sequence, clip);
+    if (!at) {
+        return std::unexpected(at.error());
+    }
+    ResolveOptions o = options;
+    if (!o.brandKit && state.brandKit) {
+        o.brandKit = &*state.brandKit;
+    }
+    auto aligned = alignGraphicLayers(*at->clip->graphic(), layers, align, to, time, o);
+    if (!aligned) {
+        return std::unexpected(aligned.error());
+    }
+    return replaceGraphic(state, *at, std::move(*aligned));
+}
+
+// ---- Text styles (0.2) ------------------------------------------------------------------------------------------------
+
+namespace {
+
+bool sameStyleName(std::string_view a, std::string_view b) {
+    return a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin(), [](char x, char y) {
+               return std::tolower(static_cast<unsigned char>(x)) == std::tolower(static_cast<unsigned char>(y));
+           });
+}
+
+/// Applies `fix` to every layer of a tree; true when one changed.
+bool fixLayers(std::vector<GraphicLayer>& layers, const std::function<bool(GraphicLayer&)>& fix) {
+    bool changed = false;
+    for (GraphicLayer& l : layers) {
+        changed = fix(l) || changed;
+        changed = fixLayers(l.children, fix) || changed;
+    }
+    return changed;
+}
+
+/// `state` with `fix` applied to the layers of every graphic clip of every sequence (clips on locked tracks are left).
+ProjectState fixProjectLayers(const ProjectState& state, const std::function<bool(GraphicLayer&)>& fix) {
+    ProjectState current = state;
+    for (const SequencePtr& seq : state.sequences) {
+        detail::SequenceEditor ed(current, *current.findSequence(seq->id));
+        bool any = false;
+        for (const TrackId trackId : ed.trackIds()) {
+            const Track& track = ed.track(trackId);
+            if (track.locked) {
+                continue;
+            }
+            for (std::size_t i = 0; i < track.clips.size(); ++i) {
+                const Graphic* g = track.clips[i].graphic();
+                if (!g) {
+                    continue;
+                }
+                Graphic next = *g;
+                if (fixLayers(next.layers, fix)) {
+                    ed.mutableClip(trackId, i).setGraphic(std::make_shared<const Graphic>(std::move(next)));
+                    any = true;
+                }
+            }
+        }
+        if (any) {
+            current = ed.finish().state;
+        }
+    }
+    return current;
+}
+
+EditResult projectResult(const ProjectState& before, ProjectState after) {
+    EditResult r;
+    r.changes = diff(before, after);
+    r.state = std::move(after);
+    return r;
+}
+
+} // namespace
+
+ProjectTextStyle textStyleOf(const GraphicLayer& layer, std::string name) {
+    ProjectTextStyle s;
+    s.name = std::move(name);
+    if (!layer.text.runs.empty()) {
+        s.style = layer.text.runs.front().style;
+    }
+    s.align = layer.text.align;
+    s.background = layer.text.background;
+    s.shadow = layer.shadow;
+    return s;
+}
+
+GraphicLayer withTextStyle(GraphicLayer layer, const ProjectTextStyle& style) {
+    for (TextRun& run : layer.text.runs) {
+        run.style = style.style;
+    }
+    layer.text.align = style.align;
+    layer.text.background = style.background;
+    layer.shadow = style.shadow;
+    layer.textStyle = style.name;
+    return layer;
+}
+
+EditOutcome saveTextStyle(const ProjectState& state, ProjectTextStyle style) {
+    if (const auto problem = textStyleProblem(style)) {
+        return std::unexpected(detail::invalidArgument(*problem));
+    }
+    ProjectState out = state;
+    if (const ProjectTextStyle* existing = state.findTextStyle(style.name)) {
+        style.name = existing->name; // the name keeps its spelling
+        out.textStyles.edit()[static_cast<std::size_t>(existing - state.textStyles.data())] = style;
+        out = fixProjectLayers(out, [&](GraphicLayer& l) {
+            if (l.kind != LayerKind::Text || !sameStyleName(l.textStyle, style.name)) {
+                return false;
+            }
+            GraphicLayer next = withTextStyle(l, style);
+            if (next == l) {
+                return false;
+            }
+            l = std::move(next);
+            return true;
+        });
+    } else {
+        if (out.textStyles.size() >= kMaxProjectTextStyles) {
+            return std::unexpected(detail::invalidArgument("a project holds at most " + std::to_string(kMaxProjectTextStyles) +
+                                                           " text styles"));
+        }
+        out.textStyles.push_back(std::move(style));
+    }
+    return projectResult(state, std::move(out));
+}
+
+EditOutcome createTextStyle(const ProjectState& state, SequenceId sequence, ClipId clip, std::uint32_t layerId, std::string name) {
+    const auto at = locate(state, sequence, clip);
+    if (!at) {
+        return std::unexpected(at.error());
+    }
+    const GraphicLayer* layer = at->clip->graphic()->findLayer(layerId);
+    if (!layer) {
+        return std::unexpected(detail::notFound("the graphic has no layer " + std::to_string(layerId)));
+    }
+    if (layer->kind != LayerKind::Text) {
+        return std::unexpected(detail::invalidArgument("layer '" + layer->name + "' is not a text layer"));
+    }
+    if (state.findTextStyle(name)) {
+        return std::unexpected(detail::invalidArgument("a text style named '" + name + "' exists"));
+    }
+    const ProjectTextStyle style = textStyleOf(*layer, std::move(name));
+    auto saved = saveTextStyle(state, style);
+    if (!saved) {
+        return saved;
+    }
+    const std::vector<std::uint32_t> one{layerId};
+    auto linked = applyTextStyle(saved->state, sequence, clip, one, style.name);
+    if (!linked) {
+        return linked;
+    }
+    return projectResult(state, std::move(linked->state));
+}
+
+EditOutcome applyTextStyle(const ProjectState& state, SequenceId sequence, ClipId clip, std::span<const std::uint32_t> layers,
+                           std::string_view name) {
+    const ProjectTextStyle* style = state.findTextStyle(name);
+    if (!style) {
+        return std::unexpected(detail::notFound("there is no text style '" + std::string(name) + "'"));
+    }
+    const auto at = locate(state, sequence, clip);
+    if (!at) {
+        return std::unexpected(at.error());
+    }
+    Graphic g = *at->clip->graphic();
+    for (const std::uint32_t id : layers) {
+        GraphicLayer* layer = findMutable(g.layers, id);
+        if (!layer) {
+            return std::unexpected(detail::notFound("the graphic has no layer " + std::to_string(id)));
+        }
+        if (layer->kind != LayerKind::Text) {
+            return std::unexpected(detail::invalidArgument("layer '" + layer->name + "' is not a text layer"));
+        }
+        *layer = withTextStyle(*layer, *style);
+    }
+    return replaceGraphic(state, *at, std::move(g));
+}
+
+namespace {
+
+void collectTextLayers(const std::vector<GraphicLayer>& layers, std::vector<std::uint32_t>& out, std::size_t depth) {
+    if (depth > kMaxGraphicDepth) {
+        return;
+    }
+    for (const GraphicLayer& l : layers) {
+        if (l.kind == LayerKind::Text) {
+            out.push_back(l.id);
+        } else if (l.kind == LayerKind::Group) {
+            collectTextLayers(l.children, out, depth + 1);
+        }
+    }
+}
+
+} // namespace
+
+std::vector<std::uint32_t> textLayerIds(const Graphic& graphic) {
+    std::vector<std::uint32_t> out;
+    collectTextLayers(graphic.layers, out, 0);
+    return out;
+}
+
+EditOutcome renameTextStyle(const ProjectState& state, std::string_view from, std::string to) {
+    const ProjectTextStyle* style = state.findTextStyle(from);
+    if (!style) {
+        return std::unexpected(detail::notFound("there is no text style '" + std::string(from) + "'"));
+    }
+    if (const ProjectTextStyle* other = state.findTextStyle(to); other && other != style) {
+        return std::unexpected(detail::invalidArgument("a text style named '" + to + "' exists"));
+    }
+    ProjectTextStyle renamed = *style;
+    const std::string old = renamed.name;
+    renamed.name = to;
+    if (const auto problem = textStyleProblem(renamed)) {
+        return std::unexpected(detail::invalidArgument(*problem));
+    }
+    ProjectState out = state;
+    out.textStyles.edit()[static_cast<std::size_t>(style - state.textStyles.data())] = renamed;
+    out = fixProjectLayers(out, [&](GraphicLayer& l) {
+        if (!sameStyleName(l.textStyle, old)) {
+            return false;
+        }
+        l.textStyle = to;
+        return true;
+    });
+    return projectResult(state, std::move(out));
+}
+
+EditOutcome removeTextStyle(const ProjectState& state, std::string_view name) {
+    const ProjectTextStyle* style = state.findTextStyle(name);
+    if (!style) {
+        return std::unexpected(detail::notFound("there is no text style '" + std::string(name) + "'"));
+    }
+    const std::string old = style->name;
+    ProjectState out = state;
+    out.textStyles.erase(out.textStyles.begin() + (style - state.textStyles.data()));
+    out = fixProjectLayers(out, [&](GraphicLayer& l) {
+        if (!sameStyleName(l.textStyle, old)) {
+            return false;
+        }
+        l.textStyle.clear();
+        return true;
+    });
+    return projectResult(state, std::move(out));
+}
+
+
+// ---- Type on a path (0.2) ---------------------------------------------------------------------------------------------
+
+std::string_view toString(TextPathShape shape) {
+    switch (shape) {
+    case TextPathShape::Line:
+        return "line";
+    case TextPathShape::Arc:
+        return "arc";
+    case TextPathShape::Circle:
+        return "circle";
+    case TextPathShape::Wave:
+        return "wave";
+    }
+    return "line";
+}
+
+std::optional<TextPathShape> textPathShapeFromString(std::string_view text) {
+    for (const TextPathShape s : {TextPathShape::Line, TextPathShape::Arc, TextPathShape::Circle, TextPathShape::Wave}) {
+        if (toString(s) == text) {
+            return s;
+        }
+    }
+    return std::nullopt;
+}
+
+std::vector<MaskVertex> textPathVertices(TextPathShape shape, double width, double height, bool* closed) {
+    // Cubic Bezier quarter circles: tangent length kappa x radius.
+    constexpr double kappa = 0.5522847498307936;
+    const double w = std::max(width, 1.0) / 2.0;
+    const double h = std::max(height, 1.0);
+    if (closed) {
+        *closed = shape == TextPathShape::Circle;
+    }
+    switch (shape) {
+    case TextPathShape::Line:
+        return {MaskVertex{-w, 0.0, 0.0, 0.0, 0.0, 0.0}, MaskVertex{w, 0.0, 0.0, 0.0, 0.0, 0.0}};
+    case TextPathShape::Arc:
+        // From the left end over the top (y up is negative) to the right end.
+        return {MaskVertex{-w, 0.0, 0.0, 0.0, 0.0, -kappa * h}, MaskVertex{0.0, -h, -kappa * w, 0.0, kappa * w, 0.0},
+                MaskVertex{w, 0.0, 0.0, -kappa * h, 0.0, 0.0}};
+    case TextPathShape::Circle:
+        return {MaskVertex{-w, 0.0, 0.0, kappa * w, 0.0, -kappa * w}, MaskVertex{0.0, -w, -kappa * w, 0.0, kappa * w, 0.0},
+                MaskVertex{w, 0.0, 0.0, -kappa * w, 0.0, kappa * w}, MaskVertex{0.0, w, kappa * w, 0.0, -kappa * w, 0.0}};
+    case TextPathShape::Wave: {
+        // Two periods: crests and troughs every quarter period, horizontal tangents there (a sine, closely).
+        std::vector<MaskVertex> out;
+        const double step = 2.0 * w / 8.0; // eight quarter periods
+        const double a = h / 2.0;
+        for (int i = 0; i <= 8; ++i) {
+            const double x = -w + step * i;
+            const double y = i % 2 == 0 ? 0.0 : (i % 4 == 1 ? -a : a);
+            // Zero crossings: slope a / (step / 2); crests: flat.
+            const double t = step * 0.36;
+            const double slope = i % 2 == 0 ? (i % 4 == 0 ? -1.0 : 1.0) * a / (step * 0.6) : 0.0;
+            out.push_back(MaskVertex{x, y, i == 0 ? 0.0 : -t, i == 0 ? 0.0 : -t * slope, i == 8 ? 0.0 : t, i == 8 ? 0.0 : t * slope});
+        }
+        return out;
+    }
+    }
+    return {};
+}
+
+EditOutcome setTextPath(const ProjectState& state, SequenceId sequence, ClipId clip, std::uint32_t layerId,
+                        std::optional<TextPath> path) {
+    const auto at = locate(state, sequence, clip);
+    if (!at) {
+        return std::unexpected(at.error());
+    }
+    Graphic g = *at->clip->graphic();
+    GraphicLayer* target = g.findLayer(layerId);
+    if (!target) {
+        return std::unexpected(detail::notFound("the graphic has no layer " + std::to_string(layerId)));
+    }
+    if (target->kind != LayerKind::Text) {
+        return std::unexpected(detail::invalidArgument("only a text layer can be put on a path"));
+    }
+    target->text.path = std::move(path);
+    return replaceGraphic(state, *at, std::move(g));
 }
 
 } // namespace wabcut::edit

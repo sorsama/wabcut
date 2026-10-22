@@ -162,6 +162,12 @@ Rectangle {
             target: root.strip.key
             effects: root.strip.effects
         }
+        // Sends (p02 audio)
+        SendSlots {
+            Layout.fillWidth: true
+            target: root.strip.key
+            sends: root.strip.sends ?? []
+        }
 
         // Pan: the knob, or the 5.1 panner while the master is 5.1.
         PanKnob {
@@ -305,6 +311,13 @@ Rectangle {
             Layout.alignment: Qt.AlignHCenter
             target: root.strip.key
             mode: root.strip.automation ?? "read"
+        }
+        // Output assignment (p02 audio)
+        OutputMenu {
+            Layout.fillWidth: true
+            target: root.strip.key
+            output: root.strip.output ?? "mix"
+            outputName: root.strip.outputName ?? ""
         }
     }
 }

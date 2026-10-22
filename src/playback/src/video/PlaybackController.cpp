@@ -39,17 +39,78 @@ PlaybackController::PlaybackController(PlaybackOptions options)
 }
 
 PlaybackController::~PlaybackController() {
+    if (PlaybackController* leader = m_mirrorOf.load()) {
+        leader->removeMirror(this);
+    }
+    {
+        std::lock_guard lock(m_mirrorsMutex);
+        for (PlaybackController* mirror : m_mirrors) {
+            mirror->m_mirrorOf = nullptr;
+        }
+        m_mirrors.clear();
+    }
     m_scheduler.reset(); // stops the scheduler thread before the transport goes
+}
+
+template <class Fn> void PlaybackController::forMirrors(Fn&& fn) {
+    std::lock_guard lock(m_mirrorsMutex);
+    for (PlaybackController* mirror : m_mirrors) {
+        fn(*mirror);
+    }
+}
+
+void PlaybackController::addMirror(PlaybackController* mirror) {
+    if (!mirror || mirror == this) {
+        return;
+    }
+    {
+        std::lock_guard lock(m_mirrorsMutex);
+        if (std::find(m_mirrors.begin(), m_mirrors.end(), mirror) != m_mirrors.end()) {
+            return;
+        }
+        m_mirrors.push_back(mirror);
+    }
+    mirror->m_mirrorOf = this;
+    mirror->follow(transport(), m_session.load(), m_sequence.load(), loop());
+}
+
+void PlaybackController::removeMirror(PlaybackController* mirror) {
+    std::lock_guard lock(m_mirrorsMutex);
+    const auto it = std::find(m_mirrors.begin(), m_mirrors.end(), mirror);
+    if (it != m_mirrors.end()) {
+        (*it)->m_mirrorOf = nullptr;
+        m_mirrors.erase(it);
+    }
+}
+
+void PlaybackController::follow(const std::shared_ptr<TransportClock>& transport, const EditSession* session,
+                                SequenceId sequence, std::optional<TimeRange> loop) {
+    {
+        std::lock_guard lock(m_mutex);
+        m_transport = transport;
+        m_loop = loop;
+    }
+    m_mailbox->setClock(std::make_shared<PresentationAdapter>(transport));
+    m_scheduler->setClock(transport);
+    m_scheduler->setLoop(loop);
+    m_session = session;
+    m_sequence = sequence;
+    m_scheduler->setSession(session, sequence);
+    startEpoch(render::SeekDisplay::HoldPrevious);
 }
 
 void PlaybackController::setTransport(std::shared_ptr<TransportClock> transport) {
     if (!transport) {
         transport = makeFreeRunTransport();
     }
+    forMirrors([&](PlaybackController& m) { m.follow(transport, m_session.load(), m_sequence.load(), loop()); });
+    std::optional<TimeRange> loop;
     {
         std::lock_guard lock(m_mutex);
         m_transport = transport;
+        loop = m_loop;
     }
+    transport->setLoop(loop); // the new clock loops like the old one
     m_mailbox->setClock(std::make_shared<PresentationAdapter>(transport));
     m_scheduler->setClock(transport);
     startEpoch(render::SeekDisplay::HoldPrevious);
@@ -63,17 +124,26 @@ std::shared_ptr<TransportClock> PlaybackController::transport() const {
 void PlaybackController::setSession(const EditSession* session) {
     m_session = session;
     m_scheduler->setSession(session, m_sequence.load());
+    forMirrors([&](PlaybackController& m) {
+        m.m_session = session;
+        m.m_scheduler->setSession(session, m_sequence.load());
+    });
     startEpoch(render::SeekDisplay::Black);
 }
 
 void PlaybackController::setSequence(SequenceId sequence) {
     m_sequence = sequence;
     m_scheduler->setSession(m_session.load(), sequence);
+    forMirrors([&](PlaybackController& m) {
+        m.m_sequence = sequence;
+        m.m_scheduler->setSession(m_session.load(), sequence);
+    });
     startEpoch(render::SeekDisplay::Black);
 }
 
 void PlaybackController::startEpoch(render::SeekDisplay display) {
     m_scheduler->retarget(m_mailbox->beginSeek(display));
+    forMirrors([&](PlaybackController& m) { m.m_scheduler->retarget(m.m_mailbox->beginSeek(display)); });
 }
 
 void PlaybackController::play() {
@@ -121,6 +191,7 @@ bool PlaybackController::setTransportSpeed(TransportSpeed speed) {
         startEpoch(render::SeekDisplay::HoldPrevious);
     } else {
         m_scheduler->wake();
+        forMirrors([](PlaybackController& m) { m.m_scheduler->wake(); });
     }
     return true;
 }
@@ -173,6 +244,9 @@ Ticks PlaybackController::position() const {
 }
 
 void PlaybackController::onBoundary(int direction) {
+    if (isMirror()) {
+        return; // the leader parks the shared transport
+    }
     // Scheduler thread: playback ran off the sequence. Park on the last frame (forward) or the first
     // (reverse).
     auto t = transport();
@@ -187,6 +261,33 @@ void PlaybackController::onBoundary(int direction) {
         t->seek(Ticks{});
     }
     startEpoch(render::SeekDisplay::HoldPrevious);
+}
+
+void PlaybackController::setLoop(std::optional<TimeRange> range) {
+    if (range && range->isEmpty()) {
+        range.reset();
+    }
+    {
+        std::lock_guard lock(m_mutex);
+        if (m_loop == range) {
+            return;
+        }
+        m_loop = range;
+    }
+    transport()->setLoop(range);
+    m_scheduler->setLoop(range);
+    forMirrors([&](PlaybackController& m) {
+        {
+            std::lock_guard lock(m.m_mutex);
+            m.m_loop = range;
+        }
+        m.m_scheduler->setLoop(range);
+    });
+}
+
+std::optional<TimeRange> PlaybackController::loop() const {
+    std::lock_guard lock(m_mutex);
+    return m_loop;
 }
 
 void PlaybackController::setRenderBackend(std::string name) {

@@ -61,7 +61,7 @@
 				<modifier.ctrl>true</modifier.ctrl>
 				<modifier.alt>false</modifier.alt>
 				<modifier.shift>true</modifier.shift>
-				<commandname>cmd.export.frame</commandname>
+				<commandname>cmd.multicam.transmit.gridview</commandname>
 			</item.7>
 			<!-- Unverified virtual key code: skipped with a warning; Play/Stop keeps Space from the next item. -->
 			<item.8 Version="1">

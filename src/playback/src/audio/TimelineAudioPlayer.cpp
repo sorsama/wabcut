@@ -3,6 +3,7 @@
 #include "Fader.h"
 #include "LiveFader.h"
 #include "MasterBus.h"
+#include "SubmixGraph.h"
 #include "TrackStream.h"
 
 #include <wabcut/audio/Gain.h>
@@ -56,7 +57,8 @@ public:
           m_deviceChannels(deviceChannels), m_rate{sampleRate, 1},
           m_ticksPerFrame(m_rate.ticksPerUnit()),
           m_maxBlockFrames(maxBlockFrames), m_maxWaitFrames(maxWaitFrames),
-          m_mixer(slots, channels, sampleRate, maxBlockFrames),
+          m_mixer(slots + detail::SubmixGraph::kMaxSubmixes, channels, sampleRate, maxBlockFrames),
+          m_graph(slots, channels, sampleRate, maxBlockFrames),
           m_scratch(static_cast<std::size_t>(maxBlockFrames) * static_cast<std::size_t>(channels)),
           m_prime(static_cast<std::size_t>(maxBlockFrames) * static_cast<std::size_t>(channels)), m_master(channels, sampleRate),
           m_stretch(channels, sampleRate, audio::kMaxShuttleSpeed, kShuttleInputFrames),
@@ -156,12 +158,14 @@ private:
         const std::size_t frames = out.size() / ch;
         m_faderSeq.fetch_add(1, std::memory_order_seq_cst); // odd: rendering (the fader programs in use)
         m_master.beginRender();
+        m_graph.beginRender();
         m_stretching = false; // a plain render ends any time-stretched run
         const LoopRange loop = loopRange();
         (void)startMaster(start, loop);
         Resync resync;
         mixAhead(out.first(frames * ch), start, loop, resync);
         m_masterNext = start + Ticks{static_cast<std::int64_t>(frames) * m_ticksPerFrame};
+        m_graph.endRender();
         m_master.endRender();
         m_faderSeq.fetch_add(1, std::memory_order_seq_cst); // even: done
         m_tap.push(out); // A.3: the live loudness of what leaves the player (not of shuttle audition)
@@ -185,6 +189,7 @@ private:
         m_stretch.setSpeed(static_cast<double>(s.num) / static_cast<double>(s.den));
         m_faderSeq.fetch_add(1, std::memory_order_seq_cst);
         m_master.beginRender();
+        m_graph.beginRender();
         const std::int64_t latency = startMaster(m_stretchCursor, LoopRange{});
         Resync resync;
         // Read the timeline up to `end` (whole frames from the run's start), mix it and feed the stretcher.
@@ -204,6 +209,7 @@ private:
         m_stretchNext = end;
         const int got = m_stretch.pull(out.data(), static_cast<int>(frames));
         std::fill(out.begin() + static_cast<std::ptrdiff_t>(got) * static_cast<std::ptrdiff_t>(ch), out.end(), 0.0f);
+        m_graph.endRender();
         m_master.endRender();
         m_faderSeq.fetch_add(1, std::memory_order_seq_cst);
         finish(resync, m_stretchCursor.value + latency * m_ticksPerFrame);
@@ -219,6 +225,8 @@ public:
     audio::Mixer& mixer() noexcept { return m_mixer; }
     const audio::Mixer& mixer() const noexcept { return m_mixer; }
     detail::MasterBus& master() noexcept { return m_master; }
+    detail::SubmixGraph& graph() noexcept { return m_graph; }
+    const detail::SubmixGraph& graph() const noexcept { return m_graph; }
     audio::LoudnessTap& tap() noexcept { return m_tap; }
     const audio::LoudnessTap& tap() const noexcept { return m_tap; }
     void setActive(int count) noexcept { m_active.store(count, std::memory_order_release); }
@@ -306,13 +314,17 @@ private:
     /// the stream (the read-ahead wrapped with it, mixAhead), so the master plays on with its state instead of
     /// restarting (and a plug-in there replaying its pipeline's priming).
     std::int64_t startMaster(Ticks start, const LoopRange& loop) noexcept {
-        const int latency = m_master.latencyFrames();
+        // p02 audio: the submix paths' latency comes before the master's; a change of their delays realigns them.
+        const int latency = m_master.latencyFrames() + m_graph.latencyFrames();
+        const std::uint64_t delays = m_graph.delayKey();
         const bool wrapped = loop.active() && start.value == loop.start && m_masterNext.value == loop.end;
-        if (m_masterStarted && (start == m_masterNext || wrapped) && latency == m_masterLatency &&
+        if (m_masterStarted && (start == m_masterNext || wrapped) && latency == m_masterLatency && delays == m_graphDelays &&
             m_readNext == readPosition(start, latency, loop)) {
             return latency;
         }
         m_master.restart(start, m_ticksPerFrame);
+        m_graph.restart(start, m_ticksPerFrame);
+        m_graphDelays = delays;
         m_masterStarted = true;
         m_masterLatency = latency;
         m_readNext = start;
@@ -337,6 +349,7 @@ private:
             if (wraps && m_readNext.value >= loop.end) {
                 m_readNext = Ticks{loop.start + (m_readNext.value - loop.end) % (loop.end - loop.start)};
                 m_master.continueAt(m_readNext);
+                m_graph.continueAt(m_readNext);
             }
         };
         wrapRead();
@@ -359,7 +372,11 @@ private:
         const auto ch = static_cast<std::size_t>(m_channels);
         const std::size_t n = out.size() / ch;
         const int active = m_active.load(std::memory_order_acquire);
+        const bool routed = m_graph.active(); // p02 audio: submixes and sends
         m_mixer.beginBlock(out);
+        if (routed) {
+            m_graph.beginBlock(at, static_cast<std::int64_t>(n));
+        }
         for (int slot = 0; slot < active; ++slot) {
             const std::span<float> scratch(m_scratch.data(), n * ch);
             if (!m_streams[static_cast<std::size_t>(slot)]->read(at, scratch, m_ticksPerFrame, m_maxWaitFrames, m_counters) &&
@@ -367,8 +384,21 @@ private:
                 resync.needed = true;
                 resync.at = at.value;
             }
+            if (routed) {
+                m_graph.sendPre(slot, scratch.data(), m_mixer);
+            }
             applyTrackFader(slot, at, scratch);
+            if (routed) {
+                m_graph.sendPost(slot, scratch.data(), m_mixer);
+                if (const std::span<float> to = m_graph.outputOf(slot); !to.empty()) {
+                    m_mixer.addBusTo(slot, scratch, m_channels, to);
+                    continue;
+                }
+            }
             m_mixer.addBus(slot, scratch, m_channels);
+        }
+        if (routed) {
+            m_graph.finishBlock(m_mixer, out.first(n * ch));
         }
         m_mixer.endBlock(&m_master);
     }
@@ -421,7 +451,8 @@ private:
     const int m_maxBlockFrames;
     const std::int64_t m_maxWaitFrames;
     std::vector<std::unique_ptr<TrackStream>> m_streams; // fixed after construction
-    audio::Mixer m_mixer;
+    audio::Mixer m_mixer;                                // the track slots' buses, then the submixes'
+    detail::SubmixGraph m_graph;                         // p02 audio: submixes and sends
     std::vector<float> m_scratch;
     std::vector<float> m_prime;
     StreamCounters m_counters; // audio thread only
@@ -430,7 +461,8 @@ private:
     detail::MasterBus m_master;
     bool m_masterStarted = false;
     Ticks m_masterNext;
-    int m_masterLatency = 0;
+    int m_masterLatency = 0;          ///< the master's and the submix paths' (p02)
+    std::uint64_t m_graphDelays = 0;  ///< the submix paths' delays the last restart aligned (SubmixGraph::delayKey)
     Ticks m_readNext; ///< where the tracks are read next (the master's latency ahead, wrapped with the loop)
     LoopRange m_lastLoop;
     std::atomic<std::uint64_t> m_loopSeq{0}; ///< setLoop(): odd while it writes
@@ -1040,14 +1072,25 @@ struct TimelineAudioPlayer::Impl {
             lastSnapshot = snapshot;
             source->master().update(seq != nullptr ? seq->audioEffects : EffectStack{},
                                     seq != nullptr ? seq->masterVolume : ParamValue{});
+            // p02 audio: the submix routing, and mute / solo with its rules (a soloed submix sounds with what feeds it).
+            std::vector<TrackId> ids(slots.size());
+            for (std::size_t i = 0; i < slots.size(); ++i) {
+                ids[i] = slots[i].track ? slots[i].track->id : TrackId{};
+            }
+            source->graph().update(seq, ids);
+            source->graph().applyFlags(seq, ids, source->mixer());
         }
         source->master().collect();
+        source->graph().collect();
         collectFaders();
         if (engine.isPaused()) {
             // An automation pass ends with playback, however the transport was stopped (the app stops it through the
             // playback controller): the faders return to their automation.
             for (int i = 0; i < source->slots(); ++i) {
                 source->live(i).clear();
+            }
+            for (int k = 0; k < detail::SubmixGraph::kMaxSubmixes; ++k) {
+                source->graph().live(k).clear();
             }
             source->masterLive().clear();
         }
@@ -1263,6 +1306,11 @@ bool TimelineAudioPlayer::setLiveTrackMix(TrackId track, std::optional<double> g
     }
     const int slot = source->slotOf(track);
     if (slot < 0) {
+        // p02 audio: a submix track's fader and panner.
+        if (const int submix = source->graph().indexOf(track); submix >= 0) {
+            source->graph().live(submix).set(gainDb, pan);
+            return true;
+        }
         return false;
     }
     source->live(slot).set(gainDb, pan);
@@ -1273,6 +1321,9 @@ void TimelineAudioPlayer::clearLiveMix() noexcept {
     if (const std::shared_ptr<TimelineMixSource> source = m_impl->published.load(std::memory_order_acquire)) {
         for (int i = 0; i < source->slots(); ++i) {
             source->live(i).clear();
+        }
+        for (int k = 0; k < detail::SubmixGraph::kMaxSubmixes; ++k) {
+            source->graph().live(k).clear();
         }
         source->masterLive().clear();
     }
@@ -1371,6 +1422,21 @@ void TimelineAudioPlayer::clearTrackClip(int index) const noexcept {
     const std::shared_ptr<TimelineMixSource> source = m_impl->published.load(std::memory_order_acquire);
     if (source != nullptr && index >= 0 && index < source->slots()) {
         source->mixer().busMeter(index).clearClip();
+    }
+}
+
+MeterSnapshot TimelineAudioPlayer::submixMeter(int index) const noexcept {
+    const std::shared_ptr<TimelineMixSource> source = m_impl->published.load(std::memory_order_acquire);
+    if (source == nullptr || index < 0 || index >= detail::SubmixGraph::kMaxSubmixes) {
+        return MeterSnapshot(silentMeter());
+    }
+    return MeterSnapshot(source->mixer().busMeter(source->graph().busOf(index)));
+}
+
+void TimelineAudioPlayer::clearSubmixClip(int index) const noexcept {
+    const std::shared_ptr<TimelineMixSource> source = m_impl->published.load(std::memory_order_acquire);
+    if (source != nullptr && index >= 0 && index < detail::SubmixGraph::kMaxSubmixes) {
+        source->mixer().busMeter(source->graph().busOf(index)).clearClip();
     }
 }
 

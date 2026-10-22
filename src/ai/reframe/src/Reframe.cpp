@@ -638,6 +638,141 @@ std::size_t applyPlan(Clip& clip, const ClipPlan& plan, DisplayGeometry display,
     return keys;
 }
 
+// --- Nested and multicam clips (0.2) ---------------------------------------------------------------------------------
+
+CanvasPlacement canvasPlacement(const Clip& clip, DisplayGeometry picture, double canvasWidth, double canvasHeight, Ticks time) {
+    const ClipProperties& p = clip.properties();
+    const double scale = p.value(ParamId::Scale, time);
+    CanvasPlacement out;
+    if (canvasWidth <= 0.0 || canvasHeight <= 0.0) {
+        return out;
+    }
+    out.factorX = scale * picture.width / canvasWidth;
+    out.factorY = scale * picture.height / canvasHeight;
+    out.offsetX = (canvasWidth / 2.0 + p.value(ParamId::PositionX, time) - scale * (picture.width / 2.0 + p.value(ParamId::AnchorX, time))) / canvasWidth;
+    out.offsetY = (canvasHeight / 2.0 + p.value(ParamId::PositionY, time) - scale * (picture.height / 2.0 + p.value(ParamId::AnchorY, time))) / canvasHeight;
+    return out;
+}
+
+const Track* nestedPictureTrack(const ProjectState& state, const Clip& clip) {
+    const Sequence* inner = clip.isNested() && clip.stream.kind == StreamKind::Video ? state.findSequence(clip.sequence) : nullptr;
+    if (!inner) {
+        return nullptr;
+    }
+    if (inner->multicam) {
+        const std::size_t angle = clip.angles.first();
+        return angle < inner->multicam->angles.size() ? inner->findTrack(inner->multicam->angles[angle].video) : nullptr;
+    }
+    const Track* track = nullptr;
+    for (const TrackPtr& candidate : inner->videoTracks) {
+        if (candidate->clips.empty() || !candidate->enabled) {
+            continue;
+        }
+        if (track) {
+            return nullptr;
+        }
+        track = candidate.get();
+    }
+    return track;
+}
+
+namespace {
+
+using AnalysisOf = std::function<const SubjectAnalysis*(const MediaItem&, int stream)>;
+
+/// The subjects of what a nested or multicam video clip shows, in its nested sequence's time and on its canvas: the
+/// samples of the media clips on its picture track inside the clip's window, moved to the nested time each shows them
+/// at, their boxes placed through the leaf clip's Motion (Position, Scale, Anchor at that time; rotation is not
+/// followed). A new leaf clip starts a new shot. Retimed leaves and media without analysis are left out (warnings).
+std::optional<SubjectAnalysis> nestedSubjects(const ProjectState& state, const Clip& clip, const AnalysisOf& analysisOf,
+                                              std::vector<std::string>& warnings) {
+    const Sequence* inner = state.findSequence(clip.sequence);
+    const Track* track = nestedPictureTrack(state, clip);
+    if (!inner || inner->width <= 0 || inner->height <= 0) {
+        return std::nullopt;
+    }
+    const std::string label = "'" + (clip.name().empty() ? inner->name : clip.name()) + "'";
+    if (!track) {
+        warnings.push_back(label + " shows layers of a nested sequence: its subjects are not followed (it stays centred)");
+        return std::nullopt;
+    }
+    const Ticks windowStart = clip.isFreeze() ? clip.sourceIn : std::min(clip.sourceIn, clip.sourceOut());
+    const Ticks windowEnd = clip.isFreeze() ? clip.sourceIn + Ticks{1} : std::max(clip.sourceIn, clip.sourceOut());
+    const double cw = static_cast<double>(inner->width);
+    const double ch = static_cast<double>(inner->height);
+    SubjectAnalysis out;
+    out.frameWidth = inner->width;
+    out.frameHeight = inner->height;
+    out.start = windowStart;
+    out.end = windowEnd;
+    bool any = false;
+    for (const Clip& leaf : track->clips) {
+        if (!leaf.enabled || leaf.isNested() || leaf.end() <= windowStart || leaf.start() >= windowEnd) {
+            continue;
+        }
+        const MediaItem* media = state.findMedia(leaf.media);
+        if (!media || media->isGenerator() || media->info.video.empty() || leaf.stream.kind != StreamKind::Video) {
+            continue;
+        }
+        if (leaf.speed.num != leaf.speed.den || leaf.reversed || leaf.isRemapped() || leaf.isFreeze()) {
+            warnings.push_back("'" + media->name + "' is retimed inside " + label + ": its subjects are not followed there");
+            continue;
+        }
+        const int stream = std::clamp(leaf.stream.index, 0, static_cast<int>(media->info.video.size()) - 1);
+        const SubjectAnalysis* a = analysisOf(*media, stream);
+        if (!a) {
+            continue;
+        }
+        any = true;
+        if (out.models.empty()) {
+            out.models = a->models;
+        }
+        const DisplayGeometry d = displayGeometry(media->info.video[static_cast<std::size_t>(stream)]);
+        const Ticks from = std::max(leaf.start(), windowStart);
+        const Ticks to = std::min(leaf.end(), windowEnd);
+        if (from > windowStart) {
+            out.cuts.push_back(from); // another clip of the angle: a new shot
+        }
+        const auto nestedTime = [&](Ticks mediaTime) { return leaf.start() + (mediaTime - leaf.sourceIn); };
+        for (const Ticks cut : a->cuts) {
+            if (const Ticks t = nestedTime(cut); t > from && t < to) {
+                out.cuts.push_back(t);
+            }
+        }
+        for (const SubjectSample& s : a->samples) {
+            const Ticks t = nestedTime(s.time);
+            if (t < from || t >= to) {
+                continue;
+            }
+            const CanvasPlacement on = canvasPlacement(leaf, d, cw, ch, leaf.curveTimeAt(t));
+            const auto place = [&](const Box& b) {
+                return Box{static_cast<float>(on.offsetX + on.factorX * b.x), static_cast<float>(on.offsetY + on.factorY * b.y),
+                           static_cast<float>(on.factorX * b.w), static_cast<float>(on.factorY * b.h)};
+            };
+            SubjectSample moved = s;
+            moved.time = t;
+            for (std::vector<SubjectBox>* boxes : {&moved.faces, &moved.people}) {
+                for (SubjectBox& b : *boxes) {
+                    b.box = place(b.box);
+                }
+            }
+            if (moved.salient) {
+                moved.salient = place(*moved.salient);
+            }
+            out.samples.push_back(std::move(moved));
+        }
+    }
+    if (!any) {
+        return std::nullopt;
+    }
+    std::ranges::stable_sort(out.samples, {}, &SubjectSample::time);
+    std::ranges::sort(out.cuts);
+    out.cuts.erase(std::unique(out.cuts.begin(), out.cuts.end()), out.cuts.end());
+    return out;
+}
+
+} // namespace
+
 // --- Copying a sequence ----------------------------------------------------------------------------------------------
 
 std::expected<SequenceCopy, Error> duplicateSequence(const ProjectState& state, SequenceId source, std::string name, int width,
@@ -742,31 +877,53 @@ std::expected<ReframeResult, Error> reframeSequence(const ProjectState& state, S
 
     std::map<std::pair<std::uint64_t, int>, std::optional<vision::SubjectAnalysis>> analyses;
     std::set<std::uint64_t> warned;
+    // A media stream's subjects, analysed once (null: none, a warning says why; Anchor mode needs none).
+    const AnalysisOf analysisOf = [&](const MediaItem& media, int stream) -> const SubjectAnalysis* {
+        auto& analysis = analyses[{media.id.value, stream}];
+        if (!analysis && options.mode != ReframeMode::Anchor && subjects) {
+            auto found = subjects(media, stream);
+            if (found) {
+                analysis = std::move(*found);
+            } else if (warned.insert(media.id.value).second) {
+                result.warnings.push_back("'" + media.name + "': no subject analysis (" + found.error().message + "); its clips stay centred");
+            }
+        }
+        return analysis ? &*analysis : nullptr;
+    };
     std::vector<Clip> blurred;
     for (TrackPtr& trackPtr : seq->videoTracks) {
         auto track = std::make_shared<Track>(*trackPtr);
         std::vector<Clip> clips = track->clips.toVector();
         bool changed = false;
         for (Clip& clip : clips) {
-            const MediaItem* media = next.findMedia(clip.media);
-            if (!media || media->isGenerator() || clip.stream.kind != StreamKind::Video || media->info.video.empty()) {
-                continue; // titles and generated media keep their own layout
-            }
-            const int stream = std::clamp(clip.stream.index, 0, static_cast<int>(media->info.video.size()) - 1);
-            const DisplayGeometry display = displayGeometry(media->info.video[static_cast<std::size_t>(stream)]);
-            auto& analysis = analyses[{media->id.value, stream}];
-            if (!analysis && options.mode != ReframeMode::Anchor && subjects) {
-                auto found = subjects(*media, stream);
-                if (found) {
-                    analysis = std::move(*found);
-                } else if (warned.insert(media->id.value).second) {
-                    result.warnings.push_back("'" + media->name + "': no subject analysis (" + found.error().message +
-                                              "); its clips stay centred");
+            DisplayGeometry display;
+            const SubjectAnalysis* analysis = nullptr;
+            std::optional<SubjectAnalysis> nestedAnalysis;
+            if (clip.isNested()) {
+                // 0.2: a nested or multicam clip is one picture, its nested sequence's canvas (the active angle for a
+                // multicam clip): it gets the camera keyframes itself - angles stay switchable, the nest untouched - from
+                // the subjects of the media it shows, mapped through the nest's time and placement.
+                const Sequence* inner = next.findSequence(clip.sequence);
+                if (clip.stream.kind != StreamKind::Video || !inner || inner->width <= 0 || inner->height <= 0) {
+                    continue;
                 }
+                display = DisplayGeometry{static_cast<double>(inner->width), static_cast<double>(inner->height)};
+                if (options.mode != ReframeMode::Anchor && subjects) {
+                    nestedAnalysis = nestedSubjects(next, clip, analysisOf, result.warnings);
+                    analysis = nestedAnalysis ? &*nestedAnalysis : nullptr;
+                }
+            } else {
+                const MediaItem* media = next.findMedia(clip.media);
+                if (!media || media->isGenerator() || clip.stream.kind != StreamKind::Video || media->info.video.empty()) {
+                    continue; // titles and generated media keep their own layout
+                }
+                const int stream = std::clamp(clip.stream.index, 0, static_cast<int>(media->info.video.size()) - 1);
+                display = displayGeometry(media->info.video[static_cast<std::size_t>(stream)]);
+                analysis = analysisOf(*media, stream);
             }
             const TimeRange range = clip.isFreeze() ? TimeRange{clip.sourceIn, Ticks{1}}
                                                     : TimeRange::fromStartEnd(clip.sourceIn, clip.sourceOut());
-            ClipPlan plan = planClip(analysis ? &*analysis : nullptr, range, display, width, height, options);
+            ClipPlan plan = planClip(analysis, range, display, width, height, options);
             result.keyframes += applyPlan(clip, plan, display, width, height, options);
             ++result.clipsReframed;
             changed = true;

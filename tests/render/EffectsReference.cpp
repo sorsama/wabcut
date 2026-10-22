@@ -231,46 +231,70 @@ LinearImage referenceEffect(const LinearImage& in, const LayerEffect& e) {
     return in;
 }
 
-LinearImage referenceTransition(const LinearImage* a, const LinearImage* b, const LayerTransition& mixInfo) {
-    const LinearImage& shape = a ? *a : *b;
-    LinearImage out(shape.width, shape.height);
-    const double t = clamp01(mixInfo.progress);
-    const double w = shape.width;
-    const double h = shape.height;
-    const double angle = mixInfo.angleDegrees * kPi / 180.0;
-    const double dirX = std::cos(angle);
-    const double dirY = std::sin(angle);
-    const double s0 = std::min(0.0, dirX * w) + std::min(0.0, dirY * h);
-    const double s1 = std::max(0.0, dirX * w) + std::max(0.0, dirY * h);
-    const double len = s1 - s0;
-    const double feather = clamp01(mixInfo.feather) * len;
-    const double e = s0 - 0.5 * feather + t * (len + feather);
-    const Rgba transparent{0, 0, 0, 0};
-    for (int y = 0; y < shape.height; ++y) {
-        for (int x = 0; x < shape.width; ++x) {
-            const Rgba ca = a ? a->at(x, y) : transparent;
-            const Rgba cb = b ? b->at(x, y) : transparent;
-            Rgba r{};
-            switch (mixInfo.kind) {
-            case TransitionKind::DipToColor: {
-                const Rgba color{mixInfo.color[0], mixInfo.color[1], mixInfo.color[2], 1.0};
-                r = t < 0.5 ? mix(ca, color, 2.0 * t) : mix(color, cb, 2.0 * t - 1.0);
-                break;
-            }
-            case TransitionKind::Wipe: {
-                const double s = (x + 0.5) * dirX + (y + 0.5) * dirY;
-                const double m = feather > 0.0 ? clamp01((e - s) / feather + 0.5) : clamp01((e - s) + 0.5);
-                r = mix(ca, cb, m);
-                break;
-            }
-            case TransitionKind::CrossDissolve:
-                r = mix(ca, cb, t);
-                break;
-            }
-            out.at(x, y) = r;
+reference::Image toReference(const LinearImage& in) {
+    reference::Image out(in.width, in.height);
+    for (int y = 0; y < in.height; ++y) {
+        for (int x = 0; x < in.width; ++x) {
+            out.setD(x, y, in.at(x, y));
         }
     }
     return out;
+}
+
+LinearImage fromReference(const reference::Image& in) {
+    LinearImage out(in.width, in.height);
+    for (int y = 0; y < in.height; ++y) {
+        for (int x = 0; x < in.width; ++x) {
+            out.at(x, y) = in.atD(x, y);
+        }
+    }
+    return out;
+}
+
+reference::TransitionSpec referenceSpec(const LayerTransition& mix) {
+    reference::TransitionSpec s;
+    s.pattern = static_cast<reference::TransitionPattern>(static_cast<int>(mix.kind));
+    s.progress = mix.progress;
+    s.color = mix.color;
+    s.angleDegrees = mix.angleDegrees;
+    s.feather = mix.feather;
+    s.borderWidth = mix.borderWidth;
+    s.borderColor = mix.borderColor;
+    s.reverse = mix.reverse;
+    s.antiAliasing = mix.antiAliasing;
+    s.center = mix.center;
+    s.direction = mix.direction;
+    s.custom = mix.custom;
+    s.seed = mix.seed;
+    return s;
+}
+
+RenderMatch compareToReference(const RenderedImage& image, const std::vector<std::uint8_t>& rgb24, int tolerance) {
+    RenderMatch m;
+    double sum = 0.0;
+    std::size_t bad = 0;
+    const std::size_t pixels = static_cast<std::size_t>(image.width) * static_cast<std::size_t>(image.height);
+    for (std::size_t i = 0; i < pixels; ++i) {
+        const std::uint8_t* p = image.rgba.data() + i * 4;
+        bool off = false;
+        for (std::size_t c = 0; c < 3; ++c) {
+            const int d = static_cast<int>(p[c]) - static_cast<int>(rgb24[i * 3 + c]);
+            sum += static_cast<double>(d) * d;
+            off = off || std::abs(d) > tolerance;
+        }
+        bad += off ? 1 : 0;
+    }
+    const double mse = sum / (3.0 * static_cast<double>(std::max<std::size_t>(pixels, 1)));
+    m.psnr = mse <= 0.0 ? 99.0 : 10.0 * std::log10(255.0 * 255.0 / mse);
+    m.mismatched = static_cast<double>(bad) / static_cast<double>(std::max<std::size_t>(pixels, 1));
+    return m;
+}
+
+LinearImage referenceTransition(const LinearImage* a, const LinearImage* b, const LayerTransition& mixInfo) {
+    // The oracle is render/reference/Transitions.h (0.2): every transition kind, the I.2 three included.
+    const reference::Image ra = a ? toReference(*a) : reference::Image();
+    const reference::Image rb = b ? toReference(*b) : reference::Image();
+    return fromReference(reference::transition(a ? &ra : nullptr, b ? &rb : nullptr, referenceSpec(mixInfo)));
 }
 
 std::vector<std::uint8_t> encodeOverBlack(const LinearImage& image, OutputTransform transform) {

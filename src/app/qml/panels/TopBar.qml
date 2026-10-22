@@ -227,6 +227,20 @@ Item {
                     command: "sequence.renderInToOut"
                     onTriggered: MediaReadiness.rendering ? MediaReadiness.cancelRender() : MediaReadiness.renderInToOut()
                 }
+                // 0.2: Premiere's Sequence > Selection Follows Playhead (a toggle).
+                ContextMenuItem {
+                    id: followPlayheadItem
+                    objectName: "selectionFollowsPlayheadMenuItem"
+                    text: qsTr("Selection Follows Playhead")
+                    iconName: "mouse-pointer-2"
+                    command: "sequence.selectionFollowsPlayhead"
+                    checkable: true
+                    checked: ProjectController.selectionFollowsPlayhead
+                    onTriggered: {
+                        ProjectController.selectionFollowsPlayhead = !ProjectController.selectionFollowsPlayhead
+                        followPlayheadItem.checked = Qt.binding(() => ProjectController.selectionFollowsPlayhead)
+                    }
+                }
             }
         }
 
@@ -395,6 +409,11 @@ Item {
                 border.width: Theme.hairline + 1
                 border.color: Theme.canvas
             }
+        }
+
+        // 0.2: Premiere's Quick Export (a preset, a file, one click).
+        QuickExportButton {
+            Layout.alignment: Qt.AlignVCenter
         }
 
         PillButton {

@@ -77,6 +77,10 @@ struct ExplainedEffect {
     State state = State::Applied;
     /// Masks limiting it (I.6), as names ("Face (subtract, inverted)"); the opacity mask lists its shapes too.
     QStringList masks;
+    /// 0.2: what the evaluated effect does at this frame, for effects that need it explained: Border ("8 px, #FFFFFF,
+    /// 100 % opacity"), Ultra Key (key colour, output, matte generation and cleanup, spill), Track Matte Key (the matte
+    /// track and how it is read, or why the layer shows nothing). Empty otherwise.
+    QString detail;
 };
 
 /// A colour-grade stage (color::GradeSpec, in the shader's order).
@@ -114,6 +118,11 @@ struct ExplainedVideoLayer {
     QStringList redactions;
     int evaluatedRedactions = 0;
     double opacity = 1.0;
+    /// 0.2: the clip's blend mode when it is not Normal ("Multiply"), else empty.
+    QString blendMode;
+    /// 0.2: set when this layer is another layer's matte or second picture, not drawn itself: "Track Matte of V2", or
+    /// "Second picture of V2's Gradient Wipe".
+    QString matteFor;
     render::LayerTransform transform;
     /// Fully covered by an opaque layer above (the preview does not even decode it).
     bool occluded = false;
@@ -176,8 +185,9 @@ class FrameInspector : public QObject {
     /// [{ key ("c12"), track, clipName, mediaName, source ("original"|"proxy"|"proxyOffline"|"generated"), sourceText,
     ///    sourceFile, sourceTimecode, sourceFrame (text), mapping, remapped, transition ("" or "Cross Dissolve 40 %,
     ///    outgoing"), effects: [{ key ("e5"), owner ("c12"), name, state ("applied"|"disabled"|"unsupported"|
-    ///    "previewBypassed"), stateText, masks (text) }], grade: [{ name, active }], gradeText, redactions (text),
-    ///    opacityText, motionText, occluded, soloed }], top first.
+    ///    "previewBypassed"), stateText, masks (text), detail (0.2) }], grade: [{ name, active }], gradeText,
+    ///    redactions (text), opacityText, motionText, blendText (0.2: "" for Normal), matteText (0.2: "" unless the layer is
+    ///    another layer's matte), occluded, soloed }], top first.
     Q_PROPERTY(QVariantList layers READ layers NOTIFY explanationChanged FINAL)
     /// [{ key, track, clipName, mediaName, sampleText, sourceTimecode, silentReason, gain: [{ stage, value }],
     ///    effects: [...as above, clip then track], transition, redactions (text), soloed }]

@@ -1,4 +1,5 @@
 #include <wabcut/ai/edit/CaptionBuilder.h>
+#include <wabcut/ai/edit/Profanity.h>
 
 #include <wabcut/ai/Text.h>
 #include <wabcut/ai/WordBuilder.h>
@@ -233,7 +234,7 @@ CaptionTrack buildCaptions(const SequenceTranscript& st, const CaptionOptions& o
         static_cast<std::size_t>(std::max(1, options.maxCharsPerLine)) * static_cast<std::size_t>(std::max(1, options.maxLines));
     for (std::size_t i = 0; i < st.size(); ++i) {
         const TimelineWord& w = st[i];
-        const std::string word(st.text(i));
+        const std::string word = options.profanity != nullptr ? options.profanity->mask(st.text(i)) : std::string(st.text(i));
         bool fresh = cues.empty();
         if (!fresh) {
             Pending& cur = cues.back();

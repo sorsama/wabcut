@@ -16,6 +16,11 @@
 // mailbox epoch: seek() is a jump (black until the target is decoded), scrub() and stepFrames() hold the
 // previous picture.
 //
+// Mirrors (P.2, a second program output such as a full-screen window on another display): addMirror() makes another
+// controller follow this one - the same session, sequence, transport and loop, a new epoch whenever this one starts
+// one - while decoding and composing on its own (its own scheduler and mailbox, e.g. CPU frames for another GPU
+// device). A mirror never commands the transport; it is driven through this controller only.
+//
 // Threading: every member is for the GUI/controller thread except stats(), position() and mailbox() (any
 // thread).
 
@@ -31,6 +36,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace wabcut::playback {
 
@@ -107,6 +113,18 @@ public:
     /// turns it off for a pass (Scheduler::setStopAtEnd). Default true.
     void setStopAtEnd(bool stop) { m_scheduler->setStopAtEnd(stop); }
     bool stopAtEnd() const { return m_scheduler->stopAtEnd(); }
+    /// P.2, Premiere's Loop: playback that reaches the end of `range` continues at its start (the transport wraps:
+    /// audio on the engine, video follows; the scheduler decodes no further than the range's end). nullopt turns it
+    /// off. Kept across setTransport().
+    void setLoop(std::optional<TimeRange> range);
+    std::optional<TimeRange> loop() const;
+
+    // ---- Mirrors (P.2) ----
+    /// `mirror` follows this controller until removeMirror() (call it before the mirror goes). GUI thread.
+    void addMirror(PlaybackController* mirror);
+    void removeMirror(PlaybackController* mirror);
+    /// This controller follows another one (it was added as a mirror).
+    bool isMirror() const { return m_mirrorOf.load() != nullptr; }
 
     // ---- Stats ----
     void setRenderBackend(std::string name);
@@ -119,6 +137,11 @@ private:
     void startEpoch(render::SeekDisplay display);
     void onBoundary(int direction);
     Rate sequenceRate() const;
+    /// The leader's state, adopted by a mirror (P.2).
+    void follow(const std::shared_ptr<TransportClock>& transport, const EditSession* session, SequenceId sequence,
+                std::optional<TimeRange> loop);
+    /// Runs `fn` on every mirror (under the mirrors' lock, so a mirror cannot go meanwhile).
+    template <class Fn> void forMirrors(Fn&& fn);
 
     PlaybackOptions m_options;
     std::shared_ptr<render::CompositeMailbox> m_mailbox;
@@ -126,8 +149,12 @@ private:
     std::unique_ptr<Scheduler> m_scheduler;
     std::atomic<const EditSession*> m_session{nullptr}; // also read by onBoundary() on the scheduler thread
     std::atomic<SequenceId> m_sequence{};
-    mutable std::mutex m_mutex; // m_renderBackend, m_transport swaps
+    mutable std::mutex m_mutex; // m_renderBackend, m_transport swaps, m_loop
     std::string m_renderBackend;
+    std::optional<TimeRange> m_loop;
+    std::mutex m_mirrorsMutex; // m_mirrors: the scheduler thread starts epochs too (onBoundary)
+    std::vector<PlaybackController*> m_mirrors;
+    std::atomic<PlaybackController*> m_mirrorOf{nullptr};
 };
 
 } // namespace wabcut::playback

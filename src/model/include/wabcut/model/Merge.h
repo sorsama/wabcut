@@ -77,6 +77,48 @@ namespace edit {
 std::expected<Created<SequenceId>, Error> copySequenceFrom(const ProjectState& state, const ProjectState& source,
                                                            SequenceId sequence, std::string name);
 
+/// 0.2 (P.3): what to bring in from another project (Premiere's Import of a project: the whole project or selected
+/// sequences; dragging items from another open project's panel). Ids are the other project's.
+struct ProjectImportSelection {
+    bool everything = false;             ///< the whole project (every bin, sequence and media item)
+    std::vector<BinId> bins;             ///< with everything inside them
+    std::vector<SequenceId> sequences;   ///< with everything they play
+    std::vector<MediaId> media;
+};
+
+struct ProjectImportOptions {
+    BinId into;                 ///< where the imported items go (invalid = the root bin; a search bin is refused)
+    /// Not empty: a new bin of this name in `into` holds them (Premiere makes one named after the imported project).
+    std::string binName;
+    /// Media whose file the project already has (same path, same content) are not added again: the copies play the
+    /// project's own item. Off: every needed item is copied.
+    bool reuseMedia = true;
+    /// The other project's file (UTF-8, absolute): copied media items and sequences remember it and their id there
+    /// (ImportSource). Empty: they record nothing.
+    std::string sourceProject;
+};
+
+struct ProjectImportResult {
+    ProjectState state;
+    BinId bin;                          ///< the bin made for the import (binName), else invalid
+    std::vector<BinId> bins;            ///< copies of bins, in the other project's id order
+    std::vector<SequenceId> sequences;  ///< copies of sequences (selected ones and what they play), same order
+    std::vector<MediaId> media;         ///< media items added
+    std::size_t reusedMedia = 0;        ///< needed media the project already had
+    std::vector<std::string> notes;     ///< what was adjusted or left out, for the import report
+};
+
+/// Brings items of `source` (another project, its media already resolved: absolute paths, offline flags) into
+/// `state` in one edit: copies with new ids of the selected bins (sub-bins and contents), sequences and media, and of
+/// everything they need: the media and nested / multicam sequences their clips play, the LUT assets their effects use,
+/// caption speakers, transcript corrections and redactions of copied media, review notes of copied sequences, and graphic
+/// templates, text styles and caption presets this project has no item of that name for. Items whose bin is not copied
+/// go into `options.into`. Errors: NotFound (an id `source` does not have, or no such bin `into`), InvalidArgument
+/// (nothing selected, a search bin as `into`, an invalid result).
+std::expected<ProjectImportResult, Error> importProjectItems(const ProjectState& state, const ProjectState& source,
+                                                             const ProjectImportSelection& selection,
+                                                             const ProjectImportOptions& options = {});
+
 } // namespace edit
 
 } // namespace wabcut

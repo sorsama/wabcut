@@ -14,11 +14,17 @@ wabcut_add_test_suite(export
         ExportTestUtil.cpp
         ExportTestUtil.h
         test_benchmark.cpp
+        test_audio_post_host.cpp # P.2: AAF / OMF audio rendered from real media, and the CLI
+        test_caption_files_export.cpp # P.2: caption sidecar formats and 608 embedded in H.264
         test_caption_redaction.cpp
         test_cli_render.cpp
+        test_content_credentials.cpp # AI-15: signed C2PA Content Credentials in MP4 exports
         test_export.cpp
         test_export_audio_ai.cpp
+        test_export_parity.cpp # 0.2: Premiere's formats, presets, effects, metadata, queue, watch folders, smart render
         test_gaming_export.cpp # I.9 (gaming): 60 fps presets, target sizes under Discord's limits
+        test_media_formats_export.cpp # 0.2: deinterlaced and spanned media through the export
+        test_hdr_export.cpp # I.9: PQ / HLG exports, HDR10 metadata, colour-managed preview == export
         test_proxy.cpp
         test_queue.cpp
         test_rendered.cpp
@@ -26,7 +32,7 @@ wabcut_add_test_suite(export
         test_highlights_e2e.cpp # G.2: a recording's highlights -> a reel -> MP4, end to end
         test_settings.cpp
         test_sidecar_text.cpp
-    LIBS wabcut_export wabcut_media wabcut_playback wabcut_audio wabcut_ai_highlights_media
+    LIBS wabcut_export wabcut_media wabcut_playback wabcut_audio wabcut_ai_highlights_media wabcut_ai_c2pa
     # Label: "export", or "gpu" for the tests tagged [gpu] (QRhi rendering, NVENC), so GPU-less CI can skip them
     # (tests/CMakeLists.txt).
     PROPERTIES FIXTURES_REQUIRED wabcut_test_media)
@@ -38,6 +44,9 @@ target_compile_definitions(wabcut_export_tests PRIVATE
     WABCUT_FFPROBE_EXECUTABLE="${WABCUT_FFPROBE_EXECUTABLE}"
     WABCUT_CLI_EXECUTABLE="$<TARGET_FILE:wabcut-cli>")
 add_dependencies(wabcut_export_tests wabcut-cli) # test_cli_render.cpp runs it
+# P.2 (E6): Export Frame's stills (every format, OpenEXR by the spec) and sequence.exportFrame / source.exportFrame.
+target_sources(wabcut_export_tests PRIVATE test_still_export.cpp)
+target_link_libraries(wabcut_export_tests PRIVATE wabcut_editor)
 
 # Export UI: ExportController and the Export workspace on the real QML shell, through tests/app's ShellFixture
 # (one QGuiApplication per process, Qt message capture, Main.qml created hidden). The screenshot lands in

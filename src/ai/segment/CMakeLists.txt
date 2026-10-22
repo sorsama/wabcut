@@ -6,6 +6,7 @@
 find_package(nlohmann_json CONFIG REQUIRED)
 
 add_library(wabcut_ai_segment STATIC
+    src/FaceRedaction.cpp
     src/HelperSegmenter.cpp
     src/Matte.cpp
     src/ObjectMask.cpp
@@ -22,6 +23,6 @@ wabcut_target_defaults(wabcut_ai_segment)
 if(NOT WABCUT_CORE_ONLY)
     add_library(wabcut_ai_segment_media STATIC src/MatteCache.cpp src/MediaSegment.cpp)
     target_link_libraries(wabcut_ai_segment_media PUBLIC wabcut_ai_segment wabcut_ai_search_media wabcut_ai_edit_media wabcut_ai_vision
-        wabcut_media wabcut_render)
+        wabcut_media wabcut_render wabcut_export PRIVATE wabcut_editor)
     wabcut_target_defaults(wabcut_ai_segment_media)
 endif()

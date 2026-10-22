@@ -140,7 +140,7 @@ public:
     Ticks position() const noexcept;
 
     // ---- Live fader overrides (automation passes: Touch / Latch / Write) ------------------------------------
-    /// Overrides the fader (dB) and/or panner (-1..1) of audio track `track` (TrackId{}: the master fader; the master
+    /// Overrides the fader (dB) and/or panner (-1..1) of audio track `track` (p02: or submix track; TrackId{}: the master fader; the master
     /// has no panner of its own, so a pan there is a balance on the mix) while set, heard at once: the callback applies
     /// it instead of the evaluated Track::volume / pan (or Sequence::masterVolume), ramped over ~10 ms on every change
     /// and on the way in and out. Both unset clears it. The model is never touched: the UI writes the pass as keys.
@@ -173,6 +173,10 @@ public:
     /// Resets a meter's clip latch (the user clicked its clip LED).
     void clearTrackClip(int index) const noexcept;
     void clearMasterClip() const noexcept;
+    /// p02 audio: the post-fader meter of submix track `index` (0 = the sequence's first submix); silent when out of
+    /// range or not routed to.
+    MeterSnapshot submixMeter(int index) const noexcept;
+    void clearSubmixClip(int index) const noexcept;
 
     /// A.3: live EBU R128 loudness of what leaves the player (post master effects, master fader and soft clip guard:
     /// what export renders), measured by an audio::LoudnessTap on its own worker thread (manual-feed mode: by

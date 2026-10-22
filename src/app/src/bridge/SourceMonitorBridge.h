@@ -16,6 +16,13 @@
 //   * Insert (,) / Overwrite (.): edit.insertFromSource / overwriteFromSource. A four-point edit whose ranges differ
 //     needs a Fit Clip choice: edit() returns "fit" until QML passes one (the dialog, or the remembered choice).
 //     previewEdit() shows the edit as a ghost on the timeline (a dry run in TimelineView's external preview).
+//   * P.2: Premiere's Loop (`loop`, remembered): playback repeats the source In to Out (a missing mark is the start
+//     or the end); Play from outside that range starts at its beginning, and Play In to Out repeats it.
+//   * 0.2 Media Browser: a file shown before it is imported (loadFile, `preview`): it plays from its own description
+//     (editor::describeCameraClip: a camera card's clip, spanned parts joined) and has no marks; the first mark,
+//     marker, patch change or edit imports it through the Library (the importer: LibraryBridge::importFromBrowser,
+//     one undo step into the Library's bin, with the Ingest settings) and goes on with the imported item. A preview is
+//     a file, not a project's item: it stays when another project opens.
 //   * Track targeting from the headers (sequence.setTargets), Match Frame (F) and Reverse Match Frame (Shift+R)
 //     (sequence.matchFrame / reverseMatchFrame), and drops from the Source Monitor onto the timeline (video and
 //     audio, video only, audio only), which go where they are dropped.
@@ -35,6 +42,7 @@
 #include <QVariantMap>
 #include <QtQml/qqmlregistration.h>
 
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
@@ -53,8 +61,10 @@ class SourceMonitorBridge : public QObject {
     Q_OBJECT
 
     Q_PROPERTY(bool loaded READ loaded NOTIFY sourceChanged FINAL)
-    /// Opaque key of the loaded media item ("m12"), or "".
+    /// Opaque key of the loaded media item ("m12"), or "" (also for a Media Browser preview).
     Q_PROPERTY(QString media READ mediaKeyText NOTIFY sourceChanged FINAL)
+    /// 0.2: a Media Browser file shown before it is imported (loadFile); its first mark or edit imports it.
+    Q_PROPERTY(bool preview READ preview NOTIFY sourceChanged FINAL)
     Q_PROPERTY(QString name READ name NOTIFY sourceChanged FINAL)
     /// "video", "audio" (no picture: the panel draws a waveform), "still", or "" when nothing is loaded.
     Q_PROPERTY(QString kind READ kind NOTIFY sourceChanged FINAL)
@@ -78,6 +88,8 @@ class SourceMonitorBridge : public QObject {
     /// Length of the sequence In/Out range ("" without both marks), for the Fit Clip dialog.
     Q_PROPERTY(QString sequenceInOutText READ sequenceInOutText NOTIFY marksChanged FINAL)
     Q_PROPERTY(bool playing READ playing NOTIFY transportChanged FINAL)
+    /// P.2: Premiere's Loop button in the Source Monitor.
+    Q_PROPERTY(bool loop READ loop WRITE setLoop NOTIFY loopChanged FINAL)
     /// Recently loaded sources, newest first: [{ media, name, kind }].
     Q_PROPERTY(QVariantList recent READ recent NOTIFY recentChanged FINAL)
     /// The source track indicators: [{ source: "V1"|"A1"..., kind: "video"|"audio", track: key or "", enabled }].
@@ -96,6 +108,9 @@ public:
 
     void setController(ProjectController* controller);
     void setProgramPlayback(PlaybackBridge* playback);
+    /// 0.2: imports a Media Browser file (its path as loadFile got it) and returns its item (LibraryBridge sets it).
+    using Importer = std::function<std::optional<MediaId>(const QString& file)>;
+    void setImporter(Importer importer) { m_importer = std::move(importer); }
 
     // ---- C++ (tests) ----
     MediaId mediaId() const { return m_media; }
@@ -112,7 +127,8 @@ public:
     command::CommandResult run(const std::string& name, command::Json params, bool dryRun = false);
 
     // ---- Properties ----
-    bool loaded() const { return m_media.isValid(); }
+    bool loaded() const { return m_media.isValid() || m_pending.has_value(); }
+    bool preview() const { return m_pending.has_value(); }
     QString mediaKeyText() const;
     QString name() const { return m_name; }
     QString kind() const { return m_kind; }
@@ -131,6 +147,8 @@ public:
     QString inOutText() const;
     QString sequenceInOutText() const;
     bool playing() const;
+    bool loop() const { return m_loop; }
+    void setLoop(bool loop);
     QVariantList recent() const;
     QVariantList indicators() const;
     QVariantMap patchMap() const;
@@ -140,6 +158,9 @@ public:
     // ---- QML: the source ----
     /// Loads a library item ("m12"); false (with `message`) for unknown or offline media.
     Q_INVOKABLE bool load(const QString& media);
+    /// 0.2 Media Browser: shows `file` (a file, or the first file of a camera card's clip) without importing it; false
+    /// (with `message`) when it is not media Wabcut reads.
+    Q_INVOKABLE bool loadFile(const QString& file);
     Q_INVOKABLE void unload();
     /// The Source Monitor panel's picture (a ProgramMonitor).
     Q_INVOKABLE void attachMonitor(QObject* monitor);
@@ -217,6 +238,7 @@ signals:
     void recentChanged();
     void patchingChanged();
     void messageChanged();
+    void loopChanged();
     /// A source was loaded (Library, Match Frame, recent sources), Reverse Match Frame moved the program playhead:
     /// the narrow layout shows the monitor it concerns.
     void showSourceRequested();
@@ -231,10 +253,19 @@ private:
     double fractionOf(Ticks t) const;
     QString timecodeOf(Ticks t) const;
     bool loadMedia(MediaId media, std::optional<Ticks> at);
+    /// Plays `item` (the project's item `projectMedia`, or a preview's description with none) from `at`.
+    bool loadItem(const MediaItem& item, MediaId projectMedia, std::optional<Ticks> at, const QString& kind);
+    /// A preview's first use: imports it (the importer) and goes on with the item. True when there is no preview.
+    bool adoptPreview();
+    std::vector<command::SourcePatchSetting> patchingFor(SequenceId sequence, const MediaItem& item) const;
     void teardown();
     void tick();
     void startAudio();
     void setMessage(const QString& message);
+    /// Hands the loop range (In to Out of the source) to the playback, or none; with `starting` and the position
+    /// outside the range, moves to its start (P.2).
+    void applyLoop(bool starting = false);
+    void toggleLoop() { setLoop(!m_loop); }
     bool setMarks(command::Json params);
     void onProjectChanged();
     /// The project's redactions of the loaded media, re-pointed at the private copy (I.6: the source shows them).
@@ -254,6 +285,13 @@ private:
     // The loaded source and its private one-clip project.
     MediaId m_media;
     MediaId m_copyMedia; ///< the media item's id in the private project
+    /// 0.2: a Media Browser preview - the file and its description - until it is imported.
+    struct Preview {
+        QString file;
+        MediaItem item;
+    };
+    std::optional<Preview> m_pending;
+    Importer m_importer;
     /// The project's redaction ids -> their copies' ids in the private project, allocated there (its ids start at 1, so
     /// keeping the project's would collide with its media, sequence, tracks or clips; Codex wave-4 P2-38). Stable while
     /// the source stays loaded, so an unchanged set of redactions makes no new commit.
@@ -272,6 +310,7 @@ private:
     QTimer m_tick;
     bool m_wasPlaying = false;
     std::optional<Ticks> m_stopAt; ///< Play In to Out
+    bool m_loop = false;           ///< P.2: Premiere's Loop
     Ticks m_lastPosition{-1};
     std::vector<MediaId> m_recent;
     /// Per sequence: the source track indicators (V1, A1, A2, ...), kept across sources.

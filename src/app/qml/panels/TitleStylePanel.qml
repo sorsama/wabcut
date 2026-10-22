@@ -64,6 +64,11 @@ Flickable {
         width: root.width
         spacing: Theme.space(3)
 
+        // 0.2: the project's Text Styles as Library items (apply to the selected graphics, rename, duplicate, delete).
+        TextStyleItems {
+            Layout.fillWidth: true
+        }
+
         // Preview card: the title as styled, over a dark frame.
         Rectangle {
             objectName: "titlePreview"

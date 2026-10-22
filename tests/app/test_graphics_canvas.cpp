@@ -785,7 +785,8 @@ TEST_CASE("Type tool (T): a click in the Program Monitor adds a text layer there
     QCoreApplication::sendEvent(shell.window.get(), &press);
     QMouseEvent release(QEvent::MouseButtonRelease, at, at, Qt::LeftButton, Qt::NoButton, {});
     QCoreApplication::sendEvent(shell.window.get(), &release);
-    CHECK(controller->session().undoCount() > undo);
+    // 0.2: creating the graphic and placing its text is ONE undo step (Premiere).
+    CHECK(controller->session().undoCount() == undo + 1);
     const int layer = graphics->selectedLayer();
     REQUIRE(layer > 0);
     REQUIRE(controller->selection().size() == 1);

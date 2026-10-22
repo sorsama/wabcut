@@ -6,6 +6,7 @@
 #include "SequenceEditor.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <functional>
 #include <limits>
@@ -96,6 +97,34 @@ std::pair<int, int> layoutOf(std::string_view text, int minimum) {
     return {longest, std::max(1, lines)};
 }
 
+/// 0.2, Track Styles: every caption track (all sequences) that follows preset `name` takes `style`, or with null follows
+/// nothing any more.
+void restyleTracks(ProjectState& state, std::string_view name, const CaptionStyle* style) {
+    const auto same = [&](std::string_view a) {
+        return a.size() == name.size() && std::equal(a.begin(), a.end(), name.begin(), [](char x, char y) {
+                   return std::tolower(static_cast<unsigned char>(x)) == std::tolower(static_cast<unsigned char>(y));
+               });
+    };
+    const std::vector<SequencePtr> sequences = state.sequences;
+    for (const SequencePtr& seq : sequences) {
+        if (std::none_of(seq->captionTracks.begin(), seq->captionTracks.end(), [&](const CaptionTrack& t) { return same(t.trackStyle); })) {
+            continue;
+        }
+        auto next = std::make_shared<Sequence>(*seq);
+        for (CaptionTrack& t : next->captionTracks) {
+            if (!same(t.trackStyle)) {
+                continue;
+            }
+            if (style) {
+                t.style = *style;
+            } else {
+                t.trackStyle.clear();
+            }
+        }
+        state = state.withSequence(std::move(next));
+    }
+}
+
 std::string trimmed(std::string_view s) {
     const std::size_t a = s.find_first_not_of(" \t\n");
     if (a == std::string_view::npos) {
@@ -117,6 +146,9 @@ std::optional<std::string> captionTrackProblem(const CaptionTrack& track) {
     }
     if (const auto problem = captionStyleProblem(track.style)) {
         return "style " + *problem;
+    }
+    if (!oneLineName(track.trackStyle, kMaxCaptionNameBytes, true)) {
+        return "has a track style name that is not one line of UTF-8 up to " + std::to_string(kMaxCaptionNameBytes) + " bytes";
     }
     for (std::size_t i = 0; i < track.cues.size(); ++i) {
         const CaptionCue& cue = track.cues[i];
@@ -403,7 +435,10 @@ std::expected<ProjectState, Error> saveCaptionPreset(const ProjectState& state, 
     }
     ProjectState out = state;
     if (const CaptionPreset* existing = state.findCaptionPreset(preset.name)) {
+        const std::string name = existing->name;
+        const CaptionStyle style = preset.style;
         out.captionPresets.edit()[static_cast<std::size_t>(existing - state.captionPresets.data())] = std::move(preset);
+        restyleTracks(out, name, &style);
         return out;
     }
     if (out.captionPresets.size() >= kMaxCaptionPresets) {
@@ -423,8 +458,49 @@ std::expected<ProjectState, Error> removeCaptionPreset(const ProjectState& state
         return std::unexpected(detail::notFound("there is no caption preset \"" + std::string(name) + "\""));
     }
     ProjectState out = state;
+    const std::string removed = p->name;
     out.captionPresets.erase(out.captionPresets.begin() + (p - state.captionPresets.data()));
+    restyleTracks(out, removed, nullptr);
     return out;
+}
+
+EditOutcome setCaptionTrackStyle(const ProjectState& state, SequenceId sequenceId, CaptionTrackId trackId, std::string_view name) {
+    std::optional<CaptionStyle> style;
+    std::string canonical;
+    if (!name.empty()) {
+        style = captionPresetStyle(state, name);
+        if (!style) {
+            return std::unexpected(detail::notFound("there is no caption preset \"" + std::string(name) + "\""));
+        }
+        const CaptionPreset* p = state.findCaptionPreset(name);
+        canonical = p ? p->name : findBuiltinCaptionPreset(name)->name;
+    }
+    return editCaptionTrack(state, sequenceId, trackId, [&](CaptionTrack& t) -> std::expected<void, Error> {
+        if (style) {
+            t.style = *style;
+        }
+        t.trackStyle = canonical;
+        return {};
+    });
+}
+
+std::expected<ProjectState, Error> pushCaptionTrackStyle(const ProjectState& state, SequenceId sequenceId, CaptionTrackId trackId) {
+    const auto seq = detail::findSequence(state, sequenceId);
+    if (!seq) {
+        return std::unexpected(seq.error());
+    }
+    const auto it = std::find_if((*seq)->captionTracks.begin(), (*seq)->captionTracks.end(),
+                                 [&](const CaptionTrack& t) { return t.id == trackId; });
+    if (it == (*seq)->captionTracks.end()) {
+        return std::unexpected(detail::notFound("caption track " + std::to_string(trackId.value) + " does not exist"));
+    }
+    if (it->trackStyle.empty()) {
+        return std::unexpected(detail::invalidArgument("the caption track follows no track style"));
+    }
+    if (findBuiltinCaptionPreset(it->trackStyle) && !state.findCaptionPreset(it->trackStyle)) {
+        return std::unexpected(detail::invalidArgument("\"" + it->trackStyle + "\" is a built-in style: save it under a new name"));
+    }
+    return saveCaptionPreset(state, CaptionPreset{it->trackStyle, it->style});
 }
 
 } // namespace wabcut::edit

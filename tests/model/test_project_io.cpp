@@ -4,15 +4,24 @@
 #include "TimelineFixture.h"
 
 #include <wabcut/model/AudioChannelOps.h>
+#include <wabcut/model/ColorManagementOps.h>
+#include <wabcut/model/CaptionOps.h>
 #include <wabcut/model/EditOps.h>
+#include <wabcut/model/EditingOps.h>
 #include <wabcut/model/FinishingOps.h>
+#include <wabcut/model/FieldOptionsOps.h>
+#include <wabcut/model/FrameScaling.h>
 #include <wabcut/model/GraphicOps.h>
+#include <wabcut/model/MotionOps.h>
 #include <wabcut/model/ProjectIO.h>
 #include <wabcut/model/ProjectOps.h>
+#include <wabcut/model/SequenceSettings.h>
+#include <wabcut/model/SubmixOps.h>
 #include <wabcut/model/Synthetic.h>
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -686,7 +695,7 @@ std::set<std::string> collectKeys(const std::string& text) {
 } // namespace
 
 TEST_CASE("Every key a project file uses is in the key list of its schema (E5-P2-8)", "[model][io][migration]") {
-    // The rich project with the fields of A.8, A.9 and C.13 too. A feature that adds a field adds it here, bumps
+    // The rich project with the fields of A.8, A.9, C.13 and I.9 too. A feature that adds a field adds it here, bumps
     // kSchemaVersion (with a migration step and a note in ProjectIO.h) and updates tests/data/project-file-keys.txt:
     // files with the new field must not half-load in the builds before it.
     ProjectState s = richProject();
@@ -696,6 +705,11 @@ TEST_CASE("Every key a project file uses is in the key list of its schema (E5-P2
     s = ok(edit::setClipChannels(s, seq, std::span(&audio, 1), AudioChannelMap::swap())).state;
     s = ok(edit::setMasterFormat(s, seq, ChannelFormat::Surround51)).state;
     s = ok(edit::setSequenceStartTimecode(s, seq, Ticks::fromSeconds(3600))).state; // X.1, schema 14
+    {
+        edit::SequenceSettingsChange label; // 0.2, schema 18: a sequence's label colour
+        label.colorIndex = 4;
+        s = ok(edit::setSequenceSettings(s, seq, label)).state;
+    }
     // A.8 and A.9's fields that are written only when set: a record-armed track with a moved 5.1 panner, a take.
     const TrackId a1 = s.findSequence(seq)->audioTracks.at(0)->id;
     edit::TrackStateChange armed;
@@ -706,6 +720,10 @@ TEST_CASE("Every key a project file uses is in the key list of its schema (E5-P2
         MediaItem take = *s.media.front();
         take.recording = RecordingProvenance{seq, a1, TimeRange{f(0), f(2)}, 1, "USB Mic", f(0), "2026-10-12T09:00:00Z"};
         take.info.audio.front().title = "Mic"; // A.10, schema 16: a named stream
+        if (!take.info.video.empty()) {
+            take.info.video.front().logColorSpace = "s-log3-cine"; // 0.2, schema 17: the camera log its metadata names
+            take.info.video.front().fieldOrder = FieldOrder::UpperFirst; // 0.2 media, schema 18: interlaced footage
+        }
         s.media.front() = std::make_shared<const MediaItem>(std::move(take));
     }
     requireValid(s);
@@ -731,10 +749,160 @@ TEST_CASE("Every key a project file uses is in the key list of its schema (E5-P2
     REQUIRE(matte);
     s = matte->state;
     s = ok(edit::addAdjustmentLayer(s, seq, v1, f(12), f(2))).state;
+    // P.2 (schema 17): a clip's Time Interpolation.
+    s = ok(edit::setTimeInterpolation(s, seq, std::span(&video, 1), TimeInterpolation::OpticalFlow)).state;
     Marker highlighted{f(1), f(2), "Clutch"};
     highlighted.highlight = MarkerHighlight{0.9, HighlightConfidence::High, {"kill streak"}, f(2), "highlights"};
     s = ok(edit::addMarker(s, seq, highlighted)).state;
+    // P.2 (schema 17): Scale to Frame Size and a frame hold with Hold Filters, an item's default scaling, interpretation,
+    // timecode, still duration and Make Offline, the sequence's pixel aspect, fields, preview format and display
+    // formats, and a merged clip.
+    s = ok(edit::setScaleToFrameSize(s, seq, std::span(&video, 1), true)).state;
+    ClipFieldOptions fields; // 0.2 media (schema 18): Field Options
+    fields.reverseFieldDominance = true;
+    fields.processing = FieldProcessing::AlwaysDeinterlace;
+    s = ok(edit::setFieldOptions(s, seq, std::span(&video, 1), fields)).state;
+    edit::FrameHoldOptions hold;
+    hold.holdFilters = true;
+    s = ok(edit::setFrameHoldOptions(s, seq, video, hold)).state;
+    const auto named = [&](std::string_view name) {
+        const auto it = std::find_if(s.media.begin(), s.media.end(), [&](const MediaPtr& m) { return m->name == name; });
+        REQUIRE(it != s.media.end());
+        return it;
+    };
+    {
+        const auto interview = named("Interview 🎤"); // an item with a file and no clips
+        MediaItem item = **interview;
+        item.scaling = MediaScaling::SetToFill;
+        MediaInterpretation in;
+        in.frameRate = Rate{24, 1};
+        in.pixelAspect = Rate{1, 1};
+        in.fieldOrder = FieldOrder::UpperFirst;
+        in.ignoreAlpha = true;
+        in.invertAlpha = true;
+        in.premultiplication = AlphaMode::Straight;
+        item.interpretation = in;
+        item.timecode = MediaTimecode{Ticks::fromSeconds(3600), "A001"};
+        item.stillDuration = Ticks::fromSeconds(3);
+        item.madeOffline = true;
+        *interview = std::make_shared<const MediaItem>(std::move(item));
+    }
+    edit::SequenceSettingsChange settings;
+    settings.pixelAspect = Rate{2, 1};
+    settings.fields = FieldOrder::LowerFirst;
+    settings.previewFormat = "prores";
+    settings.videoDisplay = VideoTimeDisplay::Feet35mm;
+    settings.audioDisplay = AudioTimeDisplay::Milliseconds;
+    s = ok(edit::setSequenceSettings(s, seq, settings)).state;
+    edit::MergeSpec merge;
+    merge.video = (*named("A"))->id;
+    merge.audio = {(*named("M"))->id};
+    auto merged = edit::mergeClips(s, merge);
+    REQUIRE(merged);
+    s = merged->state;
+    // p02 audio (schema 17): a submix track, a track assigned to it and a pre-fader, muted send with a level and pan.
+    s = ok(edit::addSubmixTrack(s, seq, ChannelFormat::Stereo, "Voices")).state;
+    const TrackId submix = s.findSequence(seq)->submixTracks.at(0)->id;
+    s = ok(edit::setTrackOutput(s, seq, a1, submix)).state;
+    TrackSend send;
+    send.submix = submix;
+    send.preFader = true;
+    send.muted = true;
+    send.level = ParamValue(-6.0);
+    send.pan = ParamValue(0.5);
+    s = ok(edit::addTrackSend(s, seq, a1, send)).state;
+    // 0.2 (schema 17): a rolling graphic with a layer pinned to the video frame and a text style it follows, and a caption
+    // track following a caption preset (its Track Style).
+    {
+        Graphic credits;
+        GraphicLayer name;
+        name.id = 1;
+        name.kind = LayerKind::Text;
+        name.text.runs = {TextRun{"Directed by", TextStyle{}}};
+        name.pin = LayerPin{LayerPin::kVideoFrame, LayerPin::kLeft, {40.0, 0.0, 0.0, 0.0}};
+        // 0.2 graphics (schema 18): a text layer on a path with every option off its default.
+        GraphicLayer ring;
+        ring.id = 2;
+        ring.kind = LayerKind::Text;
+        ring.text.runs = {TextRun{"Around", TextStyle{}}};
+        TextPath path;
+        path.path = {MaskPathKey{Ticks{}, {MaskVertex{-100, 0, 0, -50, 0, 0}, MaskVertex{100, 0, 0, -50, 0, 0}},
+                                 Interpolation::Linear}};
+        path.reverse = true;
+        path.perpendicular = false;
+        path.forceAlignment = true;
+        path.firstMargin = 10.0;
+        path.lastMargin = 20.0;
+        ring.text.path = path;
+        credits.layers = {name, ring};
+        credits.roll = GraphicRoll{};
+        auto rolled = ok(edit::addGraphic(s, seq, v1, f(11), f(2), credits));
+        s = ok(edit::createTextStyle(rolled.state, seq, rolled.placed.front(), 1, "Credits")).state;
+        auto captions = edit::addCaptionTrack(s, seq, "English", "en");
+        REQUIRE(captions);
+        s = *edit::saveCaptionPreset(captions->state, CaptionPreset{"Channel look", CaptionStyle{}});
+        s = ok(edit::setCaptionTrackStyle(s, seq, s.findSequence(seq)->captionTracks.back().id, "Channel look")).state;
+    }
+    // 0.2 P.3 (schema 18): clip metadata, a search bin with every field and a Freeform view with a saved layout.
+    {
+        edit::MediaAttributeChange md;
+        md.scene = "12";
+        md.shot = "3";
+        md.take = "2";
+        md.logNote = "Good energy";
+        md.client = "Northwind";
+        md.good = true;
+        md.status = "Approved";
+        md.cameraAngle = "Wide";
+        md.cameraLabel = "A";
+        md.cameraModel = "FX6";
+        md.shotDate = "2026-10-16";
+        md.shotLocation = "Kitchen";
+        s = *edit::setMediaAttributes(s, std::vector<MediaId>{s.media.front()->id}, md);
+        // A copy from another project, on a media item and a sequence.
+        MediaItem copied = *s.media.front();
+        copied.importSource = ImportSource{"D:/Other.wabcut", 12};
+        s.media.front() = std::make_shared<const MediaItem>(std::move(copied));
+        Sequence importedSeq = *s.sequences.front();
+        importedSeq.importSource = ImportSource{"D:/Other.wabcut", 13};
+        s = s.withSequence(std::make_shared<const Sequence>(std::move(importedSeq)));
+        BinSearch query{"interview", "scene", "video", 2, true, true, true, true, true, true, true, "2026-01-01", "2026-12-31"};
+        s = edit::addSearchBin(s, "Selects", query)->state;
+        FreeformArrangement arrangement;
+        arrangement.scale = 1.25;
+        FreeformPlacement p;
+        p.kind = FreeformPlacement::Kind::Media;
+        p.id = s.media.front()->id.value;
+        p.x = 10.0;
+        p.y = 20.0;
+        p.size = 2.0;
+        arrangement.items = {p};
+        s = *edit::setFreeformArrangement(s, s.media.front()->bin, arrangement);
+        s = *edit::saveFreeformLayout(s, s.media.front()->bin, "Storyboard");
+    }
     requireValid(s);
+    // I.9: an HDR project and a clip read as camera log.
+    ColorManagement hdr;
+    hdr.mode = ColorManagementMode::HdrPq;
+    hdr.peakNits = 4000.0;
+    hdr.autoDetectLog = false; // 0.2 (schema 17): written only when off
+    auto managed = edit::setColorManagement(s, hdr);
+    REQUIRE(managed);
+    s = *managed;
+    s = ok(edit::setClipInputColorSpace(s, seq, std::span(&video, 1), InputColorSpace::SLog3SGamut3Cine)).state;
+    // p03 AI (schema 18): an object mask made from a nested clip's picture names its sequence instead of media.
+    {
+        Mask object;
+        object.name = "Object";
+        object.shape = MaskShape::Matte;
+        object.matte = MaskMatte{"0000000000abcdef/0/red-v1/0123456789abcdef", MediaId{}, 0, TimeRange{f(0), f(10)}, "red-v1", seq};
+        for (const char* key : {"center.x", "center.y", "size.x", "size.y"}) {
+            object.set(key, ParamValue(0.5));
+        }
+        auto masked = edit::addMask(s, seq, video, {}, object);
+        REQUIRE(masked);
+        s = masked->state;
+    }
 
     const auto text = io::toJson(s);
     REQUIRE(text);

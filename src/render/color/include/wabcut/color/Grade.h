@@ -170,6 +170,9 @@ struct GradeSpec {
     std::shared_ptr<const Lut> look;
     int missingLuts = 0;                       ///< LUT references that did not resolve (the UI warns)
     LutInterpolation interpolation = LutInterpolation::Tetrahedral;
+    /// The encoding of the display-referred stages (I.9): ACEScct in colour-managed projects (the compositor uses it
+    /// whenever its ColorPipeline is managed, whatever this says; the CPU reference follows this field).
+    GradeEncoding encoding = GradeEncoding::Rec709;
 
     /// Which stages do something (enabled and not neutral).
     bool inputLutActive() const;
@@ -214,12 +217,24 @@ double qualifierMatte(const GradeParams& p, const Rgb& display);
 /// The denoise threshold the refine applies after its first blur.
 double denoiseThreshold(double matte);
 /// Stage 10's correction mixed in by `matte`; `blurred` is the display value blurred for the sharpen (unused without).
-Rgb applySecondary(const GradeParams& p, const Rgb& display, double matte, const Rgb& blurred);
+Rgb applySecondary(const GradeParams& p, const Rgb& display, double matte, const Rgb& blurred,
+                   GradeEncoding encoding = GradeEncoding::Rec709);
 /// Stage 11 on linear RGB at normalised frame position q in [-1, 1]^2 (frame aspect `aspect`).
 Rgb applyVignette(const GradeParams& p, const Rgb& linear, double qx, double qy, double aspect);
 
 /// A whole pixel without neighbourhood effects (no denoise, blur or sharpen): stages 1-11. `qx`, `qy` as above.
 Rgb gradePixel(const GradeSpec& spec, const Rgb& linear, double qx = 0.0, double qy = 0.0, double aspect = 16.0 / 9.0);
+
+// ---- Export .cube (0.2) ----
+
+/// Lumetri's Export .cube: the grade as a `size`^3 3D LUT (2..kMaxLut3dSize, Premiere writes 33) from display-referred
+/// Rec.709 code values to code values, the way Wabcut and other applications apply a look. Every pixel-local stage goes
+/// in (input LUT, Basic, Creative, Curves, Color Wheels, the HSL secondary's correction through its qualifier); the
+/// vignette (it depends on where a pixel is) and the secondary's denoise / blur / sharpen (they read neighbours) cannot,
+/// and are left out. Outputs are clamped to [0, 1]. `title` is cleaned for a .cube TITLE line.
+Lut gradeToLut(const GradeSpec& spec, int size = 33, std::string title = {});
+/// What gradeToLut leaves out of this grade ("Vignette", "masks", ...), for the export's report.
+std::vector<std::string> gradeLutOmissions(const GradeSpec& spec, const EffectInstance& instance);
 
 /// The sigma (sequence px) of the matte refine's denoise and blur, and the sharpen's blur.
 double denoiseSigma(const GradeParams& p);

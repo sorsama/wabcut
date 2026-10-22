@@ -1,5 +1,7 @@
 #include <wabcut/editor/PreviewRender.h>
 
+#include <wabcut/editor/Production.h>
+
 #include <stop_token>
 #include <system_error>
 #include <utility>
@@ -83,6 +85,12 @@ std::shared_ptr<PreviewRenderer> makeExportPreviewRenderer(PreviewRenderOptions 
 }
 
 std::filesystem::path previewFolderFor(const std::filesystem::path& projectFile) {
+    // 0.2 (P.3): a production's scratch disk for previews (its Production Settings) holds every project's previews.
+    if (const auto production = productionOf(projectFile)) {
+        if (std::filesystem::path shared = production->previewFolderFor(projectFile); !shared.empty()) {
+            return shared;
+        }
+    }
     std::filesystem::path stem = projectFile.stem();
     stem += " Preview Files";
     return projectFile.parent_path() / stem;

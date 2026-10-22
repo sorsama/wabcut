@@ -17,6 +17,11 @@ layout(std140, binding = 0) uniform FxParams {
     vec4 toFrame1;
     vec4 frame;
     ivec4 mode; // y: 1 = textures are stored bottom-up (QRhi::isYUpInFramebuffer)
+    vec4 p3;    // 0.2: more parameters (the family shaders, fx_*.frag)
+    vec4 p4;
+    vec4 p5;
+    vec4 p6;
+    vec4 p7;
 } p;
 
 out gl_PerVertex { vec4 gl_Position; };

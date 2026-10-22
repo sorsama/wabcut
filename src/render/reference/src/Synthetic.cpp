@@ -28,6 +28,9 @@ Image syntheticPicture(const MediaItem& item, int width, int height) {
         return blackVideo(width, height);
     case SyntheticKind::TransparentVideo:
         return transparentVideo(width, height);
+    case SyntheticKind::BarsAndTone:
+    case SyntheticKind::CountingLeader:
+        break; // P.2: drawn by render::syntheticPicture, which needs the media time (the leader counts down)
     }
     return {};
 }

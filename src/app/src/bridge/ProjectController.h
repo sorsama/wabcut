@@ -199,6 +199,11 @@ class ProjectController : public QObject {
 
     // ---- Playhead (UI state, not in undo) ----
     Q_PROPERTY(QString playheadText READ playheadText NOTIFY playheadChanged FINAL)
+    /// 0.2, Premiere's Show Audio Time Units (the Program Monitor's and the Timeline's menu; MonitorBridge keeps the
+    /// setting): the playhead moves by audio samples (finePlayhead) and playheadText counts them (the sequence's audio
+    /// display format: samples or milliseconds). playhead() stays the frame that holds the sample, so every edit at
+    /// the playhead still lands on a frame.
+    Q_PROPERTY(bool audioTimeUnits READ audioTimeUnits WRITE setAudioTimeUnits NOTIFY audioTimeUnitsChanged FINAL)
     /// Index of the marker exactly at the playhead, or -1.
     Q_PROPERTY(int playheadMarkerIndex READ playheadMarkerIndex NOTIFY playheadChanged FINAL)
 
@@ -212,6 +217,12 @@ class ProjectController : public QObject {
     /// The selection's link and enable state, for the clip context menu (Link/Unlink, Enable).
     Q_PROPERTY(bool selectionLinked READ selectionLinked NOTIFY selectedClipChanged FINAL)
     Q_PROPERTY(bool selectionEnabled READ selectionEnabled NOTIFY selectedClipChanged FINAL)
+    /// 0.2: a selected clip is grouped (Clip > Group / Ungroup, ClipGroups.h).
+    Q_PROPERTY(bool selectionGrouped READ selectionGrouped NOTIFY selectedClipChanged FINAL)
+    /// 0.2, Premiere's Sequence > Selection Follows Playhead: while on, moving the playhead selects the clips under it on
+    /// the targeted tracks (with their groups and links). UI state of the session, off at start.
+    Q_PROPERTY(bool selectionFollowsPlayhead READ selectionFollowsPlayhead WRITE setSelectionFollowsPlayhead NOTIFY
+                   selectionFollowsPlayheadChanged FINAL)
     /// The clipboard holds clips: this session's, or another Wabcut's on the system clipboard.
     Q_PROPERTY(bool canPaste READ canPaste NOTIFY clipboardChanged FINAL)
     /// The edge of the primary selected clip that keyboard trims move: "head", "tail" or "" (none chosen: tail).
@@ -375,7 +386,13 @@ public:
     QString markOutText() const;
     QVariantList mediaItems() const { return m_mediaItems; }
     bool hasMediaFiles() const { return m_hasMediaFiles; }
-    QString playheadText() const { return formatTimecode(m_playhead); }
+    QString playheadText() const;
+    bool audioTimeUnits() const { return m_audioTimeUnits; }
+    void setAudioTimeUnits(bool on);
+    /// The playhead to the audio sample with audio time units on (playhead() is the frame holding it); else playhead().
+    Ticks finePlayhead() const { return m_finePlayhead; }
+    /// `t` as the sequence's audio time (samples or milliseconds, Show Audio Time Units).
+    QString formatAudioTime(Ticks t) const;
     int playheadMarkerIndex() const;
     QStringList selectedClips() const;
     QVariantMap selectedClip() const;
@@ -440,6 +457,16 @@ public:
     Q_INVOKABLE void unlinkSelection();
     /// Shift+E: enables or disables the selected clips.
     Q_INVOKABLE void toggleEnabledSelection();
+    /// 0.2, Clip > Group (Ctrl/Cmd+G) / Ungroup (Ctrl/Cmd+Shift+G) on the selection (the clip.group / clip.ungroup
+    /// commands; ProjectControllerTimeline.cpp).
+    Q_INVOKABLE void groupSelection();
+    Q_INVOKABLE void ungroupSelection();
+    /// 0.2, Sequence > Go to Gap > Next in Sequence (Shift+;) / Previous in Sequence (Ctrl/Cmd+Shift+;): the playhead
+    /// to the start of the next / previous gap where no track has a clip.
+    Q_INVOKABLE void goToSequenceGap(bool forward);
+    bool selectionGrouped() const;
+    bool selectionFollowsPlayhead() const { return m_selectionFollowsPlayhead; }
+    void setSelectionFollowsPlayhead(bool on);
     /// Alt+Left/Right (±1, ±5): moves the selection; Alt+,/. slides and Ctrl+Alt+Left/Right slips the clip.
     Q_INVOKABLE void nudgeSelection(int frames);
     Q_INVOKABLE void slideSelection(int frames);
@@ -464,6 +491,11 @@ public:
     /// Selects the previous (-1) or next (+1) clip on the primary clip's track (with its links); with nothing
     /// selected, the first clip at or after the playhead on the top track that has one.
     Q_INVOKABLE void selectAdjacentClip(int direction);
+    /// 0.2, Premiere's Select Next / Previous Clip (timeline.selectNextClip / selectPreviousClip): the next (+1) or
+    /// previous (-1) clip on the targeted tracks (every track when none is targeted) after / before the primary clip -
+    /// every targeted track's clip that starts there, with links and groups; with nothing selected the clips under the
+    /// playhead, else the first ones after it.
+    void selectNextClip(int direction);
     /// Selects the clip nearest in time on the track above (-1) or below (+1), skipping empty tracks.
     Q_INVOKABLE void selectClipOnAdjacentTrack(int direction);
     /// Moves the selected edge (selectedEdge; the tail when none is chosen) by `frames`: a regular trim, one
@@ -535,6 +567,8 @@ signals:
     void selectedClipChanged();
     void historyChanged();
     void lastErrorChanged();
+    void selectionFollowsPlayheadChanged();
+    void audioTimeUnitsChanged();
     /// Emitted first in the destructor, while session() is still valid: engine threads reading the session
     /// (playback) stop here. C++ only.
     void sessionClosing();
@@ -568,6 +602,8 @@ private:
     std::vector<ClipId> selectedClipIds() const;
     std::vector<Ticks> editPoints(bool anyTrack) const;
     Ticks lastMarkedFrame() const;
+    /// Selection Follows Playhead: selects the clips under the playhead (setPlayhead calls it).
+    void followPlayheadSelection();
 
     std::unique_ptr<EditSession> m_session;
     /// P.1: frees what the session lets go (evicted undo steps, the previous project) on a thread of its own; before
@@ -596,6 +632,8 @@ private:
     bool m_hasMediaFiles = false;
     SequenceId m_sequence;
     Ticks m_playhead;
+    Ticks m_finePlayhead;         // 0.2: to the audio sample with audio time units on, else m_playhead
+    bool m_audioTimeUnits = false;
     std::vector<ClipId> m_selection;
     ClipId m_primary;
     TrackListModel* m_tracks = nullptr;
@@ -604,6 +642,7 @@ private:
     TransitionId m_selectedTransition;
     std::vector<TimelineHighlight> m_highlights;
     QString m_selectedEdge;
+    bool m_selectionFollowsPlayhead = false;
     int m_revision = 0;
     QString m_lastError;
 };

@@ -137,12 +137,19 @@ Panel {
                     color: Theme.videoBlack
                     visible: SourceMonitor.loaded && !picture.hasFrame
                 }
+                // P.2: Premiere's Transparency Grid under the picture (qml/monitor/).
+                TransparencyGrid {
+                    objectName: "sourceTransparencyGrid"
+                    anchors.fill: parent
+                    visible: Monitors.sourceTransparencyGrid && SourceMonitor.loaded && picture.hasFrame
+                }
                 ProgramMonitor {
                     id: picture
                     objectName: "sourceMonitorPicture"
                     anchors.fill: parent
                     visible: SourceMonitor.loaded
                     surroundColor: Theme.videoBlack
+                    transparencyGrid: Monitors.sourceTransparencyGrid
                     previewDivisor: MediaReadiness.previewDivisor
                     Component.onCompleted: SourceMonitor.attachMonitor(picture)
                 }
@@ -240,7 +247,7 @@ Panel {
                 height: Theme.controlHeightSmall
                 radius: height / 2
                 color: Theme.raised
-                visible: SourceMonitor.recent.length > 0
+                visible: SourceMonitor.recent.length > 0 || SourceMonitor.preview
 
                 Text {
                     id: sourceName
@@ -250,7 +257,8 @@ Panel {
                     anchors.leftMargin: Theme.space(3)
                     anchors.rightMargin: Theme.space(1)
                     anchors.verticalCenter: parent.verticalCenter
-                    text: SourceMonitor.name
+                    // 0.2: a Media Browser clip shown before it is imported (its first mark or edit imports it).
+                    text: SourceMonitor.preview ? qsTr("%1 (Media Browser: not imported yet)").arg(SourceMonitor.name) : SourceMonitor.name
                     elide: Text.ElideRight
                     color: Theme.textSecondary
                     font.family: Theme.fontSans
@@ -585,6 +593,35 @@ Panel {
                     tooltip: qsTr("Play In to Out")
                     command: "transport.playInToOut"
                     onClicked: SourceMonitor.playInToOut()
+                }
+                // P.2: Premiere's Loop and the Source Monitor's settings (qml/monitor/).
+                LoopButton {
+                    anchors.verticalCenter: parent.verticalCenter
+                    source: true
+                }
+                // P.2: Premiere's Export Frame from the Source Monitor (qml/monitor/ExportFrameDialog.qml).
+                IconButton {
+                    objectName: "sourceExportFrame"
+                    anchors.verticalCenter: parent.verticalCenter
+                    compact: true
+                    iconName: "camera"
+                    tooltip: qsTr("Export Frame")
+                    command: "file.exportFrame"
+                    enabled: SourceMonitor.hasVideo
+                    onClicked: Monitors.requestExportFrame(true)
+                }
+                IconButton {
+                    id: sourceSettingsButton
+                    objectName: "sourceMonitorSettingsButton"
+                    anchors.verticalCenter: parent.verticalCenter
+                    compact: true
+                    iconName: "settings"
+                    tooltip: qsTr("Settings")
+                    onClicked: sourceSettingsMenu.popup(sourceSettingsButton, 0, -sourceSettingsMenu.implicitHeight - Theme.space(1))
+
+                    SourceSettingsMenu {
+                        id: sourceSettingsMenu
+                    }
                 }
                 Item {
                     width: Theme.space(2)

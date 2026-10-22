@@ -64,10 +64,14 @@ struct MaskPathKey {
 /// computer) shows the bounding box (center / size keys): a redaction never shows nothing.
 struct MaskMatte {
     std::string track; ///< the matte track's identity in the analysis cache (opaque, <= kMaxMatteTrack bytes)
-    MediaId media;     ///< the media it was made from
+    MediaId media;     ///< the media it was made from (invalid for a nested picture's matte: `sequence`)
     int stream = 0;    ///< its video stream (ordinal)
-    TimeRange source;  ///< the media time the mattes cover
+    TimeRange source;  ///< the media time the mattes cover (a nested picture's: nested sequence time)
     std::string model; ///< the segmentation model and version ("sam2.1-tiny-video@aa7a8542")
+    /// 0.2: a matte made from what a nested or multicam clip shows (the nested sequence's canvas, a multicam source's
+    /// active angle) instead of a media stream: that sequence. Exactly one of `media` and `sequence` is valid; the
+    /// mattes are then at nested sequence time, the clip's curve time.
+    SequenceId sequence;
 
     bool operator==(const MaskMatte&) const = default;
 };

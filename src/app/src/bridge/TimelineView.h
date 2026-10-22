@@ -46,6 +46,7 @@
 #include "ProjectController.h"
 #include "TimelineEditing.h"
 
+#include <wabcut/model/PreviewCache.h>
 #include <wabcut/model/Sequence.h>
 
 #include <QColor>
@@ -62,12 +63,14 @@
 
 #include <memory>
 #include <optional>
+#include <span>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
 namespace wabcut::app {
 
+class MeshBuilder;
 class TimelineRootNode;
 
 /// Measurements of the last updatePaintNode (for tests and profiling).
@@ -84,6 +87,8 @@ struct TimelineStats {
     int nestedClips = 0;   // M5l: clips drawn with the nested / multi-camera stripe (built range)
     int angleCuts = 0;     // M5l: angle-cut marks between multi-camera segments (built range)
     int trackLanes = 0;    // M5l: audio tracks drawing their fader or pan lane
+    int buildingWaveforms = 0; // p02 audio: audio clips (rebuilt this frame) shaded where their peaks are still building
+    float loudestWaveform = 0; // p02 audio: the highest waveform column the tracks rebuilt this frame drew (0..1)
     int responsiveClips = 0; // M5o: graphic clips with responsive time, their intro / outro drawn (built range)
     int responsiveTags = 0;  // M5o: "Intro" / "Outro" tags shown on those bands
     QHash<quint64, QPair<qreal, qreal>> responsiveBands; // M5o: clip id -> the intro and outro band widths in px
@@ -286,6 +291,9 @@ class TimelineView : public QQuickItem {
     Q_PROPERTY(bool rectifiedWaveforms READ rectifiedWaveforms WRITE setRectifiedWaveforms NOTIFY displayChanged FINAL)
     Q_PROPERTY(bool logarithmicWaveforms READ logarithmicWaveforms WRITE setLogarithmicWaveforms NOTIFY displayChanged
                    FINAL)
+    /// p02 audio: "Show Audio Waveforms Using Clip Volume": waveforms scaled by the clip's Audio Gain and its Volume
+    /// (level and keyframes), so they show what is heard rather than the source.
+    Q_PROPERTY(bool volumeWaveforms READ volumeWaveforms WRITE setVolumeWaveforms NOTIFY displayChanged FINAL)
     /// Coloured bands under video that uses source frames another clip also uses (Premiere's duplicate frame markers).
     Q_PROPERTY(bool showDuplicateFrames READ showDuplicateFrames WRITE setShowDuplicateFrames NOTIFY displayChanged
                    FINAL)
@@ -303,6 +311,23 @@ class TimelineView : public QQuickItem {
     /// ("regular", "ripple" or "roll").
     Q_PROPERTY(QVariantList trimPoints READ trimPoints WRITE setTrimPoints NOTIFY trimPointsChanged FINAL)
     Q_PROPERTY(QString trimType READ trimType WRITE setTrimType NOTIFY trimPointsChanged FINAL)
+
+    // ---- 0.2: Premiere's render bar, fade handle display and audio time units (TimelineViewRender.cpp) ----
+    /// The MediaReadiness singleton (its preview cache makes rendered segments green); null: nothing is green.
+    Q_PROPERTY(QObject* readiness READ readiness WRITE setReadiness NOTIFY readinessChanged FINAL)
+    /// The render bar of the current sequence (render.status): [{ start, end (seconds), status ("yellow" | "red" |
+    /// "rendered"), reason }] in time order, adjacent segments of one status merged; plain segments are left out.
+    /// Recomputed shortly after every edit and when Render In to Out finishes.
+    Q_PROPERTY(QVariantList renderBarItems READ renderBarItems NOTIFY renderBarChanged FINAL)
+    /// Premiere's Show Video / Audio Fade Handles (Timeline Display Settings): the handles in clips' top corners.
+    Q_PROPERTY(bool showVideoFadeHandles READ showVideoFadeHandles WRITE setShowVideoFadeHandles NOTIFY displayChanged
+                   FINAL)
+    Q_PROPERTY(bool showAudioFadeHandles READ showAudioFadeHandles WRITE setShowAudioFadeHandles NOTIFY displayChanged
+                   FINAL)
+    /// Premiere's Show Audio Time Units: the ruler and the time readouts count audio samples (or milliseconds, the
+    /// sequence's audio display format), the view zooms down to single samples, and drags of audio-only material (and
+    /// the playhead, ProjectController.audioTimeUnits) move by samples instead of frames.
+    Q_PROPERTY(bool audioTimeUnits READ audioTimeUnits WRITE setAudioTimeUnits NOTIFY displayChanged FINAL)
 
 public:
     explicit TimelineView(QQuickItem* parent = nullptr);
@@ -384,6 +409,8 @@ public:
     void setRectifiedWaveforms(bool on);
     bool logarithmicWaveforms() const { return m_logarithmic; }
     void setLogarithmicWaveforms(bool on);
+    bool volumeWaveforms() const { return m_volumeWaveforms; }
+    void setVolumeWaveforms(bool on);
     bool showDuplicateFrames() const { return m_showDuplicates; }
     void setShowDuplicateFrames(bool on);
     bool showThroughEdits() const { return m_showThroughEdits; }
@@ -401,6 +428,32 @@ public:
     QString trimType() const { return m_trimType; }
     void setTrimType(const QString& type);
     QVariantList markerItems() const;
+
+    // ---- 0.2 (TimelineViewRender.cpp) ----
+    QObject* readiness() const { return m_readiness; }
+    void setReadiness(QObject* readiness);
+    struct RenderBarSegment {
+        Ticks start;
+        Ticks end;
+        RenderStatus status = RenderStatus::None;
+        QString reason;
+        bool operator==(const RenderBarSegment&) const = default;
+    };
+    /// The render bar as last computed (C++ / tests).
+    const std::vector<RenderBarSegment>& renderBar() const { return m_renderBar; }
+    QVariantList renderBarItems() const;
+    /// Recomputes the render bar now (edits schedule it after a short delay).
+    Q_INVOKABLE void refreshRenderBar();
+    bool showVideoFadeHandles() const { return m_showVideoFades; }
+    void setShowVideoFadeHandles(bool on);
+    bool showAudioFadeHandles() const { return m_showAudioFades; }
+    void setShowAudioFadeHandles(bool on);
+    bool audioTimeUnits() const { return m_audioTimeUnits; }
+    void setAudioTimeUnits(bool on);
+    /// The time quantum of drags of the material: an audio sample with audio time units on and only audio clips in
+    /// `clips` (Premiere: sample edits never move video), else a frame.
+    Rate editRate(std::span<const ClipId> clips) const;
+
     /// The sequence marker under the ruler x (within a few px), or -1.
     Q_INVOKABLE int markerAt(double x) const;
     /// The time under x as a frame-quantised key for marker drags: "ticks" text (principle 9: opaque).
@@ -410,6 +463,10 @@ public:
     /// Where `db` sits on the rubber band: 0 at its top (+6 dB) to 1 at its bottom (-60 dB and below), 0 dB at 0.25.
     static double volumeFraction(double db);
     static double volumeDbAtFraction(double fraction);
+    /// 0.2, the pen on video clips: the band of an audio clip (`audio`: Volume, dB, volumeFraction) or a video clip
+    /// (Opacity 0..1, linear: 100 % at the top) as a fraction from the top, and back.
+    static double bandFraction(bool audio, double value);
+    static double bandValueAtFraction(bool audio, double fraction);
     /// The band's vertical extent inside an audio clip's rectangle.
     static QRectF volumeArea(const QRectF& clipRect);
 
@@ -478,6 +535,9 @@ public:
     const TimelineStats& stats() const { return m_stats; }
     /// Peaks for audio waveforms (default: PlaceholderPeakSource). Must outlive no render: shared ownership.
     void setPeakSource(std::shared_ptr<const PeakSource> source);
+    /// p02 audio: the peak source has new peaks: rebuilds the audio tracks holding clips of the media that changed
+    /// (PeakSource::mediaChangedSince), or every waveform when the source cannot say which.
+    void refreshPeaks();
     /// Thumbnails for video filmstrips (default: none). New atlases need filmstripsChanged() to be drawn.
     void setFilmstripSource(std::shared_ptr<const FilmstripSource> source);
     /// Atlases arrived: rebuilds the video tracks.
@@ -547,6 +607,8 @@ signals:
     void playingChanged();
     void displayChanged();
     void trimPointsChanged();
+    void readinessChanged();
+    void renderBarChanged();
     /// A click (no drag) on a clip's edge with the Selection, Ripple or Roll tool: QML selects that edit point
     /// (TrimBridge). `type` is the tool's trim ("regular", "ripple", "roll"); Ctrl/⌘ makes a Selection-tool click a
     /// ripple (Premiere).
@@ -589,13 +651,14 @@ private:
     void setHovered(ClipId clip);
 
     // ---- Gestures (TimelineViewInput.cpp) ----
-    enum class Zone { None, Body, Head, Tail, VolumeLine, VolumeKey, SpeedLine, SpeedKey };
+    enum class Zone { None, Body, Head, Tail, VolumeLine, VolumeKey, SpeedLine, SpeedKey, FadeHandle };
     struct Hit {
         ClipId clip;
         int row = -1;
         Zone zone = Zone::None;
         TransitionId transition; ///< set instead of `clip` when a transition covers the point (Head/Tail = its edges)
         int volumeKey = -1;      ///< VolumeKey: the key's index in the clip's volume curve
+        bool fadeHead = false;   ///< FadeHandle (0.2): the fade in handle, else the fade out one
     };
     /// The rubber band under (x, y) of an audio clip hit (`hit`): a key, the line, or `hit` unchanged.
     Hit volumeHit(double x, double y, Hit hit) const;
@@ -603,6 +666,12 @@ private:
     void dragVolume(QPointF pos, Qt::KeyboardModifiers mods);
     void releaseVolume();
     Hit speedHit(double x, double y, Hit hit) const;
+    /// 0.2, fade handles (TimelineViewFade.cpp): a selected clip's fade handle under (x, y) on `row`, else no hit.
+    Hit fadeHit(double x, double y, int row) const;
+    void addFadeHandles(MeshBuilder& mesh, const QRectF& rect, const Clip& clip) const;
+    void pressFade(const Hit& hit);
+    void dragFade(QPointF pos);
+    void releaseFade();
     void pressSpeed(const Hit& hit);
     void dragSpeed(QPointF pos);
     void releaseSpeed(QPointF pos);
@@ -629,6 +698,10 @@ private:
     void dragTransitionEdge(QPointF pos);
     Hit hitTest(double x, double y) const;
     GestureKind gestureFor(const Hit& hit, Qt::KeyboardModifiers mods) const;
+    /// 0.2, groups: for an edge hit on a grouped clip (and no Alt), the group's members whose same edge is the group's
+    /// outer edge (the grabbed clip first), or nothing when the hit edge is an inner one (that drag moves the group).
+    /// nullopt when the hit is not a grouped clip's edge (an ordinary trim).
+    std::optional<std::vector<ClipId>> groupEdgeMembers(const Hit& hit, Qt::KeyboardModifiers mods) const;
     void pressClip(const Hit& hit, Qt::KeyboardModifiers mods);
     void trackSelect(double x, int row, bool backward, bool oneTrack);
     void razorClick(double x, int row, Qt::KeyboardModifiers mods);
@@ -662,7 +735,7 @@ private:
     void updateAutoScroll(QPointF pos);
     void updateMarquee(QPointF pos);
     /// Frame-quantised time under x, snapped to a target when snapping is on (razor).
-    Ticks snappedTimeAt(double x, std::optional<Ticks>* snappedAt = nullptr) const;
+    Ticks snappedTimeAt(double x, std::optional<Ticks>* snappedAt = nullptr, std::optional<Rate> rate = {}) const;
     Ticks snapTolerance() const;
     /// Snap positions near `t`: the playhead, marks, markers and the clip edges around `t` on every track.
     std::vector<Ticks> localSnapTargets(Ticks t) const;
@@ -673,6 +746,8 @@ private:
     double fitPixelsPerSecond() const;
     double maxPixelsPerSecond() const;
     Rate frameRate() const;
+    /// The ruler's and the readouts' unit: the audio rate with audio time units on, else the frame rate.
+    Rate displayRate() const;
     int rowAt(double y) const;
     ClipId clipIdAt(double x, double y) const;
     Ticks ticksAtX(double x) const;
@@ -705,6 +780,10 @@ private:
     std::vector<Redaction> m_drawnRedactions;
     int m_markerRevision = 0;
     std::unordered_map<std::uint64_t, std::vector<TimeRange>> m_pendingRanges;
+    /// p02 audio: media whose peaks changed since the last frame (their audio tracks rebuild), and the peak source's
+    /// serial as of the last look.
+    std::unordered_set<std::uint64_t> m_pendingPeakMedia;
+    std::uint64_t m_peakSerial = 0;
     Ticks m_contentDuration = Ticks::fromSeconds(30);
     std::vector<Row> m_rows;
     qreal m_contentHeight = 0;
@@ -729,7 +808,7 @@ private:
     double m_hoverProgress = 0;
     QVariantAnimation* m_liftAnimation = nullptr;
 
-    enum class Drag { None, Click, Marquee, Pending, Gesture, Cancelled, TransitionEdge, VolumeKey, VolumeLine, Speed, Remix };
+    enum class Drag { None, Click, Marquee, Pending, Gesture, Cancelled, TransitionEdge, VolumeKey, VolumeLine, Speed, Remix, Fade };
     /// M5m: the Remix tool's drag of a music clip's end (a proposed length; the model is not touched).
     struct RemixDrag {
         ClipId clip;
@@ -756,6 +835,7 @@ private:
         int grabbedTrackIndex = 0; // V1/A1 = 0
         std::vector<Ticks> targets; // sorted snap targets
         std::vector<Ticks> edges;   // edges of the dragged material at press time
+        Rate rate = kRate30;        // what the drag's delta snaps to (editRate of the dragged material, 0.2)
         std::optional<Ticks> snappedAt;
         Ticks appliedDelta;
         std::shared_ptr<const ProjectState> preview; // last valid preview
@@ -834,6 +914,7 @@ private:
     QString m_filmstripMode = QStringLiteral("continuous");
     bool m_rectified = false;
     bool m_logarithmic = false;
+    bool m_volumeWaveforms = false; // p02 audio
     bool m_showDuplicates = false;
     bool m_showThroughEdits = true;
     bool m_showClipMarkers = true;
@@ -884,6 +965,25 @@ private:
         std::string mergeKey;
     } m_volumeDrag;
     int m_volumeDragCounter = 0;
+    // A fade handle drag (0.2, TimelineViewFade.cpp).
+    struct FadeDrag {
+        ClipId clip;
+        bool head = true;
+        bool moved = false;
+        std::string mergeKey;
+    } m_fadeDrag;
+    int m_fadeDragCounter = 0;
+
+    // ---- 0.2 (TimelineViewRender.cpp) ----
+    void scheduleRenderBar();
+    QPointer<QObject> m_readiness;
+    std::vector<RenderBarSegment> m_renderBar;
+    QTimer* m_renderBarTimer = nullptr;
+    bool m_showVideoFades = true;
+    bool m_showAudioFades = true;
+    bool m_audioTimeUnits = false;
+    /// The fade handles of this clip show although it is not selected: the pointer is over it (Premiere 26).
+    bool fadeHandlesShown(const Clip& clip, bool audio) const;
 
     // ---- External preview (TimelineViewPreview.cpp) ----
     friend class ExternalPreviewItem;

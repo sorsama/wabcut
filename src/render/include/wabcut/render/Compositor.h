@@ -105,6 +105,10 @@ struct CompositeStats {
     int toneMappedCaptures = 0; ///< I.9 (gaming): PQ / HLG layers of an SDR project, tone-mapped into SDR
     int unsupportedBlends = 0;  ///< Layers whose blend mode the compositor cannot draw yet (drawn as Normal; none since 0.1.2)
     int shaderBlends = 0;       ///< Layers blended in a shader over the canvas below them (0.1.2: a canvas-pass split each)
+    /// Layers read through a colour-managed input plan (ColorPipeline v2, I.9), of them through a baked LUT.
+    int managedInputs = 0;
+    int inputLuts = 0;
+    int colorPlanErrors = 0; ///< managed inputs or outputs OpenColorIO could not build (the layer or output fell back)
     QSize canvasPixels;     ///< Size of the intermediate canvas actually rendered.
 };
 
@@ -182,6 +186,12 @@ private:
     std::expected<void, Error> ensureOutputPipeline(QRhiRenderPassDescriptor* rpd, int sampleCount);
     std::expected<void, Error> ensureFxPipelines();
     QRhiShaderResourceBindings* layerSrb(const ImportedFrame& frame);
+    /// The layer pass's bindings of `frame` with a colour-management input LUT (I.9).
+    QRhiShaderResourceBindings* lutLayerSrb(const ImportedFrame& frame, QRhiTexture* lut);
+    /// The 3D texture of a baked colour-management LUT (I.9), uploaded on first use; null without 3D textures.
+    QRhiTexture* cmLutTexture(const std::shared_ptr<const color::BakedLut>& lut, QRhiResourceUpdateBatch* updates);
+    /// The output pass's bindings with an output LUT (I.9).
+    QRhiShaderResourceBindings* outputLutSrb(QRhiTexture* lut);
     QRhiShaderResourceBindings* fxSrb(QRhiTexture* in0, QRhiTexture* in1);
     // Colour grade passes (shaders/grade.frag, I.5).
     std::expected<void, Error> ensureGradePipeline();
@@ -198,6 +208,15 @@ private:
                              QSize size);
     QRhiShaderResourceBindings* maskSrb(const std::array<QRhiTexture*, 8>& textures);
     void setMaskBindings(QRhiShaderResourceBindings& srb, const std::array<QRhiTexture*, 8>& textures);
+    // The flow mix (shaders/flowmix.frag, P.2; CompositorFlow.cpp): Time Interpolation's Optical Flow and Morph Cut.
+    /// Its pipeline: fx.vert + flowmix.frag, the fx uniform block (`blockSize` bytes) and a third input, the motion.
+    std::expected<void, Error> ensureFlowPipeline(std::uint32_t blockSize);
+    /// The RGBA32F texture of `motion` (uploaded with `updates` on first use), kept while in use; null on failure.
+    QRhiTexture* motionTexture(const std::shared_ptr<const motion::FlowPair>& motion, QRhiResourceUpdateBatch* updates);
+    QRhiShaderResourceBindings* flowSrb(QRhiTexture* a, QRhiTexture* b, QRhiTexture* motion, std::uint32_t blockSize);
+    /// Drops motion textures not used for a while (every 64 frames, like the grade's).
+    void evictMotionTextures();
+    void releaseFlowResources();
 
     /// A canvas-size RGBA16F texture (with mips, for wide blurs) and its render target.
     struct Intermediate {
@@ -238,6 +257,27 @@ private:
     std::uint64_t m_frameCounter = 0;
 
     std::unique_ptr<QRhiShaderResourceBindings> m_outputSrb;
+    // Colour management (I.9): baked LUT textures by LUT, the layer bindings that use them, the output's.
+    struct CmLutTexture {
+        std::shared_ptr<const color::BakedLut> lut; ///< pins the pointer key
+        std::unique_ptr<QRhiTexture> texture;
+        std::uint64_t lastUsedFrame = 0;
+    };
+    std::unordered_map<const color::BakedLut*, CmLutTexture> m_cmLuts;
+    struct LutLayerKey {
+        bool array = false;
+        std::uint64_t setSerial = 0;
+        QRhiTexture* lut = nullptr;
+        bool operator==(const LutLayerKey&) const = default;
+    };
+    struct LutLayerKeyHash {
+        std::size_t operator()(const LutLayerKey& k) const {
+            return std::hash<std::uint64_t>{}(k.setSerial * 2 + (k.array ? 1 : 0)) ^ std::hash<const void*>{}(k.lut);
+        }
+    };
+    std::unordered_map<LutLayerKey, NativeSrb, LutLayerKeyHash> m_lutLayerSrbs;
+    std::unique_ptr<QRhiShaderResourceBindings> m_outputLutSrb;
+    QRhiTexture* m_outputLutSrbTexture = nullptr;
     std::unique_ptr<QRhiGraphicsPipeline> m_outputPipeline;
     std::unique_ptr<QRhiRenderPassDescriptor> m_outputPassCompat; // a compatible descriptor, for later checks
     QRhiRenderPassDescriptor* m_outputPassSeen = nullptr;
@@ -247,6 +287,12 @@ private:
     // Effect and transition passes (shaders/fx.frag).
     std::unique_ptr<QRhiGraphicsPipeline> m_fxPipeline;     // replaces the target
     std::unique_ptr<QRhiGraphicsPipeline> m_fxOverPipeline; // premultiplied "over" (results into the canvas)
+    // 0.2: the family shaders of the transition and effect library (fx_transition.frag, fx_*.frag): the fx pipeline's
+    // vertex shader, uniform block and bindings with another fragment shader, made on first use. Index = FxFamily.
+    static constexpr int kFxFamilies = 6;
+    std::array<std::unique_ptr<QRhiGraphicsPipeline>, kFxFamilies> m_fxFamilyPipelines;
+    /// The pipeline of a family (0 = fx.frag), made when missing; null when its shader cannot be loaded or created.
+    QRhiGraphicsPipeline* fxFamilyPipeline(int family);
     // Blend-mode variants (C.15) of the three canvas-pass pipelines, by blendVariantOf() - 1, made on first use: Add.
     static constexpr int kBlendVariants = 1;
     using BlendPipelines = std::array<std::unique_ptr<QRhiGraphicsPipeline>, kBlendVariants>;
@@ -320,6 +366,21 @@ private:
         std::uint64_t lastUsedFrame = 0;
     };
     std::unordered_map<std::uint64_t, std::unique_ptr<MatteTexture>> m_matteTextures;
+
+    // P.2 flow mix: its pipeline, bindings per (A, B, motion), and the motion textures by their FlowPair.
+    std::unique_ptr<QRhiGraphicsPipeline> m_flowPipeline;
+    std::unique_ptr<QRhiShaderResourceBindings> m_flowLayoutSrb;
+    struct FlowSrb {
+        std::unique_ptr<QRhiShaderResourceBindings> srb;
+        std::uint64_t uniformGeneration = 0;
+    };
+    std::map<std::array<QRhiTexture*, 3>, FlowSrb> m_flowSrbs;
+    struct MotionTexture {
+        std::shared_ptr<const motion::FlowPair> motion; ///< pins the pointer key
+        std::unique_ptr<QRhiTexture> texture;
+        std::uint64_t lastUsedFrame = 0;
+    };
+    std::unordered_map<const motion::FlowPair*, MotionTexture> m_motionTextures;
 
     struct Placement {
         ImportedFrame frame;

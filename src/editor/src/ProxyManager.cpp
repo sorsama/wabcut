@@ -4,6 +4,7 @@
 
 #include <wabcut/editor/ProjectDocument.h>
 #include <wabcut/media/VideoDecoder.h>
+#include <wabcut/model/ImageSequence.h>
 
 #include <nlohmann/json.hpp>
 
@@ -37,6 +38,8 @@ std::string hex8(std::string_view text) {
 }
 
 bool hasProxyableVideo(const MediaItem& item) {
+    // 0.2: image sequences and spanned clips are decoded through their paths (media::detail::openInput) like any file,
+    // so they get proxies too; a layered file's item is a still.
     return !item.isGenerator() && !item.info.isStillImage && !item.info.video.empty();
 }
 
@@ -706,7 +709,9 @@ bool ProxyManager::queueFor(const MediaItem& item, ProxyPriority priority, std::
     const std::string identity = item.locator.fingerprint.isKnown()
                                      ? item.locator.fingerprint.sampleHash + ":" + std::to_string(item.locator.fingerprint.size)
                                      : item.locator.path;
-    std::filesystem::path name = pathFromUtf8(item.locator.path).stem();
+    // 0.2: named after the file that stands for the item (an image sequence's first frame, a spanned clip's first
+    // part): a sequence or spanned path holds characters no file name may.
+    std::filesystem::path name = mediaFileToCheck(pathFromUtf8(item.locator.path)).stem();
     name += std::format(".{}.g{}.mov", hex8(identity), job.generation);
     job.output = proxyFolder() / name;
     m_reasons[item.id.value] = std::move(reason);

@@ -10,7 +10,8 @@ public:
     virtual command::Json local(std::string_view operation, const command::Json&) = 0;
 };
 void registerGenerationCommands(command::CommandRegistry&);
-// Pure import/place operation. Rejects occupied extension ranges, locked tracks and mismatched conformed video.
+// Pure import/place operation. Rejects occupied extension ranges, locked tracks and mismatched conformed video. A sound
+// effect (audio-only media, 0.2) is placed on a new audio track and never extends a clip.
 std::expected<command::CommandOutput, Error> stageAsset(const ProjectState&, SequenceId, MediaItem,
     Ticks duration, std::optional<Ticks> at = {}, std::optional<ClipId> extend = {}, bool head = false);
 }

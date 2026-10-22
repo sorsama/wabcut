@@ -9,6 +9,7 @@
 
 #include "../AgentTestUtil.h"
 #include "CommandHarness.h"
+#include "NestedTestUtil.h"
 #include "TimelineFixture.h"
 
 #include <wabcut/ai/agent/EditAgent.h>
@@ -16,6 +17,9 @@
 #include <wabcut/ai/edit/TranscriptCommands.h>
 #include <wabcut/command/Schema.h>
 #include <wabcut/model/Masks.h>
+#include <wabcut/model/Nesting.h>
+#include <wabcut/model/ProjectIO.h>
+#include <wabcut/model/ProjectOps.h>
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -338,6 +342,176 @@ TEST_CASE("mask.objectSelect finds a subject by kind, colour and position", "[ai
     }
 }
 
+namespace {
+
+/// What a nested or multicam clip shows, scripted: the scene at nested time; angle 1 of a multicam source shows the
+/// object elsewhere (the second shot's place). Records the clips it was asked for.
+struct NestedPictures {
+    std::vector<AngleSet> asked;
+    std::shared_ptr<SegmentServices> attach(ScriptedServices& seg) {
+        seg.services->nestedFrames = [this](const ProjectState&, const Clip& clip) -> std::expected<std::unique_ptr<FrameSource>, wabcut::Error> {
+            asked.push_back(clip.angles);
+            ScriptedScene scene;
+            scene.cutFrame = clip.angles == AngleSet::of(1) ? 0 : -1; // angle 1: the object where the second shot has it
+            return std::unique_ptr<FrameSource>(std::make_unique<ScriptedVideo>(scene));
+        };
+        return seg.services;
+    }
+};
+
+const Mask& onlyObjectMask(const ProjectSnapshot& s, SequenceId seq, ClipId clip) {
+    const EffectInstance* opacity = effectNamed(clipIn(s, seq, clip), "wabcut.mask");
+    REQUIRE(opacity);
+    REQUIRE(opacity->masks.size() == 1);
+    return opacity->masks.front();
+}
+
+} // namespace
+
+// 0.2 (C.17 / 0.1.2 follow-up): object masks were refused on nested and multicam clips. They now segment what the clip
+// shows - the nest's picture, a multicam source's active angle - at nested time, and put the mask on the clip itself:
+// nothing flattened, the matte names the nested sequence, the nest's edit points stop the tracking.
+TEST_CASE("mask.objectSelect on a nested clip: the nest's picture, the mask on the nested clip, one undo step (0.2)",
+          "[ai][segment][commands][nested]") {
+    Studio s("nested");
+    NestedPictures pictures;
+    pictures.attach(s.seg);
+    CommandHarness h = s.harness();
+    const SequenceId seq = h.tl.seq;
+    REQUIRE(h.session.apply("Nest", [&](const ProjectState& state) -> std::expected<ProjectState, wabcut::Error> {
+        return wabcut::test::nestEverything(state, seq).edit.state;
+    }));
+    const ClipId nested = h.clip("V1@0");
+    const SequenceId inner = clipIn(h.state(), seq, nested).sequence;
+    REQUIRE(inner.isValid());
+    const auto before = h.state();
+    const std::size_t undo = h.session.undoCount();
+    const Json params{{"sequence", seq.value}, {"clip", nested.value}, {"time", frameTicks(20).value}, {"points", Json::array({click(0.25, 0.4)})}};
+
+    const auto dry = h.run(Json{{"command", "mask.objectSelect"}, {"params", params}, {"dryRun", true}});
+    INFO(command::toJson(dry).dump());
+    REQUIRE(dry.ok());
+    CHECK(h.state() == before);
+    CHECK(dry.data["frames"] == 100); // one clip inside: no edit point stops it
+    CHECK(pictures.asked.size() == 1);
+
+    const auto applied = h.ok("mask.objectSelect", params);
+    CHECK(applied.data["cached"] == true);
+    CHECK(h.session.undoCount() == undo + 1);
+    const ProjectSnapshot held = h.state(); // c and m refer into it: held, not a temporary
+    const Clip& c = clipIn(held, seq, nested);
+    CHECK(c.isNested()); // still the nest
+    const Mask& m = onlyObjectMask(held, seq, nested);
+    REQUIRE(m.matte);
+    CHECK(m.shape == MaskShape::Matte);
+    CHECK(m.matte->sequence == inner);
+    CHECK_FALSE(m.matte->media.isValid());
+    CHECK(m.matte->source == TimeRange{Ticks{}, frameTicks(100)});
+    // The box keys follow the object at nested time (= the source's time here).
+    const MatteBox truth = ScriptedScene{1000, -1}.objectAt(20);
+    CHECK(maskValue(m, "center.x", frameTicks(20)) == Approx(truth.x + truth.width / 2).margin(0.02));
+    // It saves and loads (schema 18).
+    const auto text = io::toJson(*h.state());
+    REQUIRE(text);
+    const auto loaded = io::fromJson(*text);
+    REQUIRE(loaded);
+    CHECK(onlyObjectMask(std::make_shared<const ProjectState>(*loaded), seq, nested) == m);
+
+    // Refine and propagate go through the nest too.
+    const std::uint32_t id = applied.data["mask"];
+    const auto refined = h.ok("mask.refine", Json{{"sequence", seq.value}, {"clip", nested.value}, {"mask", id}, {"time", frameTicks(40).value},
+                                                  {"points", Json::array({click(0.3, 0.4)})}});
+    CHECK(refined.data["prompts"] == 2);
+    CHECK(onlyObjectMask(h.state(), seq, nested).matte->sequence == inner);
+    REQUIRE(h.session.undo());
+    REQUIRE(h.session.undo());
+    CHECK(effectNamed(clipIn(h.state(), seq, nested), "wabcut.mask") == nullptr);
+
+    // A host that renders no nested pictures says how to do it instead.
+    s.seg.services->nestedFrames = nullptr;
+    const auto refused = h.run(Json{{"command", "mask.objectSelect"}, {"params", params}});
+    REQUIRE(refused.error);
+    CHECK(refused.error->code == command::ErrorCode::EditRejected);
+    CHECK(refused.error->message.find("clip.openNested") != std::string::npos);
+}
+
+TEST_CASE("mask.objectSelect on a multicam clip: the active angle, never flattened; an angle switch keeps the mask (0.2)",
+          "[ai][segment][commands][multicam]") {
+    Studio s("multicam");
+    NestedPictures pictures;
+    pictures.attach(s.seg);
+    Timeline tl(clipPicture(100) + "\nV2     |B" + std::string(99, 'b') + "|");
+    const auto mc = wabcut::test::placeMulticam(tl.state, tl.seq, {tl.media('A'), tl.media('B')}, {Ticks{}, Ticks{}},
+                                                TimeRange{Ticks{}, frameTicks(100)}, Ticks{}, 0, 0);
+    tl.state = mc.state;
+    CommandHarness h(tl, command::EnginePolicy{command::CapabilitySet::all(), 1024, s.services()}, ai::edit::editingCommands());
+    const SequenceId seq = h.tl.seq;
+    const std::size_t clipsBefore = h.state()->findSequence(seq)->videoTracks.front()->clips.size();
+    // The project has two sequences now (the multicam source): the commands name the edit's.
+    const Json params{{"sequence", seq.value}, {"clip", mc.video.value}, {"time", frameTicks(20).value}, {"points", Json::array({click(0.25, 0.4)})}};
+
+    const auto r = h.ok("mask.objectSelect", params);
+    REQUIRE(pictures.asked.size() == 1);
+    CHECK(pictures.asked.front() == AngleSet::of(0)); // angle 0's picture
+    CHECK(r.data["frames"] == 100);
+    const ProjectSnapshot held = h.state(); // c refers into it: held, not a temporary
+    const Clip& c = clipIn(held, seq, mc.video);
+    CHECK(c.isNested());
+    CHECK(c.sequence == mc.multicam);
+    CHECK(c.angles == AngleSet::of(0));
+    CHECK(h.state()->findSequence(seq)->videoTracks.front()->clips.size() == clipsBefore); // not flattened
+    const Mask first = onlyObjectMask(h.state(), seq, mc.video);
+    CHECK(first.matte->sequence == mc.multicam);
+    const std::uint32_t id = r.data["mask"];
+
+    // Switch to angle 1: the mask stays on the clip, where it was on the frame.
+    REQUIRE(h.session.apply("Switch", [&](const ProjectState& state) { return wabcut::edit::switchMulticamAngle(state, seq, mc.video, std::nullopt, 1); }));
+    const ProjectSnapshot afterSwitch = h.state(); // switched refers into it
+    const Clip& switched = clipIn(afterSwitch, seq, mc.video);
+    CHECK(switched.angles == AngleSet::of(1));
+    CHECK(onlyObjectMask(h.state(), seq, mc.video) == first);
+
+    // mask.propagate re-tracks the angle shown now: its object, the same mask.
+    const auto again = h.ok("mask.propagate", Json{{"sequence", seq.value}, {"clip", mc.video.value}, {"mask", id}});
+    REQUIRE(pictures.asked.size() == 2);
+    CHECK(pictures.asked.back() == AngleSet::of(1));
+    const ProjectSnapshot afterPropagate = h.state(); // moved refers into it
+    const Mask& moved = onlyObjectMask(afterPropagate, seq, mc.video);
+    CHECK(moved.id == id);
+    CHECK(moved.matte->sequence == mc.multicam);
+    CHECK(moved.matte->track != first.matte->track);
+    const MatteBox elsewhere = ScriptedScene{1000, 0}.objectAt(30);
+    CHECK(maskValue(moved, "center.x", frameTicks(30)) == Approx(elsewhere.x + elsewhere.width / 2).margin(0.02));
+    CHECK(again.data["mask"] == id);
+    REQUIRE(h.session.undo());
+    CHECK(onlyObjectMask(h.state(), seq, mc.video) == first);
+}
+
+TEST_CASE("nestedCuts and nestedFingerprint: the nest's edit points; edits elsewhere leave the identity (0.2)", "[ai][segment][nested]") {
+    Timeline tl("V1 tgt |AaaaBbbb|");
+    const auto nest = wabcut::test::nestEverything(tl.state, tl.seq);
+    const ProjectState& state = nest.edit.state;
+    const Clip* nested = nullptr;
+    for (const Clip& c : state.findSequence(tl.seq)->videoTracks.front()->clips) {
+        nested = c.isNested() ? &c : nested;
+    }
+    REQUIRE(nested);
+    const std::vector<Ticks> cuts = nestedCuts(state, *nested);
+    REQUIRE(cuts.size() == 1);
+    CHECK(cuts.front() == frameTicks(4));
+    const std::uint64_t id = nestedFingerprint(state, *nested);
+    // A marker on the outer sequence does not change what the nest shows.
+    const auto marked = wabcut::edit::addMarker(state, tl.seq, Marker{frameTicks(1), frameTicks(1), "Note"});
+    REQUIRE(marked);
+    CHECK(nestedFingerprint(marked->state, *nested) == id);
+    // Removing a clip inside the nest does.
+    const Sequence& inner = *state.findSequence(nested->sequence);
+    const ClipId first = inner.videoTracks.front()->clips.front().id;
+    const auto removed = wabcut::edit::deleteClips(state, nested->sequence, std::span(&first, 1));
+    REQUIRE(removed);
+    CHECK(nestedFingerprint(removed->state, *nested) != id);
+}
+
 TEST_CASE("Object masks refuse what they cannot do; nothing is committed", "[ai][segment][commands]") {
     Studio s("refusals");
     CommandHarness h = s.harness();
@@ -464,6 +638,7 @@ TEST_CASE("The assistant blurs the background behind the speaker and brightens t
     CHECK(offered("mask_refine"));
     CHECK(offered("mask_propagate"));
     CHECK_FALSE(offered("redaction_add")); // AI redactions stay in the user's hands
+    CHECK_FALSE(offered("redaction_detectFaces")); // automatic face redaction too (0.2)
 
     const ClipId clip = wabcut::test::clipAt(s.tl.state, s.tl.seq, "V1@0");
     // The effect instance a staged clip.addEffect will create on the session's current state (ids are allocated
@@ -527,4 +702,70 @@ TEST_CASE("The assistant blurs the background behind the speaker and brightens t
     REQUIRE(car.status == AgentStatus::Staged);
     REQUIRE(car.batch.commands.size() == 2);
     CHECK(car.batch.commands[1].params["colour"] == "red");
+}
+
+// 0.2: automatic face redaction. The detector's faces (here: the red object) are followed and each covered by one
+// moving source-anchored redaction; the tracking starts again at the shot cut (the object jumps there: a second face).
+TEST_CASE("redaction.detectFaces: one moving redaction per face, fail closed, one undo step (0.2)", "[ai][segment][commands][redaction]") {
+    Studio s("faces");
+    CommandHarness h = s.harness();
+    const ClipId clip = h.clip("V1@0");
+    const auto before = h.state();
+    const Json params{{"clip", clip.value}, {"style", "mosaic"}, {"samplesPerSecond", 5}};
+
+    const auto dry = h.run(Json{{"command", "redaction.detectFaces"}, {"params", params}, {"dryRun", true}});
+    INFO(command::toJson(dry).dump());
+    REQUIRE(dry.ok());
+    CHECK(h.state() == before);
+    CHECK(dry.data["samples"] == 20); // 100 frames at 25 fps, 5 a second
+    CHECK(dry.data["faces"] == 2);    // before and after the cut
+
+    const auto made = h.ok("redaction.detectFaces", params);
+    CHECK(h.session.undoCount() == 1);
+    const auto& redactions = h.state()->redactions;
+    REQUIRE(redactions.size() == 2);
+    const Redaction& first = *redactions.begin();
+    CHECK(first.media == h.tl.media('A'));
+    CHECK(first.name == "Face 1");
+    CHECK(first.style == RedactionStyle::Mosaic);
+    CHECK(first.region.shape == MaskShape::Ellipse);
+    CHECK(first.source.start == Ticks{});
+    CHECK(first.source.end() >= frameTicks(55)); // the last sighting (frame 55) and a margin
+    CHECK(first.source.end() <= frameTicks(60));
+    // The ellipse follows the face and covers it with a margin, between the samples too.
+    const ScriptedScene scene;
+    for (const int n : {0, 12, 30, 47}) {
+        INFO("frame " << n);
+        const MatteBox face = scene.objectAt(n);
+        const double cx = maskValue(first.region, "center.x", frameTicks(n));
+        const double w = maskValue(first.region, "size.x", frameTicks(n));
+        CHECK(cx == Approx(face.x + face.width / 2).margin(0.02));
+        CHECK(w > face.width);
+    }
+    const Redaction& second = *std::next(redactions.begin());
+    CHECK(second.name == "Face 2");
+    CHECK(second.source.start <= frameTicks(60));
+    CHECK(maskValue(second.region, "center.x", frameTicks(80)) == Approx(0.725).margin(0.02));
+    REQUIRE(made.data["redactions"].size() == 2);
+    REQUIRE(h.session.undo());
+    CHECK(h.state()->redactions.empty());
+
+    // No face: nothing redacted, said so.
+    Studio empty("faces-none", ScriptedScene{1000, -1}, 300);
+    CommandHarness none = empty.harness();
+    const auto nothing = none.ok("redaction.detectFaces", Json{{"clip", none.clip("V1@0").value}});
+    CHECK(nothing.data["faces"] == 0);
+    REQUIRE_FALSE(nothing.warnings.empty());
+    CHECK(none.state()->redactions.empty());
+
+    // No detector: refused with the reason.
+    s.seg.services->detector = nullptr;
+    const auto refused = h.run(Json{{"command", "redaction.detectFaces"}, {"params", params}});
+    REQUIRE(refused.error);
+    CHECK(refused.error->code == command::ErrorCode::EditRejected);
+    CHECK(refused.error->message.find("face detector") != std::string::npos);
+    // A media item's span by media time works as well as a clip.
+    s.seg.services->detector = s.detector;
+    const auto byMedia = h.ok("redaction.detectFaces", Json{{"media", h.tl.media('A').value}, {"in", frameTicks(70).value}, {"out", frameTicks(90).value}});
+    CHECK(byMedia.data["faces"] == 1);
 }

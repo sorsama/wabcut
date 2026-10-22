@@ -1,5 +1,7 @@
 #include <wabcut/model/MediaLocator.h>
 
+#include <wabcut/model/ImageSequence.h>
+
 #include <array>
 #include <chrono>
 #include <fstream>
@@ -48,7 +50,9 @@ std::filesystem::path pathFromUtf8(const std::string& utf8) {
     return std::filesystem::path(std::u8string(reinterpret_cast<const char8_t*>(utf8.data()), utf8.size()));
 }
 
-std::expected<SourceFingerprint, Error> fingerprintFile(const std::filesystem::path& file) {
+std::expected<SourceFingerprint, Error> fingerprintFile(const std::filesystem::path& path) {
+    // An image sequence is recognised by its first frame (ImageSequence.h).
+    const std::filesystem::path file = mediaFileToCheck(path);
     std::error_code ec;
     const std::uintmax_t size = std::filesystem::file_size(file, ec);
     if (ec) {
@@ -118,7 +122,7 @@ std::optional<std::filesystem::path> resolveMediaPath(const MediaLocator& locato
     std::error_code ec;
     if (!locator.path.empty()) {
         const std::filesystem::path absolutePath = pathFromUtf8(locator.path);
-        if (std::filesystem::is_regular_file(absolutePath, ec)) {
+        if (mediaFileExists(absolutePath)) {
             return absolutePath;
         }
     }
@@ -126,7 +130,7 @@ std::optional<std::filesystem::path> resolveMediaPath(const MediaLocator& locato
         const std::filesystem::path candidate =
             (std::filesystem::absolute(projectFile, ec).parent_path() / pathFromUtf8(locator.relativePath))
                 .lexically_normal();
-        if (!ec && std::filesystem::is_regular_file(candidate, ec)) {
+        if (!ec && mediaFileExists(candidate)) {
             return candidate;
         }
     }

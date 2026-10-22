@@ -4,6 +4,7 @@
 #include "CommandJob.h"
 #include "GlobalBridge.h"
 #include "ProjectController.h"
+#include "SpellingBridge.h"
 #include "TranscriptBridge.h"
 
 #include <wabcut/ai/edit/CaptionBuilder.h>
@@ -13,12 +14,14 @@
 #include <wabcut/model/FinishingOps.h>
 #include <wabcut/model/Graphics.h>
 #include <wabcut/model/MediaLocator.h>
+#include <wabcut/model/Spelling.h>
 #include <wabcut/model/Timecode.h>
 
 #include <QColor>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QQmlEngine>
+#include <QSettings>
 
 #include <algorithm>
 #include <cmath>
@@ -31,6 +34,11 @@ using command::Json;
 namespace {
 
 #define LABEL(text) QT_TRANSLATE_NOOP("wabcut::app::ProjectController", text)
+
+/// The UTF-16 index of byte `byte` of UTF-8 `text`.
+int utf16At(const std::string& text, std::size_t byte) {
+    return static_cast<int>(QString::fromUtf8(text.data(), static_cast<qsizetype>(std::min(byte, text.size()))).size());
+}
 
 QString fromStd(const std::string& text) {
     return QString::fromStdString(text);
@@ -237,7 +245,82 @@ bool setCaptionStyleField(CaptionStyle& s, const QString& key, const QVariant& v
     return false;
 }
 
-CaptionsBridge::CaptionsBridge(QObject* parent) : QObject(parent) {}
+CaptionsBridge::CaptionsBridge(QObject* parent) : QObject(parent) {
+    // p02 audio: Hide profanity and its word lists are the user's (as Premiere keeps them in its settings).
+    const QSettings settings;
+    m_hideProfanity = settings.value(QStringLiteral("captions/hideProfanity"), false).toBool();
+    m_profanityWords = settings.value(QStringLiteral("captions/profanityWords")).toString();
+    m_allowedWords = settings.value(QStringLiteral("captions/allowedWords")).toString();
+}
+
+namespace {
+
+/// Comma-separated words as a JSON array (trimmed, empty ones dropped).
+Json wordList(const QString& words) {
+    Json out = Json::array();
+    for (const QString& w : words.split(QLatin1Char(','), Qt::SkipEmptyParts)) {
+        const QString t = w.trimmed();
+        if (!t.isEmpty())
+            out.push_back(t.toStdString());
+    }
+    return out;
+}
+
+} // namespace
+
+void CaptionsBridge::setHideProfanity(bool on) {
+    if (m_hideProfanity == on)
+        return;
+    m_hideProfanity = on;
+    QSettings().setValue(QStringLiteral("captions/hideProfanity"), on);
+    emit profanityChanged();
+}
+
+void CaptionsBridge::setProfanityWords(const QString& words) {
+    if (m_profanityWords == words)
+        return;
+    m_profanityWords = words;
+    QSettings().setValue(QStringLiteral("captions/profanityWords"), words);
+    emit profanityChanged();
+}
+
+void CaptionsBridge::setAllowedWords(const QString& words) {
+    if (m_allowedWords == words)
+        return;
+    m_allowedWords = words;
+    QSettings().setValue(QStringLiteral("captions/allowedWords"), words);
+    emit profanityChanged();
+}
+
+QString CaptionsBridge::hideProfanityNow() {
+    if (!m_transcript || !shownTrack())
+        return tr("Make a caption track first");
+    Json params{{"captionTrack", m_track.value}, {"profanityWords", wordList(m_profanityWords)}, {"allowedWords", wordList(m_allowedWords)}};
+    const command::CommandResult result = m_transcript->run("captions.hideProfanity", std::move(params));
+    if (!result.ok()) {
+        setMessage(fromStd(result.error->message));
+        return m_message;
+    }
+    setMessage(tr("Profanity hidden in %n caption(s)", nullptr, result.data.value("cues", 0)));
+    return {};
+}
+
+QString CaptionsBridge::bleepProfanity(const QString& mode) {
+    if (!m_transcript || !m_controller)
+        return tr("No transcript");
+    Json params{{"mode", mode == QLatin1String("mute") ? "mute" : "bleep"},
+                {"profanityWords", wordList(m_profanityWords)},
+                {"allowedWords", wordList(m_allowedWords)}};
+    const command::CommandResult result = m_transcript->run("audio.bleepProfanity", std::move(params));
+    if (!result.ok()) {
+        setMessage(fromStd(result.error->message));
+        return m_message;
+    }
+    const auto words = static_cast<int>(result.data.contains("words") ? result.data["words"].size() : 0);
+    setMessage(words == 0 ? tr("No profanity found in the transcript")
+                          : mode == QLatin1String("mute") ? tr("%n word(s) muted", nullptr, words) : tr("%n word(s) bleeped", nullptr, words));
+    return {};
+}
 
 CaptionsBridge* CaptionsBridge::create(QQmlEngine* qmlEngine, QJSEngine*) {
     auto* captions = new CaptionsBridge;
@@ -350,7 +433,24 @@ QVariantMap CaptionsBridge::trackInfo() const {
         return {};
     return {{QStringLiteral("name"), fromStd(t->name)},
             {QStringLiteral("language"), fromStd(t->language)},
-            {QStringLiteral("enabled"), t->enabled}};
+            {QStringLiteral("enabled"), t->enabled},
+            {QStringLiteral("trackStyle"), fromStd(t->trackStyle)}};
+}
+
+QString CaptionsBridge::setTrackStyle(const QString& preset) {
+    if (!shownTrack())
+        return tr("Make a caption track first");
+    const QString error = runCommand("captions.setTrackStyle", QVariantMap{{QStringLiteral("style"), preset}});
+    refresh();
+    return error;
+}
+
+QString CaptionsBridge::pushTrackStyle() {
+    if (!shownTrack())
+        return tr("Make a caption track first");
+    const QString error = runCommand("captions.pushTrackStyle", {});
+    refresh();
+    return error;
 }
 
 QVariantList CaptionsBridge::cues() const {
@@ -493,6 +593,11 @@ QString CaptionsBridge::generate(int maxCharsPerLine, int maxLines) {
     Json params{{"maxCharsPerLine", std::clamp(maxCharsPerLine, 8, 200)}, {"maxLines", std::clamp(maxLines, 1, 4)}};
     if (m_track && shownTrack())
         params["replace"] = m_track.value;
+    if (m_hideProfanity) { // p02 audio
+        params["hideProfanity"] = true;
+        params["profanityWords"] = wordList(m_profanityWords);
+        params["allowedWords"] = wordList(m_allowedWords);
+    }
     const command::CommandResult result = m_transcript->run("captions.generateFromTranscript", std::move(params));
     if (!result.ok()) {
         setMessage(fromStd(result.error->message));
@@ -511,7 +616,13 @@ QString CaptionsBridge::generate(int maxCharsPerLine, int maxLines) {
 QString CaptionsBridge::updateFromTranscript() {
     if (!m_transcript || !shownTrack())
         return tr("Make a caption track first");
-    const command::CommandResult result = m_transcript->run("captions.updateFromTranscript", Json{{"captionTrack", m_track.value}});
+    Json params{{"captionTrack", m_track.value}};
+    if (m_hideProfanity) { // p02 audio
+        params["hideProfanity"] = true;
+        params["profanityWords"] = wordList(m_profanityWords);
+        params["allowedWords"] = wordList(m_allowedWords);
+    }
+    const command::CommandResult result = m_transcript->run("captions.updateFromTranscript", std::move(params));
     if (!result.ok()) {
         setMessage(fromStd(result.error->message));
         return m_message;
@@ -880,6 +991,171 @@ QString CaptionsBridge::exportFile(const QUrl& file, const QString& format) {
     }
     setMessage(tr("Saved %1").arg(QUrl::fromLocalFile(path).fileName()));
     return {};
+}
+
+QString CaptionsBridge::findReplace(const QString& find, const QString& replace, bool matchCase, bool wholeWord,
+                                    const QString& scope) {
+    if (!m_transcript)
+        return tr("Not available here");
+    if (find.isEmpty())
+        return tr("Type the text to find");
+    Json params{{"find", find.toStdString()}, {"replace", replace.toStdString()}, {"matchCase", matchCase}, {"wholeWord", wholeWord}};
+    const bool transcript = scope == QLatin1String("transcript");
+    if (scope == QLatin1String("track")) {
+        if (!shownTrack())
+            return tr("Make a caption track first");
+        params["captionTrack"] = m_track.value;
+    }
+    const command::CommandResult result = m_transcript->run(transcript ? "transcript.findReplace" : "captions.findReplace",
+                                                            std::move(params));
+    if (!result.ok()) {
+        setMessage(fromStd(result.error->message));
+        return m_message;
+    }
+    const int replaced = result.data.value("replaced", 0);
+    setMessage(replaced == 0 ? tr("\"%1\" was not found").arg(find) : tr("Replaced %n match(es)", nullptr, replaced));
+    refresh();
+    return {};
+}
+
+QString CaptionsBridge::importFile(const QUrl& file) {
+    if (!m_transcript)
+        return tr("Not available here");
+    const QString path = file.isLocalFile() ? file.toLocalFile() : file.toString();
+    const command::CommandResult result = m_transcript->run("captions.import", Json{{"path", path.toStdString()}});
+    if (!result.ok()) {
+        setMessage(fromStd(result.error->message));
+        return m_message;
+    }
+    if (!result.createdIds.empty())
+        m_track = CaptionTrackId{result.createdIds.front()};
+    setMessage(tr("Imported %n caption(s)", nullptr, result.data.value("cues", 0)));
+    refresh();
+    return {};
+}
+
+QString CaptionsBridge::exportTranscript(const QUrl& file) {
+    if (!m_transcript)
+        return tr("Not available here");
+    const QString path = file.isLocalFile() ? file.toLocalFile() : file.toString();
+    const command::CommandResult result =
+        m_transcript->run("transcript.export", Json{{"path", path.toStdString()}, {"overwrite", true}});
+    if (!result.ok()) {
+        setMessage(fromStd(result.error->message));
+        return m_message;
+    }
+    setMessage(tr("Saved %1").arg(QUrl::fromLocalFile(path).fileName()));
+    return {};
+}
+
+
+QVariantList CaptionsBridge::findMatches(const QString& find, bool matchCase, bool wholeWord, const QString& scope) {
+    QVariantList out;
+    if (!m_transcript || find.isEmpty())
+        return out;
+    Json params{{"find", find.toStdString()}, {"matchCase", matchCase}, {"wholeWord", wholeWord}};
+    const bool transcript = scope == QLatin1String("transcript");
+    if (scope == QLatin1String("track")) {
+        if (!shownTrack())
+            return out;
+        params["captionTrack"] = m_track.value;
+    }
+    const command::CommandResult result = m_transcript->run(transcript ? "transcript.find" : "captions.find", std::move(params));
+    if (!result.ok()) {
+        setMessage(fromStd(result.error->message));
+        return out;
+    }
+    for (const Json& m : result.data.value("matches", Json::array())) {
+        QVariantMap item;
+        item[QStringLiteral("time")] = fromStd(m.value("time", std::string()));
+        const std::string text = m.value("text", std::string());
+        item[QStringLiteral("text")] = fromStd(text);
+        if (transcript) {
+            item[QStringLiteral("words")] = QVariantList{m["words"][0].get<int>(), m["words"][1].get<int>()};
+        } else {
+            item[QStringLiteral("captionTrack")] = static_cast<qulonglong>(m.value("captionTrack", std::uint64_t{0}));
+            item[QStringLiteral("trackKey")] = captionTrackKey(CaptionTrackId{m.value("captionTrack", std::uint64_t{0})});
+            item[QStringLiteral("cue")] = m.value("cue", 0);
+            item[QStringLiteral("startByte")] = m.value("start", 0);
+            item[QStringLiteral("start")] = utf16At(text, m.value("start", std::size_t{0}));
+            item[QStringLiteral("end")] = utf16At(text, m.value("end", std::size_t{0}));
+        }
+        out.push_back(item);
+    }
+    return out;
+}
+
+QString CaptionsBridge::replaceMatch(const QString& find, const QString& replace, bool matchCase, bool wholeWord,
+                                     const QString& scope, const QVariantMap& match) {
+    if (!m_transcript)
+        return tr("Not available here");
+    if (find.isEmpty())
+        return tr("Type the text to find");
+    Json params{{"find", find.toStdString()}, {"replace", replace.toStdString()}, {"matchCase", matchCase}, {"wholeWord", wholeWord}};
+    const bool transcript = scope == QLatin1String("transcript");
+    if (scope == QLatin1String("track")) {
+        if (!shownTrack())
+            return tr("Make a caption track first");
+        params["captionTrack"] = m_track.value;
+    }
+    if (transcript) {
+        const QVariantList words = match.value(QStringLiteral("words")).toList();
+        if (words.size() != 2)
+            return tr("Find the text first");
+        params["words"] = Json::array({words[0].toInt(), words[1].toInt()});
+    } else {
+        if (!match.contains(QStringLiteral("cue")))
+            return tr("Find the text first");
+        params["at"] = Json{{"captionTrack", match.value(QStringLiteral("captionTrack")).toULongLong()},
+                            {"cue", match.value(QStringLiteral("cue")).toInt()},
+                            {"start", match.value(QStringLiteral("startByte")).toInt()}};
+    }
+    const command::CommandResult result =
+        m_transcript->run(transcript ? "transcript.findReplace" : "captions.findReplace", std::move(params));
+    if (!result.ok()) {
+        setMessage(fromStd(result.error->message));
+        return m_message;
+    }
+    setMessage(tr("Replaced %n match(es)", nullptr, result.data.value("replaced", 0)));
+    refresh();
+    return {};
+}
+
+QVariantList CaptionsBridge::spellingIssues() {
+    QVariantList out;
+    const CaptionTrack* track = shownTrack();
+    if (!track)
+        return out;
+    for (const TextSpellIssue& i : spellingOf(*track, *sharedSpelling(), {}, true, 2000)) {
+        const std::string& text = track->cues[i.cue].text;
+        QStringList suggestions;
+        for (const std::string& s : i.issue.suggestions)
+            suggestions << fromStd(s);
+        out.push_back(QVariantMap{{QStringLiteral("cue"), static_cast<int>(i.cue)},
+                                  {QStringLiteral("start"), utf16At(text, i.issue.start)},
+                                  {QStringLiteral("end"), utf16At(text, i.issue.end)},
+                                  {QStringLiteral("word"), fromStd(i.issue.word)},
+                                  {QStringLiteral("action"), fromStd(std::string(toString(i.issue.action)))},
+                                  {QStringLiteral("suggestions"), suggestions},
+                                  {QStringLiteral("text"), fromStd(text)}});
+    }
+    return out;
+}
+
+QString CaptionsBridge::changeWord(int cue, int start, int end, const QString& with) {
+    const CaptionTrack* t = shownTrack();
+    if (!t || cue < 0 || cue >= static_cast<int>(t->cues.size()))
+        return tr("No such caption");
+    const QString text = fromStd(t->cues[static_cast<std::size_t>(cue)].text);
+    const QString error = setCueText(cue, correctedText(text, start, end, with));
+    endEdit();
+    return error;
+}
+
+QString CaptionsBridge::changeAll(const QString& word, const QString& with) {
+    if (!shownTrack())
+        return tr("Make a caption track first");
+    return findReplace(word, with, true, true, QStringLiteral("track"));
 }
 
 } // namespace wabcut::app

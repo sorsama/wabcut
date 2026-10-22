@@ -15,8 +15,29 @@ Panel {
 
     title: qsTr("Effects")
 
+    // 0.2: the panel menu (New Custom Bin, New Presets Bin, Import / Export Presets).
+    trailing: IconButton {
+        id: panelMenuButton
+        objectName: "effectsPanelMenuButton"
+        compact: true
+        iconName: "ellipsis"
+        tooltip: qsTr("Effects panel menu")
+        onClicked: panelMenu.popupAt(panelMenuButton, 0, panelMenuButton.height)
+    }
+    EffectsPanelMenu {
+        id: panelMenu
+        onStatus: message => root.status = message
+    }
+    EffectItemMenu {
+        id: itemMenu
+        onStatus: message => root.status = message
+    }
+
     property string query: ""
-    readonly property var groups: ProjectController.effectControls.library(query)
+    // 0.2: Favorites, Presets and Lumetri Presets before Premiere's effect groups, the custom bins after them.
+    readonly property var groups: EffectPresets.revision >= 0
+        ? EffectPresets.leadingGroups(query).concat(ProjectController.effectControls.library(query), EffectPresets.customGroups(query))
+        : []
     property string status: ""
 
     // Focus target for the rail's "Effects" shortcut.
@@ -25,6 +46,11 @@ Panel {
     }
 
     function applyToSelection(item) {
+        if (item.kind === "preset") {
+            const failed = EffectPresets.applyToSelection(item.name)
+            status = failed === "" ? qsTr("Applied %1").arg(item.name) : failed
+            return
+        }
         if (item.kind === "videoTransition" || item.kind === "audioTransition") {
             status = qsTr("Drag %1 onto an edit point in the timeline").arg(item.name)
             return
@@ -99,7 +125,15 @@ Panel {
                     spacing: Theme.space(1)
 
                     Row {
+                        id: groupHeader
                         spacing: Theme.space(1.5)
+                        // 0.2: a custom bin's header: Rename… / Delete Custom Bin.
+                        TapHandler {
+                            acceptedButtons: Qt.RightButton
+                            enabled: (group.modelData.customBin ?? "") !== ""
+                            onTapped: point => itemMenu.popupForCustomBin(groupHeader, point.position.x, point.position.y,
+                                                                          group.modelData.customBin)
+                        }
                         Icon {
                             anchors.verticalCenter: parent.verticalCenter
                             name: group.modelData.icon
@@ -117,89 +151,135 @@ Panel {
                         }
                     }
 
+                    // Premiere's bins (0.2): Dissolve, Iris, Wipe... each with its effects, alphabetical.
                     Repeater {
-                        model: group.modelData.items
+                        model: group.modelData.bins
 
-                        delegate: AbstractButton {
-                            id: item
+                        delegate: Column {
+                            id: bin
                             required property var modelData
-
-                            objectName: "effectItem_" + modelData.id
+                            objectName: "effectBin_" + modelData.title
                             width: group.width
-                            height: Theme.controlHeight
-                            focusPolicy: Qt.StrongFocus
-                            hoverEnabled: true
-                            Accessible.role: Accessible.ListItem
-                            Accessible.name: modelData.name
-                            Accessible.description: modelData.description
-                            onDoubleClicked: root.applyToSelection(modelData)
-                            Keys.onReturnPressed: root.applyToSelection(modelData)
-                            Keys.onEnterPressed: root.applyToSelection(modelData)
 
-                            contentItem: Item {
-                                Icon {
-                                    id: itemIcon
-                                    anchors.left: parent.left
-                                    anchors.leftMargin: Theme.space(3)
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    name: item.modelData.icon
-                                    size: Theme.iconSm
-                                    color: item.hovered || dragSource.Drag.active ? Theme.accentStroke : Theme.textTertiary
-                                }
-                                Text {
-                                    anchors.left: itemIcon.right
-                                    anchors.leftMargin: Theme.space(2)
-                                    anchors.right: category.left
-                                    anchors.rightMargin: Theme.space(2)
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    text: item.modelData.name
-                                    elide: Text.ElideRight
-                                    color: Theme.textPrimary
-                                    font.family: Theme.fontSans
-                                    font.pixelSize: Theme.textMd
-                                }
-                                Text {
-                                    id: category
-                                    anchors.right: parent.right
-                                    anchors.rightMargin: Theme.space(3)
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    text: item.modelData.category
-                                    color: Theme.textTertiary
-                                    font.family: Theme.fontSans
-                                    font.pixelSize: Theme.textSm
+                            Text {
+                                id: binTitle
+                                visible: bin.modelData.title !== ""
+                                leftPadding: Theme.space(3)
+                                topPadding: Theme.space(1)
+                                text: bin.modelData.title
+                                color: Theme.textTertiary
+                                font.family: Theme.fontSans
+                                font.pixelSize: Theme.textSm
+                                // 0.2: one of the user's presets bins: New Presets Bin Inside… / Rename… / Delete.
+                                TapHandler {
+                                    acceptedButtons: Qt.RightButton
+                                    enabled: (bin.modelData.presetsBin ?? "") !== ""
+                                    onTapped: point => itemMenu.popupForPresetsBin(binTitle, point.position.x, point.position.y,
+                                                                                   bin.modelData.presetsBin)
                                 }
                             }
 
-                            background: Rectangle {
-                                radius: Theme.radiusField
-                                color: item.down ? Theme.raised : item.hovered ? Theme.hover : "transparent"
-                                Behavior on color { ColorAnimation { duration: Theme.durFast } }
+                            Repeater {
+                                model: bin.modelData.items
 
-                                FocusRing {
-                                    anchors.margins: 0
-                                    targetRadius: Theme.radiusField
-                                    visible: item.visualFocus
+                                delegate: AbstractButton {
+                                    id: item
+                                    required property var modelData
+
+                                    objectName: "effectItem_" + modelData.id
+                                    width: bin.width
+                                    height: Theme.controlHeight
+                                    focusPolicy: Qt.StrongFocus
+                                    hoverEnabled: true
+                                    Accessible.role: Accessible.ListItem
+                                    Accessible.name: modelData.name
+                                    Accessible.description: modelData.description
+                                    onDoubleClicked: root.applyToSelection(modelData)
+                                    Keys.onReturnPressed: root.applyToSelection(modelData)
+                                    Keys.onEnterPressed: root.applyToSelection(modelData)
+                                    // 0.2: the item the keymap's Delete Custom Item acts on, and its right-click menu.
+                                    onActiveFocusChanged: {
+                                        if (activeFocus) {
+                                            EffectPresets.currentItem = modelData.item ?? EffectPresets.itemReference(modelData.id)
+                                            EffectPresets.currentBin = group.modelData.customBin ?? ""
+                                        }
+                                    }
+                                    TapHandler {
+                                        acceptedButtons: Qt.RightButton
+                                        onTapped: point => {
+                                            item.forceActiveFocus()
+                                            itemMenu.popupForItem(item, point.position.x, point.position.y,
+                                                                  Object.assign({ item: EffectPresets.itemReference(item.modelData.id) }, item.modelData),
+                                                                  group.modelData.customBin ?? "")
+                                        }
+                                    }
+
+                                    contentItem: Item {
+                                        Icon {
+                                            id: itemIcon
+                                            anchors.left: parent.left
+                                            anchors.leftMargin: Theme.space(3)
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            name: item.modelData.icon
+                                            size: Theme.iconSm
+                                            color: item.hovered || dragSource.Drag.active ? Theme.accentStroke : Theme.textTertiary
+                                        }
+                                        Text {
+                                            anchors.left: itemIcon.right
+                                            anchors.leftMargin: Theme.space(2)
+                                            anchors.right: category.left
+                                            anchors.rightMargin: Theme.space(2)
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            text: item.modelData.name
+                                            elide: Text.ElideRight
+                                            color: Theme.textPrimary
+                                            font.family: Theme.fontSans
+                                            font.pixelSize: Theme.textMd
+                                        }
+                                        Text {
+                                            id: category
+                                            anchors.right: parent.right
+                                            anchors.rightMargin: Theme.space(3)
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            text: root.query === "" ? "" : item.modelData.category // the bin says it otherwise
+                                            color: Theme.textTertiary
+                                            font.family: Theme.fontSans
+                                            font.pixelSize: Theme.textSm
+                                        }
+                                    }
+
+                                    background: Rectangle {
+                                        radius: Theme.radiusField
+                                        color: item.down ? Theme.raised : item.hovered ? Theme.hover : "transparent"
+                                        Behavior on color { ColorAnimation { duration: Theme.durFast } }
+
+                                        FocusRing {
+                                            anchors.margins: 0
+                                            targetRadius: Theme.radiusField
+                                            visible: item.visualFocus
+                                        }
+                                    }
+
+                                    // Drag source: onto a clip or an edit point in the timeline, or onto Effect Controls.
+                                    Item {
+                                        id: dragSource
+                                        anchors.fill: parent
+                                        Drag.active: dragHandler.active
+                                        Drag.dragType: Drag.Automatic
+                                        Drag.supportedActions: Qt.CopyAction
+                                        Drag.mimeData: { "application/x-wabcut-effect": item.modelData.id }
+
+                                        DragHandler {
+                                            id: dragHandler
+                                            target: null
+                                        }
+                                    }
+
+                                    HoverHandler {
+                                        enabled: item.enabled
+                                        cursorShape: Qt.PointingHandCursor
+                                    }
                                 }
-                            }
-
-                            // Drag source: onto a clip or an edit point in the timeline, or onto Effect Controls.
-                            Item {
-                                id: dragSource
-                                anchors.fill: parent
-                                Drag.active: dragHandler.active
-                                Drag.dragType: Drag.Automatic
-                                Drag.supportedActions: Qt.CopyAction
-                                Drag.mimeData: { "application/x-wabcut-effect": item.modelData.id }
-
-                                DragHandler {
-                                    id: dragHandler
-                                    target: null
-                                }
-                            }
-
-                            HoverHandler {
-                                enabled: item.enabled
-                                cursorShape: Qt.PointingHandCursor
                             }
                         }
                     }

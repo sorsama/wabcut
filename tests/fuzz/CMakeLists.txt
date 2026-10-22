@@ -90,6 +90,19 @@ wabcut_add_fuzzer(edl SOURCES fuzz_import.cpp LIBS wabcut_interchange DEFINITION
 wabcut_add_fuzzer(export SOURCES fuzz_export.cpp LIBS wabcut_interchange MAX_LEN 65536)
 file(GLOB fuzz_lottie_seeds ${fuzz_fixtures}/lottie/*.json)
 wabcut_add_fuzzer(lottie SOURCES fuzz_lottie.cpp LIBS wabcut_interchange MAX_LEN 65536 SEEDS ${fuzz_lottie_seeds})
+# P.2: caption files (every format's reader on each input) and the readers of the AAF / OMF containers.
+file(GLOB fuzz_caption_seeds ${fuzz_fixtures}/captions/*)
+wabcut_add_fuzzer(captions SOURCES fuzz_captions.cpp LIBS wabcut_interchange MAX_LEN 65536 SEEDS ${fuzz_caption_seeds})
+wabcut_add_fuzzer(audio_post SOURCES fuzz_audio_post.cpp LIBS wabcut_interchange MAX_LEN 1048576
+    SEEDS ${fuzz_fixtures}/export/audiopost.aaf ${fuzz_fixtures}/export/audiopost.omf)
+target_include_directories(fuzz_audio_post PRIVATE ${CMAKE_SOURCE_DIR}/src/interchange/src)
+# 0.2: Motion Graphics templates (.mogrt made in Premiere Pro) and the bounded ZIP reader; effect preset files and the
+# user's effects library (seeds: seeds/mogrt, seeds/effect_presets - the first byte picks the input).
+wabcut_add_fuzzer(mogrt SOURCES fuzz_mogrt.cpp LIBS wabcut_interchange MAX_LEN 65536)
+wabcut_add_fuzzer(effect_presets SOURCES fuzz_effect_presets.cpp LIBS wabcut_model MAX_LEN 65536)
+if(TARGET wabcut_media) # not in the core build (no FFmpeg)
+    wabcut_add_fuzzer(psd SOURCES fuzz_psd.cpp LIBS wabcut_media MAX_LEN 65536) # 0.2 layered Photoshop files
+endif()
 file(GLOB fuzz_prproj_seeds ${fuzz_fixtures}/prproj/*.prproj)
 wabcut_add_fuzzer(prproj SOURCES fuzz_import.cpp LIBS wabcut_interchange DEFINITIONS WABCUT_FUZZ_FORMAT=PremiereProject
     MAX_LEN 65536 SEEDS ${fuzz_prproj_seeds})

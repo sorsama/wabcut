@@ -6,6 +6,7 @@
 #include <wabcut/ai/dub/DubCommands.h>
 #include <wabcut/ai/highlights/HighlightCommands.h>
 #include <wabcut/ai/multicam/MulticamAiCommands.h>
+#include <wabcut/ai/segment/FaceRedaction.h>
 #include <wabcut/ai/segment/ObjectMask.h>
 #include <wabcut/ai/workflow/WorkflowCommands.h>
 #include <wabcut/ai/reframe/ReframeCommands.h>
@@ -13,17 +14,24 @@
 #include <wabcut/ai/translate/TranslateCommands.h>
 #include <wabcut/ai/search/SearchCommands.h>
 #include <wabcut/ai/shorts/ShortsCommands.h>
+#include <wabcut/ai/stabilize/StabilizeCommands.h>
 #include <wabcut/audio/edit/AudioCommands.h>
 #include <wabcut/color/ColorCommands.h>
 #include <wabcut/masks/MaskCommands.h>
 
 #include <wabcut/ai/TranscriptRedaction.h>
 #include <wabcut/ai/edit/CaptionBuilder.h>
+#include <wabcut/ai/edit/Profanity.h>
 #include <wabcut/ai/edit/TextEdits.h>
 #include <wabcut/ai/edit/TranscriptEditing.h>
 #include <wabcut/model/CaptionOps.h>
 #include <wabcut/command/Schema.h>
+#include <wabcut/interchange/Docx.h>
 #include <wabcut/model/FinishingOps.h>
+#include <wabcut/model/ProjectOps.h>
+#include <wabcut/model/MediaLocator.h>
+#include <wabcut/model/ProjectIO.h>
+#include <wabcut/model/TextFind.h>
 #include <wabcut/model/RedactionMedia.h>
 
 #include <algorithm>
@@ -31,6 +39,7 @@
 #include <cmath>
 #include <cstdio>
 #include <exception>
+#include <filesystem>
 #include <map>
 #include <tuple>
 #include <unordered_map>
@@ -505,6 +514,31 @@ CommandOutput cleanup(ExecutionContext& c) {
     return applyPlan(c, plan, Json{{"fillers", fillers}, {"silences", silences}});
 }
 
+/// p02 audio: a list of strings param (at most ProfanityFilter::kMaxWords).
+std::vector<std::string> stringList(ExecutionContext& c, const char* key) {
+    std::vector<std::string> out;
+    if (!c.has(key)) {
+        return out;
+    }
+    const Json& list = c.params()[key];
+    for (std::size_t i = 0; i < list.size() && i < ProfanityFilter::kMaxWords; ++i) {
+        if (!list[i].is_string()) {
+            fail(ErrorCode::InvalidParams, "a word list holds strings", Json{{"path", std::string("/") + key + "/" + std::to_string(i)}});
+        }
+        out.push_back(list[i].get<std::string>());
+    }
+    return out;
+}
+
+/// p02 audio: the profanity filter a request asks for ("hideProfanity", or always with `always`), with its
+/// "profanityWords" added and "allowedWords" taken out of the built-in English and Thai lists.
+std::optional<ProfanityFilter> profanityOf(ExecutionContext& c, bool always = false) {
+    if (!always && !c.boolean("hideProfanity", false)) {
+        return std::nullopt;
+    }
+    return ProfanityFilter(stringList(c, "profanityWords"), stringList(c, "allowedWords"));
+}
+
 CommandOutput generateCaptions(ExecutionContext& c) {
     const SequenceTranscript st = transcriptOf(c);
     if (st.empty()) {
@@ -515,6 +549,8 @@ CommandOutput generateCaptions(ExecutionContext& c) {
     options.maxLines = static_cast<int>(c.integer("maxLines", 2));
     options.maxDuration = secondsOr(c, "maxDuration", 7.0);
     options.minDuration = secondsOr(c, "minDuration", 0.7);
+    const std::optional<ProfanityFilter> profanity = profanityOf(c); // p02 audio: Hide profanity
+    options.profanity = profanity ? &*profanity : nullptr;
     CaptionTrack track = buildCaptions(st, options, c.string("name", "Captions"));
     if (c.has("replace")) {
         track.id = CaptionTrackId{static_cast<std::uint64_t>(c.integer("replace"))};
@@ -603,7 +639,10 @@ CommandOutput generateFromTranscript(ExecutionContext& c) {
         state = withSpeakers(c, std::move(state), st);
         st = SequenceTranscript::build(state, c.sequenceId(), *servicesOf(c).transcripts);
     }
-    CaptionTrack track = buildCaptions(st, captionOptions(c), c.string("name", "Captions"));
+    CaptionOptions options = captionOptions(c);
+    const std::optional<ProfanityFilter> profanity = profanityOf(c); // p02 audio: Hide profanity
+    options.profanity = profanity ? &*profanity : nullptr;
+    CaptionTrack track = buildCaptions(st, options, c.string("name", "Captions"));
     if (c.has("language")) {
         track.language = c.string("language");
     }
@@ -642,6 +681,7 @@ CommandOutput updateFromTranscript(ExecutionContext& c) {
     const SequenceTranscript st = transcriptOf(c);
     CaptionTrack track = captionTrackParamOf(c);
     const CaptionOptions options = captionOptions(c);
+    const std::optional<ProfanityFilter> profanity = profanityOf(c); // p02 audio: Hide profanity
     std::size_t updated = 0;
     for (CaptionCue& cue : track.cues) {
         // The words whose middle lies in the cue, in order.
@@ -652,7 +692,7 @@ CommandOutput updateFromTranscript(ExecutionContext& c) {
             const TimeRange w = st[i].timeline;
             const Ticks mid = w.start + Ticks{w.duration.value / 2};
             if (mid >= cue.start && mid < cue.end()) {
-                words.emplace_back(st.text(i));
+                words.emplace_back(profanity ? profanity->mask(st.text(i)) : std::string(st.text(i)));
                 speakers.push_back(st[i].speakerId);
             }
         }
@@ -669,6 +709,91 @@ CommandOutput updateFromTranscript(ExecutionContext& c) {
     out.state = updated == 0 ? c.state()
                              : c.take(::wabcut::edit::setCaptionTrack(c.state(), c.sequenceId(), std::move(track))).state;
     out.data = Json{{"updated", updated}};
+    return out;
+}
+
+// --- p02 audio: profanity (Premiere's Speech to Text "Hide profanity"; Profanity.h) ---------------------------------
+
+CommandOutput hideProfanity(ExecutionContext& c) {
+    CaptionTrack track = captionTrackParamOf(c);
+    const ProfanityFilter filter = *profanityOf(c, true);
+    std::size_t masked = 0;
+    for (CaptionCue& cue : track.cues) {
+        std::string text = filter.maskText(cue.text);
+        if (text != cue.text) {
+            cue.text = std::move(text);
+            ++masked;
+        }
+    }
+    CommandOutput out;
+    out.state = masked == 0 ? c.state()
+                            : c.take(::wabcut::edit::setCaptionTrack(c.state(), c.sequenceId(), std::move(track))).state;
+    out.data = Json{{"cues", masked}};
+    return out;
+}
+
+CommandOutput bleepProfanity(ExecutionContext& c) {
+    const SequenceTranscript st = transcriptOf(c);
+    const ProfanityFilter filter = *profanityOf(c, true);
+    const std::string modeName = c.string("mode", "bleep");
+    const auto mode = redactionAudioFromString(modeName);
+    if (!mode || *mode == RedactionAudio::None) {
+        fail(ErrorCode::InvalidParams, "mode is bleep or mute", Json{{"path", "/mode"}});
+    }
+    const Ticks padding = secondsOr(c, "padding", 0.02);
+    const Sequence& seq = c.sequence();
+    // The profane words the sequence plays, by the media item they are heard from (words heard through nested or
+    // multicam clips are reported, not bleeped: bleep them in their own sequence).
+    std::map<std::uint64_t, std::vector<TimeRange>> byMedia;
+    Json words = Json::array();
+    std::size_t nested = 0;
+    for (std::size_t i = 0; i < st.size(); ++i) {
+        const TimelineWord& w = st[i];
+        if (w.redacted || !filter.isProfane(st.text(i))) {
+            continue;
+        }
+        const auto [media, stream] = streamOf(seq, w);
+        const auto loc = seq.findClip(w.clip);
+        if (!media.isValid() || !loc || loc->clip().isNested()) {
+            ++nested;
+            continue;
+        }
+        const Ticks start = std::max(Ticks{}, w.source.start - padding);
+        byMedia[media.value].push_back(TimeRange::fromStartEnd(start, w.source.end() + padding));
+        words.push_back(Json{{"word", i}, {"text", filter.mask(st.text(i))}, {"at", c.timecode(w.timeline.start)}});
+    }
+    ProjectState state = c.state();
+    CommandOutput out;
+    for (auto& [media, ranges] : byMedia) {
+        std::sort(ranges.begin(), ranges.end(), [](const TimeRange& a, const TimeRange& b) { return a.start < b.start; });
+        std::vector<TimeRange> merged;
+        for (const TimeRange& r : ranges) {
+            if (!merged.empty() && r.start <= merged.back().end()) {
+                merged.back() = TimeRange::fromStartEnd(merged.back().start, std::max(merged.back().end(), r.end()));
+            } else if (merged.size() < kMaxRedactionRanges) {
+                merged.push_back(r);
+            }
+        }
+        Redaction r;
+        r.media = MediaId{media};
+        r.name = "Profanity";
+        r.audio = *mode;
+        r.audioRanges = merged;
+        r.source = TimeRange::fromStartEnd(merged.front().start, merged.back().end());
+        // The sound only: a region of no size covers no picture (Masks.h: an empty shape covers nothing).
+        r.region.shape = MaskShape::Ellipse;
+        r.region.set("size.x", 0.0);
+        r.region.set("size.y", 0.0);
+        auto added = c.take(::wabcut::edit::addRedaction(state, std::move(r)));
+        out.createdIds.push_back(added.id.value);
+        state = std::move(added.state);
+    }
+    // Captions over bleeped words follow (refreshRedactedCues, like the redaction commands).
+    if (auto* services = command::findService<TranscriptServices>(c.services()); services && services->transcripts && !byMedia.empty()) {
+        state = refreshRedactedCues(c.state(), std::move(state), *services->transcripts);
+    }
+    out.state = std::move(state);
+    out.data = Json{{"mode", modeName}, {"words", std::move(words)}, {"redactions", byMedia.size()}, {"skippedNested", nested}};
     return out;
 }
 
@@ -698,6 +823,226 @@ CommandOutput correctWords(ExecutionContext& c, std::size_t first, std::size_t l
     out.state = std::move(state);
     out.data = Json{{"media", stream.first.value}, {"audioStream", stream.second}, {"original", original},
                     {"text", c.string("text")}};
+    return out;
+}
+
+// --- 0.2: Export transcript, Find and Replace ---------------------------------------------------------------------
+
+/// The speaker line of a paragraph: the project speaker's name, else "Speaker N" from the diarization label (as
+/// Premiere names unnamed speakers), else none.
+std::string speakerName(ExecutionContext& c, const TimelineWord& w) {
+    if (w.speakerId.isValid()) {
+        if (const Speaker* s = c.state().findSpeaker(w.speakerId)) {
+            return s->name;
+        }
+    }
+    return w.speaker ? "Speaker " + std::to_string(*w.speaker + 1) : std::string();
+}
+
+/// A CSV field (RFC 4180): quoted when it holds a comma, a quote or a line break.
+std::string csvField(std::string_view s) {
+    if (s.find_first_of(",\"\n\r") == std::string_view::npos) {
+        return std::string(s);
+    }
+    std::string out = "\"";
+    for (const char ch : s) {
+        out += ch == '"' ? std::string("\"\"") : std::string(1, ch);
+    }
+    return out + "\"";
+}
+
+CommandOutput exportTranscript(ExecutionContext& c) {
+    const SequenceTranscript st = transcriptOf(c);
+    if (st.empty()) {
+        fail(ErrorCode::EditRejected, "the sequence has no transcript to export (transcribe its media first)");
+    }
+    std::string format = c.string("format");
+    std::filesystem::path file;
+    if (c.has("path")) {
+        file = pathFromUtf8(c.string("path"));
+        std::string ext = pathToUtf8(file.extension());
+        std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+        if (ext != ".txt" && ext != ".csv" && ext != ".docx") {
+            fail(ErrorCode::InvalidParams, "a transcript is exported to a .txt, .csv or .docx file", Json{{"path", "/path"}});
+        }
+        if (format.empty()) {
+            format = ext.substr(1);
+        }
+        std::error_code ec;
+        if (std::filesystem::exists(file, ec) && !c.boolean("overwrite", false)) {
+            fail(ErrorCode::EditRejected, "the file exists; pass \"overwrite\": true to replace it", Json{{"path", "/path"}});
+        }
+    }
+    if (format.empty()) {
+        format = "txt";
+    }
+    if (format == "docx" && file.empty()) {
+        fail(ErrorCode::InvalidParams, "a .docx transcript is written to a file: give \"path\"", Json{{"path", "/format"}});
+    }
+    const bool speakers = c.boolean("speakers", true);
+    std::vector<interchange::DocxParagraph> document;
+    const Ticks maxPause = secondsOr(c, "maxPause", 1.0);
+    std::string text = format == "csv" ? std::string("Start,End,Speaker,Text\n") : std::string();
+    std::size_t paragraphs = 0;
+    std::size_t first = 0;
+    for (std::size_t i = 0; i < st.size(); ++i) {
+        const bool last = i + 1 == st.size();
+        const bool split = last || (st[i + 1].speaker != st[i].speaker) ||
+                           st[i + 1].timeline.start - st[i].timeline.end() > maxPause || i + 1 - first >= 80;
+        if (!split) {
+            continue;
+        }
+        const std::string start = c.timecode(st[first].timeline.start);
+        const std::string end = c.timecode(st[i].timeline.end());
+        const std::string who = speakers ? speakerName(c, st[first]) : std::string();
+        const std::string words = st.textOf(first, i);
+        if (format == "csv") {
+            text += csvField(start) + "," + csvField(end) + "," + csvField(who) + "," + csvField(words) + "\n";
+        } else if (format == "docx") {
+            // The .txt layout as a Word document (Premiere's): the timecodes in grey, the speaker in bold, the text,
+            // an empty paragraph between blocks (captions.import reads it back the same way).
+            if (paragraphs > 0) {
+                document.push_back({});
+            }
+            document.push_back({{{start + " - " + end, false, true}}});
+            if (!who.empty()) {
+                document.push_back({{{who, true, false}}});
+            }
+            document.push_back({{{words, false, false}}});
+        } else {
+            text += (paragraphs == 0 ? "" : "\n") + start + " - " + end + "\n" + (who.empty() ? "" : who + "\n") + words + "\n";
+        }
+        ++paragraphs;
+        first = i + 1;
+    }
+    if (format == "docx") {
+        text = interchange::writeDocx(document, pathToUtf8(file.stem()));
+    }
+    if (!file.empty() && !c.dryRun()) {
+        if (auto written = ::wabcut::io::writeFileAtomically(file, text); !written) {
+            fail(ErrorCode::EditRejected, "cannot write the transcript: " + written.error().message, Json{{"path", "/path"}});
+        }
+    }
+    Json data{{"format", format}, {"paragraphs", paragraphs}, {"words", st.size()}};
+    if (file.empty()) {
+        data["text"] = text;
+    } else {
+        data["path"] = pathToUtf8(file);
+        data["bytes"] = text.size();
+    }
+    return readOutput(c, st, std::move(data));
+}
+
+/// The matches of "find" in the transcript: each as the words it spans ([first, last], one more word per space in the
+/// find text, since words never hold spaces) and how many times it is in them.
+struct TranscriptMatch {
+    std::size_t first = 0;
+    std::size_t last = 0;
+};
+
+std::vector<TranscriptMatch> transcriptMatches(const SequenceTranscript& st, std::string_view find, TextFindOptions options) {
+    std::vector<TranscriptMatch> out;
+    const std::size_t span = static_cast<std::size_t>(std::count(find.begin(), find.end(), ' ')) + 1;
+    for (std::size_t i = 0; i + span <= st.size();) {
+        const std::size_t last = i + span - 1;
+        if (findText(st.textOf(i, last), find, options).empty()) {
+            ++i;
+            continue;
+        }
+        out.push_back({i, last});
+        i = last + 1;
+    }
+    return out;
+}
+
+CommandOutput findTranscript(ExecutionContext& c) {
+    const SequenceTranscript st = transcriptOf(c);
+    const std::string find = c.string("find");
+    const TextFindOptions options{c.boolean("matchCase", false), c.boolean("wholeWord", false)};
+    const std::vector<TranscriptMatch> matches = transcriptMatches(st, find, options);
+    Json list = Json::array();
+    for (const TranscriptMatch& m : matches) {
+        if (list.size() >= 1000) {
+            break;
+        }
+        list.push_back(Json{{"words", Json::array({m.first, m.last})},
+                            {"time", c.timecode(st[m.first].timeline.start)},
+                            {"text", st.textOf(m.first, m.last)}});
+    }
+    return readOutput(c, st, Json{{"count", matches.size()}, {"matches", std::move(list)}});
+}
+
+CommandOutput findReplaceTranscript(ExecutionContext& c) {
+    const SequenceTranscript st = transcriptOf(c);
+    const std::string find = c.string("find");
+    const std::string replacement = c.string("replace");
+    const TextFindOptions options{c.boolean("matchCase", false), c.boolean("wholeWord", false)};
+    // The find text spans as many words as it has spaces + 1 (words never hold spaces).
+    const std::size_t span = static_cast<std::size_t>(std::count(find.begin(), find.end(), ' ')) + 1;
+    // Premiere's Replace (one match): "words" names the match transcript.find listed.
+    std::optional<std::size_t> only;
+    if (c.has("words")) {
+        const Json& range = c.params()["words"];
+        const std::size_t first = c.indexValue(range[0], "/words/0");
+        const std::size_t last = c.indexValue(range[1], "/words/1");
+        if (last + 1 != first + span || last >= st.size() || findText(st.textOf(first, last), find, options).empty()) {
+            fail(ErrorCode::NotFound, "\"" + find + "\" is not at words [" + std::to_string(first) + ", " + std::to_string(last) +
+                                          "] (the transcript changed?)",
+                 Json{{"path", "/words"}});
+        }
+        only = first;
+    }
+    ProjectState state = c.state();
+    std::size_t replaced = 0;
+    std::size_t skipped = 0;
+    Json changes = Json::array();
+    for (std::size_t i = only.value_or(0); i + span <= st.size();) {
+        if (only && i != *only) {
+            break;
+        }
+        const std::size_t last = i + span - 1;
+        const std::string before = st.textOf(i, last);
+        std::size_t n = 0;
+        const std::string after = replaceText(before, find, replacement, options, &n);
+        if (n == 0) {
+            ++i;
+            continue;
+        }
+        const auto stream = streamOf(c.sequence(), st[i]);
+        Ticks start = st[i].source.start;
+        Ticks end = st[i].source.end();
+        bool oneMedia = true;
+        for (std::size_t k = i; k <= last; ++k) {
+            oneMedia = oneMedia && streamOf(c.sequence(), st[k]) == stream;
+            start = std::min(start, st[k].source.start);
+            end = std::max(end, st[k].source.end());
+        }
+        if (!oneMedia) {
+            ++skipped; // a match across two media items: corrections are per media
+            i = last + 1;
+            continue;
+        }
+        if (end <= start) {
+            end = start + Ticks{1};
+        }
+        state = c.take(::wabcut::edit::correctTranscript(state, stream.first, stream.second,
+                                                         WordCorrection{TimeRange::fromStartEnd(start, end), before, after}));
+        replaced += n;
+        if (changes.size() < 200) {
+            changes.push_back(Json{{"words", Json::array({i, last})}, {"time", c.timecode(st[i].timeline.start)},
+                                   {"before", before}, {"after", after}});
+        }
+        i = last + 1;
+    }
+    CommandOutput out;
+    out.state = std::move(state);
+    out.data = Json{{"replaced", replaced}, {"skipped", skipped}, {"changes", std::move(changes)}};
+    if (replaced == 0) {
+        out.warnings.push_back("\"" + find + "\" was not found in the transcript");
+    }
+    if (skipped > 0) {
+        out.warnings.push_back(std::to_string(skipped) + " match(es) span two media items and were left alone");
+    }
     return out;
 }
 
@@ -870,6 +1215,12 @@ void registerTranscriptCommands(command::CommandRegistry& registry) {
                        {"padding", padding},
                        {"roomTone", secondsParam("Seconds of each removed pause kept on both sides. Default 0.15.", 0.0, 5.0)}}),
          Json{{"fillers", true}, {"silences", 0.8}}, {}, cleanup});
+    // p02 audio: Premiere's "Hide profanity" and its word lists (Profanity.h).
+    const Json profanitySwitch =
+        schema::boolean("Hide profanity: profane words read as their first letter and asterisks (\"f***\"). Default false.");
+    const Json profanityWords = schema::array(schema::string("A word; a trailing * matches words that start with it."),
+                                              "Words to treat as profane besides the built-in English and Thai lists.");
+    const Json allowedWords = schema::array(schema::string("A word of the built-in lists."), "Words of the built-in lists to allow.");
     add(registry,
         {"captions.generate", 1, "Generate Captions",
          "Makes a caption track from the transcript: cues of at most maxLines lines of maxCharsPerLine characters and "
@@ -881,7 +1232,10 @@ void registerTranscriptCommands(command::CommandRegistry& registry) {
                        {"maxLines", schema::integer("Default 2.", 1, 4)},
                        {"maxDuration", secondsParam("Longest cue in seconds. Default 7.", 1.0, 60.0)},
                        {"minDuration", secondsParam("Shortest cue in seconds. Default 0.7.", 0.0, 10.0)},
-                       {"replace", schema::integer("Caption track id to replace.", 1)}}),
+                       {"replace", schema::integer("Caption track id to replace.", 1)},
+                       {"hideProfanity", profanitySwitch},
+                       {"profanityWords", profanityWords},
+                       {"allowedWords", allowedWords}}),
          Json{{"maxCharsPerLine", 37}}, {}, generateCaptions});
     const auto captionSchema = [&](std::initializer_list<std::pair<const char*, Json>> extra) {
         Json s = withSequence({{"maxCharsPerLine", schema::integer("Default 42.", 8, 200)},
@@ -892,7 +1246,10 @@ void registerTranscriptCommands(command::CommandRegistry& registry) {
                                {"gap", secondsParam("Least time between two cues in seconds. Default 0.", 0.0, 2.0)},
                                {"splitOnPunctuation",
                                 schema::boolean("A sentence end closes a cue once it is half full. Default true.")},
-                               {"breakOnSpeakerChange", schema::boolean("A new speaker starts a new cue. Default true.")}});
+                               {"breakOnSpeakerChange", schema::boolean("A new speaker starts a new cue. Default true.")},
+                               {"hideProfanity", profanitySwitch},
+                               {"profanityWords", profanityWords},
+                               {"allowedWords", allowedWords}});
         for (const auto& [key, value] : extra) {
             s["properties"][key] = value;
         }
@@ -919,6 +1276,29 @@ void registerTranscriptCommands(command::CommandRegistry& registry) {
          Capability::EditSequence,
          captionSchema({{"captionTrack", schema::integer("Caption track id. Default: the first.", 1)}}),
          Json{{"captionTrack", 57}}, {}, updateFromTranscript});
+    add(registry,
+        {"captions.hideProfanity", 1, "Hide Profanity in Captions",
+         "Premiere's Hide profanity on a caption track that exists: every profane word of its cues reads as its first "
+         "letter and asterisks (\"f***\"), with the built-in English and Thai lists, \"profanityWords\" added and "
+         "\"allowedWords\" taken out. One undo step.",
+         Capability::EditSequence,
+         withSequence({{"captionTrack", schema::integer("Caption track id. Default: the first.", 1)},
+                       {"profanityWords", profanityWords},
+                       {"allowedWords", allowedWords}}),
+         Json{{"captionTrack", 57}}, {}, hideProfanity});
+    add(registry,
+        {"audio.bleepProfanity", 1, "Bleep Profanity",
+         "Bleeps (a 1 kHz tone) or mutes the profane words the sequence's transcript finds, in the sound: one audio "
+         "redaction per media item over those words (with \"padding\" each side), so they stay bleeped in every use of "
+         "the media, in preview and export, and captions over them read [bleep]. The picture is untouched. Built-in "
+         "English and Thai lists, \"profanityWords\" added, \"allowedWords\" taken out. dryRun lists the words first. "
+         "One undo step.",
+         Capability::EditProject,
+         withSequence({{"mode", schema::enumeration({"bleep", "mute"}, "Bleep (default) or mute.")},
+                       {"padding", secondsParam("Seconds added before and after each word. Default 0.02.", 0.0, 1.0)},
+                       {"profanityWords", profanityWords},
+                       {"allowedWords", allowedWords}}),
+         Json{{"mode", "bleep"}}, {}, bleepProfanity});
     Json correctionText = schema::string("The corrected text (UTF-8; words separated by spaces). Empty removes the words.");
     correctionText["maxLength"] = 4096;
     add(registry,
@@ -949,6 +1329,56 @@ void registerTranscriptCommands(command::CommandRegistry& registry) {
          "words changed since, e.g. after re-transcription; the correction still wins), restored (no words there any "
          "more; the correction brings them back) or noTranscript.",
          Capability::Read, withSequence({}), Json::object(), {}, transcriptCorrections});
+    add(registry,
+        command::touchesFiles({"transcript.export", 1, "Export Transcript",
+         "Premiere's Export transcript as a text file: the sequence's transcript as paragraphs (split at speaker changes "
+         "and pauses longer than maxPause) with their start and end timecodes and speaker. \"txt\": blocks of \"start - "
+         "end\", the speaker, the text, a blank line between (transcript files captions.import reads back); \"csv\": "
+         "Start,End,Speaker,Text rows; \"docx\": the .txt layout as a Word document (timecodes grey, speakers bold), "
+         "which captions.import reads back too. Without \"path\" the text is returned (not for docx). Refuses to "
+         "replace a file unless \"overwrite\"; a dry run writes nothing.",
+         Capability::Read,
+         withSequence({{"path", schema::string("A .txt, .csv or .docx file. Default: return the text.")},
+                       {"format", schema::enumeration({"txt", "csv", "docx"}, "Default: the file's extension, else txt.")},
+                       {"speakers", schema::boolean("Name the speakers. Default true.", true)},
+                       {"maxPause", secondsParam("A longer pause starts a new paragraph. Default 1.", 0.0, 60.0)},
+                       {"overwrite", schema::boolean("Replace an existing file. Default false.", false)}}),
+         Json{{"path", "C:/exports/interview transcript.csv"}}, {}, exportTranscript}, {"path"}));
+    {
+        Json findSchema = schema::string("The text to find (plain text, not a pattern; spaces separate words).");
+        findSchema["minLength"] = 1;
+        findSchema["maxLength"] = 1024;
+        Json replaceSchema = schema::string("What each match becomes (empty removes the words).");
+        replaceSchema["maxLength"] = 4096;
+        add(registry,
+            {"transcript.find", 1, "Find in Transcript",
+             "Premiere's Find for the transcript (the arrows of Find and Replace): every match of \"find\" (within a "
+             "word, or across consecutive words when it has spaces) as the words it spans, the time of the first and "
+             "their text, in transcript order. \"matchCase\" and \"wholeWord\" as transcript.findReplace. At most "
+             "1000 matches.",
+             Capability::Read,
+             withSequence({{"find", findSchema},
+                           {"matchCase", schema::boolean("Match Case. Default false.", false)},
+                           {"wholeWord", schema::boolean("Whole Word. Default false.", false)}},
+                          {"find"}),
+             Json{{"find", "wab cut"}}, {}, findTranscript});
+        add(registry,
+            {"transcript.findReplace", 1, "Find and Replace in Transcript",
+             "Premiere's Find and Replace for the transcript: every match of \"find\" (within a word, or across "
+             "consecutive words when it has spaces) is corrected as transcript.correctRange would - saved with the "
+             "project on top of the cached transcripts, so captions generated or updated later read it - in one undo "
+             "step; with \"words\" (a match transcript.find listed) only that match (Premiere's Replace). "
+             "\"matchCase\" and \"wholeWord\" as Premiere's options (without Match Case, Unicode simple case "
+             "folding). A dry run lists the changes without making them.",
+             Capability::EditProject,
+             withSequence({{"find", findSchema},
+                           {"replace", replaceSchema},
+                           {"matchCase", schema::boolean("Match Case. Default false.", false)},
+                           {"wholeWord", schema::boolean("Whole Word. Default false.", false)},
+                           {"words", wordRange("Replace only the match on these words: [first, last], inclusive.")}},
+                          {"find", "replace"}),
+             Json{{"find", "wab cut"}, {"replace", "Wabcut"}}, {}, findReplaceTranscript});
+    }
 }
 
 namespace {
@@ -1179,7 +1609,9 @@ const command::CommandRegistry& editingCommands() {
         multicam::registerMulticamAiCommands(r); // AI-13: analysis.speakers, multicam.autoSwitch
         workflow::registerWorkflowCommands(r);   // AI-13: workflow.podcast
         segment::registerObjectMaskCommands(r);  // AI-14: mask.objectSelect, mask.refine, mask.propagate
+        segment::registerFaceRedactionCommands(r); // 0.2: redaction.detectFaces
         highlights::registerHighlightCommands(r); // G.2: highlights.find, highlights.toReel, highlights.toShort
+        stabilize::registerStabilizeCommands(r);  // P.2: effect.analyzeStabilization, effect.analyzeRollingShutter
         return r;
     }();
     return registry;

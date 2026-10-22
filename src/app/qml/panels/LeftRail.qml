@@ -44,6 +44,7 @@ Panel {
 
     readonly property var panels: [
         { key: "library", label: qsTr("Library"), icon: "library", command: "window.projects" },
+        { key: "mediaBrowser", label: qsTr("Media Browser"), icon: "folder-open", command: "window.mediaBrowser" },
         { key: "effects", label: qsTr("Effects"), icon: "sparkles", command: "window.effects" },
         { key: "captions", label: qsTr("Transcript"), icon: "captions" },
         { key: "audio", label: qsTr("Audio Tools"), icon: "audio-lines" },
@@ -51,6 +52,8 @@ Panel {
         { key: "graphics", label: qsTr("Callouts"), icon: "layers" },
         { key: "highlights", label: qsTr("Highlights"), icon: "zap" },
         { key: "markers", label: qsTr("Markers"), icon: "bookmark" },
+        { key: "metadata", label: qsTr("Metadata"), icon: "tag" },
+        { key: "production", label: qsTr("Production"), icon: "folders" },
         { key: "review", label: qsTr("Review"), icon: "message-square" },
         { key: "shorts", label: qsTr("Shorts"), icon: "clapperboard" },
         { key: "takes", label: qsTr("Takes"), icon: "repeat" },

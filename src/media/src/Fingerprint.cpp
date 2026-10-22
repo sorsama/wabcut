@@ -2,6 +2,7 @@
 #include "FfmpegUtil.h"
 
 #include <wabcut/media/Fingerprint.h>
+#include <wabcut/model/ImageSequence.h>
 #include <wabcut/platform/FileTime.h>
 
 #include <array>
@@ -60,7 +61,10 @@ template <typename T> std::uint64_t mix(std::uint64_t hash, const T& value) {
 } // namespace
 
 std::expected<std::uint64_t, Error> sourceFingerprint(const std::string& utf8Path) {
-    const std::filesystem::path path = detail::pathFromUtf8(utf8Path);
+    // 0.2: an image sequence, spanned clip or layered file's item is sampled from the file standing for it (its first
+    // frame, first part, PSD), and its whole path goes into the hash: two layers of one PSD are different pictures.
+    const std::filesystem::path path = mediaFileToCheck(detail::pathFromUtf8(utf8Path));
+    const bool virtualPath = utf8Path.find('?') != std::string::npos;
     std::error_code ec;
     const auto size = std::filesystem::file_size(path, ec);
     if (ec) {
@@ -99,6 +103,9 @@ std::expected<std::uint64_t, Error> sourceFingerprint(const std::string& utf8Pat
 
     std::uint64_t hash = mix(0xcbf29ce484222325ULL, static_cast<std::uint64_t>(size));
     hash = mix(hash, mtimeNs);
+    if (virtualPath) {
+        hash = detail::fnv1a({reinterpret_cast<const std::uint8_t*>(utf8Path.data()), utf8Path.size()}, hash);
+    }
     const std::size_t head = static_cast<std::size_t>(std::min<std::uint64_t>(size, kSampleBytes));
     auto got = readAt(0, head);
     if (!got) {

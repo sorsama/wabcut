@@ -50,6 +50,29 @@
 //      before C.15 refuse schema 15 files rather than drop blend modes or play synthetic items as unknown generators.
 //   16 A.10: media info audio stream "title" (the stream's name in the file: MKV track name, MP4 handler name; written
 //      only when set). Builds before A.10 refuse schema 16 files rather than drop the names on their next save.
+//   17 P.2 (0.2 Premiere parity, one schema for the whole round). Editing (E5): clip "scaleToFrame" (Scale to Frame
+//      Size) and "holdFilters" (Frame Hold Options); media "scaling" (default media scaling), "interpretation"
+//      (Interpret Footage), "timecode" (Modify > Timecode) and "stillDuration"; sequence "pixelAspect", "fields",
+//      "previewFormat", "videoDisplay" and "audioDisplay" (Sequence Settings) and multicam "merged" (Merge Clips).
+//      Motion: clip "timeInterpolation" ("frameBlending" | "opticalFlow"; written only when not frame sampling) and the
+//      synthetic generator kinds "wabcut.synthetic.barsAndTone" and "wabcut.synthetic.countingLeader" (with sound).
+//      Colour management (I.9, back in 0.2): project "colorManagement" (mode, peakNits, referenceWhiteNits,
+//      autoDetectLog), clip "inputColorSpace" and media video stream "logColorSpace" (absent: Direct Rec.709, Auto).
+//      Audio: sequence "submixTracks" (Premiere's audio submix tracks), track "output" (the output assignment)
+//      and "sends". Graphics and captions: graphic "roll" (Roll / Crawl), layer "textStyle" and pin "to":
+//      "frame", project "textStyles" (Text Styles), caption track "trackStyle". All written only when set. Builds before P.2 refuse schema 17 files rather than drop the settings, play the
+//      items as unknown generators, show an HDR / Wide Gamut project unmanaged or drop the routing.
+//   18 (0.2 parity, second round): optional fields only, each written only when set. Timeline: sequence "colorIndex"
+//      (the sequence's label colour, not 0). AI: a matte mask's "matte" may name a "sequence" instead of its media (an
+//      object mask made from what a nested or multicam clip shows). Graphics: type on a path - a text layer's
+//      "onPath" ({path (keys of "t", "i", "v"), closed, reverse, perpendicular, forceAlignment, firstMargin,
+//      lastMargin}). Media: media info video stream "fieldOrder" (the file's interlacing) and clip "fieldOptions"
+//      (Field Options: "reverseFieldDominance", "processing"). Project panel (P.3): media "metadata" (clip metadata:
+//      scene, shot, take, logNote, client, good, status, cameraAngle, cameraLabel, cameraModel, shotDate,
+//      shotLocation), media and sequence "importSource" ({project, id}: a copy from another project), bin "search"
+//      (Search Bins: text, field, type, label, good, offline, generated, transcribed, proxy, unused, duplicates, from,
+//      to) and project "freeform" (Freeform views: [{bin, scale, items: [{kind, id, x, y, size}], layouts: [{name,
+//      scale, items}]}]). Builds before it refuse schema 18 files rather than drop these settings.
 // Files from a newer schema are rejected with ErrorCode::VersionMismatch rather than half-loaded.
 //
 // Saving is atomic (temporary file in the same directory, flushed to disk, renamed over the project)
@@ -70,7 +93,7 @@
 
 namespace wabcut::io {
 
-inline constexpr int kSchemaVersion = 16;
+inline constexpr int kSchemaVersion = 18;
 inline constexpr int kOldestSchemaVersion = 1;
 inline constexpr std::string_view kFormatName = "wabcut-project";
 inline constexpr std::string_view kProjectExtension = ".wabcut";

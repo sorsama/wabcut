@@ -214,6 +214,47 @@ std::vector<ResolvedLeaf> resolveSequenceLeaves(const ProjectState& state, Seque
     return out;
 }
 
+namespace {
+
+/// mediaPlayedBy(): each (sequence, kind, angle set) is walked once, so a crafted file of doubling nests stays linear.
+void collectMedia(const ProjectState& state, const Clip& clip, std::size_t depth, std::vector<MediaId>& out,
+                  std::vector<std::array<std::uint64_t, 3>>& walked) {
+    if (!clip.enabled || clip.hasUnknownSource()) {
+        return;
+    }
+    if (!clip.isNested()) {
+        if (clip.media.isValid() && std::find(out.begin(), out.end(), clip.media) == out.end()) {
+            out.push_back(clip.media);
+        }
+        return;
+    }
+    const Sequence* nested = depth < kMaxNestingDepth ? state.findSequence(clip.sequence) : nullptr;
+    if (!nested) {
+        return;
+    }
+    const TrackKind kind = clip.stream.kind == StreamKind::Video ? TrackKind::Video : TrackKind::Audio;
+    const std::array<std::uint64_t, 3> key{nested->id.value, kind == TrackKind::Video ? 0u : 1u, nested->multicam ? clip.angles.bits : 0u};
+    if (std::find(walked.begin(), walked.end(), key) != walked.end()) {
+        return;
+    }
+    walked.push_back(key);
+    const std::vector<TrackPtr>& tracks = nested->tracks(kind);
+    for (const std::size_t i : nestedTracksRead(*nested, clip)) {
+        for (const Clip& inside : tracks[i]->clips) {
+            collectMedia(state, inside, depth + 1, out, walked);
+        }
+    }
+}
+
+} // namespace
+
+std::vector<MediaId> mediaPlayedBy(const ProjectState& state, const Clip& clip) {
+    std::vector<MediaId> out;
+    std::vector<std::array<std::uint64_t, 3>> walked;
+    collectMedia(state, clip, 0, out, walked);
+    return out;
+}
+
 // ---- The composite plan (C.15) -------------------------------------------------------------------------------------
 
 namespace {

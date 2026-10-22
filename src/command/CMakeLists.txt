@@ -9,6 +9,9 @@ add_library(wabcut_command STATIC
     src/CatalogClipboard.cpp
     src/CatalogCollaboration.cpp
     src/CatalogEdit.cpp
+    src/CatalogEditing.cpp
+    src/CatalogExport.cpp
+    src/CatalogEffects.cpp
     src/CatalogFinishing.cpp
     src/CatalogGraphics.cpp
     src/CatalogInterchange.cpp
@@ -16,11 +19,14 @@ add_library(wabcut_command STATIC
     src/CatalogGaming.cpp
     src/CatalogParity.cpp
     src/CatalogLibrary.cpp
+    src/CatalogProjectPanel.cpp
     src/CatalogQuery.cpp
     src/CatalogRhythm.cpp
     src/CatalogMarkers.cpp
+    src/CatalogMotion.cpp
     src/CatalogNesting.cpp
     src/CatalogSource.cpp
+    src/CatalogTimeline.cpp
     src/Cli.cpp
     src/Command.cpp
     src/Engine.cpp
@@ -34,9 +40,12 @@ target_include_directories(wabcut_command PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/inc
 target_compile_features(wabcut_command PUBLIC cxx_std_23)
 # Requests, results and schemas are JSON values, so nlohmann_json is part of the public API.
 target_link_libraries(wabcut_command PUBLIC wabcut_model nlohmann_json::nlohmann_json)
-# lottie.import (C.13) reads Lottie files through the interchange importers.
-target_link_libraries(wabcut_command PRIVATE wabcut_interchange)
+# lottie.import (C.13) reads Lottie files through the interchange importers; interchange.export (AAF / OMF) and the
+# caption file commands (P.2) take its types in their public services (AudioPostServices.h).
+target_link_libraries(wabcut_command PUBLIC wabcut_interchange)
 wabcut_target_defaults(wabcut_command)
+# P.2 (E6): the Source and Program Monitors' commands (clip.setMotion, ...).
+target_sources(wabcut_command PRIVATE src/CatalogMonitor.cpp)
 
 # The MCP server (wabcut-cli mcp).
 add_subdirectory(mcp)

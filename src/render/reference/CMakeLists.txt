@@ -8,7 +8,12 @@ add_library(wabcut_render_reference STATIC
     src/Golden.cpp
     src/Image.cpp
     src/Layout.cpp
+    src/LibraryDistort.cpp
+    src/LibraryEffects.cpp
+    src/LibraryGenerate.cpp
+    src/LibraryStylize.cpp
     src/Synthetic.cpp
+    src/Transitions.cpp
     src/UltraKey.cpp
 )
 target_include_directories(wabcut_render_reference PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)

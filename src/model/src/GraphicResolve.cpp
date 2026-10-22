@@ -197,7 +197,27 @@ Box shapeBounds(const ShapeContent& s, Ticks time, ShapeSize size) {
     return {};
 }
 
-Box textBounds(const TextContent& t, const ResolveOptions& o) {
+Box textBounds(const TextContent& t, Ticks time, const ResolveOptions& o) {
+    if (t.path) {
+        // Type on a path: the path's box, grown by the text's height on every side (the characters stand on it and
+        // lines go below; an open path's text may run on past its ends).
+        TextContent lines = t;
+        lines.path.reset();
+        lines.boxWidth = 0.0;
+        lines.boxHeight = 0.0;
+        const auto size = measurerOf(o).measure(lines, runFonts(lines, o.brandKit));
+        Box box = boxOf(pathAt(t.path->path, time));
+        double maxSize = 0.0;
+        for (const TextRun& r : t.runs) {
+            maxSize = std::max(maxSize, r.style.fontSize);
+        }
+        const double pad = size[1] + maxSize;
+        box = {box.x - pad, box.y - pad, box.width + 2 * pad, box.height + 2 * pad};
+        if (!t.path->closed) {
+            box = {box.x - size[0], box.y - size[0], box.width + 2 * size[0], box.height + 2 * size[0]};
+        }
+        return box;
+    }
     const auto size = measurerOf(o).measure(t, runFonts(t, o.brandKit));
     return {-size[0] * alignFactor(t.align), 0.0, size[0], size[1]};
 }
@@ -222,7 +242,7 @@ Box boundsOf(const GraphicLayer& l, Ticks time, const ResolveOptions& o, std::si
     case LayerKind::Shape:
         return shapeBounds(l.shape, time, shapeSizeAt(l.shape, time));
     case LayerKind::Text:
-        return textBounds(l.text, o);
+        return textBounds(l.text, time, o);
     case LayerKind::Image:
         return {-l.image.width / 2.0, -l.image.height / 2.0, l.image.width, l.image.height};
     case LayerKind::Group:
@@ -297,7 +317,7 @@ void applyPin(Placed& p, const Placed& target, Ticks time) {
 }
 
 std::vector<Placed> placeSiblings(const std::vector<GraphicLayer>& layers, Ticks time, const ResolveOptions& o,
-                                  std::size_t depth) {
+                                  std::size_t depth, const Box* frame) {
     std::vector<Placed> placed;
     placed.reserve(layers.size());
     for (const GraphicLayer& l : layers) {
@@ -318,6 +338,17 @@ std::vector<Placed> placeSiblings(const std::vector<GraphicLayer>& layers, Ticks
         bool progress = false;
         for (Placed& p : placed) {
             if (p.resolved) {
+                continue;
+            }
+            if (p.layer->pin->target == LayerPin::kVideoFrame) {
+                // 0.2: pinned to the video frame (top-level layers): the canvas box.
+                if (frame) {
+                    Placed canvas;
+                    canvas.bounds = *frame;
+                    applyPin(p, canvas, time);
+                }
+                p.resolved = true;
+                progress = true;
                 continue;
             }
             const auto target = std::find_if(placed.begin(), placed.end(),
@@ -425,7 +456,18 @@ DrawText drawText(const TextContent& t, Ticks time, const ResolveOptions& o) {
     out.backgroundColor = resolved(t.background.color, o.brandKit);
     out.backgroundPadding = t.background.padding;
     out.backgroundRadius = t.background.radius;
-    if (t.animators.empty()) {
+    if (t.path) {
+        out.path = pathAt(t.path->path, time);
+        out.pathClosed = t.path->closed;
+        out.pathReverse = t.path->reverse;
+        out.pathPerpendicular = t.path->perpendicular;
+        out.pathForceAlignment = t.path->forceAlignment;
+        out.firstMargin = t.path->firstMargin.valueAt(time);
+        out.lastMargin = t.path->lastMargin.valueAt(time);
+        out.boxWidth = 0.0; // the path is the line
+        out.boxHeight = 0.0;
+    }
+    if (t.animators.empty() && !t.path) {
         return out;
     }
     const std::string text = t.text();
@@ -473,7 +515,8 @@ void resolveLayers(Context& ctx, const std::vector<GraphicLayer>& layers, const 
     if (depth > kMaxGraphicDepth) {
         return;
     }
-    const std::vector<Placed> placed = placeSiblings(layers, ctx.time, ctx.options, depth);
+    const Box frame{0.0, 0.0, static_cast<double>(ctx.width), static_cast<double>(ctx.height)};
+    const std::vector<Placed> placed = placeSiblings(layers, ctx.time, ctx.options, depth, depth == 1 ? &frame : nullptr);
     for (const Placed& p : placed) {
         const GraphicLayer& l = *p.layer;
         if (!shownAt(l, ctx.time)) {
@@ -622,8 +665,75 @@ DrawList resolveGraphic(const Graphic& graphic, Ticks time, const ResolveOptions
     list.width = graphic.width;
     list.height = graphic.height;
     Context ctx{options, graphic.width, graphic.height, time, list.items};
-    resolveLayers(ctx, graphic.layers, Affine2D{}, 1.0, BlendMode::Normal, {}, 1);
+    resolveLayers(ctx, graphic.layers, translation(options.offset[0], options.offset[1]), 1.0, BlendMode::Normal, {}, 1);
     return list;
+}
+
+Box contentBox(const DrawList& list) {
+    Box box;
+    for (const DrawItem& item : list.items) {
+        if (item.bounds.width > 0.0 || item.bounds.height > 0.0) {
+            box = unite(box, mapBox(item.transform, item.bounds));
+        }
+    }
+    return box;
+}
+
+std::array<double, 2> rollOffset(const GraphicRoll& roll, const Box& content, std::int32_t width, std::int32_t height,
+                                 Ticks sinceStart, Ticks clipDuration) {
+    if (content.width <= 0.0 && content.height <= 0.0) {
+        return {0.0, 0.0};
+    }
+    // Where the travel starts and ends along its axis (canvas pixels added to the content's position).
+    const bool vertical = roll.kind == RollKind::Roll;
+    const double extent = vertical ? height : width;
+    const double low = vertical ? content.y : content.x;              // the content's top / left edge
+    const double high = low + (vertical ? content.height : content.width); // its bottom / right edge
+    double from = 0.0;
+    double to = 0.0;
+    if (roll.kind == RollKind::CrawlRight) {
+        // Travels right: in past the frame's left edge, out past its right edge.
+        from = roll.startOffScreen ? -high : 0.0;
+        to = roll.endOffScreen ? extent - low : std::max(0.0, -low);
+    } else {
+        // Roll travels up, Crawl Left travels left: in past the frame's bottom / right edge, out past the top / left.
+        from = roll.startOffScreen ? extent - low : 0.0;
+        to = roll.endOffScreen ? -high : std::min(0.0, extent - high);
+    }
+    // How far along: still in the preroll and postroll, a trapezoidal speed between them.
+    const double d = static_cast<double>(std::max<std::int64_t>(0, clipDuration.value));
+    const double u = std::clamp(static_cast<double>(sinceStart.value), 0.0, d);
+    const double pre = std::min(static_cast<double>(roll.preroll.value), d);
+    const double post = std::min(static_cast<double>(roll.postroll.value), d - pre);
+    const double span = d - pre - post;
+    double p = 0.0;
+    if (span <= 0.0) {
+        p = u >= d - post && d > 0.0 ? 1.0 : 0.0;
+    } else if (u <= pre) {
+        p = 0.0;
+    } else if (u >= pre + span) {
+        p = 1.0;
+    } else {
+        double a = static_cast<double>(roll.easeIn.value);
+        double b = static_cast<double>(roll.easeOut.value);
+        if (a + b > span) {
+            const double k = span / (a + b);
+            a *= k;
+            b *= k;
+        }
+        const double s = u - pre;
+        const double v = 1.0 / (span - a / 2.0 - b / 2.0); // the cruising speed, fractions per tick
+        if (a > 0.0 && s < a) {
+            p = v * s * s / (2.0 * a);
+        } else if (b > 0.0 && s > span - b) {
+            p = 1.0 - v * (span - s) * (span - s) / (2.0 * b);
+        } else {
+            p = v * (s - a / 2.0);
+        }
+        p = std::clamp(p, 0.0, 1.0);
+    }
+    const double offset = from + (to - from) * p;
+    return vertical ? std::array<double, 2>{0.0, offset} : std::array<double, 2>{offset, 0.0};
 }
 
 Ticks responsiveDesignTime(const ResponsiveTime& r, Ticks sinceStart, Ticks clipDuration) {
@@ -665,7 +775,19 @@ DrawList resolveGraphicClip(const ProjectState& state, const Clip& clip, Ticks t
     if (!options.brandKit && state.brandKit) {
         options.brandKit = &*state.brandKit;
     }
-    return resolveGraphic(*graphic, graphicTimeAt(clip, *graphic, t), options);
+    const Ticks time = graphicTimeAt(clip, *graphic, t);
+    if (!graphic->roll) {
+        return resolveGraphic(*graphic, time, options);
+    }
+    // 0.2, Roll / Crawl: where the content is at this time, then the whole graphic moved along.
+    DrawList still = resolveGraphic(*graphic, time, options);
+    const auto offset = rollOffset(*graphic->roll, contentBox(still), graphic->width, graphic->height,
+                                   Ticks{t.value - clip.start().value}, clip.duration());
+    if (offset[0] == 0.0 && offset[1] == 0.0) {
+        return still;
+    }
+    options.offset = {options.offset[0] + offset[0], options.offset[1] + offset[1]};
+    return resolveGraphic(*graphic, time, options);
 }
 
 Box layerBounds(const GraphicLayer& layer, Ticks time, const ResolveOptions& options) {
@@ -741,6 +863,100 @@ double textSelection(const TextAnimator& a, std::size_t index, std::size_t count
     }
     const double k = a.softness;
     return std::clamp((x - from) / k + 0.5, 0.0, 1.0) * std::clamp((to - x) / k + 0.5, 0.0, 1.0);
+}
+
+
+// ---- Type on a path (0.2) ---------------------------------------------------------------------------------------------
+
+TextPathWalker::TextPathWalker(const std::vector<MaskVertex>& v, bool closed, bool reverse) : m_closed(closed) {
+    if (v.empty()) {
+        return;
+    }
+    const std::size_t segments = closed ? v.size() : v.size() - 1;
+    m_points.push_back({v[0].x, v[0].y});
+    for (std::size_t i = 0; i < segments; ++i) {
+        const MaskVertex& p = v[i];
+        const MaskVertex& q = v[(i + 1) % v.size()];
+        const std::array<double, 2> p0{p.x, p.y};
+        const std::array<double, 2> c1{p.x + p.outX, p.y + p.outY};
+        const std::array<double, 2> c2{q.x + q.inX, q.y + q.inY};
+        const std::array<double, 2> p3{q.x, q.y};
+        const bool straight = p.outX == 0 && p.outY == 0 && q.inX == 0 && q.inY == 0;
+        const int n = straight ? 1 : 48;
+        for (int k = 1; k <= n; ++k) {
+            const double t = static_cast<double>(k) / n;
+            const double u = 1.0 - t;
+            m_points.push_back({u * u * u * p0[0] + 3 * u * u * t * c1[0] + 3 * u * t * t * c2[0] + t * t * t * p3[0],
+                                u * u * u * p0[1] + 3 * u * u * t * c1[1] + 3 * u * t * t * c2[1] + t * t * t * p3[1]});
+        }
+    }
+    if (reverse) {
+        std::reverse(m_points.begin(), m_points.end());
+    }
+    // Drop repeated points (no direction between them).
+    std::vector<std::array<double, 2>> kept;
+    for (const auto& p : m_points) {
+        if (kept.empty() || std::hypot(p[0] - kept.back()[0], p[1] - kept.back()[1]) > 1e-9) {
+            kept.push_back(p);
+        }
+    }
+    m_points = std::move(kept);
+    m_lengths.assign(m_points.size(), 0.0);
+    for (std::size_t i = 1; i < m_points.size(); ++i) {
+        m_lengths[i] = m_lengths[i - 1] + std::hypot(m_points[i][0] - m_points[i - 1][0], m_points[i][1] - m_points[i - 1][1]);
+    }
+    m_length = m_lengths.empty() ? 0.0 : m_lengths.back();
+}
+
+std::array<double, 3> TextPathWalker::at(double distance) const {
+    if (m_points.empty()) {
+        return {0.0, 0.0, 0.0};
+    }
+    if (m_points.size() == 1 || m_length <= 0.0) {
+        return {m_points[0][0], m_points[0][1], 0.0};
+    }
+    const auto direction = [&](std::size_t i) { // of the segment from point i to i + 1
+        return std::atan2(m_points[i + 1][1] - m_points[i][1], m_points[i + 1][0] - m_points[i][0]) * 180.0 / std::numbers::pi;
+    };
+    if (m_closed) {
+        distance = std::fmod(distance, m_length);
+        if (distance < 0.0) {
+            distance += m_length;
+        }
+    } else if (distance < 0.0 || distance > m_length) {
+        // Past an end: straight on along the end's direction.
+        const bool start = distance < 0.0;
+        const std::size_t i = start ? 0 : m_points.size() - 2;
+        const double a = direction(i) * std::numbers::pi / 180.0;
+        const auto& p = start ? m_points.front() : m_points.back();
+        const double d = start ? distance : distance - m_length;
+        return {p[0] + d * std::cos(a), p[1] + d * std::sin(a), direction(i)};
+    }
+    const auto it = std::upper_bound(m_lengths.begin(), m_lengths.end(), distance);
+    std::size_t i = it == m_lengths.begin() ? 0 : static_cast<std::size_t>(it - m_lengths.begin()) - 1;
+    i = std::min(i, m_points.size() - 2);
+    const double span = m_lengths[i + 1] - m_lengths[i];
+    const double f = span > 0.0 ? (distance - m_lengths[i]) / span : 0.0;
+    return {m_points[i][0] + f * (m_points[i + 1][0] - m_points[i][0]), m_points[i][1] + f * (m_points[i + 1][1] - m_points[i][1]),
+            direction(i)};
+}
+
+std::array<double, 2> TextPathWalker::lineStart(double width, TextAlign align, double firstMargin, double lastMargin,
+                                                bool forceAlignment) const {
+    const double available = m_length - firstMargin - lastMargin;
+    if ((forceAlignment || align == TextAlign::Justify) && width > 0.0 && available > 0.0) {
+        return {firstMargin, available / width};
+    }
+    switch (align) {
+    case TextAlign::Center:
+        return {firstMargin + (available - width) / 2.0, 1.0};
+    case TextAlign::Right:
+        return {m_length - lastMargin - width, 1.0};
+    case TextAlign::Left:
+    case TextAlign::Justify:
+        break;
+    }
+    return {firstMargin, 1.0};
 }
 
 } // namespace wabcut

@@ -1,6 +1,6 @@
 // The Premiere parity pack (C.15): clip blend modes, adjustment layers, synthetic media and the preview render cache's
 // commands. Keyers, track mattes and Warp Stabilizer are effects (clip.addEffect, clip.setParam);
-// effect.analyzeStabilization lives with the analysis (src/ai/stabilize).
+// effect.analyzeStabilization and effect.analyzeRollingShutter live with the analysis (src/ai/stabilize, P.2).
 
 #include "Catalog.h"
 
@@ -32,6 +32,27 @@ std::vector<std::string> syntheticNames() {
         out.emplace_back(d.shortName);
     }
     return out;
+}
+
+/// The "params" schema of media.newSynthetic: every kind's settings (P.2: Bars and Tone's and the Universal Counting
+/// Leader's too), each described with the kinds it applies to.
+Json syntheticParamsSchema() {
+    Json props = Json::object();
+    for (const SyntheticDescriptor& d : syntheticKinds()) {
+        for (const EffectParamInfo& p : d.params) {
+            const std::string key(p.key);
+            if (props.contains(key)) {
+                props[key]["description"] = props[key]["description"].get<std::string>() + " " + std::string(d.shortName) + ".";
+                continue;
+            }
+            props[key] = schema::number(std::string(d.shortName) + ": " + std::string(p.displayName) + ".", p.minValue, p.maxValue);
+        }
+    }
+    return Json{{"type", "object"},
+                {"properties", props},
+                {"additionalProperties", false},
+                {"description", "Settings by key; missing ones take the defaults (a white matte, HD bars with a 1 kHz tone "
+                                "at -20 dBFS, the leader's Premiere colours)."}};
 }
 
 /// "params": an object of numbers, as synthetic parameters (checked by the model).
@@ -168,16 +189,16 @@ void registerParityCommands(CommandRegistry& registry) {
     addBuiltin(
         registry,
         {"media.newSynthetic", 1, "New Synthetic Item",
-         "Makes a synthetic project item (File > New): \"colorMatte\" (params color.r/g/b, 0..1: a background "
-         "for text, a flash), \"blackVideo\" or \"transparentVideo\" (a layer of its own for effects that draw). It "
-         "is made for the sequence's frame size and rate, needs no file and can be any length. Put it on the timeline "
-         "with clip.overwrite or clip.insert. createdIds: the item.",
+         "Makes a synthetic project item (File > New): \"barsAndTone\" (SMPTE colour bars, params pattern 0 HD "
+         "RP 219 or 1 SD EG 1, with a sine tone: tone.frequency, tone.level), \"blackVideo\", \"colorMatte\" (params "
+         "color.r/g/b, 0..1: a background for text, a flash), \"countingLeader\" (Premiere's Universal Counting Leader: "
+         "8 seconds counting down from 8 to 2 with a clock wipe, its colours and cue blips as params) or "
+         "\"transparentVideo\" (a layer of its own for effects that draw). It is made for the sequence's frame size and "
+         "rate, needs no file and can be any length (the leader is 8 seconds). Put it on the timeline with "
+         "clip.overwrite or clip.insert. createdIds: the item.",
          Capability::EditProject,
          withSequence({{"kind", schema::enumeration(syntheticNames(), "What to make.")},
-                       {"params", schema::object({{"color.r", schema::number("colorMatte: red, 0..1.", 0.0, 1.0)},
-                                                  {"color.g", schema::number("colorMatte: green, 0..1.", 0.0, 1.0)},
-                                                  {"color.b", schema::number("colorMatte: blue, 0..1.", 0.0, 1.0)}},
-                                                 {}, "Settings by key; missing ones take the defaults (white).")},
+                       {"params", syntheticParamsSchema()},
                        {"name", schema::string("The item's name. Default: the kind's name (\"Color Matte\").")},
                        {"bin", schema::integer("The bin to put it in (bin id). Default: the root.", 1)}},
                       {"kind"}),

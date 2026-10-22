@@ -1,9 +1,12 @@
 #include "FfmpegUtil.h"
 
+#include <wabcut/media/CameraLog.h>
 #include <wabcut/media/Probe.h>
+#include <wabcut/model/ImageSequence.h>
 #include <wabcut/platform/FileTime.h>
 
 extern "C" {
+#include <libavutil/dict.h>
 #include <libavutil/mathematics.h>
 }
 
@@ -19,6 +22,19 @@ namespace {
 
 bool isImageDemuxer(std::string_view name) {
     return name == "image2" || name == "image2pipe" || name.ends_with("_pipe");
+}
+
+/// The camera log a demuxer's metadata names (QuickTime "mdta" keys, Matroska tags; CameraLog.h), or empty.
+std::string cameraLogFromTags(const AVDictionary* metadata) {
+    const AVDictionaryEntry* entry = nullptr;
+    for (int i = 0; i < 512 && (entry = av_dict_iterate(metadata, entry)) != nullptr; ++i) {
+        if (entry->key && entry->value) {
+            if (std::string log = cameraLogFromTag(entry->key, entry->value); !log.empty()) {
+                return log;
+            }
+        }
+    }
+    return {};
 }
 
 } // namespace
@@ -37,7 +53,10 @@ std::expected<MediaInfo, Error> probe(const std::string& path) {
         info.duration = detail::toTicks(fmt->duration, AVRational{1, AV_TIME_BASE}).value_or(Ticks{});
     }
 
-    const std::filesystem::path fsPath = detail::pathFromUtf8(path);
+    // An image sequence's size and time are its first frame's (ImageSequence.h), a spanned clip's its first part's, a
+    // layered file's item its PSD's (0.2).
+    const std::optional<ImageSequenceSpec> sequence = parseImageSequencePath(path);
+    const std::filesystem::path fsPath = mediaFileToCheck(detail::pathFromUtf8(path));
     std::error_code ec;
     if (const auto size = std::filesystem::file_size(fsPath, ec); !ec) {
         info.fileSize = static_cast<std::int64_t>(size);
@@ -66,7 +85,24 @@ std::expected<MediaInfo, Error> probe(const std::string& path) {
     if (info.video.empty() && info.audio.empty()) {
         return std::unexpected(Error{ErrorCode::Unsupported, "No audio or video streams in " + path});
     }
-    info.isStillImage = info.audio.empty() && info.video.size() == 1 &&
+    if (!info.video.empty() && !isImageDemuxer(info.container)) {
+        // 0.2: the camera log the file's metadata (or Sony's sidecar) names: colour management reads such clips through
+        // it when "Color Manage Auto Detected Log" is on (VideoStreamInfo::logColorSpace).
+        std::string log = cameraLogFromTags(fmt->metadata);
+        for (unsigned i = 0; i < fmt->nb_streams && log.empty(); ++i) {
+            if (fmt->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+                log = cameraLogFromTags(fmt->streams[i]->metadata);
+            }
+        }
+        if (log.empty()) {
+            log = cameraLogFromFile(fsPath);
+        }
+        for (VideoStreamInfo& v : info.video) {
+            v.logColorSpace = log;
+        }
+    }
+    // An image sequence plays one still per frame: a video, not a still.
+    info.isStillImage = !sequence && info.audio.empty() && info.video.size() == 1 &&
                         (isImageDemuxer(info.container) || info.video.front().frameCount == 1);
     if (info.duration.value == 0) {
         for (const auto& v : info.video) {

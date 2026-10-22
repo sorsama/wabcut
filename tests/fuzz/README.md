@@ -18,6 +18,8 @@ validation, a round trip changes it, or a rejected command changed the project.
 | `mcp` | up to 16 JSON-RPC lines | core | every reply is JSON-RPC 2.0; the project stays `validate(Strict)` |
 | `fcp7`, `fcpxml`, `otio`, `edl`, `prproj` | another editor's timeline | core (interchange) | `validate(Strict)` (the importer's promise); `.wabcut` round trip |
 | `lottie` | a Lottie (Bodymovin JSON) animation (C.13) | core (interchange) | no `internal:` error; the graphic passes `graphicProblem`, round-trips through the graphic JSON and resolves to finite draw lists |
+| `captions` | a caption file: SRT, WebVTT, SCC, MCC, EBU STL, TTML / DFXP / SMPTE-TT, iTT (P.2) | core (interchange) | every format's reader: cues sorted, positive, not overlapping, text the model accepts; writing them back in the format works |
+| `audio_post` | an AAF (MS-CFB) or OMF (Bento) container (P.2) | core (interchange) | the test readers refuse with a ParseError or give values inside the input |
 | `kys` | Premiere keyboard shortcuts | keymap | harness only |
 | `cube`, `cdl` | `.cube` LUT, ASC CDL `.cc` / `.ccc` / `.cdl` | colour | write → parse → write is stable |
 | `ai_sse` | an AI provider's response body | AI platform | SSE / NDJSON decoding does not depend on how the bytes arrive; four chat adapters; error bodies |

@@ -10,7 +10,9 @@
 #include <wabcut/model/ProjectState.h>
 #include <wabcut/model/Sequence.h>
 #include <wabcut/model/Time.h>
+#include <wabcut/model/TimeInterpolation.h>
 #include <wabcut/playback/video/CaptionRedaction.h>
+#include <wabcut/playback/video/MotionAnalysis.h>
 #include <wabcut/render/GraphicRaster.h>
 #include <wabcut/render/Caption.h>
 #include <wabcut/render/PreparedComposite.h>
@@ -55,6 +57,14 @@ struct LayerSpec {
     double redactionAspect = 16.0 / 9.0;
     /// Stack effects bypassed because the renderer cannot run them (unknown id, newer version, wrong kind).
     int bypassedEffects = 0;
+    /// The clip's input colour space (I.9, Clip::inputColorSpace, else the camera log its media's metadata names when
+    /// the project auto-detects log; unset = Auto from the frame's tags). Managed projects read the frame through it,
+    /// Direct Rec.709 converts (tone-maps) such clips into Rec.709, Disable Color Management ignores it.
+    std::optional<InputColorSpace> inputSpace;
+    /// 0.2 field options (model/FieldOptions.h): how the clip shows its frames' lines - deinterlaced (one field kept,
+    /// both fields at the field rate) or blended (Flicker Removal). Set on the layers that draw a frame or a nested
+    /// canvas; the groups Time Interpolation and the stabilizers make hand it to the frames inside them.
+    FieldRendering fields;
     /// Set on the first layer of a transition group (see render::LayerTransition).
     std::optional<render::LayerTransition> transition;
     /// A title clip (C.4 generator media): what render::TitleRenderer draws, at the frame's curve time. Nothing
@@ -86,13 +96,54 @@ struct LayerSpec {
     /// A nested group that is the Track Matte of the next layer of its level (0.1.2): the matte track's clip at this
     /// time. Not drawn; buildCompositeLayers() hands its composite to that layer's TrackMatte effect.
     bool matte = false;
+    /// 0.2: with `matte`, the next layer's library effect (its index in that layer's `effects`) that reads this group as
+    /// its second picture (Echo's echoes, Gradient Wipe's or Difference Matte's layer of another track); -1 = the layer's
+    /// Track Matte Keys.
+    int matteEffect = -1;
     /// The nested and multicam clips leading to this layer, outermost first (null at the top level): a redaction that
     /// excepts any of them does not apply (docs/internal/c8-nested-multicam-handoff.md). Shared by the layers of one level.
     std::shared_ptr<const std::vector<ClipId>> nestPath;
     /// The decoder this layer reads from (sessionKey()): its clip id at the top level; inside nested clips a key of the
     /// path too, since one nested sequence can show twice at different times.
     std::uint64_t decodeKey = 0;
+
+    /// P.2 Time Interpolation (docs/motion.md): set on the group (`nested`, two children, a canvas of the stream's
+    /// displayed size) that stands for a retimed clip whose Frame Blending or Optical Flow decides its picture. Its
+    /// `sourceTime` is the exact source time; the first child decodes the frame containing it, the second the frame
+    /// after that one (interpolationNextTime). buildCompositeLayers mixes the two by where `sourceTime` lies between their
+    /// PTS - a cross dissolve, or a flow mix along the motion between them - and places the group with the clip's
+    /// Motion, Opacity, effects, redactions and transition.
+    std::optional<TimeInterpolation> interpolation;
+    /// P.2: the second frame of an interpolation group. Its sourceTime is a first guess (one nominal frame on): the
+    /// scheduler and export decode the frame that follows the first child's.
+    bool interpolationSecond = false;
+    /// P.2 stabilizers (Warp Stabilizer, Rolling Shutter Repair): the warp of this layer's frame inside its clip's
+    /// stabilizer group (render::CompositeLayer::warp, fractions of the frame); identity elsewhere. The group (a canvas of
+    /// the stream's displayed size) carries the clip's Motion, effects (Stabilize, Crop's crop first) and transition.
+    std::array<double, 9> warp{1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0};
+    /// P.2: a Bars and Tone or Universal Counting Leader picture (model/Synthetic.h) of `item` at media time
+    /// `sourceTime`, drawn at `fillSize` (render::syntheticPicture). Nothing is decoded for it.
+    bool syntheticPicture = false;
 };
+
+/// P.2: the source time of the frame after `first` (its PTS plus its duration: the next frame's PTS).
+inline Ticks interpolationNextTime(const media::VideoFrame& first) { return first.pts + first.duration; }
+
+/// P.2: where `exact` lies between frames `a` and `b` (0 at a's PTS, 1 at b's), snapped to 0 or 1 within 1/1024; 0 when
+/// `b` is missing or not after `a`.
+double interpolationWeight(Ticks exact, const media::VideoFrame& a, const media::VideoFrame& b);
+
+/// P.2: the picture of `spec` (a decodable media layer) a motion analysis reads at source time `time`, placed with the
+/// spec's transform (`placed`) or filling a canvas of the stream's displayed size (identity). Null when the layer has
+/// nothing to decode (no file, a generated layer).
+std::optional<MotionPicture> motionPictureOf(const LayerSpec& spec, Ticks time, bool placed);
+
+/// P.2: the motion analyses the composite of `specs` needs with these decoded `frames` (frames[j] for specs[j], as
+/// buildCompositeLayers takes them), `canvas` the top level's: Optical Flow interpolation groups whose frames do not
+/// coincide with the source time, and Morph Cut pairs. The scheduler waits for these (MotionAnalyzer) before it
+/// publishes; tests list them.
+std::vector<MotionRequest> motionRequestsOf(const std::vector<LayerSpec>& specs,
+                                            const std::vector<media::VideoFrame>& frames, render::CanvasSize canvas);
 
 /// The index of the spec after `j` and its nested subtree: the next layer of the same level.
 inline std::size_t nextSibling(const std::vector<LayerSpec>& specs, std::size_t j) {
@@ -197,7 +248,7 @@ ResolvedSource resolveSource(const MediaItem& item, const PreviewSettings& previ
 
 /// Whether `spec` needs a decoded frame (false for generated layers such as titles, and for nested groups).
 inline bool needsDecode(const LayerSpec& spec) {
-    return !spec.title && !spec.caption && !spec.nested && !spec.graphic && !spec.fill;
+    return !spec.title && !spec.caption && !spec.nested && !spec.graphic && !spec.fill && !spec.syntheticPicture;
 }
 
 /// Visible video layers of `sequence` at `time`, bottom (V1) to top, following the model's evaluator
@@ -234,11 +285,51 @@ void evaluateVideoLayers(const ProjectState& project, const Sequence& sequence, 
                          std::vector<LayerSpec>& out, bool cullOccluded = true,
                          const PreviewSettings* preview = nullptr, const CaptionSettings* captions = nullptr);
 
+/// The compositor's form of a video transition at `progress` (0..1 over its length, before its Start and End are
+/// applied): the kind and options its descriptor's parameters give (render::LayerTransition, render/reference/
+/// Transitions.h); user colours become linear light, the seed of random patterns is the transition's id. nullopt for
+/// an id the compositor does not implement (shown as a plain cut).
+std::optional<render::LayerTransition> transitionMixAt(const Transition& transition, double progress);
+
+/// 0.2: what an Animations transition (model/Animations.h: Pop, Spin, Flip...) does to the layer it animates.
+struct LayerAnimation {
+    render::Vec2 offset{};        ///< added to the layer's position (sequence pixels)
+    double scale = 1.0;           ///< times its scale
+    double rotationDegrees = 0.0; ///< added to its rotation
+    double opacity = 1.0;         ///< times its opacity
+    /// After its own effects: Basic 3D, then Transform keeping Fold's hinge edge in place (Flip, Fold); Block Dissolve.
+    std::vector<render::LayerEffect> effects;
+};
+/// The animation of an Animations transition at `progress` (0..1 over its length, before Start and End are applied):
+/// animating in (an In point, the incoming clip of an edit point) or, with `out`, out (an Out point: the In animation
+/// reversed, turns carrying on). `canvas` is the level's, `frame` the animated layer's frame (Basic 3D's). Surprise Me
+/// that was never resolved animates as its id picks. nullopt for any other transition.
+std::optional<LayerAnimation> transitionAnimationAt(const Transition& transition, double progress, bool out,
+                                                    render::CanvasSize canvas, render::CanvasSize frame);
+
 /// Source time of `clip` at timeline time `t`, also outside its range (transition handles): Clip::sourceTimeAt
 /// without the clamp to the clip's own source range (never negative). A freeze frame shows its source In.
 Ticks sourceTimeAround(const Clip& clip, Ticks t);
 /// Curve time of `clip` at `t`, also outside its range (Clip::curveTimeAt extended like sourceTimeAround).
 Ticks curveTimeAround(const Clip& clip, Ticks t);
+
+/// What a few library effects read besides the curve time (0.2, docs/effects.md): the sequence's frame rate (the
+/// Transform effect's shutter, Timecode), times and names (Timecode, Clip Name) and the canvas the text effects draw on.
+/// Without a context those effects draw nothing extra (no motion blur, no text).
+struct EffectContext {
+    Rate frameRate{};
+    bool dropFrame = false;
+    render::CanvasSize canvas{};
+    Ticks clipTime{};          ///< time since the clip's start
+    Ticks sourceTime{};        ///< the media time shown
+    std::optional<Ticks> mediaStartTimecode;
+    std::string clipName;      ///< in the sequence
+    std::string projectClipName;
+    std::string fileName;
+    /// The project the clip is in: Image Matte Key reads its still image item (null: no image).
+    const ProjectState* project = nullptr;
+};
+
 /// The stack effects of `clip` the compositor implements, evaluated at `curveTime`; `bypassed` counts the
 /// enabled instances it cannot run. A title's "wabcut.title.style" contributes its shadow (a Drop Shadow at its
 /// place in the stack). A colour grade ("wabcut.color.grade") is evaluated whole (color::evaluateGrade: curves baked
@@ -246,9 +337,10 @@ Ticks curveTimeAround(const Clip& clip, Ticks t);
 /// (I.6) evaluate through render::maskSpecAt; `frameAspect` = the frame's displayed width / height. `mediaTime` = the
 /// media time the frame shows (Clip::sourceTimeAt): AI object mattes are looked up there, not at the curve time, so a
 /// clip remapped or frozen after its matte was made still shows the matte of the frame on screen (AI-14 review).
+/// `context`: what the time and text effects need (0.2, EffectContext).
 void evaluateEffects(const Clip& clip, Ticks curveTime, std::vector<render::LayerEffect>& out, int& bypassed,
                      const color::LutResolver* luts = nullptr, double frameAspect = 16.0 / 9.0,
-                     std::optional<Ticks> mediaTime = std::nullopt);
+                     std::optional<Ticks> mediaTime = std::nullopt, const EffectContext* context = nullptr);
 
 /// The redactions of `clip`'s media covering media time `sourceTime` and not excepted for the clip, evaluated there.
 /// With the stream's `frameRate`, also those marking any moment of the frame on screen at `sourceTime` (the frame
@@ -276,8 +368,18 @@ render::TitleStyle evaluateTitle(const MediaItem& title, const Clip& clip, Ticks
 /// A frame smaller than its media's stream (a proxy, a reduced-resolution decode) is placed exactly where the
 /// original would be: Motion is defined in original pixels, so its scale grows and its anchor shrinks by the
 /// height ratio, and the frame's pixel aspect (kept by proxies and downscales) absorbs any width rounding.
+///
+/// P.2: flow mixes (Optical Flow interpolation groups, Morph Cut) take their motion from `motion` (null, or no motion
+/// there: they mix as cross dissolves); `canvas` is the top level's size (Morph Cut analyses on it; empty: no Morph
+/// Cut motion).
 void buildCompositeLayers(const std::vector<LayerSpec>& specs, std::vector<media::VideoFrame>& frames,
-                          std::vector<render::CompositeLayer>& out);
+                          std::vector<render::CompositeLayer>& out, MotionSource* motion = nullptr,
+                          render::CanvasSize canvas = {0, 0});
+
+/// P.2: the Morph Cut analyses `sequence`'s video tracks (the top level) need, for the background analysis Premiere
+/// starts as soon as the transition is applied (the same requests buildCompositeLayers makes there).
+std::vector<MotionRequest> morphCutRequests(const ProjectState& project, const Sequence& sequence,
+                                            const PreviewSettings* preview = nullptr);
 
 /// The Motion transform that shows a `frameHeight`-pixel-high frame of a stream `streamHeight` pixels high exactly
 /// where the full-size frame would be (identity when they match).

@@ -9,7 +9,10 @@ namespace wabcut {
 bool ClipContent::operator==(const ClipContent& o) const {
     const bool sameGraphic = graphic == o.graphic || (graphic && o.graphic && *graphic == *o.graphic);
     return name == o.name && properties == o.properties && effects == o.effects && timeRemap == o.timeRemap &&
-           unknownSource == o.unknownSource && channels == o.channels && sameGraphic && blendMode == o.blendMode;
+           unknownSource == o.unknownSource && channels == o.channels && sameGraphic && blendMode == o.blendMode &&
+           scaleToFrame == o.scaleToFrame && holdFilters == o.holdFilters &&
+           timeInterpolation == o.timeInterpolation && inputColorSpace == o.inputColorSpace &&
+           fieldOptions == o.fieldOptions;
 }
 
 // Direction-aware source bookkeeping. A forward clip shows [sourceIn, sourceOut) from its head to its tail;
@@ -196,7 +199,9 @@ std::optional<Ticks> Clip::timelineTimeOfSourceTime(Ticks source) const {
 
 std::optional<Ticks> Clip::timelineTimeOfCurveTime(Ticks curveTime) const {
     std::optional<Ticks> t;
-    if (isFreeze() || isRemapped()) {
+    if (isFreeze() && content().holdFilters) {
+        t = curveTime == sourceIn ? std::optional<Ticks>(start()) : std::nullopt; // P.2: Hold Filters holds one curve time
+    } else if (isFreeze() || isRemapped()) {
         t = start() + (curveTime - sourceIn);
     } else {
         const Ticks offset = reversed ? (sourceOut() - Ticks{1}) - curveTime : curveTime - sourceIn;

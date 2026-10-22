@@ -1,0 +1,1 @@
+2{"name":"Twirl","type":"scale","duration":254016000000,"effects":[{"id":1,"effect":"wabcut.distort.twirl","params":{"angle":{"value":90}},"masks":[]}]}

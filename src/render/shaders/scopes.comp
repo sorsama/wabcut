@@ -9,12 +9,13 @@
 layout(local_size_x = 16, local_size_y = 16) in;
 
 layout(std140, binding = 0) uniform ScopeParams {
-    ivec4 size;    // x, y = canvas pixels; z = step; w = output transform (0 Rec.709, 1 sRGB, 2 linear)
+    ivec4 size;    // x, y = canvas pixels; z = step; w = output transform (0 Rec.709, 1 sRGB, 2 linear; I.9: 3 PQ, 4 HLG)
     ivec4 dims;    // x = columns, y = levels, z = vector size, w = mode (0 accumulate, 1 clear)
     vec4 zoom;     // x = vectorscope zoom; y = total bins (clear mode); z = 1 when the texture is stored bottom-up;
                    // w = invocations per row (clear mode)
     ivec4 waves;   // offsets of the luma, R, G, B waveforms
     ivec4 waves2;  // offsets of the Cb, Cr waveforms, the vectorscope, the histograms (R, G, B, Y)
+    vec4 hdr;      // I.9, size.w 3 (PQ) / 4 (HLG): x = reference white (nits), y = peak (nits), z = HLG system gamma
 } p;
 
 layout(binding = 1) uniform sampler2D canvas;
@@ -34,6 +35,32 @@ float encode(float l, int t)
         return l < b ? 4.5 * l : a * pow(l, 0.45) - (a - 1.0);
     }
     return l;
+}
+
+// I.9: an HDR project's working value (linear Rec.2020, 1.0 = the reference white) as PQ code values or the HLG signal
+// (color::nitsToPq, color::displayNitsToHlg).
+float nitsToPq(float nits)
+{
+    float y = pow(clamp(nits / 10000.0, 0.0, 1.0), 0.1593017578125);
+    return pow((0.8359375 + 18.8515625 * y) / (1.0 + 18.6875 * y), 78.84375);
+}
+
+float hlgOetf(float e)
+{
+    e = max(e, 0.0);
+    return e <= 1.0 / 12.0 ? sqrt(3.0 * e) : 0.17883277 * log(12.0 * e - 0.28466892) + 0.55991073;
+}
+
+vec3 encodeHdr(vec3 c, int t)
+{
+    vec3 nits = max(c, vec3(0.0)) * p.hdr.x;
+    if (t == 3)
+        return vec3(nitsToPq(nits.r), nitsToPq(nits.g), nitsToPq(nits.b));
+    float peak = p.hdr.y;
+    float gamma = p.hdr.z;
+    float yd = max(dot(nits, vec3(0.2627, 0.6780, 0.0593)), 0.0);
+    float k = yd > 0.0 ? pow(yd / peak, (1.0 - gamma) / gamma) / peak : 0.0;
+    return vec3(hlgOetf(nits.r * k), hlgOetf(nits.g * k), hlgOetf(nits.b * k));
 }
 
 int level(float v, int levels)
@@ -61,9 +88,10 @@ void main()
     int ty = p.zoom.z > 0.5 ? p.size.y - 1 - y : y;
     vec4 c = texelFetch(canvas, ivec2(x, ty), 0); // premultiplied linear: over black, as the monitor shows it
     int t = p.size.w;
-    float r = encode(c.r, t);
-    float g = encode(c.g, t);
-    float b = encode(c.b, t);
+    vec3 e = t >= 3 ? encodeHdr(c.rgb, t) : vec3(encode(c.r, t), encode(c.g, t), encode(c.b, t));
+    float r = e.r;
+    float g = e.g;
+    float b = e.b;
     int columns = p.dims.x;
     int levels = p.dims.y;
     int vsize = p.dims.z;

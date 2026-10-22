@@ -317,6 +317,9 @@ Json toJson(const ChangeSet& changes) {
     if (changes.templatesChanged) {
         out["templatesChanged"] = true;
     }
+    if (changes.textStylesChanged) {
+        out["textStylesChanged"] = true;
+    }
     return out;
 }
 

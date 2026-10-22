@@ -6,6 +6,7 @@
 
 #include <wabcut/model/BuiltinTemplates.h>
 #include <wabcut/model/GamingOps.h>
+#include <wabcut/model/Resolve.h>
 
 #include <algorithm>
 #include <cmath>
@@ -101,9 +102,12 @@ public:
                 continue;
             }
             for (const Clip& clip : t->clips) {
-                const MediaItem* item = m_c.state().findMedia(clip.media);
-                if (item && !item->isGenerator() && std::find(todo.begin(), todo.end(), clip.media) == todo.end()) {
-                    todo.push_back(clip.media);
+                // 0.2: a nested or multicam clip is measured through the media it plays (its active angles).
+                for (const MediaId media : mediaPlayedBy(m_c.state(), clip)) {
+                    const MediaItem* item = m_c.state().findMedia(media);
+                    if (item && !item->isGenerator() && std::find(todo.begin(), todo.end(), media) == todo.end()) {
+                        todo.push_back(media);
+                    }
                 }
             }
         }
@@ -452,8 +456,9 @@ void registerGamingCommands(CommandRegistry& registry) {
          "\"apply\" it only lists the ranges (the preview: nothing changes); review them, then call again with \"apply\": "
          "true (the same detection) or with the \"ranges\" to remove. Removing ripple-deletes on every unlocked track and "
          "the captions in one undo step; markers move with the material. Listens to the gameplay track (the lowest video "
-         "track with media) and the unmuted audio tracks unless \"tracks\" says otherwise. Media the host cannot measure is "
-         "never cut.",
+         "track with media or a nested clip) and the unmuted audio tracks unless \"tracks\" says otherwise. Nested and "
+         "multicam clips are measured through what they show and play (the active angle) and cut in place, staying "
+         "nested / multicam. Media the host cannot measure is never cut.",
          Capability::EditSequence,
          withSequence({{"minSeconds", secondsParam("Shortest stretch that counts. Default 3.", 0.5, 3600.0)},
                        {"sensitivity", schema::number("0..1: higher finds more dead time. Default 0.5.", 0.0, 1.0)},

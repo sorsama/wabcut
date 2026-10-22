@@ -1,5 +1,7 @@
 #include <wabcut/render/GpuScopes.h>
 
+#include <wabcut/color/ColorSpaces.h>
+
 #include <QFile>
 #include <QMatrix4x4>
 
@@ -19,16 +21,19 @@ struct ScopeUniforms {
     float zoom[4];
     std::int32_t waves[4];
     std::int32_t waves2[4];
+    float hdr[4]; ///< I.9: reference white, peak, HLG system gamma
 };
-static_assert(sizeof(ScopeUniforms) == 80);
+static_assert(sizeof(ScopeUniforms) == 96);
 
 // shaders/output.vert + output.frag (the fallback's downsampling pass).
 struct OutputUniforms {
     float cornerToClip[16];
     float uvXform[4];
     std::int32_t mode[4];
+    float toOutput[16]; ///< I.9 (output.frag): working -> Rec.2020
+    float cm[4];        ///< I.9: reference white, HLG peak, HLG system gamma, output LUT size
 };
-static_assert(sizeof(OutputUniforms) == 96);
+static_assert(sizeof(OutputUniforms) == 176);
 
 constexpr int kGroup = 16;
 
@@ -85,6 +90,7 @@ struct GpuScopes::Impl {
     std::unique_ptr<QRhiBuffer> quad;
     std::unique_ptr<QRhiBuffer> outputUniforms;
     std::unique_ptr<QRhiShaderResourceBindings> outputSrb;
+    std::unique_ptr<QRhiTexture> dummy3d; // output.frag's LUT binding (I.9), unused here
     std::unique_ptr<QRhiGraphicsPipeline> outputPipeline;
     QRhiTexture* outputCanvas = nullptr;
     bool quadUploaded = false;
@@ -92,6 +98,7 @@ struct GpuScopes::Impl {
 
     bool pending = false;
     color::ScopeSettings settings;
+    int scale = 0; // ScopeData::scale of the request
     QSize canvasPixels;
     int step = 1;
     std::function<void(color::ScopeData)> done;
@@ -184,7 +191,8 @@ bool GpuScopes::Impl::ensureFallback(QRhiTexture* canvas, QSize smallSize) {
                                           QRhiSampler::ClampToEdge));
             sampler->create();
         }
-        if (!quad->create() || !outputUniforms->create()) {
+        dummy3d.reset(rhi->newTexture(QRhiTexture::RGBA8, 1, 1, 1, 1, QRhiTexture::ThreeDimensional));
+        if (!quad->create() || !outputUniforms->create() || !dummy3d->create()) {
             return false;
         }
         quadUploaded = false;
@@ -194,7 +202,9 @@ bool GpuScopes::Impl::ensureFallback(QRhiTexture* canvas, QSize smallSize) {
         outputSrb.reset(rhi->newShaderResourceBindings());
         outputSrb->setBindings({QRhiShaderResourceBinding::uniformBuffer(0, stages, outputUniforms.get()),
                                 QRhiShaderResourceBinding::sampledTexture(1, QRhiShaderResourceBinding::FragmentStage, canvas,
-                                                                          sampler.get())});
+                                                                          sampler.get()),
+                                QRhiShaderResourceBinding::sampledTexture(2, QRhiShaderResourceBinding::FragmentStage,
+                                                                          dummy3d.get(), sampler.get())});
         if (!outputSrb->create()) {
             return false;
         }
@@ -253,6 +263,7 @@ void GpuScopes::Impl::deliverCompute() {
         pixels += n;
     }
     d.pixels = pixels;
+    d.scale = scale;
     if (done) {
         auto callback = std::move(done);
         done = nullptr;
@@ -281,6 +292,7 @@ void GpuScopes::Impl::deliverFallback() {
     d.sourceWidth = canvasPixels.width();
     d.sourceHeight = canvasPixels.height();
     d.step = step;
+    d.scale = scale;
     if (done) {
         auto callback = std::move(done);
         done = nullptr;
@@ -315,6 +327,7 @@ void GpuScopes::releaseResources() {
     i.small.reset();
     i.quad.reset();
     i.outputUniforms.reset();
+    i.dummy3d.reset();
     i.sampler.reset();
     i.boundCanvas = nullptr;
     i.outputCanvas = nullptr;
@@ -323,7 +336,8 @@ void GpuScopes::releaseResources() {
 }
 
 std::expected<void, Error> GpuScopes::record(QRhiCommandBuffer* cb, QRhiTexture* canvas, QSize pixels, OutputTransform transform,
-                                             const color::ScopeSettings& settings, std::function<void(color::ScopeData)> done) {
+                                             const color::ScopeSettings& settings, std::function<void(color::ScopeData)> done,
+                                             std::optional<ScopeHdr> hdr) {
     Impl& i = *m_impl;
     if (!cb || !canvas || pixels.isEmpty()) {
         return std::unexpected(Error{ErrorCode::InvalidArgument, "scopes need a command buffer and a canvas"});
@@ -335,6 +349,12 @@ std::expected<void, Error> GpuScopes::record(QRhiCommandBuffer* cb, QRhiTexture*
     i.canvasPixels = pixels;
     i.step = color::scopeStep(settings, pixels.width(), pixels.height());
     i.done = std::move(done);
+    i.scale = hdr ? (hdr->hlg ? 2 : 1) : 0;
+    // I.9: HDR scopes read the working values as PQ (3) or HLG (4).
+    const std::int32_t code = hdr ? (hdr->hlg ? 4 : 3) : transformCode(transform);
+    const float hdrParams[4] = {static_cast<float>(hdr ? hdr->referenceWhiteNits : 203.0),
+                                static_cast<float>(hdr ? hdr->peakNits : 1000.0),
+                                static_cast<float>(color::hlgSystemGamma(hdr ? hdr->peakNits : 1000.0)), 0.0f};
     const bool yUp = i.rhi->isYUpInFramebuffer();
     if (computeSupported() && !m_forceCpu && i.ensureCompute(canvas)) {
         const Layout l = layoutOf(settings);
@@ -342,7 +362,8 @@ std::expected<void, Error> GpuScopes::record(QRhiCommandBuffer* cb, QRhiTexture*
         u.size[0] = pixels.width();
         u.size[1] = pixels.height();
         u.size[2] = i.step;
-        u.size[3] = transformCode(transform);
+        u.size[3] = code;
+        std::memcpy(u.hdr, hdrParams, sizeof(u.hdr));
         u.dims[0] = settings.columns;
         u.dims[1] = settings.levels;
         u.dims[2] = settings.vectorSize;
@@ -411,8 +432,12 @@ std::expected<void, Error> GpuScopes::record(QRhiCommandBuffer* cb, QRhiTexture*
     u.uvXform[1] = static_cast<float>(yUp ? -sy : sy);
     u.uvXform[2] = static_cast<float>(ox);
     u.uvXform[3] = static_cast<float>(yUp ? 1.0 - oy : oy);
-    u.mode[0] = transformCode(transform);
+    u.mode[0] = code; // output.frag: 3 = OUT_PQ, 4 = OUT_HLG
     u.mode[1] = 0; // opaque: over black, like the monitor
+    for (int k = 0; k < 4; ++k) {
+        u.toOutput[k * 5] = 1.0f; // identity: the HDR working space is Rec.2020
+    }
+    std::memcpy(u.cm, hdrParams, sizeof(u.cm));
     updates->updateDynamicBuffer(i.outputUniforms.get(), 0, sizeof(u), &u);
     cb->beginPass(i.smallTarget.get(), QColor(0, 0, 0, 255), {1.0f, 0}, updates);
     cb->setGraphicsPipeline(i.outputPipeline.get());

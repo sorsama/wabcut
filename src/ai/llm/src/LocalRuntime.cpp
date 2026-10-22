@@ -141,6 +141,7 @@ std::expected<void, AiError> LocalRuntime::start(const std::filesystem::path& ex
                 "http://127.0.0.1:" + std::to_string(port) + "/v1"};
     ChildProcessOptions child;
     child.executable = executable; child.workingDirectory = executable.parent_path(); child.lowPriority = true;
+    child.aiHelper = true; // the helper policy's CPU cap (Settings > AI)
     child.arguments = {"--model", utf8(weights), "--alias", model.id, "--host", "127.0.0.1", "--port",
         std::to_string(port), "--api-key", std::string(m_key.reveal()), "--jinja", "--ctx-size",
         std::to_string(plan.context), "--parallel", "1", "--threads", std::to_string(plan.threads), "--gpu-layers",

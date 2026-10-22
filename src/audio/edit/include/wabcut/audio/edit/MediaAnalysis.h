@@ -99,8 +99,12 @@ std::shared_ptr<MusicAnalyzer> makeMediaMusicAnalyzer(std::shared_ptr<ai::Analys
 /// most ChannelAnalyzer::kMaxSeconds of the range.
 std::shared_ptr<ChannelAnalyzer> makeMediaChannelAnalyzer();
 
+/// p02 audio: Essential Sound auto-tagging over the project's media: at most SoundTagger::kMaxSeconds from the middle of
+/// the range, decoded to mono at 16 kHz (MediaAudioFeed), classified by SoundClassifier.h.
+std::shared_ptr<SoundTagger> makeMediaSoundTagger();
+
 /// Real media, the user's analysis cache, and the given transcripts (null: energy only). Includes the audio sync,
-/// Music Remix and the channel levels.
+/// Music Remix, the channel levels and the auto-tagger.
 std::shared_ptr<AudioServices> makeMediaAudioServices(std::shared_ptr<const ai::edit::TranscriptProvider> transcripts,
                                                       std::shared_ptr<ai::AnalysisCache> cache);
 

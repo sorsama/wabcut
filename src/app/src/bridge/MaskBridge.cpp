@@ -12,6 +12,7 @@
 #include <wabcut/model/EditOps.h>
 #include <wabcut/model/EditSession.h>
 #include <wabcut/model/Effects.h>
+#include <wabcut/model/FrameScaling.h>
 #include <wabcut/model/ProjectOps.h>
 #include <wabcut/model/RedactionMedia.h>
 #include <wabcut/render/PreparedComposite.h>
@@ -495,7 +496,7 @@ std::optional<MaskBridge::Placement> MaskBridge::placementOf(const ProjectState&
     const ClipProperties& p = clip.properties();
     render::LayerTransform transform;
     transform.position = {p.value(ParamId::PositionX, t), p.value(ParamId::PositionY, t)};
-    transform.scale = p.value(ParamId::Scale, t);
+    transform.scale = p.value(ParamId::Scale, t) * scaleToFrameFactor(project, clip, seq.width, seq.height); // P.2
     transform.rotationDegrees = p.value(ParamId::Rotation, t);
     transform.anchor = {p.value(ParamId::AnchorX, t), p.value(ParamId::AnchorY, t)};
     // As playback places it (Evaluate.cpp): the stream's display rotation before the clip's own motion.

@@ -67,18 +67,27 @@ TEST_CASE("The editing catalog is the built-in one plus the transcript and analy
         CHECK_FALSE(command::builtinCommands().knows(name));
         CHECK(command::unsupportedSchemaKeywords(registry.find(name)->params).empty());
     }
-    // The 15 transcript commands (AI-3, AI-7 transcribe, C.7 captions from the transcript, corrections, speakers),
-    // + analysis.*, clip.splitAtShots (C.5), the 37 audio commands (AI-4, A.3 faders, A.4 enhance / stems, A.5 sync,
+    // The 20 transcript commands (AI-3, AI-7 transcribe, C.7 captions from the transcript, corrections, speakers, p02's
+    // captions.hideProfanity and audio.bleepProfanity, 0.2 transcript.export / transcript.findReplace / transcript.find),
+    // + analysis.*, clip.splitAtShots (C.5), the 44 audio commands (AI-4, A.3 faders, A.4 enhance / stems, A.5 sync,
     // A.6's plugins.list / plugins.scan, A.7's audio.essentialSound / audio.remix and A.8's audio.remixRender /
-    // track.setRecordArm / record.takes / record.useTake, A.9's ten channel commands),
+    // track.setRecordArm / record.takes / record.useTake, A.9's ten channel commands, p02's six submix commands and audio.autoTag),
     // search.footage / search.indexMedia (AI-8)
-    // the 10 colour commands (I.5: color.*, lut.*, cdl.*, scopes.read), analysis.subjects / reframe.createSequence /
+    // the 15 colour commands (I.5: color.*, lut.*, cdl.*, scopes.read; I.9: color.management.*, color.inputSpace.*; 0.2 lut.export),
+    // analysis.subjects / reframe.createSequence /
     // reframe.rerun / shorts.find / shorts.create (AI-9), 11 mask/tracking/redaction commands (I.6),
     // 8 local-runtime/generation/provenance commands (AI-10), roughcut.fromScript / roughcut.swapTake / takes.find /
     // takes.use / autozoom.apply (AI-11), captions.translate / dub.create / narration.create (AI-12),
     // analysis.speakers / multicam.autoSwitch / workflow.podcast (AI-13), mask.objectSelect / mask.refine /
-    // mask.propagate (AI-14), and highlights.find / importChat / toReel / toShort (G.2).
-    CHECK(registry.all().size() == command::builtinCommands().all().size() + 15 + 3 + 37 + 2 + 10 + 5 + 11 + 8 + 5 + 3 + 3 + 3 + 4);
+    // mask.propagate (AI-14), highlights.find / importChat / toReel / toShort (G.2), and effect.analyzeStabilization /
+    // effect.analyzeRollingShutter (P.2), and gen.sfx / redaction.detectFaces (0.2).
+    CHECK(registry.all().size() == command::builtinCommands().all().size() + 20 + 3 + 44 + 2 + 15 + 5 + 11 + 8 + 5 + 3 + 3 + 3 + 4 + 2 + 2);
+    for (const char* name : {"effect.analyzeStabilization", "effect.analyzeRollingShutter"}) {
+        INFO(name);
+        CHECK(registry.knows(name));
+        CHECK_FALSE(command::builtinCommands().knows(name));
+        CHECK(command::unsupportedSchemaKeywords(registry.find(name)->params).empty());
+    }
     for (const char* name : {"roughcut.fromScript", "roughcut.swapTake", "takes.find", "takes.use", "autozoom.apply", "captions.translate",
                              "dub.create", "narration.create", "analysis.speakers", "multicam.autoSwitch", "workflow.podcast",
                              "mask.objectSelect", "mask.refine", "mask.propagate"}) {
@@ -89,13 +98,14 @@ TEST_CASE("The editing catalog is the built-in one plus the transcript and analy
     for (const char* name : {"mask.add", "mask.update", "mask.remove", "mask.list", "track.mask", "track.transform",
                              "redaction.add", "redaction.update", "redaction.remove", "redaction.override", "redaction.list",
                              "llm.local.status", "llm.local.start", "llm.local.stop", "llm.local.models",
-                             "gen.extend", "gen.broll", "gen.image", "provenance.report"}) {
+                             "gen.extend", "gen.broll", "gen.image", "gen.sfx", "provenance.report", "redaction.detectFaces"}) {
         INFO(name);
         CHECK(registry.knows(name));
         CHECK(command::unsupportedSchemaKeywords(registry.find(name)->params).empty());
     }
     for (const char* name : {"color.grade.set", "color.grade.get", "color.auto", "color.match", "color.matchScene",
-                             "lut.import", "lut.list", "cdl.export", "cdl.import", "scopes.read"}) {
+                             "lut.import", "lut.list", "lut.export", "cdl.export", "cdl.import", "scopes.read", "color.management.get",
+                             "color.management.set", "color.inputSpace.set", "color.inputSpace.get"}) {
         INFO(name);
         CHECK(registry.knows(name));
     }

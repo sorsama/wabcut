@@ -5,6 +5,7 @@
 add_library(wabcut_audio_edit STATIC
     src/AudioChannelCommands.cpp
     src/AudioCommands.cpp
+    src/AutoTagCommands.cpp
     src/AudioCommandHelpers.h
     src/EssentialSoundCommands.cpp
     src/PluginCommands.cpp
@@ -14,6 +15,8 @@ add_library(wabcut_audio_edit STATIC
     src/GameAudio.cpp
     src/Loudness.cpp
     src/Remix.cpp
+    src/SoundClassifier.cpp
+    src/SubmixCommands.cpp
     src/SyncFft.h
     src/VoiceOver.cpp
     src/VoiceOverCommands.cpp)

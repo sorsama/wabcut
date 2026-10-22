@@ -526,6 +526,45 @@ QString EssentialSoundBridge::run(Json params, const char* label) {
     return {};
 }
 
+QString EssentialSoundBridge::autoTag() {
+    if (!m_controller)
+        return tr("No project");
+    if (m_job.running())
+        return tr("Essential Sound is still working");
+    // p02 audio: the selected clips, or every audio clip of the sequence.
+    Json params = Json::object();
+    if (!m_clips.empty()) {
+        Json ids = Json::array();
+        for (const ClipId id : m_clips)
+            ids.push_back(id.value);
+        params["clips"] = std::move(ids);
+    }
+    setMessage({});
+    setJob(tr("Listening to the clips"), -1);
+    QPointer<EssentialSoundBridge> self(this);
+    const bool started = m_job.start(
+        this, m_controller, services(), {"audio.autoTag", std::move(params), "Auto-tag Audio"},
+        [self](const QString& phase, double progress) {
+            if (self)
+                self->setJob(phase, progress);
+        },
+        [self](const command::CommandResult& result) {
+            if (!self)
+                return;
+            self->setJob({}, 0);
+            if (!result.ok())
+                self->setMessage(commandErrorText(result));
+            else
+                self->setMessage(tr("%n clip(s) tagged", nullptr, result.data.value("tagged", 0)));
+            self->refresh();
+        });
+    if (!started) {
+        setJob({}, 0);
+        return tr("Essential Sound is still working");
+    }
+    return {};
+}
+
 QString EssentialSoundBridge::setType(const QString& type) {
     if (type == QLatin1String("none"))
         return clear();

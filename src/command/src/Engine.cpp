@@ -117,13 +117,20 @@ std::optional<std::string> lockedTrackChange(const ProjectState& before, const P
 
 CommandEngine::CommandEngine(EditSession& session, const CommandRegistry& registry, EnginePolicy policy)
     : m_session(session), m_registry(registry), m_policy(policy) {
-    // Every engine has a clipboard (C.11): the host's, or one of its own.
-    if (!findService<ClipboardServices>(m_policy.services.get())) {
+    // Every engine has a clipboard (C.11) and an effects library (0.2, presets): the host's, or one of its own.
+    const bool clipboard = findService<ClipboardServices>(m_policy.services.get()) != nullptr;
+    const bool effects = findService<EffectLibraryServices>(m_policy.services.get()) != nullptr;
+    if (!clipboard || !effects) {
         std::vector<std::shared_ptr<CommandServices>> parts;
         if (m_policy.services) {
             parts.push_back(m_policy.services);
         }
-        parts.push_back(std::make_shared<ClipboardServices>());
+        if (!clipboard) {
+            parts.push_back(std::make_shared<ClipboardServices>());
+        }
+        if (!effects) {
+            parts.push_back(std::make_shared<EffectLibraryServices>());
+        }
         m_policy.services = std::make_shared<ServiceBundle>(std::move(parts));
     }
 }

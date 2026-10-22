@@ -263,7 +263,7 @@ Popup {
                 compact: true
                 iconName: "upload"
                 text: qsTr("Export…")
-                tooltip: qsTr("Save your changes to the shortcuts as a .json file")
+                tooltip: qsTr("Save your shortcuts as a Premiere Pro key set (.kys) or your changes as Wabcut shortcuts (.json)")
                 onClicked: exportDialog.open()
             }
             PillButton {
@@ -777,11 +777,14 @@ Popup {
     FileDialog {
         id: exportDialog
         fileMode: FileDialog.SaveFile
-        defaultSuffix: "json"
-        nameFilters: [qsTr("Wabcut shortcuts (*.json)")]
+        defaultSuffix: selectedNameFilter.index === 1 ? "kys" : "json"
+        // P.2: Premiere's Keyboard Shortcuts > Save As writes a .kys that Premiere (and Wabcut) can import.
+        nameFilters: [qsTr("Wabcut shortcuts (*.json)"), qsTr("Premiere Pro key sets (*.kys)")]
         onAccepted: {
             const error = Shortcuts.exportOverrides(selectedFile)
-            dialog.say(error !== "" ? error : qsTr("Exported your shortcut changes"), error !== "" ? "danger" : "success")
+            const kys = selectedFile.toString().toLowerCase().endsWith(".kys")
+            dialog.say(error !== "" ? error : kys ? qsTr("Saved your shortcuts as a Premiere Pro key set")
+                                                  : qsTr("Exported your shortcut changes"), error !== "" ? "danger" : "success")
         }
     }
 }

@@ -122,7 +122,8 @@ Window {
             const loaders = { effects: effectsLoader, captions: captionsLoader, audio: audioToolsLoader,
                               markers: markersLoader, shorts: shortsLoader, generate: generateLoader, takes: takesLoader,
                               essential: essentialLoader, review: reviewLoader, graphics: graphicsLoader,
-                              highlights: highlightsLoader }
+                              highlights: highlightsLoader, mediaBrowser: mediaBrowserLoader,
+                              metadata: metadataLoader, production: productionLoader }
             loaders[key]?.withItem(panel => panel.focusContent())
         })
     }
@@ -156,7 +157,8 @@ Window {
     readonly property var lazyPanels: [effectsLoader, captionsLoader, audioToolsLoader, markersLoader, generateLoader,
                                        shortsLoader, takesLoader, essentialLoader, reviewLoader, scopesLoader,
                                        captionStyleLoader, frameInspectorLoader, mixerLoader, exportLoader, colorLoader,
-                                       graphicsLoader, highlightsLoader]
+                                       graphicsLoader, highlightsLoader, mediaBrowserLoader, metadataLoader,
+                                       productionLoader]
     readonly property bool panelsReady: lazyPanels.every(p => p.ready)
     onPanelsReadyChanged: {
         if (panelsReady)
@@ -196,9 +198,18 @@ Window {
     // Panels declare their KeymapScope; the dispatcher resolves keys against the focused panel and emits
     // commands, routed here: project file commands (ProjectFile), playback (Play/Stop, J/K/L), the timeline view
     // (zoom, tools, snap), then ProjectController (history, selection, playhead, marks).
+    // 0.2: Selection Follows Playhead is remembered between sessions (Premiere's menu switch).
+    Connections {
+        target: ProjectController
+        function onSelectionFollowsPlayheadChanged() {
+            Preferences.selectionFollowsPlayhead = ProjectController.selectionFollowsPlayhead
+        }
+    }
+
     Component.onCompleted: {
         UiProfile.mark("Main.qml completed") // M5n: startup timings (printed with WABCUT_UI_PROFILE)
         KeymapDispatcher.window = window
+        ProjectController.selectionFollowsPlayhead = Preferences.selectionFollowsPlayhead // 0.2
         // The workspace chosen in the welcome (M5j) or in Settings: that one, or the first one made from the preset it
         // chose; never one made from Export. Else the first workspace. Its floating windows come once the editor shows.
         let start = Workspaces.startId(Preferences.startWorkspace)
@@ -257,6 +268,9 @@ Window {
             return // Extensions runs these (C.12: KeymapDispatcher.commandTriggered)
         if (window.sourceHasFocus() && SourceMonitor.runCommand(commandId))
             return
+        // P.2 (E6): the monitors' keys (Loop, Play In to Out, Nudge Selected Object, ...): the Monitors bridge.
+        if (Monitors.runCommand(commandId, window.sourceHasFocus()))
+            return
         // M5o (C.13): New Layer (Ctrl+T ...), Bring / Send, Select Next / Previous Layer.
         if (commandId.startsWith("graphics.") && Graphics.runCommand(commandId)) {
             if (commandId.startsWith("graphics.new"))
@@ -266,7 +280,17 @@ Window {
         // Gaming (M5o): Slow-mo / Punch-in at Playhead.
         if (commandId.startsWith("moments.") && Moments.runCommand(commandId))
             return
+        // P.2 (E5): Premiere's editing and sequence commands (Video Options, Preferences, ...): the Editing bridge.
+        if (Editing.runCommand(commandId))
+            return
         switch (commandId) {
+        // 0.2: Premiere's Show Video / Audio Fade Handles (Timeline Display Settings).
+        case "timeline.showVideoFadeHandles":
+            Preferences.showVideoFadeHandles = !Preferences.showVideoFadeHandles
+            return
+        case "timeline.showAudioFadeHandles":
+            Preferences.showAudioFadeHandles = !Preferences.showAudioFadeHandles
+            return
         // 0.1.1: Sequence > Render In to Out (Enter); Enter again while rendering stops it.
         case "sequence.renderInToOut":
             if (MediaReadiness.rendering)
@@ -318,6 +342,16 @@ Window {
         case "window.effects":
             window.showBrowserPanel("effects")
             return
+        case "window.mediaBrowser": // 0.2: Shift+8
+            window.showBrowserPanel("mediaBrowser")
+            return
+        // 0.2: the Effects panel's custom items (EffectPresets: effects.newCustomBin / effects.deleteCustomItem).
+        case "effects.newCustomBin":
+            EffectPresets.newCustomBin("")
+            return
+        case "effects.deleteCustomItem":
+            EffectPresets.deleteCurrentItem()
+            return
         case "window.timeline":
             window.revealPanel("timeline")
             Qt.callLater(() => timeline.focusLanes())
@@ -327,6 +361,12 @@ Window {
             return
         case "window.programMonitor":
             monitorArea.show("program")
+            return
+        // p02 audio: Shift+6 / Shift+9, the Audio Track Mixer and the Audio Clip Mixer (the mixer panel's two views).
+        case "window.audioTrackMixer":
+        case "window.audioClipMixer":
+            window.revealPanel("mixer")
+            mixerLoader.withItem(panel => panel.view = commandId === "window.audioClipMixer" ? 1 : 0)
             return
         // Premiere's workspace keys (Alt+Shift+1..9) onto the first workspace made from the matching preset.
         case "window.workspace3":
@@ -351,6 +391,10 @@ Window {
             return
         case "file.exportMedia":
             window.openPreset("export")
+            return
+        case "file.sendToMediaEncoder": // 0.2: into the export queue, waiting for Start Queue
+            window.openPreset("export")
+            exportLoader.withItem(panel => panel.sendToQueue())
             return
         case "clip.speedDuration":
             speedDialog.openDialog()
@@ -447,7 +491,15 @@ Window {
         id: shortcutsDialog
     }
 
+    // P.2 (E6): the monitors' windows and dialogs (qml/monitor/): full screen and transmit output.
+    MonitorHost {}
+
     // Fit Clip (M5h): a four-point Insert/Overwrite whose source and sequence ranges differ.
+    // P.2 (E5): the dialogs of Premiere's editing and sequence commands (qml/editing/).
+    EditingHost {
+        onMessageShown: message => toast.show(message)
+    }
+
     FitClipDialog {
         id: fitClipDialog
         onChosen: (fit, remember) => {
@@ -533,19 +585,42 @@ Window {
     function openProject() {
         whenSaved(() => openDialog.open())
     }
+    // 0.2 (P.3): a project chosen in the Production panel (or File > Open Project Next to This One) opens next to the
+    // ones open and comes into the panels; the others stay loaded with their undo history and unsaved changes.
+    function openProjectFile(url) {
+        ProjectFile.openAlongside(url) // a failure shows as ProjectFile.lastError, like File > Open
+    }
+    // Closes open project `index`, asking first about its unsaved changes (it comes into the panels for that).
+    function closeOpenProject(index) {
+        const project = ProjectFile.openProjects[index]
+        if (!project)
+            return
+        if (!project.dirty) {
+            ProjectFile.closeProject(index)
+            return
+        }
+        if (ProjectFile.switchTo(index))
+            whenSaved(() => ProjectFile.closeProject(ProjectFile.activeProject))
+    }
     function showHome() {
         home.open()
     }
     // File > Import and drops on the Library. A .wabcut project among the files is opened instead.
     function importUrls(urls) {
-        // C.13 (M5o): Lottie animations become graphic clips, with their own report.
+        // C.13 (M5o): Lottie animations become graphic clips, with their own report. 0.2: Photoshop files open Import
+        // Layered File (in turn when several come together).
         const rest = []
+        const layered = []
         for (const url of urls) {
             if (GraphicsImport.isLottie(url))
                 GraphicsImport.importLottie(url)
+            else if (Library.isLayeredFile(url))
+                layered.push(url)
             else
                 rest.push(url)
         }
+        if (layered.length > 0)
+            importLayeredFileDialog.openFor(layered)
         if (rest.length === 0)
             return ({})
         const result = ProjectFile.importFiles(rest)
@@ -554,17 +629,31 @@ Window {
         return result
     }
 
+    // Whether the window may close now. 0.2 (P.3): else every open project with unsaved changes is asked about in turn
+    // (it comes into the panels first); each answer closes it and tries to close the window again.
+    function readyToClose() {
+        if (window.closeConfirmed)
+            return true
+        const pending = ProjectFile.firstDirtyProject()
+        if (pending < 0)
+            return true
+        if (!ProjectFile.switchTo(pending))
+            return false
+        window.whenSaved(() => {
+            if (ProjectFile.openProjects.length > 1)
+                ProjectFile.closeProject(ProjectFile.activeProject)
+            else
+                window.closeConfirmed = true
+            window.close()
+        })
+        return false
+    }
     onClosing: close => {
         // A voice-over pass ends first and keeps its take: it goes into the project, so the save question covers it.
         if (VoiceOver.recording)
             VoiceOver.stop()
-        if (ProjectFile.dirty && !window.closeConfirmed) {
+        if (!window.readyToClose())
             close.accepted = false
-            window.whenSaved(() => {
-                window.closeConfirmed = true
-                window.close()
-            })
-        }
     }
 
     Connections {
@@ -602,6 +691,18 @@ Window {
             text: qsTr("Open Project…")
             command: "file.openProject"
             onTriggered: window.openProject()
+        }
+        // 0.2 (P.3): several projects open at once (the Production panel lists them and switches between them).
+        ContextMenuItem {
+            objectName: "fileMenuOpenAlongside"
+            text: qsTr("Open Project Next to This One…")
+            onTriggered: openAlongsideDialog.open()
+        }
+        ContextMenuItem {
+            objectName: "fileMenuCloseProject"
+            text: qsTr("Close Project")
+            enabled: ProjectFile.openProjects.length > 1
+            onTriggered: window.closeOpenProject(ProjectFile.activeProject)
         }
         ContextMenuItem {
             text: qsTr("Save")
@@ -674,6 +775,37 @@ Window {
             command: "edit.keyboardShortcuts"
             onTriggered: shortcutsDialog.openDialog()
         }
+        // P.2 (E5): Premiere's File > New > Sequence From Clip, Sequence > Sequence Settings and Window > History.
+        ContextMenuItem {
+            objectName: "newSequenceFromClipMenuItem"
+            text: qsTr("New Sequence From Clip")
+            iconName: "clapperboard"
+            command: "file.newSequenceFromClip"
+            enabled: Library.mediaSelected
+            onTriggered: Editing.runCommand("file.newSequenceFromClip")
+        }
+        ContextMenuItem {
+            objectName: "sequenceSettingsMenuItem"
+            text: qsTr("Sequence Settings…")
+            iconName: "sliders-horizontal"
+            command: "sequence.settings"
+            enabled: ProjectController.sequenceNames.length > 0
+            onTriggered: Editing.runCommand("sequence.settings")
+        }
+        ContextMenuItem {
+            objectName: "historyMenuItem"
+            text: qsTr("History")
+            iconName: "undo-2"
+            command: "window.history"
+            onTriggered: Editing.runCommand("window.history")
+        }
+        ContextMenuItem {
+            objectName: "editingPreferencesMenuItem"
+            text: qsTr("Media and Timeline Preferences…")
+            iconName: "settings"
+            command: "edit.preferencesMedia"
+            onTriggered: Editing.runCommand("edit.preferencesMedia")
+        }
         // 0.1.3 panel docking: Window: every panel, checked when it is open in this workspace; choosing one opens it (or
         // shows it where it is).
         ContextMenu {
@@ -734,6 +866,13 @@ Window {
         }
     }
     FileDialog {
+        id: openAlongsideDialog
+        fileMode: FileDialog.OpenFile
+        nameFilters: [qsTr("Wabcut projects (*.wabcut)"), qsTr("All files (*)")]
+        currentFolder: ProjectFile.folder
+        onAccepted: window.openProjectFile(selectedFile)
+    }
+    FileDialog {
         id: saveAsDialog
         property var then: null
         fileMode: FileDialog.SaveFile
@@ -759,6 +898,9 @@ Window {
         id: unsavedDialog
         onSaveChosen: window.saveProject(() => window.continuePending())
         onDiscardChosen: window.continuePending()
+    }
+    ImportLayeredFileDialog {
+        id: importLayeredFileDialog
     }
     ImportReportDialog {
         id: importReportDialog
@@ -1282,6 +1424,8 @@ Window {
                     project: project
                     onImportRequested: importDialog.open()
                     onFilesDropped: urls => window.importUrls(urls)
+                    onMetadataPanelRequested: window.showBrowserPanel("metadata")
+                    onProductionPanelRequested: window.showBrowserPanel("production")
                     opacity: active ? 1 : 0
                     visible: active || opacity > 0
                     enabled: active
@@ -1329,6 +1473,20 @@ Window {
                     enabled: shown
                     Behavior on opacity { NumberAnimation { duration: Theme.durState } }
                     sourceComponent: AudioToolsPanel {}
+                }
+                // 0.2: the Media Browser (camera cards, spanned clips, Ingest).
+                LazyPanel {
+                    id: mediaBrowserLoader
+                    name: "mediaBrowser"
+                    parent: workArea.hostOf("mediaBrowser")
+                    anchors.fill: parent
+                    shown: workArea.panelShown("mediaBrowser")
+                    preload: window.preloadPanels
+                    opacity: shown ? 1 : 0
+                    visible: shown || opacity > 0
+                    enabled: shown
+                    Behavior on opacity { NumberAnimation { duration: Theme.durState } }
+                    sourceComponent: MediaBrowserPanel {}
                 }
                 LazyPanel {
                     id: markersLoader
@@ -1447,6 +1605,37 @@ Window {
                     enabled: shown
                     Behavior on opacity { NumberAnimation { duration: Theme.durState } }
                     sourceComponent: ReviewPanel {}
+                }
+                // 0.2 (P.3): Premiere's Metadata panel (Clip and File sections of the Library's selection).
+                LazyPanel {
+                    id: metadataLoader
+                    name: "metadata"
+                    parent: workArea.hostOf("metadata")
+                    anchors.fill: parent
+                    shown: workArea.panelShown("metadata")
+                    preload: window.preloadPanels
+                    opacity: shown ? 1 : 0
+                    visible: shown || opacity > 0
+                    enabled: shown
+                    Behavior on opacity { NumberAnimation { duration: Theme.durState } }
+                    sourceComponent: MetadataPanel {}
+                }
+                // 0.2 (P.3): Productions and the other open projects.
+                LazyPanel {
+                    id: productionLoader
+                    name: "production"
+                    parent: workArea.hostOf("production")
+                    anchors.fill: parent
+                    shown: workArea.panelShown("production")
+                    preload: window.preloadPanels
+                    opacity: shown ? 1 : 0
+                    visible: shown || opacity > 0
+                    enabled: shown
+                    Behavior on opacity { NumberAnimation { duration: Theme.durState } }
+                    sourceComponent: ProductionPanel {
+                        onOpenProjectRequested: url => window.openProjectFile(url)
+                        onCloseProjectRequested: index => window.closeOpenProject(index)
+                    }
                 }
                 // Scopes (I.5): the Color workspace's left column.
                 LazyPanel {
@@ -1625,6 +1814,14 @@ Window {
                                 return
                             }
                             const mediaId = drop.getDataAsString("application/x-wabcut-media")
+                            // P.2: Alt- or Shift-drag onto a clip is Premiere's Replace Edit.
+                            if (Editing.replaceModifierHeld(false)) {
+                                const p = timelineMediaDrop.mapToItem(timeline.view, drop.x, drop.y)
+                                if (Editing.replaceDrop(timeline.view.clipAt(p.x, p.y), mediaId, false)) {
+                                    drop.accept(Qt.CopyAction)
+                                    return
+                                }
+                            }
                             if (ProjectFile.dropMedia(mediaId, at.time, at.track, !ProjectFile.insertModifierHeld()))
                                 drop.accept(Qt.CopyAction)
                         }
@@ -1684,6 +1881,14 @@ Window {
                             timeline.endDrop(at)
                             if (!at)
                                 return
+                            // P.2: Shift-drag onto a clip is Premiere's Replace Edit (the Source Monitor's clip from its In).
+                            if (Editing.replaceModifierHeld(true)) {
+                                const p = timelineSourceDrop.mapToItem(timeline.view, drop.x, drop.y)
+                                if (Editing.replaceDrop(timeline.view.clipAt(p.x, p.y), "", true)) {
+                                    drop.accept(Qt.CopyAction)
+                                    return
+                                }
+                            }
                             if (SourceMonitor.dropAt(at.time, at.track, !ProjectFile.insertModifierHeld(),
                                                      drop.getDataAsString("application/x-wabcut-source")))
                                 drop.accept(Qt.CopyAction)
@@ -2061,6 +2266,10 @@ Window {
         }
         // C.12 (M5n): forms extensions open (ui.prompt, non-modal), their notifications and crashes.
         ExtensionPromptHost {
+            anchors.fill: parent
+        }
+        // p02 audio: voice-over takes to recover when a project opens (Recover / Discard).
+        TakeRecoveryHost {
             anchors.fill: parent
         }
         Connections {

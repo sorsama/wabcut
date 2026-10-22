@@ -86,6 +86,9 @@ class GraphicsBridge : public QObject {
     Q_PROPERTY(QVariantList layers READ layers NOTIFY graphicChanged FINAL)
     /// The selected layer's id (0: none); the canvas handles select through it too.
     Q_PROPERTY(int selectedLayer READ selectedLayer WRITE setSelectedLayer NOTIFY selectedLayerChanged FINAL)
+    /// 0.2: every selected layer, the selected one first, then the ones Ctrl-clicked into the selection (Align and
+    /// Distribute work on them). Setting selectedLayer selects that one alone.
+    Q_PROPERTY(QVariantList selectedLayers READ selectedLayers NOTIFY selectedLayerChanged FINAL)
     /// The selected layer at the playhead (see the file comment); {} for none.
     Q_PROPERTY(QVariantMap layer READ layer NOTIFY layerChanged FINAL)
     /// The project's brand kit for the pickers: { name, colors: [{ name, color }], fonts: [{ role, family, weight }],
@@ -115,6 +118,10 @@ public:
     QVariantList fields() const { return m_fields; }
     QVariantList layers() const { return m_layers; }
     int selectedLayer() const { return static_cast<int>(m_selectedLayer); }
+    QVariantList selectedLayers() const;
+    /// Ctrl-click in the layer list: adds the layer to the selection or takes it out (the selected one passes to the
+    /// next when it is taken out).
+    Q_INVOKABLE void toggleLayerSelected(int id);
     void setSelectedLayer(int id);
     QVariantMap layer() const { return m_layer; }
     QVariantMap brand() const { return m_brand; }
@@ -149,8 +156,9 @@ public:
 
     // ---- Edit: layers ----
     /// A new layer on top: "text", "rectangle", "ellipse", "shape" (= rectangle), "image" or "group". Without a graphic
-    /// clip selected, a new graphic clip at the playhead (Premiere's New Layer: Text). Selects the layer.
-    Q_INVOKABLE QString addLayer(const QString& kind);
+    /// clip selected, a new graphic clip at the playhead (Premiere's New Layer: Text). Selects the layer. `properties`
+    /// (0.2): a JSON merge patch over the new layer, in the same undo step (the Type tool's { transform: { x, y } }).
+    Q_INVOKABLE QString addLayer(const QString& kind, const QVariantMap& properties = {});
     Q_INVOKABLE QString removeLayer(int layerId);
     /// "forward", "backward", "front", "back" (inside the layer's group).
     Q_INVOKABLE QString moveLayer(int layerId, const QString& where);
@@ -172,6 +180,11 @@ public:
     Q_INVOKABLE QString setRun(int layerId, int run, const QString& key, const QVariant& value);
     /// The whole text of a text layer (one run in the first run's style when it has one run or none).
     Q_INVOKABLE QString setText(int layerId, const QString& text);
+    /// 0.2, type on a path: puts a text layer on a "line", "arc", "circle" or "wave" sized to the canvas, or back on
+    /// lines ("none"); one undo step. Its points move on the Program Monitor (GraphicCanvas).
+    Q_INVOKABLE QString setTextPath(int layerId, const QString& shape);
+    /// "reverse", "perpendicular" or "forceAlignment" of a text layer on a path.
+    Q_INVOKABLE QString setTextPathOption(int layerId, const QString& key, bool on);
     /// A colour: "fill" (a shape's fill or every run of a text), "stroke", "background", "shadow" or "stop:<n>" (a
     /// gradient stop). Merges until endEdit().
     Q_INVOKABLE QString setColor(int layerId, const QString& what, const QString& color);
@@ -262,6 +275,7 @@ private:
     QVariantList m_fields;
     QVariantList m_layers;
     std::uint32_t m_selectedLayer = 0;
+    std::vector<std::uint32_t> m_extraLayers; ///< also selected (Ctrl-click), in the order they were added
     QVariantMap m_layer;
     QVariantMap m_brand;
     QVariantList m_media;

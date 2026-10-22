@@ -4,12 +4,22 @@
 
 #include "Catalog.h"
 
+#include <wabcut/command/SpellingServices.h>
+#include <wabcut/interchange/Docx.h>
 #include <wabcut/model/CaptionOps.h>
+#include <wabcut/model/FinishingOps.h>
+#include <wabcut/model/MediaLocator.h>
+#include <wabcut/model/Spelling.h>
+#include <wabcut/model/TextFind.h>
 
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
 #include <format>
+#include <fstream>
+#include <optional>
+#include <tuple>
 
 namespace wabcut::command {
 
@@ -341,6 +351,262 @@ std::vector<SourceSpan> sourceSpans(ExecutionContext& c, Ticks from, Ticks to, s
     return out;
 }
 
+// --- 0.2: Find and Replace, import of caption files ------------------------------------------------------------
+
+CommandOutput readOnly(ExecutionContext& c, Json data) {
+    CommandOutput out;
+    out.state = c.state();
+    out.data = std::move(data);
+    return out;
+}
+
+/// A match of captions.find: the caption track, the cue and the byte range of the cue's text.
+struct CaptionMatch {
+    CaptionTrackId track;
+    std::size_t cue = 0;
+    std::size_t start = 0;
+    std::size_t end = 0;
+};
+
+/// Every match in the sequence's caption tracks (`only` when given): track order, cue order, position.
+std::vector<CaptionMatch> captionMatches(const Sequence& seq, std::optional<CaptionTrackId> only, std::string_view find,
+                                         TextFindOptions options) {
+    std::vector<CaptionMatch> out;
+    for (const CaptionTrack& t : seq.captionTracks) {
+        if (only && t.id != *only) {
+            continue;
+        }
+        for (std::size_t i = 0; i < t.cues.size(); ++i) {
+            for (const auto& [b, e] : findText(t.cues[i].text, find, options)) {
+                out.push_back(CaptionMatch{t.id, i, b, e});
+            }
+        }
+    }
+    return out;
+}
+
+Json captionMatchJson(ExecutionContext& c, const Sequence& seq, const CaptionMatch& m) {
+    Json out{{"captionTrack", m.track.value}, {"cue", m.cue}, {"start", m.start}, {"end", m.end}};
+    for (const CaptionTrack& t : seq.captionTracks) {
+        if (t.id == m.track && m.cue < t.cues.size()) {
+            out["time"] = c.timecode(t.cues[m.cue].start);
+            out["text"] = t.cues[m.cue].text;
+        }
+    }
+    return out;
+}
+
+Json spellIssueJson(const SpellIssue& issue) {
+    return Json{{"start", issue.start},
+                {"end", issue.end},
+                {"word", issue.word},
+                {"action", std::string(toString(issue.action))},
+                {"suggestions", issue.suggestions}};
+}
+
+TextFindOptions findOptions(ExecutionContext& c) {
+    return TextFindOptions{c.boolean("matchCase", false), c.boolean("wholeWord", false)};
+}
+
+Json findParam() {
+    Json s = schema::string("The text to find (plain text, not a pattern).");
+    s["minLength"] = 1;
+    s["maxLength"] = 1024;
+    return s;
+}
+
+Json replaceParam() {
+    Json s = schema::string("What each match becomes (may be empty).");
+    s["maxLength"] = 1024;
+    return s;
+}
+
+/// A caption file's cue before it is placed: times from the file, text, the speaker's name (timed text only).
+struct FileCue {
+    Ticks start;
+    Ticks end;
+    std::string text;
+    std::string speaker;
+};
+
+constexpr std::uintmax_t kMaxCaptionFileBytes = 16u * 1024u * 1024u;
+
+/// The file's bytes (at most kMaxCaptionFileBytes).
+std::string readCaptionFileBytes(const std::filesystem::path& path) {
+    std::error_code ec;
+    const std::uintmax_t size = std::filesystem::file_size(path, ec);
+    if (ec) {
+        fail(ErrorCode::NotFound, "cannot read \"" + pathToUtf8(path) + "\"", Json{{"path", "/path"}});
+    }
+    if (size > kMaxCaptionFileBytes) {
+        fail(ErrorCode::InvalidParams, "the caption file is larger than 16 MiB", Json{{"path", "/path"}});
+    }
+    std::ifstream in(path, std::ios::binary);
+    std::string bytes(static_cast<std::size_t>(size), '\0');
+    in.read(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    bytes.resize(static_cast<std::size_t>(in.gcount()));
+    return bytes;
+}
+
+/// The text of a caption or transcript file: UTF-8 without a byte order mark or carriage returns; a .docx (0.2
+/// graphics: a transcript exported as a Word document) is read through interchange::readDocxText.
+std::string readCaptionFile(const std::filesystem::path& path) {
+    std::string text = readCaptionFileBytes(path);
+    std::string ext = pathToUtf8(path.extension());
+    std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    if (ext == ".docx") {
+        auto document = interchange::readDocxText(text);
+        if (!document) {
+            fail(ErrorCode::InvalidParams, document.error().message, Json{{"path", "/path"}});
+        }
+        text = std::move(*document);
+    }
+    if (text.starts_with("\xEF\xBB\xBF")) {
+        text.erase(0, 3);
+    }
+    std::erase(text, '\r');
+    return text;
+}
+
+std::vector<std::string> linesOf(std::string_view text) {
+    std::vector<std::string> out;
+    std::size_t start = 0;
+    while (start <= text.size()) {
+        const std::size_t nl = std::min(text.find('\n', start), text.size());
+        out.emplace_back(text.substr(start, nl - start));
+        start = nl + 1;
+    }
+    return out;
+}
+
+std::string trimmed(std::string_view s) {
+    while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) {
+        s.remove_prefix(1);
+    }
+    while (!s.empty() && (s.back() == ' ' || s.back() == '\t')) {
+        s.remove_suffix(1);
+    }
+    return std::string(s);
+}
+
+/// "hh:mm:ss,mmm" / "hh:mm:ss.mmm" / "mm:ss.mmm" (SRT, WebVTT); nullopt when it is not one.
+std::optional<Ticks> clockTime(std::string_view s) {
+    int h = 0;
+    int m = 0;
+    int sec = 0;
+    int ms = 0;
+    char sep = 0;
+    int used = 0;
+    const std::string text(s);
+    if (std::sscanf(text.c_str(), "%d:%d:%d%c%3d%n", &h, &m, &sec, &sep, &ms, &used) == 5 && (sep == ',' || sep == '.') &&
+        used == static_cast<int>(text.size())) {
+    } else if (std::sscanf(text.c_str(), "%d:%d%c%3d%n", &m, &sec, &sep, &ms, &used) == 4 && (sep == ',' || sep == '.') &&
+               used == static_cast<int>(text.size())) {
+        h = 0;
+    } else {
+        return std::nullopt;
+    }
+    if (h < 0 || h > 99 || m < 0 || m > 59 || sec < 0 || sec > 59 || ms < 0) {
+        return std::nullopt;
+    }
+    const std::int64_t millis = ((static_cast<std::int64_t>(h) * 60 + m) * 60 + sec) * 1000 + ms;
+    return Ticks{millis * kTicksPerSecond / 1000};
+}
+
+/// Text without <i>, <b>, <font ...>, <v Speaker> tags (SRT and WebVTT styling).
+std::string withoutTags(std::string_view s) {
+    std::string out;
+    for (std::size_t i = 0; i < s.size(); ++i) {
+        if (s[i] == '<') {
+            const std::size_t close = s.find('>', i);
+            if (close != std::string_view::npos && close - i < 64) {
+                i = close;
+                continue;
+            }
+        }
+        out.push_back(s[i]);
+    }
+    return out;
+}
+
+/// SRT and WebVTT: blocks with a "start --> end" line, the lines after it the text.
+std::vector<FileCue> parseTimedBlocks(const std::vector<std::string>& lines) {
+    std::vector<FileCue> out;
+    for (std::size_t i = 0; i < lines.size(); ++i) {
+        const std::size_t arrow = lines[i].find("-->");
+        if (arrow == std::string::npos) {
+            continue;
+        }
+        const std::string a = trimmed(std::string_view(lines[i]).substr(0, arrow));
+        std::string b = trimmed(std::string_view(lines[i]).substr(arrow + 3));
+        if (const std::size_t space = b.find_first_of(" \t"); space != std::string::npos) {
+            b.resize(space); // WebVTT cue settings
+        }
+        const auto start = clockTime(a);
+        const auto end = clockTime(b);
+        if (!start || !end) {
+            continue;
+        }
+        FileCue cue{*start, *end, {}, {}};
+        std::size_t j = i + 1;
+        for (; j < lines.size() && !trimmed(lines[j]).empty(); ++j) {
+            cue.text += (cue.text.empty() ? "" : "\n") + withoutTags(trimmed(lines[j]));
+        }
+        out.push_back(std::move(cue));
+        i = j;
+    }
+    return out;
+}
+
+/// Premiere's transcript text export (and transcript.export): blocks of "start - end" (timecodes), the speaker when
+/// the block has three lines or more, then the text.
+std::vector<FileCue> parseTimedText(ExecutionContext& c, const std::vector<std::string>& lines) {
+    std::vector<FileCue> out;
+    std::vector<std::string> block;
+    const auto flush = [&] {
+        if (block.size() >= 2) {
+            const std::size_t dash = block[0].find(" - ");
+            if (dash != std::string::npos) {
+                try {
+                    const Ticks start = c.timeValue(Json(trimmed(std::string_view(block[0]).substr(0, dash))), "/path");
+                    const Ticks end = c.timeValue(Json(trimmed(std::string_view(block[0]).substr(dash + 3))), "/path");
+                    FileCue cue{start, end, {}, block.size() >= 3 ? block[1] : std::string()};
+                    for (std::size_t k = block.size() >= 3 ? 2 : 1; k < block.size(); ++k) {
+                        cue.text += (cue.text.empty() ? "" : "\n") + block[k];
+                    }
+                    out.push_back(std::move(cue));
+                } catch (const CommandFailure&) {
+                    // not a timed block: skipped
+                }
+            }
+        }
+        block.clear();
+    };
+    for (const std::string& line : lines) {
+        const std::string t = trimmed(line);
+        if (t.empty()) {
+            flush();
+        } else {
+            block.push_back(t);
+        }
+    }
+    flush();
+    return out;
+}
+
+/// The first `max` bytes of UTF-8 text, cut at a character boundary.
+std::string clippedUtf8(std::string s, std::size_t max) {
+    if (s.size() <= max) {
+        return s;
+    }
+    std::size_t n = max;
+    while (n > 0 && (static_cast<unsigned char>(s[n]) & 0xC0) == 0x80) {
+        --n;
+    }
+    s.resize(n);
+    return s;
+}
+
 } // namespace
 
 void registerCaptionCommands(CommandRegistry& registry) {
@@ -577,7 +843,8 @@ void registerCaptionCommands(CommandRegistry& registry) {
     addBuiltin(registry,
                {"captions.savePreset", 1, "Save Caption Preset",
                 "Saves a named caption style in the project: a caption track's style, with \"style\" fields applied on "
-                "top (or the default look). Replaces the project preset of that name; built-in names are refused.",
+                "top (or the default look). Replaces the project preset of that name (every caption track that follows "
+                "it as its Track Style takes the new look); built-in names are refused.",
                 Capability::EditProject,
                 withSequence({{"name", nameParam("Preset name.", kMaxCaptionNameBytes)},
                               {"captionTrack", schema::integer("Caption track whose style to save.", 1)},
@@ -614,6 +881,32 @@ void registerCaptionCommands(CommandRegistry& registry) {
                     out.state = c.state();
                     out.data = Json{{"presets", std::move(presets)}};
                     return out;
+                }});
+    // 0.2: Premiere's Track Style (the Captions panel's Track Style menu and Push to Track Style).
+    addBuiltin(registry,
+               {"captions.setTrackStyle", 1, "Track Style",
+                "Makes a caption track follow a caption preset (Premiere's Track Style menu): it takes the preset's style, and "
+                "saving that preset again (captions.savePreset, captions.pushTrackStyle) restyles every track that follows "
+                "it. \"style\": \"\" makes the track follow nothing (it keeps its look).",
+                Capability::EditSequence,
+                withSequence({{"captionTrack", captionTrackParam()},
+                              {"style", schema::string("Preset name (built in or the project's), or \"\" for none.")}},
+                             {"style"}),
+                Json{{"style", "Channel look"}}, {},
+                [](ExecutionContext& c) {
+                    const CaptionTrack& track = captionTrackOf(c);
+                    return edited(c.take(edit::setCaptionTrackStyle(c.state(), c.sequenceId(), track.id, c.string("style"))));
+                }});
+    addBuiltin(registry,
+               {"captions.pushTrackStyle", 1, "Push to Track Style",
+                "Premiere's Push to Track Style: the caption track's current look becomes its track style (a project "
+                "preset), and every caption track that follows that style, in every sequence, takes it. Refused for a "
+                "built-in style (save it under a new name with captions.savePreset).",
+                Capability::EditProject, withSequence({{"captionTrack", captionTrackParam()}}), Json::object(), {},
+                [](ExecutionContext& c) {
+                    const CaptionTrack& track = captionTrackOf(c);
+                    return projectEdited(c.take(edit::pushCaptionTrackStyle(c.state(), c.sequenceId(), track.id)),
+                                         Json{{"style", track.trackStyle}});
                 }});
 
     // --- Speakers ------------------------------------------------------------------------------------------
@@ -748,6 +1041,353 @@ void registerCaptionCommands(CommandRegistry& registry) {
                     data["clips"] = spans.size();
                     return projectEdited(std::move(state), std::move(data));
                 }});
+    // --- 0.2: Find and Replace (Find Next, Replace, Replace All), spell check -----------------------------------------
+    addBuiltin(registry,
+               {"captions.find", 1, "Find in Captions",
+                "Premiere's Find (the arrows of Find and Replace): every match of \"find\" in the cues of a caption track "
+                "(\"captionTrack\") or of every caption track of the sequence (default), in track order, then cue order, "
+                "then position: the caption track, cue index, byte range in the cue's text, the cue's start, and the cue "
+                "text. Plain text; \"matchCase\" and \"wholeWord\" as captions.findReplace. At most 1000 matches.",
+                Capability::Read,
+                withSequence({{"captionTrack", captionTrackParam()},
+                              {"find", findParam()},
+                              {"matchCase", schema::boolean("Match Case. Default false.", false)},
+                              {"wholeWord", schema::boolean("Whole Word. Default false.", false)}},
+                             {"find"}),
+                Json{{"find", "colour"}, {"wholeWord", true}}, {},
+                [](ExecutionContext& c) {
+                    const Sequence& seq = c.sequence();
+                    if (seq.captionTracks.empty()) {
+                        fail(ErrorCode::NotFound, "the sequence has no caption tracks");
+                    }
+                    const std::optional<CaptionTrackId> only =
+                        c.has("captionTrack") ? std::optional(captionTrackOf(c).id) : std::nullopt;
+                    const std::vector<CaptionMatch> matches = captionMatches(seq, only, c.string("find"), findOptions(c));
+                    Json list = Json::array();
+                    for (const CaptionMatch& m : matches) {
+                        if (list.size() >= 1000) {
+                            break;
+                        }
+                        list.push_back(captionMatchJson(c, seq, m));
+                    }
+                    return readOnly(c, Json{{"count", matches.size()}, {"matches", std::move(list)}});
+                }});
+    addBuiltin(registry,
+               {"captions.findReplace", 1, "Find and Replace in Captions",
+                "Premiere's Find and Replace for captions: replaces every match of \"find\" in the cues of a caption track "
+                "(\"captionTrack\") or of every caption track of the sequence (default), in one undo step - or, with "
+                "\"at\" (a match captions.find listed: its caption track, cue and start byte), only that match "
+                "(Premiere's Replace); the result then names the next match after it (\"next\", or null). Plain text; "
+                "\"matchCase\" and \"wholeWord\" as Premiere's options (without Match Case, Unicode simple case "
+                "folding; whole word treats letters, digits and marks of every script as word characters). A dry run "
+                "lists the matches without changing anything. A replacement that would leave a cue empty is refused.",
+                Capability::EditSequence,
+                withSequence({{"captionTrack", captionTrackParam()},
+                              {"find", findParam()},
+                              {"replace", replaceParam()},
+                              {"matchCase", schema::boolean("Match Case. Default false.", false)},
+                              {"wholeWord", schema::boolean("Whole Word. Default false.", false)},
+                              {"at", schema::object({{"captionTrack", schema::integer("The match's caption track id.", 1)},
+                                                     {"cue", cueParam("The match's cue.")},
+                                                     {"start", schema::integer("The match's first byte in the cue's text.", 0,
+                                                                               static_cast<std::int64_t>(kMaxCaptionTextBytes))}},
+                                                    {"captionTrack", "cue", "start"},
+                                                    "Replace only this match (captions.find lists them).")}},
+                             {"find", "replace"}),
+                Json{{"find", "colour"}, {"replace", "color"}, {"wholeWord", true}}, {},
+                [](ExecutionContext& c) {
+                    const Sequence& seq = c.sequence();
+                    if (seq.captionTracks.empty()) {
+                        fail(ErrorCode::NotFound, "the sequence has no caption tracks");
+                    }
+                    const std::optional<CaptionTrackId> only =
+                        c.has("captionTrack") ? std::optional(captionTrackOf(c).id) : std::nullopt;
+                    const std::string find = c.string("find");
+                    const std::string replacement = c.string("replace");
+                    const TextFindOptions options = findOptions(c);
+                    const auto checkText = [&](const std::string& text, std::size_t cue, const CaptionTrack& track) {
+                        if (trimmed(text).empty()) {
+                            fail(ErrorCode::EditRejected,
+                                 "the replacement would leave cue " + std::to_string(cue) + " of caption track " +
+                                     std::to_string(track.id.value) + " empty");
+                        }
+                        if (text.size() > kMaxCaptionTextBytes) {
+                            fail(ErrorCode::EditRejected, "cue " + std::to_string(cue) + " would be longer than 4096 bytes");
+                        }
+                    };
+                    if (c.has("at")) {
+                        // Premiere's Replace: one match, then the next one after it.
+                        const Json& at = c.params()["at"];
+                        const CaptionTrackId trackId{at["captionTrack"].get<std::uint64_t>()};
+                        const auto it = std::find_if(seq.captionTracks.begin(), seq.captionTracks.end(),
+                                                     [&](const CaptionTrack& t) { return t.id == trackId; });
+                        if (it == seq.captionTracks.end() || (only && *only != trackId)) {
+                            fail(ErrorCode::NotFound, "no caption track " + std::to_string(trackId.value) + " to replace in",
+                                 Json{{"path", "/at/captionTrack"}});
+                        }
+                        const auto cue = at["cue"].get<std::size_t>();
+                        const auto start = at["start"].get<std::size_t>();
+                        if (cue >= it->cues.size()) {
+                            fail(ErrorCode::NotFound, "caption track " + std::to_string(trackId.value) + " has no cue " +
+                                                          std::to_string(cue), Json{{"path", "/at/cue"}});
+                        }
+                        CaptionTrack track = *it;
+                        const std::string before = track.cues[cue].text;
+                        auto replaced = replaceTextAt(before, find, replacement, start, options);
+                        if (!replaced) {
+                            fail(ErrorCode::NotFound, "\"" + find + "\" is not at byte " + std::to_string(start) + " of cue " +
+                                                          std::to_string(cue) + " (the text changed?)",
+                                 Json{{"path", "/at/start"}});
+                        }
+                        checkText(*replaced, cue, track);
+                        track.cues[cue].text = *replaced;
+                        ProjectState state = c.take(edit::setCaptionTrack(c.state(), c.sequenceId(), track)).state;
+                        // The next match: after the replacement in this cue, then on in scope order (wrapping round).
+                        const Sequence* after = state.findSequence(c.sequenceId());
+                        Json next = nullptr;
+                        if (after) {
+                            const std::vector<CaptionMatch> matches = captionMatches(*after, only, find, options);
+                            const std::size_t resume = start + replacement.size();
+                            const auto order = [&](const CaptionMatch& m) {
+                                const auto t = std::find_if(after->captionTracks.begin(), after->captionTracks.end(),
+                                                            [&](const CaptionTrack& x) { return x.id == m.track; });
+                                return std::tuple(t - after->captionTracks.begin(), m.cue, m.start);
+                            };
+                            const auto here = std::tuple(it - seq.captionTracks.begin(), cue, resume);
+                            const auto found = std::find_if(matches.begin(), matches.end(),
+                                                            [&](const CaptionMatch& m) { return order(m) >= here; });
+                            if (found != matches.end()) {
+                                next = captionMatchJson(c, *after, *found);
+                            } else if (!matches.empty()) {
+                                next = captionMatchJson(c, *after, matches.front());
+                            }
+                        }
+                        Json change{{"captionTrack", trackId.value}, {"cue", cue}, {"matches", 1}, {"before", before},
+                                    {"after", *replaced}};
+                        return projectEdited(std::move(state), Json{{"replaced", 1},
+                                                                    {"cues", 1},
+                                                                    {"changes", Json::array({std::move(change)})},
+                                                                    {"next", std::move(next)}});
+                    }
+                    ProjectState state = c.state();
+                    std::size_t total = 0;
+                    std::size_t cuesChanged = 0;
+                    Json matches = Json::array();
+                    for (const CaptionTrack& original : seq.captionTracks) {
+                        if (only && original.id != *only) {
+                            continue;
+                        }
+                        CaptionTrack track = original;
+                        bool changed = false;
+                        for (std::size_t i = 0; i < track.cues.size(); ++i) {
+                            std::size_t n = 0;
+                            std::string text = replaceText(track.cues[i].text, find, replacement, options, &n);
+                            if (n == 0) {
+                                continue;
+                            }
+                            checkText(text, i, track);
+                            total += n;
+                            ++cuesChanged;
+                            if (matches.size() < 200) {
+                                matches.push_back(Json{{"captionTrack", track.id.value}, {"cue", i}, {"matches", n},
+                                                       {"before", track.cues[i].text}, {"after", text}});
+                            }
+                            track.cues[i].text = std::move(text);
+                            changed = true;
+                        }
+                        if (changed) {
+                            state = c.take(edit::setCaptionTrack(state, c.sequenceId(), std::move(track))).state;
+                        }
+                    }
+                    CommandOutput out = projectEdited(std::move(state), Json{{"replaced", total},
+                                                                             {"cues", cuesChanged},
+                                                                             {"changes", std::move(matches)}});
+                    if (total == 0) {
+                        out.warnings.push_back("\"" + find + "\" was not found");
+                    }
+                    return out;
+                }});
+    addBuiltin(registry,
+               {"captions.checkSpelling", 1, "Check Spelling in Captions",
+                "Premiere's spell check for captions: the misspelled words of a caption track's cues (\"captionTrack\", "
+                "default the first) in its language (or \"language\"), from the host's spell checker and the user's "
+                "dictionary: the cue, the word's byte range in the cue's text, the word, what the checker advises "
+                "(\"suggest\", \"replace\" with the first suggestion, or \"delete\" a repeated word) and up to 8 "
+                "suggestions. \"available\" is false when the host cannot check that language (nothing is listed). "
+                "At most 2000 words. Corrections are captions.updateCue or captions.findReplace edits.",
+                Capability::Read,
+                withSequence({{"captionTrack", captionTrackParam()},
+                              {"language", schema::string("BCP 47 or ISO 639-1. Default: the track's, else the user's.")},
+                              {"suggestions", schema::boolean("List suggestions. Default true.", true)}}),
+                Json{{"captionTrack", 57}}, {},
+                [](ExecutionContext& c) {
+                    const auto* services = findService<SpellingServices>(c.services());
+                    if (!services) {
+                        fail(ErrorCode::InvalidRequest, "this host has no spell checker");
+                    }
+                    const CaptionTrack& track = captionTrackOf(c);
+                    const std::string language = c.has("language") ? c.string("language") : track.language;
+                    const SpellChecker& checker = services->checker();
+                    const bool available = checker.supports(language);
+                    Json issues = Json::array();
+                    if (available) {
+                        for (const TextSpellIssue& i :
+                             spellingOf(track, checker, language, c.boolean("suggestions", true), 2000)) {
+                            Json item = spellIssueJson(i.issue);
+                            item["cue"] = i.cue;
+                            issues.push_back(std::move(item));
+                        }
+                    }
+                    return readOnly(c, Json{{"captionTrack", track.id.value},
+                                              {"language", language},
+                                              {"available", available},
+                                              {"cues", track.cues.size()},
+                                              {"issues", std::move(issues)}});
+                }});
+    {
+        Json textSchema = schema::string("The text to check (UTF-8).");
+        textSchema["maxLength"] = 64 * 1024;
+        addBuiltin(registry,
+                   {"spelling.check", 1, "Check Spelling",
+                    "The misspelled words of a text in a language (default the user's), from the host's spell checker "
+                    "and the user's dictionary, as captions.checkSpelling lists them (byte ranges of the text). "
+                    "\"available\" is false when the host cannot check that language.",
+                    Capability::Read,
+                    withSequence({{"text", textSchema},
+                                  {"language", schema::string("BCP 47 or ISO 639-1. Default: the user's.")},
+                                  {"suggestions", schema::boolean("List suggestions. Default true.", true)}},
+                                 {"text"}),
+                    Json{{"text", "Teh quick brown fox"}, {"language", "en-US"}}, {},
+                    [](ExecutionContext& c) {
+                        const auto* services = findService<SpellingServices>(c.services());
+                        if (!services) {
+                            fail(ErrorCode::InvalidRequest, "this host has no spell checker");
+                        }
+                        const std::string language = c.has("language") ? c.string("language") : std::string();
+                        const std::string text = c.string("text");
+                        const SpellChecker& checker = services->checker();
+                        const bool available = checker.supports(language);
+                        Json issues = Json::array();
+                        if (available) {
+                            const bool suggestions = c.boolean("suggestions", true);
+                            for (SpellIssue& issue : checker.check(text, language)) {
+                                if (suggestions && issue.suggestions.empty() && issue.action != SpellAction::Delete) {
+                                    issue.suggestions = checker.suggest(issue.word, language);
+                                }
+                                issues.push_back(spellIssueJson(issue));
+                            }
+                        }
+                        return readOnly(c, Json{{"language", language}, {"available", available}, {"issues", std::move(issues)}});
+                    }});
+    }
+}
+
+
+// ---- captions.import (one command, CatalogInterchange.cpp): 0.2 graphics' reader of .srt / .vtt / timed .txt and
+// the rules every imported cue follows -------------------------------------------------------------------------------
+
+namespace {
+
+/// Places `cues` (sorted here) as a new caption track: "offset", the overlap trimming, 4096-byte cues, at most
+/// kMaxCaptionCues, "name" / "language" / "preset", speakers by name. `language` and `style` are the file's when the
+/// parameters do not say; `extra` joins the result's data.
+CommandOutput placeCaptionFileCues(ExecutionContext& c, const std::filesystem::path& file, std::vector<FileCue> cues,
+                                   std::string language, std::optional<CaptionStyle> fileStyle, Json extra) {
+    const Ticks offset = c.has("offset") ? c.time("offset") : Ticks{};
+    std::stable_sort(cues.begin(), cues.end(), [](const FileCue& a, const FileCue& b) { return a.start < b.start; });
+                    CaptionTrack track;
+                    track.name = c.has("name") ? c.string("name") : clippedUtf8(pathToUtf8(file.stem()), kMaxCaptionNameBytes);
+                    if (track.name.empty()) {
+                        track.name = "Captions";
+                    }
+                    track.language = c.has("language") ? c.string("language") : language;
+                    if (fileStyle) {
+                        track.style = *fileStyle;
+                    }
+                    if (c.has("preset")) {
+                        const auto style = edit::captionPresetStyle(c.state(), c.string("preset"));
+                        if (!style) {
+                            fail(ErrorCode::NotFound, "there is no caption preset \"" + c.string("preset") + "\"",
+                                 Json{{"path", "/preset"}});
+                        }
+                        track.style = *style;
+                    }
+                    std::size_t dropped = 0;
+                    std::size_t trimmedCues = 0;
+                    std::size_t withSpeaker = 0;
+                    for (std::size_t i = 0; i < cues.size(); ++i) {
+                        FileCue& f = cues[i];
+                        Ticks end = f.end;
+                        if (i + 1 < cues.size() && cues[i + 1].start < end) {
+                            end = cues[i + 1].start;
+                            ++trimmedCues;
+                        }
+                        const std::string text = clippedUtf8(f.text, kMaxCaptionTextBytes);
+                        if (end <= f.start || f.start + offset < Ticks{} || trimmed(text).empty() ||
+                            track.cues.size() >= kMaxCaptionCues) {
+                            ++dropped;
+                            continue;
+                        }
+                        SpeakerId speaker;
+                        if (!f.speaker.empty()) {
+                            for (const Speaker& s : c.state().speakers) {
+                                if (s.name == f.speaker) {
+                                    speaker = s.id;
+                                }
+                            }
+                            withSpeaker += speaker.isValid() ? 1 : 0;
+                        }
+                        track.cues.push_back(CaptionCue{f.start + offset, end - f.start, text, speaker});
+                    }
+                    if (track.cues.empty()) {
+                        fail(ErrorCode::InvalidParams, "the file has no captions Wabcut can read", Json{{"path", "/path"}});
+                    }
+                    const std::size_t count = track.cues.size();
+                    edit::EditResult r = c.take(edit::setCaptionTrack(c.state(), c.sequenceId(), std::move(track)));
+                    const CaptionTrackId id = r.createdCaptionTrack;
+                    CommandOutput out = edited(std::move(r), Json{{"captionTrack", id.value},
+                                                                  {"cues", count},
+                                                                  {"dropped", dropped},
+                                                                  {"trimmed", trimmedCues},
+                                                                  {"cuesWithSpeaker", withSpeaker}});
+                    out.createdIds.push_back(id.value);
+                    if (dropped > 0) {
+                        out.warnings.push_back(std::to_string(dropped) +
+                                               " cue(s) could not be used (no text, no length or before the sequence start)");
+                    }
+                    for (auto& [key, value] : extra.items()) {
+                        out.data[key] = value; // the format's own facts (interchange: format, report)
+                    }
+                    return out;
+}
+
+} // namespace
+
+std::optional<CommandOutput> importCaptionFileCues(ExecutionContext& c) {
+                    const std::filesystem::path file = pathFromUtf8(c.string("path"));
+                    std::string ext = pathToUtf8(file.extension());
+                    std::transform(ext.begin(), ext.end(), ext.begin(),
+                                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+                    if (ext != ".srt" && ext != ".vtt" && ext != ".txt" && ext != ".docx") {
+                        return std::nullopt;
+                    }
+                    const std::vector<std::string> lines = linesOf(readCaptionFile(file));
+                    std::vector<FileCue> cues =
+                        ext == ".txt" || ext == ".docx" ? parseTimedText(c, lines) : parseTimedBlocks(lines);
+    if (cues.empty()) {
+        return std::nullopt;
+    }
+    return placeCaptionFileCues(c, file, std::move(cues), {}, std::nullopt, Json::object());
+}
+
+CommandOutput placeImportedCaptions(ExecutionContext& c, const std::filesystem::path& file, const std::vector<CaptionCue>& cues,
+                                    std::string language, std::optional<CaptionStyle> style, Json extra) {
+    std::vector<FileCue> fileCues;
+    fileCues.reserve(cues.size());
+    for (const CaptionCue& cue : cues) {
+        fileCues.push_back(FileCue{cue.start, cue.end(), cue.text, {}});
+    }
+    return placeCaptionFileCues(c, file, std::move(fileCues), std::move(language), std::move(style), std::move(extra));
 }
 
 } // namespace wabcut::command::detail

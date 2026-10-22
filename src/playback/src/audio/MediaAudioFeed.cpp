@@ -4,6 +4,7 @@
 #include <wabcut/media/AudioDecoder.h>
 
 #include <wabcut/model/ProjectState.h>
+#include <wabcut/model/Synthetic.h>
 
 #include <algorithm>
 #include <atomic>
@@ -133,6 +134,10 @@ struct MediaAudioFeed::Impl {
                 invalidations.fetch_add(1, std::memory_order_relaxed);
             }
             return fail(Error{ErrorCode::NotFound, "media item or audio stream not in the project"});
+        }
+        if (syntheticOf(*item)) {
+            // P.2: Bars and Tone, the counting leader: the sound is generated, there is no file to decode.
+            return renderSyntheticAudio(*item, sourceTime, interleaved, channels, rate);
         }
         if (item->locator.offline) {
             return fail(Error{ErrorCode::NotFound, "media is offline: " + item->locator.path});

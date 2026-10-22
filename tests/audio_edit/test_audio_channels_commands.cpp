@@ -3,6 +3,7 @@
 // the 5.1 panner and the master's format; one undo step each; capabilities.
 
 #include "CommandHarness.h"
+#include "NestedTestUtil.h"
 
 #include <wabcut/ai/edit/TranscriptCommands.h>
 #include <wabcut/audio/edit/AudioAnalysis.h>
@@ -179,6 +180,43 @@ TEST_CASE("audio.channels and audio.channelLevels report what plays and which ch
     CHECK(analyzer->calls == 1);
     CommandHarness none = harness();
     CHECK(none.errorOf("audio.channelLevels", {{"clips", Json::array({none.clip("A1@0").value})}}) == "InvalidRequest");
+}
+
+TEST_CASE("audio.channelLevels measures what a multicam clip and a nested clip play (0.2)", "[audio][edit][channels][multicam]") {
+    auto analyzer = std::make_shared<LeftOnlyAnalyzer>();
+    auto services = std::make_shared<AudioServices>(nullptr, nullptr);
+    services->channels = analyzer;
+    CommandHarness h = harness(services);
+    const SequenceId seq = h.tl.seq;
+
+    SECTION("a two-angle multicam clip playing angle 2's sound") {
+        PlacedMulticam mc;
+        REQUIRE(h.session.apply("Multicam", [&](const ProjectState& s) -> std::expected<ProjectState, Error> {
+            mc = placeMulticam(s, seq, {h.tl.media('A'), h.tl.media('B')}, {Ticks{}, Ticks{}}, TimeRange{Ticks{}, f(10)}, Ticks{}, 0, 1);
+            return mc.state;
+        }));
+        // The picture stands for its linked sound, as for media clips.
+        const auto levels = h.ok("audio.channelLevels", {{"sequence", seq.value}, {"clips", Json::array({mc.video.value})}});
+        REQUIRE_FALSE(levels.data["clips"].empty()); // one entry per recording stream angle 2 plays
+        for (const Json& entry : levels.data["clips"]) {
+            CHECK(entry["clip"] == mc.audio.value);
+            CHECK(entry["media"] == h.tl.media('B').value); // angle 2's recording, not the shown angle's
+            CHECK(entry["silentChannels"] == Json::array({2}));
+        }
+        CHECK(analyzer->calls == static_cast<int>(levels.data["clips"].size()));
+    }
+
+    SECTION("a nested clip") {
+        edit::NestResult nest;
+        REQUIRE(h.session.apply("Nest", [&](const ProjectState& s) -> std::expected<ProjectState, Error> {
+            nest = nestEverything(s, seq);
+            return nest.edit.state;
+        }));
+        const auto levels = h.ok("audio.channelLevels", {{"sequence", seq.value}, {"clips", Json::array({nest.clips.back().value})}});
+        REQUIRE(levels.data["clips"].size() == 1);
+        CHECK(levels.data["clips"][0]["media"] == h.tl.media('A').value);
+        CHECK(levels.data["clips"][0]["channels"].size() == 2);
+    }
 }
 
 TEST_CASE("track.setFormat, track.setSurroundPan and sequence.setMasterFormat", "[audio][edit][channels][surround]") {

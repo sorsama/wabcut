@@ -6,13 +6,14 @@
 find_package(nlohmann_json CONFIG REQUIRED)
 
 add_library(wabcut_ai_vision STATIC
+    src/ColorFaces.cpp
     src/Detection.cpp
     src/HelperDetector.cpp
     src/Saliency.cpp
     src/Subjects.cpp
     src/Tracker.cpp)
 target_include_directories(wabcut_ai_vision PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-target_link_libraries(wabcut_ai_vision PUBLIC wabcut_ai wabcut_ai_analysis wabcut_ai_search wabcut_model
+target_link_libraries(wabcut_ai_vision PUBLIC wabcut_ai wabcut_ai_analysis wabcut_ai_search wabcut_model wabcut_color
     PRIVATE nlohmann_json::nlohmann_json)
 wabcut_target_defaults(wabcut_ai_vision)
 

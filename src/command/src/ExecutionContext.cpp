@@ -2,9 +2,11 @@
 
 #include <limits>
 
+#include <wabcut/model/ProjectIO.h>
 #include <wabcut/model/Timecode.h>
 
 #include <cctype>
+#include <fstream>
 
 namespace wabcut::command {
 
@@ -31,6 +33,81 @@ std::optional<std::uint64_t> idValue(const Json& v) {
 }
 
 } // namespace
+
+// ---- EffectLibraryServices ---------------------------------------------------------------------------------------------
+
+EffectLibraryServices::EffectLibraryServices(std::filesystem::path file)
+    : m_file(std::move(file)), m_store(std::make_shared<Store>()) {}
+
+void EffectLibraryServices::loadLocked(Store& store) const {
+    if (store.loaded) {
+        return;
+    }
+    store.loaded = true;
+    store.library = {};
+    store.error.clear();
+    std::error_code ec;
+    if (m_file.empty() || !std::filesystem::exists(m_file, ec)) {
+        return;
+    }
+    const std::uintmax_t size = std::filesystem::file_size(m_file, ec);
+    if (ec || size > kMaxEffectsLibraryBytes) {
+        store.error = ec ? "the effects library cannot be read" : "the effects library is larger than 16 MiB";
+        return;
+    }
+    std::ifstream in(m_file, std::ios::binary);
+    std::string text(static_cast<std::size_t>(size), '\0');
+    in.read(text.data(), static_cast<std::streamsize>(text.size()));
+    text.resize(static_cast<std::size_t>(in.gcount()));
+    auto library = io::effectsLibraryFromJson(text);
+    if (!library) {
+        store.error = library.error().message;
+        return;
+    }
+    store.library = std::move(*library);
+}
+
+EffectsLibrary EffectLibraryServices::library() const {
+    std::lock_guard lock(m_store->mutex);
+    loadLocked(*m_store);
+    return m_store->library;
+}
+
+std::optional<std::string> EffectLibraryServices::set(EffectsLibrary library) {
+    std::lock_guard lock(m_store->mutex);
+    m_store->loaded = true;
+    m_store->library = std::move(library);
+    ++m_store->revision;
+    m_store->error.clear();
+    if (m_file.empty()) {
+        return std::nullopt;
+    }
+    std::error_code ec;
+    std::filesystem::create_directories(m_file.parent_path(), ec);
+    if (auto written = io::writeFileAtomically(m_file, io::effectsLibraryToJson(m_store->library)); !written) {
+        m_store->error = written.error().message;
+        return m_store->error;
+    }
+    return std::nullopt;
+}
+
+std::string EffectLibraryServices::error() const {
+    std::lock_guard lock(m_store->mutex);
+    loadLocked(*m_store);
+    return m_store->error;
+}
+
+std::uint64_t EffectLibraryServices::revision() const {
+    std::lock_guard lock(m_store->mutex);
+    return m_store->revision;
+}
+
+void EffectLibraryServices::reload() {
+    std::lock_guard lock(m_store->mutex);
+    m_store->loaded = false;
+    loadLocked(*m_store);
+    ++m_store->revision;
+}
 
 ExecutionContext::ExecutionContext(const ProjectState& state, const Json& params, ExecutionControl* control,
                                    CommandServices* services)
@@ -104,14 +181,16 @@ TrackId ExecutionContext::trackValue(const Json& value, const std::string& path)
     const Sequence& s = sequence();
     if (const auto raw = idValue(value)) {
         const TrackId id{*raw};
-        if (!s.findTrack(id)) {
+        if (!s.findTrack(id) && !s.findSubmix(id)) {
             fail(ErrorCode::NotFound, "no track with id " + value.dump() + " in this sequence", at(path));
         }
         return id;
     }
     if (value.is_string()) {
         const std::string label = value.get<std::string>();
-        if (label.size() >= 2 && (label[0] == 'V' || label[0] == 'A' || label[0] == 'v' || label[0] == 'a')) {
+        // V<n>, A<n> and (p02 audio) S<n> for the submix tracks.
+        if (label.size() >= 2 && (label[0] == 'V' || label[0] == 'A' || label[0] == 'v' || label[0] == 'a' ||
+                                  label[0] == 'S' || label[0] == 's')) {
             std::size_t number = 0;
             bool digits = true;
             for (std::size_t i = 1; i < label.size(); ++i) {
@@ -125,7 +204,9 @@ TrackId ExecutionContext::trackValue(const Json& value, const std::string& path)
                     break;
                 }
             }
-            const auto& list = (label[0] == 'V' || label[0] == 'v') ? s.videoTracks : s.audioTracks;
+            const auto& list = (label[0] == 'V' || label[0] == 'v')   ? s.videoTracks
+                               : (label[0] == 'S' || label[0] == 's') ? s.submixTracks
+                                                                      : s.audioTracks;
             if (digits && number >= 1 && number <= list.size()) {
                 return list[number - 1]->id;
             }
@@ -304,6 +385,9 @@ std::string ExecutionContext::timecode(Ticks t) {
 std::string ExecutionContext::trackLabel(TrackId track) {
     const auto pos = sequence().trackPosition(track);
     if (!pos) {
+        if (const auto submix = sequence().submixIndex(track)) {
+            return "S" + std::to_string(*submix + 1); // p02 audio: a submix track
+        }
         return std::to_string(track.value);
     }
     return (pos->kind == TrackKind::Video ? "V" : "A") + std::to_string(pos->index + 1);

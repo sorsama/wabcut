@@ -4,6 +4,7 @@
 // (dryRun preview, one undo step, rerun after an edit, a missing source, permissions).
 
 #include "CommandHarness.h"
+#include "NestedTestUtil.h"
 #include "TimelineFixture.h"
 
 #include <wabcut/ai/edit/TranscriptCommands.h>
@@ -328,6 +329,74 @@ std::shared_ptr<command::CommandServices> servicesWith(MediaId media, SubjectAna
 }
 
 } // namespace
+
+TEST_CASE("Auto Reframe follows the subjects of a multicam clip's active angle and of a nested clip (0.2)", "[ai][reframe][multicam]") {
+    // Media A's face stands still at 0.75. B has a cut at its own 3 s: a face at 0.2 before it, another at 0.8 after.
+    const SubjectSource bySource = [](const MediaItem& media, int) -> std::expected<SubjectAnalysis, Error> {
+        if (media.name == "A") {
+            return analysis(40.0, {}, [](double) { return std::vector<SubjectBox>{faceAt(0.75f, 0.4f, 1)}; });
+        }
+        return analysis(40.0, {3.0}, [](double t) { return std::vector<SubjectBox>{t < 3.0 ? faceAt(0.2f, 0.4f, 1) : faceAt(0.8f, 0.4f, 2)}; });
+    };
+    const std::string picture = "A" + std::string(74, 'a');
+    Timeline tl("V1 |" + picture + "|\nA1 |" + picture + "|\n");
+    tl.linkMatching();
+
+    SECTION("a two-angle multicam clip showing angle 2") {
+        // B synced 1 s after A; the clip plays the source from 2 s to 5 s, so source time T shows B at T - 1 s.
+        PlacedMulticam mc = placeMulticam(tl.state, tl.seq, {tl.media('A'), tl.media('B')}, {Ticks{}, sec(1.0)},
+                                          TimeRange::fromStartEnd(sec(2.0), sec(5.0)), Ticks{}, 1, 0);
+        auto result = reframeSequence(mc.state, tl.seq, ReframeOptions{}, bySource);
+        REQUIRE(result);
+        requireValid(result->state);
+        CHECK(result->clipsReframed == 1);
+        const Clip& clip = onlyVideoClip(result->state, result->sequence);
+        CHECK(clip.sequence == mc.multicam); // still the multicam clip: angles stay switchable
+        CHECK(clip.angles == AngleSet::of(1));
+        CHECK(result->state.sequencePtr(mc.multicam) == mc.state.sequencePtr(mc.multicam)); // the source untouched
+        CHECK(clip.properties().value(ParamId::Scale) == Approx(1920.0 / 1080.0));
+        REQUIRE(clip.properties()[ParamId::PositionX].isCurve()); // B's two shots, not A's still face
+        // B's cut (its 3 s) is the source's 4 s, the clip's keyframe time.
+        CHECK(result->plans.begin()->second.cuts == std::vector<Ticks>{sec(4.0)});
+        CHECK(centreXAt(clip, sec(3.0)) == Approx(0.2).margin(0.06));
+        CHECK(centreXAt(clip, sec(4.5)) == Approx(0.8).margin(0.06));
+        CHECK(result->plans.begin()->second.guide == "faces");
+
+        // Angle 1 (A): the still face.
+        const edit::EditResult switched = ok(edit::switchMulticamAngle(mc.state, tl.seq, mc.video, std::nullopt, 0, edit::AngleTarget::Video));
+        auto again = reframeSequence(switched.state, tl.seq, ReframeOptions{}, bySource);
+        REQUIRE(again);
+        const Clip& still = onlyVideoClip(again->state, again->sequence);
+        CHECK(still.angles == AngleSet::of(0));
+        CHECK(centreXAt(still, sec(3.0)) == Approx(0.75).margin(0.06));
+        CHECK(centreXAt(still, sec(4.5)) == Approx(0.75).margin(0.06));
+    }
+
+    SECTION("a nested clip") {
+        // The nest holds B from B's 1 s on: nested time T shows B at T + 1 s, so B's cut is at nested 2 s.
+        Timeline nestTl("V1 |B25" + std::string(74, 'b') + "|\n");
+        const edit::NestResult nest = nestEverything(nestTl.state, nestTl.seq);
+        auto result = reframeSequence(nest.edit.state, nestTl.seq, ReframeOptions{}, bySource);
+        REQUIRE(result);
+        requireValid(result->state);
+        const Clip& clip = onlyVideoClip(result->state, result->sequence);
+        CHECK(clip.sequence == nest.nested);
+        REQUIRE(clip.properties()[ParamId::PositionX].isCurve());
+        CHECK(result->plans.begin()->second.cuts == std::vector<Ticks>{sec(2.0)});
+        CHECK(centreXAt(clip, sec(1.0)) == Approx(0.2).margin(0.06));
+        CHECK(centreXAt(clip, sec(2.5)) == Approx(0.8).margin(0.06));
+    }
+
+    SECTION("a nested sequence with layers stays centred and says so") {
+        Timeline layered("V1 |Aaaaaaaaaa|\nV2 |Bbbbbbbbbb|\n");
+        const edit::NestResult nest = nestEverything(layered.state, layered.seq);
+        auto result = reframeSequence(nest.edit.state, layered.seq, ReframeOptions{}, bySource);
+        REQUIRE(result);
+        REQUIRE(result->warnings.size() == 1);
+        CHECK(result->warnings[0].find("layers") != std::string::npos);
+        CHECK(onlyVideoClip(result->state, result->sequence).properties()[ParamId::PositionX].isConstant());
+    }
+}
 
 TEST_CASE("reframe.createSequence previews, applies as one undo step, and reruns", "[ai][reframe][commands]") {
     Timeline tl(clipPicture(100));

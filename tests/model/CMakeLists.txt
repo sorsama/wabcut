@@ -13,27 +13,38 @@ wabcut_add_test_suite(model
         test_captions.cpp
         test_changeset.cpp
         test_clipboard.cpp
+        test_color_management.cpp
         test_cliplist.cpp
         test_edit_move.cpp
+        test_timeline_parity.cpp
         test_edit_remove.cpp
         test_edit_session.cpp
         test_edit_source.cpp
         test_edit_trim.cpp
+        test_editing_ops.cpp
         test_effect_data.cpp
+        test_effect_presets.cpp
         test_masks.cpp
         test_effects.cpp
         test_fixture.cpp
+        test_field_options.cpp
+        test_frame_scaling.cpp
         test_gaming_ops.cpp
         test_graphic_ops.cpp
         test_graphics.cpp
+        test_graphics_roll.cpp
+        test_graphics_styles.cpp
         test_history.cpp
         test_keyframes.cpp
         test_layouts.cpp
         test_library_ops.cpp
+        test_project_panel.cpp
         test_locked_links.cpp
         test_marks_snap.cpp
         test_media_locator.cpp
+        test_media_paths.cpp
         test_merge.cpp
+        test_motion_model.cpp
         test_nesting.cpp
         test_parameters.cpp
         test_parity.cpp
@@ -44,12 +55,15 @@ wabcut_add_test_suite(model
         test_project_state.cpp
         test_redaction_media.cpp
         test_sequence_extent.cpp
+        test_sequence_settings.cpp
         test_session_history.cpp
         test_snapshot_releaser.cpp
         test_source_marks.cpp
         test_source_tracks.cpp
         test_markers.cpp
         test_speed.cpp
+        test_spelling.cpp
+        test_text_path.cpp
         test_time.cpp
         test_time_checked.cpp
         test_remap_review.cpp
@@ -66,3 +80,6 @@ wabcut_add_test_suite(model
         test_transition_ops.cpp
         test_transitions.cpp
     LIBS wabcut_model)
+
+# P.2 (E6, monitors): Motion set as one edit (MotionOps.h).
+target_sources(wabcut_model_tests PRIVATE test_motion_ops.cpp)

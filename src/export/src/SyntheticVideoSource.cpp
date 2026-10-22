@@ -183,6 +183,15 @@ private:
         const std::int64_t startFrame =
             ticksToFrames(m_format.start, m_format.frameRate, Rounding::Nearest).value_or(0);
         drawSyntheticFrame(pixels.get(), w, h, startFrame + index, m_pattern.barcode);
+        if (m_format.alpha) {
+            // 0.2: an alpha export's test pattern: the bottom-right sixteenth is transparent (no box ever crosses it).
+            for (int y = h * 3 / 4; y < h; ++y) {
+                std::uint8_t* row = pixels.get() + static_cast<std::size_t>(y) * static_cast<std::size_t>(w) * 4;
+                for (int x = w * 3 / 4; x < w; ++x) {
+                    row[4 * x + 3] = 0;
+                }
+            }
+        }
 
         media::FrameHandle f;
         const Ticks period = framesToTicks(1, m_format.frameRate, Rounding::Nearest).value_or(Ticks{});

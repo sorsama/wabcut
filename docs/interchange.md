@@ -2,7 +2,8 @@
 
 Module `wabcut_interchange` (pure C++23, no Qt) imports timelines from Premiere Pro, DaVinci Resolve,
 Final Cut Pro and anything that writes OpenTimelineIO or CMX3600 EDLs, and (X.1) exports them back in the same
-formats ("Export" below). Owner: Interchange (follow-ups since C.4: Core engine).
+formats ("Export" below); since P.2 it also exports AAF and OMF for audio post and reads and writes caption files
+("Audio post" and "Caption files" below). Owner: Interchange (follow-ups since C.4: Core engine).
 
 ```cpp
 #include <wabcut/interchange/Import.h>
@@ -226,6 +227,134 @@ C = carried exactly (comes back the same), A = approximated (written, but change
 | Nested sequences | C (defined at the first clip, then by id) | C (`ref-clip` of a `<media>` compound) | C (a `Stack` per clip; the first carries the definition) | A (an event named after the sequence) |
 | Multicam | C (`<multiclip>` with each clip's active angles) | C (`mc-clip` of a `<multicam>`; one audio track per angle) | C | A (an event named after the source and angle) |
 
+## Audio post: AAF and OMF export (P.2)
+
+For the mix in Pro Tools, Nuendo, Resolve / Fairlight or Media Composer, a sequence goes out as an AAF or an OMF 2.0
+file with its audio rendered to new files, the way Premiere Pro's File > Export > AAF and File > Export > OMF do it.
+
+```cpp
+#include <wabcut/interchange/AudioPostExport.h>
+
+interchange::AafExportOptions options;               // Premiere's AAF Export Settings
+options.audio.files = interchange::AudioPostFiles::Separate;
+exporter::ClipAudioRenderer audio(projectFile);      // the host's audio engine (wabcut/export/AudioPostHost.h)
+interchange::AudioPostHost host{.audio = &audio};
+auto result = interchange::exportAafToFile(project, sequenceId, "Mix.aaf", options, host);
+// result->report: carried / approximated / dropped; result->audioFiles: the files written next to it.
+```
+
+```
+wabcut-cli export-timeline <project.wabcut> <out.aaf|out.omf> [--format aaf|omf] [--sequence <name|id>]
+    [--sample-rate 48000|96000] [--bits 16|24] [--separate-audio] [--audio-format wav|aiff] [--copy-complete]
+    [--handles <frames>] [--no-breakout] [--render-effects] [--clean-copies] [--mixdown-video] [--omf-title <t>]
+    [--no-pan] [--json] [--carried]
+```
+
+In the app: **File > Export Timeline…**, format **AAF** or **OMF**, with the settings below. The command is
+`interchange.export` with `"format": "aaf"` or `"omf"` and an `"audioPost"` object (docs/commands.md); a dry run plans
+and reports without rendering. The model module cannot decode media, so the audio comes from the host
+(`AudioPostRenderer`): the app and wabcut-cli render each clip through the playback path every export uses
+(`exporter::ClipAudioRenderer`, `exporter::interchangeServices`). Without one (a bare engine, an MCP server without the
+export module), an AAF links the original media instead and says so; an OMF is refused.
+
+### Settings (Premiere's names)
+
+| Setting | AAF | OMF | Wabcut default |
+|---|---|---|---|
+| Mixdown Video | the picture rendered to `<name> Reference.mov` (DNxHR LB 4:2:2, PCM 24-bit; Premiere writes an MXF DNxHD/DNxHR), one clip on V1. Off: video clips link to their original files | — (audio only, video clips reported dropped) | off |
+| Breakout to Mono | new mono files; a stereo track becomes "<track> Left" / "<track> Right" (panned hard left / right), 5.1 "L R C LFE Ls Rs". Off: clips link to the original media with their channels | always (OMF tracks are mono) | on |
+| Render audio clip effects / Include clip copies without effects | the clips' effect stacks rendered in; with copies, "<track> FX" and "<track> No FX" tracks | — | off |
+| Sample Rate / Bits per Sample | 48000 or 96000 / 16 or 24 | same | 48000 / 24 |
+| Files | Embed Audio (in the file) or Separate Audio (folder "<name> Audio" next to it) | Encapsulate or Separate Audio | Embed |
+| Format | Broadcast WAV (bext: description, originator, time reference = the clip's sample at its timecode, UMID = the file's MobID) or AIFF (AIFF-C when embedded) | WAV or AIFF-C | WAV |
+| Render | Trim Audio Files (each clip plus handles) or Copy Complete Audio Files (whole media; clips that are retimed or nested fall back to trimmed files, reported) | same | Trim, 24 handle frames |
+| OMF Title / Include Pan | — | the composition's name / the tracks' pan as a MonoAudioPan effect | sequence name / on |
+
+### What goes into the file
+
+| Sequence | AAF | OMF |
+|---|---|---|
+| Start timecode | C (Timecode slot "TC1") | C (TCCP slot) |
+| Audio tracks, names, order | C (one AAF track per channel with breakout) | C (one OMF track per channel) |
+| Clips: position, length, name, handles | C (sample-exact at the export rate; handles in the files) | C |
+| Clip volume, its keyframes | C (MonoAudioGain OperationGroup, constant or linear VaryingValue) | C (MonoAudioGain effect, CVAL / VVAL) |
+| Clip pan, channel map, speed, reverse, time remap, nested / multicam mixes, Enhance Speech takes, bleeps | rendered into the files (A when that is a change of meaning: the receiver sees the result, not the setting) | same |
+| Clip effects | rendered with "Render audio clip effects", else D | D |
+| Track volume and pan | C (MonoAudioGain / MonoAudioPan around the track, keyframes as points) | constant: C; keyframes A (the value at the start) |
+| Crossfades | C (Transition with MonoAudioDissolve; equal power = Power interpolation, equal gain = Linear) | A (SimpleMonoAudioDissolve has no curve: linear) |
+| Fades in / out at one clip | C (a Transition against Filler) | C (the source clip's FadeIn / FadeOut, linear power or linear amplitude) |
+| Markers | C (DescriptiveMarker: position, length, "name: comment") | D (OMF has none) |
+| Video | linked clips, or the Mixdown Video reference | D |
+| Disabled clips, offline media | D (reported; the rest is written) | same |
+| Track effects, mute, solo, the master bus, the 5.1 panner | D / A (reported) | same |
+
+### How it is written
+
+* **AAF** (`AafExporter.cpp`): a Microsoft Compound File Binary (version 4, 4096-byte sectors; `Cfb.h`) holding the
+  AAF object model (`AafFile.h`): Header (Edit Protocol), the full baseline MetaDictionary (class, property and type
+  definitions generated from pyaaf2's MIT-licensed tables by `tools/gen_aaf_model.py`), Dictionary, ContentStorage with
+  the CompositionMob (UsageCode TopLevel), a MasterMob and a file SourceMob per audio file (WAVEDescriptor /
+  AIFCDescriptor with the file's header as Summary; EssenceData with the whole file when embedded, a NetworkLocator
+  when separate; PCMDescriptor for linked originals), video SourceMobs (CDCIDescriptor + NetworkLocator). Strong
+  references, sets and vectors are child storages named as the AAF SDK names them; MobIDs are deterministic.
+* **OMF** (`OmfExporter.cpp`): OMF Interchange 2.0 in a Bento container (`Bento.h`: value data, a TOC in 1 KiB blocks,
+  reference lists for object references, the label at the end), big-endian ('MM'): HEAD (object 1) with Mobs,
+  PrimaryMobs, MediaData, DefinitionObjects and IdentificationList; a CMOB; per file an MMOB and an SMOB with a WAVD /
+  AIFD; WAVE / AIFC media data when encapsulated, NETL + DOSL locators when separate. A file is limited to 2 GB
+  (OMF readers' limit; Bento offsets are 32-bit): larger encapsulated exports are refused (use Separate Audio).
+* **Deterministic**: a fixed timestamp gives the same bytes (golden files `tests/interchange/fixtures/export/audiopost.aaf`
+  and `.omf`, `WABCUT_UPDATE_GOLDEN=1`). The tests read the files back with the module's own readers (`AafReader.h`,
+  `bento::read`), check every clip, handle, gain, fade and marker, and the samples in the audio files.
+* **Checked with other readers** during development (not test dependencies): pyaaf2 1.7.1 opens and walks every object
+  of the AAF golden (811 objects), and LibAAF's `aaftool` (`--aaf-clips --aaf-essences --show-automation`) lists the
+  same tracks, clips, gain automation, crossfade (power curve), fade-in, marker and embedded / separate essence. It also
+  logs two messages that pyaaf2's own files produce too: no class for the Avid `TypeDefinitionGenericCharacter` and
+  `ContentStorage::EssenceData` missing when nothing is embedded (optional in the AAF object specification). The OMF
+  golden was parsed by deck2omf's `bentodump` (a Bento TOC dumper written against real OMF files): all 419 objects with
+  their type and property names.
+
+## Caption files (P.2)
+
+`CaptionFiles.h`: the caption and subtitle files Premiere Pro reads and writes, as sidecars and for broadcast.
+
+| Format | Read | Write | What is kept |
+|---|---|---|---|
+| SubRip `.srt` | C | C (as I.4: text escaped so players show it literally) | text; `{\anN}` position A; italics, bold, font colours D (reported) |
+| WebVTT `.vtt` | C | C (`line` / `align` for top / left / right placement) | text; `line:` and `align:` settings A (top or bottom, left / centre / right); voice, ruby, karaoke timestamps, regions D |
+| Scenarist SCC `.scc` (CEA-608) | C | C | CC1; pop-on (default), roll-up 2/3/4 and paint-on; text to the 32-column, 4-row grid (rewrapped, reported); rows and columns map to top / bottom and alignment; italics, underline, colours, CC2-CC4, XDS, field 2 D |
+| MacCaption `.mcc` (CEA-608 in CDPs) | C | C (MCC v1.0, 29.97 DF / 30 fps) | as SCC; CEA-708 services D |
+| EBU N19 `.stl` | C | C (STL25.01 / STL30.01, Teletext, ISO 6937 with its accents) | 40 columns × 3 rows of double-height text, vertical position and justification; characters outside ISO 6937 become '?' (reported) |
+| W3C TTML `.xml`, DFXP `.dfxp`, SMPTE-TT `.xml` | C | C | text and line breaks, `xml:lang`, title, regions and `tts:textAlign` / `displayAlign` → top or bottom, alignment; spans and styles A |
+| iTunes Timed Text `.itt` | C | C (frame-based SMPTE timecode) | as TTML |
+
+* **Import**: `captions.import` (or File > Import / dropping the file, like Premiere: the file becomes a new caption
+  track of the current sequence, one undo step, and its report shows like a timeline import's). The format comes from
+  the content, then the extension (an `.xml` is a caption file only when it is Timed Text). Timecode-based files (SCC,
+  MCC, STL, iTT, SMPTE-time TTML) count from the sequence's start timecode, unless their first caption is earlier (then
+  from 00:00:00:00, reported). Cues are sorted, cut where they overlap, cues with the same start joined, at most 60 s
+  long (a caption a file never erases), text cleaned to valid UTF-8 within the model's limits.
+* **Export**: `captions.export` (a format from the extension or `"format"`; SCC / MCC `"display"`; `"range"` sequence or
+  In/Out; frame rate and drop-frame from the sequence) and the export settings' **Captions** row: **Sidecar file** in
+  any of the formats above, next to the output, timecode-based ones from the sequence's start timecode at the export's
+  first frame. Words the soundtrack bleeps are replaced as in burned-in captions.
+* **CEA-608 details** (`Cea608.h`): byte pairs with odd parity; control codes sent twice; preamble address codes for
+  rows 1-15 with indents and tab offsets; the standard, special and extended (Spanish / French / Portuguese / German /
+  Danish) character sets, with the backspace the extended set needs; each caption is loaded before its start (pop-on)
+  and the display is erased at its end. A caption whose text needs more frames than the gap before it starts late
+  (reported, with the largest delay).
+* **Embed In Output File** (export Captions row **Embed**, `CaptionExport::Embed`): the same 608 data as an SCC,
+  attached to every video frame as A/53 caption data (`AV_FRAME_DATA_A53_CC`), which libx264, libx265 (its `a53cc`
+  option), NVENC, Quick Sync H.264, VA-API and VideoToolbox write as caption SEI in the H.264 / HEVC stream (MP4, MOV,
+  MKV). Encoders that do not (AMF, Media Foundation) are skipped by automatic selection and refused by name. Premiere
+  embeds into QuickTime caption tracks and MXF; Wabcut's are in-stream (what YouTube, broadcast encoders and most players
+  read). The test decodes the file and compares every byte pair with the SCC timing; FFmpeg's `ffprobe -show_frames`
+  lists "ATSC A53 Part 4 Closed Captions" side data on every frame of such an export.
+* **Checked with FFmpeg** during development: its `scc` and `mcc` demuxers with the `cc_dec` decoder read the golden
+  files back as the same text (FFmpeg's SCC demuxer times each line from its first byte pair, so its start times are a
+  few frames earlier than the caption's display; its MCC timing matches to the frame).
+* Malformed and hostile files: every reader bounds sizes (64 MiB), counts (100,000 cues), nesting (32 levels of XML) and
+  times; `fuzz_captions` runs every reader on each input, `fuzz_audio_post` the AAF and OMF readers.
+
 ## Lottie (motion graphics, C.13)
 
 `importLottie` (`Lottie.h`, `src/LottieImporter.cpp`) reads Bodymovin JSON into a `Graphic` (not a timeline): shape,
@@ -334,7 +463,7 @@ with more ground-truth samples (py-premiere has ~80) before turning it on.
 * Bins (X.1): FCP7 bins and FCPXML events and keyword collections become bins below the import bin. Not read:
   `.prproj` bins (the project view's tree is not mapped yet), FCPXML keyword collections beyond a media item's first,
   smart collections. The exporters write no bins.
-* Not supported yet: AAF, `.otioz`, OTIO `ImageSequenceReference`, OTIO nested `Track` items, multicam angle switches
+* Not supported yet: AAF and OMF import (P.2 exports them), `.otioz`, OTIO `ImageSequenceReference`, OTIO nested `Track` items, multicam angle switches
   in Premiere `.prproj` files, generators other than titles.
 * Nested and multicam sequences (C.8) are built before the sequences that use them; `ImportResult::sequences` keeps the
   parsers' order: a parent sequence comes before the sequences nested in it (FCP7 right after it, FCPXML after the project
@@ -367,5 +496,14 @@ with more ground-truth samples (py-premiere has ~80) before turning it on.
   the OTIO FCP7/FCPX/CMX3600 adapters (alignment cut points, exploded stereo tracks, sample files).
 * CMX 3600 EDL specification (event/M2 column layout, edit types); Avid/Resolve comment conventions
   (`* FROM CLIP NAME:`, `* LOC:`, `AUD`).
+* AAF Object Specification and AAF Low-Level Container Specification (AMWA); Microsoft [MS-CFB] Compound File Binary
+  File Format; pyaaf2 (MIT) for the baseline model tables and as a validator; LibAAF's `aaftool` as a validator.
+* OMF Interchange Specification 2.1 (Avid, 1997: classes, data types, the audio effects dictionary); Bento
+  Specification 1.0d5 (Apple, 1993: label and TOC format); deck2omf's notes and `bentodump` (GPL-2.0) on the Bento
+  variant OMF files use (standard object IDs, reference lists).
+* Adobe Premiere Pro help: Export AAF files, Export OMF files, Export settings reference (Captions).
+* CEA-608 / EIA-608 (character sets, control codes, preamble address codes), SCC (Scenarist) and MCC (MacCaption VANC,
+  SMPTE 334 CDPs) as FFmpeg's `ccaption_dec`, `sccenc`, `mccenc` read and write them; EBU Tech 3264 (STL); W3C TTML1,
+  DFXP, SMPTE ST 2052-1 (SMPTE-TT); Apple iTT; ATSC A/53 Part 4 (caption SEI).
 * py-premiere (MIT) and its ExtendScript ground-truth samples; Adobe Premiere Pro Scripting Guide (Time,
   TrackItem); OpenNeuro ds004505 (CC0) and other public `.prproj` files examined during the spike.

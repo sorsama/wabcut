@@ -181,6 +181,11 @@ std::vector<TimelineView*> timelineViews(const ProjectController* controller) {
 
 } // namespace
 
+/// p02 audio: a strip's effect slots, for the submix strips (AudioMixerRouting.cpp).
+QVariantList mixerEffectsOf(const EffectStack& stack) {
+    return effectsOf(stack);
+}
+
 /// A measuring job on a worker thread: dry runs over a copy of the project.
 struct AudioMixerBridge::Job {
     CancelControl control;
@@ -294,7 +299,7 @@ void AudioMixerBridge::rebuild() {
             m_trackOrder.push_back(t.id);
             const QString key = trackKey(t.id);
             const QVariantMap row = rows[key];
-            strips.append(QVariantMap{
+            QVariantMap strip{
                 {QStringLiteral("key"), key},
                 {QStringLiteral("name"), QString::fromStdString(t.name)},
                 {QStringLiteral("shortName"), row.value(QStringLiteral("shortName"), QStringLiteral("A%1").arg(i + 1))},
@@ -310,7 +315,9 @@ void AudioMixerBridge::rebuild() {
                 {QStringLiteral("automation"), automationMode(key)},
                 {QStringLiteral("meter"), static_cast<int>(i)},
                 {QStringLiteral("effects"), effectsOf(t.effects)},
-            });
+            };
+            addRouting(strip, t, *seq); // p02 audio: output and sends
+            strips.append(strip);
         }
         const bool limiter = !seq->audioEffects.empty() && seq->audioEffects.back().effect == "wabcut.audio.limiter";
         master = {{QStringLiteral("effects"), effectsOf(seq->audioEffects)},
@@ -319,11 +326,23 @@ void AudioMixerBridge::rebuild() {
                   {QStringLiteral("automated"), seq->masterVolume.isCurve()},
                   {QStringLiteral("automation"), automationMode(QStringLiteral("master"))}};
     }
+    // p02 audio: the submix strips and the output choices.
+    QVariantList submixes;
+    QVariantList outputs;
+    m_submixOrder.clear();
+    if (seq) {
+        for (const TrackPtr& t : seq->submixTracks)
+            m_submixOrder.push_back(t->id);
+        submixes = buildSubmixes(*seq);
+        outputs = buildOutputs(*seq);
+    }
     updateFaderValues();
-    if (strips == m_strips && master == m_master)
+    if (strips == m_strips && master == m_master && submixes == m_submixes && outputs == m_outputs)
         return;
     m_strips = strips;
     m_master = master;
+    m_submixes = submixes;
+    m_outputs = outputs;
     emit stripsChanged();
 }
 
@@ -341,6 +360,23 @@ QVariantList AudioMixerBridge::effectTypes() const {
         out.append(QVariantMap{{QStringLiteral("id"), QString::fromLatin1(id)},
                                {QStringLiteral("name"), d ? fromView(d->displayName) : shortEffectName(id)},
                                {QStringLiteral("shortName"), shortEffectName(id)}});
+    }
+    // p02 audio: then the rest of the audio effects (Premiere's catalog), by category: "Delay and Echo › Analog Delay".
+    std::vector<const EffectDescriptor*> rest;
+    for (const EffectDescriptor& d : EffectRegistry::builtin().all()) {
+        if (d.kind != EffectKind::Audio || d.intrinsic
+            || std::ranges::any_of(kAudioEffects, [&](const char* id) { return d.id == id; }))
+            continue;
+        rest.push_back(&d);
+    }
+    std::ranges::stable_sort(rest, [](const EffectDescriptor* a, const EffectDescriptor* b) {
+        return std::pair{a->category, a->displayName} < std::pair{b->category, b->displayName};
+    });
+    for (const EffectDescriptor* d : rest) {
+        out.append(QVariantMap{{QStringLiteral("id"), fromView(d->id)},
+                               {QStringLiteral("name"), QStringLiteral("%1 › %2").arg(fromView(d->category), fromView(d->displayName))},
+                               {QStringLiteral("category"), fromView(d->category)},
+                               {QStringLiteral("shortName"), shortEffectName(d->id)}});
     }
     return out;
 }
@@ -432,10 +468,8 @@ const ParamValue* AudioMixerBridge::modelParam(const QString& target, const QStr
     if (target == QLatin1String("master"))
         return param == QLatin1String("volume") ? &seq->masterVolume : nullptr;
     const auto id = parseTrackKey(target);
-    for (const TrackPtr& t : seq->audioTracks) {
-        if (id && t->id == *id)
-            return param == QLatin1String("pan") ? &t->pan : &t->volume;
-    }
+    if (const Track* t = id ? seq->findAudioBus(*id) : nullptr) // p02 audio: a submix's fader too
+        return param == QLatin1String("pan") ? &t->pan : &t->volume;
     return nullptr;
 }
 
@@ -453,10 +487,8 @@ const ParamValue* paramIn(const Sequence& seq, const QString& target, const QStr
     if (target == QLatin1String("master"))
         return param == QLatin1String("volume") ? &seq.masterVolume : nullptr;
     const auto id = parseTrackKey(target);
-    for (const TrackPtr& t : seq.audioTracks) {
-        if (id && t->id == *id)
-            return param == QLatin1String("pan") ? &t->pan : &t->volume;
-    }
+    if (const Track* t = id ? seq.findAudioBus(*id) : nullptr) // p02 audio: a submix's fader too
+        return param == QLatin1String("pan") ? &t->pan : &t->volume;
     return nullptr;
 }
 
@@ -728,6 +760,8 @@ void AudioMixerBridge::updateFaderValues() {
         };
         for (const TrackPtr& t : seq->audioTracks)
             values.insert(trackKey(t->id), row(trackKey(t->id)));
+        for (const TrackPtr& t : seq->submixTracks)
+            values.insert(trackKey(t->id), row(trackKey(t->id)));
         values.insert(QStringLiteral("master"), row(QStringLiteral("master")));
     }
     pushLiveMix();
@@ -911,7 +945,7 @@ void AudioMixerBridge::pollMeters() {
         playback::TimelineAudioPlayer* player = session ? session->audioPlayer() : nullptr;
         if (!player)
             return std::nullopt;
-        return index < 0 ? player->masterMeter() : player->trackMeter(index);
+        return index <= -2 ? player->submixMeter(-2 - index) : index < 0 ? player->masterMeter() : player->trackMeter(index);
     };
     const auto reading = [&](int index) -> std::optional<MeterReading> {
         if (m_meterSource)
@@ -961,6 +995,8 @@ void AudioMixerBridge::pollMeters() {
     };
     for (std::size_t i = 0; i < m_trackOrder.size(); ++i)
         update(trackKey(m_trackOrder[i]), static_cast<int>(i));
+    for (std::size_t k = 0; k < m_submixOrder.size(); ++k)
+        update(trackKey(m_submixOrder[k]), -2 - static_cast<int>(k));
     update(QStringLiteral("master"), -1);
     if (changed)
         emit metersUpdated();
@@ -987,6 +1023,9 @@ void AudioMixerBridge::clearClip(const QString& key) {
             const auto pos = id ? std::ranges::find(m_trackOrder, *id) : m_trackOrder.end();
             if (pos != m_trackOrder.end())
                 player->clearTrackClip(static_cast<int>(pos - m_trackOrder.begin()));
+            const auto sub = id ? std::ranges::find(m_submixOrder, *id) : m_submixOrder.end();
+            if (sub != m_submixOrder.end())
+                player->clearSubmixClip(static_cast<int>(sub - m_submixOrder.begin()));
         }
     }
 }

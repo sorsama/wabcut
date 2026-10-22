@@ -10,10 +10,15 @@
 #include "BridgeIds.h"
 #include "EditCursors.h"
 #include "EffectControls.h"
+#include "EffectPresetsBridge.h"
 
+#include <wabcut/model/Animations.h>
+#include <wabcut/model/ClipGroups.h>
+#include <wabcut/model/EffectPresets.h>
 #include <wabcut/model/Effects.h>
 #include <wabcut/model/FinishingOps.h>
 #include <wabcut/model/ProjectOps.h>
+#include <wabcut/model/GraphicOps.h>
 #include <wabcut/model/Snap.h>
 #include <wabcut/model/Timecode.h>
 
@@ -24,6 +29,7 @@
 #include <QKeyEvent>
 #include <QMouseEvent>
 #include <QQuickWindow>
+#include <QRandomGenerator>
 #include <QStyleHints>
 
 #include <algorithm>
@@ -51,8 +57,9 @@ void TimelineView::setTool(const QString& key) {
         return;
     cancelGesture();
     const bool band = volumeBandShown();
+    const bool pen = m_tool == TimelineTool::Pen; // 0.2: the pen also shows the video clips' opacity band
     m_tool = *tool;
-    if (volumeBandShown() != band)
+    if (volumeBandShown() != band || (m_tool == TimelineTool::Pen) != pen)
         m_pendingAll = true; // the pen tool shows the volume rubber band
     // The pointer may sit over the lanes (a key switched the tool): its cursor and edge follow at once.
     setHoverEdge({});
@@ -112,8 +119,8 @@ std::vector<Ticks> TimelineView::localSnapTargets(Ticks t) const {
     return targets;
 }
 
-Ticks TimelineView::snappedTimeAt(double x, std::optional<Ticks>* snappedAt) const {
-    const Ticks t = snapToFrame(ticksAtX(x), frameRate());
+Ticks TimelineView::snappedTimeAt(double x, std::optional<Ticks>* snappedAt, std::optional<Rate> rate) const {
+    const Ticks t = snapToFrame(ticksAtX(x), rate.value_or(frameRate()));
     if (snappedAt)
         snappedAt->reset();
     if (!m_snapping)
@@ -285,6 +292,8 @@ TimelineView::Hit TimelineView::hitTest(double x, double y) const {
     hit.row = rowAt(y);
     if (hit.row < 0)
         return hit;
+    if (const Hit fade = fadeHit(x, y, hit.row); fade.zone == Zone::FadeHandle)
+        return fade; // 0.2: a selected clip's fade handles, in its top corners (TimelineViewFade.cpp)
     // Transitions sit over the edit point: they take the press before the clips' edges.
     if (const Hit transition = transitionHit(x, hit.row); transition.transition)
         return transition;
@@ -340,6 +349,48 @@ GestureKind TimelineView::gestureFor(const Hit& hit, Qt::KeyboardModifiers mods)
         break;
     }
     return GestureKind::None;
+}
+
+std::optional<std::vector<ClipId>> TimelineView::groupEdgeMembers(const Hit& hit, Qt::KeyboardModifiers mods) const {
+    if (!m_sequence || !hit.clip || (hit.zone != Zone::Head && hit.zone != Zone::Tail) || (mods & Qt::AltModifier))
+        return std::nullopt;
+    const auto grabbed = m_sequence->findClip(hit.clip);
+    if (!grabbed || !grabbed->clip().group.isValid())
+        return std::nullopt;
+    const bool head = hit.zone == Zone::Head;
+    const Clip& clip = grabbed->clip();
+    const std::vector<ClipId> group = edit::withGroupedClips(*m_sequence, std::span(&hit.clip, 1));
+    Ticks outer = head ? clip.start() : clip.end();
+    std::vector<std::pair<ClipId, const Clip*>> members;
+    for (const ClipId id : group) {
+        const auto loc = m_sequence->findClip(id);
+        if (!loc)
+            continue;
+        const Clip& c = loc->clip();
+        if (c.group != clip.group)
+            continue; // a linked partner outside the group follows its member (or not, without linked selection)
+        outer = head ? std::min(outer, c.start()) : std::max(outer, c.end());
+        members.emplace_back(id, &c);
+    }
+    if ((head ? clip.start() : clip.end()) != outer)
+        return std::vector<ClipId>{}; // an inner edge: Premiere trims only a group's outer edges
+    std::vector<ClipId> out{hit.clip};
+    const bool links = followLinks(mods);
+    std::vector<LinkGroupId> linked;
+    if (links && clip.linkGroup.isValid())
+        linked.push_back(clip.linkGroup);
+    for (const auto& [id, c] : members) {
+        if (id == hit.clip || (head ? c->start() : c->end()) != outer)
+            continue;
+        // With links followed, one member per link group: its partners trim with it.
+        if (links && c->linkGroup.isValid()) {
+            if (std::ranges::find(linked, c->linkGroup) != linked.end())
+                continue;
+            linked.push_back(c->linkGroup);
+        }
+        out.push_back(id);
+    }
+    return out;
 }
 
 // ---- Mouse --------------------------------------------------------------------------------------------------------
@@ -433,6 +484,12 @@ void TimelineView::mousePressEvent(QMouseEvent* event) {
         }
         return;
     }
+    if (hit.zone == Zone::FadeHandle) {
+        m_pressHit = hit;
+        m_pressClip = hit.clip;
+        pressFade(hit);
+        return;
+    }
     if (hit.zone == Zone::SpeedKey || hit.zone == Zone::SpeedLine) {
         m_pressHit = hit;
         m_pressClip = hit.clip;
@@ -519,6 +576,9 @@ void TimelineView::mouseMoveEvent(QMouseEvent* event) {
         return;
     case Drag::Speed:
         dragSpeed(pos);
+        return;
+    case Drag::Fade:
+        dragFade(pos);
         return;
     case Drag::Remix:
         if (m_remix && m_controller) {
@@ -672,6 +732,9 @@ void TimelineView::mouseReleaseEvent(QMouseEvent* event) {
     case Drag::Speed:
         releaseSpeed(event->position());
         break;
+    case Drag::Fade:
+        releaseFade();
+        break;
     case Drag::Remix:
         if (m_remix) {
             const RemixDrag r = *m_remix;
@@ -755,7 +818,9 @@ void TimelineView::updateHoverCursor(QPointF pos, Qt::KeyboardModifiers mods) {
 // ---- Edit cursors (0.1.3) -------------------------------------------------------------------------------------------
 
 QString TimelineView::hoverCursorKey(const Hit& hit, Qt::KeyboardModifiers mods) const {
-    const bool edge = hit.zone == Zone::Head || hit.zone == Zone::Tail;
+    // 0.2: a group's inner edges do not trim (the group moves), its outer edges do.
+    const auto groupEdge = m_tool == TimelineTool::Select ? groupEdgeMembers(hit, mods) : std::nullopt;
+    const bool edge = (hit.zone == Zone::Head || hit.zone == Zone::Tail) && !(groupEdge && groupEdge->empty());
     const bool head = hit.zone == Zone::Head;
     const auto trim = [&](bool ripple) {
         return ripple ? (head ? QStringLiteral("rippleHead") : QStringLiteral("rippleTail"))
@@ -763,6 +828,8 @@ QString TimelineView::hoverCursorKey(const Hit& hit, Qt::KeyboardModifiers mods)
     };
     switch (m_tool) {
     case TimelineTool::Select:
+        if (hit.zone == Zone::FadeHandle)
+            return QStringLiteral("resizeH"); // 0.2: a fade handle drags sideways
         if (hit.zone == Zone::VolumeKey || hit.zone == Zone::SpeedKey)
             return QStringLiteral("point");
         if (hit.zone == Zone::VolumeLine || hit.zone == Zone::SpeedLine)
@@ -775,6 +842,8 @@ QString TimelineView::hoverCursorKey(const Hit& hit, Qt::KeyboardModifiers mods)
     case TimelineTool::TrackBackward:
         return hit.row >= 0 ? QStringLiteral("trackBackward") : QString();
     case TimelineTool::Ripple:
+        if (hit.zone == Zone::FadeHandle)
+            return QStringLiteral("resizeH");
         return edge ? trim(true) : QString();
     case TimelineTool::Roll:
         return edge ? QStringLiteral("roll") : QString();
@@ -839,6 +908,10 @@ TimelineView::HoverEdge TimelineView::hoverEdgeFor(const Hit& hit, Qt::KeyboardM
     HoverEdge edge;
     if (!hit.clip || hit.transition || (hit.zone != Zone::Head && hit.zone != Zone::Tail))
         return edge;
+    if (m_tool == TimelineTool::Select) {
+        if (const auto group = groupEdgeMembers(hit, mods); group && group->empty())
+            return edge; // a group's inner edge: the group moves (0.2)
+    }
     switch (m_tool) {
     case TimelineTool::Select:
         edge.kind = (mods & Qt::ControlModifier) ? EdgeKind::Ripple : EdgeKind::Trim;
@@ -927,7 +1000,19 @@ void TimelineView::keyReleaseEvent(QKeyEvent* event) {
 void TimelineView::razorClick(double x, int row, Qt::KeyboardModifiers mods) {
     if (!m_controller || row < 0)
         return;
-    const Ticks at = snappedTimeAt(x);
+    // 0.2, Show Audio Time Units: the razor cuts an audio clip between frames, on a sample, when no video is cut
+    // with it (Shift cuts every track; its linked video follows unless Alt).
+    std::optional<Rate> rate;
+    if (m_audioTimeUnits && m_sequence && !(mods & Qt::ShiftModifier)) {
+        const Track& track = *m_rows[static_cast<std::size_t>(row)].track;
+        if (const auto index = track.clipIndexAt(ticksAtX(x))) {
+            const ClipId clip = track.clips[*index].id;
+            const std::vector<ClipId> cut = followLinks(mods) ? edit::withLinkedClips(*m_sequence, std::vector<ClipId>{clip})
+                                                              : std::vector<ClipId>{clip};
+            rate = editRate(cut);
+        }
+    }
+    const Ticks at = snappedTimeAt(x, nullptr, rate);
     m_controller->razorAt(m_rows[static_cast<std::size_t>(row)].track->id, at, mods & Qt::ShiftModifier,
                           !followLinks(mods));
 }
@@ -963,6 +1048,17 @@ bool TimelineView::startGesture() {
     Gesture g;
     g.spec.kind = m_pendingKind;
     g.spec.links = followLinks(m_pressMods) ? edit::LinkMode::FollowLinks : edit::LinkMode::IgnoreLinks;
+    // 0.2, Premiere's groups: a trim on a grouped clip trims the group's outer edge (every member whose edge it is); an
+    // inner edge moves the group instead. Alt trims the clip alone.
+    std::vector<ClipId> groupEdges;
+    if (g.spec.kind == GestureKind::Trim || g.spec.kind == GestureKind::RippleTrim) {
+        if (const auto members = groupEdgeMembers(m_pressHit, m_pressMods)) {
+            if (members->empty())
+                g.spec.kind = GestureKind::Move;
+            else
+                groupEdges.assign(members->begin() + 1, members->end()); // a trim or a ripple of the outer edge
+        }
+    }
     const bool multi = g.spec.kind == GestureKind::Move || g.spec.kind == GestureKind::Slip;
     std::vector<ClipId> clips = multi ? m_controller->selection() : std::vector<ClipId>{};
     ClipId grabbed = m_pressClip;
@@ -973,6 +1069,7 @@ bool TimelineView::startGesture() {
     std::erase(clips, grabbed);
     clips.insert(clips.begin(), grabbed);
     g.spec.clips = clips;
+    g.spec.groupTrim = std::move(groupEdges);
     g.grabbed = grabbed;
     const auto loc = seq.findClip(grabbed);
     const auto position = loc ? seq.trackPosition(loc->track->id) : std::nullopt;
@@ -985,9 +1082,13 @@ bool TimelineView::startGesture() {
         || g.spec.kind == GestureKind::RateStretch)
         g.spec.edge = m_pressHit.zone == Zone::Head ? edit::Edge::Head : edit::Edge::Tail;
 
-    // The material the gesture moves: the clips plus (unless Alt) their linked partners.
+    // The material the gesture moves: the clips (and a group trim's other members) plus (unless Alt) their linked
+    // partners.
+    std::vector<ClipId> material = g.spec.clips;
+    material.insert(material.end(), g.spec.groupTrim.begin(), g.spec.groupTrim.end());
     const std::vector<ClipId> involved =
-        g.spec.links == edit::LinkMode::FollowLinks ? edit::withLinkedClips(seq, g.spec.clips) : g.spec.clips;
+        g.spec.links == edit::LinkMode::FollowLinks ? edit::withLinkedClips(seq, material) : material;
+    g.rate = editRate(involved); // 0.2: samples for audio-only material with audio time units on
     std::unordered_set<std::uint64_t> moving;
     for (ClipId id : involved)
         moving.insert(id.value);
@@ -1063,8 +1164,9 @@ void TimelineView::updateGesture(QPointF pos, Qt::KeyboardModifiers mods) {
     Gesture& g = m_gesture;
     const Rate rate = frameRate();
     const double seconds = (pos.x() - m_pressPos.x()) / std::max(1e-6, m_pps);
+    const bool samples = g.rate != rate; // 0.2: audio time units on audio-only material
     Ticks delta = snapToFrame(Ticks{static_cast<std::int64_t>(std::llround(seconds * static_cast<double>(kTicksPerSecond)))},
-                              rate);
+                              g.rate);
     std::optional<Ticks> snapped;
     if (m_snapping && !g.edges.empty()) {
         const SnapResult snap = snapDelta(g.edges, delta, g.targets, snapTolerance());
@@ -1134,7 +1236,9 @@ void TimelineView::updateGesture(QPointF pos, Qt::KeyboardModifiers mods) {
         }
     } else {
         const Ticks applied = g.appliedDelta;
-        const QString amount = QString::fromStdString(ticksToTimecode(applied.value < 0 ? -applied : applied, rate, dropFrame));
+        const Ticks magnitude = applied.value < 0 ? -applied : applied;
+        const QString amount = samples ? m_controller->formatAudioTime(magnitude)
+                                       : QString::fromStdString(ticksToTimecode(magnitude, rate, dropFrame));
         m_gestureReadout = (applied.value < 0 ? QStringLiteral("−") : QStringLiteral("+")) + amount;
         if (g.spec.kind == GestureKind::Move && g.spec.moveMode == edit::MoveMode::Insert)
             m_gestureReadout = tr("Insert %1").arg(m_gestureReadout);
@@ -1331,14 +1435,47 @@ std::optional<TimelineView::EdgeTarget> TimelineView::edgeTargetAt(double x, int
 
 TimelineView::DropPlan TimelineView::planDrop(double x, double y, const QString& effectId) const {
     DropPlan plan;
-    const EffectDescriptor* desc = EffectRegistry::builtin().find(effectId.toStdString());
-    if (!m_controller || !desc || desc->intrinsic) {
-        plan.message = tr("Unknown effect");
+    // 0.2: a Text Style from the Library ("textStyle:<name>") styles every text layer of the graphic clip it lands on.
+    if (effectId.startsWith(QLatin1String("textStyle:"))) {
+        plan.kind = QStringLiteral("clip");
+        const QString name = effectId.mid(10);
+        const SequencePtr seq = m_controller ? m_controller->currentSequence() : nullptr;
+        const ProjectSnapshot snap = m_controller ? m_controller->snapshot() : nullptr;
+        if (!seq || !snap || !snap->findTextStyle(name.toStdString())) {
+            plan.message = tr("Unknown text style");
+            return plan;
+        }
+        const int row = rowAt(y);
+        const ClipId clip = clipIdAt(x, y);
+        const auto loc = clip ? seq->findClip(clip) : std::nullopt;
+        if (!loc || row < 0) {
+            plan.message = tr("Drop %1 on a graphic clip").arg(name);
+            return plan;
+        }
+        const Graphic* graphic = loc->clip().graphic();
+        if (!graphic || edit::textLayerIds(*graphic).empty()) {
+            plan.message = tr("%1 is a text style: drop it on a graphic with text").arg(name);
+            return plan;
+        }
+        const Row& r = m_rows[static_cast<std::size_t>(row)];
+        const double x0 = xOfTicks(loc->clip().start());
+        plan.rect = QRectF(x0, r.y - m_scrollY, xOfTicks(loc->clip().end()) - x0, r.height);
+        plan.clip = clip;
+        plan.ok = true;
+        plan.message = tr("Apply %1").arg(name);
         return plan;
     }
-    const QString name = QCoreApplication::translate("wabcut::app::EffectControlsModel", desc->displayName.data());
+    // 0.2: presets from the Effects panel ("preset:<name>") drop on clips like effects.
+    const auto preset = effectPresetForItem(m_controller, effectId);
+    const EffectDescriptor* desc = preset ? nullptr : EffectRegistry::builtin().find(effectId.toStdString());
+    if (!m_controller || (!preset && (!desc || desc->intrinsic))) {
+        plan.message = effectId.startsWith(QLatin1String("preset:")) ? tr("Unknown preset") : tr("Unknown effect");
+        return plan;
+    }
+    const QString name = preset ? QString::fromStdString(preset->name)
+                                : QCoreApplication::translate("wabcut::app::EffectControlsModel", desc->displayName.data());
     const int row = rowAt(y);
-    const bool transition = desc->kind == EffectKind::VideoTransition || desc->kind == EffectKind::AudioTransition;
+    const bool transition = desc && (desc->kind == EffectKind::VideoTransition || desc->kind == EffectKind::AudioTransition);
     const SequencePtr seq = m_controller->currentSequence();
     if (!seq)
         return plan;
@@ -1350,7 +1487,8 @@ TimelineView::DropPlan TimelineView::planDrop(double x, double y, const QString&
             plan.message = tr("Drop %1 on a clip").arg(name);
             return plan;
         }
-        const StreamKind want = desc->kind == EffectKind::Video ? StreamKind::Video : StreamKind::Audio;
+        const EffectKind kind = preset ? preset->kind() : desc->kind;
+        const StreamKind want = kind == EffectKind::Video ? StreamKind::Video : StreamKind::Audio;
         bool fits = loc->clip().stream.kind == want;
         if (!fits) {
             const ClipId ids[] = {clip};
@@ -1369,7 +1507,7 @@ TimelineView::DropPlan TimelineView::planDrop(double x, double y, const QString&
         plan.rect = QRectF(x0, r.y - m_scrollY, xOfTicks(loc->clip().end()) - x0, r.height);
         plan.clip = clip;
         plan.ok = true;
-        plan.message = tr("Add %1").arg(name);
+        plan.message = preset ? tr("Apply %1").arg(name) : tr("Add %1").arg(name);
         return plan;
     }
 
@@ -1460,10 +1598,40 @@ QString TimelineView::dropEffect(double x, double y, const QString& effectId) {
     const DropPlan plan = planDrop(x, y, effectId);
     if (!plan.ok || !m_controller)
         return plan.message;
+    if (plan.kind == QLatin1String("clip") && effectId.startsWith(QLatin1String("textStyle:"))) {
+        const SequenceId seqId = m_controller->currentSequenceId();
+        const ClipId clip = plan.clip;
+        const std::string name = effectId.mid(10).toStdString();
+        const bool ok = m_controller->applyEditFn(
+            QT_TRANSLATE_NOOP("wabcut::app::GraphicToolsBridge", "Apply Text Style"), [&](const ProjectState& state) -> edit::EditOutcome {
+                const Sequence* seq = state.findSequence(seqId);
+                const auto loc = seq ? seq->findClip(clip) : std::nullopt;
+                const Graphic* graphic = loc ? loc->clip().graphic() : nullptr;
+                if (!graphic)
+                    return std::unexpected(Error(ErrorCode::NotFound, "the graphic clip is gone"));
+                return edit::applyTextStyle(state, seqId, clip, edit::textLayerIds(*graphic), name);
+            });
+        return ok ? QString() : m_controller->lastError();
+    }
+    if (plan.kind == QLatin1String("clip") && effectId.startsWith(QLatin1String("preset:"))) {
+        // A preset dropped on either half of a linked clip applies to the half of its kind (and skips the other).
+        const SequencePtr seq = m_controller->currentSequence();
+        const ClipId ids[] = {plan.clip};
+        std::vector<ClipId> clips = seq ? edit::withLinkedClips(*seq, ids) : std::vector<ClipId>{plan.clip};
+        if (std::find(clips.begin(), clips.end(), plan.clip) == clips.end())
+            clips.push_back(plan.clip);
+        return applyEffectPresetToClips(*m_controller, clips, effectId.mid(7));
+    }
     if (plan.kind == QLatin1String("clip"))
         return m_controller->effectControls()->addEffectToClip(clipKey(plan.clip), effectId);
     const SequenceId seqId = m_controller->currentSequenceId();
-    const edit::EdgeTransition spec = *plan.transition;
+    edit::EdgeTransition spec = *plan.transition;
+    if (spec.spec.effect == kSurpriseAnimation) {
+        // 0.2 Surprise Me: a new pick each drop (the model alone would pick the same one again after an undo).
+        PickedAnimation picked = surpriseAnimation(QRandomGenerator::global()->generate64(), std::move(spec.spec.params));
+        spec.spec.effect = std::move(picked.effect);
+        spec.spec.params = std::move(picked.params);
+    }
     const edit::HandleFit fit = plan.fit;
     std::optional<TransitionId> created;
     const bool ok = m_controller->applyEditFn(QT_TRANSLATE_NOOP("wabcut::app::ProjectController", "Add Transition"),

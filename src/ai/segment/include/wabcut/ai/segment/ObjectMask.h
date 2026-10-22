@@ -21,6 +21,13 @@
 // frame has no matte (not tracked there, the cache cleared, another computer) the box stands in, and a redaction
 // covers it, never nothing.
 //
+// Nested and multicam clips (0.2): the three commands segment what the clip shows - the nested sequence's canvas, a
+// multicam source's active angle, rendered by the export renderer at nested time (SegmentServices::nestedFrames) -
+// and the mask goes on the clip itself, its matte naming the nested sequence (MaskMatte::sequence) at nested time (the
+// clip's curve time). Nothing is flattened: a multicam clip switches angles as before and its mask stays where it was
+// on the frame (as a tracked mask does in Premiere); mask.propagate re-tracks the angle it shows then. The cuts inside
+// the nest (its clips' edit points on the tracks the clip shows) stop the tracking like shot cuts.
+//
 // No redaction is made here: redaction.* stay out of the assistant's reach. The app makes AI-tracked redactions with
 // segmentObject() and objectMask() (a Redaction whose region is the matte mask).
 
@@ -69,6 +76,8 @@ public:
     using SegmenterFactory = std::function<std::expected<std::shared_ptr<Segmenter>, Error>(std::stop_token)>;
     using FrameOpener = std::function<std::expected<std::unique_ptr<FrameSource>, Error>(const MediaItem& media, int videoStream)>;
     using Fingerprinter = std::function<std::expected<std::uint64_t, Error>(const MediaItem& media)>;
+    /// What a nested or multicam clip of `state` shows, at nested sequence time (NestedFrameSource in full builds).
+    using NestedFrameOpener = std::function<std::expected<std::unique_ptr<FrameSource>, Error>(const ProjectState& state, const Clip& clip)>;
 
     /// The model, for one run at a time (it may wait for the helper to start and load). Called only when the cache does
     /// not have the run.
@@ -77,6 +86,8 @@ public:
     std::string model;
     FrameOpener frames;
     Fingerprinter fingerprint;
+    /// 0.2: nested and multicam clips' pictures. Null: such clips are refused with the reason.
+    NestedFrameOpener nestedFrames;
     /// The analysis cache root the tracks go to (MatteStore).
     std::filesystem::path cacheRoot;
     /// "subject" prompts: faces, and COCO objects (FrameDetections::objects). Null: they fail with Unsupported.
@@ -119,6 +130,19 @@ std::expected<ObjectResult, Error> segmentObject(SegmentServices& services, anal
                                                  int videoStream, const ObjectRequest& request, std::stop_token stop = {},
                                                  const std::function<bool(double, const std::string&)>& checkpoint = {});
 
+/// 0.2: `request` on what nested or multicam clip `clip` of `state` shows (SegmentServices::nestedFrames), at nested
+/// sequence time: prompts, span and frames are nested times (clip.sourceTimeAt). The cuts are the nest's edit points
+/// on the tracks the clip shows (nestedCuts). Errors: as segmentObject(), InvalidArgument for a clip that is not nested.
+std::expected<ObjectResult, Error> segmentNested(SegmentServices& services, const ProjectState& state, const Clip& clip,
+                                                 const ObjectRequest& request, std::stop_token stop = {},
+                                                 const std::function<bool(double, const std::string&)>& checkpoint = {});
+/// The identity of what nested clip `clip` shows: a hash of its nested sequences (every level), the media they use and
+/// the clip's angles. Edits inside the nest change it; edits elsewhere in the project do not.
+std::uint64_t nestedFingerprint(const ProjectState& state, const Clip& clip);
+/// The edit points inside nested clip `clip`'s sequence on the video tracks it shows (nested time, sorted, without 0
+/// and the end).
+std::vector<Ticks> nestedCuts(const ProjectState& state, const Clip& clip);
+
 /// A subject on a picture: the box of the detection of `kind` ("face", or a COCO class name: "person", "car", "dog",
 /// ...) that best fits: of colour `colour` when given ("red", "orange", "yellow", "green", "cyan", "blue", "purple",
 /// "pink", "white", "black", "grey"), then by `pick` ("largest", "center", "left", "right"). Errors: InvalidArgument
@@ -126,14 +150,19 @@ std::expected<ObjectResult, Error> segmentObject(SegmentServices& services, anal
 std::expected<MatteBox, Error> findSubject(vision::SubjectDetector& detector, const search::Image& picture, double aspect,
                                            std::string_view kind, std::string_view colour, std::string_view pick,
                                            std::stop_token stop = {});
+/// `picture` (any size, the frame stretched, as FrameSource::pictureAt gives it) resampled to its display aspect,
+/// `longSide` on the long side: what the detectors expect.
+search::Image naturalPicture(const search::Image& picture, double aspect, int longSide = 640);
 /// The 80 COCO class names, in class order.
 std::span<const std::string_view> cocoClassNames();
 
 /// The matte mask showing `track` of `media`: MaskShape::Matte, its bounding box as Hold keys, `feather` and
-/// `expansion` (frame heights; negative chokes).
-Mask objectMask(const MatteTrack& track, MediaId media, std::string name, double feather = kDefaultMatteFeather, double expansion = 0.0);
+/// `expansion` (frame heights; negative chokes). `nested`: a track of a nested clip's picture (segmentNested) instead,
+/// `media` then invalid.
+Mask objectMask(const MatteTrack& track, MediaId media, std::string name, double feather = kDefaultMatteFeather, double expansion = 0.0,
+                SequenceId nested = {});
 /// Points `mask` at `track` (its matte and its bounding-box keys); its other settings stay.
-void setMatteTrack(Mask& mask, const MatteTrack& track, MediaId media);
+void setMatteTrack(Mask& mask, const MatteTrack& track, MediaId media, SequenceId nested = {});
 
 /// Adds mask.objectSelect, mask.refine and mask.propagate.
 void registerObjectMaskCommands(command::CommandRegistry& registry);

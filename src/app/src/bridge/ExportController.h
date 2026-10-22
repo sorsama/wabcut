@@ -29,9 +29,16 @@
 
 #include "ProjectController.h"
 
+#include <wabcut/ai/c2pa/ContentCredentials.h>
+
+#include <wabcut/export/ExportCommandServices.h>
 #include <wabcut/export/ExportJob.h>
+#include <wabcut/export/ExportPresets.h>
+#include <wabcut/export/WatchFolders.h>
 #include <wabcut/ai/Chat.h>
+#include <atomic>
 #include <map>
+#include <mutex>
 
 #include <QAbstractListModel>
 #include <QObject>
@@ -66,7 +73,7 @@ public:
         TitleRole,                    ///< output file name
         OutputPathRole,               ///< native path
         PresetNameRole,
-        StateRole,     ///< "jobState": "queued" | "running" | "done" | "failed" | "cancelled"
+        StateRole,     ///< "jobState": "held" | "queued" | "running" | "paused" | "done" | "failed" | "cancelled"
         PhaseTextRole, ///< "Queued", "Preparing", "Rendering", "Finishing", "Done", ...
         ProgressRole,  ///< 0..1
         FpsTextRole,   ///< "212 fps" ("" until known)
@@ -91,6 +98,7 @@ public:
         QString encoder;
         QString detail;
         bool finished = false;
+        bool held = false; ///< 0.2: sent to the queue, waiting for Start Queue (Media Encoder's "Ready")
     };
 
     explicit ExportJobModel(QObject* parent = nullptr);
@@ -105,6 +113,8 @@ public:
     const Row* update(exporter::ExportJobId queueId, const exporter::ExportJobStatus& status);
     const Row* find(const QString& jobId) const;
     void removeFinished();
+    /// 0.2: drops the row of `queueId` if it has finished (export.queue.remove).
+    void removeFinished(exporter::ExportJobId queueId);
     const std::vector<Row>& rows() const { return m_rows; }
 
 signals:
@@ -124,13 +134,37 @@ class ExportController : public QObject {
     /// the controller's engine, looked up on first use.
     Q_PROPERTY(
         wabcut::app::ProjectController* project READ project WRITE setProject NOTIFY projectChanged FINAL)
-    Q_PROPERTY(QVariantList presets READ presets CONSTANT FINAL)
+    /// 0.2: built-in presets then the user's ({..., user: true, category}); changes after Save / Import / Delete Preset.
+    Q_PROPERTY(QVariantList presets READ presets NOTIFY presetsChanged FINAL)
+    /// 0.2 (Media Encoder's Watch Folders): [{ id, folder, preset, presetName, output, moveSources, queued, done, failed,
+    /// lastError }]. Persisted (export/watchFolders).
+    Q_PROPERTY(QVariantList watchFolders READ watchFolders NOTIFY watchFoldersChanged FINAL)
+    /// 0.2: the CPU limit preference for exports, in percent of the logical processors (100 = no limit; 75, 50, 25).
+    /// Persisted (export/cpuLimit).
+    Q_PROPERTY(int cpuLimit READ cpuLimit WRITE setCpuLimit NOTIFY cpuLimitChanged FINAL)
     Q_PROPERTY(wabcut::app::ExportJobModel* jobs READ jobs CONSTANT FINAL)
     Q_PROPERTY(QVariantMap autoEncoders READ autoEncoders NOTIFY autoEncodersChanged FINAL)
     Q_PROPERTY(bool busy READ busy NOTIFY busyChanged FINAL)
     Q_PROPERTY(QString lastError READ lastError NOTIFY lastErrorChanged FINAL)
     /// "Explorer" on Windows, "Finder" on macOS, "Files" elsewhere (for "Show in …" labels).
     Q_PROPERTY(QString fileManagerName READ fileManagerName CONSTANT FINAL)
+    /// AI-15: signed C2PA Content Credentials in MP4 / MOV exports: "off", "ai" (exports with AI-generated material; the
+    /// default) or "always". A signed export carries the manifest instead of the unsigned provenance sidecar; signing
+    /// never fails an export (a warning in lastError, and the sidecar as before). Persisted; queueExport's override
+    /// "contentCredentials" decides for one export.
+    Q_PROPERTY(QString contentCredentials READ contentCredentials WRITE setContentCredentials NOTIFY contentCredentialsChanged FINAL)
+    /// The C2PA library is in this build and loads.
+    Q_PROPERTY(bool contentCredentialsAvailable READ contentCredentialsAvailable CONSTANT FINAL)
+    /// 0.2 (Premiere's Export Settings > Content Credentials and its preferences): the producer's name in the manifest
+    /// ("" = none), a thumbnail of the export in it (default on), and the request that generative AI not train on it.
+    /// Persisted (export/c2paProducer, export/c2paThumbnail, export/c2paDoNotTrain).
+    Q_PROPERTY(QString credentialsProducer READ credentialsProducer WRITE setCredentialsProducer NOTIFY contentCredentialsChanged FINAL)
+    Q_PROPERTY(bool credentialsThumbnail READ credentialsThumbnail WRITE setCredentialsThumbnail NOTIFY contentCredentialsChanged FINAL)
+    Q_PROPERTY(bool credentialsDoNotTrain READ credentialsDoNotTrain WRITE setCredentialsDoNotTrain NOTIFY contentCredentialsChanged FINAL)
+    /// The signing certificate: a PEM chain (the signing certificate first) and its PEM private key; both empty = the
+    /// per-user local identity (docs/export.md "Content Credentials"). Persisted (export/c2paCertificate, export/c2paKey).
+    Q_PROPERTY(QString credentialsCertificate READ credentialsCertificate WRITE setCredentialsCertificate NOTIFY contentCredentialsChanged FINAL)
+    Q_PROPERTY(QString credentialsKey READ credentialsKey WRITE setCredentialsKey NOTIFY contentCredentialsChanged FINAL)
 
 public:
     explicit ExportController(QObject* parent = nullptr);
@@ -146,9 +180,51 @@ public:
     bool busy() const { return m_jobs->activeCount() > 0; }
     QString lastError() const { return m_lastError; }
     QString fileManagerName() const;
+    QString contentCredentials() const { return m_contentCredentials; }
+    void setContentCredentials(const QString& mode);
+    bool contentCredentialsAvailable() const;
+    QString credentialsProducer() const { return m_credentialsProducer; }
+    void setCredentialsProducer(const QString& name);
+    bool credentialsThumbnail() const { return m_credentialsThumbnail; }
+    void setCredentialsThumbnail(bool on);
+    bool credentialsDoNotTrain() const { return m_credentialsDoNotTrain; }
+    void setCredentialsDoNotTrain(bool on);
+    QString credentialsCertificate() const { return m_credentialsCertificate; }
+    void setCredentialsCertificate(const QString& path);
+    QString credentialsKey() const { return m_credentialsKey; }
+    void setCredentialsKey(const QString& path);
+    /// What signs Content Credentials: { local (the per-user identity), ready (it exists, or the certificate reads),
+    /// subject, notAfter, error }. Never makes the local identity (the first signed export does).
+    Q_INVOKABLE QVariantMap signingIdentity() const;
 
     Q_INVOKABLE QString queueExport(const QString& sequenceId, const QString& presetId,
                                     const QVariantMap& overrides = {});
+    /// 0.2, Premiere's Quick Export: the current sequence with `presetId` to `output` ("" = the default name).
+    Q_INVOKABLE QString quickExport(const QString& presetId, const QString& output = QString());
+    /// 0.2, Send to Media Encoder / several destinations: one job per preset, the same overrides; `hold` = they wait
+    /// for Start Queue. Returns the job ids ([] with lastError on a problem: nothing is queued then).
+    Q_INVOKABLE QStringList sendToQueue(const QString& sequenceId, const QStringList& presetIds,
+                                        const QVariantMap& overrides = {}, bool hold = true);
+    /// 0.2 (Media Encoder's queue): start a held job / every held job, pause a running or queued job, resume it.
+    Q_INVOKABLE void start(const QString& jobId);
+    Q_INVOKABLE void startQueue();
+    Q_INVOKABLE void pause(const QString& jobId);
+    Q_INVOKABLE void resume(const QString& jobId);
+    /// 0.2, Save Preset: `presetId` + `overrides` under `name` -> { ok, id, error }.
+    Q_INVOKABLE QVariantMap savePreset(const QString& name, const QString& description, const QString& presetId,
+                                       const QVariantMap& overrides = {}, bool overwrite = false);
+    /// 0.2, Import Preset (a file path or URL) -> { ok, id, name, error }.
+    Q_INVOKABLE QVariantMap importPreset(const QString& file, bool overwrite = false);
+    /// 0.2: writes a preset to a file others can import.
+    Q_INVOKABLE bool exportPreset(const QString& id, const QString& file);
+    Q_INVOKABLE bool deletePreset(const QString& id);
+    /// 0.2, Watch Folders: { ok, id, error }.
+    Q_INVOKABLE QVariantMap addWatchFolder(const QString& folder, const QString& presetId, const QString& output = QString(),
+                                           bool moveSources = true);
+    Q_INVOKABLE void removeWatchFolder(const QString& id);
+    QVariantList watchFolders() const;
+    int cpuLimit() const { return m_cpuLimit; }
+    void setCpuLimit(int percent);
     /// What an export would write: { ok, error (plain language), container, videoCodec, format, resolution,
     /// frameRate, duration, frames, encoder, quality, audio, range, output,
     /// rangeAvailable: { whole, inOut, workArea } }.
@@ -168,9 +244,13 @@ public:
     void setProject(ProjectController* project);
     ProjectController* project() const;
     /// The project file media paths resolve against (MediaLocator::relativePath); default output folder.
-    void setProjectFile(std::filesystem::path file) { m_projectFile = std::move(file); }
-    /// Queues a fully built request (tests, integrations with their own settings). Returns the job id.
-    QString queueRequest(exporter::ExportRequest request, const QString& presetName);
+    void setProjectFile(std::filesystem::path file);
+    /// Queues a fully built request (tests, integrations with their own settings). Returns the job id. `credentials`:
+    /// "off", "ai" or "always" for this export ("" = the setting); a request with its own finalize step keeps it.
+    QString queueRequest(exporter::ExportRequest request, const QString& presetName, const QString& credentials = QString());
+    /// Tests: the signing identity of Content Credentials (default: the user's certificate when the settings name one,
+    /// else the per-user local identity, its key in the OS keychain).
+    void setCredentialsIdentityForTests(ai::c2pa::IdentityProvider identity) { m_testIdentity = std::move(identity); }
     /// Video source for jobs queued from now on (tests: the synthetic source). Empty = the rendered source.
     void setVideoSourceFactory(exporter::VideoSourceFactory factory) { m_videoSource = std::move(factory); }
     /// Replaces "show in file manager" (tests must not open windows). Receives the native output path.
@@ -182,6 +262,23 @@ public:
     static QString plainError(const Error& error);
     /// The text of the unsigned provenance sidecar written next to a finished export.
     static std::string provenanceSidecarText(const ai::Json& provenance);
+    /// 0.2: the user's export presets ("Export Presets" in the app's config folder; tests point it elsewhere).
+    static std::shared_ptr<exporter::PresetStore> userPresetStore();
+    static void setUserPresetFolder(const std::filesystem::path& folder);
+    /// 0.2: the export.* commands' services over this controller's queue (the assistant and the command palette).
+    std::shared_ptr<exporter::ExportCommandServices> commandServices();
+    /// Queues a request under a job id reserved before (the export commands). GUI thread.
+    QString queueRequestAs(const QString& jobId, exporter::ExportRequest request, const QString& presetName, bool hold,
+                           const QString& credentials = QString());
+    /// 0.2 Media Browser Ingest > Transcode: queues `item` alone (its whole media, at its own size and rate: a project
+    /// of its own, as a watch folder makes) with `presetId` into "<folder>/<name><extension>" (numbered when taken).
+    /// Returns the job id and the output, or the error (InvalidArgument: preset; NotFound: the folder).
+    struct Transcode {
+        QString jobId;
+        std::filesystem::path output;
+    };
+    std::expected<Transcode, Error> queueTranscode(const MediaItem& item, const QString& presetId,
+                                                   const std::filesystem::path& folder);
 
 signals:
     void projectChanged();
@@ -190,12 +287,23 @@ signals:
     void autoEncodersChanged();
     void busyChanged();
     void lastErrorChanged();
+    void contentCredentialsChanged();
+    void presetsChanged();
+    void watchFoldersChanged();
+    void cpuLimitChanged();
 
 private:
     struct Relay;
     void onStatus(const exporter::ExportJobStatus& status);
     void setLastError(const QString& text);
     SequencePtr sequenceFor(const QString& sequenceId) const;
+    /// 0.2: QML's extra override keys made into settings keys: rangeIn / rangeOut (timecodes in the sequence's rate) into
+    /// customRange, file URLs of the effects into paths.
+    std::expected<QVariantMap, Error> preparedOverrides(const QVariantMap& overrides, const Sequence* sequence) const;
+    QString newJobId();
+    exporter::ExportJobId queueIdOf(const QString& jobId) const;
+    void saveWatchFolders() const;
+    ai::c2pa::IdentityProvider credentialsIdentity() const;
 
     mutable QPointer<ProjectController> m_project;
     std::filesystem::path m_projectFile;
@@ -204,10 +312,24 @@ private:
     QString m_lastError;
     exporter::VideoSourceFactory m_videoSource;
     std::function<bool(const QString&)> m_reveal;
-    std::uint64_t m_nextJob = 1;
+    std::atomic<std::uint64_t> m_nextJob{1};
+    mutable std::mutex m_idsMutex; ///< 0.2: job ids <-> queue ids and the project file, read by the command thread
+    std::map<QString, exporter::ExportJobId> m_queueIds;
+    std::filesystem::path m_sharedProjectFile;
+    int m_cpuLimit = 100;
     std::map<exporter::ExportJobId, ai::Json> m_provenance;
+    QString m_contentCredentials = QStringLiteral("ai");
+    QString m_credentialsProducer;
+    bool m_credentialsThumbnail = true;
+    bool m_credentialsDoNotTrain = false;
+    QString m_credentialsCertificate;
+    QString m_credentialsKey;
+    std::map<exporter::ExportJobId, std::shared_ptr<std::atomic<bool>>> m_signed; ///< set when the job signed its file
+    ai::c2pa::IdentityProvider m_testIdentity;
     std::shared_ptr<Relay> m_relay; // the queue's listener posts through it; cut in the destructor
     std::unique_ptr<exporter::ExportQueue> m_queue;
+    std::shared_ptr<exporter::WatchFolderService> m_watch;              ///< 0.2: after the queue (it queues there)
+    std::shared_ptr<exporter::ExportCommandServices> m_commandServices; ///< 0.2: made on first use
     std::jthread m_probe;
 };
 

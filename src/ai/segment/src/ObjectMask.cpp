@@ -1,10 +1,13 @@
 #include <wabcut/ai/segment/ObjectMask.h>
 
 #include <wabcut/ai/analysis/AnalysisCommands.h>
+#include <wabcut/model/ProjectIO.h>
+#include <wabcut/model/Resolve.h>
 
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <set>
 
 namespace wabcut::ai::segment {
 
@@ -159,6 +162,10 @@ Keyframe holdKey(Ticks time, double value) {
 
 std::span<const std::string_view> cocoClassNames() { return kCoco; }
 
+search::Image naturalPicture(const search::Image& picture, double aspect, int longSide) {
+    return unstretched(picture, aspect > 0.0 ? aspect : 16.0 / 9.0, longSide);
+}
+
 std::expected<MatteBox, Error> findSubject(vision::SubjectDetector& detector, const search::Image& picture, double aspect,
                                            std::string_view kind, std::string_view colour, std::string_view pick, std::stop_token stop) {
     const bool face = kind == "face";
@@ -239,31 +246,29 @@ std::expected<MatteBox, Error> findSubject(vision::SubjectDetector& detector, co
     return *std::ranges::max_element(ranked, {}, score);
 }
 
-std::expected<ObjectResult, Error> segmentObject(SegmentServices& s, analysis::AnalysisProvider* shots, const MediaItem& media,
-                                                 int videoStream, const ObjectRequest& r, std::stop_token stop,
-                                                 const std::function<bool(double, const std::string&)>& checkpoint) {
-    if (r.prompts.empty() || (r.prompts.back().points.empty() && !r.prompts.back().box)) {
-        return failure(ErrorCode::InvalidArgument, "point at the object or draw a box around it");
-    }
-    if (videoStream < 0 || videoStream >= static_cast<int>(media.info.video.size())) {
-        return failure(ErrorCode::InvalidArgument, "media " + std::to_string(media.id.value) + " has no such video stream");
-    }
-    if (s.model.empty() || !s.segmenter || !s.frames || !s.fingerprint) {
-        return failure(ErrorCode::Unsupported, "no segmentation model is installed here (Settings > AI > Local models: SAM 2.1)");
-    }
-    auto fingerprint = s.fingerprint(media);
-    if (!fingerprint) {
-        return std::unexpected(fingerprint.error());
-    }
-    const double aspect = displayAspectOf(media.info.video[static_cast<std::size_t>(videoStream)]);
+namespace {
+
+/// What a run segments: a media stream, or (0.2) what a nested or multicam clip shows.
+struct PictureOrigin {
+    std::uint64_t fingerprint = 0;
+    int stream = 0;
+    double aspect = 16.0 / 9.0;
+    std::function<std::expected<std::unique_ptr<FrameSource>, Error>()> open;
+    /// The cuts the tracking stops at (null: none known).
+    std::function<std::expected<std::vector<Ticks>, Error>(std::stop_token)> cuts;
+};
+
+std::expected<ObjectResult, Error> runObject(SegmentServices& s, const PictureOrigin& origin, const ObjectRequest& r, std::stop_token stop,
+                                             const std::function<bool(double, const std::string&)>& checkpoint) {
+    const double aspect = origin.aspect;
     auto [width, height] = matteSize(aspect);
     if (r.base) {
         width = r.base->width;
         height = r.base->height;
     }
     MatteTrack key;
-    key.fingerprint = *fingerprint;
-    key.stream = videoStream;
+    key.fingerprint = origin.fingerprint;
+    key.stream = origin.stream;
     key.model = s.model;
     key.params = promptsHash(r.prompts, r.span.value_or(TimeRange{}), width, height, runKey(r));
     const std::string identity = key.identity();
@@ -304,17 +309,15 @@ std::expected<ObjectResult, Error> segmentObject(SegmentServices& s, analysis::A
     o.span = r.span;
     o.acrossShots = r.acrossShots;
     o.longSide = std::max(width, height);
-    if (!r.acrossShots && shots) {
+    if (!r.acrossShots && origin.cuts) {
         report({0.0, "Finding the shot's cuts", false, {}, 0.0f, false});
-        auto found = shots->shots(media, videoStream, analysis::ShotOptions{}, [&](double) { return !stop.stop_requested(); });
+        auto found = origin.cuts(stop);
         if (!found) {
             return std::unexpected(found.error());
         }
-        for (const analysis::ShotCut& c : found->cuts) {
-            o.cuts.push_back(c.time);
-        }
+        o.cuts = std::move(*found);
     }
-    auto frames = s.frames(media, videoStream);
+    auto frames = origin.open();
     if (!frames) {
         return std::unexpected(frames.error());
     }
@@ -365,11 +368,156 @@ std::expected<ObjectResult, Error> segmentObject(SegmentServices& s, analysis::A
     return finish(std::make_shared<const MatteTrack>(std::move(track)), std::move(result));
 }
 
-void setMatteTrack(Mask& mask, const MatteTrack& track, MediaId media) {
+std::uint64_t fnv(std::uint64_t h, std::string_view bytes) {
+    for (const char ch : bytes) {
+        h = (h ^ static_cast<unsigned char>(ch)) * 1099511628211ull;
+    }
+    return h;
+}
+
+const Sequence* nestedSequenceOf(const ProjectState& state, const Clip& clip) {
+    return clip.isNested() ? state.findSequence(clip.sequence) : nullptr;
+}
+
+} // namespace
+
+std::expected<ObjectResult, Error> segmentObject(SegmentServices& s, analysis::AnalysisProvider* shots, const MediaItem& media,
+                                                 int videoStream, const ObjectRequest& r, std::stop_token stop,
+                                                 const std::function<bool(double, const std::string&)>& checkpoint) {
+    if (r.prompts.empty() || (r.prompts.back().points.empty() && !r.prompts.back().box)) {
+        return failure(ErrorCode::InvalidArgument, "point at the object or draw a box around it");
+    }
+    if (videoStream < 0 || videoStream >= static_cast<int>(media.info.video.size())) {
+        return failure(ErrorCode::InvalidArgument, "media " + std::to_string(media.id.value) + " has no such video stream");
+    }
+    if (s.model.empty() || !s.segmenter || !s.frames || !s.fingerprint) {
+        return failure(ErrorCode::Unsupported, "no segmentation model is installed here (Settings > AI > Local models: SAM 2.1)");
+    }
+    auto fingerprint = s.fingerprint(media);
+    if (!fingerprint) {
+        return std::unexpected(fingerprint.error());
+    }
+    PictureOrigin origin;
+    origin.fingerprint = *fingerprint;
+    origin.stream = videoStream;
+    origin.aspect = displayAspectOf(media.info.video[static_cast<std::size_t>(videoStream)]);
+    origin.open = [&] { return s.frames(media, videoStream); };
+    if (shots) {
+        origin.cuts = [&, shots](std::stop_token token) -> std::expected<std::vector<Ticks>, Error> {
+            auto found = shots->shots(media, videoStream, analysis::ShotOptions{}, [&](double) { return !token.stop_requested(); });
+            if (!found) {
+                return std::unexpected(found.error());
+            }
+            std::vector<Ticks> cuts;
+            for (const analysis::ShotCut& c : found->cuts) {
+                cuts.push_back(c.time);
+            }
+            return cuts;
+        };
+    }
+    return runObject(s, origin, r, stop, checkpoint);
+}
+
+std::uint64_t nestedFingerprint(const ProjectState& state, const Clip& clip) {
+    // The nested sequences of every level and the media they use, serialised as a project of their own: what the clip
+    // shows depends on these and on nothing else in the project.
+    ProjectState part;
+    std::set<std::uint64_t> seen;
+    std::set<std::uint64_t> media;
+    std::vector<SequenceId> todo;
+    if (clip.isNested()) {
+        todo.push_back(clip.sequence);
+    }
+    while (!todo.empty() && seen.size() < 4096) {
+        const SequenceId id = todo.back();
+        todo.pop_back();
+        if (!seen.insert(id.value).second) {
+            continue;
+        }
+        const auto found = std::ranges::find_if(state.sequences, [&](const SequencePtr& p) { return p && p->id == id; });
+        const SequencePtr seq = found == state.sequences.end() ? nullptr : *found;
+        if (!seq) {
+            continue;
+        }
+        part.sequences.push_back(seq);
+        seq->forEachTrack([&](const Track& t) {
+            for (const Clip& c : t.clips) {
+                if (c.isNested()) {
+                    todo.push_back(c.sequence);
+                } else if (c.media.isValid()) {
+                    media.insert(c.media.value);
+                }
+            }
+        });
+    }
+    for (const MediaPtr& m : state.media) {
+        if (media.contains(m->id.value)) {
+            part.media.push_back(m);
+        }
+    }
+    part.assets = state.assets;
+    std::uint64_t h = 1469598103934665603ull;
+    if (auto text = io::toJson(part)) {
+        h = fnv(h, *text);
+    }
+    h = fnv(h, std::to_string(clip.sequence.value) + "|" + std::to_string(clip.angles.bits));
+    return h == 0 ? 1 : h;
+}
+
+std::vector<Ticks> nestedCuts(const ProjectState& state, const Clip& clip) {
+    std::vector<Ticks> cuts;
+    const Sequence* nested = nestedSequenceOf(state, clip);
+    if (!nested) {
+        return cuts;
+    }
+    for (const std::size_t i : nestedTracksRead(*nested, clip)) {
+        if (i >= nested->videoTracks.size()) {
+            continue;
+        }
+        for (const Clip& c : nested->videoTracks[i]->clips) {
+            for (const Ticks t : {c.start(), c.end()}) {
+                if (t.value > 0 && t < nested->duration) {
+                    cuts.push_back(t);
+                }
+            }
+        }
+    }
+    std::sort(cuts.begin(), cuts.end());
+    cuts.erase(std::unique(cuts.begin(), cuts.end()), cuts.end());
+    return cuts;
+}
+
+std::expected<ObjectResult, Error> segmentNested(SegmentServices& s, const ProjectState& state, const Clip& clip, const ObjectRequest& r,
+                                                 std::stop_token stop, const std::function<bool(double, const std::string&)>& checkpoint) {
+    if (r.prompts.empty() || (r.prompts.back().points.empty() && !r.prompts.back().box)) {
+        return failure(ErrorCode::InvalidArgument, "point at the object or draw a box around it");
+    }
+    const Sequence* nested = nestedSequenceOf(state, clip);
+    if (!nested || nested->width <= 0 || nested->height <= 0) {
+        return failure(ErrorCode::InvalidArgument, "clip " + std::to_string(clip.id.value) + " plays no nested or multicam sequence");
+    }
+    if (s.model.empty() || !s.segmenter) {
+        return failure(ErrorCode::Unsupported, "no segmentation model is installed here (Settings > AI > Local models: SAM 2.1)");
+    }
+    if (!s.nestedFrames) {
+        return failure(ErrorCode::Unsupported, "this host renders no nested pictures: open the nest (clip.openNested) and select the object "
+                                               "on the clip inside");
+    }
+    PictureOrigin origin;
+    origin.fingerprint = nestedFingerprint(state, clip);
+    origin.stream = 0;
+    origin.aspect = static_cast<double>(nested->width) / nested->height;
+    origin.open = [&] { return s.nestedFrames(state, clip); };
+    origin.cuts = [&](std::stop_token) -> std::expected<std::vector<Ticks>, Error> { return nestedCuts(state, clip); };
+    return runObject(s, origin, r, stop, checkpoint);
+}
+
+void setMatteTrack(Mask& mask, const MatteTrack& track, MediaId media, SequenceId nested) {
     mask.shape = MaskShape::Matte;
     MaskMatte matte;
     matte.track = track.identity();
-    matte.media = media;
+    matte.media = nested.isValid() ? MediaId{} : media;
+    matte.sequence = nested;
     matte.stream = track.stream;
     matte.source = track.span();
     matte.model = track.model;
@@ -423,10 +571,10 @@ void setMatteTrack(Mask& mask, const MatteTrack& track, MediaId media) {
     mask.set("size.y", ParamValue(std::move(sy)));
 }
 
-Mask objectMask(const MatteTrack& track, MediaId media, std::string name, double feather, double expansion) {
+Mask objectMask(const MatteTrack& track, MediaId media, std::string name, double feather, double expansion, SequenceId nested) {
     Mask mask;
     mask.name = std::move(name);
-    setMatteTrack(mask, track, media);
+    setMatteTrack(mask, track, media, nested);
     mask.set("feather", ParamValue(feather));
     if (expansion != 0.0) {
         mask.set("expansion", ParamValue(expansion));

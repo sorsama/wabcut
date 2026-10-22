@@ -27,6 +27,12 @@ const CaptionTrack* captionTrackToExport(const Sequence& sequence, const Caption
 /// override and no timing line. A cue with no visible text is left out.
 std::string captionSidecarText(const CaptionTrack& track, TimeRange range, CaptionExport format);
 
+/// `track` (of `sequence` in `project`) as caption files carry it (P.2, captions.export and the new sidecar formats):
+/// the words the soundtrack bleeps or mutes replaced by `redactedWord`, as in sidecars and burn-in.
+CaptionTrack captionTrackForFile(const ProjectState& project, const Sequence& sequence, const CaptionTrack& track,
+                                 std::string_view redactedWord = kRedactedWordToken,
+                                 const playback::CaptionWordTimings* words = nullptr);
+
 /// Writes the sidecar of an export of `sequence` (of `project`, whose redactions apply) to "<output>" with the
 /// format's extension. Returns the file written, or an empty path when there is nothing to write (no caption track,
 /// or a mode without a sidecar). Errors: IoError.

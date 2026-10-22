@@ -58,6 +58,8 @@ constexpr Names<LineCap, 3> kLineCaps{{{{LineCap::Butt, "butt"}, {LineCap::Round
 constexpr Names<FieldKind, 6> kFieldKinds{{{{FieldKind::Text, "text"}, {FieldKind::Color, "color"},
                                             {FieldKind::Font, "font"}, {FieldKind::Image, "image"},
                                             {FieldKind::Duration, "duration"}, {FieldKind::Checkbox, "checkbox"}}}};
+constexpr Names<RollKind, 3> kRollKinds{{{{RollKind::Roll, "roll"}, {RollKind::CrawlLeft, "crawlLeft"},
+                                          {RollKind::CrawlRight, "crawlRight"}}}};
 
 constexpr std::int64_t kMaxTicks = std::int64_t{1} << 60;
 
@@ -218,6 +220,11 @@ void checkText(Checker& c, const TextContent& t, const std::string& where) {
         c.require(within(a.scale, -100000.0, 100000.0), at, "scale must be within 100000 %");
         c.require(within(a.rotation, -1e6, 1e6), at, "rotation must be finite");
     }
+    if (t.path && c.ok()) {
+        checkPath(c, t.path->path, t.path->closed, where + ".onPath.path");
+        c.param(t.path->firstMargin, -kMaxGraphicCoordinate, kMaxGraphicCoordinate, where + ".onPath.firstMargin");
+        c.param(t.path->lastMargin, -kMaxGraphicCoordinate, kMaxGraphicCoordinate, where + ".onPath.lastMargin");
+    }
 }
 
 void checkShape(Checker& c, const ShapeContent& s, const std::string& where) {
@@ -286,10 +293,12 @@ void checkLayers(Walk& w, const std::vector<GraphicLayer>& layers, std::size_t d
         }
         c.require(l.in.value >= 0 && l.in.value < kMaxTicks && (!l.out || (l.out->value > l.in.value && l.out->value < kMaxTicks)),
                   at, "in must be >= 0 and out after in");
+        c.require(isText(l.textStyle, kMaxGraphicNameBytes) && (l.textStyle.empty() || l.kind == LayerKind::Text), at,
+                  "only a text layer follows a text style (a name of at most 256 bytes)");
         if (l.kind == LayerKind::Text) {
             checkText(c, l.text, at + ".text");
         } else {
-            c.require(l.text.runs.empty() && l.text.animators.empty(), at, "only a text layer has text");
+            c.require(l.text.runs.empty() && l.text.animators.empty() && !l.text.path, at, "only a text layer has text");
         }
         if (l.kind == LayerKind::Shape) {
             checkShape(c, l.shape, at + ".shape");
@@ -305,7 +314,9 @@ void checkLayers(Walk& w, const std::vector<GraphicLayer>& layers, std::size_t d
             c.require(l.children.empty(), at, "only a group has children");
         }
         if (l.pin) {
-            c.require(l.pin->target != 0 && l.pin->target != l.id, at, "a pin needs another layer");
+            // 0.2: a top-level layer may be pinned to the video frame (LayerPin::kVideoFrame).
+            c.require(l.pin->target != l.id && (l.pin->target != LayerPin::kVideoFrame || depth == 1), at,
+                      "a pin needs another layer (or, at the top level, the video frame)");
             c.require(l.pin->edges != 0 && (l.pin->edges & ~0x0Fu) == 0, at, "a pin needs edges");
             for (const double o : l.pin->offsets) {
                 c.require(within(o, -kMaxGraphicCoordinate, kMaxGraphicCoordinate), at, "pin offsets must be finite");
@@ -314,7 +325,7 @@ void checkLayers(Walk& w, const std::vector<GraphicLayer>& layers, std::size_t d
     }
     // Pins: to a sibling, no cycles.
     for (const GraphicLayer& l : layers) {
-        if (!c.ok() || !l.pin) {
+        if (!c.ok() || !l.pin || l.pin->target == LayerPin::kVideoFrame) {
             continue;
         }
         std::uint32_t at = l.id;
@@ -324,6 +335,9 @@ void checkLayers(Walk& w, const std::vector<GraphicLayer>& layers, std::size_t d
                 break;
             }
             const std::uint32_t next = it->pin->target;
+            if (next == LayerPin::kVideoFrame) {
+                break; // the chain ends at the frame
+            }
             if (std::none_of(layers.begin(), layers.end(), [&](const GraphicLayer& s) { return s.id == next; })) {
                 c.fail("layer " + std::to_string(l.id), "is pinned to layer " + std::to_string(next) + ", which is not a sibling");
                 break;
@@ -479,6 +493,8 @@ std::string_view toString(LineCap v) { return kLineCaps.name(v); }
 std::optional<LineCap> lineCapFromString(std::string_view t) { return kLineCaps.parse(t); }
 std::string_view toString(FieldKind v) { return kFieldKinds.name(v); }
 std::optional<FieldKind> fieldKindFromString(std::string_view t) { return kFieldKinds.parse(t); }
+std::string_view toString(RollKind v) { return kRollKinds.name(v); }
+std::optional<RollKind> rollKindFromString(std::string_view t) { return kRollKinds.parse(t); }
 
 // ---- Lookups ----------------------------------------------------------------------------------------------------------
 
@@ -585,6 +601,27 @@ bool isValidTemplateId(std::string_view id) {
     return !(stem.size() == 4 && (stem.starts_with("COM") || stem.starts_with("LPT")) && stem[3] >= '0' && stem[3] <= '9');
 }
 
+std::optional<std::string> textStyleProblem(const ProjectTextStyle& s) {
+    if (s.name.empty() || !isText(s.name, kMaxGraphicNameBytes) ||
+        std::any_of(s.name.begin(), s.name.end(), [](char ch) { return static_cast<unsigned char>(ch) < 0x20; })) {
+        return "text style '" + s.name.substr(0, 64) + "': a name of 1 to 256 bytes of UTF-8 without control characters";
+    }
+    // Its values are checked as a text layer's.
+    Graphic probe;
+    GraphicLayer layer;
+    layer.id = 1;
+    layer.kind = LayerKind::Text;
+    layer.text.runs = {TextRun{"A", s.style}};
+    layer.text.align = s.align;
+    layer.text.background = s.background;
+    layer.shadow = s.shadow;
+    probe.layers = {layer};
+    if (const auto problem = graphicProblem(probe)) {
+        return "text style '" + s.name + "': " + *problem;
+    }
+    return std::nullopt;
+}
+
 std::optional<std::string> graphicProblem(const Graphic& g) {
     Checker c;
     c.require(isText(g.name, kMaxGraphicNameBytes), "name", "too long or not UTF-8");
@@ -599,6 +636,12 @@ std::optional<std::string> graphicProblem(const Graphic& g) {
         c.require(r.duration.value > 0 && r.duration.value < kMaxTicks && r.intro.value >= 0 && r.outro.value >= 0 &&
                       r.intro.value + r.outro.value <= r.duration.value,
                   "responsive", "needs a positive duration with intro + outro inside it");
+    }
+    if (g.roll) {
+        const GraphicRoll& r = *g.roll;
+        for (const Ticks t : {r.preroll, r.postroll, r.easeIn, r.easeOut}) {
+            c.require(t.value >= 0 && t.value < kMaxTicks, "roll", "preroll, postroll, ease-in and ease-out must be >= 0");
+        }
     }
     if (g.instance && c.ok()) {
         const TemplateInstance& i = *g.instance;

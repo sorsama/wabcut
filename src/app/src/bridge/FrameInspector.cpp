@@ -11,6 +11,7 @@
 #include <wabcut/model/TimeRemap.h>
 #include <wabcut/playback/audio/TimelineAudioPlayer.h>
 #include <wabcut/playback/video/PlaybackController.h>
+#include <wabcut/render/EffectLibrary.h>
 
 #include <QFileInfo>
 #include <QQmlEngine>
@@ -85,7 +86,73 @@ std::optional<render::EffectType> renderTypeOf(std::string_view id) {
         return EffectType::OpacityMask;
     if (id == "wabcut.mosaic")
         return EffectType::Mosaic;
+    // 0.2: the C.15 effects and the library's, so the effects after them pair with their evaluated entries too.
+    if (id == kBorderEffect)
+        return EffectType::Border;
+    if (id == kUltraKeyEffect)
+        return EffectType::UltraKey;
+    if (id == kTrackMatteEffect)
+        return EffectType::TrackMatte;
+    if (render::findLibraryEffect(id))
+        return EffectType::Library;
     return std::nullopt;
+}
+
+/// An encoded colour (0..1 components) as "#RRGGBB".
+QString hexColor(double r, double g, double b) {
+    const auto byte = [](double v) { return static_cast<int>(std::lround(std::clamp(v, 0.0, 1.0) * 255.0)); };
+    return QStringLiteral("#%1%2%3")
+        .arg(byte(r), 2, 16, QLatin1Char('0'))
+        .arg(byte(g), 2, 16, QLatin1Char('0'))
+        .arg(byte(b), 2, 16, QLatin1Char('0'))
+        .toUpper();
+}
+
+QString amount(double v) { return QString::number(std::lround(v)); }
+
+/// 0.2: what an evaluated Border, Ultra Key or Track Matte Key does at this frame (LayerEffect::params, in the order
+/// PreparedComposite.h lists them); empty for other effects. `matteFound`: the evaluator put the matte track's clip
+/// before the layer (a matte group; LayerEffect::matte is only filled later, when the composite is built).
+QString effectDetail(const render::LayerEffect& e, bool matteFound) {
+    const auto& p = e.params;
+    switch (e.type) {
+    case render::EffectType::Border:
+        //: Explain this frame, a Border effect: "8 px, #FFFFFF, 100 % opacity"
+        return FrameInspector::tr("%1 px, %2, %3 opacity").arg(amount(p[0]), hexColor(p[1], p[2], p[3]), percent(p[4]));
+    case render::EffectType::UltraKey: {
+        const int output = static_cast<int>(std::lround(p[0]));
+        const QString outputName = output == 1   ? FrameInspector::tr("Alpha Channel")
+                                   : output == 2 ? FrameInspector::tr("Color Channel")
+                                                 : FrameInspector::tr("Composite");
+        //: Explain this frame, an Ultra Key: "key #00FF00, output Composite; matte: transparency 45, tolerance 50,
+        //: pedestal 10; cleanup: choke 0, soften 0; spill 50"
+        return FrameInspector::tr("key %1, output %2; matte: transparency %3, tolerance %4, pedestal %5; cleanup: choke %6, "
+                                  "soften %7; spill %8")
+            .arg(hexColor(p[1], p[2], p[3]), outputName, amount(p[4]), amount(p[7]), amount(p[8]), amount(p[9]),
+                 amount(p[10]), amount(p[15]));
+    }
+    case render::EffectType::TrackMatte: {
+        const int track = static_cast<int>(std::lround(p[0]));
+        const bool luma = p[1] >= 0.5;
+        const bool reversed = p[2] >= 0.5;
+        if (p[3] < 0.5) {
+            //: Explain this frame, a Track Matte Key whose matte track is missing: "No matte track V4: the layer shows nothing"
+            return FrameInspector::tr("No matte track V%1: the layer shows nothing").arg(track);
+        }
+        if (!matteFound) {
+            //: Explain this frame, a Track Matte Key whose matte track is empty at the playhead
+            return reversed ? FrameInspector::tr("Matte V%1 is empty here: reversed, the layer shows in full").arg(track)
+                            : FrameInspector::tr("Matte V%1 is empty here: the layer shows nothing").arg(track);
+        }
+        //: Explain this frame, a Track Matte Key: "Matte V3 (luma), reversed"
+        const QString read = FrameInspector::tr("Matte V%1 (%2)").arg(track).arg(luma ? FrameInspector::tr("luma")
+                                                                                       : FrameInspector::tr("alpha"));
+        return reversed ? FrameInspector::tr("%1, reversed").arg(read) : read;
+    }
+    default:
+        break;
+    }
+    return {};
 }
 
 std::vector<GradeStage> gradeStages(const color::GradeSpec& g) {
@@ -139,9 +206,11 @@ QString transitionKindName(render::TransitionKind kind) {
     case render::TransitionKind::Wipe:
         return FrameInspector::tr("Wipe");
     case render::TransitionKind::CrossDissolve:
+        return FrameInspector::tr("Cross Dissolve");
+    default: // the library's transitions (0.2) are named by their model effect
         break;
     }
-    return FrameInspector::tr("Cross Dissolve");
+    return FrameInspector::tr("Transition");
 }
 
 QString mappingText(const Clip& clip, Ticks time, bool& remapped) {
@@ -217,6 +286,44 @@ void explainVideo(const ProjectState& project, const Sequence& sequence, Ticks t
     std::vector<playback::LayerSpec> shown;
     playback::evaluateVideoLayers(project, sequence, time, shown, /*cullOccluded*/ true, &preview, captions);
 
+    // 0.2: layers inside a matte group (a Track Matte Key's matte, a library effect's second picture) are not drawn;
+    // they shape the layer right after the group.
+    std::vector<QString> matteFor(all.size());
+    std::vector<bool> hasTrackMatte(all.size(), false); // the layer has its Track Matte group before it
+    for (std::size_t i = 0; i < all.size(); ++i) {
+        const playback::LayerSpec& group = all[i];
+        if (!group.nested || !group.matte)
+            continue;
+        const std::size_t head = i + 1 + static_cast<std::size_t>(std::max(0, group.nestedCount));
+        if (head >= all.size())
+            continue;
+        const playback::LayerSpec& shaped = all[head];
+        if (group.matteEffect < 0)
+            hasTrackMatte[head] = true;
+        const QString track = trackLabel(TrackKind::Video, static_cast<std::size_t>(std::max(0, shaped.track)));
+        QString text = FrameInspector::tr("Track Matte of %1").arg(track);
+        if (group.matteEffect >= 0) {
+            const Clip* clip = findClip(sequence, TrackKind::Video, shaped.track, shaped.clip);
+            QString effect = FrameInspector::tr("effect");
+            if (clip) {
+                // The matteEffect-th evaluated effect of the shaped layer: count the stack's library effects to find it.
+                int seen = -1;
+                for (const EffectInstance& instance : clip->effects()) {
+                    if (!instance.enabled || !isEvaluable(instance, EffectKind::Video) || !renderTypeOf(instance.effect))
+                        continue;
+                    if (++seen == group.matteEffect) {
+                        effect = effectName(instance.effect);
+                        break;
+                    }
+                }
+            }
+            //: Explain this frame: a layer used by another layer's effect, "Second picture of V2's Gradient Wipe"
+            text = FrameInspector::tr("Second picture of %1's %2").arg(track, effect);
+        }
+        for (std::size_t k = i + 1; k < head; ++k)
+            matteFor[k] = text;
+    }
+
     for (std::size_t i = 0; i < all.size(); ++i) {
         const playback::LayerSpec& spec = all[i];
         if (spec.caption || !spec.item)
@@ -282,6 +389,7 @@ void explainVideo(const ProjectState& project, const Sequence& sequence, Ticks t
             if (!type || cursor >= spec.effects.size() || spec.effects[cursor].type != *type)
                 continue;
             const render::LayerEffect& evaluated = spec.effects[cursor++];
+            e.detail = effectDetail(evaluated, hasTrackMatte[i]); // 0.2
             if (evaluated.type == render::EffectType::Grade && evaluated.grade && layer.grade.empty()) {
                 layer.grade = gradeStages(*evaluated.grade);
                 layer.missingLuts = evaluated.grade->missingLuts;
@@ -290,6 +398,11 @@ void explainVideo(const ProjectState& project, const Sequence& sequence, Ticks t
         layer.redactions = redactionNames(project, *clip, spec.sourceTime, false);
         layer.evaluatedRedactions = static_cast<int>(spec.redactions.size());
         layer.opacity = spec.opacity;
+        if (spec.blend != BlendMode::Normal) {
+            const std::string_view blend = displayName(spec.blend);
+            layer.blendMode = QString::fromUtf8(blend.data(), static_cast<qsizetype>(blend.size()));
+        }
+        layer.matteFor = matteFor[i];
         layer.transform = spec.transform;
         layer.occluded = std::none_of(shown.begin(), shown.end(), [&](const playback::LayerSpec& s) {
             return s.clip == spec.clip && s.track == spec.track;
@@ -430,6 +543,7 @@ QVariantList effectRows(const std::vector<ExplainedEffect>& effects, const QStri
             {QStringLiteral("state"), stateKey(e.state)},
             {QStringLiteral("stateText"), stateText(e.state)},
             {QStringLiteral("masks"), e.masks.join(QStringLiteral(", "))},
+            {QStringLiteral("detail"), e.detail},
         });
     }
     return out;
@@ -707,6 +821,8 @@ void FrameInspector::publish() {
                  .arg(std::lround(layer.transform.position.x))
                  .arg(std::lround(layer.transform.position.y))
                  .arg(QString::number(layer.transform.rotationDegrees, 'g', 4))},
+            {QStringLiteral("blendText"), layer.blendMode},
+            {QStringLiteral("matteText"), layer.matteFor},
             {QStringLiteral("occluded"), layer.occluded},
             {QStringLiteral("soloed"), layer.soloed},
         });

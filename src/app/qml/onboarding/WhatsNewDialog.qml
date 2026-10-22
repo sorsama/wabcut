@@ -9,9 +9,21 @@ WabcutDialog {
     id: dialog
     objectName: "whatsNewDialog"
 
-    // Keep in step with docs/roadmap.md when a milestone lands. This build: the gaming wave (M5o) first, then M5k-M5n,
-    // C.7-C.12, A.3-A.9, AI-9-AI-13.
+    // Keep in step with docs/roadmap.md when a milestone lands. This build: 0.2's Premiere parity first, then the gaming
+    // wave (M5o), M5k-M5n, C.7-C.12, A.3-A.9, AI-9-AI-13.
     readonly property var highlights: [
+        { key: "premiereTools", icon: "film", title: qsTr("More of Premiere"),
+          text: qsTr("Premiere's 41 transitions and about 70 effects, Optical Flow slow motion, Morph Cut, Warp Stabilizer, clip groups and fade handles.") },
+        { key: "exportQueue", icon: "list", title: qsTr("A Media Encoder queue"),
+          text: qsTr("Quick Export, your own presets, alpha and image sequences, and a queue you start, pause and resume, with watch folders.") },
+        { key: "monitorMotion", icon: "play", title: qsTr("Move it in the monitor"),
+          text: qsTr("Drag, scale and rotate in the Program Monitor, with rulers, guides, loop playback and a full-screen output.") },
+        { key: "projectPanel", icon: "tag", title: qsTr("Project panel and media"),
+          text: qsTr("Metadata with XMP, search bins, a freeform view, productions, several open projects, and the Media Browser for camera cards.") },
+        { key: "audioPost", icon: "sliders-horizontal", title: qsTr("Submixes and audio post"),
+          text: qsTr("Submixes and sends, the Audio Clip Mixer, Premiere's audio effects, and AAF or OMF for Pro Tools.") },
+        { key: "aiNested", icon: "sparkles", title: qsTr("AI through nested clips"),
+          text: qsTr("Highlights, Auto Reframe and object masks read through multicam and nested clips; Redact finds the faces; sound effects come from a prompt with your own key.") },
         { key: "gamingStart", icon: "gamepad-2", title: qsTr("Made for gaming videos"),
           text: qsTr("Drop an OBS or ShadowPlay recording on Home: its frame rate is kept, each audio track gets its own named track, and long or high-fps files get proxies.") },
         { key: "highlights", icon: "zap", title: qsTr("Find the highlights"),

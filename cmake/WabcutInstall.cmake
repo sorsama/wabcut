@@ -201,6 +201,14 @@ if(TARGET wabcut-embed)
     endif()
 endif()
 
+# AI-15: c2pa_c.dll (c2pa-rs's prebuilt C library, delay-loaded when an export is signed or checked) next to the
+# executables that sign: the app and the CLI.
+if(WABCUT_C2PA_DLL)
+    install(FILES "${WABCUT_C2PA_DLL}" DESTINATION ${CMAKE_INSTALL_BINDIR})
+    install(FILES "${CMAKE_SOURCE_DIR}/src/ai/c2pa/licenses/c2pa-rs.txt" "${CMAKE_SOURCE_DIR}/src/ai/c2pa/licenses/c2pa-rs-crates.txt"
+        DESTINATION ${WABCUT_INSTALL_LICENSEDIR})
+endif()
+
 # The documents the Home screen links ("Learn", "What's new"): HomeBridge looks for docs/ next to the executable, and
 # in a macOS bundle in Contents/Resources/docs.
 if(WABCUT_MACOS_BUNDLE)
@@ -211,6 +219,7 @@ endif()
 install(FILES "${CMAKE_SOURCE_DIR}/docs/interchange.md" "${CMAKE_SOURCE_DIR}/docs/keymap.md"
               "${CMAKE_SOURCE_DIR}/docs/roadmap.md" "${CMAKE_SOURCE_DIR}/docs/release.md"
               "${CMAKE_SOURCE_DIR}/docs/getting-started.md" "${CMAKE_SOURCE_DIR}/docs/release-notes-0.1.md"
+              "${CMAKE_SOURCE_DIR}/docs/release-notes-0.2.md" "${CMAKE_SOURCE_DIR}/docs/premiere-parity.md"
     DESTINATION ${wabcut_docs_dir})
 
 # Linux desktop integration: a launcher entry and the app icon in the hicolor theme (the AppImage uses them too).
@@ -311,7 +320,8 @@ set(WABCUT_VERSION ${PROJECT_VERSION})
 set(WABCUT_QT_VERSION "${Qt6_VERSION}")
 set(wabcut_license_ports ffmpeg x264 x265 dav1d libvpl amd-amf ffnvcodec miniaudio nlohmann-json pugixml zlib spdlog
                          fmt catch2 qtkeychain libebur128 rnnoise sqlite3 hnswlib onnxruntime-prebuilt whisper-cpp ggml
-                         vulkan-loader clap-cleveraudio vst3sdk svt-av1 fastfeat libvpx opus)
+                         vulkan-loader clap-cleveraudio vst3sdk svt-av1 fastfeat libvpx opus opencolorio expat imath
+                         minizip-ng pystring yaml-cpp)
 foreach(port IN LISTS wabcut_license_ports)
     _wabcut_vcpkg_port_version(${port} version)
     string(MAKE_C_IDENTIFIER "V_${port}" var)
@@ -358,6 +368,8 @@ install(FILES "${CMAKE_SOURCE_DIR}/src/app/resources/icons/LICENSE"
     DESTINATION ${WABCUT_INSTALL_LICENSEDIR} RENAME boxicons.txt)
 install(FILES "${CMAKE_CURRENT_LIST_DIR}/licenses/LGPL-3.0.txt"
     DESTINATION ${WABCUT_INSTALL_LICENSEDIR} RENAME qt-LGPL-3.0.txt)
+# The AAF object model tables of AAF export (P.2), generated from pyaaf2's (MIT).
+install(FILES "${CMAKE_CURRENT_LIST_DIR}/licenses/pyaaf2.txt" DESTINATION ${WABCUT_INSTALL_LICENSEDIR})
 # The bundled fonts (design language v3, and v2's faces kept for content): SIL OFL 1.1.
 install(FILES "${CMAKE_SOURCE_DIR}/src/app/resources/fonts/OFL-Manrope.txt"
               "${CMAKE_SOURCE_DIR}/src/app/resources/fonts/OFL-JetBrains-Mono.txt"

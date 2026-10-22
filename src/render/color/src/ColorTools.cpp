@@ -67,6 +67,40 @@ std::vector<ColorSample> samplePixels(const ColorImage& image, int maxSamples, c
     return out;
 }
 
+std::vector<float> faceWeights(const ColorImage& image, std::span<const FaceBox> faces, double faceWeight) {
+    std::vector<float> out;
+    if (faces.empty() || image.width <= 0 || image.height <= 0 ||
+        image.rgba.size() < static_cast<std::size_t>(image.width) * image.height * 4) {
+        return out;
+    }
+    out.assign(static_cast<std::size_t>(image.width) * image.height, 1.0f);
+    const double extra = std::max(0.0, faceWeight - 1.0);
+    for (const FaceBox& f : faces) {
+        if (!(f.width > 0.0) || !(f.height > 0.0)) {
+            continue;
+        }
+        const double cx = (f.x + f.width / 2.0) * image.width, cy = (f.y + f.height / 2.0) * image.height;
+        const double rx = f.width / 2.0 * image.width, ry = f.height / 2.0 * image.height;
+        const int x0 = std::clamp(static_cast<int>(std::floor(cx - rx)), 0, image.width - 1);
+        const int x1 = std::clamp(static_cast<int>(std::ceil(cx + rx)), 0, image.width - 1);
+        const int y0 = std::clamp(static_cast<int>(std::floor(cy - ry)), 0, image.height - 1);
+        const int y1 = std::clamp(static_cast<int>(std::ceil(cy + ry)), 0, image.height - 1);
+        for (int y = y0; y <= y1; ++y) {
+            for (int x = x0; x <= x1; ++x) {
+                const double u = (x + 0.5 - cx) / rx, v = (y + 0.5 - cy) / ry;
+                if (u * u + v * v > 1.0) {
+                    continue;
+                }
+                const std::size_t i = static_cast<std::size_t>(y) * image.width + x;
+                const float* p = image.rgba.data() + i * 4;
+                const double skin = skinLikelihood({p[0], p[1], p[2]});
+                out[i] = std::max(out[i], static_cast<float>(1.0 + extra * (0.25 + 0.75 * skin)));
+            }
+        }
+    }
+    return out;
+}
+
 OklabStats oklabStats(const std::vector<Rgb>& linear, const std::vector<double>& weights) {
     OklabStats s;
     double total = 0.0;

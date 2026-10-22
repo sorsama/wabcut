@@ -29,6 +29,9 @@ wabcut_add_test_suite(app
         test_gaming_callouts.cpp
         test_extensions_ui.cpp
         test_finishing_ui.cpp
+        test_effect_presets_ui.cpp
+        test_spelling_ui.cpp
+        test_graphics_tools_ui.cpp
         test_frame_inspector.cpp
         test_history_review.cpp
         test_home_ui.cpp
@@ -36,10 +39,16 @@ wabcut_add_test_suite(app
         test_icons.cpp # 0.1.3: the Boxicons icon set
         test_layout.cpp
         test_library.cpp
+        test_project_panel.cpp # 0.2 P.3: metadata, Search Bins, Freeform view, XMP, Productions
         test_masks_ui.cpp
         test_media_bridge.cpp
         test_mixer_automation.cpp
         test_monitor_docking.cpp # 0.1.3: the monitor in a shown window, panel docking
+        test_motion_ui.cpp # P.2: Time Interpolation, Warp Stabilizer's Analyze, New Item
+        test_mixer_routing.cpp
+        test_clip_mixer.cpp
+        test_take_recovery_ui.cpp
+        test_waveform_building.cpp
         test_multicam.cpp
         test_onboarding.cpp
         test_palette_access.cpp
@@ -51,6 +60,8 @@ wabcut_add_test_suite(app
         test_recovery_bridge.cpp
         test_review_wave4.cpp
         test_rhi.cpp
+        test_scope_view_hdr.cpp # I.9: the nits / HLG % waveform graticule
+        test_color_management_ui.cpp # 0.2: the Color Management dialog and the Media color space menu
         test_screenshots.cpp
         test_settings.cpp # 0.1.3: the Settings window, theme files, the rail's layout, the AI switch
         test_shell.cpp
@@ -62,6 +73,7 @@ wabcut_add_test_suite(app
         test_keymap_dispatcher.cpp
         test_timeline.cpp
         test_timeline_edit.cpp
+        test_timeline_parity.cpp
         test_timeline_pro.cpp
         test_timeline_toolbar.cpp # 0.1.3: snapped drops, edit cursors, the Tracks toolbar
         test_time_remap_ui.cpp
@@ -79,7 +91,10 @@ target_compile_definitions(wabcut_app_tests PRIVATE
     WABCUT_APP_QML_DIR="${CMAKE_SOURCE_DIR}/src/app/qml"
     # M5f: the Home screen imports interchange fixtures; the Shortcuts editor imports the keymap's .kys fixtures.
     WABCUT_INTERCHANGE_FIXTURES="${CMAKE_SOURCE_DIR}/tests/interchange/fixtures"
-    WABCUT_KEYMAP_TEST_DATA_DIR="${CMAKE_SOURCE_DIR}/tests/keymap/data")
+    WABCUT_KEYMAP_TEST_DATA_DIR="${CMAKE_SOURCE_DIR}/tests/keymap/data"
+    # 0.2: the Media Browser tests preview, ingest and transcode generated clips (tools/gen_test_media.py; skipped
+    # when they were not generated).
+    WABCUT_TEST_MEDIA_DIR="${CMAKE_BINARY_DIR}/test-output/media")
 
 # KeymapDispatcher bridge tests (owner: Keymap): the bridge header lives in src/app/src/bridge, the scene in this
 # directory.
@@ -143,3 +158,12 @@ target_sources(wabcut_app_tests PRIVATE test_moments_ui.cpp)
 
 # Wave-5 review (A.8 voice-over): the VoiceOver bridge on the Null engine and the Null input, no window.
 target_sources(wabcut_app_tests PRIVATE test_voice_over_bridge.cpp)
+
+# P.2 (E5): Premiere's editing and sequence commands (the Editing bridge, its menus, dialogs and History panel).
+target_sources(wabcut_app_tests PRIVATE test_editing_ui.cpp)
+# 0.2 media formats: Field Options, Import Layered File and the Media Browser.
+target_sources(wabcut_app_tests PRIVATE test_media_formats_ui.cpp)
+find_package(ZLIB REQUIRED) # ../media/PsdWriter.h
+target_link_libraries(wabcut_app_tests PRIVATE ZLIB::ZLIB)
+# P.2 (E6): the Source and Program Monitors (direct manipulation of Motion; Loop, Play In to Out and the monitor keys).
+target_sources(wabcut_app_tests PRIVATE test_motion_overlay.cpp test_monitors.cpp)

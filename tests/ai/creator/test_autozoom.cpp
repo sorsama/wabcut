@@ -5,6 +5,7 @@
 
 #include "CommandHarness.h"
 #include "CreatorTestUtil.h"
+#include "NestedTestUtil.h"
 #include "ScreenRecording.h"
 
 #include <wabcut/ai/autozoom/AutoZoomCommands.h>
@@ -185,6 +186,65 @@ TEST_CASE("The zoom follows the activity, stays smooth and inside the frame, and
     while (h.session.undo()) {
     }
     CHECK(h.sequence(h.state()).findClip(clip)->clip().properties() == h.sequence(original).findClip(clip)->clip().properties());
+}
+
+TEST_CASE("autozoom.apply zooms a multicam clip and a nested clip from the recording they show (0.2)", "[ai][creator][autozoom][multicam]") {
+    ZoomStudio studio;
+    CommandHarness h(studio.tl, command::EnginePolicy{command::CapabilitySet::all(), 64, studio.services}, ai::edit::editingCommands());
+    const SequenceId seq = h.tl.seq;
+    // A click and typing at the recording's 5 s, bottom left.
+    const std::string sidecar = R"({"format":"wabcut.cursor","version":1,"width":1920,"height":1080,
+        "events":[{"t":5,"x":200,"y":900,"type":"click"},{"t":5.5,"x":220,"y":900,"type":"key"}]})";
+
+    SECTION("a two-angle multicam clip showing the screen recording, synced 1 s after the other camera") {
+        wabcut::test::PlacedMulticam mc;
+        REQUIRE(h.session.apply("Multicam", [&](const ProjectState& s) -> std::expected<ProjectState, Error> {
+            mc = wabcut::test::placeMulticam(s, seq, {h.tl.media('A'), h.tl.media('B')}, {at(1.0), Ticks{}},
+                                             TimeRange::fromStartEnd(Ticks{}, at(20.0)), Ticks{}, 0, 0);
+            return mc.state;
+        }));
+        const auto before = h.state();
+        const auto dry = h.run(Json{{"command", "autozoom.apply"}, {"params", Json{{"sequence", seq.value}, {"clip", mc.video.value}, {"cursor", sidecar}}}, {"dryRun", true}});
+        REQUIRE(dry.ok());
+        CHECK(h.state() == before);
+        const std::size_t undo = h.session.undoCount();
+        const auto r = h.ok("autozoom.apply", Json{{"sequence", seq.value}, {"clip", mc.video.value}, {"cursor", sidecar}, {"easing", "linear"}});
+        CHECK(h.session.undoCount() == undo + 1);
+        CHECK(r.data["origin"] == "sidecar");
+        const Clip& zoomed = h.sequence(h.state()).findClip(mc.video)->clip();
+        CHECK(zoomed.sequence == mc.multicam); // keys on the multicam clip itself, its angle kept
+        CHECK(zoomed.angles == AngleSet::of(0));
+        // The recording's 5.5 s is the source's 6.5 s (the clip's keyframe time).
+        CHECK(clipValue(zoomed, ParamId::Scale, 6.5) > 1.4);
+        CHECK(shows(windowAt(zoomed, 6.5), 210, 900));
+        CHECK(clipValue(zoomed, ParamId::Scale, 2.0) == Approx(1.0));
+        REQUIRE(h.session.undo());
+        CHECK(*h.state() == *before);
+    }
+
+    SECTION("a nested clip of the recording") {
+        REQUIRE(h.session.apply("Nest", [&](const ProjectState& s) -> std::expected<ProjectState, Error> {
+            return wabcut::test::nestEverything(s, seq).edit.state;
+        }));
+        const ClipId nested = h.clip("V1@0");
+        REQUIRE(h.sequence(h.state()).findClip(nested)->clip().isNested());
+        h.ok("autozoom.apply", Json{{"sequence", seq.value}, {"clip", nested.value}, {"cursor", sidecar}, {"easing", "linear"}});
+        const Clip& zoomed = h.sequence(h.state()).findClip(nested)->clip();
+        CHECK(clipValue(zoomed, ParamId::Scale, 5.5) > 1.4);
+        CHECK(shows(windowAt(zoomed, 5.5), 210, 900));
+    }
+
+    SECTION("a nested sequence with layers is refused with the reason") {
+        Timeline layered(ZoomStudio::picture(100) + "\nV2 |B" + std::string(99, 'b') + "|");
+        CommandHarness two(layered, command::EnginePolicy{command::CapabilitySet::all(), 64, studio.services}, ai::edit::editingCommands());
+        REQUIRE(two.session.apply("Nest", [&](const ProjectState& s) -> std::expected<ProjectState, Error> {
+            return wabcut::test::nestEverything(s, two.tl.seq).edit.state;
+        }));
+        const auto refused = two.run(Json{{"command", "autozoom.apply"}, {"params", Json{{"sequence", two.tl.seq.value}, {"clip", two.clip("V1@0").value}, {"cursor", sidecar}}}});
+        REQUIRE_FALSE(refused.ok());
+        CHECK(refused.error->code == command::ErrorCode::InvalidParams);
+        CHECK(refused.error->message.find("layers") != std::string::npos);
+    }
 }
 
 TEST_CASE("autozoom.apply previews with a dry run, uses a sidecar when given, and refuses what it cannot zoom",

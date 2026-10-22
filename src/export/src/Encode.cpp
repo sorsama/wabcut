@@ -1,4 +1,5 @@
 #include "Encode.h"
+#include "FrameEffects.h"
 
 #include <wabcut/export/Encoders.h>
 #include <wabcut/model/MediaLocator.h>
@@ -90,17 +91,35 @@ AVColorSpace toAvColorSpace(ColorMatrix m) {
     return AVCOL_SPC_BT709;
 }
 
-/// The export's output colour: BT.709, limited range, left-sited chroma. Primaries and transfer are the same
-/// on both sides of every conversion, so swscale only applies the matrix (no gamut or transfer mapping).
-void tagOutput(AVFrame* f) {
-    f->colorspace = AVCOL_SPC_BT709;
-    f->color_range = AVCOL_RANGE_MPEG;
-    f->color_primaries = AVCOL_PRI_BT709;
-    f->color_trc = AVCOL_TRC_BT709;
+/// The export's output colour: `tags` (BT.709 unless HDR, I.9), limited range, left-sited chroma. Primaries and
+/// transfer are the same on both sides of every conversion, so swscale only applies the matrix (no gamut or transfer
+/// mapping).
+void tagOutput(AVFrame* f, const ColorTags& tags) {
+    f->colorspace = tags.matrix;
+    f->color_range = tags.range;
+    f->color_primaries = tags.primaries;
+    f->color_trc = tags.transfer;
     f->chroma_location = AVCHROMA_LOC_LEFT;
 }
 
-std::expected<FramePtr, Error> allocVideoFrame(AVPixelFormat format, int width, int height) {
+/// 0.2: the frame's alpha channel set to 0 (transparent) over the rectangle (x, y, w, h); formats without alpha are
+/// left alone.
+void clearAlpha(AVFrame* f, int x, int y, int w, int h) {
+    const AVPixFmtDescriptor* d = av_pix_fmt_desc_get(static_cast<AVPixelFormat>(f->format));
+    if (!d || !(d->flags & AV_PIX_FMT_FLAG_ALPHA) || d->nb_components < 4) {
+        return;
+    }
+    const AVComponentDescriptor& a = d->comp[3];
+    const int bytes = (a.depth + a.shift + 7) / 8 > 2 ? 4 : (a.depth + a.shift + 7) / 8;
+    for (int row = y; row < y + h; ++row) {
+        std::uint8_t* line = f->data[a.plane] + static_cast<std::ptrdiff_t>(row) * f->linesize[a.plane];
+        for (int col = x; col < x + w; ++col) {
+            std::memset(line + static_cast<std::ptrdiff_t>(col) * a.step + a.offset, 0, static_cast<std::size_t>(bytes));
+        }
+    }
+}
+
+std::expected<FramePtr, Error> allocVideoFrame(AVPixelFormat format, int width, int height, const ColorTags& tags = {}) {
     FramePtr f(av_frame_alloc());
     if (!f) {
         return std::unexpected(Error{ErrorCode::EncoderError, "Out of memory (frame)"});
@@ -111,7 +130,7 @@ std::expected<FramePtr, Error> allocVideoFrame(AVPixelFormat format, int width, 
     if (const int r = av_frame_get_buffer(f.get(), 0); r < 0) {
         return std::unexpected(ffmpegError(ErrorCode::EncoderError, "Cannot allocate a video frame", r));
     }
-    tagOutput(f.get());
+    tagOutput(f.get(), tags);
     return f;
 }
 
@@ -131,12 +150,29 @@ AVCodecID codecIdOf(VideoCodec c) {
         return AV_CODEC_ID_GIF;
     case VideoCodec::Vp9:
         return AV_CODEC_ID_VP9;
+    case VideoCodec::Png:
+        return AV_CODEC_ID_PNG;
+    case VideoCodec::Tiff:
+        return AV_CODEC_ID_TIFF;
+    case VideoCodec::Dpx:
+        return AV_CODEC_ID_DPX;
+    case VideoCodec::Jpeg:
+        return AV_CODEC_ID_MJPEG;
+    case VideoCodec::Targa:
+        return AV_CODEC_ID_TARGA;
+    case VideoCodec::Exr:
+        return AV_CODEC_ID_EXR;
+    case VideoCodec::Animation:
+        return AV_CODEC_ID_QTRLE;
+    case VideoCodec::CineForm:
+        return AV_CODEC_ID_CFHD;
     }
     return AV_CODEC_ID_H264;
 }
 
-/// CPU layouts for an output format, preferred first (semi-planar first: hardware encoders take it natively).
-std::vector<AVPixelFormat> inputFormatsFor(OutputPixelFormat f) {
+/// CPU layouts for an output format, preferred first (semi-planar first: hardware encoders take it natively); 0.2: the
+/// RGB formats in the byte orders the still encoders take (PNG wants big-endian 16-bit, Targa BGR, qtrle ARGB).
+std::vector<AVPixelFormat> inputFormatsFor(VideoCodec codec, OutputPixelFormat f) {
     switch (f) {
     case OutputPixelFormat::Yuv420p:
         return {AV_PIX_FMT_NV12, AV_PIX_FMT_YUV420P};
@@ -148,24 +184,37 @@ std::vector<AVPixelFormat> inputFormatsFor(OutputPixelFormat f) {
         return {AV_PIX_FMT_P210LE, AV_PIX_FMT_YUV422P10LE};
     case OutputPixelFormat::Pal8:
         return {AV_PIX_FMT_PAL8};
+    case OutputPixelFormat::Yuv444p10:
+        return {AV_PIX_FMT_YUV444P10LE};
+    case OutputPixelFormat::Yuva444p10:
+        return {AV_PIX_FMT_YUVA444P10LE};
+    case OutputPixelFormat::Rgb24:
+        if (codec == VideoCodec::Jpeg) {
+            return {AV_PIX_FMT_YUVJ444P};
+        }
+        return {AV_PIX_FMT_RGB24, AV_PIX_FMT_BGR24};
+    case OutputPixelFormat::Rgba:
+        return {AV_PIX_FMT_RGBA, AV_PIX_FMT_BGRA, AV_PIX_FMT_ARGB};
+    case OutputPixelFormat::Rgb48:
+        return {AV_PIX_FMT_RGB48LE, AV_PIX_FMT_RGB48BE};
+    case OutputPixelFormat::Rgba64:
+        return {AV_PIX_FMT_RGBA64LE, AV_PIX_FMT_RGBA64BE};
+    case OutputPixelFormat::Gbrp10:
+        return {AV_PIX_FMT_GBRP10LE};
+    case OutputPixelFormat::Gbrp12:
+        return {AV_PIX_FMT_GBRP12LE};
+    case OutputPixelFormat::Gbrap12:
+        return {AV_PIX_FMT_GBRAP12LE};
+    case OutputPixelFormat::Rgbf:
+        return {AV_PIX_FMT_GBRPF32LE};
+    case OutputPixelFormat::Rgbaf:
+        return {AV_PIX_FMT_GBRAPF32LE};
     }
     return {AV_PIX_FMT_YUV420P};
 }
 
 std::string_view outputFormatName(OutputPixelFormat f) {
-    switch (f) {
-    case OutputPixelFormat::Yuv420p:
-        return "yuv420p";
-    case OutputPixelFormat::Yuv420p10:
-        return "yuv420p10";
-    case OutputPixelFormat::Yuv422p:
-        return "yuv422p";
-    case OutputPixelFormat::Yuv422p10:
-        return "yuv422p10";
-    case OutputPixelFormat::Pal8:
-        return "pal8";
-    }
-    return "yuv420p";
+    return pixelFormatName(f);
 }
 
 bool endsWith(std::string_view s, std::string_view suffix) {
@@ -267,12 +316,35 @@ void configureVideoOptions(const std::string& name, const VideoSettings& v, AVCo
             setBitrate();
         }
     } else if (name == "prores_ks") {
-        constexpr std::string_view kProfiles[] = {"proxy", "lt", "standard", "hq"};
+        constexpr std::string_view kProfiles[] = {"proxy", "lt", "standard", "hq", "4444", "4444xq"};
         setOption(opts, "profile", kProfiles[static_cast<int>(v.proresProfile)]);
         setOption(opts, "vendor", "apl0");
     } else if (name == "dnxhd") {
-        constexpr std::string_view kProfiles[] = {"dnxhr_lb", "dnxhr_sq", "dnxhr_hq", "dnxhr_hqx"};
-        setOption(opts, "profile", kProfiles[static_cast<int>(v.dnxhrProfile)]);
+        if (isDnxhd(v.dnxhrProfile)) {
+            // 0.2: DNxHD picks its compression ID from the size, the bit depth and Avid's bitrate for the frame rate.
+            setOption(opts, "profile", "dnxhd");
+            ctx->bit_rate = dnxhdBitrate(v.dnxhrProfile, ctx->width, ctx->height,
+                                         Rate{ctx->framerate.num, ctx->framerate.den})
+                                .value_or(0);
+        } else {
+            constexpr std::string_view kProfiles[] = {"dnxhr_lb", "dnxhr_sq", "dnxhr_hq", "dnxhr_hqx", "dnxhr_444"};
+            setOption(opts, "profile", kProfiles[std::min(static_cast<int>(v.dnxhrProfile), 4)]);
+        }
+    } else if (name == "mjpeg") { // 0.2: JPEG stills, the 0..51 quality scale onto qscale 2..31
+        ctx->flags |= AV_CODEC_FLAG_QSCALE;
+        ctx->global_quality = FF_QP2LAMBDA * std::clamp(2 + v.quality * 29 / 51, 2, 31);
+    } else if (name == "tiff") {
+        setOption(opts, "compression_algo", "lzw");
+    } else if (name == "exr") {
+        setOption(opts, "compression", "zip16");
+        setOption(opts, "format", "half");
+    }
+    // 0.2: the CPU limit preference (0 = automatic).
+    if (const int limit = exportThreadLimit(); limit > 0) {
+        ctx->thread_count = limit;
+        if (name == "libx264" || name == "libx265" || name == "libsvtav1") {
+            setOption(opts, "threads", limit);
+        }
     }
 }
 
@@ -356,12 +428,16 @@ std::expected<Muxer, Error> Muxer::create(Container container, const std::filesy
     Muxer m;
     m.m_container = container;
     m.m_path = pathToUtf8(file);
-    const char* format = container == Container::Mp4   ? "mp4"
-                         : container == Container::Mov ? "mov"
-                         : container == Container::Mkv ? "matroska"
-                         : container == Container::Gif ? "gif"
+    const char* format = container == Container::Mp4    ? "mp4"
+                         : container == Container::Mov  ? "mov"
+                         : container == Container::Mkv  ? "matroska"
+                         : container == Container::Gif  ? "gif"
                          : container == Container::WebM ? "webm"
-                                                       : "wav";
+                         : container == Container::Mp3  ? "mp3"  // 0.2
+                         : container == Container::M4a  ? "ipod" // MPEG-4 audio (.m4a)
+                         : container == Container::Aiff ? "aiff"
+                         : container == Container::Image ? "image2"
+                                                         : "wav";
     const int r = avformat_alloc_output_context2(&m.m_ctx, nullptr, format, m.m_path.c_str());
     if (r < 0 || m.m_ctx == nullptr) {
         return std::unexpected(ffmpegError(ErrorCode::Unsupported, "Cannot create the muxer", r));
@@ -371,7 +447,7 @@ std::expected<Muxer, Error> Muxer::create(Container container, const std::filesy
 
 Muxer::Muxer(Muxer&& other) noexcept
     : m_ctx(std::exchange(other.m_ctx, nullptr)), m_container(other.m_container),
-      m_path(std::move(other.m_path)), m_open(std::exchange(other.m_open, false)),
+      m_path(std::move(other.m_path)), m_open(std::exchange(other.m_open, false)), m_bext(other.m_bext),
       m_writeMutex(std::move(other.m_writeMutex)) {}
 
 Muxer& Muxer::operator=(Muxer&& other) noexcept {
@@ -382,9 +458,46 @@ Muxer& Muxer::operator=(Muxer&& other) noexcept {
         m_container = other.m_container;
         m_path = std::move(other.m_path);
         m_open = std::exchange(other.m_open, false);
+        m_bext = other.m_bext;
         m_writeMutex = std::move(other.m_writeMutex);
     }
     return *this;
+}
+
+void Muxer::setMetadata(const char* key, const std::string& value) {
+    if (m_ctx) {
+        av_dict_set(&m_ctx->metadata, key, value.c_str(), 0);
+    }
+}
+
+void Muxer::addChapter(std::int64_t startMs, std::int64_t endMs, const std::string& title) {
+    if (!m_ctx || endMs <= startMs) {
+        return;
+    }
+    // libavformat frees ctx->chapters (and each chapter's metadata) in avformat_free_context.
+    auto* chapter = static_cast<AVChapter*>(av_mallocz(sizeof(AVChapter)));
+    if (!chapter) {
+        return;
+    }
+    chapter->id = static_cast<std::int64_t>(m_ctx->nb_chapters) + 1;
+    chapter->time_base = AVRational{1, 1000};
+    chapter->start = startMs;
+    chapter->end = endMs;
+    av_dict_set(&chapter->metadata, "title", title.c_str(), 0);
+    void* grown = av_realloc_array(m_ctx->chapters, m_ctx->nb_chapters + 1, sizeof(AVChapter*));
+    if (!grown) {
+        av_dict_free(&chapter->metadata);
+        av_free(chapter);
+        return;
+    }
+    m_ctx->chapters = static_cast<AVChapter**>(grown);
+    m_ctx->chapters[m_ctx->nb_chapters++] = chapter;
+}
+
+void Muxer::setLanguage(AVStream* stream, const std::string& language) {
+    if (stream && !language.empty()) {
+        av_dict_set(&stream->metadata, "language", language.c_str(), 0);
+    }
 }
 
 Muxer::~Muxer() {
@@ -426,10 +539,15 @@ std::expected<void, Error> Muxer::open() {
     }
     m_open = true;
     DictionaryOwner opts;
-    if (m_container == Container::Mp4) {
+    if (m_container == Container::Mp4 || m_container == Container::M4a) {
         setOption(&opts.dict, "movflags", "+faststart"); // index first: plays while downloading
     } else if (m_container == Container::Wav) {
         setOption(&opts.dict, "rf64", "auto"); // > 4 GiB
+        if (m_bext) {
+            setOption(&opts.dict, "write_bext", 1); // 0.2: Broadcast WAV (its time reference)
+        }
+    } else if (m_container == Container::Image) {
+        setOption(&opts.dict, "start_number", 0); // 0.2: frame k -> file k
     }
     const int r = avformat_write_header(m_ctx, &opts.dict);
     if (r < 0) {
@@ -472,6 +590,84 @@ void Muxer::abort() noexcept {
     m_open = false;
 }
 
+// ---- Colour (I.9) -----------------------------------------------------------------------------------------
+
+ColorTags colorTagsOf(DynamicRange range) {
+    switch (range) {
+    case DynamicRange::Pq:
+        return {AVCOL_PRI_BT2020, AVCOL_TRC_SMPTE2084, AVCOL_SPC_BT2020_NCL};
+    case DynamicRange::Hlg:
+        return {AVCOL_PRI_BT2020, AVCOL_TRC_ARIB_STD_B67, AVCOL_SPC_BT2020_NCL};
+    case DynamicRange::Auto:
+    case DynamicRange::Sdr:
+        break;
+    }
+    return {};
+}
+
+ColorTags colorTagsFor(DynamicRange range, VideoCodec codec, OutputPixelFormat format) {
+    ColorTags tags = colorTagsOf(range);
+    using F = OutputPixelFormat;
+    switch (format) {
+    case F::Rgb24:
+        if (codec == VideoCodec::Jpeg) { // JFIF: BT.601 Y'CbCr, full range
+            tags.matrix = AVCOL_SPC_BT470BG;
+            tags.range = AVCOL_RANGE_JPEG;
+            break;
+        }
+        [[fallthrough]];
+    case F::Rgba:
+    case F::Rgb48:
+    case F::Rgba64:
+    case F::Gbrp10:
+    case F::Gbrp12:
+    case F::Gbrap12:
+    case F::Rgbf:
+    case F::Rgbaf:
+        tags.matrix = AVCOL_SPC_RGB;
+        tags.range = AVCOL_RANGE_JPEG;
+        break;
+    default:
+        break;
+    }
+    return tags;
+}
+
+AVMasteringDisplayMetadata masteringDisplayFor(double peakNits) {
+    // Display P3 primaries (R, G, B) and the D65 white point, in the 1 / 50000 units of the HEVC SEI.
+    AVMasteringDisplayMetadata m{};
+    const auto q = [](double v) { return AVRational{static_cast<int>(std::lround(v * 50000.0)), 50000}; };
+    m.display_primaries[0][0] = q(0.680);
+    m.display_primaries[0][1] = q(0.320);
+    m.display_primaries[1][0] = q(0.265);
+    m.display_primaries[1][1] = q(0.690);
+    m.display_primaries[2][0] = q(0.150);
+    m.display_primaries[2][1] = q(0.060);
+    m.white_point[0] = q(0.3127);
+    m.white_point[1] = q(0.3290);
+    m.max_luminance = AVRational{static_cast<int>(std::lround(std::clamp(peakNits, 100.0, 10000.0))), 1};
+    m.min_luminance = AVRational{1, 10000}; // 0.0001 nits
+    m.has_primaries = 1;
+    m.has_luminance = 1;
+    return m;
+}
+
+void setHdrStreamMetadata(AVStream* stream, const AVMasteringDisplayMetadata* display, const AVContentLightMetadata* light) {
+    AVCodecParameters* par = stream->codecpar;
+    const auto put = [&](AVPacketSideDataType type, const void* data, std::size_t size) {
+        av_packet_side_data_remove(par->coded_side_data, &par->nb_coded_side_data, type);
+        if (AVPacketSideData* sd = av_packet_side_data_new(&par->coded_side_data, &par->nb_coded_side_data, type, size, 0)) {
+            std::memcpy(sd->data, data, size);
+        }
+    };
+    if (display) {
+        put(AV_PKT_DATA_MASTERING_DISPLAY_METADATA, display, sizeof(AVMasteringDisplayMetadata));
+    }
+    if (light) {
+        put(AV_PKT_DATA_CONTENT_LIGHT_LEVEL, light, sizeof(AVContentLightMetadata));
+    }
+}
+
 // ---- Video encoder ----------------------------------------------------------------------------------------
 
 std::expected<VideoEncoder, Error> openVideoEncoder(const std::string& name, const VideoEncodeParams& params,
@@ -504,6 +700,9 @@ std::expected<VideoEncoder, Error> openVideoEncoder(const std::string& name, con
     ctx->color_range = params.range;
     ctx->chroma_sample_location = params.chromaLocation;
     ctx->thread_count = 0;
+    if (params.noFrameDelay) {
+        ctx->thread_type = FF_THREAD_SLICE; // 0.2: copied packets interleave with these in order
+    }
     if (params.globalHeader) {
         ctx->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
     }
@@ -524,7 +723,7 @@ std::expected<VideoEncoder, Error> openVideoEncoder(const std::string& name, con
     auto isSupported = [&](AVPixelFormat f) {
         return supported == nullptr || std::find(supported, supported + count, f) != supported + count;
     };
-    const std::vector<AVPixelFormat> wanted = inputFormatsFor(v.pixelFormat);
+    const std::vector<AVPixelFormat> wanted = inputFormatsFor(v.codec, v.pixelFormat);
     const bool vaapi = endsWith(name, "_vaapi");
     if (vaapi) {
         if (!isSupported(AV_PIX_FMT_VAAPI)) {
@@ -562,6 +761,18 @@ std::expected<VideoEncoder, Error> openVideoEncoder(const std::string& name, con
 
     DictionaryOwner opts;
     configureVideoOptions(name, v, ctx, &opts.dict);
+    if (params.masteringDisplay) { // I.9: HDR10 static metadata for the encoder's SEI / metadata OBU
+        AVFrameSideData* sd = av_frame_side_data_new(&ctx->decoded_side_data, &ctx->nb_decoded_side_data,
+                                                     AV_FRAME_DATA_MASTERING_DISPLAY_METADATA,
+                                                     sizeof(AVMasteringDisplayMetadata), 0);
+        if (!sd) {
+            return std::unexpected(Error{ErrorCode::EncoderError, "Out of memory (mastering display)"});
+        }
+        std::memcpy(sd->data, &*params.masteringDisplay, sizeof(AVMasteringDisplayMetadata));
+    }
+    if (params.a53Captions && (name == "libx265" || name == "libx264" || endsWith(name, "_nvenc") || name == "h264_qsv")) {
+        setOption(&opts.dict, "a53cc", 1); // libx265's is off by default
+    }
     r = avcodec_open2(ctx, codec, &opts.dict);
     if (r < 0) {
         return std::unexpected(ffmpegError(ErrorCode::EncoderError, "cannot open", r));
@@ -574,6 +785,11 @@ std::expected<VideoEncoder, Error> openVideoEncoder(const std::string& name, con
     return enc;
 }
 
+bool supportsA53Captions(std::string_view name) {
+    return name == "libx264" || name == "libx265" || endsWith(name, "_nvenc") || name == "h264_qsv" ||
+           endsWith(name, "_vaapi") || endsWith(name, "_videotoolbox");
+}
+
 std::expected<VideoEncoderChoice, Error> chooseVideoEncoder(const VideoEncodeParams& params) {
     const VideoSettings& v = params.settings;
     const bool automatic = v.encoder.empty() || v.encoder == "auto";
@@ -582,6 +798,10 @@ std::expected<VideoEncoderChoice, Error> chooseVideoEncoder(const VideoEncodePar
     const std::string_view software = softwareEncoder(v.codec);
     VideoEncoderChoice choice;
     for (const std::string& name : names) {
+        if (params.a53Captions && !supportsA53Captions(name)) {
+            choice.fallbacks.push_back(std::format("{}: does not embed closed captions", name));
+            continue;
+        }
         if (name != software) {
             // Hardware: open a throwaway context and encode a test frame first.
             if (auto probe = openVideoEncoder(name, params, true); !probe) {
@@ -621,8 +841,8 @@ std::expected<EncoderProbe, Error> probeVideoEncoder(const VideoSettings& video,
 
 namespace detail {
 
-std::expected<FramePtr, Error> blackFrame(AVPixelFormat format, int width, int height) {
-    auto f = allocVideoFrame(format, width, height);
+std::expected<FramePtr, Error> blackFrame(AVPixelFormat format, int width, int height, ColorTags tags) {
+    auto f = allocVideoFrame(format, width, height, tags);
     if (!f) {
         return f;
     }
@@ -630,9 +850,23 @@ std::expected<FramePtr, Error> blackFrame(AVPixelFormat format, int width, int h
     for (int i = 0; i < 4; ++i) {
         linesizes[i] = (*f)->linesize[i];
     }
-    const int r = av_image_fill_black((*f)->data, linesizes, format, AVCOL_RANGE_MPEG, width, height);
+    const int r = av_image_fill_black((*f)->data, linesizes, format, tags.range, width, height);
     if (r < 0) {
-        return std::unexpected(ffmpegError(ErrorCode::EncoderError, "Cannot clear a frame", r));
+        // 0.2: formats av_image_fill_black does not know (float RGB): zero bits are black there.
+        const AVPixFmtDescriptor* d = av_pix_fmt_desc_get(format);
+        if (!d || !(d->flags & (AV_PIX_FMT_FLAG_RGB | AV_PIX_FMT_FLAG_FLOAT))) {
+            return std::unexpected(ffmpegError(ErrorCode::EncoderError, "Cannot clear a frame", r));
+        }
+        for (int p = 0; p < 4 && (*f)->data[p]; ++p) {
+            std::memset((*f)->data[p], 0, static_cast<std::size_t>((*f)->linesize[p]) * static_cast<std::size_t>(height));
+        }
+        if (d->flags & AV_PIX_FMT_FLAG_ALPHA && d->flags & AV_PIX_FMT_FLAG_FLOAT) {
+            const AVComponentDescriptor& a = d->comp[3];
+            for (int y = 0; y < height; ++y) {
+                auto* line = reinterpret_cast<float*>((*f)->data[a.plane] + static_cast<std::ptrdiff_t>(y) * (*f)->linesize[a.plane]);
+                std::fill(line, line + width, 1.0f); // opaque, as av_image_fill_black leaves alpha
+            }
+        }
     }
     return f;
 }
@@ -657,39 +891,62 @@ std::expected<FramePtr, Error> prepareForEncoder(const VideoEncoder& encoder, Fr
 // ---- Frame conversion -------------------------------------------------------------------------------------
 
 std::expected<FrameConverter, Error> FrameConverter::create(int renderWidth, int renderHeight, int width,
-                                                            int height, AVPixelFormat format) {
+                                                            int height, AVPixelFormat format, ColorTags tags) {
+    Setup setup;
+    setup.sourceWidth = renderWidth;
+    setup.sourceHeight = renderHeight;
+    setup.renderWidth = renderWidth;
+    setup.renderHeight = renderHeight;
+    setup.width = width;
+    setup.height = height;
+    setup.format = format;
+    setup.tags = tags;
+    return create(setup);
+}
+
+std::expected<FrameConverter, Error> FrameConverter::create(const Setup& setup) {
     FrameConverter c;
-    c.m_sws.reset(sws_alloc_context());
-    if (!c.m_sws) {
-        return std::unexpected(Error{ErrorCode::EncoderError, "Out of memory (scaler)"});
+    const int threads = exportThreadLimit(); // 0.2: the CPU limit preference (0 = automatic)
+    for (SwsContextPtr* sws : {&c.m_sws, &c.m_swsWork, &c.m_swsPre}) {
+        sws->reset(sws_alloc_context());
+        if (!*sws) {
+            return std::unexpected(Error{ErrorCode::EncoderError, "Out of memory (scaler)"});
+        }
+        (*sws)->flags = SWS_BICUBIC | SWS_ACCURATE_RND | SWS_FULL_CHR_H_INP;
+        (*sws)->threads = threads;
     }
-    c.m_sws->flags = SWS_BICUBIC | SWS_ACCURATE_RND | SWS_FULL_CHR_H_INP;
-    c.m_sws->threads = 0; // automatic
-    c.m_renderWidth = renderWidth;
-    c.m_renderHeight = renderHeight;
-    c.m_width = width;
-    c.m_height = height;
-    c.m_format = format;
-    if (format == AV_PIX_FMT_PAL8) { // GIF: convert to RGB, then a palette of 256 colours for each frame
-        auto palette = PaletteGraph::create(width, height);
+    c.m_swsPre->flags = SWS_LANCZOS | SWS_ACCURATE_RND | SWS_FULL_CHR_H_INP; // Use Maximum Render Quality
+    c.m_sourceWidth = setup.sourceWidth;
+    c.m_sourceHeight = setup.sourceHeight;
+    c.m_renderWidth = setup.renderWidth;
+    c.m_renderHeight = setup.renderHeight;
+    c.m_width = setup.width;
+    c.m_height = setup.height;
+    c.m_format = setup.format;
+    if (setup.format == AV_PIX_FMT_PAL8) { // GIF: convert to RGB, then a palette of 256 colours for each frame
+        auto palette = PaletteGraph::create(setup.width, setup.height);
         if (!palette) {
             return std::unexpected(palette.error());
         }
         c.m_palette = std::move(*palette);
     }
+    c.m_tags = setup.tags;
+    c.m_effects = setup.effects;
+    c.m_alpha = setup.alpha;
+    c.m_deep = setup.deep;
     return c;
 }
 
-std::expected<FramePtr, Error> FrameConverter::convert(const media::FrameHandle& source) {
+std::expected<FramePtr, Error> FrameConverter::convert(const media::FrameHandle& source, std::int64_t frameIndex) {
     const media::CpuPlanes* cpu = source.cpu();
     if (!cpu) {
         return std::unexpected(Error{ErrorCode::Unsupported, "The video source must deliver CPU frames"});
     }
-    if (source.width != m_renderWidth || source.height != m_renderHeight) {
+    if (source.width != m_sourceWidth || source.height != m_sourceHeight) {
         return std::unexpected(
             Error{ErrorCode::InvalidArgument,
                   std::format("The video source delivered {}x{}, the export asked for {}x{}", source.width,
-                              source.height, m_renderWidth, m_renderHeight)});
+                              source.height, m_sourceWidth, m_sourceHeight)});
     }
     const AVPixelFormat srcFormat = toAvPixelFormat(source.format);
     const AVPixFmtDescriptor* desc = av_pix_fmt_desc_get(srcFormat);
@@ -705,16 +962,20 @@ std::expected<FramePtr, Error> FrameConverter::convert(const media::FrameHandle&
     const int cropY = ((m_renderHeight - viewH) / 2) & ~1;
     int pixsteps[4] = {};
     av_image_fill_max_pixsteps(pixsteps, nullptr, desc);
+    // 0.2, Use Maximum Render Quality: the source is larger than the render size; it is scaled down whole first.
+    const bool prescale = m_sourceWidth != m_renderWidth || m_sourceHeight != m_renderHeight;
+    const int sourceX = prescale ? 0 : cropX;
+    const int sourceY = prescale ? 0 : cropY;
 
     FramePtr src(av_frame_alloc()); // a view of the source memory, not refcounted
     src->format = srcFormat;
-    src->width = viewW;
-    src->height = viewH;
+    src->width = prescale ? m_sourceWidth : viewW;
+    src->height = prescale ? m_sourceHeight : viewH;
     for (int p = 0; p < source.planeCount() && p < 4; ++p) {
         const media::Plane& plane = cpu->planes[static_cast<std::size_t>(p)];
         const bool chroma = (p == 1 || p == 2) && !(desc->flags & AV_PIX_FMT_FLAG_RGB);
-        const int x = chroma ? cropX >> desc->log2_chroma_w : cropX;
-        const int y = chroma ? cropY >> desc->log2_chroma_h : cropY;
+        const int x = chroma ? sourceX >> desc->log2_chroma_w : sourceX;
+        const int y = chroma ? sourceY >> desc->log2_chroma_h : sourceY;
         src->data[p] = const_cast<std::uint8_t*>(plane.data) + static_cast<std::ptrdiff_t>(y) * plane.stride +
                        static_cast<std::ptrdiff_t>(x) * pixsteps[p];
         src->linesize[p] = plane.stride;
@@ -726,13 +987,16 @@ std::expected<FramePtr, Error> FrameConverter::convert(const media::FrameHandle&
         src->colorspace = toAvColorSpace(source.color.matrix);
         src->color_range = source.color.range == ColorRange::Full ? AVCOL_RANGE_JPEG : AVCOL_RANGE_MPEG;
     }
-    src->color_primaries = AVCOL_PRI_BT709;
-    src->color_trc = AVCOL_TRC_BT709;
+    src->color_primaries = m_tags.primaries; // the source carries the output's primaries and transfer (I.9)
+    src->color_trc = m_tags.transfer;
     src->chroma_location = AVCHROMA_LOC_LEFT;
+    if (prescale || m_effects) {
+        return convertThroughWork(src.get(), viewW, viewH, cropX, cropY, frameIndex);
+    }
 
     const bool padded = viewW < m_width || viewH < m_height; // ScaleMode::Fit
     const AVPixelFormat work = m_palette ? AV_PIX_FMT_RGB24 : m_format; // GIF: RGB first, the palette after
-    auto converted = allocVideoFrame(work, viewW, viewH);
+    auto converted = allocVideoFrame(work, viewW, viewH, m_tags);
     if (!converted) {
         return converted;
     }
@@ -748,9 +1012,12 @@ std::expected<FramePtr, Error> FrameConverter::convert(const media::FrameHandle&
         return m_palette ? m_palette->apply(std::move(*converted)) : std::move(converted);
     }
 
-    auto out = blackFrame(work, m_width, m_height);
+    auto out = blackFrame(work, m_width, m_height, m_tags);
     if (!out) {
         return out;
+    }
+    if (m_alpha) {
+        clearAlpha(out->get(), 0, 0, m_width, m_height); // 0.2: the bars of an alpha export are transparent
     }
     const AVPixFmtDescriptor* dstDesc = av_pix_fmt_desc_get(work);
     int dstSteps[4] = {};
@@ -770,6 +1037,77 @@ std::expected<FramePtr, Error> FrameConverter::convert(const media::FrameHandle&
                             rows);
     }
     return m_palette ? m_palette->apply(std::move(*out)) : std::move(out);
+}
+
+std::expected<FramePtr, Error> FrameConverter::convertThroughWork(AVFrame* view, int viewW, int viewH, int cropX,
+                                                                  int cropY, std::int64_t frameIndex) {
+    const AVPixelFormat workFormat = m_deep ? AV_PIX_FMT_RGBA64LE : AV_PIX_FMT_RGBA;
+    const int bytesPerPixel = m_deep ? 8 : 4;
+    ColorTags workTags = m_tags;
+    workTags.matrix = AVCOL_SPC_RGB;
+    workTags.range = AVCOL_RANGE_JPEG;
+    const bool prescale = m_sourceWidth != m_renderWidth || m_sourceHeight != m_renderHeight;
+
+    // The view of the canvas this frame shows, in the work format.
+    FramePtr scaled;
+    FramePtr viewWork;
+    if (prescale) {
+        auto whole = allocVideoFrame(workFormat, m_renderWidth, m_renderHeight, workTags);
+        if (!whole) {
+            return whole;
+        }
+        if (const int r = sws_scale_frame(m_swsPre.get(), whole->get(), view); r < 0) {
+            return std::unexpected(ffmpegError(ErrorCode::EncoderError, "Cannot scale a frame", r));
+        }
+        scaled = std::move(*whole);
+        viewWork.reset(av_frame_alloc()); // a view into `scaled`
+        viewWork->format = workFormat;
+        viewWork->width = viewW;
+        viewWork->height = viewH;
+        viewWork->data[0] = scaled->data[0] + static_cast<std::ptrdiff_t>(cropY) * scaled->linesize[0] +
+                            static_cast<std::ptrdiff_t>(cropX) * bytesPerPixel;
+        viewWork->linesize[0] = scaled->linesize[0];
+    } else {
+        auto v = allocVideoFrame(workFormat, viewW, viewH, workTags);
+        if (!v) {
+            return v;
+        }
+        if (const int r = sws_scale_frame(m_swsWork.get(), v->get(), view); r < 0) {
+            return std::unexpected(ffmpegError(ErrorCode::EncoderError, "Cannot convert a frame", r));
+        }
+        viewWork = std::move(*v);
+    }
+
+    // The output frame: the view at its place, black (transparent for alpha exports) around it.
+    auto out = blackFrame(workFormat, m_width, m_height, workTags);
+    if (!out) {
+        return out;
+    }
+    if (m_alpha) {
+        clearAlpha(out->get(), 0, 0, m_width, m_height);
+    }
+    const int padX = ((m_width - viewW) / 2) & ~1;
+    const int padY = ((m_height - viewH) / 2) & ~1;
+    av_image_copy_plane((*out)->data[0] + static_cast<std::ptrdiff_t>(padY) * (*out)->linesize[0] +
+                            static_cast<std::ptrdiff_t>(padX) * bytesPerPixel,
+                        (*out)->linesize[0], viewWork->data[0], viewWork->linesize[0], viewW * bytesPerPixel, viewH);
+    if (m_effects) {
+        m_effects->apply(out->get(), frameIndex);
+    }
+
+    const AVPixelFormat target = m_palette ? AV_PIX_FMT_RGB24 : m_format;
+    auto converted = allocVideoFrame(target, m_width, m_height, m_tags);
+    if (!converted) {
+        return converted;
+    }
+    if (m_palette) {
+        (*converted)->colorspace = AVCOL_SPC_RGB;
+        (*converted)->color_range = AVCOL_RANGE_JPEG;
+    }
+    if (const int r = sws_scale_frame(m_sws.get(), converted->get(), out->get()); r < 0) {
+        return std::unexpected(ffmpegError(ErrorCode::EncoderError, "Cannot convert a frame", r));
+    }
+    return m_palette ? m_palette->apply(std::move(*converted)) : std::move(converted);
 }
 
 // ---- GIF palettes ------------------------------------------------------------------------------------------
@@ -838,10 +1176,13 @@ std::expected<FramePtr, Error> PaletteGraph::apply(FramePtr rgb) {
 
 // ---- Audio encoder ----------------------------------------------------------------------------------------
 
-std::expected<AudioEncoder, Error> AudioEncoder::open(const AudioSettings& settings, bool globalHeader) {
+std::expected<AudioEncoder, Error> AudioEncoder::open(const AudioSettings& settings, bool globalHeader, bool bigEndian) {
     media::detail::ensureFfmpegLogging();
     AudioEncoder enc;
     enc.m_name = std::string(audioCodecName(settings.codec));
+    if (bigEndian && (settings.codec == AudioCodec::Pcm16 || settings.codec == AudioCodec::Pcm24)) {
+        enc.m_name = settings.codec == AudioCodec::Pcm16 ? "pcm_s16be" : "pcm_s24be"; // 0.2: AIFF
+    }
     const AVCodec* codec = avcodec_find_encoder_by_name(enc.m_name.c_str());
     if (!codec) {
         return std::unexpected(Error{ErrorCode::Unsupported, enc.m_name + " is not in this FFmpeg build"});
@@ -854,10 +1195,13 @@ std::expected<AudioEncoder, Error> AudioEncoder::open(const AudioSettings& setti
     ctx->sample_rate = settings.sampleRate;
     av_channel_layout_default(&ctx->ch_layout, settings.channels);
     ctx->time_base = AVRational{1, settings.sampleRate};
-    ctx->sample_fmt = settings.codec == AudioCodec::Aac || settings.codec == AudioCodec::Ac3     ? AV_SAMPLE_FMT_FLTP
-                      : settings.codec == AudioCodec::Pcm16 || settings.codec == AudioCodec::Opus ? AV_SAMPLE_FMT_S16
-                                                                                                   : AV_SAMPLE_FMT_S32;
-    if (settings.codec == AudioCodec::Aac || settings.codec == AudioCodec::Ac3 || settings.codec == AudioCodec::Opus) {
+    ctx->sample_fmt = settings.codec == AudioCodec::Aac || settings.codec == AudioCodec::Ac3 ? AV_SAMPLE_FMT_FLTP
+                      : settings.codec == AudioCodec::Pcm16 || settings.codec == AudioCodec::Opus ||
+                              settings.codec == AudioCodec::Mp3
+                          ? AV_SAMPLE_FMT_S16
+                          : AV_SAMPLE_FMT_S32;
+    if (settings.codec == AudioCodec::Aac || settings.codec == AudioCodec::Ac3 || settings.codec == AudioCodec::Opus ||
+        settings.codec == AudioCodec::Mp3) {
         ctx->bit_rate = settings.bitrate;
     }
     if (globalHeader) {

@@ -15,6 +15,17 @@
 //     searching folders (file name + fingerprint).
 //   * Library -> timeline drops (dropMedia): overwrite at the drop point, insert with Ctrl/Cmd (Premiere); files
 //     dragged from the desktop onto the timeline (dropFiles): imported, then dropped the same way.
+//   * 0.2 (P.3) Project locking (Premiere's Productions, and its "Enable Project Locking" preference for other
+//     projects): a project in a production is locked for this session while it is open (editor/Production.h); a project
+//     another session has locked opens read-only (`readOnly`, `lockOwner`): Save is refused (Save As works) and it
+//     does not autosave next to the other session's file.
+//   * 0.2 (P.3) Several projects open (Premiere keeps several projects open, one at a time in the panels):
+//     openAlongside() opens another project without closing this one, switchTo() makes an open project the one the
+//     panels show at once. Each keeps its own undo history, unsaved changes, lock and view (sequence, playhead): the
+//     others are parked out of the one EditSession (EditSession::exchange), autosaved when left, and cannot change
+//     while parked. The quit question goes through every open project with unsaved changes (firstDirtyProject).
+//   * 0.2 (P.3) Production Settings: the active project's production may keep the media cache (waveforms,
+//     filmstrips) in a folder of its own (applyScratchDisks; previews follow editor::previewFolderFor).
 //   * Crash recovery: a clean exit removes the current project's autosaves, so what is left at startup (untitled
 //     autosaves, or the last project's autosave newer than its file) means work an unclean exit did not save:
 //     `recoveryFiles` lists it and Main.qml offers it (RecoveryDialog). Opening a project whose autosave is newer
@@ -87,6 +98,17 @@ class ProjectLifecycle : public QObject {
     /// "" until rendered), newer, comparison (vs the version saved now) }], newest first after the current one.
     Q_PROPERTY(QVariantList recoveryVersions READ recoveryVersions NOTIFY recoveryVersionsChanged FINAL)
     Q_PROPERTY(bool recoveryScanning READ recoveryScanning NOTIFY recoveryVersionsChanged FINAL)
+    /// 0.2 (P.3): another session has the project locked: it is read-only here ("" / false otherwise).
+    Q_PROPERTY(bool readOnly READ readOnly NOTIFY documentChanged FINAL)
+    Q_PROPERTY(QString lockOwner READ lockOwner NOTIFY documentChanged FINAL)
+    /// The production folder the project lies in ("" when none).
+    Q_PROPERTY(QString productionFolder READ productionFolder NOTIFY documentChanged FINAL)
+    /// Premiere's Preferences > General > Enable Project Locking: lock projects outside productions too (per user).
+    Q_PROPERTY(bool lockProjects READ lockProjects WRITE setLockProjects NOTIFY lockProjectsChanged FINAL)
+    /// 0.2 (P.3): the projects open now, in the order they were opened: [{ index, name, path, url, dirty, active,
+    /// readOnly, demo }]; and the index of the active one (the one the panels show).
+    Q_PROPERTY(QVariantList openProjects READ openProjects NOTIFY documentChanged FINAL)
+    Q_PROPERTY(int activeProject READ activeProject NOTIFY documentChanged FINAL)
 
 public:
     explicit ProjectLifecycle(ProjectController* controller, QObject* parent = nullptr);
@@ -113,10 +135,17 @@ public:
     int offlineCount() const;
     QString lastError() const { return m_lastError; }
     QStringList importNameFilters() const;
+    bool readOnly() const { return m_readOnly; }
+    QString lockOwner() const { return m_lockOwner; }
+    QString productionFolder() const;
+    bool lockProjects() const;
+    void setLockProjects(bool on);
     QVariantList recoveryFiles() const {
         collectRecovery(true);
         return m_recovery;
     }
+    QVariantList openProjects() const;
+    int activeProject() const { return static_cast<int>(m_active); }
 
     // ---- File ----
     /// An empty untitled project with one sequence (1920x1080, 30 fps).
@@ -136,6 +165,30 @@ public:
     /// What the autosave timer runs (P.1): the job is prepared here and written on a worker, one at a time; its
     /// result arrives through the event loop (autosaveChanged, or an error). Tests call it instead of waiting.
     void startBackgroundAutosave();
+
+    // ---- Several projects open (0.2, P.3) ----
+    /// Opens `file` next to the projects already open and makes it the active one; the one left stays loaded with its
+    /// undo history and unsaved changes (it is autosaved first). A project already open is switched to. The demo is
+    /// replaced (it is not a project). False (lastError) when the file cannot be opened: nothing changes then.
+    Q_INVOKABLE bool openAlongside(const QUrl& file);
+    /// Makes open project `index` (of openProjects) the one the panels show, at once: nothing is saved or closed.
+    /// Refused while a drag or another gesture is in progress.
+    Q_INVOKABLE bool switchTo(int index);
+    /// Closes open project `index` without a question (QML asks first, switching to a project with unsaved changes):
+    /// its lock is released and its autosaves removed. Closing the active one makes its neighbour active. False for
+    /// the only project open.
+    Q_INVOKABLE bool closeProject(int index);
+    /// The index of an open project with unsaved changes, the active one first; -1 when none (the quit question).
+    Q_INVOKABLE int firstDirtyProject() const;
+    /// The index (in openProjects) of the open project whose file is `file`, or -1.
+    Q_INVOKABLE int indexOfProject(const QUrl& file) const;
+    /// The state of the open project whose file is `file` (the active one or a parked one, with its unsaved changes);
+    /// null when it is not open.
+    ProjectSnapshot openProjectState(const std::filesystem::path& file) const;
+    /// Applies the active project's Production Settings (its media cache folder, else the app's); emits
+    /// scratchDisksChanged when the project or its settings changed. Called whenever the active project changes;
+    /// ProductionBridge calls it after changing the settings.
+    void applyScratchDisks();
 
     // ---- Crash recovery ----
     /// Opens a recovery file (from recoveryFiles) as its project, with unsaved changes, and autosaves that revision
@@ -175,9 +228,20 @@ public:
     // ---- Export Timeline (0.1.1, File > Export Timeline...) ----
     /// Writes sequence `sequenceIndex` (an index in ProjectController.sequenceNames) as a timeline file other editors
     /// read, through the interchange.export command on a worker, on a snapshot of the project (nothing changes).
-    /// `format`: "fcp7-xml", "fcpxml", "otio" or "edl". False when an export is running or nothing can be exported
-    /// (lastError says why); otherwise timelineExported follows.
-    Q_INVOKABLE bool exportTimeline(const QString& format, int sequenceIndex, const QUrl& file);
+    /// `format`: "fcp7-xml", "fcpxml", "otio" or "edl"; or for audio post (P.2) "aaf" or "omf", with `audioPost` the
+    /// AAF / OMF settings of interchange.export (sampleRate, bitsPerSample, files, audioFormat, render, handleFrames,
+    /// mixdownVideo, breakoutToMono, renderAudioClipEffects, includeClipCopiesWithoutEffects, omfTitle, includePan):
+    /// the clips' audio is rendered by the playback engine. False when an export is running or nothing can be
+    /// exported (lastError says why); otherwise timelineExported follows.
+    Q_INVOKABLE bool exportTimeline(const QString& format, int sequenceIndex, const QUrl& file,
+                                    const QVariantMap& audioPost = {});
+    /// 0.2: Export Timeline of several sequences at once: one file per sequence (indices in sequenceNames) in `folder`
+    /// (an existing folder), named after the sequence ("Name.xml"; "Name (2).xml" for a second sequence of that name),
+    /// written one after another on a worker. timelineExported then carries one combined report: ok (every file
+    /// written), file ("3 timelines"), summary, files: [{ sequence, file, path, ok, error }], the summed counts and
+    /// every file's entries (their location names the sequence); error lists the sequences that failed.
+    Q_INVOKABLE bool exportTimelines(const QString& format, const QVariantList& sequenceIndices, const QUrl& folder,
+                                     const QVariantMap& audioPost = {});
 
     // ---- Home screen (M5f) ----
     /// An empty untitled project whose one sequence comes from a preset: { name, width, height, rateNum,
@@ -227,8 +291,11 @@ signals:
     void offlineMediaFound(int count);
     void recoveryChanged();
     void recoveryVersionsChanged();
+    void lockProjectsChanged();
     /// Recovery files appeared after startup (an opened project has a newer autosave).
     void recoveryAvailable();
+    /// 0.2 (P.3): the active project's scratch disks may have changed (another project, or its Production Settings).
+    void scratchDisksChanged();
 
 private:
     void setError(const QString& message);
@@ -238,6 +305,9 @@ private:
     void startNewProjectWith(const edit::SequenceSettings& settings);
     void rememberProject(); // the last project, for crash recovery at the next start
     void cleanExit();
+    /// 0.2 (P.3): lets go of the lock held, then locks `project` (empty: none) when it is in a production or locking
+    /// is on; read-only when another session holds it.
+    void updateLock(const std::filesystem::path& project);
 
     ProjectController* m_controller = nullptr;
     std::unique_ptr<editor::ProjectDocument> m_document;
@@ -283,6 +353,35 @@ private:
     std::filesystem::path m_untitledAutosaveDir;
     bool m_lastDirty = false;
     int m_lastOfflineCount = 0;
+    bool m_readOnly = false;
+    QString m_lockOwner;
+    std::filesystem::path m_locked; ///< the project this session holds the lock of (the active one)
+
+    /// 0.2 (P.3): an open project. The active one is in the session, m_document and the members above (m_demo,
+    /// m_readOnly, ...) and its slot only keeps its place in the order; the others are parked here.
+    struct OpenProject {
+        editor::ProjectDocument::Identity identity;
+        EditSession::Parked parked;
+        bool demo = false;
+        bool readOnly = false;
+        QString lockOwner;
+        QString autosaveText;
+        std::filesystem::path locked;
+        int sequenceIndex = 0;
+        Ticks playhead;
+    };
+    std::vector<OpenProject> m_open = std::vector<OpenProject>(1);
+    std::size_t m_active = 0;
+    editor::ProjectDocumentOptions m_documentOptions;
+    bool m_scratchCache = false; ///< the media cache is the production's (m_appMediaCache is the app's)
+    QString m_appMediaCache;
+    QString m_scratchKey; ///< the project and its scratch disks last announced (scratchDisksChanged)
+    int indexOfOpen(const std::filesystem::path& file) const;
+    void stashActive();                   // the active project's document and fields into its slot
+    void takeActive(std::size_t index);   // a slot's document and fields become the active project's
+    void showActive();                    // the controller shows the active project's file, sequence and playhead
+    void releaseSlot(OpenProject& slot);  // lets go of a parked project's lock and autosaves (it is closed)
+    static bool slotDirty(const OpenProject& slot);
 };
 
 } // namespace wabcut::app

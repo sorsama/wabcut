@@ -1,6 +1,5 @@
 pragma ComponentBehavior: Bound
 import QtQuick
-import QtQuick.Dialogs
 import QtQuick.Layouts
 
 // ● PROGRAM MONITOR: the picture (straight on the panel since 0.1.3: a black backdrop round it read as part of the
@@ -43,6 +42,13 @@ Panel {
 
     // 0 = fit the well; otherwise monitor pixels per sequence pixel (Premiere's zoom levels).
     property real zoom: 0
+    // P.2: a zoomed picture's scroll (Premiere's scroll bars): the wheel scrolls it, Shift+wheel sideways.
+    property real panX: 0
+    property real panY: 0
+    onZoomChanged: {
+        panX = 0
+        panY = 0
+    }
 
     /// 0.1.2, Premiere's Type tool (T, the timeline's tool): a click in the picture adds a text layer there - a new
     /// graphic clip at the playhead, or a layer of the selected graphic (Graphics.addLayer, like Ctrl+T) - and starts
@@ -50,14 +56,13 @@ Panel {
     property bool typeTool: false
     property int pendingTextLayer: 0
 
-    /// The Type tool's click at (fx, fy), fractions of the frame. Returns "" or why not.
+    /// The Type tool's click at (fx, fy), fractions of the frame: one undo step (0.2). Returns "" or why not.
     function addTextAt(fx, fy) {
-        const error = Graphics.addLayer("text")
+        const error = Graphics.addLayer("text", { transform: { x: Math.round(fx * ProjectController.frameWidth),
+                                                               y: Math.round(fy * ProjectController.frameHeight) } })
         if (error !== "")
             return error
         const layer = Graphics.selectedLayer
-        Graphics.updateLayer(layer, { transform: { x: Math.round(fx * ProjectController.frameWidth),
-                                                   y: Math.round(fy * ProjectController.frameHeight) } })
         pendingTextLayer = layer
         root.editPendingText()
         return ""
@@ -114,6 +119,24 @@ Panel {
             label: qsTr("%n effect(s) bypassed", "", Playback.bypassedEffects)
             dotColor: Theme.warning
             tooltip: qsTr("These effects are unknown or come from a newer version of Wabcut; the picture is shown without them.")
+        },
+        // P.2: Morph Cut and Optical Flow motion being analysed (Premiere's banner on the Program Monitor).
+        StatusPill {
+            objectName: "analyzingMotionBadge"
+            visible: Playback.analyzingMotion
+            label: qsTr("Analyzing in background")
+            dotColor: Theme.accentStroke
+            tooltip: qsTr("Morph Cut and Optical Flow analyse motion before they show; render the section for real-time playback.")
+        },
+        // Colour management (I.9): what the monitor shows of an ACES or HDR project, e.g. "HDR · tone-mapped SDR preview".
+        StatusPill {
+            objectName: "colorManagementBadge"
+            visible: Color.monitorLabel !== ""
+            label: Color.monitorLabel
+            dotColor: Theme.accentStroke
+            tooltip: Color.colorManagement.hdr
+                     ? qsTr("An HDR project shown on this SDR monitor: highlights are tone-mapped. 10-bit exports write the HDR picture (PQ or HLG).")
+                     : qsTr("A colour-managed project: the monitor shows its output transform.")
         },
         StatusPill {
             label: ProjectController.sequenceName
@@ -190,6 +213,20 @@ Panel {
                     well.forceActiveFocus(Qt.MouseFocusReason)
                 }
             }
+            // P.2: scroll a zoomed picture (only when it overflows the well).
+            WheelHandler {
+                enabled: root.zoom > 0
+                acceptedModifiers: Qt.NoModifier | Qt.ShiftModifier
+                onWheel: event => {
+                    const step = (event.angleDelta.y !== 0 ? event.angleDelta.y : event.angleDelta.x) / 2
+                    const roomX = Math.max(0, (frameArea.width - well.width) / 2 + Theme.space(4))
+                    const roomY = Math.max(0, (frameArea.height - well.height) / 2 + Theme.space(4))
+                    if ((event.modifiers & Qt.ShiftModifier) !== 0 || event.angleDelta.x !== 0)
+                        root.panX = Math.max(-roomX, Math.min(roomX, root.panX + step))
+                    else
+                        root.panY = Math.max(-roomY, Math.min(roomY, root.panY + step))
+                }
+            }
 
             // M5l: the multi-camera view puts the angle grid in the well's left half, the program picture in its right.
             MulticamView {
@@ -211,8 +248,8 @@ Panel {
                 readonly property real areaX: Multicam.viewOn ? well.width / 2 : 0
                 readonly property real areaWidth: Multicam.viewOn ? well.width / 2 : well.width
                 readonly property real fitWidth: Math.min(areaWidth - Theme.space(4), (well.height - Theme.space(4)) * aspect)
-                x: areaX + (areaWidth - width) / 2
-                y: (well.height - height) / 2
+                x: areaX + (areaWidth - width) / 2 + (root.zoom > 0 ? root.panX : 0)
+                y: (well.height - height) / 2 + (root.zoom > 0 ? root.panY : 0)
                 visible: !Trim.viewOpen // M5i: the Trim view takes the well
                 width: root.zoom > 0 ? ProjectController.frameWidth * root.zoom / Screen.devicePixelRatio : fitWidth
                 height: width / aspect
@@ -249,17 +286,24 @@ Panel {
                     }
                 }
 
+                // P.2: Premiere's Transparency Grid under the picture (qml/monitor/).
+                TransparencyGrid {
+                    objectName: "programTransparencyGrid"
+                    anchors.fill: parent
+                    visible: Monitors.programTransparencyGrid && programMonitor.hasFrame
+                }
+
                 // ---- M4 seam ----
                 Item {
                     id: slot
                     objectName: "programMonitorSlot"
                     anchors.fill: parent
-
                     ProgramMonitor {
                         id: programMonitor
                         objectName: "programMonitor"
                         anchors.fill: parent
                         surroundColor: Theme.videoBlack
+                        transparencyGrid: Monitors.programTransparencyGrid
                         scopes: true // feeds the Scopes panel (I.5) while it is open
                         // Composite at the preview resolution (the decoders follow the same divisor).
                         previewDivisor: MediaReadiness.previewDivisor
@@ -316,7 +360,14 @@ Panel {
                         hoverQuad = []
                         pickOutline.requestPaint()
                     }
-                    onDoubleClicked: mouse => root.applyPick(GraphicCanvas.pickDoubleClick(mouse.x / width, mouse.y / height))
+                    // A double-click edits a title or a text in place; on a picture it shows Motion's box (P.2).
+                    onDoubleClicked: mouse => {
+                        const picked = GraphicCanvas.pickDoubleClick(mouse.x / width, mouse.y / height)
+                        if (picked.action === "edit")
+                            root.applyPick(picked)
+                        else
+                            motionOverlay.engageAt(mouse.x, mouse.y)
+                    }
                     onPositionChanged: mouse => {
                         if (pressed)
                             return
@@ -370,6 +421,11 @@ Panel {
                 }
 
                 // Captions (I.4) are drawn by the compositor, in the picture (Playback.captionsShown): no overlay.
+                // P.2: Premiere's Overlays (qml/monitor/): source and sequence timecode over the picture.
+                MonitorOverlays {
+                    anchors.fill: parent
+                    visible: Monitors.overlays
+                }
                 SafeMarginsOverlay {
                     objectName: "programSafeMargins"
                     anchors.fill: parent
@@ -424,6 +480,25 @@ Panel {
                 LayoutMonitorOverlay {
                     anchors.fill: parent
                 }
+                // P.2: the guides (qml/monitor/), under Motion's box.
+                GuidesOverlay {
+                    anchors.fill: parent
+                }
+                // P.2: Motion's bounding box, handles, anchor point and motion path (qml/monitor/); on top, so its drags
+                // are seen first (the pick area's double-click shows it).
+                MotionOverlay {
+                    id: motionOverlay
+                    anchors.fill: parent
+                    suspended: root.typeTool
+                }
+            }
+
+            // P.2: the rulers along the top and the left (qml/monitor/), counting the frame's pixels.
+            MonitorRulers {
+                anchors.fill: parent
+                frame: frameArea
+                visible: Monitors.showRulers && !Trim.viewOpen
+                z: 1
             }
 
             // The Trim view (M5i): outgoing | incoming frames while Trim Edit is open.
@@ -435,6 +510,15 @@ Panel {
                     if (visible)
                         Trim.refreshFrames()
                 }
+            }
+
+            // P.2: Premiere's dropped frame indicator (qml/monitor/), in the picture's corner.
+            DroppedFrameIndicator {
+                anchors.right: frameArea.right
+                anchors.top: frameArea.top
+                anchors.margins: Theme.space(2)
+                visible: Monitors.droppedFrameIndicator && !Trim.viewOpen
+                z: 1
             }
 
             // Voice-over (M5m, A.8): the count-in, then the recording badge with the input meter; hidden when idle.
@@ -475,7 +559,7 @@ Panel {
                     Text {
                         id: timecodeText
                         anchors.centerIn: parent
-                        text: ProjectController.playheadText
+                        text: Monitors.audioTimeUnits ? Monitors.programTimeText : ProjectController.playheadText // P.2
                         color: Theme.accentOnFill
                         font.family: Theme.fontMono
                         font.pixelSize: Theme.textMd
@@ -502,6 +586,20 @@ Panel {
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: Theme.space(2)
 
+                // P.2: Premiere's Program Monitor settings (the wrench; qml/monitor/).
+                IconButton {
+                    id: settingsButton
+                    objectName: "programMonitorSettingsButton"
+                    anchors.verticalCenter: parent.verticalCenter
+                    compact: true
+                    iconName: "settings"
+                    tooltip: qsTr("Settings")
+                    onClicked: settingsMenu.popup(settingsButton, 0, -settingsMenu.implicitHeight - Theme.space(1))
+
+                    MonitorSettingsMenu {
+                        id: settingsMenu
+                    }
+                }
                 // Safe margins (action and title safe).
                 IconButton {
                     objectName: "safeMarginsToggle"
@@ -537,7 +635,7 @@ Panel {
                         }
                         ContextMenuSeparator {}
                         Instantiator {
-                            model: Theme.monitorZoomLevels
+                            model: Monitors.zoomLevels // P.2: Premiere's 10 % to 1600 %
                             delegate: ContextMenuItem {
                                 required property var modelData
                                 objectName: "zoom" + Math.round(modelData * 100)
@@ -778,6 +876,21 @@ Panel {
                     enabled: ProjectController.markOutText !== ""
                     onClicked: ProjectController.goToMarkOut()
                 }
+                // P.2: Premiere's Play In to Out and Loop (qml/monitor/).
+                IconButton {
+                    objectName: "programPlayInToOut"
+                    anchors.verticalCenter: parent.verticalCenter
+                    visible: transport.width >= Theme.controlHeightSmall * 15 + Theme.controlHeight
+                    compact: true
+                    iconName: "play-in-out"
+                    tooltip: qsTr("Play In to Out")
+                    command: "transport.playInToOut"
+                    onClicked: Playback.playInToOut()
+                }
+                LoopButton {
+                    anchors.verticalCenter: parent.verticalCenter
+                    visible: transport.width >= Theme.controlHeightSmall * 15 + Theme.controlHeight
+                }
                 Item {
                     width: Theme.space(2)
                     height: 1
@@ -822,6 +935,7 @@ Panel {
                         VoiceOver.toggle()
                     }
                 }
+                // P.2: Premiere's Export Frame dialog (qml/monitor/ExportFrameDialog.qml; Ctrl+Shift+E).
                 IconButton {
                     id: exportFrameButton
                     objectName: "programExportFrame"
@@ -830,25 +944,9 @@ Panel {
                     implicitWidth: Theme.controlHeight
                     iconName: "camera"
                     tooltip: qsTr("Export Frame")
+                    command: "file.exportFrame"
                     enabled: !ProjectFile.demo
-                    onClicked: exportFrameMenu.popup(exportFrameButton, 0, -exportFrameMenu.implicitHeight - Theme.space(1))
-
-                    ContextMenu {
-                        id: exportFrameMenu
-                        objectName: "exportFrameMenu"
-
-                        ContextMenuItem {
-                            objectName: "exportFrameHere"
-                            text: qsTr("Export Frame next to the project")
-                            iconName: "camera"
-                            onTriggered: ProgramTools.exportFrame(ProjectFile.folder)
-                        }
-                        ContextMenuItem {
-                            text: qsTr("Export Frame to…")
-                            iconName: "folder-open"
-                            onTriggered: frameFolderDialog.open()
-                        }
-                    }
+                    onClicked: Monitors.requestExportFrame(false)
                 }
                 // M5l: Premiere's Toggle Multi-Camera View (Shift+0).
                 IconButton {
@@ -865,12 +963,6 @@ Panel {
                 }
             }
         }
-    }
-
-    FolderDialog {
-        id: frameFolderDialog
-        currentFolder: ProjectFile.folder
-        onAccepted: ProgramTools.exportFrame(selectedFolder)
     }
 
 }

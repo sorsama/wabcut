@@ -1,5 +1,6 @@
 // Transition operations: add / change / remove on edit points, and Premiere's default-transition commands.
 
+#include <wabcut/model/Animations.h>
 #include <wabcut/model/FinishingOps.h>
 #include <wabcut/model/Nesting.h>
 
@@ -178,6 +179,24 @@ Ticks oneSecond(Rate rate) {
     return framesToTicks(std::max<std::int64_t>(nominal, 1), rate);
 }
 
+/// Surprise Me (model/Animations.h) becomes an animation picked by `seed` (its Start and End kept).
+void resolveSurprise(Transition& t, std::uint64_t seed) {
+    if (t.effect != kSurpriseAnimation) {
+        return;
+    }
+    PickedAnimation picked = surpriseAnimation(seed, std::move(t.params));
+    t.effect = std::move(picked.effect);
+    t.params = std::move(picked.params);
+}
+
+std::uint64_t fnv(std::string_view text) {
+    std::uint64_t h = 1469598103934665603ull;
+    for (const char c : text) {
+        h = (h ^ static_cast<unsigned char>(c)) * 1099511628211ull;
+    }
+    return h;
+}
+
 /// The result of several edits in a row, with one ChangeSet against the first state.
 EditResult combined(const ProjectState& first, EditResult last, std::vector<TransitionId> created) {
     last.changes = diff(first, last.state);
@@ -207,6 +226,8 @@ EditOutcome addTransition(const ProjectState& state, SequenceId sequenceId, Trac
     t.after = spec.after;
     t.effect = spec.effect;
     t.params = spec.params;
+    // Surprise Me picks by the edit point (the UI picks at random before it gets here).
+    resolveSurprise(t, (spec.outgoing.value * 0x9E3779B97F4A7C15ull) ^ (spec.incoming.value << 1) ^ trackId.value);
     if (!spec.alignment) {
         t.alignment = alignmentOf(t.before, t.after, framesToTicks(1, (*seq)->frameRate));
     } else {
@@ -258,10 +279,12 @@ EditOutcome setTransition(const ProjectState& state, SequenceId sequenceId, Tran
             std::tie(t.before, t.after) = splitTransition(duration, t.alignment, t.before, rate);
         }
     }
+    const std::string previous = t.effect;
     t.effect = change.effect.value_or(t.effect);
     if (change.params) {
         t.params = *change.params;
     }
+    resolveSurprise(t, id.value ^ fnv(previous)); // another animation than the one it replaces, usually
     auto ready = prepare(state, **seq, track, std::move(t), fit, site->index);
     if (!ready) {
         return std::unexpected(ready.error());

@@ -79,6 +79,9 @@ public:
     void scrub(Ticks position);
     /// Position presented now (any thread).
     Ticks position() const;
+    /// P.2, Premiere's Loop: playback wraps inside `range` (sound and picture); nullopt turns it off.
+    void setLoop(std::optional<TimeRange> range);
+    std::optional<TimeRange> loop() const;
 
     PlaybackSessionStats stats() const;
 

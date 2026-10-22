@@ -15,6 +15,8 @@ wabcut_add_test_suite(playback
         test_voice_over.cpp
         test_voice_over_shutdown.cpp
         test_audio_channels.cpp
+        test_submix.cpp
+        test_clip_preroll.cpp
     LIBS wabcut_playback)
 
 # Real media through the timeline player (MediaAudioFeed). A separate suite so the pure playback tests do not

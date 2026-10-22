@@ -45,6 +45,11 @@ std::expected<FieldValue, Error> fieldValueFromJson(FieldKind kind, std::string_
 std::string brandKitToJson(const BrandKit& kit);
 std::expected<BrandKit, Error> brandKitFromJson(std::string_view text);
 
+/// 0.2: a project text style: {"name", "text": {"runs": [the run style, no text], "align", "background"}, "shadow"} -
+/// the text JSON of a text layer with one run.
+std::string textStyleToJson(const ProjectTextStyle& style);
+std::expected<ProjectTextStyle, Error> textStyleFromJson(std::string_view text);
+
 /// A template as its library file holds it.
 std::string templateFileToJson(const GraphicTemplate& tmpl);
 std::expected<GraphicTemplate, Error> templateFileFromJson(std::string_view text);

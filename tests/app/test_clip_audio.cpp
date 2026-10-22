@@ -19,6 +19,7 @@
 #include <wabcut/audio/edit/AudioAnalysis.h>
 #include <wabcut/audio/edit/AudioSync.h>
 #include <wabcut/command/ExecutionContext.h>
+#include <wabcut/model/EditOps.h>
 #include <wabcut/model/MediaLocator.h>
 
 #include <catch2/catch_test_macros.hpp>
@@ -337,6 +338,41 @@ TEST_CASE("Enhance badges in the timeline: ENHANCED and NOT RENDERED micro-tags"
     CHECK(stats.badgeTexts.value(rig.clip("A1@0").value) == QStringLiteral("ENHANCED"));
     CHECK(stats.badgeTexts.value(rig.clip("A2@0").value) == QStringLiteral("NOT RENDERED"));
     CHECK_FALSE(stats.badgeTexts.contains(rig.clip("V1@0").value));
+}
+
+TEST_CASE("Enhance badges follow an edit that moves their clips and its undo (p02 integration)",
+          "[app][audio][enhance][timeline]") {
+    // The timeline's cached lane facts follow each clip an edit modifies (one walk over the clips per edit, not a
+    // lookup per clip): the badges stay on the moved clips.
+    Rig rig(kPicture, 8.0, false);
+    Tools tools("badges-follow");
+    ClipAudioBridge audio;
+    audio.setController(&rig.controller);
+    tools.attach(audio);
+    const ClipId a1 = rig.clip("A1@0");
+    const ClipId a2 = rig.clip("A2@0");
+    REQUIRE(audio.enhanceSpeech({clipKey(a1)}, 100, true).isEmpty());
+    REQUIRE(audio.enhanceSpeech({clipKey(a2)}, 100, false).isEmpty());
+    const auto settle = [&] {
+        for (int i = 0; i < 4; ++i) {
+            QCoreApplication::processEvents();
+            rig.harness.frame();
+        }
+    };
+    settle();
+    const std::vector<ClipId> both{a1, a2};
+    REQUIRE(rig.controller.commitGesture("Move", [&](const ProjectState& s) {
+        return edit::moveClips(s, rig.tl.seq, both, f(2), {}, edit::MoveMode::Overwrite, edit::LinkMode::IgnoreLinks);
+    }));
+    settle();
+    CHECK(rig.clip("A1@2") == a1);
+    CHECK(rig.clip("A2@2") == a2);
+    CHECK(rig.view->stats().badgeTexts.value(a1.value) == QStringLiteral("ENHANCED"));
+    CHECK(rig.view->stats().badgeTexts.value(a2.value) == QStringLiteral("NOT RENDERED"));
+    REQUIRE(rig.controller.undo());
+    settle();
+    CHECK(rig.view->stats().badgeTexts.value(a1.value) == QStringLiteral("ENHANCED"));
+    CHECK(rig.view->stats().badgeTexts.value(a2.value) == QStringLiteral("NOT RENDERED"));
 }
 
 TEST_CASE("Separate Stems: four stems imported as media separated from their source, one undo step",

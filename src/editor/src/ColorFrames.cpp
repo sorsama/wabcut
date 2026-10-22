@@ -2,6 +2,7 @@
 
 #include <wabcut/editor/ProjectDocument.h>
 #include <wabcut/export/RenderedVideoSource.h>
+#include <wabcut/model/FrameScaling.h>
 #include <wabcut/render/PreparedComposite.h>
 
 #include <algorithm>
@@ -141,7 +142,7 @@ std::expected<color::ColorImage, Error> ColorFrameService::frame(const ProjectSt
                 const ClipProperties& p = clip.properties();
                 render::LayerTransform transform;
                 transform.position = {p.value(ParamId::PositionX, t), p.value(ParamId::PositionY, t)};
-                transform.scale = p.value(ParamId::Scale, t);
+                transform.scale = p.value(ParamId::Scale, t) * scaleToFrameFactor(state, clip, seq->width, seq->height);
                 transform.rotationDegrees = p.value(ParamId::Rotation, t);
                 transform.anchor = {p.value(ParamId::AnchorX, t), p.value(ParamId::AnchorY, t)};
                 opacity = std::clamp(p.value(ParamId::Opacity, t), 0.0, 1.0);

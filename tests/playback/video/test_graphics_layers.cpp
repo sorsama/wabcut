@@ -64,13 +64,14 @@ TEST_CASE("Graphic clips are evaluated to draw lists and rasterised; a still gra
     CHECK(top.graphicSize.width == tl.sequence().width);
     CHECK(top.graphicSize.height == tl.sequence().height);
 
-    // Composite layers: the raster as a view; again at the same picture, the same raster.
+    // Composite layers: the raster as a view, display-referred; again at the same picture, the same raster.
     const auto before = render::GraphicRasterCache::shared().rasterizations();
     std::vector<media::VideoFrame> frames(specs.size());
     std::vector<render::CompositeLayer> layers;
     playback::buildCompositeLayers(specs, frames, layers);
     REQUIRE(layers.size() == 1); // V1's media frame was not decoded here: only the graphic draws
     REQUIRE(layers.back().view.has_value());
+    CHECK(layers.back().graphics);
     const void* identity = layers.back().view->identity;
     std::vector<LayerSpec> again = layersAt(state, tl.seq, f(5));
     std::vector<media::VideoFrame> frames2(again.size());

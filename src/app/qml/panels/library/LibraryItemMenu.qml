@@ -18,9 +18,14 @@ ContextMenu {
 
     signal renameRequested(string key)
     signal metadataRequested(string key)
+    // 0.2 (P.3)
+    signal metadataPanelRequested()
+    signal editSearchBinRequested(string key)
     signal subclipRequested(string key)
     signal editSubclipRequested(string key)
     signal openRequested(string key, string kind)
+    /// Reveal in Source Project (0.2, P.3): a copy imported from another project.
+    signal revealSourceRequested(string key)
 
     function openFor(target, itemKey, itemKind, point, fraction) {
         key = itemKey
@@ -44,6 +49,14 @@ ContextMenu {
         iconName: "external-link"
         onTriggered: Library.openBinInTab(menu.key)
     }
+    ContextMenuItem {
+        objectName: "libraryMenuEditSearchBin"
+        visible: menu.kind === "bin" && (Library.details(menu.key).searchBin ?? false)
+        height: visible ? implicitHeight : 0
+        text: qsTr("Edit search bin…")
+        iconName: "folder-search"
+        onTriggered: menu.editSearchBinRequested(menu.key)
+    }
     ContextMenuSeparator {}
     ContextMenuItem {
         objectName: "libraryMenuRename"
@@ -56,7 +69,7 @@ ContextMenu {
         id: labelMenu
         objectName: "libraryMenuLabel"
         title: qsTr("Label")
-        enabled: Library.mediaSelected
+        enabled: Library.mediaSelected || menu.kind === "sequence" // 0.2: sequences have labels too
         Instantiator {
             model: Library.labelNames
             delegate: ContextMenuItem {
@@ -66,7 +79,7 @@ ContextMenu {
                 text: modelData
                 iconName: "square"
                 iconColor: Theme.clipColor(index)
-                onTriggered: Library.setLabel(Library.selection, index)
+                onTriggered: Library.setLabel(Library.isSelected(menu.key) ? Library.selection : [menu.key], index)
             }
             onObjectAdded: (index, object) => labelMenu.insertItem(index, object)
             onObjectRemoved: (index, object) => labelMenu.removeItem(object)
@@ -79,6 +92,30 @@ ContextMenu {
         text: qsTr("Comment and description…")
         iconName: "pencil"
         onTriggered: menu.metadataRequested(menu.key)
+    }
+    ContextMenuItem {
+        objectName: "libraryMenuMetadataPanel"
+        visible: menu.isMedia
+        height: visible ? implicitHeight : 0
+        text: qsTr("Metadata…")
+        iconName: "tag"
+        onTriggered: menu.metadataPanelRequested()
+    }
+    ContextMenuItem {
+        objectName: "libraryMenuReadXmp"
+        visible: menu.isMedia && menu.kind !== "title"
+        height: visible ? implicitHeight : 0
+        text: qsTr("Read metadata from file (XMP)")
+        iconName: "import"
+        onTriggered: Library.readXmp(Library.isSelected(menu.key) ? Library.selection : [menu.key])
+    }
+    ContextMenuItem {
+        objectName: "libraryMenuWriteXmp"
+        visible: menu.isMedia && menu.kind !== "title"
+        height: visible ? implicitHeight : 0
+        text: qsTr("Write XMP sidecar")
+        iconName: "save"
+        onTriggered: Library.writeXmp(Library.isSelected(menu.key) ? Library.selection : [menu.key])
     }
     ContextMenuItem {
         objectName: "libraryMenuNewBin"
@@ -104,6 +141,101 @@ ContextMenu {
         iconName: "scissors"
         onTriggered: menu.editSubclipRequested(menu.key)
     }
+    // P.2 (E5): Premiere's Duplicate, New Sequence From Clip, Sequence Settings…, Merge Clips…, Modify > Interpret
+    // Footage… / Timecode…, Replace Footage…, Make Offline and Edit Original (the Editing bridge).
+    ContextMenuItem {
+        objectName: "libraryMenuDuplicate"
+        visible: menu.kind !== "bin"
+        height: visible ? implicitHeight : 0
+        text: qsTr("Duplicate")
+        iconName: "copy"
+        command: "edit.duplicate"
+        onTriggered: Editing.duplicate(Library.isSelected(menu.key) ? Library.selection : [menu.key])
+    }
+    ContextMenuItem {
+        objectName: "libraryMenuNewSequenceFromClip"
+        visible: menu.isMedia
+        height: visible ? implicitHeight : 0
+        text: qsTr("New Sequence From Clip")
+        iconName: "clapperboard"
+        command: "file.newSequenceFromClip"
+        onTriggered: Editing.newSequenceFromClip(menu.key)
+    }
+    ContextMenuItem {
+        objectName: "libraryMenuSequenceSettings"
+        visible: menu.kind === "sequence"
+        height: visible ? implicitHeight : 0
+        text: qsTr("Sequence Settings…")
+        iconName: "sliders-horizontal"
+        command: "sequence.settings"
+        onTriggered: Editing.openSequenceSettings(menu.key)
+    }
+    ContextMenuItem {
+        objectName: "libraryMenuMergeClips"
+        visible: menu.isMedia && Library.selectionCount > 1
+        height: visible ? implicitHeight : 0
+        text: qsTr("Merge Clips…")
+        iconName: "layers"
+        command: "clip.mergeClips"
+        onTriggered: Editing.openMergeClips(Library.selection)
+    }
+    ContextMenu {
+        id: modifyMenu
+        objectName: "libraryMenuModify"
+        title: qsTr("Modify")
+        enabled: menu.isMedia && menu.kind !== "title"
+        ContextMenuItem {
+            objectName: "libraryMenuInterpretFootage"
+            text: qsTr("Interpret Footage…")
+            iconName: "film"
+            command: "clip.interpretFootage"
+            onTriggered: Editing.openInterpretFootage(Library.isSelected(menu.key) ? Library.selection : [menu.key])
+        }
+        ContextMenuItem {
+            // 0.2: camera RAW (ProRes RAW, CinemaDNG) - exposure and white balance of the development.
+            objectName: "libraryMenuRawSourceSettings"
+            text: qsTr("Source Settings…")
+            iconName: "sliders-horizontal"
+            command: "clip.rawSourceSettings"
+            enabled: Editing.isRawMedia(menu.key)
+            onTriggered: Editing.openRawSourceSettings(Library.isSelected(menu.key) ? Library.selection : [menu.key])
+        }
+        ContextMenuItem {
+            objectName: "libraryMenuTimecode"
+            text: qsTr("Timecode…")
+            iconName: "clock"
+            command: "clip.modifyTimecode"
+            onTriggered: Editing.openTimecode(Library.isSelected(menu.key) ? Library.selection : [menu.key])
+        }
+    }
+    ContextMenuItem {
+        objectName: "libraryMenuReplaceFootage"
+        visible: menu.isMedia && menu.kind !== "title"
+        height: visible ? implicitHeight : 0
+        text: qsTr("Replace Footage…")
+        iconName: "import"
+        command: "clip.replaceFootage"
+        onTriggered: Editing.openReplaceFootage(menu.key)
+    }
+    ContextMenuItem {
+        objectName: "libraryMenuMakeOffline"
+        visible: menu.isMedia && menu.kind !== "title"
+        height: visible ? implicitHeight : 0
+        text: qsTr("Make Offline")
+        iconName: "eye-off"
+        command: "clip.makeOffline"
+        onTriggered: Editing.makeOffline(Library.isSelected(menu.key) ? Library.selection : [menu.key])
+    }
+    ContextMenuItem {
+        objectName: "libraryMenuEditOriginal"
+        visible: menu.isMedia && menu.kind !== "title"
+        height: visible ? implicitHeight : 0
+        text: qsTr("Edit Original")
+        iconName: "external-link"
+        command: "edit.editOriginal"
+        onTriggered: Editing.editOriginal(menu.key)
+    }
+    ContextMenuSeparator {}
     // M5l: Premiere's Create Multi-Camera Source Sequence… on the selected media (the angles, in Library order).
     ContextMenuItem {
         objectName: "libraryMenuMulticam"
@@ -145,6 +277,17 @@ ContextMenu {
         text: Qt.platform.os === "osx" ? qsTr("Reveal in Finder") : qsTr("Reveal in File Explorer")
         iconName: "folder-open"
         onTriggered: Library.reveal(menu.key)
+    }
+    ContextMenuItem {
+        id: revealSourceItem
+        objectName: "libraryMenuRevealSource"
+        readonly property var source: ProjectController.revision >= 0 && menu.key !== "" && menu.kind !== "bin"
+                                      ? Production.sourceOf(menu.key) : ({})
+        visible: (revealSourceItem.source.projectName ?? "") !== ""
+        height: visible ? implicitHeight : 0
+        text: qsTr("Reveal in Source Project (%1)").arg(revealSourceItem.source.projectName ?? "")
+        iconName: "layers"
+        onTriggered: menu.revealSourceRequested(menu.key)
     }
     ContextMenu {
         objectName: "libraryMenuProxy"

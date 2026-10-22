@@ -3,6 +3,7 @@
 #include <wabcut/command/Schema.h>
 #include <wabcut/command/SourceServices.h>
 #include <wabcut/model/FinishingOps.h>
+#include <wabcut/model/FrameScaling.h>
 #include <wabcut/model/ProjectOps.h>
 #include <wabcut/model/RedactionMedia.h>
 #include <wabcut/model/Timecode.h>
@@ -706,7 +707,8 @@ Point2 placeOnCanvas(const Clip& clip, Ticks curveTime, const VideoStreamInfo& v
     const ClipProperties& p = clip.properties();
     const double par = v.sampleAspect.isValid() ? v.sampleAspect.toDouble() : 1.0;
     const double rad = p.value(ParamId::Rotation, curveTime) * std::numbers::pi / 180.0;
-    const double s = p.value(ParamId::Scale, curveTime);
+    const double s = p.value(ParamId::Scale, curveTime) * // P.2: Scale to Frame Size
+                     scaleToFrameFactor(clip, streamPictureSize(v), seq.width, seq.height);
     const double x = s * (par * (q.x - v.width / 2.0) - p.value(ParamId::AnchorX, curveTime));
     const double y = s * (q.y - v.height / 2.0 - p.value(ParamId::AnchorY, curveTime));
     return {seq.width / 2.0 + p.value(ParamId::PositionX, curveTime) + std::cos(rad) * x - std::sin(rad) * y,

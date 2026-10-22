@@ -10,10 +10,19 @@
 //     -> premultiplied alpha; every blend happens here, in RGBA16F
 //     -> output transform: display or export encoding                  [linearToOutput()]
 //
+// Colour management (version 2, I.9, docs/color.md "Colour management"): with `management` other than the default
+// display-referred Rec.709, the layers reach the project's working space (ACEScg; linear Rec.2020 with 1.0 = the
+// reference white for HDR) through their input colour space (color::planInput: analytic BT.709 / sRGB / BT.2020 /
+// PQ / HLG curves, or an OpenColorIO transform baked into a 3D LUT), and the outputs come from color::planOutput (the
+// ACES output transforms, PQ, HLG, or the tone-mapped SDR preview of HDR). The default leaves everything above as it
+// was, byte for byte.
+//
 // The struct is versioned and value-typed: it travels inside every PreparedComposite and will be stored with
 // the sequence settings. The functions below are the CPU reference of exactly what the shaders do; the
 // compositor feeds their results to the GPU as uniforms, and tests compare GPU output against them.
 
+#include <wabcut/color/ColorSpaces.h>
+#include <wabcut/model/ColorManagement.h>
 #include <wabcut/model/MediaInfo.h>
 
 #include <array>
@@ -55,7 +64,7 @@ public:
 
 /// The colour contract of one render request. Plain value; compare with ==.
 struct ColorPipeline {
-    static constexpr std::uint32_t kCurrentVersion = 1;
+    static constexpr std::uint32_t kCurrentVersion = 2;
 
     /// Serialized layout/semantics version. Readers reject versions they do not know.
     std::uint32_t version = kCurrentVersion;
@@ -71,6 +80,16 @@ struct ColorPipeline {
     /// OCIO hook points (null = built-in transform). Reserved: the MVP ignores them.
     std::shared_ptr<const ColorTransformHook> displayHook;
     std::shared_ptr<const ColorTransformHook> exportHook;
+    /// Version 2 (I.9): the project's colour management. The default (display-referred Rec.709) is the pipeline above.
+    ColorManagement management;
+    /// Version 2, managed projects: what an export writes - SDR (an ACES SDR output, or the tone-mapped SDR version of an
+    /// HDR project), PQ or HLG (an HDR file). The display is always SDR here (an HDR project shows its tone-mapped
+    /// preview). Ignored by the default pipeline.
+    color::OutputTarget exportTarget = color::OutputTarget::Sdr;
+
+    /// A managed working space (Wide Gamut or HDR; ColorManagement::managed). Direct Rec.709 and Disable Color
+    /// Management keep the display-referred pipeline (Direct Rec.709 tone-maps HDR and log media on input).
+    bool managed() const { return management.managed(); }
 
     bool isSupportedVersion() const { return version >= 1 && version <= kCurrentVersion; }
     bool operator==(const ColorPipeline&) const = default;
@@ -81,6 +100,18 @@ enum class OutputRole : std::uint8_t { Display, Export };
 
 inline OutputTransform outputTransformFor(const ColorPipeline& pipeline, OutputRole role) {
     return role == OutputRole::Display ? pipeline.displayTransform : pipeline.exportTransform;
+}
+
+/// A managed pipeline's output target for `role` (the display is SDR).
+inline color::OutputTarget outputTargetFor(const ColorPipeline& pipeline, OutputRole role) {
+    return role == OutputRole::Display ? color::OutputTarget::Sdr : pipeline.exportTarget;
+}
+
+/// The pipeline of a project's colour management (display and export Rec.709, as the default pipeline has).
+inline ColorPipeline colorPipelineFor(const ColorManagement& management) {
+    ColorPipeline pipeline;
+    pipeline.management = management;
+    return pipeline;
 }
 
 // ---- Source colour resolution ----

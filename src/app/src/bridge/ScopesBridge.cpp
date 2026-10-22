@@ -1,5 +1,7 @@
 #include "ScopesBridge.h"
 
+#include <wabcut/color/ColorSpaces.h>
+
 #include <QImage>
 #include <QPainter>
 #include <QQuickItem>
@@ -313,8 +315,44 @@ void ScopeView::paint(QPainter* p) {
     const color::ScopeData shown = color::pooledScopes(*data, poolFactor(data->settings.columns, r.width() * dpr / panels),
                                                        poolFactor(data->settings.levels, r.height() * dpr), 1);
     p->drawImage(r, scopeImage([&](int& w, int& h) { return color::renderWaveform(shown, mode, w, h); }));
+    if (data->scale == 1) {
+        // I.9, an HDR (PQ) project: the levels are PQ code values; lines at absolute luminance (nits).
+        for (const double nits : {0.0, 1.0, 10.0, 100.0, 203.0, 400.0, 1000.0, 4000.0, 10000.0}) {
+            const double y = r.bottom() - (r.height() - 1) * color::nitsToPq(nits);
+            QColor line = m_grid;
+            line.setAlphaF(line.alphaF() * (nits == 100.0 || nits == 1000.0 || nits == 203.0 ? 1.0 : 0.45));
+            p->setPen(line);
+            p->drawLine(QPointF(r.left(), y), QPointF(r.right(), y));
+            p->setPen(m_label);
+            p->drawText(QRectF(area.left(), y - 7, 32, 14), Qt::AlignRight | Qt::AlignVCenter,
+                        nits >= 1000.0 ? QStringLiteral("%1k").arg(nits / 1000.0) : QString::number(nits));
+        }
+        p->setPen(m_label);
+        p->drawText(QRectF(r.right() - 160, r.top() + 2, 156, 12), Qt::AlignRight, QStringLiteral("nits · PQ (ST 2084)"));
+    } else if (data->scale == 2) {
+        // I.9, an HDR (HLG) project: the HLG signal in percent; 75 % is the reference white (BT.2408).
+        for (int pct = 0; pct <= 100; pct += 10) {
+            const double y = r.bottom() - (r.height() - 1) * pct / 100.0;
+            QColor line = m_grid;
+            line.setAlphaF(line.alphaF() * (pct % 50 == 0 ? 1.0 : 0.45));
+            p->setPen(line);
+            p->drawLine(QPointF(r.left(), y), QPointF(r.right(), y));
+            if (pct % 20 == 0 || pct == 100) {
+                p->setPen(m_label);
+                p->drawText(QRectF(area.left(), y - 7, 32, 14), Qt::AlignRight | Qt::AlignVCenter, QString::number(pct));
+            }
+        }
+        const double white = r.bottom() - (r.height() - 1) * 0.75;
+        p->setPen(QPen(m_skin, 1.0, Qt::DashLine));
+        p->drawLine(QPointF(r.left(), white), QPointF(r.right(), white));
+        p->setPen(m_label);
+        p->drawText(QRectF(r.right() - 160, r.top() + 2, 156, 12), Qt::AlignRight, QStringLiteral("HLG % · 75 = reference white"));
+    }
     // IRE lines with BT.1886 nits (100 nit SDR display).
     for (const int ire : {0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100}) {
+        if (data->scale != 0) {
+            break; // the HDR scale above
+        }
         const double y = r.bottom() - (r.height() - 1) * ire / 100.0;
         QColor line = m_grid;
         line.setAlphaF(line.alphaF() * (ire % 50 == 0 ? 1.0 : 0.45));
@@ -325,9 +363,11 @@ void ScopeView::paint(QPainter* p) {
             p->drawText(QRectF(area.left(), y - 7, 32, 14), Qt::AlignRight | Qt::AlignVCenter, QString::number(ire));
         }
     }
-    p->setPen(m_label);
-    const double nits100 = 100.0;
-    p->drawText(QRectF(r.right() - 120, r.top() + 2, 116, 12), Qt::AlignRight, QStringLiteral("IRE · %1 nits at 100").arg(nits100));
+    if (data->scale == 0) {
+        p->setPen(m_label);
+        const double nits100 = 100.0;
+        p->drawText(QRectF(r.right() - 120, r.top() + 2, 116, 12), Qt::AlignRight, QStringLiteral("IRE · %1 nits at 100").arg(nits100));
+    }
     if (mode > 0) {
         p->setPen(m_grid);
         for (int i = 1; i < 3; ++i) {

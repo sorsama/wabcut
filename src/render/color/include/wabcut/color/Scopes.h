@@ -48,6 +48,10 @@ struct ScopeData {
     std::vector<std::uint32_t> vector;                  ///< vectorSize^2, index = y * size + x
     std::array<std::vector<std::uint32_t>, 4> histogram; ///< R', G', B', Y'
     std::uint64_t pixels = 0;                           ///< pixels counted
+    /// I.9: what the levels are - 0: SDR code values (the IRE scale), 1: PQ code values of an HDR project (the nits
+    /// scale: 0.508 = 100, 0.581 = 203, 0.752 = 1000, 1 = 10000 nits), 2: the HLG signal (0..100 %, 75 % = reference
+    /// white).
+    int scale = 0;
 };
 
 /// Statistics of a picture for people and agents. Levels are IRE (0..100).

@@ -172,6 +172,11 @@ TEST_CASE("Import: timeline files are routed to the interchange importer", "[edi
     CHECK(classifyImportFile(fixtures / "resolve_timeline.otio") == ImportFileKind::Interchange);
     CHECK(classifyImportFile(fixtures / "premiere_2997df.xml") == ImportFileKind::Interchange);
     CHECK(classifyImportFile("cut.wabcut") == ImportFileKind::Project);
+    // P.2: caption files become caption tracks; an .xml only when it is Timed Text.
+    CHECK(classifyImportFile(fixtures / "captions" / "basic-scc.scc") == ImportFileKind::Captions);
+    CHECK(classifyImportFile(fixtures / "captions" / "basic-srt.srt") == ImportFileKind::Captions);
+    CHECK(classifyImportFile(fixtures / "captions" / "basic-ttml.xml") == ImportFileKind::Captions);
+    CHECK(classifyImportFile("missing.vtt") == ImportFileKind::Captions);
     if (haveMedia()) {
         CHECK(classifyImportFile(testMedia("h264_1080p60_aac.mp4")) == ImportFileKind::Media);
     }

@@ -1,7 +1,9 @@
 #include "FfmpegUtil.h"
 
 #include <wabcut/media/Fingerprint.h>
+#include <wabcut/media/RawDevelop.h>
 #include <wabcut/media/VideoDecoder.h>
+#include <wabcut/model/RawSourceSettings.h>
 
 #if defined(_WIN32)
 // Before FFmpeg's extern "C" block: d3d11.h declares C++ operators (hwcontext_d3d11va.h includes it again).
@@ -12,17 +14,20 @@ extern "C" {
 #include <libavutil/hwcontext.h>
 #include <libavutil/imgutils.h>
 #include <libavutil/pixdesc.h>
+#include <libavutil/raw_color_params.h>
 #if defined(_WIN32)
 #include <libavutil/hwcontext_d3d11va.h>
 #endif
 }
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <map>
 #include <mutex>
 #include <optional>
 #include <set>
+#include <vector>
 
 namespace wabcut::media {
 
@@ -308,6 +313,13 @@ PixelFormat conversionTarget(int avFormat) {
     return highDepth ? PixelFormat::YUV444P10 : PixelFormat::YUV444P;
 }
 
+/// 0.2 camera RAW: a colour filter array (ProRes RAW, CinemaDNG through FFmpeg's TIFF decoder), developed into 10-bit
+/// Rec.709 Y'CbCr 4:4:4 (RawDevelop.h).
+bool isBayer(int avFormat) {
+    const AVPixFmtDescriptor* desc = av_pix_fmt_desc_get(static_cast<AVPixelFormat>(avFormat));
+    return desc && (desc->flags & AV_PIX_FMT_FLAG_BAYER) != 0;
+}
+
 /// Fills Unknown colour fields with the conventional defaults so render never has to guess.
 ColorInfo resolveColor(ColorInfo c, PixelFormat format, int width, int height, bool fullRange) {
     const bool rgb = format == PixelFormat::RGBA8;
@@ -560,6 +572,7 @@ void setHardwareBackendOrder(std::vector<std::string> order) {
 struct VideoDecoder::Impl {
     std::string path;
     DecoderOptions options;
+    RawSourceSettings rawSettings; ///< 0.2: what the path asks of a RAW clip's development (RawSourceSettings.h)
 
     FormatContextPtr fmt;
     AVStream* stream = nullptr;
@@ -843,7 +856,103 @@ struct VideoDecoder::Impl {
         return sw;
     }
 
+    /// 0.2 camera RAW: develops a Bayer frame (RawDevelop.h) - ProRes RAW with the levels, white balance, matrix and
+    /// gain it carries, CinemaDNG as FFmpeg hands it (linear, white balanced camera RGB) - and the item's RAW Source
+    /// Settings: exposure, and white balance from the as-shot light (ProRes RAW's temperature, else 6500 K).
+    std::expected<FramePtr, Error> developBayer(const AVFrame* src) {
+        const AVPixFmtDescriptor* desc = av_pix_fmt_desc_get(static_cast<AVPixelFormat>(src->format));
+        if (!desc || src->width < 2 || src->height < 2) {
+            return std::unexpected(Error{ErrorCode::Unsupported, "Cannot develop this RAW frame"});
+        }
+        const std::string_view name = desc->name;
+        RawDevelopParams params;
+        params.pattern = name.find("bggr") != std::string_view::npos   ? BayerPattern::BGGR
+                         : name.find("grbg") != std::string_view::npos ? BayerPattern::GRBG
+                         : name.find("gbrg") != std::string_view::npos ? BayerPattern::GBRG
+                                                                       : BayerPattern::RGGB;
+        double shotKelvin = 6500.0;
+        if (const AVFrameSideData* sd = av_frame_get_side_data(src, AV_FRAME_DATA_RAW_COLOR_PARAMS);
+            sd && sd->size >= sizeof(AVRawColorParams)) {
+            const auto* raw = reinterpret_cast<const AVRawColorParams*>(sd->data);
+            const double black = raw->black_level.den > 0 ? av_q2d(raw->black_level) : 0.0;
+            const double white = raw->white_level.den > 0 ? av_q2d(raw->white_level) : 1.0;
+            if (white > black && black >= 0.0 && white <= 1.0) {
+                params.black = black;
+                params.white = white;
+            }
+            if (raw->wb_cct >= 1000 && raw->wb_cct <= 50000) {
+                shotKelvin = raw->wb_cct;
+            }
+            if (raw->type == AV_RAW_COLOR_PARAMS_PRORES_RAW) {
+                const AVProResRawColorParams& pr = raw->codec.prores_raw;
+                const auto q = [](AVRational r, double fallback) {
+                    const double v = r.den != 0 ? av_q2d(r) : fallback;
+                    return std::isfinite(v) && v > 0.0 && v < 1000.0 ? v : fallback;
+                };
+                params.wbRed = q(pr.wb_red, 1.0);
+                params.wbBlue = q(pr.wb_blue, 1.0);
+                params.gain = q(pr.gain, 1.0);
+                params.hasMatrix = true;
+                for (int r = 0; r < 3; ++r) {
+                    for (int c = 0; c < 3; ++c) {
+                        const AVRational e = pr.color_matrix[r][c];
+                        params.cameraToXyz[static_cast<std::size_t>(r * 3 + c)] = e.den != 0 ? av_q2d(e) : (r == c ? 1.0 : 0.0);
+                    }
+                }
+            }
+        }
+        params.exposureStops = rawSettings.exposure;
+        if (rawSettings.white) {
+            params.whiteAdaptation =
+                whiteBalanceAdaptation(shotKelvin, rawSettings.white->temperature, rawSettings.white->tint);
+        }
+        // The samples as 16-bit values in host order.
+        // Bayer descriptors split the bits among their pseudo components (16-bit: 4 / 8 / 4): ask for the sample size.
+        const bool wide = av_get_bits_per_pixel(desc) > 8;
+        const bool bigEndian = (desc->flags & AV_PIX_FMT_FLAG_BE) != 0;
+        std::vector<std::uint16_t> samples;
+        const std::uint16_t* cfa = nullptr;
+        std::size_t stride = 0;
+        if (wide && !bigEndian && src->linesize[0] % 2 == 0) {
+            cfa = reinterpret_cast<const std::uint16_t*>(src->data[0]);
+            stride = static_cast<std::size_t>(src->linesize[0]) / 2;
+        } else {
+            samples.resize(static_cast<std::size_t>(src->width) * src->height);
+            for (int y = 0; y < src->height; ++y) {
+                const std::uint8_t* row = src->data[0] + static_cast<std::ptrdiff_t>(y) * src->linesize[0];
+                for (int x = 0; x < src->width; ++x) {
+                    samples[static_cast<std::size_t>(y) * src->width + x] =
+                        !wide       ? static_cast<std::uint16_t>(row[x])
+                        : bigEndian ? static_cast<std::uint16_t>((row[2 * x] << 8) | row[2 * x + 1])
+                                    : static_cast<std::uint16_t>(row[2 * x] | (row[2 * x + 1] << 8));
+                }
+            }
+            cfa = samples.data();
+            stride = static_cast<std::size_t>(src->width);
+        }
+        FramePtr dst(av_frame_alloc());
+        dst->format = AV_PIX_FMT_YUV444P10LE;
+        dst->width = src->width;
+        dst->height = src->height;
+        int r = av_frame_get_buffer(dst.get(), 0);
+        if (r < 0) {
+            return std::unexpected(ffmpegError(ErrorCode::DecoderError, "Out of memory", r));
+        }
+        developRaw(cfa, stride, src->width, src->height, wide ? 65535 : 255, params,
+                   reinterpret_cast<std::uint16_t*>(dst->data[0]), reinterpret_cast<std::uint16_t*>(dst->data[1]),
+                   reinterpret_cast<std::uint16_t*>(dst->data[2]), static_cast<std::size_t>(dst->linesize[0]) / 2);
+        av_frame_copy_props(dst.get(), src);
+        dst->colorspace = AVCOL_SPC_BT709;
+        dst->color_range = AVCOL_RANGE_MPEG;
+        dst->color_primaries = AVCOL_PRI_BT709;
+        dst->color_trc = AVCOL_TRC_BT709;
+        return dst;
+    }
+
     std::expected<FramePtr, Error> convert(const AVFrame* src, PixelFormat target) {
+        if (isBayer(src->format)) {
+            return developBayer(src); // 0.2 camera RAW
+        }
         const AVPixelFormat dstFormat = toAvPixelFormat(target);
         if (dstFormat == AV_PIX_FMT_NONE) { // swscale asserts on unknown formats
             return std::unexpected(Error{ErrorCode::Unsupported, "No conversion target"});
@@ -936,7 +1045,7 @@ struct VideoDecoder::Impl {
         if (auto native = nativeFormat(pixelFormat)) {
             choice = *native;
         } else {
-            choice.format = conversionTarget(pixelFormat);
+            choice.format = isBayer(pixelFormat) ? PixelFormat::YUV444P10 : conversionTarget(pixelFormat); // 0.2 RAW
             if (choice.format == PixelFormat::Unknown) {
                 return std::unexpected(Error{ErrorCode::Unsupported, "Unknown pixel format"});
             }
@@ -958,6 +1067,11 @@ struct VideoDecoder::Impl {
         v.color = resolveColor(colorInfoFrom(src->colorspace, src->color_range, src->color_primaries,
                                              src->color_trc, src->chroma_location),
                                choice.format, src->width, src->height, choice.fullRange);
+        if (isBayer(pixelFormat)) { // 0.2: what developBayer makes of it
+            v.color = ColorInfo{ColorMatrix::BT709, ColorRange::Limited, ColorPrimaries::BT709, TransferFunction::BT709,
+                                ChromaLocation::Left};
+            out.fullRange = false;
+        }
         v.alpha = !pixelFormatHasAlpha(choice.format) ? AlphaMode::None
                   : src->alpha_mode == AVALPHA_MODE_PREMULTIPLIED
                       ? AlphaMode::Premultiplied
@@ -1259,6 +1373,7 @@ VideoDecoder::open(const std::string& path, int streamIndex, const DecoderOption
     auto impl = std::make_unique<Impl>();
     impl->path = path;
     impl->options = options;
+    impl->rawSettings = rawSourceSettingsOf(path);
     impl->streamIndex = streamIndex;
     if (!impl->frame || !impl->loop.isValid()) {
         return std::unexpected(Error{ErrorCode::DecoderError, "Out of memory"});

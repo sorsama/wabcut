@@ -1,8 +1,10 @@
 #include "CommandPalette.h"
 
 #include "CommandBridge.h"
+#include "EditingBridge.h"
 #include "ExtensionsBridge.h"
 #include "KeymapDispatcher.h"
+#include "MonitorBridge.h"
 #include "ProjectController.h"
 #include "Titles.h"
 
@@ -122,7 +124,9 @@ bool KeymapCommandProvider::viewHandles(const QString& id) {
         QStringLiteral("record.toggle"),             QStringLiteral("record.start"),
         QStringLiteral("record.stop"),
     };
-    return kView.contains(id);
+    // P.2: Premiere's editing and sequence commands (E5) and the monitors' commands (E6), which Main.qml routes to the
+    // Editing and Monitors bridges.
+    return kView.contains(id) || EditingBridge::handlesCommand(id) || MonitorBridge::handlesCommand(id);
 }
 
 std::shared_ptr<KeymapCommandProvider> KeymapCommandProvider::forApp(KeymapDispatcher* dispatcher,

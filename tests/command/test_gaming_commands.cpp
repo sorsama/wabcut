@@ -3,6 +3,7 @@
 // template.instantiate.
 
 #include "CommandHarness.h"
+#include "NestedTestUtil.h"
 
 #include <wabcut/command/ExecutionContext.h>
 #include <wabcut/model/BuiltinTemplates.h>
@@ -174,6 +175,42 @@ TEST_CASE("sequence.removeDeadTime previews the quiet stretches then removes the
     CHECK(h.sequence(h.state()).contentEnd() == f(300));
     CHECK(h.errorOf("sequence.removeDeadTime", Json{{"sensitivity", 2}}) == "InvalidParams");
     CHECK(h.errorOf("sequence.removeDeadTime", Json{{"inOut", true}}) == "InvalidParams");
+}
+
+TEST_CASE("sequence.removeDeadTime measures a multicam clip's active angle and cuts it in place in one undo step (0.2)",
+          "[command][gaming][multicam]") {
+    const std::string picture = "    V1 tgt |" + longClip('A', 250) + "|\n    A1 tgt |" + longClip('A', 250) + "|\n";
+    Timeline tl(picture, {{'A', 250}, {'B', 250}});
+    tl.linkMatching();
+    const PlacedMulticam mc = placeMulticam(tl.state, tl.seq, {tl.media('A'), tl.media('B')}, {Ticks{}, Ticks{}}, TimeRange{Ticks{}, f(250)}, Ticks{});
+    tl.state = mc.state;
+    int calls = 0;
+    command::EnginePolicy policy;
+    policy.services = fakeActivity(tl.media('A'), &calls);
+    CommandHarness h(std::move(tl), policy);
+    const Json params{{"sequence", h.tl.seq.value}, {"minSeconds", 2}};
+    const auto preview = h.ok("sequence.removeDeadTime", params);
+    REQUIRE(preview.data["ranges"].size() == 1);
+    CHECK(preview.warnings.empty()); // angle 2 (B, offline here) is neither shown nor heard: not measured
+    CHECK(calls == 1);
+    Json apply = params;
+    apply["apply"] = true;
+    const auto before = h.state();
+    REQUIRE(h.run(dryRun("sequence.removeDeadTime", apply)).ok());
+    CHECK(h.state() == before);
+    h.ok("sequence.removeDeadTime", apply);
+    CHECK(h.session.undoCount() == 1);
+    const Sequence& after = h.sequence(h.state());
+    CHECK(after.videoTracks[0]->clips.size() == 2);
+    for (const auto* tracks : {&after.videoTracks, &after.audioTracks}) {
+        for (const TrackPtr& t : *tracks) {
+            for (const Clip& c : t->clips) {
+                CHECK(c.sequence == mc.multicam); // cut in place, never flattened
+            }
+        }
+    }
+    h.session.undo();
+    CHECK(*h.state() == *before);
 }
 
 TEST_CASE("sequence.makeVersion adds a Shorts or square sequence in one undo step (C.16)", "[command][gaming]") {

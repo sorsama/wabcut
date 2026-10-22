@@ -132,8 +132,9 @@ protected:
             m_compositor.reset(); // a new QRhi (device reset, window move): rebuild everything on it
             m_rhi = rhi();
             // Zero-copy: decoders opened from now on decode on this device (D3D11; elsewhere a no-op) while every
-            // monitor draws on it (DeviceSharing). Opt out with WABCUT_ZERO_COPY=0.
-            if (m_rhi && qEnvironmentVariable("WABCUT_ZERO_COPY") != QStringLiteral("0")) {
+            // monitor draws on it (DeviceSharing). Opt out with WABCUT_ZERO_COPY=0; a second output (P.2) never
+            // takes the device from the main monitor.
+            if (m_rhi && m_shareDevice && qEnvironmentVariable("WABCUT_ZERO_COPY") != QStringLiteral("0")) {
                 m_sharing = true;
                 DeviceSharing::instance().attach(this, m_rhi);
             }
@@ -148,6 +149,8 @@ protected:
         // The GUI thread is blocked: item state may be read and written here.
         auto* monitor = static_cast<ProgramMonitor*>(item);
         m_surround = monitor->m_surroundColor;
+        m_shareDevice = monitor->m_shareDecoderDevice;
+        m_transparent = monitor->m_transparencyGrid;
         if (monitor->m_previewDivisor != m_previewDivisor) {
             m_previewDivisor = monitor->m_previewDivisor;
             if (m_compositor) {
@@ -221,10 +224,13 @@ protected:
         } else {
             out.surround = {static_cast<float>(m_surround.redF()), static_cast<float>(m_surround.greenF()),
                             static_cast<float>(m_surround.blueF()), 1.0f};
+            // Transparency Grid (P.2): the canvas keeps its alpha; the checkerboard under the item shows through.
+            out.alpha = m_transparent ? render::OutputAlpha::Premultiplied : render::OutputAlpha::Opaque;
             if (m_selection.composite) {
                 const auto stats = m_compositor->render(cb, out, m_selection.composite);
                 if (stats) {
-                    recordScopes(cb, stats->canvasPixels, m_selection.composite->color.displayTransform);
+                    recordScopes(cb, stats->canvasPixels, m_selection.composite->color.displayTransform,
+                                 m_selection.composite->color.management);
                 }
             } else {
                 // A jump seek with nothing decoded yet: the canvas is black.
@@ -246,7 +252,8 @@ protected:
 private:
     /// The Scopes panel's GPU scopes of the frame just drawn, at most every 30 ms; frames keep coming while a result is
     /// pending or skipped by the throttle, so a paused picture gets its scopes too.
-    void recordScopes(QRhiCommandBuffer* cb, QSize canvasPixels, render::OutputTransform transform) {
+    void recordScopes(QRhiCommandBuffer* cb, QSize canvasPixels, render::OutputTransform transform,
+                      const ColorManagement& management) {
         ScopeHub& hub = ScopeHub::shared();
         if (!m_scopesSource || !hub.wanted() || canvasPixels.isEmpty()) {
             return;
@@ -260,7 +267,12 @@ private:
             return;
         }
         const auto recorded = m_scopes->record(cb, m_compositor->canvasTexture(), canvasPixels, transform, hub.settings(),
-                                               [](color::ScopeData data) { ScopeHub::shared().deliver(std::move(data)); });
+                                               [](color::ScopeData data) { ScopeHub::shared().deliver(std::move(data)); },
+                                               management.isHdr() // I.9: the nits (PQ) or % (HLG) scale of an HDR project
+                                                   ? std::optional<render::ScopeHdr>(render::ScopeHdr{
+                                                         management.mode == ColorManagementMode::HdrHlg,
+                                                         management.referenceWhiteNits, management.peakNits})
+                                                   : std::nullopt);
         if (recorded) {
             m_lastScopes = now;
             update(); // the readback completes at the next frame
@@ -282,6 +294,8 @@ private:
     int m_previewDivisor = 1;
     std::int64_t m_latencyNs = 16'666'667;
     bool m_hasFrame = false; // render thread: a composite (or a seek's black) has been drawn
+    bool m_shareDevice = true;
+    bool m_transparent = false;
 };
 
 // ---- Item (GUI thread) ----
@@ -317,6 +331,23 @@ void ProgramMonitor::setScopes(bool scopes) {
         ScopeHub::shared().addMonitor(this);
     }
     emit scopesChanged();
+    update();
+}
+
+void ProgramMonitor::setShareDecoderDevice(bool share) {
+    if (share == m_shareDecoderDevice) {
+        return;
+    }
+    m_shareDecoderDevice = share;
+    emit shareDecoderDeviceChanged();
+}
+
+void ProgramMonitor::setTransparencyGrid(bool on) {
+    if (on == m_transparencyGrid) {
+        return;
+    }
+    m_transparencyGrid = on;
+    emit transparencyGridChanged();
     update();
 }
 

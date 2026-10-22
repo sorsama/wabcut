@@ -33,6 +33,10 @@ AbstractButton {
     readonly property bool hasPicture: frame.status === Image.Ready && frame.implicitWidth > 1
     /// M5l: a stem's source ("separated from"), or "".
     required property string derivedFrom
+    /// 0.2 (P.3): a search bin (its icon), and the Freeform view's metadata lines under the name (Freeform View
+    /// Options; empty: the usual line).
+    property bool searchBin: false
+    property var metaLines: []
 
     /// Where the pointer last was across the thumbnail (0..1; poster frame "here").
     property real scrubFraction: 0
@@ -42,13 +46,16 @@ AbstractButton {
 
     signal activated()
     signal menuRequested(point position)
+    /// A drag of the card started, pressed at `position` in the card (the Freeform view moves it by the drop).
+    signal dragStarted(point position)
 
     objectName: isSequence ? "librarySequence_" + key : "libraryCard_" + key
     hoverEnabled: true
     focusPolicy: Qt.StrongFocus
     padding: 0
     Accessible.role: Accessible.ListItem
-    Accessible.name: isBin ? qsTr("Bin %1, %n item(s)", "", itemCount).arg(name)
+    Accessible.name: searchBin ? qsTr("Search bin %1, %n item(s) found", "", itemCount).arg(name)
+                   : isBin ? qsTr("Bin %1, %n item(s)", "", itemCount).arg(name)
                            : qsTr("%1, %2").arg(name).arg(durationText !== "" ? durationText : meta)
     Accessible.selected: selected
 
@@ -121,7 +128,7 @@ AbstractButton {
                 anchors.centerIn: parent
                 visible: card.isBin || (card.isSequence && !card.hasPicture) || card.kind === "title" || (card.kind === "audio" && !card.hasPicture)
                 size: Theme.iconXl
-                name: card.isBin ? "folder" : card.isSequence ? "film" : card.kind === "audio" ? "music" : "type"
+                name: card.searchBin ? "folder-search" : card.isBin ? "folder" : card.isSequence ? "film" : card.kind === "audio" ? "music" : "type"
                 color: card.isBin ? Theme.accentStroke : Theme.textSecondary
             }
             // The label strip along the top edge.
@@ -316,14 +323,28 @@ AbstractButton {
             font.weight: Font.DemiBold
         }
         Text {
+            id: metaLine
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.top: title.bottom
             anchors.topMargin: Theme.space(0.5)
-            text: card.kind === "subclip" && card.subclip.inText !== undefined
+            text: card.metaLines.length > 0 ? card.metaLines[0]
+                  : card.kind === "subclip" && card.subclip.inText !== undefined
                   ? qsTr("%1 – %2").arg(card.subclip.inText).arg(card.subclip.outText)
                   : card.derivedFrom !== "" ? qsTr("From %1").arg(card.derivedFrom)
                   : card.binPath !== "" ? card.binPath : card.meta
+            elide: Text.ElideRight
+            color: Theme.textTertiary
+            font.family: Theme.fontMono
+            font.pixelSize: Theme.textXs
+        }
+        // The Freeform view's second metadata line.
+        Text {
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: metaLine.bottom
+            visible: card.metaLines.length > 1 && card.metaLines[1] !== ""
+            text: card.metaLines.length > 1 ? card.metaLines[1] : ""
             elide: Text.ElideRight
             color: Theme.textTertiary
             font.family: Theme.fontMono
@@ -372,6 +393,7 @@ AbstractButton {
             // The drag's data is made when it starts, after the card is selected (no card binds the selection).
             onActiveChanged: {
                 if (active) {
+                    card.dragStarted(cardDrag.centroid.pressPosition)
                     if (!card.selected)
                         Library.select(card.key, Library.Replace)
                     const keys = Library.selection.join(",")

@@ -56,7 +56,9 @@ Panel {
     readonly property string errorText: gamingPreset !== "" && gamingPlan.ok === false ? gamingPlan.error
                                         : summary.ok === false ? summary.error : ExportController.lastError
     /// The built-in presets shown as tiles (I.9's gaming presets are the gaming tiles, with their estimates: not twice).
-    readonly property var builtInPresets: ExportController.presets.filter(p => root.gamingDuplicates.indexOf(p.id) < 0)
+    /// 0.2: the user's presets and the format presets (alpha, audio, stills) are the section below them.
+    readonly property var builtInPresets: ExportController.presets.filter(p => root.gamingDuplicates.indexOf(p.id) < 0
+                                                                           && (p.category === "general" || p.category === "hdr"))
     /// The chosen preset as the summary shows it: { name, description, icon, hue }.
     readonly property var chosen: {
         if (root.gamingPreset !== "") {
@@ -111,6 +113,14 @@ Panel {
             return
         if (ExportController.queueExport(ProjectController.sequenceId, effectivePresetId, effectiveOverrides) !== "")
             outputPath = "" // the next export gets a fresh default name
+    }
+    // 0.2, Premiere's Send to Media Encoder (Alt+Shift+M): the export waits in the queue for Start Queue.
+    function sendToQueue() {
+        if (gamingPreset !== "" && gamingPlan.ok !== true)
+            return
+        if (ExportController.sendToQueue(ProjectController.sequenceId, [effectivePresetId], effectiveOverrides, true).length > 0)
+            outputPath = ""
+        queueDialog.openOn("queue")
     }
 
     // The auto encoders are probed (in the background) the first time the workspace is shown.
@@ -279,6 +289,16 @@ Panel {
                             }
                         }
                     }
+                }
+
+                // 0.2: My presets (Save / Import Preset) and Premiere's other formats.
+                ExportFormatPresets {
+                    objectName: "exportFormatPresets"
+                    Layout.fillWidth: true
+                    visible: root.showsBuiltIn
+                    selected: root.gamingPreset === "" ? root.presetId : ""
+                    onChosen: id => root.choosePreset(id)
+                    onManageRequested: presetManager.openWith(root.effectivePresetId, root.effectiveOverrides)
                 }
             }
         }
@@ -477,6 +497,15 @@ Panel {
                 onOverrideChanged: (key, value) => root.setOverride(key, value)
             }
 
+            // 0.2: Effects (overlays, Lumetri Look/LUT, Video Limiter, Loudness Normalization), Metadata, render options.
+            ExportEffectsSection {
+                objectName: "exportEffectsSection"
+                Layout.fillWidth: true
+                summary: root.summary
+                overrides: root.overrides
+                onOverrideChanged: (key, value) => root.setOverride(key, value)
+            }
+
             // Where the file goes.
             Rectangle {
                 Layout.fillWidth: true
@@ -636,18 +665,35 @@ Panel {
                         }
                     }
 
-                    PillButton {
-                        objectName: "exportButton"
+                    RowLayout {
                         Layout.fillWidth: footerGrid.columns === 1
-                        Layout.preferredWidth: footerGrid.columns === 1 ? -1 : Math.max(implicitWidth, Theme.space(34))
-                        implicitHeight: Theme.controlHeightLarge
-                        variant: "primary"
-                        enabled: root.summary.ok === true
-                        text: ExportController.busy ? qsTr("Add to queue") : qsTr("Export")
-                        iconName: "download"
-                        tooltip: qsTr("Export media")
-                        command: "file.exportMedia"
-                        onClicked: root.startExport()
+                        spacing: Theme.space(2)
+
+                        PillButton {
+                            objectName: "exportButton"
+                            Layout.fillWidth: footerGrid.columns === 1
+                            Layout.preferredWidth: footerGrid.columns === 1 ? -1 : Math.max(implicitWidth, Theme.space(34))
+                            implicitHeight: Theme.controlHeightLarge
+                            variant: "primary"
+                            enabled: root.summary.ok === true
+                            text: ExportController.busy ? qsTr("Add to queue") : qsTr("Export")
+                            iconName: "download"
+                            tooltip: qsTr("Export media")
+                            command: "file.exportMedia"
+                            onClicked: root.startExport()
+                        }
+                        // 0.2: Premiere's Send to Media Encoder: into the queue, waiting for Start Queue.
+                        PillButton {
+                            objectName: "exportSendToQueue"
+                            implicitHeight: Theme.controlHeightLarge
+                            variant: "secondary"
+                            enabled: root.summary.ok === true
+                            text: qsTr("Send to Queue")
+                            iconName: "list"
+                            tooltip: qsTr("Send to the export queue (Media Encoder) without starting")
+                            command: "file.sendToMediaEncoder"
+                            onClicked: root.sendToQueue()
+                        }
                     }
                 }
             }
@@ -670,6 +716,15 @@ Panel {
                     tooltip: qsTr("Remove finished exports from the list")
                     onClicked: ExportController.clearFinished()
                 }
+                PillButton {
+                    objectName: "exportOpenQueue"
+                    compact: true
+                    variant: "ghost"
+                    iconName: "list"
+                    text: qsTr("Queue…")
+                    tooltip: qsTr("The export queue, watch folders and the CPU limit")
+                    onClicked: queueDialog.openOn("queue")
+                }
             }
 
             ListView {
@@ -691,6 +746,9 @@ Panel {
                     objectName: "exportJob_" + job.jobId
                     onCancelRequested: ExportController.cancel(job.jobId)
                     onRevealRequested: ExportController.reveal(job.jobId)
+                    onPauseRequested: ExportController.pause(job.jobId)
+                    onResumeRequested: ExportController.resume(job.jobId)
+                    onStartRequested: ExportController.start(job.jobId)
                 }
             }
         }
@@ -700,7 +758,16 @@ Panel {
         id: saveDialog
         title: qsTr("Export to")
         fileMode: FileDialog.SaveFile
-        nameFilters: [qsTr("Video and audio files (*.mp4 *.mov *.mkv *.wav)")]
+        nameFilters: [qsTr("Video, audio and image files (*.mp4 *.mov *.mkv *.webm *.gif *.wav *.mp3 *.m4a *.aif *.png *.tif *.dpx *.jpg *.tga *.exr)")]
         onAccepted: root.outputPath = selectedFile.toString()
+    }
+
+    // 0.2: Wabcut's Media Encoder (the queue, watch folders, the CPU limit) and the preset manager.
+    ExportQueueDialog {
+        id: queueDialog
+    }
+    ExportPresetManager {
+        id: presetManager
+        onPresetSaved: id => root.choosePreset(id)
     }
 }

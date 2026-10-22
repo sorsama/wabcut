@@ -252,6 +252,8 @@ Public headers in `src/model/include/wabcut/model/`; overview in `src/model/READ
   - An explicit **`duration`**, at least `contentEnd()`. It grows with the content and never shrinks on its own, so trailing gaps
     survive ripples. Change it with `setSequenceDuration` / `fitSequenceDurationToContent`.
   - An optional **`workArea`** inside it (`setWorkArea`).
+  - **`submixTracks`** (0.2, docs/audio.md): audio submix tracks S1..Sn, buses without clips that audio tracks are assigned
+    to (`Track::output`) or send to (`Track::sends`, at most 5), with their own effects, fader, panner, mute and solo.
 - **`Track`**: kind, name, enabled/locked/muted/solo, targeted flag, sync-lock flag, `clips` and `transitions`. Clips are sorted
   by start and **never overlap**; gaps are implicit.
   - Audio tracks have a **`role`** (`TrackRole`: none, dialogue, music, effects; Premiere's Essential Sound types) that the
@@ -270,7 +272,8 @@ Public headers in `src/model/include/wabcut/model/`; overview in `src/model/READ
     the handles direction-aware (`Clip::headRoom`/`tailRoom`: a reversed clip's handles lie on the other side of its source range,
     a freeze frame has any).
   - `effect` is a stable transition id from the `EffectRegistry` (`crossDissolve`, `dipToBlack`, `dipToWhite`, `wipe`,
-    `constantPower`, `constantGain`); `params` are constants (a wipe's `angle`, `feather`). Unknown ids are kept and bypassed.
+    `constantPower`, `constantGain`; 0.2: Premiere's library, [effects.md](effects.md)); `params` are constants (a wipe's
+    `angle`, `feather`; a menu parameter is one of its options' whole numbers). Unknown ids are kept and bypassed.
   - The evaluator may request two source layers around a transition; clips on a track still never overlap.
   - Ops (`FinishingOps.h`): `addTransition` (two- or one-sided; `HandleFit::Exact` fails naming the clip and how much media it
     has, `UseAvailable` shortens each side to the media and the clip, like Premiere's insufficient-media adjustment),
@@ -279,7 +282,8 @@ Public headers in `src/model/include/wabcut/model/`; overview in `src/model/READ
     and `applyDefaultTransitions` (Shift+D: both ends of each selected clip). Other edits drop transitions they invalidate, and
     when a clip is split the transition at its Out point moves to the right-hand piece.
 - **`Clip`**: id, media id, stream ref (the n-th video or audio stream), `timelineRange`, `sourceIn`, `Speed` (exact rational;
-  0/1 is a freeze frame), `reversed`, `maintainPitch` (audio), enabled, link group and color index.
+  0/1 is a freeze frame), `reversed`, `maintainPitch` (audio), enabled, link group, group (0.2, Premiere's Clip > Group,
+  `ClipGroups.h`; saved as the optional `group` field) and color index.
   - `sourceTimeAt(t)` is the source time shown at a timeline time (direction-aware, clamped into the source range; a freeze shows
     `sourceIn`; a remapped clip reads its remap curve); `timeMap()` gives the same mapping as a `TimeMap` (negative speed when
     reversed; not for remapped clips).
@@ -425,7 +429,45 @@ Public headers in `src/model/include/wabcut/model/`; overview in `src/model/READ
     revision.
   - Superseded snapshots are queued and freed by `releasePending()` from a worker (`deferRelease`).
   - Selection, hover and playhead are **not** document state and are never in undo.
-- **`ProjectIO`**: `.wabcut` JSON (nlohmann; int64 ticks as JSON integers) at `schemaVersion` 16, with a migration chain (the
+- **Premiere editing and sequence commands (P.2, E5)**: `FrameScaling.h`, `SequenceSettings.h`, `EditingOps.h`; commands in
+  `src/command/src/CatalogEditing.cpp` ([commands.md](commands.md)).
+  - **Scale to Frame Size** is a flag on the clip (`ClipContent::scaleToFrame`): the picture is fitted to the sequence frame
+    (whole picture visible, its displayed size: pixel aspect and rotation) *before* Motion, whose Scale stays 100 %. Evaluators
+    multiply Motion's scale by `scaleToFrameFactor(state, clip, width, height)` (1 without the flag; a nested clip fits its
+    sequence's frame). **Set to Frame Size** / **Set to Fill Frame** write the fit (or fill) into Motion's Scale instead and
+    clear the flag. `MediaItem::scaling` (Preferences > Media > Default Media Scaling, set on import) is applied by every
+    source edit to the video clips it places (`scaledClipContent`).
+  - **Sequence Settings** (`setSequenceSettings`): frame size, timebase, pixel aspect, fields, audio rate, preview format,
+    start timecode and the time display formats (`VideoTimeDisplay`: timecode, frames, 16 mm / 35 mm feet+frames, which
+    `formatSequenceTime` applies and the app shows; `AudioTimeDisplay`: audio samples, milliseconds, stored for the audio
+    units display). A new timebase **conforms** the edit: on each unlocked track every edit
+    point moves to the nearest frame of the new grid that both clips' media reach (else the other neighbouring frame, else the
+    two sides split at the floor and ceiling frames), clips shorter than half a new frame go, and transitions, markers, marks,
+    the work area, caption cues and the duration snap to the grid. Locked tracks are left alone. `SequencePresets.h` has 61
+    presets (720p to UHD at 23.976 to 60 fps with drop-frame variants, 120/144/240 fps, vertical 1080x1920, square 1080x1080).
+  - **Duplicate** (`duplicateSequence`, `duplicateMedia`; names "<name> Copy", "<name> Copy 2", ...) and **New Sequence From
+    Clip** (`newSequenceFromClip`: the item's displayed size, its interpreted frame rate, pixel aspect and audio rate, the clip
+    edited in at 0 with its marks).
+  - **Replace Edit** (`replaceClips`, `replaceMatchFrameIn`): another item takes a clip's place over the same timeline range,
+    keeping its effects, keyframes, speed and links (linked partners are replaced in sync); the source starts at the item's In
+    point or, with Match Frame, lines the source frame up with the playhead. **Replace Footage** re-points an item (and its
+    subclips) at another file, keeping every use. **Make Offline** (`MediaItem::madeOffline`) keeps an item offline until it
+    is linked again.
+  - **Make Subsequence** (selection and linked partners, or the targeted tracks between In and Out), **Join Through Edits**,
+    **Go to Next/Previous Gap** and **Close Gap** (empty time where every involved track is empty, sync-safe), **Frame Hold
+    Options** (`HoldOn`: source timecode, sequence timecode, In, Out, playhead; `ClipContent::holdFilters` makes
+    `curveTimeAt` stay at the held frame).
+  - **Merge Clips** (`mergeClips`) builds a merged source sequence (`MulticamInfo::merged`) from a camera clip and separately
+    recorded audio, synced by In points, Out points, timecode, clip markers or the audio waveform, optionally without the
+    camera's audio; it edits in like a clip with every audio angle heard.
+  - **Interpret Footage** (`MediaItem::interpretation`): assumed frame rate, pixel aspect, field order, alpha (ignore, invert,
+    premultiplied or straight). An assumed rate is a conform: source edits and `interpretFootage` set the clip's speed to
+    `conformSpeed(item)` (assumed / native; 120 fps assumed 30 is 1/4), which every evaluator already reads; the pixel aspect
+    and alpha options reach the compositor through `buildLevel` (`CompositeLayer::ignoreAlpha` / `invertAlpha`). **Modify >
+    Timecode** (`MediaItem::timecode`: start timecode and reel name; `mediaStartTimecode`).
+  - Preferences > Timeline's default still duration is stored per item (`MediaItem::stillDuration`, from import); the default
+    video and audio transition durations are the app's settings passed to the transition commands.
+- **`ProjectIO`**: `.wabcut` JSON (nlohmann; int64 ticks as JSON integers) at `schemaVersion` 18, with a migration chain (the
   history is in `ProjectIO.h`). Step 1→2 converts the media locator, parameters, sequence duration and transitions. Step 2→3 only
   adds optional fields: a parameter is `{"value": x}` or `{"keys": [{"t", "v", "i", "in", "out"}]}`, clips carry `effects`,
   `reversed` and `maintainPitch`, freeze frames have speed 0/1, transitions carry `params`, tracks and sequences carry
@@ -440,7 +482,13 @@ Public headers in `src/model/include/wabcut/model/`; overview in `src/model/READ
   fields, review E5-P2-8). Step 12→13 (C.13) adds clip `graphic`, the project's `brandKit` and `templates` and caption
   style `brand` (all written only when set; GraphicJson.h's format). Step 13→14 (X.1) adds the sequence `startTimecode`,
   step 14→15 (C.15) clip `blendMode` and media generator `params`, and step 15→16 (A.10) the media info audio stream
-  `title` (the stream's name in the file, for multi-track ingest), all written only when set.
+  `title` (the stream's name in the file, for multi-track ingest), all written only when set. Step 16→17 (P.2) adds clip
+  `scaleToFrame` and `holdFilters`, media `scaling`, `interpretation`, `timecode`, `stillDuration` and `madeOffline`,
+  sequence `pixelAspect`, `fields`, `previewFormat`, `videoDisplay` and `audioDisplay`, multicam `merged`, clip
+  `timeInterpolation` and the generator kinds `wabcut.synthetic.barsAndTone` and `wabcut.synthetic.countingLeader`, and
+  colour management back from I.9: the project's `colorManagement` (`mode`, `peakNits`, `referenceWhiteNits`,
+  `autoDetectLog`), clip `inputColorSpace` and media video stream `logColorSpace` (docs/color.md); all written only when
+  set, one schema for the whole 0.2 round.
   - Malformed or out-of-domain values fail with `ErrorCode::ParseError`, and newer schemas fail with `VersionMismatch`.
   - Files are untrusted (C.10, fuzzed in `tests/fuzz`). JSON nested deeper than `kMaxJsonNesting` (256) is refused before
     parsing (`jsonNestingWithin`). Kept JSON such as an unknown clip source is written back recursively, and 100,000 levels
@@ -479,12 +527,15 @@ Public headers in `src/model/include/wabcut/model/`; overview in `src/model/READ
     `A.sourceTimeAt` beyond its end (the model guarantees the media is there), B starts early likewise; mix by the transition id
     with progress p = (t − (cut − before)) / (before + after). One-sided transitions mix with transparent (video) or silence
     (audio). `crossDissolve`: lerp; `dipToBlack`/`dipToWhite`: fade A to the colour over the first half, the colour to B over the
-    second; `wipe`: a straight edge at `angle` with `feather`; `constantPower`: gains cos/sin(p·π/2); `constantGain`: linear.
-  - **Speed.** Video: the frame nearest below `sourceTimeAt(t)` (frame blending is optional). Audio (A.10): resample by the
+    second; `wipe`: a straight edge at `angle` with `feather`; `constantPower`: gains cos/sin(p·π/2); `constantGain`: linear;
+    `exponentialFade` (0.2): log10(1 + 9x). The rest of Premiere's video transitions (0.2) and their options: [effects.md](effects.md).
+  - **Speed.** Video: the frame nearest below `sourceTimeAt(t)` (Frame Sampling), or with the clip's Time Interpolation (P.2,
+    docs/motion.md) a group of the two frames around it mixed by the source time's place between their PTS (Frame
+    Blending: a dissolve; Optical Flow: a flow mix along their motion). Audio (A.10): resample by the
     speed (varispeed, band-limited), or time-stretch when `maintainPitch` is set (WSOLA); reversed audio plays its samples
     backwards; speeds under 0.1x or over 20x and holds are silent. Audio clips are never frame holds.
 - **Deferred**:
-  - Frame blending in remaps; speed changes on nested and multicam audio (heard at 100 % only).
+  - Speed changes on nested and multicam audio (heard at 100 % only).
   - Masks.
   - Chunk-relative clip storage.
   - A memory budget for the redo branch.
@@ -602,6 +653,41 @@ Public headers in `src/media/include/wabcut/media/`. No Qt. Every fallible call 
     streams at once, so the audio tracks of one recording build together: each pass reads the whole file, and passes
     that run together share the OS file cache.
 - Logging: `setLogSink`/`setLogLevel`. FFmpeg's `av_log` goes through the sink, and the module prints nothing.
+- **Media paths of more than one file (0.2).** Three kinds of media item name more than one file, or part of one, in
+  their locator path; `media::detail::openInput` is the one place that opens them, so probing, decoding, thumbnails,
+  waveforms, playback, proxies and export need nothing else:
+  - an image sequence (`model/ImageSequence.h`): FFmpeg's image2 pattern plus `?start=&rate=`, opened with the image2
+    demuxer (CinemaDNG frames too);
+  - a spanned clip (`model/SpannedClip.h`): the first part plus `?span=<name>:<microseconds>|...`, every part in the
+    first one's folder, played by FFmpeg's concat demuxer from an in-memory script (the durations make it seekable);
+  - a layered Photoshop file's item (`model/LayeredFile.h`): the PSD plus `?layers=...&size=document|layer`; the layers
+    are composited by `media/Psd.h` (our own reader: raw, RLE and ZIP channels, 8, 16 and 32-bit float - linear light,
+    written out with the sRGB curve - RGB, grayscale and CMYK converted to RGB, PSB, masks, clipping, groups, the
+    separable and the non-separable blend modes) and handed to FFmpeg's PAM demuxer from memory, so saving the PSD in Photoshop
+    updates the item when it is next opened.
+
+  The file that stands for such an item (`mediaFileToCheck`: the first frame, the first part, the PSD) is the one the
+  existence checks, relinking and fingerprints use; `sourceFingerprint` mixes the whole path in, so two layers of one
+  PSD are two pictures in the frame cache. `relinkedMediaPath` keeps the rest of the path when such an item is relinked
+  or collected. Paths read from a project are untrusted: every parser bounds every field.
+- **Camera RAW (0.2, `RawDevelop.h`).** Bayer frames (FFmpeg's `prores_raw` decoder, and CinemaDNG through its TIFF
+  decoder) are developed in `VideoDecoder` into 10-bit Rec.709 Y'CbCr 4:4:4: black and white levels, white balance,
+  a bilinear demosaic, the codec's camera-to-XYZ matrix and gain (ProRes RAW's `AVRawColorParams`), the BT.709 OETF.
+  CinemaDNG arrives from FFmpeg linearised and white balanced in camera RGB, read as linear Rec.709. Highlights above
+  the white point clip. RAW Source Settings (`model/RawSourceSettings.h`: exposure, and a white balance as the colour
+  temperature and tint of the light to balance for) ride at the end of the item's media path
+  (`?raw=exposure:+0.50,white:3200:-10`, `&raw=...` after an image sequence's own query) like the other virtual paths'
+  descriptions, so every decoder, frame cache key (`sourceFingerprint` mixes the path), thumbnail and export develops
+  the item alike without new plumbing; `openInput` opens the path before them, `VideoDecoder` reads them and the
+  development applies the exposure and a Bradford adaptation in XYZ from the as-shot light (`AVRawColorParams::wb_cct`
+  for ProRes RAW, else 6500 K). Changing them drops the item's proxy. R3D, BRAW, ARRIRAW and Canon RAW Light need their vendors' SDKs, which a GPL-3.0 program
+  cannot link: a separate helper built with the SDK (`wabcut-raw-<ext>` in WABCUT_RAW_HELPERS or `raw-helpers/` next to
+  the program; `RawHelper.h` documents the pipe protocol: a JSON header, then one raw frame per requested index) is
+  read as FFmpeg rawvideo through a custom AVIOContext, so everything downstream works unchanged. No helper ships.
+- **Interlaced footage (0.2).** `probe` records the stream's field order (`VideoStreamInfo::fieldOrder`; Interpret
+  Footage can override it). Deinterlacing is a property of the layer (`render::CompositeLayer::fieldMode`, chosen by
+  `model/FieldOptions.h`): the layer shader keeps one field's rows and interpolates the others from it (Premiere's
+  method), or blends rows [1 2 1] / 4 (Flicker Removal), on CPU and zero-copy GPU frames alike.
 
 ### `audio` — owner: Audio engine (miniaudio)
 Public headers in `src/audio/include/wabcut/audio/`; design notes in `src/audio/README.md`.
@@ -717,6 +803,15 @@ Extensions: JavaScript over the typed command protocol, one sandboxed process ea
     (in the layer's frame), Sharpen (unsharp mask, radius = sigma), Drop Shadow (alpha offset by angle/distance, softened like
     the blur, layer over shadow). Transitions: cross dissolve, dip to colour, wipe (angle, feather).
   - `tests/render/EffectsReference.cpp` is the CPU twin of every pass (golden-image tests); change both together.
+  - 0.2, Premiere's library ([effects.md](effects.md)): every video transition is one pass of `shaders/fx_transition.frag`
+    (CPU twin `render/reference/Transitions.h`); the library's video effects are `EffectType::Library` layer effects
+    (`render/EffectLibrary.h`: op, parameter order, family) run by family shaders (`fx_color.frag`, ...) that share the fx
+    pipeline's vertex shader, uniform block (p0..p7) and bindings (`Compositor::fxFamilyPipeline`); CPU twins
+    `render/reference/LibraryEffects.h`. `LayerEffect::matte` is a library effect's second picture (rendered like a
+    Track Matte's composite, bound as tex1): Echo's echoes, the text of Timecode / Clip Name / Simple Text, Gradient
+    Wipe's and Difference Matte's other track, Image Matte Key's image - the evaluator builds them (hidden groups with
+    `LayerSpec::matteEffect`, or pictures from `playback::EffectContext`); Posterize Time is the evaluator holding the
+    clip's time, not a pass.
   - `CompositeStats`: effects applied, bypassed (counted from the layers), transitions, offscreen passes.
 - **Titles (I.2)**: `TitleRenderer` (`Title.h`) draws a `TitleStyle` (text, font, size, fill, outer stroke, alignment, line
   spacing, tracking) into a frame-size premultiplied sRGB RGBA image: QTextLayout shaping (HarfBuzz, font fallback, Thai
@@ -725,7 +820,7 @@ Extensions: JavaScript over the typed command protocol, one sandboxed process ea
 - **`ColorPipeline`** (versioned, part of sequence settings and every request): source range/matrix → transfer/primaries →
   **scene-linear working space (Rec.709 primaries, linear)** with **premultiplied alpha**. All blending happens in linear RGBA16F.
   There are separate display and export output transforms and an OCIO hook point. Missing metadata uses a defined SDR fallback (BT.709 limited);
-  HDR (PQ / HLG) game captures are tone-mapped into SDR as they are read (I.9, `docs/color.md` "HDR game captures").
+  HDR is detected and flagged. The MVP implements and tests SDR only.
 - `OffscreenRenderer`: a headless QRhi rendering the same `PreparedComposite`, with backpressured async readback for export/tests.
 - The backend is logged and shown (adapter + API). The policy is D3D11 first on Windows, Metal on macOS, and Vulkan → OpenGL on Linux, with an override.
   Device loss bumps the device generation and invalidates imports.
@@ -747,6 +842,11 @@ Extensions: JavaScript over the typed command protocol, one sandboxed process ea
 - `PlaybackController`: `setSession`, `setSequence`, `play/pause`, `setTransportSpeed(Rational)` (J/K/L ladder ±1/2/4/8×, slow
   ±1/4× for K-held), `stepFrames(int)`, `seek(Ticks)`, `position()`, and stats (frame age, late/dropped/duplicated frames, active
   decode + render backends). It follows `TransportMap::transportTime()` plus display-latency compensation.
+- P.2 (monitors, [monitors.md](monitors.md)): `setLoop(range)` is Premiere's Loop: the transport wraps inside the range
+  (`TransportClock::setLoop`: the audio engine's TransportMap, or the free-run clock), the scheduler decodes no further
+  than its end and drops what it queued past it at the wrap; it survives a transport swap. `addMirror(controller)` makes
+  another controller (a second output: full screen, transmit) follow this one's session, sequence, transport, loop and
+  epochs while it decodes and composes on its own; a mirror never commands the transport.
 - Reverse/fast shuttle: seek to a valid decode entry, decode forward into a **bounded** timestamped window, present backward,
   and prefetch the previous window. Byte/frame caps fall back to lower preview resolution or reduced cadence. At 8× only the needed samples are decoded.
   A window's frames step by the source-time step between the targets (`FrameSource::targetStep`, at least the stream's frame

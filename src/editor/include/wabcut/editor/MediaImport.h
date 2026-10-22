@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <expected>
 #include <filesystem>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -24,10 +25,12 @@ enum class ImportFileKind : std::uint8_t {
     Media,       ///< anything else: media::probe decides whether it can be read
     Interchange, ///< a timeline interchange::ImportRouter recognises (supported or not)
     Project,     ///< a .wabcut project: open it instead
+    Captions,    ///< a caption file (interchange/CaptionFiles.h, P.2): becomes a caption track of the sequence
 };
 
 /// What a chosen or dropped file is: interchange formats are detected by content and extension (also .fcpxmld /
-/// .otiod bundle folders), .wabcut by extension; everything else is treated as media.
+/// .otiod bundle folders), .wabcut by extension, caption files by extension (.srt .vtt .scc .mcc .stl .ttml .dfxp
+/// .itt) or, for .xml, by a Timed Text root; everything else is treated as media.
 ImportFileKind classifyImportFile(const std::filesystem::path& file);
 
 /// A MediaItem for `file` (not yet in any project): probed MediaInfo, the file name as its name, and a locator
@@ -35,6 +38,13 @@ ImportFileKind classifyImportFile(const std::filesystem::path& file);
 /// fingerprint. Errors are media::probe's (NotFound, Unsupported, IoError) or the fingerprint's.
 std::expected<MediaItem, Error> describeMediaFile(const std::filesystem::path& file,
                                                   const std::filesystem::path& projectFile = {});
+
+/// 0.2, Premiere's Import with "Image Sequence" ticked: a MediaItem (not yet in any project) for the numbered stills
+/// starting at `firstFrame` (model/ImageSequence.h: that file and the ones numbered after it without a gap), one video
+/// stream at `frameRate`, named after its first file. Errors are findImageSequence's, media::probe's or the
+/// fingerprint's.
+std::expected<MediaItem, Error> describeImageSequence(const std::filesystem::path& firstFrame, Rate frameRate,
+                                                      const std::filesystem::path& projectFile = {});
 
 struct FailedImport {
     std::filesystem::path file;
@@ -48,6 +58,16 @@ struct MediaImportOptions {
     BinId bin;
     /// Probe on this many threads; 0 = automatic (up to 4: probing is I/O bound).
     int threads = 0;
+    /// P.2: Premiere's Preferences > Media > Default Media Scaling for the new items (MediaItem::scaling): how source
+    /// edits size their video clips in sequences of another frame size.
+    MediaScaling scaling = MediaScaling::None;
+    /// P.2: Preferences > Timeline > Still Image Default Duration for new still images (MediaItem::stillDuration);
+    /// nullopt: the built-in 5 seconds.
+    std::optional<Ticks> stillDuration;
+    /// 0.2 (P.3): fill the new items' clip metadata (Scene, Shot, Take, Log Note, Good, ...) from their files' XMP, as
+    /// Premiere links those columns (interchange/Xmp.h): sidecars and MP4 / MOV boxes always, other files scanned only
+    /// up to 32 MB. Read on the probing threads.
+    bool readXmp = true;
 };
 
 struct MediaImportResult {

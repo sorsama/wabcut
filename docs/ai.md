@@ -796,6 +796,14 @@ has EmbedHelper's crash, timeout and cancel handling:
 - a timeout or a cancel is not retried;
 - the helper runs below normal priority.
 
+**AI helpers and the CPU (0.2).** Every AI helper process - wabcut-infer (transcription), wabcut-embed (analysis, search,
+segmentation, detection, audio models) and the local model server - starts as an AI helper (`ChildProcessOptions::aiHelper`):
+below normal priority and, on Windows, a hard CPU rate cap on its job object (`JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP`), so
+background analysis leaves playback its share of the processors. Preferences > AI > Models > "AI helpers' CPU": No limit,
+75 % (the default), 50 % or 25 % of the machine (`ai/helperCpuLimit`, `setHelperCpuPolicy`); it applies to helpers started
+afterwards. POSIX: nice +10 only (no cap yet). The export CPU limit (Export queue > Limit CPU use) is separate: it caps the
+encoder's threads. Test: `tests/ai/test_process.cpp` "AI helpers run below normal priority under the helper policy's CPU cap".
+
 **Jobs (`wabcut/ai/audio/AudioJobs.h`, `Plans.h`).**
 - **Enhance Speech.**
   - Decodes the stream with `media::AudioDecoder` at 48 kHz from source time 0, the decoder playback reads source and take with.
@@ -1679,6 +1687,47 @@ byte-identical):
   `sequence.setMasterFormat`), the Audio Track Mixer's pan knob on mono and stereo tracks becomes a puck in a square
   (x, y) with an LFE knob (`track.setSurroundPan`). The master meter shows six channels (`masterMeter()` has them).
 - **Export dialog:** Audio Channels: "As the master" (0), Mono, Stereo, 5.1 (6), and AC-3 in the codec list.
+
+## AI analyses through multicam and nested clips (0.2)
+
+A multicam clip (a podcast's cameras) or a nested clip (a gaming nest) shows and plays what its sequence holds, so the
+analyses read that, not a media item of their own. Two patterns, as transcript editing (C.17b), Split at Shots and
+the colour commands (0.1.2) already do:
+
+- **Media the clip plays, through the time maps.** `mediaPlayedBy(state, clip)` (Resolve.h) lists the recordings a
+  clip plays: a multicam clip its active angles' media only, a nested clip what the tracks it reads hold, through every
+  level. The host measures those once each; the analysis then reads them back at each time through `resolveLeaves()`
+  (the active angle at the angles' sync, the nest's speed, reverse and remap, every level).
+- **The picture as one picture.** A nested or multicam video clip is one picture, its nested sequence's canvas
+  (`reframe::nestedPictureTrack`: the active angle's video track, or a nest's only video track with clips). Results
+  found in the recording there move into the nested time and onto the canvas through that clip's Motion
+  (`reframe::canvasPlacement`: Position, Scale, Anchor; rotation is not followed).
+
+The result always lands on the multicam or nested clip itself: it is never flattened (that broke the podcast workflow
+once), cuts are made in place so angles stay switchable, keyframes go on the clip. One undo step per command; dry runs
+are unchanged.
+
+| Command | Through multicam / nested | How |
+|---|---|---|
+| `highlights.find` | yes | Measures the recordings the clips play (`mediaPlayedBy`); each 100 ms sample of a nested or multicam clip takes the signals of its leaves at their media time (the top picture's visual signal, the strongest audio), keywords and OBS markers moved to where the clip shows them. A clip of the sequence played flat, as the active angle or inside a nest gives the same moments. |
+| `sequence.removeDeadTime` | yes | Activity of the recordings inside (the busiest leaf per sample, `resolveLeaves`); a nested clip counts as the gameplay track. The ripple delete cuts the nested / multicam clips in place: the pieces stay nested / multicam clips with their angles. |
+| `reframe.createSequence`, `shorts.create` (its reframe) | yes, one picture track | The camera keys go on the nested / multicam clip, framing its canvas; the subjects are those of the media its picture track shows, moved into nested time and canvas. A nest with layers (several video tracks with clips) stays centred, with a warning. `shorts.find` scores from the transcript, which reads through these clips (C.17b), and its energy and face / shot-rhythm signals read the recordings the clips play and show (`resolveLeaves` at each part's ends): a podcast flat, as a multicam clip or in a nest gets the same shorts. |
+| `audio.syncClips` | yes | Syncs by the recording the clip plays (a multicam clip: its active audio angle; a picture: the shown media's sound), found at the clip's start (or a quarter further in, for an angle that starts late); Synchronize moves the whole clip by that recording's media time at its start. Retimed levels are not moved (a warning). |
+| `audio.channelLevels` | yes | One entry per recording the clip plays at its start (with `media`, `name`): a multicam clip's active audio angles' streams, a nest's clips. |
+| `autozoom.apply` | yes, one recording | The activity (sidecar, `cursor` or detected frames) is the recording's own, read over the part the clip shows and moved into nested time and onto the canvas; the zoom keys go on the clip. Refused with the reason for layers, several clips in the window, or a retimed recording inside. |
+| `mask.objectSelect`, `mask.refine`, `mask.propagate` | yes (0.2) | They segment what the clip shows: its nested sequence rendered by the export renderer at nested time with only the tracks the clip shows (`NestedFrameSource`; a multicam clip's active angle). The mask goes on the nested / multicam clip itself; its matte names the nested sequence (`MaskMatte::sequence`, schema 18) at nested time, the clip's curve time, so preview and export need nothing new. The nest's edit points stop the tracking like shot cuts. After an angle switch the mask stays where it was on the frame (as a tracked mask in Premiere) and `mask.propagate` re-tracks the angle shown. A host that renders no nested pictures refuses with the reason. |
+
+Tests (synthetic media, 2-angle multicam and a nest each): `tests/model/test_gaming_ops.cpp` "Dead time reads through
+multicam and nested clips", `tests/command/test_gaming_commands.cpp` "sequence.removeDeadTime measures a multicam clip's
+active angle and cuts it in place in one undo step", `tests/ai/highlights/test_highlights.cpp` "highlights.find reads through a multicam clip and a
+nested clip", `tests/ai/reframe/test_reframe.cpp` "Auto Reframe follows the subjects of a multicam clip's active angle and
+of a nested clip", `tests/audio_edit/test_sync_commands.cpp` "audio.syncClips syncs a multicam clip and a nested clip",
+`tests/audio_edit/test_audio_channels_commands.cpp` "audio.channelLevels measures what a multicam clip and a nested clip
+play", `tests/ai/creator/test_autozoom.cpp` "autozoom.apply zooms a multicam clip and a nested clip",
+`tests/ai/shorts/test_shorts.cpp` "Shorts hear and see a podcast through a multicam clip and a nest",
+`tests/ai/segment/test_object_mask_commands.cpp` "mask.objectSelect on a nested clip..." and "mask.objectSelect on a multicam
+clip: the active angle, never flattened; an angle switch keeps the mask", `tests/ai/segment/test_segment_media.cpp`
+"NestedFrameSource: a multicam clip's active angle at nested time".
 
 ## Editing assistant
 
@@ -2759,8 +2808,23 @@ are checked before staging. Occupied or negative head ranges and locked tracks a
 spend. Existing linked partners are preserved when linking the extension to its original. B-roll can
 remain in the Library or be placed on a new video track. Still generation remains a Library asset.
 
+**Sound effects (0.2, `gen.sfx`).** Premiere's Generative Media makes sound effects from a prompt; so does Generate,
+through the user's own ElevenLabs key (checked against the official docs on 2026-10-16):
+
+| Provider/model | API subset | Output and estimate |
+|---|---|---|
+| ElevenLabs `eleven_text_to_sound_v2` | `POST /v1/sound-generation?output_format=mp3_44100_128` with `text`, `model_id`, `duration_seconds` (0.5-30, or left out: the model picks the length), `prompt_influence`, `loop`; the answer is the MP3 | MP3 44.1 kHz; $0.12 per minute of sound ([pricing](https://elevenlabs.io/pricing/api)); a length the model picks is estimated at 30 s; the spend ledger is settled at the length that came back (the MP3's frames counted), never above the approved estimate |
+
+The panel shows Seconds (0: the model picks) and Seamless loop for a sound model; the result is imported as audio media
+with provenance (`kind` "audio", `operation` "text-to-sound-effect", the prompt's hash only) and can go on a new audio
+track. The answer is checked to be an MP3 (an error page with status 200 is refused). The request is never retried, and
+consent, offline mode and the project's no-cloud lock, the keychain-only key, the per-run hard cap and the monthly cap
+are the ones every generation goes through (`AiPlatform::generate`). `gen.sfx` proposes it to the user like `gen.broll`:
+the assistant cannot authorize a charge. Tests: `tests/ai/test_net_generation.cpp` "Sound effects: ..." and "A sound
+effect is booked at the length that came back...". Not done: other sound providers.
+
 Commands registered in the shared command/MCP catalog:
-`llm.local.status/start/stop/models`, `gen.extend`, `gen.broll`, `gen.image`, `provenance.report`.
+`llm.local.status/start/stop/models`, `gen.extend`, `gen.broll`, `gen.image`, `gen.sfx`, `provenance.report`.
 In the app, agent `gen.*` calls **prefill an approval proposal**, without uploads or paid work; the user
 reviews the exact Generate form and then accepts its staged result. CLI/MCP manages a separate local runtime for the lifetime of its process, with the same pinned
 cache, memory gate and idle unload. It refuses paid generation rather than accepting model-supplied
@@ -2926,16 +2990,19 @@ media.
 re-scope before one could be scheduled, so this section claims no success rates. The cloud reference was not
 measured either: no cloud keys are configured for Wabcut here, and the eval never uses keys it was not given.
 
-### Content Credentials: parked
+### Content Credentials (AI-15, in 0.2)
 
-Signed C2PA Content Credentials (c2pa-rs's C library, pinned prebuilt release; a per-user signing identity with
-its key in Windows Credential Manager; a manifest with actions, source-hash ingredients, AI segments and
-redactions; an export finalize step; the Export drawer toggle and `wabcut-cli credentials verify`) were built and
-tested in AI-15 and parked, unmerged, on the branch `SorGuayteawLord/ai15-c2pa-parked`, since C2PA is deferred
-for the gaming-first release. Its tests passed there on 2026-10-13: `tests/ai/c2pa` (8 cases, 347 assertions:
-the identity, the keychain, the manifest's contents, signature, trust, tamper detection, keys never in a file or a
-log) and a signed MP4 export that verifies and fails after one changed byte (`tests/export`, 2 cases, 36
-assertions). The AI-10 decision above (an unsigned JSON sidecar) remains what exports do.
+Signed C2PA Content Credentials (c2pa-rs 0.91.2's C library, the pinned prebuilt release; a per-user signing
+identity with its key in Windows Credential Manager, or the user's own certificate; a manifest with actions,
+source-hash ingredients, AI segments and redactions; an export finalize step; `wabcut-cli credentials verify`),
+built in AI-15 and parked for the gaming-first 0.1, are in exports since 0.2, with Premiere's Export Settings >
+Content Credentials (the producer, a thumbnail of the export, a "do not train" request): docs/export.md "Content
+Credentials". Exports that are not signed (off, or a failure to sign) keep the unsigned sidecar of the AI-10
+decision above; a signed export gets none. Tests: `tests/ai/c2pa` (the identity, the keychain, the manifest's
+contents, signature, trust, tamper detection, keys never in a file or a log; the producer and training request),
+`tests/export/test_content_credentials.cpp` (signed MP4 exports that the c2pa reader validates - with the
+producer, the thumbnail and the training assertion - and that fail after one changed byte; a failure to sign
+leaves a complete unsigned file).
 
 ## Gameplay highlights (G.2, as of 2026-10-13)
 

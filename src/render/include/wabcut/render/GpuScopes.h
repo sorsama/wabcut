@@ -19,12 +19,22 @@
 #include <expected>
 #include <functional>
 #include <memory>
+#include <optional>
 
 class QRhi;
 class QRhiCommandBuffer;
 class QRhiTexture;
 
 namespace wabcut::render {
+
+/// I.9: how an HDR project's scopes read the canvas (its working values: linear Rec.2020, 1.0 = the reference white) -
+/// as PQ code values (the waveform's nits scale) or as the HLG signal (its % scale) - instead of through the monitor's
+/// tone-mapped SDR preview.
+struct ScopeHdr {
+    bool hlg = false;
+    double referenceWhiteNits = 203.0;
+    double peakNits = 1000.0;
+};
 
 class GpuScopes {
 public:
@@ -42,7 +52,8 @@ public:
     /// `transform`, and their readback. `done` runs on this thread when the counts are on the CPU. One request may be
     /// in flight; a call while one is pending is refused (Unsupported) - callers simply try again next frame.
     std::expected<void, Error> record(QRhiCommandBuffer* cb, QRhiTexture* canvas, QSize pixels, OutputTransform transform,
-                                      const color::ScopeSettings& settings, std::function<void(color::ScopeData)> done);
+                                      const color::ScopeSettings& settings, std::function<void(color::ScopeData)> done,
+                                      std::optional<ScopeHdr> hdr = std::nullopt);
     bool pending() const;
 
     void releaseResources();

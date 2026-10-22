@@ -1,4 +1,4 @@
-# Getting started with Wabcut 0.1 "First Cut"
+# Getting started with Wabcut
 
 This guide has four parts:
 
@@ -13,8 +13,8 @@ This guide has four parts:
 
 Names in quotes are the exact labels you see in the app. Shortcuts are the Windows defaults.
 
-> **Wabcut 0.1 is Windows only** (Windows 10 22H2 or 11, x64). See the [release notes](release-notes-0.1.md) for what is
-> in this release and its known issues.
+> **Wabcut 0.2 is made and tested on Windows** (Windows 10 22H2 or 11, x64); the Linux and macOS downloads are
+> previews. See the [release notes](release-notes-0.2.md) for what is in this release and its known issues.
 
 ## Install
 
@@ -29,17 +29,17 @@ Names in quotes are the exact labels you see in the app. Shortcuts are the Windo
 
 | Package | How |
 |---|---|
-| `wabcut-0.1.0-windows-x64.msi` | Double-click it. It installs **for your user only**, with no administrator rights, to `%LOCALAPPDATA%\Programs\Wabcut` (or a folder you choose). Wabcut appears in the Start menu and in Settings > Apps. The options page has an unticked *Open .wabcut project files with Wabcut* box: tick it to open projects by double-clicking them. |
-| `wabcut-0.1.0-windows-x64-portable.zip` | Unzip it anywhere, for example a USB drive, and run `bin\wabcut.exe`. Nothing is installed. |
+| `wabcut-0.2.0-windows-x64.msi` | Double-click it. It installs **for your user only**, with no administrator rights, to `%LOCALAPPDATA%\Programs\Wabcut` (or a folder you choose). Wabcut appears in the Start menu and in Settings > Apps. The options page has an unticked *Open .wabcut project files with Wabcut* box: tick it to open projects by double-clicking them. |
+| `wabcut-0.2.0-windows-x64-portable.zip` | Unzip it anywhere, for example a USB drive, and run `bin\wabcut.exe`. Nothing is installed. |
 
-**SmartScreen.** The 0.1 packages are not code-signed yet, so Windows SmartScreen may say "Windows protected your PC".
+**SmartScreen.** The packages are not code-signed yet, so Windows SmartScreen may say "Windows protected your PC".
 Choose **More info**, then **Run anyway**.
 
 **Uninstalling** (Settings > Apps > Wabcut) removes the program files only. Your projects, autosaves, proxies, caches,
 downloaded AI models, settings and API keys stay.
 
 Admins can install silently:
-`msiexec /i wabcut-0.1.0-windows-x64.msi /qn [INSTALL_ROOT="D:\Apps\Wabcut"] [WABCUT_ASSOCIATE=1]`.
+`msiexec /i wabcut-0.2.0-windows-x64.msi /qn [INSTALL_ROOT="D:\Apps\Wabcut"] [WABCUT_ASSOCIATE=1]`.
 
 ## First run
 
@@ -76,11 +76,37 @@ Everything here can be reopened later from **Help** (bottom of the left rail): "
 Wabcut has no menu bar.
 
 **The File menu** opens with **Alt+F** or by clicking the logo, top left. It has:
-- "Home", "New Project" (Ctrl+Alt+N), "Open Project…" (Ctrl+O);
+- "Home", "New Project" (Ctrl+Alt+N), "Open Project…" (Ctrl+O), "Open Project Next to This One…", "Close Project";
 - "Save" (Ctrl+S), "Save As…" (Ctrl+Shift+S);
 - "Import…" (Ctrl+I, for media and timelines);
+  numbered stills (an image sequence from a renderer, a game's photo mode or a timelapse) come in as one clip from the
+  Library's ··· menu, **"Import image sequence…"** (Premiere's Import with "Image Sequence" ticked): choose the first
+  file (PNG, JPEG, TIFF, DPX, Targa, OpenEXR or BMP) and the frame rate (29.97 fps by default, Premiere's Indeterminate
+  Media Timebase). That file and the ones numbered after it, up to the first gap, play one still per frame. The clip is
+  named after its first file; the stills stay where they are (the first one stands for the clip when Wabcut looks for
+  offline media). Command: `media.importImageSequence`. CinemaDNG frames (.dng) import the same way and play
+  developed into Rec.709. For ProRes RAW and CinemaDNG items, the Library's right-click **Modify > Source Settings…**
+  sets the exposure and white balance they are developed with (As Shot, or the colour temperature and tint of the
+  light to balance for); commands `media.rawSourceSettings`, `media.setRawSourceSettings`.
+
+  A Photoshop file (.psd, .psb) opens **Import Layered File**: Merge All Layers, Merged Layers (the ones you tick),
+  Individual Layers (a bin with one clip per layer) or Sequence (those clips stacked on tracks of a sequence of the
+  document's size), each at Document Size or Layer Size. RGB, grayscale and CMYK files (converted to RGB) of 8, 16 or
+  32 bits import, with their blend modes. The clips read the file each time, so what you save in Photoshop comes
+  through. Commands: `media.layeredFileInfo`, `media.importLayeredFile`.
+
+  The **Media Browser** (the rail's folder icon, Shift+8) browses drives and folders. A camera card (AVCHD, Canon XF,
+  P2, XDCAM, XAVC) shows its clips instead of its folders, and a recording the camera split into several files (GoPro
+  chapters, an AVCHD span, Canon XF parts) is one clip. Hover a thumbnail to scrub through the clip. Double-click a
+  clip to watch it in the Source Monitor without importing it: the first mark, marker or edit you make there imports
+  it. Select clips (Ctrl-click) and press Import to bring them into the current bin. The list button shows the current
+  clip's metadata (format, duration, the video and audio streams). Turn on **Ingest** and open **Ingest Settings**
+  beside it to choose what an import does first: **Copy** the clips into a folder (so the card can be taken out),
+  **Transcode** them into a folder with an export preset (they import at once and switch to the new files when the
+  export queue has made them), or **Create Proxies**. Commands: `media.browse`, `media.importCameraClips`.
 - "Relink Offline Media…", "Recover…", "Export Timeline…", "Collect Files…";
 - "Settings…" (Ctrl+,), "Keyboard Shortcuts…" (Ctrl+Alt+K);
+- "New Sequence From Clip", "Sequence Settings…", "History", "Media and Timeline Preferences…";
 - "Window" (every panel; a checked one is open in this workspace, choosing a closed one opens it), "Reset Panel
   Layout";
 - "Exit" (Ctrl+Q).
@@ -166,6 +192,11 @@ several files go one after another.
 - **Undo.** Every command is one undo step (Ctrl+Z).
 - **The assistant.** The palette's **"Ask AI…"** row opens the **Assistant** panel. Describe an edit in your own words;
   the assistant proposes the commands, you review them, then choose **"Accept"**, **"Refine"** or **"Reject"**.
+
+**The monitors** work like Premiere's: double-click a clip in the Program Monitor to move, scale and rotate it there;
+**Loop**, **Play In to Out**, **Toggle Full Screen** (Ctrl+`) and **Transmit** to a second display; rulers and guides
+(Ctrl+R, Ctrl+;); the **Transparency Grid**; and **Export Frame** (Ctrl+Shift+E) in DPX, JPEG, PNG, TIFF, Targa, BMP,
+GIF or OpenEXR. The gear in each monitor holds their settings. See [monitors.md](monitors.md).
 
 **The timeline's "Moments" button** (tooltip "Moments: slow-mo, speed ramps and punch-ins at the playhead") holds the
 gaming moves: replays, slow motion, speed ramps, punch-ins, shake, dead time and the Shorts/square versions. The same
@@ -315,7 +346,8 @@ The goal is a vertical 1080x1920 clip at 60 fps with the gameplay, your facecam 
 - **"Discord 10 MB"**, **"Discord 25 MB"** and **"Discord 50 MB"**. The bitrate is set from the length you export to
   land at about 95 % of the limit. If the clip is too long, the card says how much fits: set In and Out around the
   moment.
-- The **"GIF"** and **"WebM"** cards say "Coming soon" in 0.1.
+- The **"GIF"** card makes a looping GIF for chats (480×270, 15 fps, no sound) and the **"WebM"** card a VP9 WebM for
+  the web.
 
 ---
 
@@ -346,7 +378,11 @@ The goal is a narrated essay: voice-over, B-roll, captions, a title, music under
 - **"Generate captions"** (later **"Update from transcript"**).
 - **"Caption Style"** presets: "Clean", "Bold Box", "Podcast", "Shorts", "Thai-friendly".
 - **"Translate…"**, and **"SRT"** / **"VTT"** files.
-- You can also burn them in on export.
+- Caption files from elsewhere (SRT, WebVTT, SCC, MCC, EBU STL, TTML / DFXP, iTT): **File > Import** them or drop them on
+  the Library. Each becomes a new caption track of the current sequence, and a report lists what could not be kept
+  (styles, exact positions).
+- You can also burn them in on export, write them next to the file in any of those formats, or embed them as closed
+  captions in the video (H.264 / HEVC).
 
 **4. Title and lower third.**
 - The Library's **"Text"** tab has **"New Title"**.
@@ -377,6 +413,28 @@ under **"General"**.
 
 The goal is interviews shot on two or more cameras, edited by text, graded, with private details redacted, delivered as
 a file and as a timeline for Premiere or Resolve.
+
+**0. Log the footage (0.2).**
+- **Metadata.** The **"Metadata"** panel (rail) edits the selected clips' **Scene**, **Shot**, **Take**, **Log Note**,
+  **Good**, **Client**, **Tape Name**, **Status**, the camera fields (**Camera Angle**, **Label**, **Model**, **Shot
+  Date**, **Shot Location**), **Comment** and **Description**, and shows what the file itself says (its XMP and container
+  tags). The file's XMP can be edited there too, and **"+"** adds a property it does not have yet. **"Read from file"**
+  takes the camera's or another editor's XMP; **"Write XMP"** writes it out. XMP goes into a sidecar `<clip>.xmp` next to
+  the file unless you turn on **Preferences > Media > "Write XMP metadata into MP4 and MOV files"**: then those files take
+  it themselves (a checked copy replaces the file; if anything fails it stays as it was). In the Library's list view the
+  same fields are columns (choose them in the column chooser); a click ticks **Good**.
+- **Search Bins.** Type in the Library's search field, then **"Create new search bin"** next to it: the bin keeps
+  listing whatever matches (for example Good takes of scene 12), from every bin, as you log more.
+- **Freeform view.** The Library's third view: drag thumbnails anywhere, pile alternates into stacks (Ctrl+wheel goes
+  through a stack), and keep arrangements with **"Save as New Layout…"** in the canvas menu.
+- **Productions.** For a long project split into several (one per episode or reel), the **"Production"** panel makes a
+  production folder and new projects in it. Double-click a project to open it next to the ones you have open: they all
+  stay loaded with their own undo history and unsaved changes, and a click in **"Open projects"** switches between them
+  at once (**File > Close Project** closes the one shown, asking first if it has unsaved changes). Browse another project
+  read-only to bring its sequences or bins over: they come in as copies with their media, which is never copied on disk,
+  and remember where they came from (**"Reveal in Source Project"** in the Library's item menu; the **link** button
+  offers the copies a relink their source project made). **Production Settings** (the gear) choose where every project's
+  previews and media cache go. A project a colleague has open shows a lock and opens read-only for you.
 
 **1. Multicam synced by audio.**
 1. In the **"Library"**, select the camera clips (and a separate audio recorder file if you have one).
@@ -413,8 +471,12 @@ regions are never sent to a cloud service in clear.
 
 **5. Export.**
 - **A file:** the **"Export"** tab. Choose "YouTube 1080p", "ProRes 422 HQ" (a master) or "Audio only", and **"Captions"**
-  set to "Burn in", "SRT file" or "VTT file".
-- **A timeline for Premiere, Resolve or Final Cut.** In 0.1 this is done from the command line (there is no button yet):
+  set to "Burn in", "Sidecar file" (then the format: SRT, WebVTT, SCC, MCC, EBU STL, TTML, DFXP, SMPTE-TT or iTT) or
+  "Embed".
+- **For the sound mix (Pro Tools, Nuendo, Fairlight):** **File > Export Timeline…**, format **AAF** or **OMF**. Wabcut
+  renders each clip's audio to new files (with handles), inside the file or in a folder next to it, and keeps clip
+  volume, fades, crossfades, track volume and pan, markers (AAF) and the start timecode. The report says what changed.
+- **A timeline for Premiere, Resolve or Final Cut.** **File > Export Timeline…**, or from the command line:
 
   ```powershell
   # Premiere Pro: Final Cut Pro 7 XML (File > Import in Premiere)
@@ -427,6 +489,32 @@ regions are never sent to a cloud service in clear.
   - The report lists what was carried, approximated or dropped.
   - Nested and multicam sequences go along.
   - The portable ZIP has `wabcut-cli.exe` in its `bin` folder too.
+
+---
+
+## Premiere's sequence and editing tools
+
+These work as in Premiere Pro; each is also a command for scripts and agents ([commands.md](commands.md)).
+
+- **Frame size.** Right-click a clip > **"Video Options"** > **"Scale to Frame Size"** (fits the picture, Scale stays
+  100 %), **"Set to Frame Size"** or **"Set to Fill Frame"** (writes Motion's Scale).
+  **"Media and Timeline Preferences…"** (File menu, or Settings > Timeline & editing) > **"Media"** >
+  **"Default Media Scaling"** applies one of them to everything you import.
+- **Sequences.** **"Sequence Settings…"** (File menu, or a sequence's Library menu) changes the frame size, frame rate,
+  pixel aspect, fields, audio sample rate, preview format, start timecode and time display, with presets from 23.976 to
+  240 fps, vertical 1080x1920 and square 1080x1080. A new frame rate keeps every cut where it was, on the new frames.
+  **"New Sequence From Clip"** makes a sequence that matches a clip; **"Duplicate"** copies a sequence or a clip.
+- **Replace.** Shift-drag from the Source Monitor (or Alt/Shift-drag from the Library) onto a clip, or right-click >
+  **"Replace With Clip"**: the new clip takes the old one's place and keeps its effects. In the Library: **"Replace
+  Footage…"**, **"Make Offline"** and **"Edit Original"** (**Ctrl+E**).
+- **Timeline.** Right-click > **"Make Subsequence"**, **"Join Through Edits"** (on a razor cut), **"Video Options"** >
+  **"Frame Hold Options…"**; the palette has **"Next in Sequence"** / **"Next in Track"** (gaps) and **"Close Gap"**.
+- **Footage.** In the Library: **"Merge Clips…"** (a camera clip with separately recorded sound, synced by In points,
+  Out points, timecode, markers or audio), **"Modify"** > **"Interpret Footage…"** (play a 120/144/240 fps capture as
+  30 or 60 fps slow motion; pixel aspect, fields, alpha) and **"Timecode…"**.
+- **History.** File menu > **"History"** lists the undo steps; click one to go back to it.
+- **Preferences > Timeline** sets the default still duration and the default video and audio transition durations.
+  **Keyboard Shortcuts > Export…** saves a Premiere `.kys` key set when the file name ends in `.kys`.
 
 ---
 
@@ -533,9 +621,35 @@ Wabcut uses **Premiere Pro's default shortcuts** (Windows and macOS tables, per 
   the range between In and Out (the whole sequence without marks), next to the project in "<project> Preview Files".
   The monitor then plays the rendered file there; an edit in that range makes it play live again until you render
   again. A pill in the title bar shows the progress; click it (or press Enter again) to stop.
-- **Not active yet.** These keys are kept for later, as in Premiere, but do nothing yet:
-  - R, P, H, Z and T (rate stretch, pen, hand, zoom and type tools);
-  - G and Shift+G (audio gain and channels).
+- **The other tools.** R (Rate Stretch), P (Pen), H (Hand), Z (Zoom) and T (Type) work as in Premiere, and so do G
+  and Shift+G (Audio Gain, Audio Channels).
+
+### Timeline: groups, fades, pen and zoom (0.2)
+
+- **Group / Ungroup** (Premiere's Clip > Group, **Ctrl+G**; Ungroup **Ctrl+Shift+G**; also in a clip's right-click
+  menu). Grouped clips can sit on any tracks. Clicking any of them selects the whole group (and the clips linked to its
+  members), so the group moves, nudges, copies and deletes together; **Alt-click** selects one clip of the group, as
+  Premiere does. A razor cut keeps both pieces in the group; pasting a copied group makes a new group. Ungroup dissolves
+  the whole group of the selected clips. Commands: `clip.group`, `clip.ungroup`.
+- **Selection Follows Playhead** (Premiere's Sequence menu toggle; no default key: run it from the command palette or
+  bind a key). While it is on, moving the playhead selects the clips under it on the targeted tracks (all tracks when
+  none is targeted), with their groups and links.
+- **Go to Gap.** **Shift+;** moves the playhead to the next gap in the sequence (a stretch where no track has a clip),
+  **Ctrl+Shift+;** to the previous one ("Next in Sequence" / "Previous in Sequence").
+- **Select Next Clip / Select Previous Clip** (**Ctrl+Down** / **Ctrl+Up** in the Timeline panel): the clip after / before the
+  selected one on its track, with its links and group; with nothing selected, the clip at or after the playhead.
+- **Pen on video opacity.** With the **Pen tool (P)** video clips show their **Opacity** as a line (100 % at the top of
+  the clip, 0 % at the bottom) with their opacity keyframes, like the volume line on audio clips: click (or Ctrl-click)
+  the line to add a keyframe, drag a keyframe to move it in time and level (Shift: level only), drag the line between two
+  keyframes to move both, Alt-click a keyframe to switch it between linear and Bezier. Each drag is one undo step.
+- **Zoom tool (Z).** Click zooms in at the click, **Alt+click** zooms out, and **dragging a rectangle** zooms so the time
+  range you dragged over fills the timeline.
+- **Fade handles.** A selected clip shows a small handle in each top corner. Drag the left one into the clip for a
+  fade in, the right one for a fade out; the length shows in the timeline's readout while you drag, and dragging back to
+  the edge removes the fade. One drag is one undo step. A fade is a one-sided transition inside the clip at that edge: a
+  Cross Dissolve from or to black on video, Constant Power from or to silence on audio, so it renders, exports and is
+  edited like any transition (Effect Controls, its edges on the timeline, Delete). Command: `clip.setFade` (a length of
+  0 removes the fade). An edge that already has a transition with the next clip keeps it.
 
 ## Scripts and agents
 

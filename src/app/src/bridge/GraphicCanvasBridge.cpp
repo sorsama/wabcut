@@ -166,6 +166,13 @@ void walk(const std::vector<GraphicLayer>& layers, std::uint32_t parent, const A
                 c.fontWeight = r.fontWeight;
                 c.fill = r.fill;
             }
+            if (item != items.end()) {
+                c.textPath = item->second->text.path;
+                c.textPathClosed = item->second->text.pathClosed;
+                if (!c.textPath.empty()) {
+                    c.paragraph = false; // the path is the line: no box to size
+                }
+            }
         }
         out.push_back(c);
         if (l.kind == LayerKind::Group)
@@ -713,8 +720,25 @@ void GraphicCanvasBridge::publish() {
                                        {QStringLiteral("fromX"), top[0] / m_resolved->sequenceWidth},
                                        {QStringLiteral("fromY"), top[1] / m_resolved->sequenceHeight}};
             }
+            // 0.2, type on a path: a handle on every point of the path, and the path itself to draw.
+            QVariantList pathLine;
+            if (!s->textPath.empty()) {
+                if (!s->pinned) {
+                    for (std::size_t i = 0; i < s->textPath.size(); ++i) {
+                        handles << handle(QStringLiteral("pathVertex-%1").arg(i), s->textPath[i].x, s->textPath[i].y);
+                    }
+                }
+                const TextPathWalker walker(s->textPath, s->textPathClosed, false);
+                const int steps = 96;
+                for (int i = 0; i <= steps; ++i) {
+                    const auto p = walker.at(walker.length() * i / steps);
+                    const QVariantMap point = at(p[0], p[1]);
+                    pathLine << point.value(QStringLiteral("x")) << point.value(QStringLiteral("y"));
+                }
+            }
             const auto anchor = s->parentToDesign.map(s->x, s->y);
             QVariantMap selection{{QStringLiteral("id"), static_cast<int>(s->id)},
+                                  {QStringLiteral("textPath"), pathLine},
                                   {QStringLiteral("kind"), kindName(s->kind)},
                                   {QStringLiteral("name"), QString::fromStdString(s->name)},
                                   {QStringLiteral("quad"), quadJs(m, b)},
@@ -784,6 +808,9 @@ bool GraphicCanvasBridge::beginDrag(const QString& kind, double fx, double fy) {
         return false;
     }
     if (kind.startsWith(QLatin1String("box-")) && !s->paragraph)
+        return false;
+    if (kind.startsWith(QLatin1String("pathVertex-")) &&
+        (s->textPath.empty() || kind.mid(11).toULongLong() >= s->textPath.size()))
         return false;
     if (m_drag)
         endDrag();
@@ -946,6 +973,15 @@ void GraphicCanvasBridge::dragTo(double fx, double fy, bool shift, bool ctrl, do
         next.anchorY = local[1];
         next.x = q[0];
         next.y = q[1];
+    } else if (d.kind.startsWith(QLatin1String("pathVertex-"))) {
+        // 0.2, type on a path: the point goes under the pointer (its tangents with it).
+        label = QT_TRANSLATE_NOOP("wabcut::app::GraphicCanvasBridge", "Move Path Point");
+        const std::size_t index = d.kind.mid(11).toULongLong();
+        if (index >= next.textPath.size())
+            return;
+        const auto local = inverted(s.toDesign).map(p[0], p[1]);
+        next.textPath[index].x = std::clamp(local[0], -1e6, 1e6);
+        next.textPath[index].y = std::clamp(local[1], -1e6, 1e6);
     } else if (d.kind.startsWith(QLatin1String("box-"))) {
         label = QT_TRANSLATE_NOOP("wabcut::app::GraphicCanvasBridge", "Resize Text Box");
         const auto local = inverted(s.toDesign).map(p[0], p[1]);
@@ -1054,6 +1090,21 @@ bool GraphicCanvasBridge::applyLayer(const Layer& next, const char* label, const
                 changed.text.boxWidth = next.boxWidth;
             if (differs(next.boxHeight, base.boxHeight))
                 changed.text.boxHeight = next.boxHeight;
+            if (next.textPath != base.textPath && changed.text.path && !changed.text.path->path.empty()) {
+                // A still path takes the new points; an animated one gets (or changes) its key at the playhead.
+                std::vector<MaskPathKey>& keys = changed.text.path->path;
+                if (keys.size() == 1) {
+                    keys.front().vertices = next.textPath;
+                } else {
+                    const auto key = std::find_if(keys.begin(), keys.end(), [&](const MaskPathKey& k) { return k.time == t; });
+                    if (key != keys.end()) {
+                        key->vertices = next.textPath;
+                    } else {
+                        const auto after = std::find_if(keys.begin(), keys.end(), [&](const MaskPathKey& k) { return k.time > t; });
+                        keys.insert(after, MaskPathKey{t, next.textPath, keys.front().interpolation});
+                    }
+                }
+            }
             return edit::updateGraphicLayer(state, r->sequence, r->clip, next.id, std::move(changed));
         },
         mergeKey);

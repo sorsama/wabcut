@@ -52,6 +52,7 @@ ${_lexicon_entries}    };
 
 add_library(wabcut_ai_edit STATIC
     src/CaptionBuilder.cpp
+    src/Profanity.cpp
     src/Review.cpp
     src/SequenceTranscript.cpp
     src/TextEdits.cpp
@@ -76,6 +77,8 @@ target_link_libraries(wabcut_ai_edit PUBLIC wabcut_ai_multicam wabcut_ai_workflo
 target_link_libraries(wabcut_ai_edit PUBLIC wabcut_ai_segment)
 # G.2: highlights.find / highlights.toReel / highlights.toShort (src/ai/highlights).
 target_link_libraries(wabcut_ai_edit PUBLIC wabcut_ai_highlights)
+# P.2: effect.analyzeStabilization / effect.analyzeRollingShutter (src/ai/stabilize).
+target_link_libraries(wabcut_ai_edit PUBLIC wabcut_ai_stabilize)
 
 # wabcut_ai_edit_media — the media-backed services: transcripts from the analysis cache by source fingerprint, the
 # audio-energy probes (AudioDecoder RMS; AudioEnergyService) and transcript.transcribe's transcriber

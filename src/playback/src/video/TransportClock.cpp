@@ -56,6 +56,8 @@ struct FreeRunState {
     std::int32_t den = 1;
     std::int32_t playing = 0;
     std::int32_t reserved = 0;
+    std::int64_t loopStart = 0;
+    std::int64_t loopEnd = 0; ///< looping iff loopEnd > loopStart
 };
 
 class FreeRunTransport final : public TransportClock {
@@ -67,13 +69,7 @@ public:
         m_state.store(s);
     }
 
-    Ticks transportTime(std::int64_t hostNs) const noexcept override {
-        const State s = m_state.load();
-        if (s.playing == 0) {
-            return Ticks{s.anchorTicks};
-        }
-        return advance(s.anchorTicks, hostNs - s.anchorNs, {s.num, s.den});
-    }
+    Ticks transportTime(std::int64_t hostNs) const noexcept override { return positionAt(m_state.load(), hostNs); }
 
     TransportSpeed effectiveSpeed() const noexcept override {
         const State s = m_state.load();
@@ -103,18 +99,45 @@ public:
         s.anchorNs = steadyNowNs();
         m_state.store(s);
     }
+    void setLoop(std::optional<TimeRange> range) override {
+        update([&](State& s) {
+            const bool on = range && !range->isEmpty() && range->start.value >= 0;
+            s.loopStart = on ? range->start.value : 0;
+            s.loopEnd = on ? range->end().value : 0;
+        });
+    }
     std::string name() const override { return "free-run"; }
 
 private:
     using State = FreeRunState;
+
+    /// Where the transport is at `hostNs`: anchor + speed * elapsed, wrapped inside the loop when the run crossed its
+    /// end (forward) or its start (reverse) from inside or before it (TransportMap's rule).
+    static Ticks positionAt(const State& s, std::int64_t hostNs) {
+        if (s.playing == 0) {
+            return Ticks{s.anchorTicks};
+        }
+        const Ticks t = advance(s.anchorTicks, hostNs - s.anchorNs, {s.num, s.den});
+        if (s.loopEnd <= s.loopStart) {
+            return t;
+        }
+        const std::int64_t length = s.loopEnd - s.loopStart;
+        if (s.num > 0 && s.anchorTicks < s.loopEnd && t.value >= s.loopEnd) {
+            return Ticks{s.loopStart + (t.value - s.loopStart) % length};
+        }
+        if (s.num < 0 && s.anchorTicks >= s.loopStart && t.value < s.loopStart) {
+            const std::int64_t back = (s.loopStart - t.value) % length;
+            return Ticks{back == 0 ? s.loopStart : s.loopEnd - back};
+        }
+        return t;
+    }
 
     /// Re-anchors at "now" so the change is continuous, then applies `change`.
     template <class Fn> void update(Fn change) {
         std::lock_guard lock(m_writer);
         State s = m_state.load();
         const std::int64_t now = steadyNowNs();
-        s.anchorTicks =
-            s.playing != 0 ? advance(s.anchorTicks, now - s.anchorNs, {s.num, s.den}).value : s.anchorTicks;
+        s.anchorTicks = positionAt(s, now).value;
         s.anchorNs = now;
         change(s);
         m_state.store(s);
@@ -169,6 +192,7 @@ public:
     void seek(Ticks target) override {
         m_engine.seek(Ticks{std::max<std::int64_t>(0, target.value)}, m_preroll);
     }
+    void setLoop(std::optional<TimeRange> range) override { m_engine.setLoop(range); }
     std::string name() const override {
         const std::string backend = m_engine.backendName();
         return backend.empty() ? std::string("audio engine") : "audio engine (" + backend + ")";

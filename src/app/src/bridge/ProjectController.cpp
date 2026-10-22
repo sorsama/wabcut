@@ -12,10 +12,12 @@
 
 #include <wabcut/command/ExecutionContext.h>
 
+#include <wabcut/model/ClipGroups.h>
 #include <wabcut/model/EditOps.h>
 #include <wabcut/model/MediaLocator.h>
 #include <wabcut/model/ProjectIO.h>
 #include <wabcut/model/ProjectOps.h>
+#include <wabcut/model/SequenceSettings.h>
 #include <wabcut/model/Timecode.h>
 
 #include <QDir>
@@ -327,6 +329,7 @@ void ProjectController::resetProject(ProjectState state, SequenceId sequence, st
     m_selection = std::move(selection);
     m_primary = m_selection.empty() ? ClipId{} : m_selection.front();
     m_playhead = {};
+    m_finePlayhead = {};
     m_session->reset(std::move(state)); // its Reset event resyncs everything
 }
 
@@ -592,6 +595,7 @@ void ProjectController::setCurrentSequenceIndex(int index) {
     m_selection.clear();
     m_primary = {};
     m_playhead = {};
+    m_finePlayhead = {};
     // Switching sequences is not an edit; resync everything as a structural change.
     syncAfterChange(nullptr, ChangeKind::Reset, {});
     if (hadSelection)
@@ -686,9 +690,9 @@ QVariantList ProjectController::audioTracks() const {
 
 QString ProjectController::formatTimecode(Ticks t) const {
     const SequencePtr seq = currentSequence();
-    const Rate rate = seq ? seq->frameRate : kRate30;
-    const bool dropFrame = seq && seq->dropFrame;
-    return QString::fromStdString(ticksToTimecode(t, rate, dropFrame));
+    if (seq) // P.2: the sequence's Display Format (timecode, frames, feet + frames)
+        return QString::fromStdString(edit::formatSequenceTime(*seq, t));
+    return QString::fromStdString(ticksToTimecode(t, kRate30, false));
 }
 
 Ticks ProjectController::contentDuration() const {
@@ -754,11 +758,20 @@ bool ProjectController::loadProject(const QUrl& file) {
 void ProjectController::setPlayhead(Ticks t) {
     const SequencePtr seq = currentSequence();
     const Rate rate = seq ? seq->frameRate : kRate30;
-    const Ticks clamped = snapToFrame(std::clamp(t, Ticks{}, contentDuration()), rate);
-    if (clamped == m_playhead)
+    const Ticks bounded = std::clamp(t, Ticks{}, contentDuration());
+    // 0.2, Show Audio Time Units: the playhead stops on audio samples; the frame holding the sample is playhead().
+    const bool samples = m_audioTimeUnits && seq && seq->audioRate.isValid();
+    const Ticks fine = samples ? snapToFrame(bounded, seq->audioRate) : snapToFrame(bounded, rate);
+    const Ticks clamped = samples ? snapToFrame(fine, rate) : fine;
+    if (clamped == m_playhead && fine == m_finePlayhead)
         return;
+    const bool frameChanged = clamped != m_playhead;
     m_playhead = clamped;
+    m_finePlayhead = fine;
     emit playheadChanged();
+    if (!frameChanged)
+        return; // the same frame: nothing under the playhead changed
+    followPlayheadSelection(); // 0.2: Selection Follows Playhead (off by default)
     // The clip editor shows parameter values at the playhead: refresh it when they can differ over time.
     if (seq) {
         for (StreamKind kind : {StreamKind::Video, StreamKind::Audio}) {
@@ -785,7 +798,36 @@ void ProjectController::stepFrames(int frames) {
     const SequencePtr seq = currentSequence();
     if (!seq)
         return;
+    if (m_audioTimeUnits && seq->audioRate.isValid()) {
+        // Show Audio Time Units (Premiere): the arrow keys step by audio samples.
+        setPlayhead(framesToTicks(ticksToFrames(m_finePlayhead, seq->audioRate) + frames, seq->audioRate));
+        return;
+    }
     setPlayhead(framesToTicks(ticksToFrames(m_playhead, seq->frameRate) + frames, seq->frameRate));
+}
+
+void ProjectController::setAudioTimeUnits(bool on) {
+    if (on == m_audioTimeUnits)
+        return;
+    m_audioTimeUnits = on;
+    emit audioTimeUnitsChanged();
+    if (!on && m_finePlayhead != m_playhead) {
+        m_finePlayhead = m_playhead; // back on the frame
+        emit playheadChanged();
+    } else {
+        emit playheadChanged(); // playheadText changes its units
+    }
+}
+
+QString ProjectController::playheadText() const {
+    return m_audioTimeUnits ? formatAudioTime(m_finePlayhead) : formatTimecode(m_playhead);
+}
+
+QString ProjectController::formatAudioTime(Ticks t) const {
+    const SequencePtr seq = currentSequence();
+    if (!seq)
+        return formatTimecode(t);
+    return QString::fromStdString(edit::formatSequenceAudioTime(*seq, t));
 }
 
 void ProjectController::goToStart() {
@@ -990,6 +1032,15 @@ const QHash<QString, CommandAction>& commandActions() {
         {QStringLiteral("sequence.selectClipAtPlayhead"), [](ProjectController& c) { c.selectClipAtPlayhead(); }},
         {QStringLiteral("clip.link"), [](ProjectController& c) { c.toggleLinkSelection(); }},
         {QStringLiteral("clip.enable"), [](ProjectController& c) { c.toggleEnabledSelection(); }},
+        // 0.2 timeline parity (ProjectControllerTimeline.cpp)
+        {QStringLiteral("clip.group"), [](ProjectController& c) { c.groupSelection(); }},
+        {QStringLiteral("clip.ungroup"), [](ProjectController& c) { c.ungroupSelection(); }},
+        {QStringLiteral("sequence.selectionFollowsPlayhead"),
+         [](ProjectController& c) { c.setSelectionFollowsPlayhead(!c.selectionFollowsPlayhead()); }},
+        {QStringLiteral("sequence.nextInSequence"), [](ProjectController& c) { c.goToSequenceGap(true); }},
+        {QStringLiteral("sequence.previousInSequence"), [](ProjectController& c) { c.goToSequenceGap(false); }},
+        {QStringLiteral("timeline.selectNextClip"), [](ProjectController& c) { c.selectNextClip(1); }},
+        {QStringLiteral("timeline.selectPreviousClip"), [](ProjectController& c) { c.selectNextClip(-1); }},
         {QStringLiteral("edit.copy"), [](ProjectController& c) { c.copySelection(); }},
         {QStringLiteral("edit.cut"), [](ProjectController& c) { c.cutSelection(); }},
         {QStringLiteral("edit.paste"), [](ProjectController& c) { c.paste(); }},
@@ -1059,7 +1110,7 @@ void ProjectController::selectClipById(ClipId clip, SelectMode mode, bool follow
     std::vector<ClipId> group{clip};
     if (followLinks) {
         const ClipId ids[] = {clip};
-        group = edit::withLinkedClips(*seq, ids);
+        group = edit::withGroupedClips(*seq, ids); // its links, and its group's clips (0.2)
     }
     std::vector<ClipId> next = mode == Replace ? std::vector<ClipId>{} : m_selection;
     if (mode == Toggle && isSelected(clip)) {

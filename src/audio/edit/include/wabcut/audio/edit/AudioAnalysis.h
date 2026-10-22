@@ -6,6 +6,7 @@
 
 #include <wabcut/audio/edit/AudioSync.h>
 #include <wabcut/audio/edit/Remix.h>
+#include <wabcut/audio/edit/SoundClassifier.h>
 #include <wabcut/command/ExecutionContext.h>
 #include <wabcut/model/Error.h>
 #include <wabcut/model/Ids.h>
@@ -171,6 +172,18 @@ public:
                                                                      command::ExecutionControl* control) = 0;
 };
 
+/// p02 audio: Essential Sound auto-tagging (audio.autoTag): the Dialogue / Music / SFX / Ambience a stretch of a media
+/// item's audio sounds like, by SoundClassifier.h's local, deterministic classifier (implementation: MediaAnalysis.h
+/// makeMediaSoundTagger: at most kMaxSeconds from the middle of the range, decoded to mono).
+class SoundTagger {
+public:
+    static constexpr double kMaxSeconds = 30.0;
+    virtual ~SoundTagger() = default;
+    /// Errors: NotFound (offline, no such stream), DecoderError, Cancelled.
+    virtual std::expected<SoundGuess, Error> classify(const ProjectState& state, const MediaItem& item, int streamOrdinal,
+                                                     TimeRange sourceRange, command::ExecutionControl* control) = 0;
+};
+
 /// The host's audio analysis for the audio.* commands (EnginePolicy::services, alone or in a command::ServiceBundle
 /// with the transcript and media-analysis services).
 class AudioServices : public command::CommandServices {
@@ -189,6 +202,8 @@ public:
     std::shared_ptr<MusicAnalyzer> music;
     /// A.9: per-channel levels (null: audio.channelLevels fails).
     std::shared_ptr<ChannelAnalyzer> channels;
+    /// p02 audio: Essential Sound auto-tagging (null: audio.autoTag fails).
+    std::shared_ptr<SoundTagger> tagger;
 };
 
 } // namespace wabcut::audio::edit

@@ -1,7 +1,8 @@
 cmake_minimum_required(VERSION 3.28)
 
 # Overlay ports (cmake/ports) for vcpkg, set before project(): rnnoise (a CMake build; the stock port does not support
-# Windows) and the optional AI ports below.
+# Windows), amd-amf 1.5.3#1 (vcpkg's fix of 2026-10-20: AMD replaced the release's header archive, so the baseline's
+# hash no longer matches; drop it with the next baseline) and the optional AI ports below.
 list(APPEND VCPKG_OVERLAY_PORTS "${CMAKE_CURRENT_SOURCE_DIR}/cmake/ports")
 
 # Local AI (docs/ai.md): whisper.cpp + ggml from the overlay ports in cmake/ports, built into the out-of-process
@@ -59,7 +60,7 @@ if(WABCUT_WITH_AUDIO_PLUGINS AND NOT WABCUT_CORE_ONLY)
 endif()
 
 project(Wabcut
-    VERSION 0.1.3
+    VERSION 0.2.0
     DESCRIPTION "Open-source cross-platform non-linear video editor"
     LANGUAGES C CXX)
 
@@ -123,6 +124,7 @@ add_subdirectory(src/ai)          # pure C++: AI interfaces, model registry, tra
 add_subdirectory(src/audio/edit)  # pure C++: dialogue-first audio commands (roles, loudness, ducking); core too
 add_subdirectory(src/render/color) # pure C++: colour grade core - LUTs, grade math, CDL, scopes stats, Auto/Match, colour commands; core too
 add_subdirectory(src/render/masks) # pure C++: region tracker and the mask / track / redaction commands (I.6); core too
+add_subdirectory(src/render/motion) # pure C++: dense optical flow and flow interpolation (P.2); core too
 add_subdirectory(src/render/reference) # pure C++: CPU reference renders (C.16), the GPU shaders' test oracles; core too
 add_subdirectory(src/script)      # extensions (C.12): manifests, permissions, the editor's side in pure C++ (core too);
                                   # the wabcut-scripthost helper (QJSEngine) in full builds

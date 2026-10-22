@@ -4,10 +4,12 @@
 #include <wabcut/model/CaptionText.h>
 #include <wabcut/model/FinishingOps.h>
 #include <wabcut/model/Nesting.h>
+#include <wabcut/model/SubmixOps.h>
 #include <wabcut/model/Synthetic.h>
 #include <wabcut/model/TitleOps.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cassert>
 #include <cmath>
 #include <cstddef>
@@ -88,6 +90,35 @@ std::optional<Sequence::TrackPosition> Sequence::trackPosition(TrackId trackId) 
     return std::nullopt;
 }
 
+const Track* Sequence::findSubmix(TrackId trackId) const {
+    for (const auto& t : submixTracks) {
+        if (t->id == trackId) {
+            return t.get();
+        }
+    }
+    return nullptr;
+}
+
+const Track* Sequence::findAudioBus(TrackId trackId) const {
+    for (const auto* list : {&audioTracks, &submixTracks}) {
+        for (const auto& t : *list) {
+            if (t->id == trackId) {
+                return t.get();
+            }
+        }
+    }
+    return nullptr;
+}
+
+std::optional<std::size_t> Sequence::submixIndex(TrackId trackId) const {
+    for (std::size_t i = 0; i < submixTracks.size(); ++i) {
+        if (submixTracks[i]->id == trackId) {
+            return i;
+        }
+    }
+    return std::nullopt;
+}
+
 std::optional<Sequence::ClipLocation> Sequence::findClip(ClipId clipId) const {
     for (const auto* list : {&videoTracks, &audioTracks}) {
         for (const auto& t : *list) {
@@ -131,13 +162,15 @@ bool sameTracks(const std::vector<TrackPtr>& a, const std::vector<TrackPtr>& b) 
 bool Sequence::operator==(const Sequence& o) const {
     return id == o.id && bin == o.bin && name == o.name && frameRate == o.frameRate && width == o.width &&
            height == o.height && audioRate == o.audioRate && dropFrame == o.dropFrame &&
-           startTimecode == o.startTimecode && markIn == o.markIn &&
+           startTimecode == o.startTimecode && pixelAspect == o.pixelAspect && fields == o.fields &&
+           previewFormat == o.previewFormat && videoDisplay == o.videoDisplay && audioDisplay == o.audioDisplay &&
+           colorIndex == o.colorIndex && markIn == o.markIn &&
            markOut == o.markOut && markers == o.markers && duration == o.duration && workArea == o.workArea &&
            effects == o.effects && audioEffects == o.audioEffects && captionTracks == o.captionTracks &&
            beatGrid == o.beatGrid && derivedFrom == o.derivedFrom && masterVolume == o.masterVolume &&
-           masterFormat == o.masterFormat && multicam == o.multicam &&
+           masterFormat == o.masterFormat && multicam == o.multicam && importSource == o.importSource &&
            sameTracks(videoTracks, o.videoTracks) &&
-           sameTracks(audioTracks, o.audioTracks);
+           sameTracks(audioTracks, o.audioTracks) && sameTracks(submixTracks, o.submixTracks);
 }
 
 // --- MediaItem ----------------------------------------------------------------------------------------
@@ -260,7 +293,8 @@ bool ProjectState::operator==(const ProjectState& o) const {
     return ids == o.ids && bins == o.bins && equalValues(media, o.media) && equalValues(sequences, o.sequences) &&
            aiNoCloud == o.aiNoCloud && assets == o.assets && redactions == o.redactions && speakers == o.speakers &&
            transcriptEdits == o.transcriptEdits && captionPresets == o.captionPresets && reviewNotes == o.reviewNotes &&
-           brandKit == o.brandKit && templates == o.templates;
+           brandKit == o.brandKit && templates == o.templates && colorManagement == o.colorManagement &&
+           textStyles == o.textStyles && freeform == o.freeform;
 }
 
 bool isSameRevision(const ProjectState& a, const ProjectState& b) {
@@ -268,13 +302,79 @@ bool isSameRevision(const ProjectState& a, const ProjectState& b) {
     return a.ids == b.ids && a.bins == b.bins && sameNodes(a.media, b.media) && sameNodes(a.sequences, b.sequences) &&
            a.aiNoCloud == b.aiNoCloud && a.assets == b.assets && a.redactions == b.redactions &&
            a.speakers == b.speakers && a.transcriptEdits == b.transcriptEdits && a.captionPresets == b.captionPresets &&
-           a.reviewNotes == b.reviewNotes && a.brandKit == b.brandKit && a.templates == b.templates;
+           a.reviewNotes == b.reviewNotes && a.brandKit == b.brandKit && a.templates == b.templates && a.colorManagement == b.colorManagement &&
+           a.textStyles == b.textStyles && a.freeform == b.freeform;
+}
+
+const FreeformView* ProjectState::findFreeform(BinId bin) const {
+    const auto it = std::lower_bound(freeform.begin(), freeform.end(), bin,
+                                     [](const FreeformView& v, BinId b) { return v.bin < b; });
+    return it != freeform.end() && it->bin == bin ? &*it : nullptr;
+}
+
+// --- Search Bins (0.2, P.3) ---------------------------------------------------------------------------
+
+bool isBinSearchField(std::string_view field) {
+    return std::find(kBinSearchFields.begin(), kBinSearchFields.end(), field) != kBinSearchFields.end();
+}
+
+bool isBinSearchType(std::string_view type) {
+    return std::find(kBinSearchTypes.begin(), kBinSearchTypes.end(), type) != kBinSearchTypes.end();
+}
+
+namespace {
+
+/// "YYYY-MM-DD" with a month 01..12 and a day 01..31.
+bool isIsoDate(std::string_view text) {
+    if (text.size() != 10 || text[4] != '-' || text[7] != '-') {
+        return false;
+    }
+    for (const std::size_t i : {0, 1, 2, 3, 5, 6, 8, 9}) {
+        if (text[i] < '0' || text[i] > '9') {
+            return false;
+        }
+    }
+    const int month = (text[5] - '0') * 10 + (text[6] - '0');
+    const int day = (text[8] - '0') * 10 + (text[9] - '0');
+    return month >= 1 && month <= 12 && day >= 1 && day <= 31;
+}
+
+} // namespace
+
+std::optional<std::string> binSearchProblem(const BinSearch& search) {
+    for (const std::string* text : {&search.text, &search.field, &search.type, &search.from, &search.to}) {
+        if (text->size() > BinSearch::kMaxTextBytes || !edit::isValidUtf8(*text)) {
+            return "a search bin's query text must be UTF-8 of at most " + std::to_string(BinSearch::kMaxTextBytes) + " bytes";
+        }
+    }
+    if (!search.field.empty() && !isBinSearchField(search.field)) {
+        return "a search bin cannot search the field '" + search.field + "'";
+    }
+    if (!search.type.empty() && !isBinSearchType(search.type)) {
+        return "a search bin cannot find the type '" + search.type + "'";
+    }
+    if (search.label < -1 || search.label > 15) {
+        return "a search bin's label must be -1 (any) or 0..15";
+    }
+    if ((!search.from.empty() && !isIsoDate(search.from)) || (!search.to.empty() && !isIsoDate(search.to))) {
+        return "a search bin's dates must be YYYY-MM-DD";
+    }
+    return std::nullopt;
 }
 
 const GraphicTemplate* ProjectState::findTemplate(std::string_view id) const {
     const auto it = std::lower_bound(templates.begin(), templates.end(), id,
                                      [](const GraphicTemplate& t, std::string_view v) { return t.id < v; });
     return it != templates.end() && it->id == id ? &*it : nullptr;
+}
+
+const ProjectTextStyle* ProjectState::findTextStyle(std::string_view name) const {
+    const auto lower = [](char c) { return static_cast<char>(std::tolower(static_cast<unsigned char>(c))); };
+    const auto it = std::find_if(textStyles.begin(), textStyles.end(), [&](const ProjectTextStyle& s) {
+        return s.name.size() == name.size() &&
+               std::equal(s.name.begin(), s.name.end(), name.begin(), [&](char a, char b) { return lower(a) == lower(b); });
+    });
+    return it != textStyles.end() ? &*it : nullptr;
 }
 
 const ReviewNote* ProjectState::findReviewNote(ReviewNoteId noteId) const {
@@ -461,6 +561,8 @@ std::optional<std::string> transitionProblem(const ProjectState& state, const Tr
             if (const EffectParamInfo* info = d->param(p.key);
                 info && (!p.value.isConstant() || !p.value.isValid(info->minValue, info->maxValue))) {
                 return "has parameter " + p.key + " outside its range or animated";
+            } else if (info && info->isChoice() && info->optionLabel(p.value.constant()).empty()) {
+                return "has parameter " + p.key + " that is not one of its options";
             }
         }
     }
@@ -627,7 +729,9 @@ public:
         checkCaptionPresets();
         checkGraphicsLibrary();
         checkSequences();
+        checkColorManagement();
         checkReviewNotes();
+        checkFreeform();
         if (m_problems.empty()) {
             return {};
         }
@@ -666,12 +770,25 @@ private:
     }
 
     bool binExists(BinId bin) const { return !bin.isValid() || m_state.findBin(bin) != nullptr; }
+    /// 0.2 (P.3): a search bin holds nothing (it lists what its query finds).
+    bool isSearchBin(BinId bin) const {
+        const Bin* b = bin.isValid() ? m_state.findBin(bin) : nullptr;
+        return b && b->isSearch();
+    }
 
     void checkBins() {
         for (const auto& bin : m_state.bins) {
             claim(bin.id.value, "bin '" + bin.name + "'");
             if (!binExists(bin.parent)) {
                 fail("bin '" + bin.name + "' has a missing parent");
+            }
+            if (isSearchBin(bin.parent)) {
+                fail("bin '" + bin.name + "' is inside a search bin");
+            }
+            if (bin.search) {
+                if (const auto problem = binSearchProblem(*bin.search)) {
+                    fail("search bin '" + bin.name + "': " + *problem);
+                }
             }
         }
         // No cycles: walking up from any bin reaches the root within bins.size() steps.
@@ -717,6 +834,9 @@ private:
                 fail("media items are not sorted by id");
             }
             previous = item->id;
+            if (isSearchBin(item->bin)) {
+                fail("media '" + item->name + "' is inside a search bin");
+            }
             if (!binExists(item->bin)) {
                 fail(what + " is in a missing bin");
             }
@@ -783,6 +903,24 @@ private:
         if (item.posterFrame && item.posterFrame->value < 0) {
             fail(what + " has a negative poster frame");
         }
+        // 0.2 (P.3): clip metadata, bounded UTF-8.
+        const ClipMetadata& md = item.metadata;
+        for (const std::string* field : {&md.scene, &md.shot, &md.take, &md.client, &md.status, &md.cameraAngle,
+                                         &md.cameraLabel, &md.cameraModel, &md.shotDate, &md.shotLocation}) {
+            if (field->size() > ClipMetadata::kMaxFieldBytes || !edit::isValidUtf8(*field)) {
+                fail(what + " has a clip metadata field that is not UTF-8 of at most " +
+                     std::to_string(ClipMetadata::kMaxFieldBytes) + " bytes");
+                break;
+            }
+        }
+        if (md.logNote.size() > MediaItem::kMaxTextBytes || !edit::isValidUtf8(md.logNote)) {
+            fail(what + " has a log note that is not UTF-8 of at most " + std::to_string(MediaItem::kMaxTextBytes) + " bytes");
+        }
+        if (item.importSource && (item.importSource->project.size() > ImportSource::kMaxPathBytes ||
+                                  !edit::isValidUtf8(item.importSource->project))) {
+            fail(what + " has an import source path that is not UTF-8 of at most " +
+                 std::to_string(ImportSource::kMaxPathBytes) + " bytes");
+        }
         if (item.subclip) {
             const SubclipSpec& s = *item.subclip;
             if (s.range.start.value < 0 || s.range.duration.value <= 0) {
@@ -793,6 +931,83 @@ private:
             }
             if (item.generator) {
                 fail(what + " is a generated item and a subclip");
+            }
+        }
+        // P.2 (E5): Interpret Footage, Modify > Timecode, the still's default duration.
+        const auto ratio = [](Rate r) { return static_cast<double>(r.num) / static_cast<double>(r.den); };
+        if (const auto& in = item.interpretation) {
+            if (in->frameRate && (!in->frameRate->isValid() || ratio(*in->frameRate) < 1.0 / 1000.0 ||
+                                  ratio(*in->frameRate) > 1000.0)) {
+                fail(what + " is interpreted at a frame rate outside 0.001 to 1000 fps");
+            }
+            if (in->pixelAspect && (!in->pixelAspect->isValid() || ratio(*in->pixelAspect) < 0.1 ||
+                                    ratio(*in->pixelAspect) > 10.0)) {
+                fail(what + " is interpreted with a pixel aspect outside 0.1 to 10");
+            }
+        }
+        if (item.timecode) {
+            if (item.timecode->start && (item.timecode->start->value < 0 || *item.timecode->start > kMaxStartTimecode)) {
+                fail(what + " has a start timecode outside 00:00:00:00 to 24 hours");
+            }
+            if (item.timecode->reelName.size() > MediaTimecode::kMaxReelNameBytes) {
+                fail(what + " has a reel name longer than " + std::to_string(MediaTimecode::kMaxReelNameBytes) + " bytes");
+            }
+        }
+        if (item.stillDuration && (item.stillDuration->value <= 0 || *item.stillDuration > kMaxStartTimecode)) {
+            fail(what + " has a still duration outside 1 tick to 24 hours");
+        }
+        if (item.madeOffline && item.generator) {
+            fail(what + " is a generated item and cannot be made offline");
+        }
+    }
+
+    /// 0.2 (P.3): Freeform views, one per bin (sorted by bin id, plain bins that exist), every value in range. Placements
+    /// are weak references (an item since removed or moved is not shown), so they are not checked against the items.
+    void checkFreeform() {
+        const auto checkArrangement = [&](const FreeformArrangement& a, const std::string& what) {
+            if (!(a.scale >= kFreeformMinSize && a.scale <= kFreeformMaxSize)) {
+                fail(what + " has a clip size outside " + std::to_string(kFreeformMinSize) + ".." +
+                     std::to_string(kFreeformMaxSize));
+            }
+            if (a.items.size() > kMaxFreeformItems) {
+                fail(what + " places more than " + std::to_string(kMaxFreeformItems) + " items");
+                return;
+            }
+            for (const FreeformPlacement& p : a.items) {
+                if (p.id == 0 || !std::isfinite(p.x) || !std::isfinite(p.y) || std::abs(p.x) > kFreeformMaxCoordinate ||
+                    std::abs(p.y) > kFreeformMaxCoordinate || !(p.size >= kFreeformMinSize && p.size <= kFreeformMaxSize)) {
+                    fail(what + " has a placement out of range");
+                    return;
+                }
+            }
+        };
+        for (std::size_t i = 0; i < m_state.freeform.size(); ++i) {
+            const FreeformView& v = m_state.freeform[i];
+            const std::string what = v.bin.isValid() ? "the Freeform view of bin " + std::to_string(v.bin.value)
+                                                     : std::string("the Freeform view of the root bin");
+            if (i > 0 && !(m_state.freeform[i - 1].bin < v.bin)) {
+                fail("Freeform views are not sorted by unique bin");
+            }
+            if (!binExists(v.bin)) {
+                fail(what + " is of a missing bin");
+            } else if (isSearchBin(v.bin)) {
+                fail(what + " is of a search bin");
+            }
+            checkArrangement(v.current, what);
+            if (v.layouts.size() > FreeformView::kMaxLayouts) {
+                fail(what + " has more than " + std::to_string(FreeformView::kMaxLayouts) + " saved layouts");
+            }
+            for (std::size_t k = 0; k < v.layouts.size(); ++k) {
+                const FreeformLayout& l = v.layouts[k];
+                if (l.name.empty() || l.name.size() > FreeformLayout::kMaxNameBytes || !edit::isValidUtf8(l.name)) {
+                    fail(what + " has a saved layout without a valid name");
+                }
+                for (std::size_t j = 0; j < k; ++j) {
+                    if (sameNameIgnoringCase(v.layouts[j].name, l.name)) {
+                        fail(what + " has two saved layouts named '" + l.name + "'");
+                    }
+                }
+                checkArrangement(l.arrangement, what + ", layout '" + l.name + "'");
             }
         }
     }
@@ -931,6 +1146,21 @@ private:
             }
             if (const auto problem = templateProblem(t)) {
                 fail(*problem);
+            }
+        }
+        // 0.2: text styles: bounded, valid, unique names (case-insensitive).
+        if (m_state.textStyles.size() > kMaxProjectTextStyles) {
+            fail("more than " + std::to_string(kMaxProjectTextStyles) + " text styles");
+        }
+        for (std::size_t i = 0; i < m_state.textStyles.size(); ++i) {
+            const ProjectTextStyle& s = m_state.textStyles[i];
+            if (const auto problem = textStyleProblem(s)) {
+                fail(*problem);
+            }
+            for (std::size_t k = 0; k < i; ++k) {
+                if (sameNameIgnoringCase(m_state.textStyles[k].name, s.name)) {
+                    fail("text style '" + s.name + "' appears twice");
+                }
             }
         }
     }
@@ -1144,6 +1374,9 @@ private:
             ++use.count;
             use.onLockedTrack = track.locked;
         }
+        if (clip.group.isValid() && clip.group.value >= m_state.ids.next) {
+            fail(what + " has a group id that is not below the id generator");
+        }
         checkProperties(clip.properties(), what);
         if (const AudioChannelMap* map = clip.channelMap()) { // A.9: audio clips of media only
             if (track.kind != TrackKind::Audio || clip.isNested() || clip.hasUnknownSource()) {
@@ -1216,8 +1449,9 @@ private:
         }
     }
 
-    void checkTrack(const TrackPtr& track, TrackKind expected, std::size_t index) {
-        const std::string trackName = (expected == TrackKind::Video ? "V" : "A") + std::to_string(index + 1);
+    void checkTrack(const TrackPtr& track, TrackKind expected, std::size_t index, bool submix = false) {
+        const std::string trackName =
+            (submix ? "S" : expected == TrackKind::Video ? "V" : "A") + std::to_string(index + 1);
         if (!track) {
             fail("null track " + trackName);
             return;
@@ -1225,6 +1459,14 @@ private:
         claim(track->id.value, "track " + trackName);
         if (track->kind != expected) {
             fail("track " + trackName + " has the wrong kind");
+        }
+        if (submix && (!track->clips.empty() || !track->transitions.empty() || track->role != TrackRole::None ||
+                       track->recordArmed || !track->sends.empty() || !track->surround.isDefault())) {
+            // p02 audio: a submix is a bus: no clips, role, record arm, sends (a send goes from an audio track) or 5.1 panner.
+            fail("submix track " + trackName + " holds clips, a role, a record arm, sends or a 5.1 panner");
+        }
+        if (track->kind == TrackKind::Video && (track->output.isValid() || !track->sends.empty())) {
+            fail("track " + trackName + " is a video track with an audio output assignment or sends");
         }
         if (track->kind == TrackKind::Video && track->role != TrackRole::None) {
             fail("track " + trackName + " is a video track with an audio role");
@@ -1283,6 +1525,9 @@ private:
     void checkSequence(const Sequence& seq) {
         const std::string what = "sequence '" + seq.name + "'";
         claim(seq.id.value, what);
+        if (isSearchBin(seq.bin)) {
+            fail("sequence '" + seq.name + "' is inside a search bin");
+        }
         if (!binExists(seq.bin)) {
             fail(what + " is in a missing bin");
         }
@@ -1304,6 +1549,16 @@ private:
         if (seq.startTimecode.value < 0 || seq.startTimecode > kMaxStartTimecode) { // X.1
             fail(what + " has a start timecode outside 00:00:00:00 to 24 hours");
         }
+        // P.2 (E5): sequence settings.
+        if (!seq.pixelAspect.isValid() || seq.pixelAspect.toDouble() < 0.1 || seq.pixelAspect.toDouble() > 10.0) {
+            fail(what + " has a pixel aspect outside 0.1 to 10");
+        }
+        if (seq.previewFormat.size() > 32) {
+            fail(what + " has a preview format name longer than 32 bytes");
+        }
+        if (seq.colorIndex < 0 || seq.colorIndex > 15) { // 0.2
+            fail(what + " has a label colour outside 0 to 15");
+        }
         if (seq.masterFormat != ChannelFormat::Stereo && seq.masterFormat != ChannelFormat::Surround51) { // A.9
             fail(what + " has a " + std::string(toString(seq.masterFormat)) + " master (stereo or 5.1)");
         }
@@ -1319,6 +1574,11 @@ private:
         if (seq.derivedFrom && (seq.derivedFrom->generator.size() > SequenceDerivation::kMaxGeneratorBytes ||
                                 seq.derivedFrom->params.size() > SequenceDerivation::kMaxParamsBytes)) {
             fail(what + " derivation record is too large");
+        }
+        if (seq.importSource && (seq.importSource->project.size() > ImportSource::kMaxPathBytes ||
+                                 !edit::isValidUtf8(seq.importSource->project))) {
+            fail(what + " has an import source path that is not UTF-8 of at most " +
+                 std::to_string(ImportSource::kMaxPathBytes) + " bytes");
         }
         if (seq.multicam) {
             if (const auto problem = multicamProblem(seq)) {
@@ -1362,6 +1622,15 @@ private:
         for (std::size_t i = 0; i < seq.audioTracks.size(); ++i) {
             checkTrack(seq.audioTracks[i], TrackKind::Audio, i);
         }
+        if (seq.submixTracks.size() > kMaxSubmixTracks) {
+            fail(what + " has more than " + std::to_string(kMaxSubmixTracks) + " submix tracks");
+        }
+        for (std::size_t i = 0; i < seq.submixTracks.size(); ++i) {
+            checkTrack(seq.submixTracks[i], TrackKind::Audio, i, true);
+        }
+        if (const auto problem = audioRoutingProblem(seq)) { // p02 audio: outputs and sends
+            fail(what + " audio routing: " + *problem);
+        }
         if (seq.duration < m_contentEnd) {
             fail(what + " is shorter than its content");
         }
@@ -1398,6 +1667,12 @@ private:
             fail("sequences contain each other: " + *cycle);
         } else if (const auto fanOut = nestingFanOutProblem(m_state)) {
             fail(*fanOut); // review wave 5 E5-P2-9: a file of doubling nests would expand 2^depth layers
+        }
+    }
+
+    void checkColorManagement() {
+        if (const auto problem = colorManagementProblem(m_state.colorManagement)) {
+            fail("colour management: " + std::string(*problem));
         }
     }
 

@@ -185,6 +185,29 @@ struct TextAnimator {
     bool operator==(const TextAnimator&) const = default;
 };
 
+/// 0.2: Type on a path (the Legacy Titler's Path Type tool; After Effects' Path Options): the text runs along a cubic
+/// Bezier path in the layer's pixels instead of on straight lines. The first line's baseline sits on the path, later
+/// lines below it (by the leading); `align` places the text between the margins (Justify and forceAlignment spread
+/// it from the first margin to the last). Characters past an open path's ends carry on along its end tangents; on a
+/// closed path they wrap round.
+struct TextPath {
+    /// Keys of the path (Masks.h's vertex keys: the same vertex count in every key, 2..kMaxPathVertices), pixels.
+    std::vector<MaskPathKey> path;
+    bool closed = false;
+    /// Reverse Path: the text runs from the path's last vertex to its first (and on the other side).
+    bool reverse = false;
+    /// Perpendicular To Path: each character turns with the path; off, characters stay upright.
+    bool perpendicular = true;
+    /// Force Alignment: the characters spread evenly from the first margin to the last.
+    bool forceAlignment = false;
+    /// First Margin / Last Margin: pixels along the path from its start (end) where the text may begin (end).
+    /// Keyframe the first margin to send text travelling along the path.
+    ParamValue firstMargin{0.0};
+    ParamValue lastMargin{0.0};
+
+    bool operator==(const TextPath&) const = default;
+};
+
 struct TextContent {
     std::vector<TextRun> runs;
     TextAlign align = TextAlign::Left;
@@ -193,6 +216,8 @@ struct TextContent {
     std::string language;   ///< ISO 639-1 for line breaking and word units ("th"); empty = from the text
     TextBackground background;
     std::vector<TextAnimator> animators;
+    /// 0.2: type on a path (the box is ignored: the path is the line).
+    std::optional<TextPath> path;
 
     bool operator==(const TextContent&) const = default;
     /// Every run's text joined.
@@ -260,12 +285,15 @@ struct LayerTransform {
 
 /// Premiere's Responsive Design - Position: a layer pinned to edges of a sibling layer follows them (a box pinned to
 /// all four edges of a name grows with the name). `offsets` are this layer's edge minus the target's, per edge
-/// (left, top, right, bottom), as when it was pinned.
+/// (left, top, right, bottom), as when it was pinned. 0.2: `target` kVideoFrame pins a top-level layer to the video
+/// frame (the design canvas), Premiere's "Pin To: Video Frame": a logo pinned to the right and bottom stays in that
+/// corner when the canvas changes size (a vertical version).
 struct LayerPin {
     static constexpr std::uint8_t kLeft = 1;
     static constexpr std::uint8_t kTop = 2;
     static constexpr std::uint8_t kRight = 4;
     static constexpr std::uint8_t kBottom = 8;
+    static constexpr std::uint32_t kVideoFrame = 0;
 
     std::uint32_t target = 0;
     std::uint8_t edges = 0;
@@ -287,6 +315,9 @@ struct GraphicLayer {
     Ticks in{};
     std::optional<Ticks> out;
     std::optional<LayerPin> pin;
+    /// 0.2, text layers: the project text style it follows (ProjectTextStyle::name; "" = none). Updating the style
+    /// restyles the layer (edit::saveTextStyle).
+    std::string textStyle;
     TextContent text;   ///< LayerKind::Text
     ShapeContent shape; ///< LayerKind::Shape
     ImageContent image; ///< LayerKind::Image
@@ -305,6 +336,44 @@ struct ResponsiveTime {
 
     bool operator==(const ResponsiveTime&) const = default;
 };
+
+/// 0.2: Premiere's Essential Graphics Roll (the graphic's Responsive Design - Time, no layer selected) for credits, and
+/// the Legacy Titler's Crawl Left / Crawl Right for tickers: the whole graphic travels across the frame over the clip,
+/// so the clip's length sets the speed (GraphicResolve.h rollOffset).
+enum class RollKind : std::uint8_t { Roll, CrawlLeft, CrawlRight };
+
+struct GraphicRoll {
+    RollKind kind = RollKind::Roll;
+    /// Start Off Screen: the content starts just past the frame's lower edge (crawl left: its right edge; crawl right: its
+    /// left edge) and scrolls in; off: it starts where it was designed.
+    bool startOffScreen = true;
+    /// End Off Screen: it scrolls until it has left the frame; off: until its last edge reaches the frame's edge (no
+    /// movement when it fits).
+    bool endOffScreen = true;
+    Ticks preroll{};  ///< held at the start before it moves
+    Ticks postroll{}; ///< held at the end
+    Ticks easeIn{};   ///< speeding up from rest
+    Ticks easeOut{};  ///< slowing down to rest
+
+    bool operator==(const GraphicRoll&) const = default;
+};
+
+// ---- Text styles (0.2) ------------------------------------------------------------------------------------------------
+
+/// Premiere's Text Style (Essential Graphics > Text Styles, formerly Master Styles; a Project panel item): a named look
+/// for text layers saved with the project. A layer that uses one (GraphicLayer::textStyle) takes its run style on every
+/// run, its alignment, background and shadow; updating the style restyles every layer that uses it.
+struct ProjectTextStyle {
+    std::string name; ///< unique in the project (case-insensitive), 1..kMaxGraphicNameBytes
+    TextStyle style;
+    TextAlign align = TextAlign::Left;
+    TextBackground background;
+    DropShadow shadow;
+
+    bool operator==(const ProjectTextStyle&) const = default;
+};
+
+inline constexpr std::size_t kMaxProjectTextStyles = 256;
 
 // ---- Templates (MOGRT-like) -------------------------------------------------------------------------------------------
 
@@ -356,6 +425,8 @@ struct Graphic {
     std::vector<GraphicLayer> layers; ///< bottom to top
     std::optional<ResponsiveTime> responsive;
     std::optional<TemplateInstance> instance;
+    /// 0.2: Roll / Crawl (GraphicRoll), or none.
+    std::optional<GraphicRoll> roll;
 
     bool operator==(const Graphic&) const = default;
 
@@ -443,6 +514,9 @@ std::string_view toString(LineCap cap);
 std::optional<LineCap> lineCapFromString(std::string_view text);
 std::string_view toString(FieldKind kind);
 std::optional<FieldKind> fieldKindFromString(std::string_view text);
+/// "roll", "crawlLeft", "crawlRight".
+std::string_view toString(RollKind kind);
+std::optional<RollKind> rollKindFromString(std::string_view text);
 
 /// Why `graphic` is invalid (a bound, a value out of range or not finite, a malformed curve or path, duplicate or zero
 /// layer ids, content of another kind, a pin to a missing or non-sibling layer or in a cycle, a template field that
@@ -450,6 +524,8 @@ std::optional<FieldKind> fieldKindFromString(std::string_view text);
 std::optional<std::string> graphicProblem(const Graphic& graphic);
 std::optional<std::string> brandKitProblem(const BrandKit& kit);
 std::optional<std::string> templateProblem(const GraphicTemplate& tmpl);
+/// 0.2: a text style's name (1..kMaxGraphicNameBytes of UTF-8 without control characters) and values (as a text layer's).
+std::optional<std::string> textStyleProblem(const ProjectTextStyle& style);
 /// Template field ids: [A-Za-z][A-Za-z0-9_.-]*, at most 64 bytes. Template ids: [A-Za-z0-9][A-Za-z0-9_.-]*, <= 128.
 bool isValidFieldId(std::string_view id);
 bool isValidTemplateId(std::string_view id);

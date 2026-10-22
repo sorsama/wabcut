@@ -15,6 +15,12 @@
 //     it off).
 //   * Source view (library double-click): showSource() plays one media item on its own (video only, free-run
 //     clock) in the attached monitors until showProgram().
+//   * P.2: a second program output (the full-screen window, Premiere's Toggle Full Screen and Transmit): attachMirror()
+//     shows the program in another monitor through a mirror controller (playback::PlaybackController::addMirror): the
+//     same transport and edits, its own decoding in CPU frames (that window's GPU device is not the decoders').
+//   * P.2: Premiere's Loop (`loop`, remembered): playback repeats the sequence In to Out, or the whole sequence without
+//     both marks; Play from outside that range starts at its beginning. playInToOut() (Ctrl+Shift+Space) plays In to
+//     Out once, or repeats it with Loop on.
 
 #include <wabcut/editor/PlaybackSession.h>
 #include <wabcut/model/EditSession.h>
@@ -75,6 +81,9 @@ class PlaybackBridge : public QObject {
     Q_PROPERTY(int droppedFrames READ droppedFrames NOTIFY statsChanged FINAL)
     /// Effects in the picture that cannot be rendered (unknown or from a newer version): a warning badge.
     Q_PROPERTY(int bypassedEffects READ bypassedEffects NOTIFY statsChanged FINAL)
+    /// P.2: motion is being analysed (Morph Cut, Optical Flow; playback::MotionAnalyzer): Premiere's "Analyzing in
+    /// background" banner on the program monitor.
+    Q_PROPERTY(bool analyzingMotion READ analyzingMotion NOTIFY statsChanged FINAL)
     /// Captions are drawn by the compositor (I.4): the Captions panel's track and style, shown while its "show in
     /// monitor" toggle is on. Karaoke highlights the words already spoken (transcript word times when they line up
     /// with the cue, else estimated); burned-in exports follow both.
@@ -87,6 +96,8 @@ class PlaybackBridge : public QObject {
     Q_PROPERTY(bool sourceMode READ sourceMode NOTIFY sourceChanged FINAL)
     Q_PROPERTY(QString sourceName READ sourceName NOTIFY sourceChanged FINAL)
     Q_PROPERTY(QString sourceTimeText READ sourceTimeText NOTIFY sourceTimeChanged FINAL)
+    /// P.2: Premiere's Loop button in the Program Monitor.
+    Q_PROPERTY(bool loop READ loop WRITE setLoop NOTIFY loopChanged FINAL)
 
 public:
     explicit PlaybackBridge(ProjectController* controller, QObject* parent = nullptr);
@@ -128,16 +139,26 @@ public:
     QString fpsText() const { return m_fpsText; }
     int droppedFrames() const { return m_dropped; }
     int bypassedEffects() const { return m_bypassedEffects; }
+    bool analyzingMotion() const { return m_analyzingMotion; }
     QString decodeBackend() const { return m_decodeBackend; }
     QString audioBackend() const { return m_audioBackend; }
     QString statsText() const { return m_statsText; }
     bool sourceMode() const { return m_sourceVideo != nullptr; }
     QString sourceName() const { return m_sourceName; }
     QString sourceTimeText() const;
+    bool loop() const { return m_loop; }
+    void setLoop(bool loop);
+    /// The range playback repeats with Loop on: the sequence In to Out, else the whole sequence (nullopt: no sequence).
+    std::optional<TimeRange> loopRange() const;
 
     // ---- QML ----
     /// Shows this bridge's playback in `monitor` (a ProgramMonitor).
     Q_INVOKABLE void attachMonitor(QObject* monitor);
+    /// P.2: shows the program in `monitor` (a ProgramMonitor in another window) through a mirror; detachMirror() lets go.
+    Q_INVOKABLE void attachMirror(QObject* monitor);
+    Q_INVOKABLE void detachMirror(QObject* monitor);
+    /// The mirror controller while a mirror is attached (tests).
+    playback::PlaybackController* mirror() const { return m_mirror.get(); }
     Q_INVOKABLE void togglePlay();
     Q_INVOKABLE void play();
     Q_INVOKABLE void pause();
@@ -146,6 +167,8 @@ public:
     /// KeymapDispatcher.transportIntent(kind, speedNum, speedDen, frames).
     Q_INVOKABLE void applyTransportIntent(int kind, int speedNum, int speedDen, int frames);
     Q_INVOKABLE void stepFrames(int frames);
+    /// P.2: plays from the In (or the start) to the Out (or the end) and stops there; with Loop on it repeats.
+    Q_INVOKABLE void playInToOut();
     /// Source view of a library item ("m…"); showProgram() returns to the sequence.
     Q_INVOKABLE bool showSource(const QString& mediaId);
     Q_INVOKABLE void showProgram();
@@ -159,6 +182,7 @@ signals:
     void captionsChanged();
     void sourceChanged();
     void sourceTimeChanged();
+    void loopChanged();
 
 private:
     void tick();
@@ -171,6 +195,9 @@ private:
     void attachAll(playback::PlaybackController* controller);
     void teardown();
     bool setSpeed(int num, int den);
+    /// Hands the loop range (or none) to the session; with Loop on and the playhead outside the range before forward
+    /// play starts (`starting`), the playhead goes to its start.
+    void applyLoop(bool starting = false);
 
     ProjectController* m_controller = nullptr;
     std::unique_ptr<editor::PlaybackSession> m_session;
@@ -185,6 +212,10 @@ private:
     std::optional<playback::CaptionSettings> m_captionSettings;
     playback::ColorPreview m_colorPreview;
 
+    // P.2: the second output (full screen / transmit)
+    std::unique_ptr<playback::PlaybackController> m_mirror;
+    QPointer<ProgramMonitor> m_mirrorMonitor;
+
     // Source view
     std::unique_ptr<EditSession> m_sourceSession;
     std::unique_ptr<playback::PlaybackController> m_sourceVideo;
@@ -195,12 +226,15 @@ private:
     bool m_wasPlaying = false;
     std::int32_t m_lastSpeedNum = 0;
     std::int32_t m_lastSpeedDen = 1;
+    bool m_loop = false;
+    std::optional<Ticks> m_stopAt; ///< Play In to Out without Loop: where playback stops
 
     // Stats
     QElapsedTimer m_statsClock;
     std::uint64_t m_presentedAtLastSample = 0;
     std::uint64_t m_droppedAtLastSample = 0;
     int m_bypassedEffects = 0;
+    bool m_analyzingMotion = false;
     double m_measuredFps = 0.0;
     int m_dropped = 0;
     QString m_fpsText;

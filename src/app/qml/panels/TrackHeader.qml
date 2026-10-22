@@ -80,6 +80,8 @@ Item {
         readonly property var patch: SourceMonitor.patchMap[root.trackId] ?? null
         readonly property bool patched: patch !== null
         readonly property bool patchOn: patched && patch.enabled
+        // p02 audio: the source stream as named routing calls it ("A1 (Game)"), its position alone otherwise.
+        readonly property string sourceLabel: !patched ? "" : (patch.name ? qsTr("%1 (%2)").arg(patch.source).arg(patch.name) : patch.source)
         // The loaded source has a track of this kind to patch here.
         readonly property bool canPatch: SourceMonitor.indicators.some(i => i.kind === root.kind)
         property bool dragging: false
@@ -95,7 +97,7 @@ Item {
 
         activeFocusOnTab: visible && (patched || canPatch)
         Accessible.role: Accessible.Button
-        Accessible.name: patched ? qsTr("Source %1 patched to %2").arg(patch.source).arg(root.shortName)
+        Accessible.name: patched ? qsTr("Source %1 patched to %2").arg(sourceLabel).arg(root.shortName)
                                  : qsTr("Patch the source to %1").arg(root.shortName)
         Accessible.checked: patchOn
         Keys.onSpacePressed: activate(false)
@@ -189,8 +191,8 @@ Item {
                 parent: patchSlot
                 visible: true
                 text: patchSlot.patched
-                      ? (patchSlot.patchOn ? qsTr("Source %1 goes to %2 in Insert and Overwrite. Drag to another track to repatch; Alt-click to switch it off.").arg(patchSlot.patch.source).arg(root.shortName)
-                                           : qsTr("Source %1 is switched off: click to switch it on.").arg(patchSlot.patch.source))
+                      ? (patchSlot.patchOn ? qsTr("Source %1 goes to %2 in Insert and Overwrite. Drag to another track to repatch; Alt-click to switch it off.").arg(patchSlot.sourceLabel).arg(root.shortName)
+                                           : qsTr("Source %1 is switched off: click to switch it on.").arg(patchSlot.sourceLabel))
                       : qsTr("Click to patch the source to %1").arg(root.shortName)
             }
         }

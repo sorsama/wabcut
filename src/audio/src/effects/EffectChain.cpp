@@ -1,5 +1,7 @@
 #include <wabcut/audio/effects/EffectChain.h>
 
+#include "PremiereEffects.h"
+
 #include <wabcut/audio/dsp/Compressor.h>
 #include <wabcut/audio/dsp/Denoiser.h>
 #include <wabcut/audio/dsp/Equalizer.h>
@@ -292,7 +294,8 @@ namespace {
 
 bool isBuiltinAudioEffect(std::string_view id) {
     return id == kGain || id == kEq3 || id == kCompressor || id == kLimiter || id == kDenoise || id == kFilter || id == kDeHum ||
-           id == kDeEss || id == kExpander || id == kReverb || id == kWidth;
+           id == kDeEss || id == kExpander || id == kReverb || id == kWidth || premiere::isAmplitudeEffect(id) ||
+           premiere::isFilterEffect(id) || premiere::isTimeEffect(id);
 }
 
 struct FactorySlot {
@@ -413,6 +416,16 @@ std::unique_ptr<EffectProcessor> createEffectProcessor(const EffectDescriptor& d
     }
     if (d.id == kWidth) {
         return std::make_unique<WidthProcessor>(d, channels, sampleRate);
+    }
+    // p02 audio: Premiere's effects (PremiereEffects.h).
+    if (premiere::isAmplitudeEffect(d.id)) {
+        return premiere::createAmplitudeProcessor(d, channels, sampleRate, values);
+    }
+    if (premiere::isFilterEffect(d.id)) {
+        return premiere::createFilterProcessor(d, channels, sampleRate, values);
+    }
+    if (premiere::isTimeEffect(d.id)) {
+        return premiere::createTimeProcessor(d, channels, sampleRate, values);
     }
     return nullptr;
 }

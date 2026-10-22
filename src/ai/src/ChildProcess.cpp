@@ -2,6 +2,7 @@
 
 #include <wabcut/model/MediaLocator.h>
 
+#include <algorithm>
 #include <condition_variable>
 #include <cstdio>
 #include <deque>
@@ -112,6 +113,48 @@ private:
     bool m_overflow = false;
 };
 
+std::mutex& policyMutex() {
+    static std::mutex mutex;
+    return mutex;
+}
+HelperCpuPolicy& policyStore() {
+    static HelperCpuPolicy policy;
+    return policy;
+}
+
+} // namespace
+
+void setHelperCpuPolicy(HelperCpuPolicy policy) {
+    policy.cpuRatePercent = std::clamp(policy.cpuRatePercent, 1, 100);
+    std::lock_guard lock(policyMutex());
+    policyStore() = policy;
+}
+
+HelperCpuPolicy helperCpuPolicy() {
+    std::lock_guard lock(policyMutex());
+    return policyStore();
+}
+
+namespace {
+/// The priority and CPU cap a child gets: its own options, or the helper policy for an AI helper.
+struct EffectiveLimits {
+    bool lowPriority = false;
+    int cpuRatePercent = 0; ///< 0 = none
+};
+EffectiveLimits effectiveLimits(const ChildProcessOptions& o) {
+    EffectiveLimits e{o.lowPriority, std::clamp(o.cpuRatePercent, 0, 100)};
+    if (o.aiHelper) {
+        const HelperCpuPolicy p = helperCpuPolicy();
+        e.lowPriority = e.lowPriority || p.lowPriority;
+        if (e.cpuRatePercent == 0 && p.cpuRatePercent < 100) {
+            e.cpuRatePercent = p.cpuRatePercent;
+        }
+    }
+    if (e.cpuRatePercent >= 100) {
+        e.cpuRatePercent = 0;
+    }
+    return e;
+}
 } // namespace
 
 #ifdef _WIN32
@@ -296,6 +339,15 @@ std::expected<std::unique_ptr<ChildProcess>, Error> ChildProcess::spawn(const Ch
         closeChildEnds();
         return std::unexpected(Error{ErrorCode::IoError, lastError("cannot set up the helper's sandbox limits")});
     }
+    // 0.2: an AI helper's (or an explicit) CPU rate cap, a hard one: the job's processes together get at most that share
+    // of every processor's time, so playback keeps its headroom. Best effort: a helper still runs without it.
+    const EffectiveLimits effective = effectiveLimits(options);
+    if (impl->job != nullptr && effective.cpuRatePercent > 0) {
+        JOBOBJECT_CPU_RATE_CONTROL_INFORMATION rate{};
+        rate.ControlFlags = JOB_OBJECT_CPU_RATE_CONTROL_ENABLE | JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP;
+        rate.CpuRate = static_cast<DWORD>(effective.cpuRatePercent) * 100; // in 1/100 of a percent
+        (void)SetInformationJobObject(impl->job, JobObjectCpuRateControlInformation, &rate, sizeof(rate));
+    }
 
     PROCESS_INFORMATION info{};
     // An explicit, minimal environment (no provider keys) and, unless the caller names one, the helper's own folder as
@@ -304,7 +356,7 @@ std::expected<std::unique_ptr<ChildProcess>, Error> ChildProcess::spawn(const Ch
     std::wstring environment = platform::helperEnvironmentFor(executable);
     const std::wstring workingDirectory =
         (options.workingDirectory.empty() ? executable.parent_path() : options.workingDirectory).wstring();
-    const DWORD priority = options.lowPriority ? BELOW_NORMAL_PRIORITY_CLASS : 0;
+    const DWORD priority = effective.lowPriority ? BELOW_NORMAL_PRIORITY_CLASS : 0;
     const BOOL created = CreateProcessW(options.executable.wstring().c_str(), commandLine.data(), nullptr, nullptr, TRUE,
                                         CREATE_NO_WINDOW | CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT |
                                             CREATE_UNICODE_ENVIRONMENT | priority,
@@ -395,6 +447,20 @@ std::optional<std::size_t> ChildProcess::peakMemoryBytes() const {
     return info.PeakProcessMemoryUsed;
 }
 
+std::optional<int> ChildProcess::cpuRateLimitPercent() const {
+    JOBOBJECT_CPU_RATE_CONTROL_INFORMATION rate{};
+    if (m_impl->job == nullptr ||
+        !QueryInformationJobObject(m_impl->job, JobObjectCpuRateControlInformation, &rate, sizeof(rate), nullptr) ||
+        (rate.ControlFlags & JOB_OBJECT_CPU_RATE_CONTROL_ENABLE) == 0 || (rate.ControlFlags & JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP) == 0) {
+        return std::nullopt;
+    }
+    return static_cast<int>(rate.CpuRate / 100);
+}
+
+bool ChildProcess::belowNormalPriority() const {
+    return m_impl->process != nullptr && GetPriorityClass(m_impl->process) == BELOW_NORMAL_PRIORITY_CLASS;
+}
+
 std::optional<int> ChildProcess::exitCode() {
     DWORD code = 0;
     if (!GetExitCodeProcess(m_impl->process, &code) || code == STILL_ACTIVE) {
@@ -448,6 +514,7 @@ std::filesystem::path currentExecutableDir() {
 
 struct ChildProcess::Impl {
     pid_t pid = -1;
+    bool lowPriority = false; ///< niced (nice +10)
     int stdinWrite = -1;
     int stdoutRead = -1;
     std::optional<int> status;
@@ -519,11 +586,12 @@ std::expected<std::unique_ptr<ChildProcess>, Error> ChildProcess::spawn(const Ch
     std::vector<std::string> shellStorage;
     std::vector<char*> shellArgv;
     std::string program = exe;
-    if (!options.workingDirectory.empty() || options.lowPriority) {
+    const bool lowPriority = effectiveLimits(options).lowPriority;
+    if (!options.workingDirectory.empty() || lowPriority) {
         // sh -c 'cd "$0" && exec nice -n 10 "$@"' <dir> <exe> <args...>: arguments are passed, never interpolated.
         shellStorage = {"/bin/sh", "-c",
                         std::string(options.workingDirectory.empty() ? "" : "cd \"$0\" && ") + "exec " +
-                            (options.lowPriority ? "nice -n 10 " : "") + "\"$@\"",
+                            (lowPriority ? "nice -n 10 " : "") + "\"$@\"",
                         options.workingDirectory.empty() ? std::string(".") : options.workingDirectory.string()};
         shellStorage.insert(shellStorage.end(), storage.begin(), storage.end());
         for (std::string& s : shellStorage) {
@@ -546,6 +614,7 @@ std::expected<std::unique_ptr<ChildProcess>, Error> ChildProcess::spawn(const Ch
     }
     auto impl = std::make_unique<Impl>();
     impl->pid = pid;
+    impl->lowPriority = lowPriority;
     impl->stdinWrite = in[1];
     impl->stdoutRead = out[0];
     Impl* raw = impl.get();
@@ -636,6 +705,10 @@ std::optional<int> ChildProcess::wait(std::chrono::milliseconds timeout) {
 std::uint64_t ChildProcess::processId() const { return m_impl->pid > 0 ? static_cast<std::uint64_t>(m_impl->pid) : 0; }
 
 std::optional<std::size_t> ChildProcess::peakMemoryBytes() const { return std::nullopt; }
+
+std::optional<int> ChildProcess::cpuRateLimitPercent() const { return std::nullopt; }
+
+bool ChildProcess::belowNormalPriority() const { return m_impl->lowPriority; }
 
 std::optional<int> ChildProcess::exitCode() { return m_impl->reap(false); }
 

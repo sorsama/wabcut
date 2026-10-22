@@ -714,6 +714,31 @@
       "notes": "Checked 2026-10-12: $0.04 per 1K characters, 32 languages (no Thai), 40,000 characters per request."
     },
     {
+      "id": "eleven_text_to_sound_v2",
+      "provider": "elevenlabs",
+      "name": "ElevenLabs Sound Effects v2",
+      "api": "elevenlabs-sound-generation",
+      "endpoint": "/v1/sound-generation",
+      "capabilities": {
+        "generateMedia": true
+      },
+      "generation": {
+        "soundEffect": true,
+        "loop": true,
+        "minSeconds": 0.5,
+        "maxSeconds": 30
+      },
+      "prices": [
+        {
+          "perAudioMinute": 0.12
+        }
+      ],
+      "license": "proprietary",
+      "verified": true,
+      "source": "https://elevenlabs.io/docs/api-reference/text-to-sound-effects/convert",
+      "notes": "Checked 2026-10-16: $0.12 per minute of sound (elevenlabs.io/pricing/api); 0.5 to 30 seconds, or the model picks the length (estimated at 30 s, booked at the length returned); MP3 44.1 kHz; royalty-free output."
+    },
+    {
       "id": "gpt-4o-mini-tts",
       "provider": "openai",
       "name": "OpenAI GPT-4o mini TTS",

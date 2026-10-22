@@ -3,6 +3,8 @@
 #include "BridgeIds.h"
 #include "ProjectController.h"
 
+#include <wabcut/model/SequenceSettings.h>
+
 #include <QQmlEngine>
 
 #include <algorithm>
@@ -52,7 +54,8 @@ QVariantList SequenceTabsBridge::tabs() const {
             continue;
         list << QVariantMap{{QStringLiteral("id"), sequenceKey(id)},
                             {QStringLiteral("name"), QString::fromStdString(seq->name)},
-                            {QStringLiteral("current"), id == m_controller->currentSequenceId()}};
+                            {QStringLiteral("current"), id == m_controller->currentSequenceId()},
+                            {QStringLiteral("label"), seq->colorIndex}};
     }
     return list;
 }
@@ -72,7 +75,8 @@ QVariantList SequenceTabsBridge::sequences() const {
         list << QVariantMap{{QStringLiteral("id"), sequenceKey(seq->id)},
                             {QStringLiteral("name"), QString::fromStdString(seq->name)},
                             {QStringLiteral("durationText"), m_controller->formatTimecode(seq->duration)},
-                            {QStringLiteral("open"), tabIndex(seq->id) >= 0}};
+                            {QStringLiteral("open"), tabIndex(seq->id) >= 0},
+                            {QStringLiteral("label"), seq->colorIndex}};
     }
     return list;
 }
@@ -121,6 +125,17 @@ bool SequenceTabsBridge::close(const QString& sequenceId) {
         switchTo(m_tabs[static_cast<std::size_t>(std::min(index, static_cast<int>(m_tabs.size()) - 1))]);
     emit tabsChanged();
     return true;
+}
+
+bool SequenceTabsBridge::setLabel(const QString& sequenceId, int colorIndex) {
+    const auto id = parseSequenceKey(sequenceId);
+    if (!id || !m_controller || colorIndex < 0 || colorIndex > 15)
+        return false;
+    const SequenceId seq = *id;
+    edit::SequenceSettingsChange change;
+    change.colorIndex = colorIndex;
+    return m_controller->applyEditFn(QT_TRANSLATE_NOOP("wabcut::app::ProjectController", "Label"),
+                                     [&](const ProjectState& state) { return edit::setSequenceSettings(state, seq, change); });
 }
 
 void SequenceTabsBridge::move(int from, int to) {
@@ -180,7 +195,7 @@ void SequenceTabsBridge::onSequenceChanged() {
 
 void SequenceTabsBridge::onPlayheadChanged() {
     if (m_controller && m_current && m_controller->currentSequenceId() == m_current)
-        m_playheads[m_current.value] = m_controller->playhead();
+        m_playheads[m_current.value] = m_controller->finePlayhead(); // to the sample with audio time units (0.2)
 }
 
 } // namespace wabcut::app

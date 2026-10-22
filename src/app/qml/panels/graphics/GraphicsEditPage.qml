@@ -386,15 +386,19 @@ Item {
                             readonly property var entry: Graphics.layers[index] ?? ({ id: 0, depth: 0, kind: "", name: "", visible: true })
                             readonly property int layerId: entry.id ?? 0
                             readonly property bool selected: Graphics.selectedLayer === layerId
+                            /// 0.2: Ctrl-clicked into the selection (Align and Distribute use every selected layer).
+                            readonly property bool alsoSelected: !selected && Graphics.selectedLayers.includes(layerId)
                             objectName: "graphicLayerRow_" + layerId
                             Layout.fillWidth: true
                             implicitHeight: Theme.rowHeight
                             radius: Theme.radiusField
-                            color: selected ? Theme.accentSoft : rowHover.hovered ? Theme.hover : "transparent"
+                            color: selected || alsoSelected ? Theme.accentSoft : rowHover.hovered ? Theme.hover : "transparent"
+                            border.width: alsoSelected ? Theme.hairline : 0
+                            border.color: Theme.accentStroke
                             activeFocusOnTab: true
                             Accessible.role: Accessible.ListItem
                             Accessible.name: qsTr("%1 layer %2").arg(entry.kind ?? "").arg(entry.name ?? "")
-                            Accessible.selected: selected
+                            Accessible.selected: selected || alsoSelected
                             Accessible.onPressAction: Graphics.selectedLayer = layerRow.layerId
                             // Space or Enter selects the layer (its buttons are the next tab stops).
                             Keys.onShortcutOverride: event => event.accepted = (event.modifiers & (Qt.ControlModifier | Qt.MetaModifier | Qt.AltModifier)) === 0
@@ -408,7 +412,13 @@ Item {
                                 cursorShape: Qt.PointingHandCursor
                             }
                             TapHandler {
+                                acceptedModifiers: Qt.NoModifier
                                 onTapped: Graphics.selectedLayer = layerRow.layerId
+                            }
+                            TapHandler {
+                                objectName: "graphicLayerRowToggle"
+                                acceptedModifiers: Qt.ControlModifier
+                                onTapped: Graphics.toggleLayerSelected(layerRow.layerId)
                             }
                             FocusRing {
                                 anchors.fill: parent
@@ -549,6 +559,10 @@ Item {
                             }
                         }
                     }
+                }
+                // ---- 0.2: Align and Distribute, Text Styles, Roll / Crawl ----
+                GraphicToolsSection {
+                    Layout.fillWidth: true
                 }
             }
 

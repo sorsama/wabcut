@@ -4,15 +4,22 @@
 
 #include "Catalog.h"
 
+#include <wabcut/command/SpellingServices.h>
 #include <wabcut/interchange/Lottie.h>
+#include <wabcut/interchange/Mogrt.h>
 #include <wabcut/model/BuiltinTemplates.h>
 #include <wabcut/model/GraphicJson.h>
 #include <wabcut/model/GraphicOps.h>
 #include <wabcut/model/GraphicResolve.h>
 #include <wabcut/model/MediaLocator.h>
+#include <wabcut/model/ProjectIO.h>
+#include <wabcut/model/Spelling.h>
 
 #include <algorithm>
+#include <cctype>
 #include <fstream>
+#include <functional>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -445,6 +452,37 @@ void registerGraphicsCommands(CommandRegistry& registry) {
                     data["graphic"] = asJson(io::graphicToJson(g));
                     return readData(c, std::move(data));
                 }});
+    addBuiltin(registry,
+               {"graphic.checkSpelling", 1, "Check Spelling in Graphic",
+                "Spell check for a graphic clip's text: the misspelled words of every text layer (groups included, bottom "
+                "to top), each in its layer's language (or \"language\"), from the host's spell checker and the user's "
+                "dictionary - the layer, the word's byte range in the layer's text, the word, the checker's advice and up "
+                "to 8 suggestions, as captions.checkSpelling lists them. Corrections are graphic.setText edits.",
+                Capability::Read,
+                graphicClipParams({{"language", schema::string("BCP 47 or ISO 639-1. Default: each layer's, else the user's.")},
+                                   {"suggestions", schema::boolean("List suggestions. Default true.", true)}},
+                                  {}),
+                Json{{"clip", 42}}, {},
+                [](ExecutionContext& c) {
+                    const auto* services = findService<SpellingServices>(c.services());
+                    if (!services) {
+                        fail(ErrorCode::InvalidRequest, "this host has no spell checker");
+                    }
+                    const ClipId clip = c.clip("clip");
+                    const Graphic& g = graphicOf(c, clip);
+                    const std::string language = c.has("language") ? c.string("language") : std::string();
+                    Json issues = Json::array();
+                    for (const TextSpellIssue& i :
+                         spellingOf(g, services->checker(), language, c.boolean("suggestions", true), 2000)) {
+                        issues.push_back(Json{{"layer", i.layer},
+                                              {"start", i.issue.start},
+                                              {"end", i.issue.end},
+                                              {"word", i.issue.word},
+                                              {"action", std::string(toString(i.issue.action))},
+                                              {"suggestions", i.issue.suggestions}});
+                    }
+                    return readData(c, Json{{"clip", clip.value}, {"issues", std::move(issues)}});
+                }});
     addBuiltin(
         registry,
         {"graphic.resolve", 1, "Graphic Draw List",
@@ -548,6 +586,101 @@ void registerGraphicsCommands(CommandRegistry& registry) {
                     return graphicEdited(
                         c, c.take(edit::updateGraphicLayer(c.state(), c.sequenceId(), clip, id, std::move(changed))), clip);
                 }});
+    {
+        Json vertex = schema::array(schema::number("A coordinate, pixels.", -1e6, 1e6),
+                                    "[x, y] or [x, y, inX, inY, outX, outY] (tangents relative to the vertex), pixels.", 2);
+        vertex["maxItems"] = 6;
+        Json vertices = schema::array(vertex, "custom: the path's vertices in the layer's pixels.", 2);
+        vertices["maxItems"] = static_cast<std::int64_t>(kMaxPathVertices);
+        addBuiltin(
+            registry,
+            {"graphic.setTextPath", 1, "Type on a Path",
+             "Puts a text layer on a path (the Legacy Titler's Path Type tool, After Effects' Path Options): \"shape\" "
+             "line, arc (the top of an ellipse: text over a rainbow), circle (clockwise from its left: text round the "
+             "outside) or wave, \"width\" and \"height\" in pixels, centred on the layer's origin - or custom "
+             "\"vertices\" (\"closed\" for a closed path); \"none\" puts it back on straight lines. Options: "
+             "\"reverse\" (Reverse Path), \"perpendicular\" (characters turn with the path, default true), "
+             "\"forceAlignment\" (spread from the first margin to the last), \"firstMargin\" / \"lastMargin\" "
+             "(pixels; keyframe the first margin with graphic.updateLayer to send the text along the path). Without "
+             "\"shape\" only the options change. The text's alignment places it between the margins. One undo step.",
+             Capability::EditSequence,
+             graphicClipParams({{"layer", layerIdParam("The text layer.")},
+                                {"shape", schema::enumeration({"none", "line", "arc", "circle", "wave", "custom"},
+                                                              "The path. Default: keep the layer's (arc when it has none).")},
+                                {"width", schema::number("The shape's width, pixels. Default 800 (a circle: its diameter).", 1.0, 1e6)},
+                                {"height", schema::number("The arc's or wave's height, pixels. Default 300 (wave 120).", 1.0, 1e6)},
+                                {"vertices", vertices},
+                                {"closed", schema::boolean("custom: a closed path. Default false.")},
+                                {"reverse", schema::boolean("Reverse Path.")},
+                                {"perpendicular", schema::boolean("Perpendicular To Path.")},
+                                {"forceAlignment", schema::boolean("Force Alignment.")},
+                                {"firstMargin", schema::number("First Margin, pixels.", -1e6, 1e6)},
+                                {"lastMargin", schema::number("Last Margin, pixels.", -1e6, 1e6)}},
+                               {"layer"}),
+             Json{{"clip", 42}, {"layer", 2}, {"shape", "arc"}, {"width", 900}, {"height", 320}}, {},
+             [](ExecutionContext& c) {
+                 const ClipId clip = c.clip("clip");
+                 const Graphic& g = graphicOf(c, clip);
+                 const auto id = static_cast<std::uint32_t>(c.integer("layer"));
+                 const GraphicLayer* layer = g.findLayer(id);
+                 if (!layer) {
+                     fail(ErrorCode::NotFound, "the graphic has no layer " + std::to_string(id), Json{{"path", "/layer"}});
+                 }
+                 if (layer->kind != LayerKind::Text) {
+                     fail(ErrorCode::InvalidParams, "layer " + std::to_string(id) + " is not a text layer", Json{{"path", "/layer"}});
+                 }
+                 const std::string shape = c.has("shape") ? c.string("shape") : std::string();
+                 if (shape == "none") {
+                     return graphicEdited(c, c.take(edit::setTextPath(c.state(), c.sequenceId(), clip, id, std::nullopt)), clip);
+                 }
+                 TextPath path = layer->text.path.value_or(TextPath{});
+                 if (!shape.empty() || !layer->text.path) {
+                     MaskPathKey key;
+                     if (shape == "custom") {
+                         if (!c.has("vertices")) {
+                             fail(ErrorCode::InvalidParams, "a custom path needs \"vertices\"", Json{{"path", "/vertices"}});
+                         }
+                         for (const Json& v : c.params()["vertices"]) {
+                             MaskVertex point{v[0].get<double>(), v[1].get<double>(), 0.0, 0.0, 0.0, 0.0};
+                             if (v.size() == 6) {
+                                 point.inX = v[2].get<double>();
+                                 point.inY = v[3].get<double>();
+                                 point.outX = v[4].get<double>();
+                                 point.outY = v[5].get<double>();
+                             } else if (v.size() != 2) {
+                                 fail(ErrorCode::InvalidParams, "a vertex is [x, y] or [x, y, inX, inY, outX, outY]",
+                                      Json{{"path", "/vertices"}});
+                             }
+                             key.vertices.push_back(point);
+                         }
+                         path.closed = c.boolean("closed", false);
+                     } else {
+                         const edit::TextPathShape kind =
+                             edit::textPathShapeFromString(shape.empty() ? "arc" : shape).value_or(edit::TextPathShape::Arc);
+                         const double width = c.has("width") ? c.number("width") : 800.0;
+                         const double height = c.has("height") ? c.number("height") : (kind == edit::TextPathShape::Wave ? 120.0 : 300.0);
+                         key.vertices = edit::textPathVertices(kind, width, height, &path.closed);
+                     }
+                     path.path = {std::move(key)};
+                 }
+                 if (c.has("reverse")) {
+                     path.reverse = c.boolean("reverse", path.reverse);
+                 }
+                 if (c.has("perpendicular")) {
+                     path.perpendicular = c.boolean("perpendicular", path.perpendicular);
+                 }
+                 if (c.has("forceAlignment")) {
+                     path.forceAlignment = c.boolean("forceAlignment", path.forceAlignment);
+                 }
+                 if (c.has("firstMargin")) {
+                     path.firstMargin = ParamValue(c.number("firstMargin"));
+                 }
+                 if (c.has("lastMargin")) {
+                     path.lastMargin = ParamValue(c.number("lastMargin"));
+                 }
+                 return graphicEdited(c, c.take(edit::setTextPath(c.state(), c.sequenceId(), clip, id, std::move(path))), clip);
+             }});
+    }
     addBuiltin(registry,
                {"graphic.removeLayer", 1, "Delete Graphic Layer",
                 "Removes a layer from a graphic clip (a group with its children); pins to it and template fields bound to it "
@@ -604,6 +737,213 @@ void registerGraphicsCommands(CommandRegistry& registry) {
                  clip);
          }});
 
+    // ---- Roll / Crawl and Align / Distribute (0.2) ---------------------------------------------------------------------
+    addBuiltin(
+        registry,
+        {"graphic.setRoll", 1, "Roll/Crawl Options",
+         "Makes a graphic clip roll up (credits: Premiere's Essential Graphics Roll) or crawl left or right (a ticker: the "
+         "Legacy Titler's Crawl Left / Crawl Right) over the clip, so the clip's length sets the speed; \"roll\": null stops "
+         "it. Start Off Screen / End Off Screen (default on), Preroll and Postroll (held at the start / end), Ease-In and "
+         "Ease-Out (speeding up / slowing down) as Premiere has them. The graphic is designed in place: layers below the "
+         "frame are the rest of the roll.",
+         Capability::EditSequence,
+         graphicClipParams({{"roll", Json{{"type", Json::array({"object", "null"})},
+                                          {"description", "The options, or null for none."},
+                                          {"properties", Json{{"kind", schema::enumeration({"roll", "crawlLeft", "crawlRight"}, "Default roll.")},
+                                                              {"startOffScreen", schema::boolean("Start Off Screen (default true).")},
+                                                              {"endOffScreen", schema::boolean("End Off Screen (default true).")},
+                                                              {"preroll", timeParam("Preroll: held at the start.")},
+                                                              {"postroll", timeParam("Postroll: held at the end.")},
+                                                              {"easeIn", timeParam("Ease-In.")},
+                                                              {"easeOut", timeParam("Ease-Out.")}}},
+                                          {"additionalProperties", false}}}},
+                           {"roll"}),
+         Json{{"clip", 42}, {"roll", Json{{"kind", "roll"}, {"postroll", "00:00:01:00"}, {"easeOut", "00:00:00:12"}}}}, {},
+         [](ExecutionContext& c) {
+             const ClipId clip = c.clip("clip");
+             Graphic g = graphicOf(c, clip);
+             const Json& param = c.params()["roll"];
+             if (param.is_null()) {
+                 g.roll.reset();
+             } else {
+                 GraphicRoll roll;
+                 if (param.contains("kind")) {
+                     roll.kind = *rollKindFromString(param["kind"].get<std::string>());
+                 }
+                 roll.startOffScreen = param.value("startOffScreen", true);
+                 roll.endOffScreen = param.value("endOffScreen", true);
+                 const auto span = [&](const char* key) {
+                     if (!param.contains(key)) {
+                         return Ticks{};
+                     }
+                     const Ticks t = c.timeValue(param[key], std::string("/roll/") + key);
+                     if (t.value < 0) {
+                         fail(ErrorCode::InvalidParams, std::string(key) + " must not be negative", Json{{"path", std::string("/roll/") + key}});
+                     }
+                     return t;
+                 };
+                 roll.preroll = span("preroll");
+                 roll.postroll = span("postroll");
+                 roll.easeIn = span("easeIn");
+                 roll.easeOut = span("easeOut");
+                 g.roll = roll;
+             }
+             return graphicEdited(c, c.take(edit::setGraphic(c.state(), c.sequenceId(), clip, std::move(g))), clip);
+         }});
+    addBuiltin(
+        registry,
+        {"graphic.align", 1, "Align Layers",
+         "Premiere's Essential Graphics Align and Distribute: lines layers up with the video frame (\"to\": \"frame\", the "
+         "default) or with each other (\"selection\") - left, horizontal centre, right, top, vertical centre, bottom - or "
+         "spaces three or more evenly (distributeHorizontal / distributeVertical: centres evenly spaced between the outermost "
+         "two). Layers move by their Position (an animated one with all its keys), measured as drawn at \"time\" (default "
+         "the clip's start).",
+         Capability::EditSequence,
+         graphicClipParams({{"layers", schema::array(layerIdParam("A layer."), "The layers.", 1)},
+                            {"align", schema::enumeration({"left", "horizontalCenter", "right", "top", "verticalCenter", "bottom",
+                                                           "distributeHorizontal", "distributeVertical"},
+                                                          "What to do.")},
+                            {"to", schema::enumeration({"frame", "selection"}, "Align to the video frame (default) or the selection.")},
+                            {"time", timeParam("When to measure the layers (inside the clip). Default its start.")}},
+                           {"layers", "align"}),
+         Json{{"clip", 42}, {"layers", Json::array({2, 3})}, {"align", "horizontalCenter"}}, {},
+         [](ExecutionContext& c) {
+             const ClipId clip = c.clip("clip");
+             const Clip& placed = clipOf(c, clip);
+             const Graphic& g = graphicOf(c, clip);
+             std::vector<std::uint32_t> layers;
+             for (const Json& id : c.params()["layers"]) {
+                 layers.push_back(static_cast<std::uint32_t>(id.get<std::int64_t>()));
+             }
+             const Ticks at = c.optionalTime("time").value_or(placed.start());
+             if (at < placed.start() || at >= placed.end()) {
+                 fail(ErrorCode::InvalidParams, "the time lies outside the clip", Json{{"path", "/time"}});
+             }
+             ResolveOptions options;
+             if (const GraphicsServices* s = graphicsServices(c)) {
+                 options.measurer = s->measurer();
+             }
+             if (const auto* captions = findService<CaptionServices>(c.services())) {
+                 options.lineBreaker = &captions->lineBreaker();
+             }
+             const edit::LayerAlign align = *edit::layerAlignFromString(c.string("align"));
+             const edit::AlignTo to = c.string("to", "frame") == "selection" ? edit::AlignTo::Selection : edit::AlignTo::VideoFrame;
+             return graphicEdited(c, c.take(edit::alignLayers(c.state(), c.sequenceId(), clip, layers, align, to,
+                                                             graphicTimeAt(placed, g, at), options)),
+                                  clip);
+         }});
+
+    // ---- Text styles (0.2): Premiere's Text Styles, saved with the project ------------------------------------------
+    const auto styleJson = [](const ProjectTextStyle& s) { return asJson(io::textStyleToJson(s)); };
+    addBuiltin(registry,
+               {"textStyle.list", 1, "Text Styles",
+                "The project's text styles (Premiere's Text Style items): each with its look (the text JSON of a layer with one "
+                "run: font, size, fill, tracking...; alignment, background; shadow) and how many text layers follow it.",
+                Capability::Read, withSequence({}), Json::object(), {},
+                [styleJson](ExecutionContext& c) {
+                    std::map<std::string, int> uses;
+                    const std::function<void(const std::vector<GraphicLayer>&)> count = [&](const std::vector<GraphicLayer>& layers) {
+                        for (const GraphicLayer& l : layers) {
+                            if (!l.textStyle.empty()) {
+                                ++uses[l.textStyle];
+                            }
+                            count(l.children);
+                        }
+                    };
+                    for (const SequencePtr& seq : c.state().sequences) {
+                        seq->forEachTrack([&](const Track& t) {
+                            for (const Clip& cl : t.clips) {
+                                if (const Graphic* g = cl.graphic()) {
+                                    count(g->layers);
+                                }
+                            }
+                        });
+                    }
+                    Json styles = Json::array();
+                    for (const ProjectTextStyle& s : c.state().textStyles) {
+                        Json e = styleJson(s);
+                        e["layers"] = uses[s.name];
+                        styles.push_back(std::move(e));
+                    }
+                    return readData(c, Json{{"textStyles", std::move(styles)}});
+                }});
+    addBuiltin(registry,
+               {"textStyle.create", 1, "Create Text Style",
+                "Premiere's Create Text Style: the look of a text layer (its first run's font, size, fill, tracking...; its "
+                "alignment, background and shadow) saved in the project under a name; the layer follows it.",
+                Capability::EditSequence,
+                graphicClipParams({{"layer", layerIdParam("The text layer.")}, {"name", schema::string("The style's name (unique).")}},
+                                  {"layer", "name"}),
+                Json{{"clip", 42}, {"layer", 2}, {"name", "Lower third name"}}, {},
+                [](ExecutionContext& c) {
+                    const ClipId clip = c.clip("clip");
+                    return graphicEdited(c, c.take(edit::createTextStyle(c.state(), c.sequenceId(), clip,
+                                                                        static_cast<std::uint32_t>(c.integer("layer")), c.string("name"))),
+                                         clip, Json{{"textStyle", c.string("name")}});
+                }});
+    addBuiltin(registry,
+               {"textStyle.apply", 1, "Apply Text Style",
+                "Gives text layers of a graphic clip a project text style; they follow it (updating the style restyles them).",
+                Capability::EditSequence,
+                graphicClipParams({{"layers", schema::array(layerIdParam("A text layer."), "The text layers.", 1)},
+                                   {"name", schema::string("The text style.")}},
+                                  {"layers", "name"}),
+                Json{{"clip", 42}, {"layers", Json::array({2, 3})}, {"name", "Lower third name"}}, {},
+                [](ExecutionContext& c) {
+                    const ClipId clip = c.clip("clip");
+                    std::vector<std::uint32_t> layers;
+                    for (const Json& id : c.params()["layers"]) {
+                        layers.push_back(static_cast<std::uint32_t>(id.get<std::int64_t>()));
+                    }
+                    return graphicEdited(c, c.take(edit::applyTextStyle(c.state(), c.sequenceId(), clip, layers, c.string("name"))), clip);
+                }});
+    addBuiltin(
+        registry,
+        {"textStyle.update", 1, "Push to Text Style",
+         "Updates a project text style - Premiere's Push to Text Style - from a text layer's current look (\"clip\" and "
+         "\"layer\") or from its JSON (\"style\", as textStyle.list gives it), and restyles every text layer of every graphic "
+         "clip that follows it. Makes the style when there is none of that name.",
+         Capability::EditProject,
+         withSequence({{"name", schema::string("The text style.")},
+                       {"clip", clipParam("A graphic clip whose text layer has the look.")},
+                       {"layer", layerIdParam("That text layer.")},
+                       {"style", openObject("Or the look as JSON (textStyle.list's form, without the name).")}},
+                      {"name"}),
+         Json{{"name", "Lower third name"}, {"clip", 42}, {"layer", 2}}, {},
+         [](ExecutionContext& c) {
+             ProjectTextStyle style;
+             if (c.has("clip")) {
+                 const Graphic& g = graphicOf(c, c.clip("clip"));
+                 const GraphicLayer* layer = g.findLayer(static_cast<std::uint32_t>(c.integer("layer")));
+                 if (!layer || layer->kind != LayerKind::Text) {
+                     fail(ErrorCode::InvalidParams, "\"layer\" must be a text layer of the clip", Json{{"path", "/layer"}});
+                 }
+                 style = edit::textStyleOf(*layer, c.string("name"));
+             } else if (c.has("style")) {
+                 Json j = c.params()["style"];
+                 j["name"] = c.string("name");
+                 style = parsed(io::textStyleFromJson(j.dump()), "/style");
+             } else {
+                 fail(ErrorCode::InvalidParams, "give the look: \"clip\" and \"layer\", or \"style\"");
+             }
+             edit::EditResult r = c.take(edit::saveTextStyle(c.state(), style));
+             return edited(std::move(r), Json{{"textStyle", style.name}});
+         }});
+    addBuiltin(registry,
+               {"textStyle.rename", 1, "Rename Text Style",
+                "Renames a project text style; the layers that follow it follow the new name.", Capability::EditProject,
+                withSequence({{"name", schema::string("The text style.")}, {"to", schema::string("The new name.")}}, {"name", "to"}),
+                Json{{"name", "Lower third name"}, {"to", "Name"}}, {},
+                [](ExecutionContext& c) {
+                    return edited(c.take(edit::renameTextStyle(c.state(), c.string("name"), c.string("to"))),
+                                  Json{{"textStyle", c.string("to")}});
+                }});
+    addBuiltin(registry,
+               {"textStyle.remove", 1, "Delete Text Style",
+                "Deletes a project text style: the layers that followed it keep their look and follow nothing.",
+                Capability::EditProject, withSequence({{"name", schema::string("The text style.")}}, {"name"}),
+                Json{{"name", "Name"}}, {},
+                [](ExecutionContext& c) { return edited(c.take(edit::removeTextStyle(c.state(), c.string("name")))); }});
     // ---- Templates ----------------------------------------------------------------------------------------------------
     addBuiltin(
         registry,
@@ -829,6 +1169,108 @@ void registerGraphicsCommands(CommandRegistry& registry) {
                     return graphicEdited(c, c.take(edit::setTemplateFields(c.state(), c.sequenceId(), clip, values)), clip);
                 }});
 
+    // ---- Template files (0.2): import (.mogrt made in Premiere Pro, Wabcut template files) and export -----------------
+    addBuiltin(
+        registry,
+        command::touchesFiles(
+            {"template.import", 1, "Import Motion Graphics Template",
+             "Adds a template file to the project's library (default) or the user's: a Wabcut template file "
+             "(\".wabcut-template.json\", template.export) as it is, or a Motion Graphics template (\".mogrt\") made in "
+             "Premiere Pro, approximately - its text Essential Properties become text fields of a lower third Wabcut lays "
+             "out, the first colour the box's, checkboxes show it; the report lists what was approximated or dropped. "
+             "Templates made in After Effects are refused (Wabcut cannot run After Effects compositions: export them as "
+             "Lottie). Files are untrusted: the ZIP is read bounded, with no path leaving it.",
+             Capability::EditProject,
+             withSequence({{"path", schema::string("The .mogrt or .wabcut-template.json file.")},
+                           {"library", schema::enumeration({"project", "user"}, "Where it goes. Default \"project\".")},
+                           {"id", schema::string("Give it this id (default: the file's).")}},
+                          {"path"}),
+             Json{{"path", "D:/Templates/Lower Third.mogrt"}}, {},
+             [](ExecutionContext& c) {
+                 const std::filesystem::path file = pathFromUtf8(c.string("path"));
+                 std::error_code ec;
+                 const std::uintmax_t size = std::filesystem::file_size(file, ec);
+                 if (ec) {
+                     fail(ErrorCode::NotFound, "cannot read \"" + c.string("path") + "\"", Json{{"path", "/path"}});
+                 }
+                 if (size > interchange::kMaxMogrtBytes) {
+                     fail(ErrorCode::InvalidParams, "the file is larger than 64 MiB", Json{{"path", "/path"}});
+                 }
+                 std::ifstream in(file, std::ios::binary);
+                 std::string bytes(static_cast<std::size_t>(size), '\0');
+                 in.read(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+                 bytes.resize(static_cast<std::size_t>(in.gcount()));
+                 std::string ext = pathToUtf8(file.extension());
+                 std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+                 GraphicTemplate tmpl;
+                 Json data = Json::object();
+                 if (ext == ".mogrt") {
+                     auto imported = interchange::importMogrt(bytes, pathToUtf8(file.filename()));
+                     if (!imported) {
+                         fail(imported.error().code == wabcut::ErrorCode::Unsupported ? ErrorCode::EditRejected : ErrorCode::InvalidParams,
+                              imported.error().message, Json{{"path", "/path"}});
+                     }
+                     tmpl = std::move(imported->tmpl);
+                     data["authorApp"] = imported->authorApp;
+                     data["report"] = reportJson(imported->report);
+                 } else {
+                     tmpl = parsed(io::templateFileFromJson(bytes), "/path");
+                 }
+                 if (c.has("id")) {
+                     tmpl.id = c.string("id");
+                 }
+                 if (const auto problem = templateProblem(tmpl)) {
+                     fail(ErrorCode::InvalidParams, *problem, Json{{"path", "/id"}});
+                 }
+                 data["template"] = tmpl.id;
+                 data["name"] = tmpl.name;
+                 Json fields = Json::array();
+                 for (const TemplateField& f : tmpl.fields) {
+                     fields.push_back(Json{{"id", f.id}, {"label", f.label}, {"kind", std::string(toString(f.kind))}});
+                 }
+                 data["fields"] = std::move(fields);
+                 if (c.string("library", "project") == "user") {
+                     const std::filesystem::path folder = userLibrary(c, true);
+                     data["library"] = "user";
+                     if (!c.dryRun()) {
+                         c.take(io::writeTemplateToLibrary(folder, tmpl));
+                     }
+                     return readData(c, std::move(data));
+                 }
+                 edit::EditResult r = c.take(edit::saveProjectTemplate(c.state(), tmpl));
+                 data["library"] = "project";
+                 data["version"] = r.state.findTemplate(tmpl.id)->version;
+                 return edited(std::move(r), std::move(data));
+             }},
+            {"path"}));
+    addBuiltin(registry,
+               command::touchesFiles(
+                   {"template.export", 1, "Export Template",
+                    "Writes a template (template.list: the project's, the user's or a built-in) to a Wabcut template file "
+                    "(\".wabcut-template.json\") another Wabcut imports with template.import. Refuses to replace a file "
+                    "unless \"overwrite\"; a dry run writes nothing.",
+                    Capability::Read,
+                    withSequence({{"template", schema::string("The template's id.")},
+                                  {"library", schema::enumeration({"project", "user", "builtin"}, "Only this library.")},
+                                  {"path", schema::string("The file to write.")},
+                                  {"overwrite", schema::boolean("Replace an existing file. Default false.")}},
+                                 {"template", "path"}),
+                    Json{{"template", "lower-third"}, {"path", "D:/Templates/lower-third.wabcut-template.json"}}, {},
+                    [](ExecutionContext& c) {
+                        const FoundTemplate found = findTemplate(c, c.string("template"), c.string("library"));
+                        const std::filesystem::path file = pathFromUtf8(c.string("path"));
+                        std::error_code ec;
+                        if (std::filesystem::exists(file, ec) && !c.boolean("overwrite", false)) {
+                            fail(ErrorCode::EditRejected, "the file exists; pass \"overwrite\": true to replace it", Json{{"path", "/path"}});
+                        }
+                        if (!c.dryRun()) {
+                            if (auto written = io::writeFileAtomically(file, io::templateFileToJson(found.tmpl)); !written) {
+                                fail(ErrorCode::EditRejected, "cannot write the template: " + written.error().message, Json{{"path", "/path"}});
+                            }
+                        }
+                        return readData(c, Json{{"template", found.tmpl.id}, {"library", found.library}, {"path", pathToUtf8(file)}});
+                    }},
+                   {"path"}));
     // ---- Brand kit ----------------------------------------------------------------------------------------------------
     addBuiltin(registry,
                {"brand.set", 1, "Set Brand Kit",

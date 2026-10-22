@@ -4,6 +4,7 @@
 
 #include "../AgentTestUtil.h"
 #include "CommandHarness.h"
+#include "NestedTestUtil.h"
 #include "SyntheticGameplay.h"
 
 #include <wabcut/ai/agent/EditAgent.h>
@@ -472,6 +473,54 @@ TEST_CASE("highlights.importChat keeps a chat log that highlights.find then coun
     }
     CHECK(fx.h.errorOf("highlights.importChat", Json{{"file", pathToUtf8(dir / "bad.json")}}) == "InvalidParams");
     std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("highlights.find reads through a multicam clip and a nested clip (0.2)", "[ai][highlights][commands][multicam]") {
+    // The same recording flat, as the active angle of a two-angle multicam clip, and inside a nest: the same moments.
+    Fixture fx;
+    const auto moments = [](const command::CommandResult& r) {
+        std::vector<std::pair<double, double>> out; // (peak, score)
+        for (const Json& m : r.data["moments"]) {
+            out.emplace_back(m["peak"].get<double>(), m["score"].get<double>());
+        }
+        return out;
+    };
+    const auto flat = fx.h.ok("highlights.find", Json{{"count", 5}, {"markers", false}});
+    REQUIRE(flat.data["moments"].size() == 5);
+    const SequenceId seq = fx.h.tl.seq;
+
+    SECTION("a two-angle multicam clip: the active angle only") {
+        REQUIRE(fx.h.session.apply("Multicam", [&](const ProjectState& s) -> std::expected<ProjectState, Error> {
+            return placeMulticam(s, seq, {fx.h.tl.media('A'), fx.h.tl.media('B')}, {Ticks{}, Ticks{}}, TimeRange{Ticks{}, f(kFrames)}, Ticks{}).state;
+        }));
+        const ProjectSnapshot before = fx.h.state();
+        const auto dry = fx.h.run(Json{{"command", "highlights.find"}, {"params", Json{{"sequence", seq.value}, {"count", 5}}}, {"dryRun", true}});
+        REQUIRE(dry.ok());
+        CHECK(*fx.h.state() == *before);
+        const std::size_t steps = fx.h.session.undoCount();
+        const auto r = fx.h.ok("highlights.find", Json{{"sequence", seq.value}, {"count", 5}});
+        CHECK(moments(r) == moments(flat));
+        REQUIRE(r.data["recordings"].size() == 1); // B is neither shown nor heard
+        CHECK(r.data["recordings"][0]["media"] == fx.h.tl.media('A').value);
+        CHECK(fx.h.session.undoCount() == steps + 1);
+        const Sequence& after = *fx.h.state()->findSequence(seq);
+        CHECK(highlightMarkers(after).size() == 5);
+        CHECK(after.videoTracks[0]->clips.size() == 1); // the multicam clip itself is untouched
+        CHECK(after.videoTracks[0]->clips[0].isNested());
+        fx.h.session.undo();
+        CHECK(*fx.h.state() == *before);
+    }
+
+    SECTION("a nested clip") {
+        REQUIRE(fx.h.session.apply("Nest", [&](const ProjectState& s) -> std::expected<ProjectState, Error> {
+            return nestEverything(s, seq).edit.state;
+        }));
+        REQUIRE(fx.h.state()->findSequence(seq)->videoTracks[0]->clips[0].isNested());
+        const auto r = fx.h.ok("highlights.find", Json{{"sequence", seq.value}, {"count", 5}});
+        CHECK(moments(r) == moments(flat));
+        CHECK(r.data["recordings"].size() == 1);
+        CHECK(highlightMarkers(*fx.h.state()->findSequence(seq)).size() == 5);
+    }
 }
 
 TEST_CASE("A kept chat log round-trips through its JSON", "[ai][highlights]") {

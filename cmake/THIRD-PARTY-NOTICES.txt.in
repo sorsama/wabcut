@@ -69,11 +69,22 @@ JSON for Modern C++ (nlohmann_json) @V_nlohmann_json@ (Niels Lohmann)
 pugixml @V_pugixml@ (Arseny Kapoulkine)
     License: MIT (licenses/pugixml.txt).
 
+pyaaf2 1.7.1 object model tables (Mark Reid)
+    License: MIT (licenses/pyaaf2.txt). AAF export's baseline class, property and type definitions are generated
+    from pyaaf2's aaf2/model tables (tools/gen_aaf_model.py) and compiled into Wabcut. No pyaaf2 code is included.
+
 zlib @V_zlib@ (Jean-loup Gailly and Mark Adler)
     License: zlib License (licenses/zlib.txt).
 
 spdlog @V_spdlog@ (Gabi Melman) and {fmt} @V_fmt@ (Victor Zverovich)
     Licenses: MIT (licenses/spdlog.txt, licenses/fmt.txt). Declared dependencies; included here when linked.
+
+OpenColorIO @V_opencolorio@ (Contributors to the OpenColorIO Project)
+    License: BSD 3-Clause, and BSD 2-Clause for code it contains (licenses/opencolorio.txt). Colour management:
+    ACES and camera log input transforms, output transforms (docs/color.md).
+    Its dependencies: Expat @V_expat@ (MIT, licenses/expat.txt), Imath @V_imath@ (BSD 3-Clause,
+    licenses/imath.txt), minizip-ng @V_minizip_ng@ (zlib License, licenses/minizip-ng.txt), pystring @V_pystring@
+    (BSD 3-Clause, licenses/pystring.txt) and yaml-cpp @V_yaml_cpp@ (MIT, licenses/yaml-cpp.txt).
 
 QtKeychain @V_qtkeychain@ (Frank Osterfeld and contributors)
     License: BSD 3-Clause (licenses/qtkeychain.txt). Keeps AI provider keys in the OS keychain; included in builds
@@ -100,6 +111,11 @@ ONNX Runtime @V_onnxruntime_prebuilt@ (Microsoft Corporation) - builds with WABC
     contains). Microsoft's official release binaries (onnxruntime.dll / libonnxruntime, unmodified), used by the
     wabcut-embed helper with its telemetry disabled. On Windows, DirectML comes from the operating system
     (System32\DirectML.dll) and is not part of this distribution.
+
+c2pa-rs 0.91.2 (Adobe and the Content Authenticity Initiative contributors) - Windows x64 builds with WABCUT_WITH_C2PA
+    License: MIT OR Apache-2.0 (licenses/c2pa-rs.txt). The official release binary c2pa_c.dll (unmodified), loaded
+    when an export is signed or its Content Credentials are checked. The Rust crates compiled into it and the licence
+    each declares are listed in licenses/c2pa-rs-crates.txt.
 
 whisper.cpp @V_whisper_cpp@ and ggml @V_ggml@ (the ggml authors) - builds with WABCUT_WITH_LOCAL_AI
     License: MIT (licenses/whisper-cpp.txt, licenses/ggml.txt; details in licenses/ai-local-helper.md). Local

@@ -43,7 +43,9 @@ TEST_CASE("Premiere .kys identities map to exactly one command", "[keymap][regis
     CHECK(registry.findKys("context.project", "cmd.edit.clear")->id == "project.delete");
     CHECK(registry.findKys("context.global", "cmd.edit.rippledelete")->id == "edit.rippleDelete");
     CHECK(registry.findKys("context.timeline", "cmd.timeline.ripple.delete")->id == "timeline.rippleDelete");
-    CHECK(registry.findKys("context.global", "cmd.export.frame") == nullptr);
+    // P.2 (E6): Export Frame is mapped now (it was the example of an unmapped Premiere command).
+    CHECK(registry.findKys("context.global", "cmd.export.frame")->id == "file.exportFrame");
+    CHECK(registry.findKys("context.global", "cmd.no.such.command") == nullptr);
 }
 
 TEST_CASE("The MVP command set is registered in the right scopes", "[keymap][registry]") {

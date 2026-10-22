@@ -1,14 +1,21 @@
 #include "Encode.h"
+#include "ExportLoudness.h"
+#include "FrameEffects.h"
+#include "MetadataWriter.h"
 #include "Mixdown.h"
+#include "SmartRender.h"
+#include "SubtitleStream.h"
 
 #include <wabcut/export/CaptionSidecar.h>
 #include <wabcut/export/ExportJob.h>
+#include <wabcut/interchange/CaptionFiles.h>
 #include <wabcut/export/RenderedVideoSource.h>
 #include <wabcut/model/Resolve.h>
 
 #include <wabcut/audio/effects/EffectChain.h>
 
 #include <algorithm>
+#include <cmath>
 #include <chrono>
 #include <exception>
 #include <format>
@@ -41,6 +48,30 @@ struct TempFile {
     }
 };
 
+/// 0.2: the folder an image sequence is written into before its files move into place; removed with what is left.
+struct TempDir {
+    std::filesystem::path path;
+    ~TempDir() {
+        if (!path.empty()) {
+            std::error_code ec;
+            std::filesystem::remove_all(path, ec);
+        }
+    }
+};
+
+/// 0.2, Container::Image: the name of still `index` of `count` next to `output`: "<name><index>.<ext>" with at least
+/// three digits (Premiere's Export As Sequence), or the output itself for a single still.
+std::filesystem::path stillPath(const std::filesystem::path& output, std::int64_t index, std::int64_t count, bool sequence) {
+    if (!sequence) {
+        return output;
+    }
+    const int digits = std::max<int>(3, static_cast<int>(std::to_string(std::max<std::int64_t>(count - 1, 0)).size()));
+    std::filesystem::path name = output.stem();
+    name += std::format("{:0{}}", index, digits);
+    name += output.extension();
+    return output.parent_path() / name;
+}
+
 /// Stops a video source on every exit path (outstanding frames are abandoned).
 /// Cancelling an export stops its video source at once: a stage blocked in IVideoFrameSource::next() (a slow
 /// render, a stalled decoder) then returns instead of holding the job (stop() is safe from another thread).
@@ -65,8 +96,11 @@ class ConvertStage {
 public:
     static constexpr std::size_t kDepth = 2;
 
-    ConvertStage(IVideoFrameSource& source, detail::FrameConverter& converter, std::int64_t frameCount)
-        : m_source(source), m_converter(converter), m_frameCount(frameCount),
+    /// `frames`: the output frames to render, in order (0.2: smart rendering copies the others); nullopt = all of them.
+    ConvertStage(IVideoFrameSource& source, detail::FrameConverter& converter, std::int64_t frameCount,
+                 std::optional<std::vector<std::int64_t>> frames = std::nullopt)
+        : m_source(source), m_converter(converter), m_frames(frames.value_or(std::vector<std::int64_t>{})),
+          m_frameCount(frames ? static_cast<std::int64_t>(m_frames.size()) : frameCount), m_all(!frames),
           m_thread([this](std::stop_token stop) { run(stop); }) {}
 
     ~ConvertStage() { stop(); }
@@ -110,7 +144,7 @@ private:
                 }
             }
             while (requested < m_frameCount && requested < k + m_source.maxInFlight()) {
-                if (auto ok = m_source.request(requested); !ok) {
+                if (auto ok = m_source.request(frameAt(requested)); !ok) {
                     push(std::unexpected(ok.error()));
                     return;
                 }
@@ -121,7 +155,7 @@ private:
                 push(std::unexpected(frame.error()));
                 return;
             }
-            auto converted = m_converter.convert(*frame);
+            auto converted = m_converter.convert(*frame, frameAt(k));
             const bool failed = !converted.has_value();
             push(std::move(converted));
             if (failed) {
@@ -130,9 +164,13 @@ private:
         }
     }
 
+    std::int64_t frameAt(std::int64_t i) const { return m_all ? i : m_frames[static_cast<std::size_t>(i)]; }
+
     IVideoFrameSource& m_source;
     detail::FrameConverter& m_converter;
+    std::vector<std::int64_t> m_frames;
     std::int64_t m_frameCount;
+    bool m_all = true;
     std::mutex m_mutex;
     std::condition_variable_any m_changed;
     std::deque<std::expected<detail::FramePtr, Error>> m_queue;
@@ -365,6 +403,46 @@ void collectPluginProblems(const ProjectState& project, const Sequence& seq, Tim
     }
 }
 
+/// 0.2, Premiere's Metadata: chapters from chapter markers (MP4, MOV, MKV, M4A), the start timecode (a 'tmcd' track
+/// in MOV / MP4, a Broadcast WAV's time reference), the title and description tags.
+std::expected<void, Error> addMetadata(detail::Muxer& muxer, const ExportSettings& s, const Sequence& seq,
+                                       const ResolvedExport& r, ExportResult& result) {
+    using namespace detail;
+    const Container c = s.container;
+    if (s.metadata.chapters && (c == Container::Mp4 || c == Container::Mov || c == Container::Mkv || c == Container::M4a)) {
+        for (const ChapterMark& m : chapterMarks(seq, r.range)) {
+            muxer.addChapter(m.startMs, m.endMs, m.title);
+            ++result.chapters;
+        }
+    }
+    if (!s.metadata.title.empty()) {
+        muxer.setMetadata("title", s.metadata.title);
+    }
+    if (!s.metadata.description.empty()) {
+        muxer.setMetadata(c == Container::Wav ? "comment" : "description", s.metadata.description);
+    }
+    if (!s.metadata.timecode) {
+        return {};
+    }
+    const Ticks start = exportStartTimecode(s, seq, r.range);
+    if (s.video.enabled && (c == Container::Mov || c == Container::Mp4)) {
+        result.startTimecode = timecodeText(start, r.frameRate, seq.dropFrame);
+        muxer.setMetadata("timecode", result.startTimecode);
+    } else if (c == Container::Wav && s.audio.enabled) {
+        // Broadcast WAV: the time reference counts samples since midnight.
+        const auto samples = rescale(start, TimeBase{1, s.audio.sampleRate}, Rounding::Nearest);
+        const auto now = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
+        muxer.setBroadcastWave(true);
+        muxer.setMetadata("time_reference", std::to_string(samples.value_or(0)));
+        muxer.setMetadata("originator", "Wabcut");
+        muxer.setMetadata("description", s.metadata.title.empty() ? seq.name : s.metadata.title);
+        muxer.setMetadata("origination_date", std::format("{:%Y-%m-%d}", now));
+        muxer.setMetadata("origination_time", std::format("{:%H:%M:%S}", now));
+        result.startTimecode = timecodeText(start, seq.frameRate, seq.dropFrame);
+    }
+    return {};
+}
+
 struct Originals {
     ProjectState project; ///< locators point at the resolved original files, proxies dropped
     std::vector<std::filesystem::path> files;
@@ -430,8 +508,33 @@ std::string_view exportPhaseName(ExportPhase phase) {
         return "failed";
     case ExportPhase::Cancelled:
         return "cancelled";
+    case ExportPhase::Paused:
+        return "paused";
     }
     return "unknown";
+}
+
+void PauseGate::pause() {
+    std::lock_guard lock(m_mutex);
+    m_paused = true;
+}
+
+void PauseGate::resume() {
+    {
+        std::lock_guard lock(m_mutex);
+        m_paused = false;
+    }
+    m_changed.notify_all();
+}
+
+bool PauseGate::paused() const {
+    std::lock_guard lock(m_mutex);
+    return m_paused;
+}
+
+bool PauseGate::wait(const std::stop_token& stop) {
+    std::unique_lock lock(m_mutex);
+    return m_changed.wait(lock, stop, [&] { return !m_paused; });
 }
 
 VideoSourceFactory defaultVideoSourceFactory() {
@@ -482,6 +585,20 @@ struct ExportJob::Impl {
         publish([phase](ExportProgress& p) { p.phase = phase; }, true);
     }
 
+    /// 0.2: holds the export here while its pause gate is engaged (phase Paused, then Rendering again). False when
+    /// it was cancelled meanwhile.
+    bool pausePoint(const std::stop_token& stop) {
+        if (!request.pause || !request.pause->paused()) {
+            return true;
+        }
+        setPhase(ExportPhase::Paused);
+        const bool resumed = request.pause->wait(stop);
+        if (resumed) {
+            setPhase(ExportPhase::Rendering);
+        }
+        return resumed;
+    }
+
     /// One encode; `rateScale` scales a target-size export's video bitrate (a second attempt that must come out smaller).
     std::expected<ExportResult, Error> runImpl(const std::stop_token& stop, double rateScale = 1.0);
 };
@@ -504,19 +621,29 @@ ExportProgress ExportJob::progress() const {
 std::expected<ExportResult, Error> ExportJob::run(std::stop_token stop) {
     m_impl->started = Clock::now();
     std::expected<ExportResult, Error> result;
-    try {
-        result = m_impl->runImpl(stop);
-        // I.9: a target-size export that still came out over its size is encoded once more at the rate that fits.
-        const VideoSettings& v = m_impl->request.settings.video;
-        if (result && v.enabled && v.rateControl == RateControl::TargetSize && result->bytes > v.targetBytes) {
-            const double scale = (1.0 - kTargetSizeMargin) * static_cast<double>(v.targetBytes) / static_cast<double>(result->bytes);
-            result = m_impl->runImpl(stop, scale);
-            if (result) {
-                result->attempts = 2;
+    const auto body = [&] {
+        try {
+            result = m_impl->runImpl(stop);
+            // I.9: a target-size export that still came out over its size is encoded once more at the rate that fits.
+            const VideoSettings& v = m_impl->request.settings.video;
+            if (result && v.enabled && v.rateControl == RateControl::TargetSize && result->bytes > v.targetBytes) {
+                const double scale = (1.0 - kTargetSizeMargin) * static_cast<double>(v.targetBytes) / static_cast<double>(result->bytes);
+                result = m_impl->runImpl(stop, scale);
+                if (result) {
+                    result->attempts = 2;
+                }
             }
+        } catch (const std::exception& e) {
+            result = std::unexpected(Error{ErrorCode::Unknown, std::format("Export failed: {}", e.what())});
         }
-    } catch (const std::exception& e) {
-        result = std::unexpected(Error{ErrorCode::Unknown, std::format("Export failed: {}", e.what())});
+    };
+    // 0.2: Media Foundation encoders (mp3_mf) refuse a single-threaded COM apartment, which a Qt GUI thread is: such
+    // an export runs on a thread of its own (the queue's worker never is one).
+    if (m_impl->request.settings.audio.enabled && m_impl->request.settings.audio.codec == AudioCodec::Mp3) {
+        std::thread worker(body);
+        worker.join();
+    } else {
+        body();
     }
     if (result) {
         m_impl->setPhase(ExportPhase::Done);
@@ -541,7 +668,7 @@ std::expected<ExportResult, Error> ExportJob::Impl::runImpl(const std::stop_toke
     if (!sequence) {
         return std::unexpected(Error{ErrorCode::NotFound, "The sequence to export does not exist"});
     }
-    auto resolvedOr = resolve(settings, *sequence);
+    auto resolvedOr = resolve(settings, *sequence, request.snapshot->colorManagement);
     if (!resolvedOr) {
         return std::unexpected(resolvedOr.error());
     }
@@ -572,8 +699,20 @@ std::expected<ExportResult, Error> ExportJob::Impl::runImpl(const std::stop_toke
     }
 
     // ---- Set up -------------------------------------------------------------------------------------------
-    TempFile temp{tempPathFor(output)}; // declared before the muxer: the file is closed before it is deleted
-    auto muxerOr = Muxer::create(settings.container, temp.path);
+    // 0.2: an image sequence is written into a folder of its own next to the output, its files moved into place at
+    // the end (a failed or cancelled export leaves none).
+    const bool images = settings.container == Container::Image;
+    TempFile temp{images ? std::filesystem::path{} : tempPathFor(output)}; // declared before the muxer: closed first
+    TempDir imageDir{images ? tempPathFor(output) : std::filesystem::path{}};
+    if (images) {
+        imageDir.path.replace_extension();
+        if (!std::filesystem::create_directory(imageDir.path, ec)) {
+            return std::unexpected(Error{ErrorCode::IoError, "Cannot create " + pathToUtf8(imageDir.path)});
+        }
+    }
+    const std::filesystem::path muxPath =
+        images ? imageDir.path / pathFromUtf8("frame%06d" + std::string(outputExtension(settings))) : temp.path;
+    auto muxerOr = Muxer::create(settings.container, muxPath);
     if (!muxerOr) {
         return std::unexpected(muxerOr.error());
     }
@@ -587,7 +726,11 @@ std::expected<ExportResult, Error> ExportJob::Impl::runImpl(const std::stop_toke
     VideoEncoder video;
     std::optional<FrameConverter> converter;
     AVStream* videoStream = nullptr;
+    std::optional<AVMasteringDisplayMetadata> masteringDisplay; // I.9, PQ exports
+    std::optional<SmartRenderPlan> smart;                        // 0.2: frames copied, not rendered
     if (hasVideo) {
+        // I.9: the colour description, and an HDR10 mastering display for PQ (0.2: RGB and JPEG outputs too).
+        const ColorTags tags = colorTagsFor(r.dynamicRange, settings.video.codec, settings.video.pixelFormat);
         // A target size is a bitrate with its peaks capped at it (the cap keeps the size; I.9).
         VideoSettings encode = settings.video;
         if (encode.rateControl == RateControl::TargetSize) {
@@ -597,27 +740,74 @@ std::expected<ExportResult, Error> ExportJob::Impl::runImpl(const std::stop_toke
             encode.maxBitrate = encode.bitrate;
         }
         result.videoBitrate = encode.rateControl == RateControl::Bitrate ? encode.bitrate : 0;
-        auto choice = chooseVideoEncoder(VideoEncodeParams{encode, r.width, r.height, r.frameRate, muxer.wantsGlobalHeader()});
+        VideoEncodeParams params{encode, r.width, r.height, r.frameRate, muxer.wantsGlobalHeader()};
+        params.primaries = tags.primaries;
+        params.transfer = tags.transfer;
+        params.matrix = tags.matrix;
+        params.range = tags.range;
+        // 0.2: copied packets interleave with encoded ones only if the encoder hands each frame back at once.
+        params.noFrameDelay = smartRenderEligible(settings);
+        if (r.dynamicRange == DynamicRange::Pq) {
+            params.masteringDisplay = masteringDisplayFor(request.snapshot->colorManagement.peakNits);
+        }
+        masteringDisplay = params.masteringDisplay;
+        params.a53Captions = settings.captions.mode == CaptionExport::Embed;
+        auto choice = chooseVideoEncoder(params);
         if (!choice) {
             return std::unexpected(choice.error());
         }
         video = std::move(choice->encoder);
         result.videoEncoder = video.name;
+        result.dynamicRange = r.dynamicRange;
         result.encoderFallbacks = std::move(choice->fallbacks);
         publish([&](ExportProgress& p) { p.videoEncoder = video.name; }, true);
 
-        auto conv =
-            FrameConverter::create(r.renderWidth, r.renderHeight, r.width, r.height, video.inputFormat);
+        // 0.2: Premiere's Effects (look, limiter, overlays) on the output frame.
+        std::shared_ptr<FrameEffects> effects;
+        if (settings.effects.anyVideo()) {
+            FrameEffects::Context context;
+            context.sequenceName = sequence->name;
+            context.output = output;
+            context.projectFile = request.projectFile;
+            context.width = r.width;
+            context.height = r.height;
+            context.frameRate = r.frameRate;
+            context.dropFrame = sequence->dropFrame;
+            context.rangeStart = r.range.start;
+            context.sequenceStartTimecode = sequence->startTimecode;
+            context.dynamicRange = r.dynamicRange;
+            auto fx = FrameEffects::create(settings.effects, context);
+            if (!fx) {
+                return std::unexpected(fx.error());
+            }
+            effects = std::move(*fx);
+        }
+        FrameConverter::Setup setup;
+        setup.sourceWidth = r.sourceWidth;
+        setup.sourceHeight = r.sourceHeight;
+        setup.renderWidth = r.renderWidth;
+        setup.renderHeight = r.renderHeight;
+        setup.width = r.width;
+        setup.height = r.height;
+        setup.format = video.inputFormat;
+        setup.tags = tags;
+        setup.effects = effects;
+        setup.alpha = r.alpha;
+        setup.deep = r.tenBitRender;
+        auto conv = FrameConverter::create(setup);
         if (!conv) {
             return std::unexpected(conv.error());
         }
         converter = std::move(*conv);
         const VideoSourceFactory factory =
             request.videoSource ? request.videoSource : defaultVideoSourceFactory();
-        VideoSourceFormat format{r.renderWidth, r.renderHeight, r.frameRate, r.range.start, r.frameCount};
+        VideoSourceFormat format{r.sourceWidth, r.sourceHeight, r.frameRate, r.range.start, r.frameCount};
         if (request.settings.captions.mode == CaptionExport::BurnIn) {
             format.burnInCaptions = request.settings.captions;
         }
+        format.dynamicRange = r.dynamicRange;
+        format.tenBit = r.tenBitRender;
+        format.alpha = r.alpha;
         auto src = factory(originals->project, *sequence, format);
         if (!src) {
             return std::unexpected(src.error());
@@ -631,10 +821,31 @@ std::expected<ExportResult, Error> ExportJob::Impl::runImpl(const std::stop_toke
             return std::unexpected(st.error());
         }
         videoStream = *st;
+        if (masteringDisplay) {
+            setHdrStreamMetadata(videoStream, &*masteringDisplay, nullptr); // the light levels follow at the end
+        }
+        // 0.2: smart rendering - the frames whose packets are copied from preview or source files.
+        if (params.noFrameDelay) {
+            SmartRenderPlan::Inputs in;
+            in.project = &originals->project;
+            in.snapshot = request.snapshot.get();
+            in.sequence = sequence.get();
+            in.resolved = &r;
+            in.settings = &settings;
+            in.encoder = videoStream->codecpar;
+            in.previews = request.previews.get();
+            in.projectFile = request.projectFile;
+            smart = SmartRenderPlan::build(in, stop);
+            if (smart->copiedFrames() == 0) {
+                smart.reset();
+            }
+        }
     }
 
     std::optional<AudioEncoder> audio;
     std::unique_ptr<OfflineMix> mix;
+    std::unique_ptr<NormalizedMix> normalized;     // 0.2: Loudness Normalization (renders through `mix`)
+    std::optional<LoudnessMeasurement> loudness;
     AVStream* audioStream = nullptr;
     // A.6: audio plugins render here before they process (never bypassed while they load) and wait for every block;
     // what goes wrong with one is reported (RenderIncidents) and ends up in the result's warnings.
@@ -645,7 +856,7 @@ std::expected<ExportResult, Error> ExportJob::Impl::runImpl(const std::stop_toke
     audioSettings.channels = channels;
     if (hasAudio) {
         collectPluginProblems(*request.snapshot, *sequence, r.range, 0, result.warnings);
-        auto enc = AudioEncoder::open(audioSettings, muxer.wantsGlobalHeader());
+        auto enc = AudioEncoder::open(audioSettings, muxer.wantsGlobalHeader(), settings.container == Container::Aiff);
         if (!enc) {
             return std::unexpected(enc.error());
         }
@@ -655,11 +866,44 @@ std::expected<ExportResult, Error> ExportJob::Impl::runImpl(const std::stop_toke
         const wabcut::audio::ScopedOfflineRender offline(pluginIncidents); // the master's plugins are created here
         mix = std::make_unique<OfflineMix>(originals->project, sequence, channels, settings.audio.sampleRate,
                                            r.range.start);
+        // 0.2, Loudness Normalization: the mix measured first (its own render), then rendered through the gain and
+        // the true-peak limiter.
+        if (settings.effects.loudness.applied) {
+            OfflineMix measured(originals->project, sequence, channels, settings.audio.sampleRate, r.range.start);
+            auto m = measureLoudness(measured, channels, settings.audio.sampleRate, r.audioSamples, settings.effects.loudness,
+                                     stop);
+            if (!m) {
+                return std::unexpected(m.error());
+            }
+            loudness = *m;
+            normalized = std::make_unique<NormalizedMix>(*mix, channels, settings.audio.sampleRate, m->gainDb,
+                                                         settings.effects.loudness.effectiveTruePeak());
+            result.loudnessLufs = std::isfinite(m->integratedLufs) ? std::optional<double>(m->integratedLufs) : std::nullopt;
+            result.loudnessGainDb = m->gainDb;
+        }
         auto st = muxer.addStream(audio->context());
         if (!st) {
             return std::unexpected(st.error());
         }
         audioStream = *st;
+    }
+    // 0.2: Metadata - chapters, the start timecode, title and description - and a soft subtitle track.
+    if (auto ok = addMetadata(muxer, settings, *sequence, r, result); !ok) {
+        return std::unexpected(ok.error());
+    }
+    std::optional<SubtitleStream> subtitles;
+    std::vector<SubtitleCue> cues;
+    if (settings.subtitles.enabled && hasVideo) {
+        cues = subtitleCues(*request.snapshot, *sequence, settings.captions, r.range);
+        if (cues.empty()) {
+            result.warnings.push_back("The subtitle track was left out: the sequence has no captions in the range");
+        } else {
+            auto s = SubtitleStream::add(settings.container, muxer, subtitleLanguage(*sequence, settings));
+            if (!s) {
+                return std::unexpected(s.error());
+            }
+            subtitles = std::move(*s);
+        }
     }
     if (auto ok = muxer.open(); !ok) {
         return std::unexpected(ok.error());
@@ -684,7 +928,11 @@ std::expected<ExportResult, Error> ExportJob::Impl::runImpl(const std::stop_toke
         while (samplesDone < upTo) {
             const std::int64_t n = std::min<std::int64_t>(upTo - samplesDone, 4096);
             audioBuffer.resize(static_cast<std::size_t>(n * channels));
-            mix->render(audioBuffer);
+            if (normalized) {
+                normalized->render(audioBuffer);
+            } else {
+                mix->render(audioBuffer);
+            }
             if (auto ok = audio->encode(audioBuffer, muxer, audioStream); !ok) {
                 return ok;
             }
@@ -701,28 +949,74 @@ std::expected<ExportResult, Error> ExportJob::Impl::runImpl(const std::stop_toke
                 pumpAudio, [&] { return audio->flush(muxer, audioStream); }, r.audioSamples,
                 std::int64_t{2} * settings.audio.sampleRate);
         }
-        ConvertStage stage(*source, *converter, r.frameCount);
+        // 0.2, smart rendering: copied frames are not rendered; their packets come from the preview or source files.
+        std::optional<PacketCopier> copier;
+        if (smart) {
+            copier.emplace(*smart);
+            result.copiedFrames = smart->copiedFrames();
+        }
+        ConvertStage stage(*source, *converter, r.frameCount,
+                           smart ? std::optional<std::vector<std::int64_t>>(smart->renderedFrames()) : std::nullopt);
+        // P.2 Embed In Output File: each frame's CEA-608 byte pairs as A/53 cc_data (CC1, field 1); frames without
+        // captions carry a null pair so the caption channel stays continuous.
+        std::map<std::int64_t, std::vector<std::array<std::uint8_t, 2>>> cc;
+        const bool embedCaptions = settings.captions.mode == CaptionExport::Embed;
+        if (embedCaptions) {
+            if (const CaptionTrack* track = captionTrackToExport(*sequence, settings.captions)) {
+                const CaptionTrack exported = captionTrackForFile(*request.snapshot, *sequence, *track,
+                                                                  settings.captions.redactedWord, settings.captions.words.get());
+                interchange::CaptionWriteOptions o;
+                o.language = track->language;
+                o.placement = track->style.placement == CaptionPlacement::Top ? CaptionPlacement::Top : CaptionPlacement::Bottom;
+                o.alignment = track->style.alignment;
+                o.display = static_cast<interchange::Cea608Display>(std::min<int>(settings.captions.display608, 4));
+                cc = interchange::cea608ForVideo(exported.cues, r.range, r.frameRate, o);
+            }
+        }
         // Samples that end with video frame k: k frame periods at the audio rate (exact rational, nearest).
         const std::int64_t sampleNum = std::int64_t{settings.audio.sampleRate} * r.frameRate.den;
         for (std::int64_t k = 0; k < r.frameCount; ++k) {
-            if (stop.stop_requested()) {
+            if (stop.stop_requested() || !pausePoint(stop)) {
                 return cancelled();
             }
-            auto converted = stage.next();
-            if (!converted) {
-                return std::unexpected(converted.error());
-            }
-            (*converted)->pts = k;
-            (*converted)->duration = 1;
-            auto ready = prepareForEncoder(video, std::move(*converted));
-            if (!ready) {
-                return std::unexpected(ready.error());
-            }
-            if (const int rc = avcodec_send_frame(video.ctx.get(), ready->get()); rc < 0) {
-                return std::unexpected(ffmpegError(ErrorCode::EncoderError, "Video encoding failed", rc));
-            }
-            if (auto ok = drainEncoder(video.ctx.get(), packet.get(), muxer, videoStream, false); !ok) {
-                return std::unexpected(ok.error());
+            if (const CopyFrame* copy = smart ? smart->copyFor(k) : nullptr) {
+                auto copied = copier->packet(*copy, k);
+                if (!copied) {
+                    return std::unexpected(copied.error());
+                }
+                if (auto ok = muxer.write(copied->get(), video.ctx->time_base, videoStream); !ok) {
+                    return std::unexpected(ok.error());
+                }
+            } else {
+                auto converted = stage.next();
+                if (!converted) {
+                    return std::unexpected(converted.error());
+                }
+                (*converted)->pts = k;
+                (*converted)->duration = 1;
+                auto ready = prepareForEncoder(video, std::move(*converted));
+                if (!ready) {
+                    return std::unexpected(ready.error());
+                }
+                if (embedCaptions) {
+                    const auto it = cc.find(k);
+                    const std::size_t pairs = it != cc.end() ? std::min<std::size_t>(it->second.size(), 31) : 1;
+                    AVFrameSideData* sd = av_frame_new_side_data(ready->get(), AV_FRAME_DATA_A53_CC, 3 * pairs);
+                    if (!sd) {
+                        return std::unexpected(Error{ErrorCode::EncoderError, "Cannot attach the closed captions"});
+                    }
+                    for (std::size_t i = 0; i < pairs; ++i) {
+                        sd->data[3 * i] = 0xFC; // cc_valid, NTSC line 21 field 1
+                        sd->data[3 * i + 1] = it != cc.end() ? it->second[i][0] : 0x80;
+                        sd->data[3 * i + 2] = it != cc.end() ? it->second[i][1] : 0x80;
+                    }
+                }
+                if (const int rc = avcodec_send_frame(video.ctx.get(), ready->get()); rc < 0) {
+                    return std::unexpected(ffmpegError(ErrorCode::EncoderError, "Video encoding failed", rc));
+                }
+                if (auto ok = drainEncoder(video.ctx.get(), packet.get(), muxer, videoStream, false); !ok) {
+                    return std::unexpected(ok.error());
+                }
             }
             if (audioStage) {
                 const auto upTo = mulDiv(k + 1, sampleNum, r.frameRate.num, Rounding::Nearest);
@@ -747,7 +1041,7 @@ std::expected<ExportResult, Error> ExportJob::Impl::runImpl(const std::stop_toke
         }
     } else {
         for (std::int64_t b = 0; b < blocksTotal; ++b) {
-            if (stop.stop_requested()) {
+            if (stop.stop_requested() || !pausePoint(stop)) {
                 return cancelled();
             }
             if (auto ok = pumpAudio((b + 1) * OfflineMix::kBlockFrames); !ok) {
@@ -765,7 +1059,15 @@ std::expected<ExportResult, Error> ExportJob::Impl::runImpl(const std::stop_toke
     if (stop.stop_requested()) {
         return cancelled();
     }
+    // 0.2: the soft subtitle track (its packets interleave by time with what is written already).
+    if (subtitles) {
+        if (auto ok = subtitles->write(cues, muxer); !ok) {
+            return std::unexpected(ok.error());
+        }
+        result.subtitleCues = static_cast<int>(cues.size());
+    }
     // The mix's plugin processors report what went wrong with them as they go away.
+    normalized.reset();
     mix.reset();
     for (std::string& incident : pluginIncidents->messages()) {
         result.warnings.push_back(std::move(incident));
@@ -773,16 +1075,94 @@ std::expected<ExportResult, Error> ExportJob::Impl::runImpl(const std::stop_toke
 
     // ---- Finish: trailer, then the atomic rename into place -----------------------------------------------
     setPhase(ExportPhase::Finalizing);
+    if (masteringDisplay && source) {
+        // I.9: MaxCLL / MaxFALL as measured over every frame, into the movie header the trailer writes ('clli').
+        if (const auto light = source->lightLevels(); light && light->frames > 0) {
+            AVContentLightMetadata cll{};
+            cll.MaxCLL = static_cast<unsigned>(std::clamp(std::ceil(light->maxCll), 0.0, 65535.0));
+            cll.MaxFALL = static_cast<unsigned>(std::clamp(std::ceil(light->maxFall), 0.0, 65535.0));
+            setHdrStreamMetadata(videoStream, &*masteringDisplay, &cll);
+            result.maxCll = static_cast<int>(cll.MaxCLL);
+            result.maxFall = static_cast<int>(cll.MaxFALL);
+        }
+    }
     if (auto ok = muxer.finish(); !ok) {
         return std::unexpected(ok.error());
     }
-    std::filesystem::rename(temp.path, output, ec); // replaces an existing output
-    if (ec) {
-        return std::unexpected(
-            Error{ErrorCode::IoError, std::format("Cannot move the export into place at {}: {}",
-                                                  pathToUtf8(output), ec.message())});
+    // 0.2: XMP, embedded (MP4 / MOV / M4A, before Content Credentials sign the file) or as a sidecar.
+    std::string xmpSidecar;
+    if (settings.metadata.xmp != XmpMode::None) {
+        std::string xmp = xmpPacket(settings, *sequence, r.range, hasVideo ? r.frameRate : sequence->frameRate, "Wabcut");
+        const bool embeddable = !images && (settings.container == Container::Mp4 || settings.container == Container::Mov ||
+                                            settings.container == Container::M4a);
+        if (settings.metadata.xmp == XmpMode::Embed && embeddable) {
+            if (auto ok = appendXmpBox(temp.path, xmp); ok) {
+                result.xmpEmbedded = true;
+            } else {
+                result.warnings.push_back("The XMP could not be embedded (" + ok.error().message + "); it is a sidecar");
+                xmpSidecar = std::move(xmp);
+            }
+        } else {
+            xmpSidecar = std::move(xmp);
+        }
     }
-    temp.keep = true;
+    if (request.finalize && !images && !stop.stop_requested()) {
+        std::string warning;
+        try {
+            warning = request.finalize(temp.path, stop);
+        } catch (const std::exception& e) {
+            warning = std::string("A finishing step failed: ") + e.what();
+        } catch (...) {
+            warning = "A finishing step failed.";
+        }
+        if (!warning.empty()) {
+            result.warnings.push_back(std::move(warning));
+        }
+    }
+    std::int64_t imageBytes = 0;
+    if (images) {
+        // 0.2: the stills into place, numbered from 0 ("<name>000.png", ...), or the single still as the output.
+        const std::string ext(outputExtension(settings));
+        for (std::int64_t k = 0; k < r.frameCount; ++k) {
+            const std::filesystem::path from = imageDir.path / pathFromUtf8(std::format("frame{:06}{}", k, ext));
+            const std::filesystem::path to = stillPath(output, k, r.frameCount, settings.video.exportAsSequence);
+            imageBytes += static_cast<std::int64_t>(std::filesystem::file_size(from, ec));
+            std::filesystem::rename(from, to, ec);
+            if (ec) {
+                return std::unexpected(Error{ErrorCode::IoError, std::format("Cannot move {} into place: {}",
+                                                                             pathToUtf8(to), ec.message())});
+            }
+            if (k == 0) {
+                result.output = to;
+            }
+        }
+        result.imageFiles = r.frameCount;
+    } else {
+        std::filesystem::rename(temp.path, output, ec); // replaces an existing output
+        if (ec) {
+            return std::unexpected(
+                Error{ErrorCode::IoError, std::format("Cannot move the export into place at {}: {}",
+                                                      pathToUtf8(output), ec.message())});
+        }
+        temp.keep = true;
+    }
+    if (!xmpSidecar.empty()) {
+        const std::filesystem::path file = xmpSidecarPath(output);
+        if (auto ok = writeTextFile(file, xmpSidecar); ok) {
+            result.xmp = file;
+        } else {
+            result.warnings.push_back(ok.error().message);
+        }
+    }
+    if (loudness && settings.effects.loudness.writeLog) {
+        std::filesystem::path file = output;
+        file += ".loudness.txt";
+        if (auto ok = writeTextFile(file, loudnessLogText(*loudness, settings.effects.loudness, pathToUtf8(output.filename()))); ok) {
+            result.loudnessLog = file;
+        } else {
+            result.warnings.push_back(ok.error().message);
+        }
+    }
 
     // Captions as a sidecar next to the output (SRT / WebVTT), times relative to the exported range.
     auto sidecar = writeCaptionSidecar(*request.snapshot, *sequence, request.settings.captions, r.range, output);
@@ -791,7 +1171,7 @@ std::expected<ExportResult, Error> ExportJob::Impl::runImpl(const std::stop_toke
     }
     result.captions = std::move(*sidecar);
 
-    result.bytes = static_cast<std::int64_t>(std::filesystem::file_size(output, ec));
+    result.bytes = images ? imageBytes : static_cast<std::int64_t>(std::filesystem::file_size(output, ec));
     result.frames = hasVideo ? r.frameCount : 0;
     result.audioSamples = hasAudio ? samplesDone : 0;
     result.duration = r.duration;
@@ -806,6 +1186,7 @@ struct ExportQueue::Entry {
     ExportRequest request; // moved into the job when it starts
     ExportJobStatus status;
     std::stop_source cancel;
+    std::shared_ptr<PauseGate> gate = std::make_shared<PauseGate>(); // 0.2: pause / resume while it runs
     bool started = false;
     bool finished = false;
 };
@@ -832,16 +1213,77 @@ ExportQueue::~ExportQueue() {
     }
 }
 
-ExportJobId ExportQueue::enqueue(ExportRequest request) {
+ExportJobId ExportQueue::enqueue(ExportRequest request, bool hold) {
     std::lock_guard lock(m_mutex);
     auto entry = std::make_shared<Entry>();
     entry->status.id = m_nextId++;
     entry->status.output = request.output;
     entry->status.presetId = request.settings.presetId;
+    entry->status.held = hold;
     entry->request = std::move(request);
     m_entries.push_back(entry);
     m_changed.notify_all();
     return entry->status.id;
+}
+
+void ExportQueue::start(ExportJobId id) {
+    std::optional<ExportJobStatus> report;
+    {
+        std::lock_guard lock(m_mutex);
+        for (const auto& e : m_entries) {
+            if (e->status.id == id && !e->finished && !e->started && e->status.held) {
+                e->status.held = false;
+                report = e->status;
+            }
+        }
+    }
+    m_changed.notify_all();
+    if (report) {
+        notify(*report);
+    }
+}
+
+void ExportQueue::pause(ExportJobId id) {
+    std::optional<ExportJobStatus> report;
+    {
+        std::lock_guard lock(m_mutex);
+        for (const auto& e : m_entries) {
+            if (e->status.id != id || e->finished) {
+                continue;
+            }
+            if (e->started) {
+                e->gate->pause(); // the job reports Paused at its next frame
+            } else if (!e->status.held) {
+                e->status.held = true;
+                report = e->status;
+            }
+        }
+    }
+    if (report) {
+        notify(*report);
+    }
+}
+
+void ExportQueue::resume(ExportJobId id) {
+    std::shared_ptr<PauseGate> gate;
+    {
+        std::lock_guard lock(m_mutex);
+        for (const auto& e : m_entries) {
+            if (e->status.id == id && !e->finished && e->started) {
+                gate = e->gate;
+            }
+        }
+    }
+    if (gate) {
+        gate->resume();
+        return;
+    }
+    start(id); // a held job: released
+}
+
+void ExportQueue::remove(ExportJobId id) {
+    std::lock_guard lock(m_mutex);
+    std::erase_if(m_entries, [&](const std::shared_ptr<Entry>& e) { return e->status.id == id && e->finished; });
 }
 
 void ExportQueue::cancel(ExportJobId id) {
@@ -920,7 +1362,7 @@ void ExportQueue::run(std::stop_token stop) {
             std::unique_lock lock(m_mutex);
             const auto next = [&] {
                 const auto it = std::find_if(m_entries.begin(), m_entries.end(),
-                                             [](const auto& e) { return !e->started && !e->finished; });
+                                             [](const auto& e) { return !e->started && !e->finished && !e->status.held; });
                 return it == m_entries.end() ? nullptr : *it;
             };
             if (!m_changed.wait(lock, stop, [&] { return next() != nullptr; })) {
@@ -930,6 +1372,7 @@ void ExportQueue::run(std::stop_token stop) {
             entry->started = true;
         }
         ExportRequest request = std::move(entry->request);
+        request.pause = entry->gate;
         auto callerCallback = std::move(request.onProgress);
         request.onProgress = [this, entry, callerCallback](const ExportProgress& p) {
             ExportJobStatus copy;

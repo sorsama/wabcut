@@ -495,12 +495,33 @@ VideoStreamInfo describeVideoStream(AVFormatContext* fmt, AVStream* st) {
     }
     info.color = colorInfoFrom(par->color_space, par->color_range, par->color_primaries, par->color_trc,
                                par->chroma_location);
+    if (const AVPixFmtDescriptor* desc = av_pix_fmt_desc_get(pixFmt); desc && (desc->flags & AV_PIX_FMT_FLAG_BAYER) != 0) {
+        // 0.2 camera RAW (ProRes RAW, CinemaDNG): VideoDecoder develops the mosaic into Rec.709 (RawDevelop.h).
+        info.color = ColorInfo{ColorMatrix::BT709, ColorRange::Limited, ColorPrimaries::BT709, TransferFunction::BT709,
+                               ChromaLocation::Left};
+        info.bitDepth = 10;
+        info.chromaSubsampling = "4:4:4";
+    }
     info.rotationDegrees = orientationOf(par).rotationDegrees;
     if (const AVPixFmtDescriptor* desc = av_pix_fmt_desc_get(pixFmt);
         desc && (desc->flags & AV_PIX_FMT_FLAG_ALPHA) != 0) {
         // Codecs with alpha (ProRes 4444, PNG, VP9/HEVC alpha) are straight unless the stream says otherwise.
         info.alpha =
             par->alpha_mode == AVALPHA_MODE_PREMULTIPLIED ? AlphaMode::Premultiplied : AlphaMode::Straight;
+    }
+    // 0.2 field options: which field the file shows first (TB / BT: coded in one order, displayed in the other).
+    switch (par->field_order) {
+    case AV_FIELD_TT:
+    case AV_FIELD_BT:
+        info.fieldOrder = FieldOrder::UpperFirst;
+        break;
+    case AV_FIELD_BB:
+    case AV_FIELD_TB:
+        info.fieldOrder = FieldOrder::LowerFirst;
+        break;
+    default:
+        info.fieldOrder = FieldOrder::Progressive;
+        break;
     }
     info.duration = streamDuration(fmt, st);
 

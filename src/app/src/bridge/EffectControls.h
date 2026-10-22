@@ -155,6 +155,8 @@ public:
     Q_INVOKABLE void toggleKeyAtPlayhead(const QString& row);
     /// Moves the playhead to the previous (-1) or next (+1) key of the row.
     Q_INVOKABLE void goToKey(const QString& row, int direction);
+    /// A text row (0.2: Simple Text's text, the effect's data "text"): sets it; empty restores the default.
+    Q_INVOKABLE void setEffectText(const QString& row, const QString& text);
 
     // ---- Sections ----
     Q_INVOKABLE void setCollapsed(const QString& section, bool collapsed);
@@ -168,7 +170,9 @@ public:
 
     // ---- Adding effects ----
     /// The effect library for the Effects panel, grouped: [{ title, icon, kind, items: [{ id, name, category,
-    /// description, icon, kind }] }], filtered by a fuzzy `query`.
+    /// description, icon, kind }], bins: [{ title, items }] }], filtered by a fuzzy `query`. `items` are by relevance
+    /// to the query (else by bin and name); `bins` are Premiere's bins (the categories), alphabetical, each with its
+    /// effects in alphabetical order (0.2).
     Q_INVOKABLE QVariantList library(const QString& query = {}) const;
     /// Adds an effect to the selected clip (to its partner of the effect's kind); `stackIndex` -1 appends.
     /// Returns "" or a message saying why not.
@@ -212,6 +216,11 @@ public:
     /// "center", "startAtCut", "endAtCut".
     Q_INVOKABLE void setTransitionAlignment(const QString& alignment);
     Q_INVOKABLE void setTransitionEffect(const QString& effectId);
+
+    /// 0.2 (Save Preset, EffectPresetsBridge): the clip a section ("motion", "opacity", "audio", "e12") belongs to, and
+    /// the sections of a clip in the panel's order.
+    std::optional<ClipId> sectionClip(const QString& section) const;
+    QStringList sectionsOf(ClipId clip) const;
 
     /// Rebuilds the rows from the controller (connected to its change signals).
     void refresh();
@@ -259,6 +268,11 @@ private:
                      const QString& sectionKind, const edit::ParamRef& ref, const QString& title, const QString& icon,
                      const UiRange& range, double defaultModel, bool animatable, bool enabled, std::string undoLabel);
     void addTransitionRows(std::vector<Row>& rows, const Track& track, const Transition& transition);
+    /// A menu parameter (0.2: Premiere's popups, EffectParamInfo::options) shown as a choice row: its options' values
+    /// are the UI values of its whole numbers, the row's text the current one.
+    static void makeChoice(Row& row, const EffectParamInfo& param);
+    /// A row whose value setValue() changes: a parameter, a switch, or a menu parameter's choice.
+    static bool isValueRow(const Row& row);
     void applyRows(std::vector<Row> next);
     const Row* findRow(const QString& key) const;
     /// The clip a row edits (in the current sequence).

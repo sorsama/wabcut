@@ -93,6 +93,9 @@ ClipDiff compareClips(const Placed& a, const Placed& b) {
         if (x.blendMode() != y.blendMode()) {
             d.parameters.emplace_back("Blend Mode"); // C.15
         }
+        if (x.timeInterpolation() != y.timeInterpolation()) {
+            d.parameters.emplace_back("Time Interpolation"); // P.2
+        }
     }
     return d;
 }
@@ -302,11 +305,12 @@ ProjectDiff diffProjects(const ProjectState& before, const ProjectState& after) 
             ++out.reviewNotesChanged;
         }
     }
-    out.binsChanged = before.bins != after.bins;
+    out.binsChanged = before.bins != after.bins || before.freeform != after.freeform; // 0.2 (P.3): Freeform views too
     out.assetsChanged = before.assets != after.assets;
     out.redactionsChanged = before.redactions != after.redactions;
     out.transcriptsChanged = before.speakers != after.speakers || before.transcriptEdits != after.transcriptEdits;
-    out.graphicsLibraryChanged = before.brandKit != after.brandKit || !(before.templates == after.templates);
+    out.graphicsLibraryChanged = before.brandKit != after.brandKit || !(before.templates == after.templates) ||
+                                 !(before.textStyles == after.textStyles);
     return out;
 }
 

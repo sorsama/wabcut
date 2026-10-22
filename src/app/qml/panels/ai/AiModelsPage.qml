@@ -183,6 +183,30 @@ Item {
                 }
             }
 
+            // 0.2: the AI helpers on this computer run below normal priority under a CPU cap, so playback stays smooth
+            // while they work in the background.
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: Theme.space(2)
+                Text {
+                    text: qsTr("AI helpers' CPU")
+                    color: Theme.textSecondary
+                    font.family: Theme.fontSans
+                    font.pixelSize: Theme.textSm
+                }
+                PillTabs {
+                    id: helperCpu
+                    readonly property var limits: [100, 75, 50, 25]
+                    objectName: "aiHelperCpuLimit"
+                    Layout.fillWidth: true
+                    compact: true
+                    model: [qsTr("No limit"), qsTr("75 %"), qsTr("50 %"), qsTr("25 %")]
+                    currentIndex: Math.max(0, helperCpu.limits.indexOf(AiController.helperCpuLimit))
+                    Accessible.name: qsTr("Limit the CPU use of AI helpers on this computer")
+                    onActivated: index => AiController.helperCpuLimit = helperCpu.limits[index]
+                }
+            }
+
             Text {
                 Layout.fillWidth: true
                 wrapMode: Text.WordWrap

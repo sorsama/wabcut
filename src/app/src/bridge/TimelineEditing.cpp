@@ -1,6 +1,7 @@
 #include "TimelineEditing.h"
 
 #include <wabcut/model/ChangeSet.h>
+#include <wabcut/model/ClipGroups.h>
 #include <wabcut/model/FinishingOps.h>
 #include <wabcut/model/ProjectOps.h>
 #include <wabcut/model/Snap.h>
@@ -9,6 +10,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdlib>
 #include <cstdint>
 #include <unordered_set>
 #include <utility>
@@ -159,6 +161,32 @@ edit::EditOutcome rateStretch(const ProjectState& state, SequenceId sequence, Cl
     return result;
 }
 
+/// 0.2: a group's outer edge (GestureSpec::groupTrim): the grabbed clip and the other members trimmed by one delta, the
+/// smallest any of them can take (each clamps to its neighbours and its media on its own), as one edit.
+edit::EditOutcome trimGroup(const ProjectState& state, SequenceId sequence, const GestureSpec& spec) {
+    std::vector<ClipId> clips{spec.clips.front()};
+    clips.insert(clips.end(), spec.groupTrim.begin(), spec.groupTrim.end());
+    Ticks delta = spec.delta;
+    for (const ClipId clip : clips) {
+        auto probe = edit::trimEdge(state, sequence, clip, spec.edge, delta, spec.links);
+        if (!probe)
+            return probe;
+        if (std::abs(probe->appliedDelta.value) < std::abs(delta.value) || (probe->appliedDelta.value < 0) != (delta.value < 0))
+            delta = probe->appliedDelta;
+    }
+    ProjectState next = state;
+    edit::EditOutcome out = std::unexpected(Error{ErrorCode::InvalidArgument, "no clip to edit"});
+    for (const ClipId clip : clips) {
+        out = edit::trimEdge(next, sequence, clip, spec.edge, delta, spec.links);
+        if (!out)
+            return out;
+        next = out->state;
+    }
+    out->changes = wabcut::diff(state, out->state); // every member's trim
+    out->appliedDelta = delta;
+    return out;
+}
+
 } // namespace
 
 QString toolKey(TimelineTool tool) {
@@ -197,8 +225,16 @@ edit::EditOutcome applyGesture(const ProjectState& state, SequenceId sequence, c
         return edit::moveClips(next, sequence, spec.clips, spec.delta, tracks, spec.moveMode, spec.links);
     }
     case GestureKind::Trim:
+        if (!spec.groupTrim.empty())
+            return trimGroup(state, sequence, spec);
         return edit::trimEdge(state, sequence, clip, spec.edge, spec.delta, spec.links);
     case GestureKind::RippleTrim:
+        if (!spec.groupTrim.empty()) {
+            // 0.2: a group's outer edge ripples as one edit (every member on it, downstream material, sync locks).
+            std::vector<ClipId> edges{clip};
+            edges.insert(edges.end(), spec.groupTrim.begin(), spec.groupTrim.end());
+            return edit::rippleTrimEdges(state, sequence, edges, spec.edge, spec.delta, spec.links);
+        }
         return edit::rippleTrim(state, sequence, clip, spec.edge, spec.delta, spec.links);
     case GestureKind::Roll:
         return edit::rollEdit(state, sequence, clip, spec.edge, spec.delta, spec.links);

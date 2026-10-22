@@ -17,6 +17,9 @@ WabcutDialog {
     property bool reverse: false
     property bool maintainPitch: false
     property bool ripple: false
+    /// P.2: Time Interpolation of the video clips ("frameSampling", "frameBlending", "opticalFlow"; docs/motion.md).
+    property string interpolation: "frameSampling"
+    readonly property var interpolationIds: ["frameSampling", "frameBlending", "opticalFlow"]
     /// The field typed last decides the request: "speed" or "duration".
     property string driver: "speed"
     property var preview: ({})
@@ -30,12 +33,15 @@ WabcutDialog {
         reverse = info.reversed ?? false
         maintainPitch = info.maintainPitch ?? false
         ripple = false
+        interpolation = info.timeInterpolation ?? "frameSampling"
         driver = "speed"
         refreshPreview()
         open()
     }
     function params() {
         const p = { reverse: dialog.reverse, maintainPitch: dialog.maintainPitch, ripple: dialog.ripple }
+        if (dialog.info.hasVideo ?? false)
+            p.timeInterpolation = dialog.interpolation
         if (driver === "duration")
             p.duration = dialog.duration
         else
@@ -191,6 +197,32 @@ WabcutDialog {
             checked: dialog.ripple
             onToggled: {
                 dialog.ripple = checked
+                dialog.refreshPreview()
+            }
+        }
+    }
+
+    // P.2: Time Interpolation (Premiere's dialog section): how retimed video makes the frames between its own.
+    ColumnLayout {
+        Layout.fillWidth: true
+        spacing: Theme.space(1)
+        enabled: (dialog.info.available ?? false) && (dialog.info.hasVideo ?? false)
+
+        Text {
+            text: qsTr("Time Interpolation")
+            color: Theme.textSecondary
+            font.family: Theme.fontSans
+            font.pixelSize: Theme.textMd
+        }
+        PillTabs {
+            objectName: "timeInterpolationTabs"
+            Layout.fillWidth: true
+            compact: true
+            model: [qsTr("Frame Sampling"), qsTr("Frame Blending"), qsTr("Optical Flow")]
+            currentIndex: Math.max(0, dialog.interpolationIds.indexOf(dialog.interpolation))
+            Accessible.name: qsTr("Time Interpolation")
+            onActivated: index => {
+                dialog.interpolation = dialog.interpolationIds[index]
                 dialog.refreshPreview()
             }
         }

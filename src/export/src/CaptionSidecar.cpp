@@ -1,12 +1,16 @@
 #include <wabcut/export/CaptionSidecar.h>
 
+#include <wabcut/interchange/CaptionFiles.h>
 #include <wabcut/playback/video/CaptionRedaction.h>
 #include <wabcut/playback/video/Evaluate.h>
 
 #include <wabcut/model/MediaLocator.h>
+#include <wabcut/model/ProjectIO.h>
+#include <wabcut/model/Timecode.h>
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <format>
 #include <fstream>
 #include <string_view>
@@ -113,15 +117,74 @@ std::string captionSidecarText(const CaptionTrack& track, TimeRange range, Capti
     return out;
 }
 
+CaptionTrack captionTrackForFile(const ProjectState& project, const Sequence& sequence, const CaptionTrack& track,
+                                 std::string_view redactedWord, const playback::CaptionWordTimings* words) {
+    const std::vector<TimeRange> redacted = playback::redactedSpeechRanges(project, sequence);
+    return playback::redactCaptionTrack(track, redacted, words, redactedWord);
+}
+
+namespace {
+
+std::optional<interchange::CaptionFileFormat> fileFormatOf(CaptionExport mode) {
+    using F = interchange::CaptionFileFormat;
+    switch (mode) {
+    case CaptionExport::Scc:
+        return F::Scc;
+    case CaptionExport::Mcc:
+        return F::Mcc;
+    case CaptionExport::EbuStl:
+        return F::EbuStl;
+    case CaptionExport::Ttml:
+        return F::Ttml;
+    case CaptionExport::Dfxp:
+        return F::Dfxp;
+    case CaptionExport::SmpteTt:
+        return F::SmpteTt;
+    case CaptionExport::Itt:
+        return F::Itt;
+    default:
+        return std::nullopt;
+    }
+}
+
+} // namespace
+
 std::expected<std::filesystem::path, Error> writeCaptionSidecar(const ProjectState& project, const Sequence& sequence,
                                                                 const CaptionExportSettings& captions, TimeRange range,
                                                                 const std::filesystem::path& output) {
-    if (captions.mode != CaptionExport::Srt && captions.mode != CaptionExport::Vtt) {
+    if (!isCaptionSidecar(captions.mode)) {
         return std::filesystem::path{};
     }
     const CaptionTrack* track = captionTrackToExport(sequence, captions);
     if (!track) {
         return std::filesystem::path{};
+    }
+    if (const auto format = fileFormatOf(captions.mode)) {
+        // P.2: Premiere's other sidecar formats (CaptionFiles.h); timecode-based ones from the sequence's start
+        // timecode at the exported range's start.
+        const CaptionTrack exported = captionTrackForFile(project, sequence, *track, captions.redactedWord, captions.words.get());
+        interchange::CaptionWriteOptions o;
+        o.frameRate = sequence.frameRate;
+        o.dropFrame = sequence.dropFrame || !supportsDropFrame(sequence.frameRate);
+        o.startTimecode = sequence.startTimecode + range.start;
+        o.language = track->language;
+        o.title = sequence.name;
+        o.placement = track->style.placement == CaptionPlacement::Top ? CaptionPlacement::Top : CaptionPlacement::Bottom;
+        o.alignment = track->style.alignment;
+        o.display = static_cast<interchange::Cea608Display>(std::min<int>(captions.display608, 4));
+        const auto now = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
+        o.creationDate = std::format("{:%Y-%m-%d}", now);
+        o.creationTime = std::format("{:%H:%M:%S}", now);
+        std::filesystem::path file = output;
+        file.replace_extension(std::string(interchange::extension(*format)));
+        auto written = interchange::writeCaptionData(exported.cues, range, *format, o, pathToUtf8(file.filename()));
+        if (!written) {
+            return std::unexpected(written.error());
+        }
+        if (auto saved = io::writeFileAtomically(file, written->data); !saved) {
+            return std::unexpected(Error{ErrorCode::IoError, "Cannot write the captions to " + pathToUtf8(file)});
+        }
+        return file;
     }
     std::filesystem::path file = output;
     file.replace_extension(captions.mode == CaptionExport::Vtt ? ".vtt" : ".srt");

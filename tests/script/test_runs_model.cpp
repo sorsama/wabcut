@@ -18,7 +18,7 @@ namespace {
 const std::set<std::string> kRunsModel{
     "transcript.transcribe",                       // whisper (local) or a cloud transcriber
     "llm.local.start",                             // loads the local assistant
-    "gen.extend", "gen.broll", "gen.image",        // generation, through the host after approval
+    "gen.extend", "gen.broll", "gen.image", "gen.sfx", // generation, through the host after approval
     "audio.enhanceSpeech", "audio.separateStems",  // DeepFilterNet3, HTDemucs (wabcut-embed)
     "audio.essentialSound",                        // options.repair.enhance runs Enhance Speech
     "search.footage", "search.indexMedia",         // SigLIP 2 embeddings
@@ -29,6 +29,7 @@ const std::set<std::string> kRunsModel{
     "dub.create", "narration.create",              // speech synthesis
     "analysis.speakers", "multicam.autoSwitch",    // the face detector
     "mask.objectSelect", "mask.refine", "mask.propagate", // SAM 2.1 (AI-14)
+    "redaction.detectFaces",                       // the face detector (0.2)
     "workflow.podcast",                            // transcribe, enhance, switch, shorts when run
 };
 
@@ -38,7 +39,7 @@ const std::set<std::string> kNoModel{
     "transcript.text", "transcript.words", "transcript.review", "transcript.speakers", "transcript.corrections",
     "transcript.deleteRanges", "transcript.keepRanges", "transcript.moveRange", "transcript.cleanup",
     "transcript.correctWord", "transcript.correctRange", "captions.generate", "captions.generateFromTranscript",
-    "captions.updateFromTranscript",
+    "captions.updateFromTranscript", "captions.hideProfanity", "audio.bleepProfanity",
     // Masks, tracking (Lucas-Kanade) and redactions.
     "mask.add", "mask.update", "mask.remove", "mask.list", "track.mask", "track.transform", "redaction.add",
     "redaction.update", "redaction.remove", "redaction.override", "redaction.list",
@@ -56,13 +57,22 @@ const std::set<std::string> kNoModel{
     // Channel mapping and surround (A.9): pure parameter edits and measurements.
     "audio.channels", "audio.channelLevels", "audio.setChannels", "audio.setMediaChannels", "audio.setChannelVolume",
     "audio.splitToMono", "audio.fillChannel", "track.setFormat", "track.setSurroundPan", "sequence.setMasterFormat",
+    // Submixes and sends (p02 audio): routing edits and a read.
+    "sequence.addSubmixTrack", "track.setOutput", "track.addSend", "track.setSend", "track.removeSend", "audio.routing",
+    // Essential Sound auto-tagging (p02 audio): a DSP classifier, no model.
+    "audio.autoTag",
     // Colour: parameters, files and statistics.
     "color.grade.set", "color.grade.get", "lut.import", "lut.list", "cdl.export", "cdl.import", "scopes.read",
-    "color.auto", "color.match", "color.matchScene",
+    "color.auto", "color.match", "color.matchScene", "color.management.get", "color.management.set",
+    "color.inputSpace.set", "color.inputSpace.get", "lut.export",
+    // 0.2: transcript files and Find and Replace.
+    "transcript.export", "transcript.findReplace", "transcript.find",
     // Edits from cached results; frame differencing.
     "roughcut.swapTake", "autozoom.apply",
     // Gameplay highlights (G.2): DSP measurements, chat logs, markers and edits.
     "highlights.find", "highlights.importChat", "highlights.toReel", "highlights.toShort",
+    // Stabilization (P.2): Lucas-Kanade tracking, RANSAC fits and path smoothing.
+    "effect.analyzeStabilization", "effect.analyzeRollingShutter",
 };
 
 /// Namespaces whose every command runs a model; llm.* except its listed exceptions.
@@ -105,12 +115,26 @@ TEST_CASE("Every command the AI modules add is classified as running a model or 
 TEST_CASE("Every command that names files in its parameters is flagged; so extensions never reach a file", "[script][touchesFiles]") {
     const std::set<std::string> kTouchesFiles{"history.export", "review.exportPackage", "review.importPackage",
                                               "project.merge", "cdl.export", "cdl.import", "lut.import",
-                                              "plugins.scan", "lottie.import", "interchange.export", "highlights.importChat"};
+                                              "plugins.scan", "lottie.import", "interchange.export", "highlights.importChat",
+                                              "media.replaceFootage", "captions.export", "captions.import",
+                                              // 0.2: exports, user presets and watch folders
+                                              "export.quick", "export.queue", "export.preset.import", "export.preset.export",
+                                              "export.watchFolder.add",
+                                              "sequence.exportFrame", "source.exportFrame", // P.2 Export Frame
+                                              // 0.2: preset files, .cube export, templates (.mogrt), caption and transcript files
+                                              "effects.importPresets", "effects.exportPresets", "lut.export", "template.import",
+                                              "template.export", "transcript.export",
+                                              "media.importImageSequence", // 0.2: a folder of numbered stills
+                                              // 0.2 media formats: Photoshop files and the Media Browser's folders
+                                              "media.layeredFileInfo", "media.importLayeredFile", "media.browse",
+                                              "media.importCameraClips",
+                                              "project.importItems"}; // 0.2 P.3: another project
     // Parameters that look like files but are not, or that only the host can open.
     const std::set<std::string> kExempt{
         "mask.add", "mask.update",            // "path": a mask's outline, not a file
         "autozoom.apply", "roughcut.fromScript", // "sidecar" / "file": read only where the host's services allow
                                                 // (a local caller); extensions get the services of a remote client
+        "export.describe",                      // "output": says what an export would write, writes nothing
     };
     const std::set<std::string> fileish{"path", "file", "files", "folder", "folders", "addFolders", "removeFolders",
                                         "sidecar", "base", "theirs", "directory", "output"};

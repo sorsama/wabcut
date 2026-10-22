@@ -20,6 +20,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 
 namespace wabcut::audio {
@@ -51,6 +52,10 @@ public:
     virtual void setSpeed(TransportSpeed speed) = 0;
     /// Discontinuity: the transport continues (playing or paused) from `target`.
     virtual void seek(Ticks target) = 0;
+    /// P.2, Premiere's Loop: playback that runs into the end of `range` continues at its start (reverse: below the
+    /// start to the end); nullopt or an empty range turns looping off. Playback starting beyond the end is not wrapped
+    /// back (audio::TransportMap's rule). A clock that cannot loop ignores it.
+    virtual void setLoop(std::optional<TimeRange> range) { (void)range; }
 
     /// "audio engine (WASAPI)", "free-run", ... for stats.
     virtual std::string name() const = 0;

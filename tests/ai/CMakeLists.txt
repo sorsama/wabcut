@@ -46,7 +46,8 @@ list(APPEND wabcut_ai_test_sources
     test_text_edits.cpp
     test_transcribe_command.cpp
     test_transcript_commands.cpp
-    test_transcript_review.cpp)
+    test_transcript_review.cpp
+    test_profanity.cpp)
 list(APPEND wabcut_ai_test_libs wabcut_ai_edit)
 if(NOT WABCUT_CORE_ONLY) # the decoder-backed probe, the analysis-cache provider and wabcut-cli
     list(APPEND wabcut_ai_test_sources test_media_services.cpp)
@@ -149,8 +150,29 @@ if(NOT WABCUT_CORE_ONLY)
     list(APPEND wabcut_ai_test_libs wabcut_ai_audio_media)
 endif()
 
+# AI-15 signed Content Credentials (wabcut_ai_c2pa): the signing identity and its keychain entry, the manifest of an
+# export, signing, verification, trust and tamper detection with the pinned c2pa-rs library (skipped without it).
+list(APPEND wabcut_ai_test_sources c2pa/test_c2pa.cpp)
+list(APPEND wabcut_ai_test_libs wabcut_ai_c2pa)
+
 wabcut_add_test_suite(ai SOURCES ${wabcut_ai_test_sources} LIBS ${wabcut_ai_test_libs}
     PROPERTIES ${wabcut_ai_test_properties})
+target_include_directories(wabcut_ai_tests PRIVATE ${CMAKE_SOURCE_DIR}/src/ai/c2pa/src) # Der.h (the test checks it)
+
+# Video stabilization (C.15 parked, finished in P.2; wabcut_ai_stabilize): global motion analysis on synthetic shaky
+# clips (the masks suite's textures, ../masks/SyntheticMotion.h), Gaussian and L1 smoothing, No Motion, framing, the
+# rolling shutter's scan share, the analysis JSON, and effect.analyzeStabilization / effect.analyzeRollingShutter
+# through the CommandEngine with fake pictures. Its own suite (label ai_stabilize) so it runs without the AI helpers.
+wabcut_add_test_suite(ai_stabilize
+    SOURCES
+        ../model/TimelineFixture.cpp
+        ../model/TimelineFixture.h
+        stabilize/test_stabilize.cpp
+        stabilize/test_stabilize_commands.cpp
+    LIBS wabcut_ai_stabilize wabcut_ai_edit
+    PROPERTIES LABELS ai_stabilize)
+target_include_directories(wabcut_ai_stabilize_tests PRIVATE ${CMAKE_SOURCE_DIR}/tests/model ${CMAKE_SOURCE_DIR}/tests/command)
+target_compile_definitions(wabcut_ai_stabilize_tests PRIVATE WABCUT_TEST_OUTPUT_DIR="${CMAKE_BINARY_DIR}/test-output")
 add_dependencies(wabcut_ai_tests wabcut_fake_infer wabcut_fake_embed wabcut_fake_llama)
 if(WIN32)
     target_link_libraries(wabcut_ai_tests PRIVATE ws2_32) # review wave 4 P2-2: an impostor loopback listener
@@ -303,6 +325,8 @@ target_compile_definitions(wabcut_ai_segment_tests PRIVATE WABCUT_FAKE_EMBED="$<
 if(TARGET wabcut_ai_segment_media)
     wabcut_add_test_suite(ai_segment_media
         SOURCES
+            ../model/TimelineFixture.cpp
+            ../model/TimelineFixture.h
             segment/SegmentTestUtil.h
             segment/test_segment_media.cpp
         LIBS wabcut_ai_segment_media wabcut_ai_edit wabcut_media)

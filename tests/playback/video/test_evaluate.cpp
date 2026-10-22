@@ -480,3 +480,36 @@ TEST_CASE("An Ultra Key reaches the compositor with its 20 parameters in descrip
     CHECK(e.params[19] == 140.0); // luminance
     CHECK(layers[0].bypassedEffects == 0);
 }
+
+TEST_CASE("Scale to Frame Size fits the picture to the frame under Motion's scale (P.2)", "[playback][evaluate]") {
+    ProjectState s;
+    auto uhd = fakeMedia(s, 3840, 2160);
+    auto vertical = fakeMedia(s, 1080, 1920);
+    s.media = {uhd, vertical};
+    const auto scaled = [&](MediaId media, double motionScale) {
+        ClipProperties props;
+        props.set(ParamId::Scale, motionScale);
+        Clip c = clipOf(s, media, 0, 60, 0, props);
+        ClipContent content = c.content();
+        content.scaleToFrame = true;
+        c.setContent(std::move(content));
+        return c;
+    };
+    Sequence seq;
+    seq.id = s.ids.allocate<SequenceId>();
+    seq.frameRate = kRate60;
+    seq.width = 1920;
+    seq.height = 1080;
+    seq.videoTracks = {trackOf(s, {scaled(uhd->id, 0.5)}), trackOf(s, {}), trackOf(s, {scaled(vertical->id, 1.0)})};
+    std::vector<LayerSpec> layers;
+    evaluateVideoLayers(s, seq, framesToTicks(10, kRate60), layers, false);
+    REQUIRE(layers.size() == 2);
+    CHECK(layers[0].transform.scale == Approx(0.25));   // UHD fits at 50 %, then Motion's 50 %
+    CHECK(layers[1].transform.scale == Approx(0.5625)); // a vertical picture fits its height
+    // Without the flag, Motion's scale alone.
+    Clip plain = clipOf(s, uhd->id, 0, 60, 0);
+    seq.videoTracks = {trackOf(s, {plain})};
+    evaluateVideoLayers(s, seq, framesToTicks(10, kRate60), layers, false);
+    REQUIRE(layers.size() == 1);
+    CHECK(layers[0].transform.scale == Approx(1.0));
+}

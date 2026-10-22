@@ -1,5 +1,6 @@
 // C.16 (gaming): instant replay, dead-time detection and removal, zoom punch, camera shake and vertical / square versions.
 
+#include "NestedTestUtil.h"
 #include "TimelineFixture.h"
 
 #include <wabcut/model/CaptionOps.h>
@@ -9,6 +10,7 @@
 #include <wabcut/model/Merge.h>
 #include <wabcut/model/ProjectIO.h>
 #include <wabcut/model/ProjectOps.h>
+#include <wabcut/model/Resolve.h>
 #include <wabcut/model/TimeRemap.h>
 
 #include <catch2/catch_approx.hpp>
@@ -330,6 +332,76 @@ TEST_CASE("Removing time ranges ripples every unlocked track and the markers (C.
         A1 |Aaaaaaaaaa|
     )");
     CHECK_FALSE(edit::removeTimeRanges(s, tl.seq, std::vector<TimeRange>{TimeRange{f(2), Ticks{}}}).has_value());
+}
+
+TEST_CASE("Dead time reads through multicam and nested clips and cuts them in place (0.2)", "[model][gaming][deadtime][multicam]") {
+    // 10 s of A on V1/A1 (quiet from 2 s to 7 s); B (the second camera) is busy all along.
+    std::string v = "A" + std::string(249, 'a');
+    Timeline tl("    V1 |" + v + "|\n    A1 |" + v + "|\n", {{'A', 250}, {'B', 250}});
+    tl.linkMatching();
+    MediaActivity a;
+    a.step = Ticks{kTicksPerSecond / 10};
+    MediaActivity b = a;
+    for (int i = 0; i < 100; ++i) {
+        const bool quiet = i >= 20 && i < 70;
+        a.audio.push_back(quiet ? 0.02F : 0.8F);
+        a.motion.push_back(quiet ? 0.01F : 0.6F);
+        b.audio.push_back(0.8F);
+        b.motion.push_back(0.6F);
+    }
+    const MediaId mediaA = tl.media('A');
+    const MediaId mediaB = tl.media('B');
+    const ActivityLookup lookup = [&](MediaId id) { return id == mediaA ? &a : id == mediaB ? &b : nullptr; };
+    DeadTimeOptions o;
+    o.minSeconds = 2.0;
+    const auto flat = findDeadTime(tl.state, tl.seq, lookup, o);
+    REQUIRE(flat.has_value());
+    REQUIRE(flat->ranges.size() == 1);
+
+    SECTION("a two-angle multicam clip: the active angle's media at the angles' sync") {
+        // Angle 1 = A, angle 2 = B, both synced at 0; the clip shows and plays A over the whole 10 s.
+        PlacedMulticam mc = placeMulticam(tl.state, tl.seq, {mediaA, mediaB}, {Ticks{}, Ticks{}}, TimeRange{Ticks{}, f(250)}, Ticks{});
+        CHECK(mediaPlayedBy(mc.state, mc.state.findSequence(tl.seq)->findClip(mc.video)->clip()) == std::vector<MediaId>{mediaA});
+        const auto found = findDeadTime(mc.state, tl.seq, lookup, o);
+        REQUIRE(found.has_value());
+        REQUIRE(found->ranges.size() == 1);
+        CHECK(found->ranges[0].stretch == flat->ranges[0].stretch);
+        CHECK(found->ranges[0].remove == flat->ranges[0].remove);
+        CHECK(found->unmeasured.empty());
+        CHECK(found->tracks.size() == 2); // V1 (the multicam clip counts as gameplay) and A1
+        // Removing it cuts the multicam clips in place: the pieces stay multicam clips of the same angles.
+        const edit::EditResult removed = ok(edit::removeTimeRanges(mc.state, tl.seq, std::span<const TimeRange>(&found->ranges[0].remove, 1)));
+        const Sequence& after = *removed.state.findSequence(tl.seq);
+        CHECK(after.contentEnd() == f(250) - found->ranges[0].remove.duration);
+        for (const auto* tracks : {&after.videoTracks, &after.audioTracks}) {
+            for (const TrackPtr& t : *tracks) {
+                for (const Clip& c : t->clips) {
+                    CHECK(c.sequence == mc.multicam);
+                    CHECK(c.angles == AngleSet::of(0));
+                }
+            }
+        }
+        // Switched to angle 2 (B, busy): no dead time.
+        const edit::EditResult switched = ok(edit::switchMulticamAngle(mc.state, tl.seq, mc.video, std::nullopt, 1, edit::AngleTarget::Both));
+        const auto busy = findDeadTime(switched.state, tl.seq, lookup, o);
+        REQUIRE(busy.has_value());
+        CHECK(busy->ranges.empty());
+    }
+
+    SECTION("a nested clip: its sequence's clips through the nest's time map") {
+        const edit::NestResult nest = nestEverything(tl.state, tl.seq);
+        const Sequence& outer = *nest.edit.state.findSequence(tl.seq);
+        REQUIRE(outer.videoTracks[0]->clips.size() == 1);
+        REQUIRE(outer.videoTracks[0]->clips[0].isNested());
+        const auto found = findDeadTime(nest.edit.state, tl.seq, lookup, o);
+        REQUIRE(found.has_value());
+        REQUIRE(found->ranges.size() == 1);
+        CHECK(found->ranges[0].remove == flat->ranges[0].remove);
+        const edit::EditResult removed = ok(edit::removeTimeRanges(nest.edit.state, tl.seq, std::span<const TimeRange>(&found->ranges[0].remove, 1)));
+        for (const Clip& c : removed.state.findSequence(tl.seq)->videoTracks[0]->clips) {
+            CHECK(c.sequence == nest.nested); // still nested
+        }
+    }
 }
 
 // ---- Zoom punch and shake -------------------------------------------------------------------------------------------------

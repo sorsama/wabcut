@@ -282,6 +282,29 @@ Rectangle {
                 border.width: cueText.activeFocus ? Theme.focusRingWidth : 0
                 border.color: Theme.focus
             }
+            // 0.2: misspelled words underlined in the track's language; right-click for suggestions (and Cut, Copy,
+            // Paste: SpellingMenu replaces Qt's own text menu).
+            ContextMenu.menu: null
+            SpellHighlighter {
+                objectName: "captionSpelling"
+                document: cueText.textDocument
+                language: Captions.trackInfo.language ?? ""
+                color: Theme.danger
+            }
+            TapHandler {
+                acceptedButtons: Qt.RightButton
+                onTapped: eventPoint => cueSpelling.openAt(eventPoint.position.x, eventPoint.position.y)
+            }
+            SpellingMenu {
+                id: cueSpelling
+                target: cueText
+                language: Captions.trackInfo.language ?? ""
+                onCorrected: text => {
+                    cueText.text = text
+                    Captions.setCueText(row.modelData.index, text)
+                    Captions.endEdit()
+                }
+            }
         }
     }
 }

@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdint>
 
 namespace wabcut::color {
 
@@ -26,6 +27,24 @@ inline double decode709(double v) {
 }
 inline Rgb encode709(const Rgb& l) { return {encode709(l[0]), encode709(l[1]), encode709(l[2])}; }
 inline Rgb decode709(const Rgb& v) { return {decode709(v[0]), decode709(v[1]), decode709(v[2])}; }
+
+/// ACEScct (Academy S-2016-001): linear -> log encoding with a linear toe, and back (capped at half float's 65504).
+inline double encodeAcesCct(double l) {
+    return l <= 0.0078125 ? 10.5402377416545 * l + 0.0729055341958355 : (std::log2(l) + 9.72) / 17.52;
+}
+inline double decodeAcesCct(double v) {
+    return v <= 0.155251141552511 ? (v - 0.0729055341958355) / 10.5402377416545 : std::min(std::exp2(v * 17.52 - 9.72), 65504.0);
+}
+
+/// The encoding the grade's display-referred stages work in (I.9): BT.709 (the default pipeline), or ACEScct in a
+/// colour-managed project (ACES, HDR), as colourists grade ACES.
+enum class GradeEncoding : std::uint8_t { Rec709, AcesCct };
+inline Rgb encodeWorking(const Rgb& l, GradeEncoding e) {
+    return e == GradeEncoding::AcesCct ? Rgb{encodeAcesCct(l[0]), encodeAcesCct(l[1]), encodeAcesCct(l[2])} : encode709(l);
+}
+inline Rgb decodeWorking(const Rgb& v, GradeEncoding e) {
+    return e == GradeEncoding::AcesCct ? Rgb{decodeAcesCct(v[0]), decodeAcesCct(v[1]), decodeAcesCct(v[2])} : decode709(v);
+}
 
 /// Rec.709 luma weights (also the ASC CDL saturation weights).
 inline constexpr Rgb kLuma709{0.2126, 0.7152, 0.0722};

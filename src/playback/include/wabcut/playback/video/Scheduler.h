@@ -125,6 +125,9 @@ struct SchedulerStats {
     /// delivers, and only the delivered ones are read back, converted, cached and uploaded.
     std::uint64_t poolFramesDecoded = 0;
     std::uint64_t poolFramesDelivered = 0;
+    /// P.2: motion analyses (Optical Flow, Morph Cut; MotionAnalyzer) the next picture waits for: the monitor's
+    /// "Analyzing in background" banner while above 0.
+    int motionWaits = 0;
 };
 
 /// See Scheduler::setColorPreview().
@@ -166,6 +169,9 @@ public:
     /// pass. Any thread.
     void setStopAtEnd(bool stop);
     bool stopAtEnd() const;
+    /// P.2, Premiere's Loop (the transport wraps inside `range`): forward lookahead stops at the range's end, and the
+    /// composites queued past it are dropped when the transport wraps back to its start. nullopt: no loop. Any thread.
+    void setLoop(std::optional<TimeRange> range);
     /// Schedule a pass now (e.g. after an edit).
     void wake();
     /// What the preview decodes: proxies or originals, the decode resolution and the proxy registry. Takes effect

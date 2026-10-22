@@ -143,9 +143,11 @@ struct Fixture {
 TEST_CASE("The audio commands are in the editing catalog", "[audio][edit][commands]") {
     command::CommandRegistry registry;
     registerAudioCommands(registry);
-    CHECK(registry.all().size() == 37); // + A.3: track.setVolume, track.setPan, sequence.setMasterGain, audio.moveKeyframe;
+    CHECK(registry.all().size() == 44); // + A.3: track.setVolume, track.setPan, sequence.setMasterGain, audio.moveKeyframe;
                                         // + A.4: audio.enhanceSpeech, audio.separateStems; + A.5: audio.syncClips;
-                                        // + A.6: plugins.list, plugins.scan; + A.7: audio.essentialSound, audio.remix
+                                        // + A.6: plugins.list, plugins.scan; + A.7: audio.essentialSound, audio.remix;
+                                        // + p02: sequence.addSubmixTrack, track.setOutput, track.addSend,
+                                        // track.setSend, track.removeSend, audio.routing, audio.autoTag
                                         // + A.8: audio.remixRender, track.setRecordArm, record.takes, record.useTake
                                         // + A.9: audio.setChannels, setMediaChannels, setChannelVolume, fillChannel,
                                         //   splitToMono, channels, channelLevels, track.setFormat, setSurroundPan,

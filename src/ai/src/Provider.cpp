@@ -817,6 +817,12 @@ std::expected<GeneratedMedia, AiError> AiPlatform::generate(std::string_view mod
             out.usage.videoMilliseconds = status.usage.videoMilliseconds;
             out.usage.images = status.usage.images;
         }
+        // 0.2 sound effects: the length that came back (the adapter measures the file), never more than the estimate
+        // the user approved - a sound the model made shorter than asked for (or than the longest, when it picked the
+        // length) is booked at what it is.
+        if (request.kind == GeneratedMediaKind::SoundEffect && status.usage.audioMilliseconds > 0) {
+            out.usage.audioMilliseconds = std::min(out.usage.audioMilliseconds, status.usage.audioMilliseconds);
+        }
         out.createdAt = nowIso8601();
         return out;
     };

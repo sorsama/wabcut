@@ -738,8 +738,11 @@ TEST_CASE("What's new M5n: this build's highlights, each one spoken; screenshot"
         CHECK_FALSE(h.toMap().value(QStringLiteral("title")).toString().isEmpty());
         CHECK_FALSE(h.toMap().value(QStringLiteral("text")).toString().isEmpty());
     }
-    CHECK(keys == QStringList{QStringLiteral("gamingStart"), QStringLiteral("highlights"), QStringLiteral("layouts"),
-                              QStringLiteral("callouts"), QStringLiteral("moments"), QStringLiteral("gamingExport"),
+    CHECK(keys == QStringList{QStringLiteral("premiereTools"), QStringLiteral("exportQueue"),
+                              QStringLiteral("monitorMotion"), QStringLiteral("projectPanel"), QStringLiteral("audioPost"),
+                              QStringLiteral("aiNested"), QStringLiteral("gamingStart"), QStringLiteral("highlights"),
+                              QStringLiteral("layouts"), QStringLiteral("callouts"), QStringLiteral("moments"),
+                              QStringLiteral("gamingExport"),
                               QStringLiteral("multicam"), QStringLiteral("library"), QStringLiteral("captions"),
                               QStringLiteral("essentialSound"), QStringLiteral("mixer"), QStringLiteral("voiceOver"),
                               QStringLiteral("channels"), QStringLiteral("history"), QStringLiteral("paste"),
@@ -750,12 +753,12 @@ TEST_CASE("What's new M5n: this build's highlights, each one spoken; screenshot"
     QQuickItem* list = findNamed(popupItem(dialog), QStringLiteral("whatsNewList"));
     REQUIRE(list);
     CHECK(list->property("count").toInt() == highlights.size());
-    QQuickItem* first = findNamed(popupItem(dialog), QStringLiteral("whatsNew_gamingStart"));
+    QQuickItem* first = findNamed(popupItem(dialog), QStringLiteral("whatsNew_premiereTools"));
     REQUIRE(first);
     QAccessibleInterface* iface = QAccessible::queryAccessibleInterface(first);
     REQUIRE(iface);
     CHECK(iface->role() == QAccessible::ListItem);
-    CHECK(iface->text(QAccessible::Name).startsWith(QStringLiteral("Made for gaming videos. ")));
+    CHECK(iface->text(QAccessible::Name).startsWith(QStringLiteral("More of Premiere. ")));
     CHECK_ACCESSIBLE(popupItem(dialog));
     spin(150);
     const QImage image = shell.grab();

@@ -390,3 +390,34 @@ TEST_CASE("Captions workspace in the shell: the Caption Style panel and the cue 
     INFO(join(messages));
     CHECK(messages.isEmpty());
 }
+
+TEST_CASE("Captions page 0.2: Find and Replace in captions and the transcript, Import captions, Export transcript",
+          "[app][captions][findReplace]") {
+    Fixture fx;
+    fx.threeCues();
+    const auto before = fx.undo();
+    // This track: "two" anywhere, any case.
+    REQUIRE(fx.captions.findReplace(QStringLiteral("two"), QStringLiteral("2"), false, false, QStringLiteral("track")).isEmpty());
+    CHECK(fx.undo() == before + 1);
+    CHECK(fx.captions.cues()[1].toMap().value(QStringLiteral("text")).toString() == QStringLiteral("2 words here"));
+    CHECK(fx.captions.message() == QStringLiteral("Replaced 1 match(es)"));
+    // Whole word: "here" but not inside "Three".
+    REQUIRE(fx.captions.findReplace(QStringLiteral("re"), QStringLiteral("X"), false, true, QStringLiteral("all")).isEmpty());
+    CHECK(fx.captions.message().contains(QStringLiteral("was not found")));
+    // The transcript: a correction, so "Update from transcript" is suggested.
+    REQUIRE(fx.captions.findReplace(QStringLiteral("wrold"), QStringLiteral("world"), true, true, QStringLiteral("transcript")).isEmpty());
+    CHECK(fx.transcriptBridge.run("transcript.text", Json::object()).data["paragraphs"][0][5] == "Hello world");
+
+    // Export the transcript, import it back as a caption track.
+    const QString dir = QDir::temp().filePath(QStringLiteral("wabcut-captions-findreplace"));
+    QDir(dir).removeRecursively();
+    QDir().mkpath(dir);
+    const QUrl txt = QUrl::fromLocalFile(QDir(dir).filePath(QStringLiteral("talk.txt")));
+    REQUIRE(fx.captions.exportTranscript(txt).isEmpty());
+    REQUIRE(fx.captions.importFile(txt).isEmpty());
+    CHECK(fx.controller.currentSequence()->captionTracks.size() == 2);
+    CHECK(fx.captions.cues().size() == 2);
+    CHECK(fx.captions.cues()[0].toMap().value(QStringLiteral("text")).toString() == QStringLiteral("Hello world"));
+    CHECK_FALSE(fx.captions.importFile(QUrl::fromLocalFile(QDir(dir).filePath(QStringLiteral("missing.srt")))).isEmpty());
+    QDir(dir).removeRecursively();
+}

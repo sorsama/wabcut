@@ -25,6 +25,9 @@ std::string trackLabel(const Sequence& sequence, TrackId track) {
     if (const auto pos = sequence.trackPosition(track)) {
         return (pos->kind == TrackKind::Video ? "V" : "A") + std::to_string(pos->index + 1);
     }
+    if (const auto index = sequence.submixIndex(track)) {
+        return "Submix " + std::to_string(*index + 1);
+    }
     return "track " + std::to_string(track.value);
 }
 
@@ -171,7 +174,7 @@ std::vector<TrackId> SequenceEditor::trackIds() const {
 }
 
 TrackPtr& SequenceEditor::slot(TrackId id) {
-    for (auto* list : {&m_seq.videoTracks, &m_seq.audioTracks}) {
+    for (auto* list : {&m_seq.videoTracks, &m_seq.audioTracks, &m_seq.submixTracks}) {
         for (auto& t : *list) {
             if (t->id == id) {
                 return t;
@@ -449,10 +452,25 @@ void SequenceEditor::eraseTrack(TrackId trackId) {
         touchGroup(clip.linkGroup);
     }
     std::erase_if(m_cloned, [&](const auto& entry) { return entry.first == trackId; });
-    for (auto* list : {&m_seq.videoTracks, &m_seq.audioTracks}) {
+    for (auto* list : {&m_seq.videoTracks, &m_seq.audioTracks, &m_seq.submixTracks}) {
         std::erase_if(*list, [&](const TrackPtr& t) { return t->id == trackId; });
     }
     m_headerChanged = true;
+}
+
+TrackId SequenceEditor::addSubmixTrack(ChannelFormat format, std::string name) {
+    auto added = std::make_shared<Track>();
+    added->id = m_ids.allocate<TrackId>();
+    added->kind = TrackKind::Audio;
+    added->name = std::move(name);
+    added->format = format;
+    added->syncLocked = false; // holds no clips: ripples have nothing to move on it
+    const TrackId id = added->id;
+    m_cloned.emplace_back(id, added.get());
+    m_seq.submixTracks.push_back(std::move(added));
+    m_createdTracks.push_back(id);
+    m_headerChanged = true;
+    return id;
 }
 
 TrackId SequenceEditor::addTrack(TrackKind kind, std::string name, TrackRole role) {
@@ -645,7 +663,7 @@ EditResult SequenceEditor::finish(std::optional<Ticks> playhead, Ticks appliedDe
     }
     result.createdEffects = m_createdEffects;
     for (const TrackId id : m_createdTracks) {
-        if (m_seq.findTrack(id)) { // not erased again by the same edit
+        if (m_seq.findTrack(id) || m_seq.findSubmix(id)) { // not erased again by the same edit
             result.createdTracks.push_back(id);
         }
     }
