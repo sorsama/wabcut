@@ -831,7 +831,7 @@ TEST_CASE("Export workspace 0.2: Send to Media Encoder queues the export held an
     const int before = controller->jobs()->rowCount();
     QMetaObject::invokeMethod(shell.window.get(), "runCommand", Q_ARG(QVariant, QVariant(QStringLiteral("file.sendToMediaEncoder"))));
     REQUIRE(waitFor([&] { return controller->jobs()->rowCount() == before + 1; }, 10'000));
-    CHECK(shell.window->property("workspace").toInt() == 2);
+    CHECK(shell.window->property("workspacePreset").toInt() == 2); // a workspace made from the Export preset (0.1.3)
     const ExportJobModel::Row held = controller->jobs()->rows().back(); // a copy: the model changes below
     CHECK(held.state == QStringLiteral("held"));
     CHECK(held.held);

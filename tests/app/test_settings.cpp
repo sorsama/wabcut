@@ -349,7 +349,9 @@ TEST_CASE("Left rail: entries reorder and hide and the arrangement is kept", "[a
         REQUIRE(waitFor([&] { return (page = settingsPage(window, QStringLiteral("interface"))) != nullptr; }));
         QQuickItem* customizer = findNamed(page, QStringLiteral("railCustomizer"));
         REQUIRE(customizer != nullptr);
-        // Effects above Library, Markers hidden (the customizer's buttons do the same).
+        // Effects above Library (two steps up: past the Media Browser, 0.2), Markers hidden (the customizer's buttons do
+        // the same).
+        REQUIRE(QMetaObject::invokeMethod(findNamed(customizer, QStringLiteral("railUp_effects")), "clicked"));
         REQUIRE(QMetaObject::invokeMethod(findNamed(customizer, QStringLiteral("railUp_effects")), "clicked"));
         REQUIRE(QMetaObject::invokeMethod(findNamed(customizer, QStringLiteral("railVisible_markers")), "clicked"));
         spin(30);

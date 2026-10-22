@@ -666,7 +666,7 @@ private:
     void dragVolume(QPointF pos, Qt::KeyboardModifiers mods);
     void releaseVolume();
     Hit speedHit(double x, double y, Hit hit) const;
-    /// 0.2, fade handles (TimelineViewFade.cpp): a selected clip's fade handle under (x, y) on row ow, else no hit.
+    /// 0.2, fade handles (TimelineViewFade.cpp): a selected clip's fade handle under (x, y) on `row`, else no hit.
     Hit fadeHit(double x, double y, int row) const;
     void addFadeHandles(MeshBuilder& mesh, const QRectF& rect, const Clip& clip) const;
     void pressFade(const Hit& hit);

@@ -3,7 +3,8 @@ import QtQuick
 
 // P.2 (E6): Premiere's direct manipulation of Motion on the program monitor (bridge ProgramMotion; docs/monitors.md).
 // A sibling of the monitor slot that fills the canvas (fractions of the canvas are fractions of this item), on top of
-// the other overlays so its double-click is seen first.
+// the other overlays. The double-click comes from the monitor's pick area (MonitorPanel, 0.1.3 picking): one that does
+// not edit a title or a text in place calls engageAt here.
 //   * Double-click a clip's picture (or press the direct-manipulation button on Motion in Effect Controls) to show its
 //     bounding box: drag inside to move it (Shift: one axis), drag a corner or edge handle to scale it, drag just
 //     outside a corner to rotate it (Shift: 45-degree steps), drag the anchor crosshair to move the anchor point with
@@ -45,7 +46,8 @@ Item {
             return Qt.SizeHorCursor
         return Qt.ArrowCursor
     }
-    /// The double-click: Motion on the clip under the pointer, unless a graphic layer or another tool takes it.
+    /// The double-click (in this item's coordinates): Motion on the clip under the pointer, unless a graphic layer or
+    /// another tool takes it.
     function engageAt(x, y) {
         if (root.suspended || width <= 0 || height <= 0)
             return false
@@ -58,16 +60,6 @@ Item {
     Accessible.name: qsTr("Motion on the program monitor")
     Accessible.description: ProgramMotion.active ? qsTr("Drag to move, drag a handle to scale, drag outside a corner to rotate")
                                                  : qsTr("Double-click a clip to move, scale or rotate it")
-
-    // Double-click a picture: a passive handler, so single clicks still reach the overlays and the monitor below.
-    TapHandler {
-        enabled: !root.suspended
-        acceptedButtons: Qt.LeftButton
-        onDoubleTapped: eventPoint => {
-            if (!ProgramMotion.active || root.kindAt(eventPoint.position.x, eventPoint.position.y) === "")
-                root.engageAt(eventPoint.position.x, eventPoint.position.y)
-        }
-    }
 
     Canvas {
         id: canvas

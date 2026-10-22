@@ -274,12 +274,12 @@ Panel {
                                             target: null
                                         }
                                     }
-                                }
-                            }
 
-                            HoverHandler {
-                                enabled: item.enabled
-                                cursorShape: Qt.PointingHandCursor
+                                    HoverHandler {
+                                        enabled: item.enabled
+                                        cursorShape: Qt.PointingHandCursor
+                                    }
+                                }
                             }
                         }
                     }

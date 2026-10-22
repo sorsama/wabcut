@@ -360,7 +360,14 @@ Panel {
                         hoverQuad = []
                         pickOutline.requestPaint()
                     }
-                    onDoubleClicked: mouse => root.applyPick(GraphicCanvas.pickDoubleClick(mouse.x / width, mouse.y / height))
+                    // A double-click edits a title or a text in place; on a picture it shows Motion's box (P.2).
+                    onDoubleClicked: mouse => {
+                        const picked = GraphicCanvas.pickDoubleClick(mouse.x / width, mouse.y / height)
+                        if (picked.action === "edit")
+                            root.applyPick(picked)
+                        else
+                            motionOverlay.engageAt(mouse.x, mouse.y)
+                    }
                     onPositionChanged: mouse => {
                         if (pressed)
                             return
@@ -477,9 +484,10 @@ Panel {
                 GuidesOverlay {
                     anchors.fill: parent
                 }
-                // P.2: Motion's bounding box, handles, anchor point and motion path (qml/monitor/); on top, so its
-                // double-click is seen first.
+                // P.2: Motion's bounding box, handles, anchor point and motion path (qml/monitor/); on top, so its drags
+                // are seen first (the pick area's double-click shows it).
                 MotionOverlay {
+                    id: motionOverlay
                     anchors.fill: parent
                     suspended: root.typeTool
                 }
