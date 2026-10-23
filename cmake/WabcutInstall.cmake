@@ -219,7 +219,8 @@ endif()
 install(FILES "${CMAKE_SOURCE_DIR}/docs/interchange.md" "${CMAKE_SOURCE_DIR}/docs/keymap.md"
               "${CMAKE_SOURCE_DIR}/docs/roadmap.md" "${CMAKE_SOURCE_DIR}/docs/release.md"
               "${CMAKE_SOURCE_DIR}/docs/getting-started.md" "${CMAKE_SOURCE_DIR}/docs/release-notes-0.1.md"
-              "${CMAKE_SOURCE_DIR}/docs/release-notes-0.2.md" "${CMAKE_SOURCE_DIR}/docs/premiere-parity.md"
+              "${CMAKE_SOURCE_DIR}/docs/release-notes-0.2.md" "${CMAKE_SOURCE_DIR}/docs/release-notes-0.3.md"
+              "${CMAKE_SOURCE_DIR}/docs/premiere-parity.md"
     DESTINATION ${wabcut_docs_dir})
 
 # Linux desktop integration: a launcher entry and the app icon in the hicolor theme (the AppImage uses them too).

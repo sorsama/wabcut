@@ -9,9 +9,17 @@ WabcutDialog {
     id: dialog
     objectName: "whatsNewDialog"
 
-    // Keep in step with docs/roadmap.md when a milestone lands. This build: 0.2's Premiere parity first, then the gaming
-    // wave (M5o), M5k-M5n, C.7-C.12, A.3-A.9, AI-9-AI-13.
+    // Keep in step with docs/roadmap.md when a milestone lands. This build: 0.3's Home, menu bar, Effects panel and
+    // everyday editing first, then 0.2's Premiere parity, the gaming wave (M5o), M5k-M5n, C.7-C.12, A.3-A.9, AI-9-AI-13.
     readonly property var highlights: [
+        { key: "homeStart", icon: "house", title: qsTr("A new Home"),
+          text: qsTr("Home, Projects and Learn pages, one Import for files, folders and timelines, and a New project page with Advanced settings that can start from your media.") },
+        { key: "menuBar", icon: "columns-3", title: qsTr("A menu bar and a Window menu"),
+          text: qsTr("Premiere's menus in the title bar, each command with its shortcut. Window opens a panel in the group you clicked last, and Maximize Frame gives a group the whole work area.") },
+        { key: "effectsFolders", icon: "folders", title: qsTr("Effects in Premiere's folders"),
+          text: qsTr("Favorites, Presets, Video Effects and the rest in a List, Compact or Icons view; presets import and export per bin, and a double-click applies to every selected clip.") },
+        { key: "everyday", icon: "check", title: qsTr("Quicker everyday editing"),
+          text: qsTr("Type a timecode to jump, ripple-delete a gap, add or delete tracks from a header's menu, read marker names on the ruler, search Settings, and export with your last choices.") },
         { key: "premiereTools", icon: "film", title: qsTr("More of Premiere"),
           text: qsTr("Premiere's 41 transitions and about 70 effects, Optical Flow slow motion, Morph Cut, Warp Stabilizer, clip groups and fade handles.") },
         { key: "exportQueue", icon: "list", title: qsTr("A Media Encoder queue"),
@@ -25,7 +33,7 @@ WabcutDialog {
         { key: "aiNested", icon: "sparkles", title: qsTr("AI through nested clips"),
           text: qsTr("Highlights, Auto Reframe and object masks read through multicam and nested clips; Redact finds the faces; sound effects come from a prompt with your own key.") },
         { key: "gamingStart", icon: "gamepad-2", title: qsTr("Made for gaming videos"),
-          text: qsTr("Drop an OBS or ShadowPlay recording on Home: its frame rate is kept, each audio track gets its own named track, and long or high-fps files get proxies.") },
+          text: qsTr("Drop an OBS or ShadowPlay recording on Home: the New project page matches its frame rate, gives each audio stream its own named track, and 4K, high-fps or long files get proxies.") },
         { key: "highlights", icon: "zap", title: qsTr("Find the highlights"),
           text: qsTr("Wabcut ranks the loudest, busiest moments of a VOD on this computer, then builds a highlight reel or a Short from the ones you keep.") },
         { key: "layouts", icon: "layout-grid", title: qsTr("Facecam layouts"),
