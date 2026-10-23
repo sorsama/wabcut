@@ -14,6 +14,8 @@
 
 #include "BridgeIds.h"
 #include "EffectControls.h"
+#include "EffectPresetsBridge.h"
+#include "EffectsTreeModel.h"
 #include "PluginBridge.h"
 #include "ProjectController.h"
 #include "TimelineFixture.h"
@@ -24,6 +26,7 @@
 #if defined(WABCUT_WITH_AUDIO_PLUGINS) && defined(WABCUT_TEST_PLUGIN_DIR)
 
 #include <wabcut/audio/effects/EffectChain.h>
+#include <wabcut/command/ExecutionContext.h>
 #include <wabcut/model/FinishingOps.h>
 #include <wabcut/plughost/Ipc.h>
 #include <wabcut/plughost/PluginCatalog.h>
@@ -32,6 +35,7 @@
 
 #include <QCoreApplication>
 #include <QDir>
+#include <QSettings>
 #include <QTemporaryDir>
 #include <QUrl>
 
@@ -353,6 +357,92 @@ TEST_CASE("A plugin dropped on a clip in the timeline goes through the view's dr
     CHECK(QString::fromStdString(music.effects().back().effect) == kClap);
     // A plugin is an audio effect: on a video clip it goes to the linked audio clip (V1 is linked to A1).
     CHECK(rig.view->effectDropTarget(rig.x(20), rig.y("V1"), kClap).value(QStringLiteral("ok")).toBool());
+}
+
+TEST_CASE("Effects tree: the Audio Plug-ins folder with favourites and a remembered grouping", "[app][plugins][effects]") {
+    TestPlugins test;
+    Project p(test);
+    REQUIRE(p.plugins.pluginCount() == 2);
+    p.plugins.setGroupBy(QStringLiteral("vendor"));
+    sharedEffectLibrary()->set({});
+    EffectPresetsBridge presets;
+    presets.setController(&p.controller);
+    EffectsTreeModel tree;
+    tree.setPersistent(false);
+    tree.setSources(&p.controller, &presets, &p.plugins);
+
+    // A top-level folder after Premiere's effect folders, its vendors as sub-folders (keys from PluginBridge::groups).
+    const int folder = tree.indexOf(QStringLiteral("plugins"));
+    REQUIRE(folder > 0);
+    CHECK(folder == tree.indexOf(QStringLiteral("videoTransition")) + 1);
+    CHECK(tree.get(folder).value(QStringLiteral("folderKind")).toString() == QStringLiteral("plugins"));
+    CHECK(tree.get(folder).value(QStringLiteral("count")).toInt() == 2);
+    CHECK(p.plugins.groups().value(0).toMap().value(QStringLiteral("key")).toString() == QStringLiteral("vendor:Wabcut"));
+    tree.setExpanded(QStringLiteral("plugins"), true);
+    CHECK(tree.indexOf(QStringLiteral("plugins/vendor:Wabcut")) == folder + 1);
+    tree.setExpanded(QStringLiteral("plugins/vendor:Wabcut"), true);
+    const QString rowKey = QStringLiteral("plugins/vendor:Wabcut|") + kClap;
+    const int row = tree.indexOf(rowKey);
+    REQUIRE(row > 0);
+    const QVariantMap item = tree.get(row);
+    CHECK(item.value(QStringLiteral("plugin")).toBool());
+    CHECK(item.value(QStringLiteral("itemId")).toString() == kClap);
+    CHECK(item.value(QStringLiteral("item")).toString() == QStringLiteral("effect:") + kClap);
+    CHECK(item.value(QStringLiteral("kind")).toString() == QStringLiteral("audio"));
+    CHECK(item.value(QStringLiteral("name")).toString() == QStringLiteral("Wabcut Test Gain"));
+    CHECK(item.value(QStringLiteral("vendor")).toString() == QStringLiteral("Wabcut"));
+    CHECK(item.value(QStringLiteral("format")).toString() == QStringLiteral("CLAP"));
+    CHECK(item.value(QStringLiteral("icon")).toString() == QStringLiteral("sliders-horizontal"));
+    CHECK(item.value(QStringLiteral("home")).toBool());
+
+    // The panel's search finds it (its folders open) without touching Plugins.query; Show Audio Plug-ins off hides it.
+    tree.setExpanded(QStringLiteral("plugins"), false);
+    tree.setQuery(QStringLiteral("Wabcut"));
+    CHECK(tree.indexOf(rowKey) > 0);
+    CHECK(p.plugins.query().isEmpty());
+    tree.setQuery({});
+    tree.setShowPlugins(false);
+    CHECK(tree.indexOf(QStringLiteral("plugins")) < 0);
+    tree.setShowPlugins(true);
+    tree.setFilter(QStringLiteral("plugins"));
+    CHECK(tree.get(0).value(QStringLiteral("rowKey")).toString() == QStringLiteral("plugins"));
+    tree.setFilter(QStringLiteral("all"));
+
+    // Favorites and custom bins take plug-ins (the item menu); their copies say they are plug-ins.
+    CHECK(presets.setFavorite(QStringLiteral("effect:") + kClap, true).isEmpty());
+    const int favorite = tree.indexOf(QStringLiteral("favorites|") + kClap);
+    REQUIRE(favorite > 0);
+    CHECK(tree.get(favorite).value(QStringLiteral("plugin")).toBool());
+    CHECK(tree.get(favorite).value(QStringLiteral("icon")).toString() == QStringLiteral("sliders-horizontal"));
+    CHECK_FALSE(tree.get(favorite).value(QStringLiteral("name")).toString().isEmpty());
+    tree.setExpanded(QStringLiteral("plugins"), true); // its vendor folder stayed open
+    REQUIRE(tree.indexOf(rowKey) > 0);
+    CHECK(tree.get(tree.indexOf(rowKey)).value(QStringLiteral("favorite")).toBool());
+    CHECK(presets.newCustomBin(kClap) == QStringLiteral("Custom Bin 01"));
+
+    // Applying from a copy goes through the plug-in bridge: every selected audio clip (a video clip stands for its
+    // linked audio), one undo step, the plug-in's name kept with each.
+    p.controller.setSelection({});
+    CHECK_FALSE(p.plugins.applyToSelectedClips(kClap).value(QStringLiteral("ok")).toBool());
+    p.controller.setSelection({p.tl.clip("V1@0"), p.tl.clip("A2@0")});
+    const auto before = p.undo();
+    const QVariantMap result = tree.applyToSelection(tree.get(favorite).value(QStringLiteral("itemId")).toString());
+    CHECK(result.value(QStringLiteral("ok")).toBool());
+    CHECK(result.value(QStringLiteral("clips")).toInt() == 2);
+    CHECK(p.undo() == before + 1);
+    CHECK(QString::fromStdString(p.a1Plugin().effect) == kClap);
+    CHECK(p.a1Plugin().findData(plughost::kPluginNameKey) != nullptr);
+    CHECK(QString::fromStdString(p.clip("A2@0").effects().back().effect) == kClap);
+    CHECK(p.clip("V1@0").effects().empty());
+
+    // The grouping is remembered for the next start, and the tree follows it.
+    p.plugins.setGroupBy(QStringLiteral("category"));
+    CHECK(QSettings().value(QStringLiteral("effects/pluginGroupBy")).toString() == QStringLiteral("category"));
+    PluginBridge again;
+    CHECK(again.groupBy() == QStringLiteral("category"));
+    CHECK(tree.indexOf(QStringLiteral("plugins/vendor:Wabcut")) < 0);
+    p.plugins.setGroupBy(QStringLiteral("vendor"));
+    CHECK(QSettings().value(QStringLiteral("effects/pluginGroupBy")).toString() == QStringLiteral("vendor"));
 }
 
 TEST_CASE("Plugin badges: missing on a computer without the plugin, crashed when its helper dies", "[app][plugins]") {

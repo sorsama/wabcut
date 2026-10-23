@@ -152,10 +152,11 @@ TEST_CASE("Every focusable control has an accessible name and a visible focus ri
     QAccessible::setActive(false);
 
     INFO("tab stops: " << chain.size() << ", named: " << join(names));
-    CHECK(chain.size() >= 40);
-    for (const char* expected : {"railButton_library", "railButton_effects", "railButton_captions", "railButton_markers",
-                                 "saveButton", "settingsButton", "sequencePill", "workspaceTab_edit",
-                                 "newWorkspaceButton"})
+    CHECK(chain.size() >= 30);
+    // UX rework: the menu bar's titles replaced the left rail's buttons (Settings is in Edit; panels in Window).
+    for (const char* expected : {"menuBar_file", "menuBar_edit", "menuBar_clip", "menuBar_sequence", "menuBar_markers",
+                                 "menuBar_graphics", "menuBar_view", "menuBar_window", "menuBar_help", "saveButton",
+                                 "sequencePill", "workspaceTab_edit", "newWorkspaceButton"})
         CHECK(names.contains(QLatin1String(expected)));
     INFO("without accessible name: " << join(unnamed));
     CHECK(unnamed.isEmpty());
@@ -224,7 +225,7 @@ TEST_CASE("Interacting with the mock shell stays warning-free", "[app][qml]") {
         }
     }
 
-    SECTION("rail shortcuts open and focus the browser panels") {
+    SECTION("the panel focus keys open and focus the browser panels") {
         for (const char* key : {"effects", "captions", "markers", "library"}) {
             REQUIRE(QMetaObject::invokeMethod(shell.window.get(), "showBrowserPanel",
                                               Q_ARG(QVariant, QVariant(QString::fromLatin1(key)))));
@@ -263,9 +264,8 @@ TEST_CASE("Interacting with the mock shell stays warning-free", "[app][qml]") {
     }
 
     SECTION("the Settings window and native window frame") {
-        QObject* rail = shell.object("leftRail");
-        REQUIRE(rail != nullptr);
-        REQUIRE(QMetaObject::invokeMethod(rail, "openSettings", Q_ARG(QString, QStringLiteral("general"))));
+        REQUIRE(QMetaObject::invokeMethod(shell.window.get(), "openSettings", Q_ARG(QString, QStringLiteral("general")),
+                                          Q_ARG(QString, QString())));
         QObject* settings = nullptr;
         for (QObject* o : shell.window->findChildren<QObject*>()) {
             if (o->objectName() == QStringLiteral("settingsWindow"))
@@ -297,10 +297,11 @@ TEST_CASE("Interacting with the mock shell stays warning-free", "[app][qml]") {
     CHECK(messages.isEmpty());
 }
 
-TEST_CASE("Settings: the AI category and the rail open Settings > AI", "[app][qml]") {
+TEST_CASE("Settings: the AI category and openAiPreferences open Settings > AI", "[app][qml]") {
     // Regression (master 0853e65): openAiPreferences() threw "true is not a function" (a line starting with "("
     // continued the assignment above it), so the page never opened. Both ways in (0.1.3: the Settings window): its AI
-    // category, and the rail's openAiPreferences() (the transcript panel's "set up transcription").
+    // category, and window.openAiPreferences() (the transcript panel's "set up transcription"; UX rework: the window
+    // hosts Settings since the left rail went).
     resetSettings();
     clearMessages();
     Shell shell;
@@ -308,9 +309,7 @@ TEST_CASE("Settings: the AI category and the rail open Settings > AI", "[app][qm
     shell.resize(kShotWidth, kShotHeight);
     shell.theme->setProperty("reduceMotion", true);
 
-    QObject* rail = shell.object("leftRail");
-    REQUIRE(rail != nullptr);
-    REQUIRE(QMetaObject::invokeMethod(rail, "openSettings", Q_ARG(QString, QString())));
+    REQUIRE(QMetaObject::invokeMethod(shell.window.get(), "openSettings", Q_ARG(QString, QString()), Q_ARG(QString, QString())));
     QObject* settings = shell.object("settingsWindowLoader")->property("item").value<QObject*>();
     REQUIRE(settings != nullptr);
     REQUIRE(waitFor([&] { return settings->property("opened").toBool(); }));
@@ -336,7 +335,7 @@ TEST_CASE("Settings: the AI category and the rail open Settings > AI", "[app][qm
     REQUIRE(QMetaObject::invokeMethod(settings, "close"));
     REQUIRE(waitFor([&] { return !page->property("opened").toBool(); }));
 
-    REQUIRE(QMetaObject::invokeMethod(rail, "openAiPreferences"));
+    REQUIRE(QMetaObject::invokeMethod(shell.window.get(), "openAiPreferences"));
     REQUIRE(waitFor([&] { return page->property("opened").toBool(); }));
 
     const QStringList messages = early + takeMessages();

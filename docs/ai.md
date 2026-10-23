@@ -2225,7 +2225,7 @@ All the shorts of one call are one undo step, and each records `derivedFrom` (`s
 
 **The assistant** may use `reframe.createSequence` and `shorts.create` without the EditProject capability, because they only add sequences. Other project commands stay out of reach, and so does `reframe.rerun`. A request may make at most 10 sequences. Verification adds two checks: *others* (no other sequence or media item changed or was removed) and *newSequences*. So "make 5 shorts from this podcast about the pricing discussion" runs `shorts.find` (query: pricing) and then `shorts.create`, staged and verified.
 
-**App.** The **Shorts** browser panel (left rail) has the query, a count, the re-rank toggle (when a cloud model is set up and the project is not no-cloud) and the create options. Each candidate is a card with:
+**App.** The **Shorts** browser panel (Window menu) has the query, a count, the re-rank toggle (when a cloud model is set up and the project is not no-cloud) and the create options. Each candidate is a card with:
 - a strip of six frames, looping (still under reduced motion);
 - range and length;
 - score bars;
@@ -2289,7 +2289,7 @@ Three features for people who record themselves: a **rough cut from a script**, 
 
 ### App
 - **Rough cut sheet** (`qml/panels/creator/RoughCutSheet.qml`, Sequence menu): paste or open a script, choose the scope and the take preference, clean-up, B-roll, and the cloud interpretation (only offered with a set-up model and never for a no-cloud project). **Make the cut** previews; the report lists every line with its chosen take, confidence and alternates; clicking an alternate swaps it (a staged edit); **Create sequence** applies and opens it.
-- **Takes panel** (`qml/panels/creator/TakesPanel.qml`, left rail): groups with the takes' words, the diff against the best (added words underlined, missing ones struck through), quality chips and pace. **Play** auditions a take in place (timeline takes in the Program Monitor, others in the Source Monitor), **Use this take** stages one edit, **Keep best takes** stages them all with a review list; the ghost shows on the timeline.
+- **Takes panel** (`qml/panels/creator/TakesPanel.qml`, Window menu): groups with the takes' words, the diff against the best (added words underlined, missing ones struck through), quality chips and pace. **Play** auditions a take in place (timeline takes in the Program Monitor, others in the Source Monitor), **Use this take** stages one edit, **Keep best takes** stages them all with a review list; the ghost shows on the timeline.
 - **Auto zoom dialog** (`qml/dialogs/AutoZoomDialog.qml`, clip menu): the zoom window over the recording's frames, the activity near the playhead, the zoom over time (scrub or click), max zoom, hold, motion, and what to zoom in on. **Add zoom** applies.
 - The singletons are `RoughCut`, `Takes` and `AutoZoom` (`src/app/src/bridge/CreatorBridge.*`). Each runs its command on a scratch copy and commits only on apply, guarded by the revision it was made at.
 
@@ -2687,7 +2687,7 @@ thumbnails), and the render / playback / export suites' matte cases ([masks.md](
   consent history and the offline toggle, under the tabs Providers and keys / Models / Privacy / Usage / Local assistant.
 - **The "AI features" switch (0.1.3):** the master switch at the top of Settings > AI (`Preferences.aiEnabled`). Off
   forces offline mode on, so no request leaves the computer whatever the consent or the per-feature choice, and hides
-  the AI entry points (the rail's Generate panel, Rough Cut and Narration from Script in the sequence menu; Generate
+  the AI entry points (the Window menu's Generate panel, Rough Cut and Narration from Script in the sequence menu; Generate
   says "AI is off" if it is already open). The offline setting from before is kept in `Preferences.aiOfflineBefore`
   and comes back when the switch goes on again. Local tools that need no provider (transcription, Enhance Speech,
   smart search) keep working: the switch is about what leaves the computer and the generative entry points.

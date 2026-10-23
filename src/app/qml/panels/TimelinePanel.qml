@@ -25,6 +25,12 @@ import QtQuick.Controls.Basic
 // - 0.1.3: the tools as Premiere's palette groups with flyouts in the header, the modes (Snap, Linked) as labelled
 //   toggles beside the sequence tabs; edit cursors (EditCursors) on hover and while a drag holds; drops from the
 //   Library and the Source Monitor snap and show an insertion line (trackDrop)
+// - UX rework (2026-10-23, stream T): Snap and the time remapping lines are remembered (Preferences); the corner
+//   timecode takes a typed time or a +/- offset (TimecodeEntry); the track header menu for both kinds with its Add
+//   Tracks... and Delete Track dialogs (TrackHeaderMenu, here: AddTracksDialog, DeleteTrackDialog); right clicks on a
+//   transition (TransitionContextMenu: Set Duration..., alignment, Replace with Default, Set as Default, Clear) and in
+//   a selected gap (GapContextMenu: Ripple Delete); Delete on a selected gap closes it, a refusal shows as a toast
+//   (messageRequested)
 Panel {
     id: root
 
@@ -36,10 +42,14 @@ Panel {
     // or the view tools "hand" and "zoom" (this panel's overlay; the view keeps the selection tool meanwhile)
     property string tool: "select"
     readonly property bool viewTool: tool === "hand" || tool === "zoom"
-    property bool snapping: true
+    /// Snap (S) and the time remapping lines: remembered between runs (UX rework, stream T: Preferences, timeline/*).
+    /// The toggles write Preferences; a write here goes there too.
+    property bool snapping: Preferences.timelineSnapping
+    onSnappingChanged: Preferences.timelineSnapping = snapping
     /// Audio clips show their volume as a rubber band with keyframes (on in the Audio workspace).
     property bool showVolume: false
-    property bool showSpeed: false
+    property bool showSpeed: Preferences.timelineShowSpeed
+    onShowSpeedChanged: Preferences.timelineShowSpeed = showSpeed
     // `name`: the tool in menus (the flyouts); `label`: its tooltip, saying what it does.
     readonly property var tools: [
         { key: "select", icon: "mouse-pointer-2", name: qsTr("Selection"), label: qsTr("Selection tool"), command: "tool.selection" },
@@ -205,6 +215,20 @@ Panel {
     // Keymap commands the timeline view owns. Returns false for anything else.
     // The empty state's action (Main opens File > Import).
     signal importRequested()
+    /// UX rework (stream T): an edit from the panel's menus was refused; Main shows `text` as a toast.
+    signal messageRequested(string text)
+
+    /// The keyboard focus is in the Timeline (its keymap scope) of the window the user works in: the main window, or a
+    /// floating Timeline's own window unless the main window is the active one (the floating window keeps its focus
+    /// item while the user works in the main window).
+    function hasKeyboardFocus(): bool {
+        const w = root.Window.window
+        const item = w ? w.activeFocusItem : null
+        if (!item || KeymapDispatcher.scopeAt(item) !== "timeline")
+            return false
+        const main = KeymapDispatcher.window
+        return !main || w === main || w.active || !main.active
+    }
 
     function runCommand(commandId) {
         switch (commandId) {
@@ -221,7 +245,23 @@ Panel {
         case "sequence.zoomIn": root.zoomBy(0.1); return true
         case "sequence.zoomOut": root.zoomBy(-0.1); return true
         case "sequence.zoomToSequence": lanes.view.zoomAt(0, 0); return true
-        case "sequence.snap": root.snapping = !root.snapping; return true
+        case "sequence.snap": Preferences.timelineSnapping = !root.snapping; return true
+        // UX rework (stream T): Delete, Backspace and Ripple Delete close a selected gap when no clip is selected; when
+        // the model refuses (another sync-locked track has clips in that time, a locked track) the panel says why.
+        // A gap is selected by any plain click in empty lane space, so Delete and Shift+Delete (application keys) close
+        // it only while the Timeline has the keyboard focus: pressed in another panel they do nothing (the command
+        // stops here, so ProjectController's Clear does not close the gap either).
+        case "edit.clear":
+        case "edit.rippleDelete":
+        case "timeline.clearSelection":
+        case "timeline.rippleDelete":
+            if ((ProjectController.selectedGap.track ?? "") === "" || ProjectController.selectedClips.length > 0)
+                break
+            if (!root.hasKeyboardFocus())
+                return true
+            if (!ProjectController.rippleDeleteGap())
+                root.messageRequested(ProjectController.lastError)
+            return true
         }
         const tool = root.tools.find(t => t.command === commandId)
         if (tool) {
@@ -348,7 +388,7 @@ Panel {
             tooltip: qsTr("Snap: clips, edges, drops and the playhead stick to clip edges, marks and markers")
             command: "sequence.snap"
             checked: root.snapping
-            onToggled: root.snapping = checked
+            onToggled: Preferences.timelineSnapping = checked
         }
         // Premiere's Linked Selection (M5i): clicking a clip selects its linked clips too.
         ToggleChip {
@@ -384,7 +424,7 @@ Panel {
             checked: root.showSpeed
             iconName: "timer"
             tooltip: qsTr("Time remapping: click the speed line for a key, drag its halves for a ramp, Ctrl-drag the line for speed, Alt-drag for a hold")
-            onToggled: root.showSpeed = checked
+            onToggled: Preferences.timelineShowSpeed = checked
         }
         // The Timeline list (M5j): tracks and clips as a list for the keyboard and screen readers.
         IconButton {
@@ -423,7 +463,7 @@ Panel {
                     if (key === "volume")
                         root.showVolume = !root.showVolume
                     else if (key === "speed")
-                        root.showSpeed = !root.showSpeed
+                        Preferences.timelineShowSpeed = !root.showSpeed
                     else
                         root.listMode = !root.listMode
                 }
@@ -559,17 +599,26 @@ Panel {
         width: Theme.trackHeaderWidth
         height: Theme.rulerHeight
 
-        Text {
+        // The playhead timecode. UX rework (stream T): click it (or Tab to it and type) to go to a time: a timecode,
+        // frames, or + / - an offset (TimecodeEntry, ProjectController.seekToText); Esc cancels.
+        TimecodeEntry {
             id: cornerTimecode
             objectName: "timelineTimecode"
             anchors.left: parent.left
             anchors.leftMargin: Theme.space(2)
             anchors.verticalCenter: parent.verticalCenter
+            height: Theme.controlHeightSmall
+            pill: false
             text: ProjectController.playheadText
-            color: Theme.accentStroke
-            font.family: Theme.fontMono
-            font.pixelSize: Theme.textLg + Theme.space(0.5)
-            font.weight: Font.Bold
+            label: qsTr("Playhead")
+            pixelSize: Theme.textLg + Theme.space(0.5)
+            seek: typed => {
+                const moved = ProjectController.seekToText(typed)
+                if (moved)
+                    root.revealPlayhead()
+                return moved
+            }
+            preview: typed => ProjectController.timeEntryText(typed)
         }
         // The sequence's frame rate (0.1.3: moved here from the header, which now holds the tools), only where it
         // fits beside the timecode (the title bar shows it too).
@@ -629,6 +678,10 @@ Panel {
                 delegate: TrackHeader {
                     width: headers.width
                     view: lanes.view
+                    // UX rework (stream T): the header menu's dialogs and refusals.
+                    onAddTracksRequested: trackId => addTracksDialog.openFor(trackId)
+                    onDeleteRequested: info => deleteTrackDialog.openFor(info)
+                    onMessageRequested: text => root.messageRequested(text)
                 }
             }
 
@@ -861,6 +914,13 @@ Panel {
                     if (Nesting.clipInfo(clipId).nested === true)
                         Nesting.openNested(clipId)
                 }
+                // UX rework (stream T): right clicks on a transition and in a gap (each selected it first).
+                function onTransitionContextMenuRequested(transitionId, x, y) {
+                    transitionMenu.openAt(lanes, transitionId, Qt.point(x, y))
+                }
+                function onGapContextMenuRequested(trackId, x, y) {
+                    gapMenu.openAt(lanes, Qt.point(x, y))
+                }
                 // M5m: the Remix tool proposed a length: preview the remix (audio.remix, dry run) and show it.
                 function onRemixRequested(clipId, seconds, x, y) {
                     EssentialSound.preview(clipId, seconds)
@@ -880,6 +940,17 @@ Panel {
 
             NestDialog {
                 id: nestDialog
+            }
+
+            // UX rework (stream T): the transition menu (Set Duration..., alignment, Replace with Default, Set as Default
+            // Transition, Clear) and the gap menu (Ripple Delete).
+            TransitionContextMenu {
+                id: transitionMenu
+                onDurationRequested: info => transitionDurationDialog.openFor(info)
+            }
+            GapContextMenu {
+                id: gapMenu
+                onFailed: message => root.messageRequested(message)
             }
 
             RenameClipPopover {
@@ -1087,6 +1158,17 @@ Panel {
                 v.scrollBy(-delta / 2, 0)
             }
         }
+    }
+
+    // UX rework (stream T): the dialogs of the track header and transition menus (over the window: Overlay.overlay).
+    AddTracksDialog {
+        id: addTracksDialog
+    }
+    DeleteTrackDialog {
+        id: deleteTrackDialog
+    }
+    TransitionDurationDialog {
+        id: transitionDurationDialog
     }
 
     // ---- Footer: zoom + minimap ----

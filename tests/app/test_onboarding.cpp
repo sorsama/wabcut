@@ -3,7 +3,7 @@
 //     custom keymap (keys resolve from the active keymap, so edited or imported keys train themselves);
 //   * the first-run welcome: after the launch Home screen, skippable (Esc) and not shown again; completed (a .kys
 //     import, the workspace and the accent), then the three-step tour (Library → Timeline → Export);
-//   * Help and the command palette run it all again;
+//   * Help and the command palette run it all again; so do the rows of Home's Learn page (Home closes first);
 //   * the trainer in the window: keys answer the prompt and never reach the editor.
 // Screenshots: the welcome, the tour and the trainer.
 
@@ -335,6 +335,60 @@ TEST_CASE("Onboarding: the first-run welcome follows Home, skips with Esc and do
     CHECK(messages.filter(QStringLiteral("qml")).isEmpty());
 }
 
+TEST_CASE("Onboarding: Home's Learn page runs the tour and the Keyboard Trainer and What's new after Home closes",
+          "[app][onboarding][home][qml]") {
+    resetSettings();
+    clearMessages();
+    Shell shell;
+    REQUIRE(shell.window != nullptr);
+    shell.resize(kShotWidth, kShotHeight);
+    shell.theme->setProperty("reduceMotion", true);
+    shell.preferences->setProperty("welcomeDone", true);
+    QObject* home = shell.object("homeScreen");
+    REQUIRE(home);
+    const auto fromLearn = [&](const char* row) {
+        REQUIRE(QMetaObject::invokeMethod(shell.window.get(), "showHome"));
+        REQUIRE(waitUntil([&] { return home->property("opened").toBool(); }));
+        REQUIRE(QMetaObject::invokeMethod(home, "showPage", Q_ARG(QString, QStringLiteral("learn"))));
+        spin(100);
+        QQuickItem* item = named(shell, row);
+        REQUIRE(item);
+        REQUIRE(item->isVisible());
+        click(item);
+        // Home closes first: the tour and the dialogs run over the editor.
+        REQUIRE(waitUntil([&] { return !home->property("opened").toBool(); }));
+    };
+
+    // Take the tour: the coach marks over the editor; Esc ends it.
+    QObject* tour = shell.object("coachMarks");
+    REQUIRE(tour);
+    fromLearn("homeLearnTour");
+    REQUIRE(waitUntil([&] { return tour->property("active").toBool(); }));
+    tap(shell.window.get(), Qt::Key_Escape);
+    REQUIRE(waitUntil([&] { return !tour->property("active").toBool(); }));
+
+    // Keyboard Trainer.
+    QObject* trainer = shell.object("keyboardTrainer");
+    REQUIRE(trainer);
+    fromLearn("homeLearnTrainer");
+    REQUIRE(waitUntil([&] { return isVisible(trainer); }));
+    tap(shell.window.get(), Qt::Key_Escape);
+    REQUIRE(waitUntil([&] { return !isVisible(trainer); }));
+
+    // What's new.
+    QObject* whatsNew = shell.object("whatsNewDialog");
+    REQUIRE(whatsNew);
+    fromLearn("homeLearnWhatsNew");
+    REQUIRE(waitUntil([&] { return isVisible(whatsNew); }));
+    tap(shell.window.get(), Qt::Key_Escape);
+    REQUIRE(waitUntil([&] { return !isVisible(whatsNew); }));
+    CHECK(waitUntil([&] { return focusVisible(shell); }));
+
+    const QStringList messages = takeMessages();
+    INFO(join(messages));
+    CHECK(messages.filter(QStringLiteral("qml")).isEmpty());
+}
+
 TEST_CASE("Onboarding: the welcome sets keys, workspace and accent, then tours Library, Timeline and Export",
           "[app][onboarding][qml]") {
     resetSettings();
@@ -461,15 +515,16 @@ TEST_CASE("Onboarding: Help and the command palette run the welcome, the tour, t
     REQUIRE(onboarding);
     CHECK_FALSE(call(onboarding, "firstRun").toBool());
 
-    QObject* help = shell.object("helpPopover");
+    // UX rework: the Help menu of the menu bar (it replaced the left rail's Help popover).
+    QObject* help = shell.object("helpMenu");
     REQUIRE(help);
     const auto fromHelp = [&](const char* item, QObject* dialog) {
-        click(named(shell, "helpButton"));
+        click(named(shell, "menuBar_help"));
         REQUIRE(waitUntil([&] { return isVisible(help); }));
-        click(named(shell, item));
+        click(shell.object(item));
         REQUIRE(waitUntil([&] { return isVisible(dialog); }));
         CHECK_FALSE(isVisible(help));
-        // The dialog keeps the focus (the popover gave it back before the dialog opened).
+        // The dialog keeps the focus (the menu had closed and given it back before the dialog opened).
         auto* content = dialog->property("contentItem").value<QQuickItem*>();
         REQUIRE(content);
         QQuickItem* popupItem = content->parentItem();

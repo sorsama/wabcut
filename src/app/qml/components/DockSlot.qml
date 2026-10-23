@@ -8,6 +8,9 @@ import QtQuick.Window
 // onto another group joins it or docks beside it; the slot pops out into a window of its own (FloatingDock), which
 // docks it back when it closes. The slot's children live in its holder: that is what moves into the floating window
 // and back.
+// UX rework (Premiere's frames): a press anywhere in the group makes it the active group (DockManager.activeGroup),
+// which wears a 2 px accent outline; a tab's right-click opens the tab menu (DockTabMenu), its double-click maximizes
+// the group.
 Item {
     id: slot
 
@@ -28,6 +31,14 @@ Item {
     /// The window it floats in (a FloatingDock), else null.
     property Window floatWindow: null
     readonly property bool floating: floatWindow !== null
+    /// The active group (the Window menu opens closed panels here; Shift+` maximizes it; Ctrl+W closes its panel).
+    readonly property bool highlighted: manager !== null && manager.activeGroup === dockKey
+    /// The group takes the whole work area (Maximize Frame).
+    readonly property bool maximized: manager !== null && manager.maximizedGroup === dockKey
+    /// The mouse pointer is over the group (` maximizes the group under it).
+    readonly property bool pointerInside: glassHover.hovered
+    /// The tab menu (a DockTabMenu), once a tab's right-click made it; null before.
+    readonly property QtObject tabMenu: tabMenuLoader.item
     default property alias content: holder.data
     readonly property alias holder: holder
 
@@ -56,6 +67,22 @@ Item {
         if (slot.currentPanel !== "")
             manager?.closePanel(slot.currentPanel)
     }
+    /// Maximize / Restore Frame for this group (a double-click on one of its tabs).
+    function toggleMaximize() {
+        manager?.toggleMaximize(slot.dockKey)
+    }
+    /// The tab menu (DockTabMenu) for the panel `panel`, at (`x`, `y`) in `item` (its tab).
+    function openTabMenu(panel: string, item: Item, x: real, y: real) {
+        if (!slot.manager)
+            return
+        slot.manager.setActiveGroup(slot.dockKey)
+        tabMenuLoader.active = true
+        const menu = tabMenuLoader.item as DockTabMenu
+        if (!menu)
+            return
+        menu.panel = panel
+        menu.popup(item, x, y)
+    }
 
     DockHolder {
         id: holder
@@ -80,8 +107,56 @@ Item {
             width: slot.tabbed ? Math.min(naturalWidth, Math.max(Theme.space(24), holder.width * 0.62)) : 0
             panels: slot.tabPanels
             current: slot.currentPanel
-            onActivated: key => slot.manager?.activate(key)
+            onActivated: key => {
+                slot.manager?.activate(key)
+                slot.manager?.setActiveGroup(slot.dockKey)
+            }
             onCloseRequested: key => slot.manager?.closePanel(key)
+        }
+
+        // The active group's outline (Premiere's highlighted frame): 2 px of the accent along the island's edge, over
+        // its panels. Keyboard focus rings stay the white (black on light) rings inside.
+        Rectangle {
+            objectName: "dockActiveOutline_" + slot.dockKey
+            anchors.fill: parent
+            z: 90
+            visible: slot.highlighted
+            radius: Theme.radiusPanel
+            color: "transparent"
+            border.width: Theme.focusRingWidth
+            border.color: Theme.accentStroke
+        }
+
+        // The glass: sees every press in the group without taking it (a PointHandler only watches; the panels' own
+        // controls keep their presses) and makes the group the active one. In the holder, so it goes along to a
+        // floating window.
+        Item {
+            objectName: "dockGlass_" + slot.dockKey
+            anchors.fill: parent
+            z: 100
+
+            PointHandler {
+                acceptedButtons: Qt.LeftButton | Qt.RightButton | Qt.MiddleButton
+                onActiveChanged: {
+                    if (active)
+                        slot.manager?.setActiveGroup(slot.dockKey)
+                }
+            }
+        }
+
+        // Whether the pointer is over the group (` maximizes the group under it). On the holder, under its panels: a
+        // HoverHandler on the glass above them took the hover the panels need (the timeline lost its edit cursors);
+        // a parent's HoverHandler sees hover over its children without taking it.
+        HoverHandler {
+            id: glassHover
+        }
+
+        // The tab menu, made on first use (its host set here: inside the component `slot` would not be this id).
+        Loader {
+            id: tabMenuLoader
+            active: false
+            sourceComponent: DockTabMenu {}
+            onLoaded: (tabMenuLoader.item as DockTabMenu).host = slot
         }
     }
 }

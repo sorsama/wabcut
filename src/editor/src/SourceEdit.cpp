@@ -267,13 +267,39 @@ edit::EditOutcome dropMedia(EditSession& session, const MediaDrop& drop) {
         if (drop.sourceRange) {
             source.sourceRange = *drop.sourceRange;
         } else {
+            // What the streams that go in may use (MediaItem::sourceBounds: a restricted subclip's range) and, as an
+            // unmarked three-point edit takes it (edit::resolveThreePointEdit), the default range: a subclip's own range
+            // (restricted or not), else all of the media.
             std::optional<Ticks> extent;
+            Ticks start{};
             for (const edit::SourcePatch& p : source.patches) {
-                if (const auto e = media->sourceExtent(p.source)) {
-                    extent = extent ? std::min(*extent, *e) : *e;
+                const SourceBounds bounds = media->sourceBounds(p.source);
+                start = std::max(start, bounds.start);
+                if (bounds.end) {
+                    extent = extent ? std::min(*extent, *bounds.end) : *bounds.end;
                 }
             }
-            source.sourceRange = {Ticks{}, extent.value_or(edit::kDefaultStillDuration)};
+            Ticks defaultIn = start;
+            std::optional<Ticks> defaultOut = extent;
+            if (media->subclip) {
+                defaultIn = std::max(start, media->subclip->range.start);
+                defaultOut = extent ? std::min(*extent, media->subclip->range.end()) : media->subclip->range.end();
+            }
+            source.sourceRange = defaultOut ? TimeRange::fromStartEnd(defaultIn, std::max(defaultIn, *defaultOut))
+                                            : TimeRange{defaultIn, edit::kDefaultStillDuration};
+            if (drop.useSourceMarks) {
+                // The item's marks (Premiere: a Project panel drag uses its In and Out); a missing one is the start or
+                // the end of that default range, and none reaches outside what the streams that go in may use.
+                const edit::SourceMarks marks = edit::storedSourceMarks(*media);
+                const Ticks in = std::max(start, marks.in.value_or(source.sourceRange.start));
+                Ticks out = marks.out.value_or(source.sourceRange.end());
+                if (extent) {
+                    out = std::min(out, *extent);
+                }
+                if ((marks.in || marks.out) && out > in) {
+                    source.sourceRange = TimeRange::fromStartEnd(in, out);
+                }
+            }
         }
         if (source.sourceRange.isEmpty()) {
             return std::unexpected(invalid("the media is empty"));

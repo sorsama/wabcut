@@ -1,6 +1,7 @@
 #include "ProjectLifecycle.h"
 
 #include "BridgeIds.h"
+#include "DemoProject.h"
 #include "EditingBridge.h"
 #include "MediaBridge.h"
 #include "ProjectController.h"
@@ -14,16 +15,22 @@
 #include <wabcut/export/AudioPostHost.h>
 #include <wabcut/interchange/CaptionFiles.h>
 #include <wabcut/interchange/ImportSummary.h>
+#include <wabcut/model/AudioChannelOps.h>
+#include <wabcut/model/ColorManagementOps.h>
 #include <wabcut/model/MediaLocator.h>
 #include <wabcut/model/ProjectIO.h>
 #include <wabcut/model/ProjectOps.h>
+#include <wabcut/model/SequencePresets.h>
+#include <wabcut/model/SequenceSettings.h>
 #include <wabcut/model/Timecode.h>
+#include <wabcut/model/Vfr.h>
 #include <wabcut/platform/FileTime.h>
 
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QPointer>
 #include <QImage>
+#include <QJSValue>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QThreadPool>
@@ -38,6 +45,7 @@
 #include <algorithm>
 #include <climits>
 #include <chrono>
+#include <cmath>
 #include <filesystem>
 
 namespace wabcut::app {
@@ -91,8 +99,13 @@ edit::SequenceSettings settingsFor(const QList<QUrl>& media) {
             settings.width = sideways ? v.height : v.width;
             settings.height = sideways ? v.width : v.height;
         }
-        if (v.frameRate.num > 0 && v.frameRate.den > 0 && !v.variableFrameRate) {
-            settings.frameRate = v.frameRate;
+        if (v.frameRate.num > 0 && v.frameRate.den > 0) {
+            // UX rework: a variable frame rate capture gets its nominal rate (the measured rate snapped to a standard
+            // one), as Home's media start and the gaming start do; it used to get 30 fps.
+            const Rate rate = v.variableFrameRate ? nominalRate(v.frameRate) : v.frameRate;
+            if (rate.isExact()) {
+                settings.frameRate = rate;
+            }
         }
         break;
     }
@@ -102,6 +115,225 @@ edit::SequenceSettings settingsFor(const QList<QUrl>& media) {
 ProjectState emptyProject(const edit::SequenceSettings& settings) {
     auto created = edit::addSequence(ProjectState{}, settings);
     return created ? std::move(created->state) : ProjectState{};
+}
+
+// ---- The New project page's settings (UX rework, Home) ----
+
+constexpr int kMinFrameSize = 16;    // sequence.setSettings' bounds
+constexpr int kMaxFrameSize = 16384;
+constexpr int kMinAudioRate = 8000;
+constexpr int kMaxAudioRate = 384000;
+constexpr int kMaxTracks = 99;
+
+/// A QML value as plain QVariant data (a JS object can arrive as a QJSValue).
+QVariant plainValue(const QVariant& value) {
+    if (value.metaType() == QMetaType::fromType<QJSValue>()) {
+        return value.value<QJSValue>().toVariant();
+    }
+    return value;
+}
+
+/// `key` as a whole number in [lo, hi] into `out`; absent leaves `out`. False for anything else.
+bool readWhole(const QVariantMap& values, const QString& key, int lo, int hi, std::int32_t& out) {
+    if (!values.contains(key)) {
+        return true;
+    }
+    bool ok = false;
+    const double number = plainValue(values.value(key)).toDouble(&ok);
+    if (!ok || !std::isfinite(number) || number != std::floor(number) || number < lo || number > hi) {
+        return false;
+    }
+    out = static_cast<std::int32_t>(number);
+    return true;
+}
+
+/// 29.97 and 59.94: the rates drop-frame timecode exists for.
+bool dropFrameRate(Rate rate) {
+    const Rate r = rate.normalized();
+    return r.den == 1001 && (r.num == 30000 || r.num == 60000);
+}
+
+/// The untitled project New project makes from `values` (ProjectLifecycle::newProjectWith's keys): its one sequence,
+/// then the Advanced settings applied to that state (no undo step). The message for the user when a value cannot be used.
+std::expected<ProjectState, QString> newProjectState(const QVariantMap& values) {
+    edit::SequenceSettings settings;
+    if (const QString id = values.value(QStringLiteral("preset")).toString(); !id.isEmpty()) {
+        const SequencePreset* preset = findSequencePreset(id.toStdString());
+        if (!preset) {
+            return std::unexpected(ProjectLifecycle::tr("There is no sequence preset “%1”").arg(id));
+        }
+        settings.width = preset->width;
+        settings.height = preset->height;
+        settings.frameRate = preset->frameRate;
+        settings.dropFrame = preset->dropFrame;
+    }
+    if (const QString name = values.value(QStringLiteral("name")).toString().trimmed(); !name.isEmpty()) {
+        settings.name = name.toStdString();
+    }
+    if (!readWhole(values, QStringLiteral("width"), kMinFrameSize, kMaxFrameSize, settings.width) ||
+        !readWhole(values, QStringLiteral("height"), kMinFrameSize, kMaxFrameSize, settings.height)) {
+        return std::unexpected(ProjectLifecycle::tr("The frame size must be %1 to %2 pixels each way")
+                                   .arg(kMinFrameSize)
+                                   .arg(kMaxFrameSize));
+    }
+    if (values.contains(QStringLiteral("rateNum")) || values.contains(QStringLiteral("rateDen"))) {
+        settings.frameRate = Rate{values.value(QStringLiteral("rateNum"), settings.frameRate.num).toInt(),
+                                  values.value(QStringLiteral("rateDen"), settings.frameRate.den).toInt()};
+        if (settings.frameRate.isValid() && settings.frameRate.toDouble() > 1000.0) {
+            return std::unexpected(ProjectLifecycle::tr("The frame rate must be at most 1000 fps"));
+        }
+    }
+    std::int32_t audioRate = settings.audioRate.num / std::max(1, settings.audioRate.den);
+    if (!readWhole(values, QStringLiteral("audioRate"), kMinAudioRate, kMaxAudioRate, audioRate)) {
+        return std::unexpected(ProjectLifecycle::tr("The audio sample rate must be %1 to %2 Hz").arg(kMinAudioRate).arg(kMaxAudioRate));
+    }
+    settings.audioRate = Rate{audioRate, 1};
+    if (values.contains(QStringLiteral("dropFrame"))) {
+        settings.dropFrame = values.value(QStringLiteral("dropFrame")).toBool();
+    }
+    if (!dropFrameRate(settings.frameRate)) {
+        settings.dropFrame = false; // only 29.97 and 59.94 have drop-frame timecode
+    }
+    if (!readWhole(values, QStringLiteral("videoTracks"), 1, kMaxTracks, settings.videoTracks)) {
+        return std::unexpected(ProjectLifecycle::tr("A new sequence has 1 to %1 video tracks").arg(kMaxTracks));
+    }
+    if (!readWhole(values, QStringLiteral("audioTracks"), 1, kMaxTracks, settings.audioTracks)) {
+        return std::unexpected(ProjectLifecycle::tr("A new sequence has 1 to %1 audio tracks").arg(kMaxTracks));
+    }
+    // The same checks as edit::addSequence (an exact rate, a frame), before anything changes.
+    auto created = edit::addSequence(ProjectState{}, settings);
+    if (!created) {
+        return std::unexpected(
+            ProjectLifecycle::tr("Cannot create the sequence: %1").arg(QString::fromStdString(created.error().message)));
+    }
+    ProjectState state = std::move(created->state);
+    const SequenceId sequence = created->id;
+
+    // Sequence Settings fields that addSequence does not take.
+    edit::SequenceSettingsChange change;
+    bool changed = false;
+    if (values.contains(QStringLiteral("pixelAspect"))) {
+        const QVariant value = plainValue(values.value(QStringLiteral("pixelAspect")));
+        std::optional<Rate> aspect;
+        if (value.typeId() == QMetaType::QVariantMap) {
+            const QVariantMap map = value.toMap();
+            aspect = Rate::make(map.value(QStringLiteral("num")).toInt(), map.value(QStringLiteral("den")).toInt());
+        } else {
+            bool ok = false;
+            const double ratio = value.toDouble(&ok);
+            if (ok && std::isfinite(ratio) && ratio > 0.0) {
+                // A ratio such as 0.9091: thousandths are exact enough for every PAR Premiere lists (as sequence.setSettings).
+                aspect = Rate::make(std::llround(ratio * 10000.0), 10000);
+            }
+        }
+        if (!aspect || aspect->toDouble() < 0.1 || aspect->toDouble() > 10.0) {
+            return std::unexpected(ProjectLifecycle::tr("The pixel aspect ratio must be 0.1 to 10"));
+        }
+        change.pixelAspect = *aspect;
+        changed = true;
+    }
+    if (values.contains(QStringLiteral("fields"))) {
+        const auto fields = fieldOrderFromString(values.value(QStringLiteral("fields")).toString().toStdString());
+        if (!fields) {
+            return std::unexpected(ProjectLifecycle::tr("Fields must be progressive, upperFirst or lowerFirst"));
+        }
+        change.fields = *fields;
+        changed = true;
+    }
+    if (const QString start = values.value(QStringLiteral("startTimecode")).toString().trimmed(); !start.isEmpty()) {
+        const auto ticks = parseTimecode(start.toStdString(), settings.frameRate, settings.dropFrame);
+        if (!ticks) {
+            return std::unexpected(ProjectLifecycle::tr("“%1” is not a start timecode").arg(start));
+        }
+        change.startTimecode = *ticks;
+        changed = true;
+    }
+    if (values.contains(QStringLiteral("previewFormat"))) {
+        const QString format = values.value(QStringLiteral("previewFormat")).toString();
+        if (format == QLatin1String("prores") || format == QLatin1String("dnxhr") || format == QLatin1String("h264")) {
+            change.previewFormat = format.toStdString();
+            changed = true;
+        } else if (!format.isEmpty() && format != QLatin1String("auto")) {
+            return std::unexpected(ProjectLifecycle::tr("The preview file format must be Auto, ProRes, DNxHR or H.264"));
+        }
+    }
+    if (changed) {
+        auto edited = edit::setSequenceSettings(state, sequence, change);
+        if (!edited) {
+            return std::unexpected(ProjectLifecycle::tr("Cannot create the sequence: %1")
+                                       .arg(QString::fromStdString(edited.error().message)));
+        }
+        state = std::move(edited->state);
+    }
+
+    // The audio tracks' channel format and the master's.
+    if (values.contains(QStringLiteral("trackFormat"))) {
+        const auto format = channelFormatFromString(values.value(QStringLiteral("trackFormat")).toString().toStdString());
+        if (!format) {
+            return std::unexpected(ProjectLifecycle::tr("The audio track format must be stereo, mono, 5.1 or adaptive"));
+        }
+        if (*format != ChannelFormat::Stereo) {
+            std::vector<TrackId> tracks;
+            for (const auto& track : state.findSequence(sequence)->audioTracks) {
+                tracks.push_back(track->id);
+            }
+            edit::TrackStateChange trackChange;
+            trackChange.format = *format;
+            for (const TrackId track : tracks) {
+                auto edited = edit::setTrackState(state, sequence, track, trackChange);
+                if (!edited) {
+                    return std::unexpected(ProjectLifecycle::tr("Cannot create the sequence: %1")
+                                               .arg(QString::fromStdString(edited.error().message)));
+                }
+                state = std::move(edited->state);
+            }
+        }
+    }
+    if (values.contains(QStringLiteral("masterFormat"))) {
+        const auto format = channelFormatFromString(values.value(QStringLiteral("masterFormat")).toString().toStdString());
+        if (!format || (*format != ChannelFormat::Stereo && *format != ChannelFormat::Surround51)) {
+            return std::unexpected(ProjectLifecycle::tr("The audio master must be stereo or 5.1"));
+        }
+        if (*format != ChannelFormat::Stereo) {
+            auto edited = edit::setMasterFormat(state, sequence, *format);
+            if (!edited) {
+                return std::unexpected(ProjectLifecycle::tr("Cannot create the sequence: %1")
+                                           .arg(QString::fromStdString(edited.error().message)));
+            }
+            state = std::move(edited->state);
+        }
+    }
+
+    // The project's colour management (Color.setColorManagement's keys).
+    if (values.contains(QStringLiteral("colorManagement"))) {
+        const QVariant value = plainValue(values.value(QStringLiteral("colorManagement")));
+        const QVariantMap map = value.typeId() == QMetaType::QVariantMap
+                                    ? value.toMap()
+                                    : QVariantMap{{QStringLiteral("mode"), value.toString()}};
+        ColorManagement management;
+        const QString modeId = map.value(QStringLiteral("mode"), QString::fromLatin1(toString(management.mode))).toString();
+        const auto mode = colorManagementModeFromString(modeId.toStdString());
+        if (!mode) {
+            return std::unexpected(ProjectLifecycle::tr("There is no colour management “%1”").arg(modeId));
+        }
+        management.mode = *mode;
+        if (map.contains(QStringLiteral("peakNits"))) {
+            management.peakNits = map.value(QStringLiteral("peakNits")).toDouble();
+        }
+        if (map.contains(QStringLiteral("referenceWhiteNits"))) {
+            management.referenceWhiteNits = map.value(QStringLiteral("referenceWhiteNits")).toDouble();
+        }
+        if (map.contains(QStringLiteral("autoDetectLog"))) {
+            management.autoDetectLog = map.value(QStringLiteral("autoDetectLog")).toBool();
+        }
+        auto managed = edit::setColorManagement(state, management);
+        if (!managed) {
+            return std::unexpected(ProjectLifecycle::tr("Cannot set the colour management: %1")
+                                       .arg(QString::fromStdString(managed.error().message)));
+        }
+        state = std::move(*managed);
+    }
+    return state;
 }
 
 QVariantMap reportToMap(const interchange::ImportResult& result, const std::filesystem::path& file) {
@@ -980,9 +1212,13 @@ void ProjectLifecycle::startNewProject(const QList<QUrl>& firstMedia) {
 }
 
 void ProjectLifecycle::startNewProjectWith(const edit::SequenceSettings& settings) {
+    startNewProjectFrom(emptyProject(settings));
+}
+
+void ProjectLifecycle::startNewProjectFrom(ProjectState initial) {
     waitForAutosave(); // P.1: an autosave being written lands before the files change
     m_controller->setSelection({});
-    m_document->newProject(emptyProject(settings));
+    m_document->newProject(std::move(initial));
     updateLock({});
     m_controller->setProjectFile({});
     m_controller->setCurrentSequenceIndex(0);
@@ -999,6 +1235,47 @@ void ProjectLifecycle::newProject() {
     }
     setError({});
     startNewProject({});
+}
+
+bool ProjectLifecycle::openDemo() {
+    if (!m_document || !m_controller) {
+        return false;
+    }
+    if (m_controller->session().inGesture()) {
+        setError(tr("Finish the edit in progress first"));
+        return false;
+    }
+    waitForAutosave(); // P.1: an autosave being written lands before the files change
+    // The project shown makes way (QML asked about its unsaved changes first): what is on disk is the truth now, as
+    // closeProject does. Other open projects stay open.
+    if (!m_demo && !m_readOnly) {
+        m_document->removeAutosaves();
+    }
+    m_controller->setSelection({});
+    DemoProject demo = buildDemoProject();
+    m_document->newProject(std::move(demo.state)); // untitled, not dirty, no history
+    updateLock({});
+    m_controller->setProjectFile({});
+    int sequenceIndex = 0;
+    if (const ProjectSnapshot snapshot = m_controller->snapshot()) {
+        const auto& sequences = snapshot->sequences;
+        const auto it = std::ranges::find_if(sequences, [&](const SequencePtr& s) { return s->id == demo.mainSequence; });
+        if (it != sequences.end()) {
+            sequenceIndex = static_cast<int>(it - sequences.begin());
+        }
+    }
+    m_controller->setCurrentSequenceIndex(sequenceIndex);
+    // As at launch: City B-roll selected, the playhead at 00:00:12:08.
+    if (demo.initialSelection.isValid()) {
+        m_controller->setSelection({demo.initialSelection}, demo.initialSelection);
+    }
+    m_controller->setPlayhead(demo.initialPlayhead);
+    m_demo = true;
+    m_autosaveText = tr("Not autosaved yet");
+    setError({});
+    emit autosaveChanged();
+    adoptDocument();
+    return true;
 }
 
 QUrl ProjectLifecycle::launchProject() const {
@@ -1028,9 +1305,15 @@ bool ProjectLifecycle::open(const QUrl& file) {
         return false;
     }
     const std::filesystem::path path = toPath(file);
-    // 0.2 (P.3): open next to this one already: it becomes the active project, with its unsaved changes.
-    if (const int at = indexOfOpen(path); at >= 0 && static_cast<std::size_t>(at) != m_active) {
-        return switchTo(at);
+    // 0.2 (P.3): open next to this one already: it becomes the active project, with its unsaved changes. The active
+    // project itself (File > Open, an import or a drop of its own file): nothing to do. Reading it again would drop its
+    // undo history; File > Revert is the way to read the saved file again.
+    if (const int at = indexOfOpen(path); at >= 0) {
+        if (static_cast<std::size_t>(at) != m_active) {
+            return switchTo(at);
+        }
+        setError({});
+        return true;
     }
     waitForAutosave(); // P.1: an autosave being written lands before the files change
     m_controller->setSelection({});
@@ -1116,6 +1399,75 @@ bool ProjectLifecycle::saveAs(const QUrl& file) {
     m_autosaveText = tr("Saved %1").arg(QDateTime::currentDateTime().toString(QStringLiteral("HH:mm")));
     emit autosaveChanged();
     adoptDocument();
+    return true;
+}
+
+// UX rework (stream S): File > Save a Copy... and File > Revert.
+bool ProjectLifecycle::saveCopy(const QUrl& file) {
+    if (!m_document) {
+        return false;
+    }
+    std::filesystem::path path = toPath(file);
+    if (path.empty()) {
+        setError(tr("Choose a file for the copy"));
+        return false;
+    }
+    if (path.extension() != io::kProjectExtension) {
+        path += std::string(io::kProjectExtension);
+    }
+    // Not over this project's own file (that is Save) nor over a project open next to it.
+    if (indexOfOpen(path) >= 0) {
+        setError(tr("%1 is open: choose another file for the copy").arg(toQString(path.filename())));
+        return false;
+    }
+    if (auto written = m_document->saveCopy(path); !written) {
+        setError(tr("Cannot save a copy as %1: %2").arg(toQString(path.filename()), QString::fromStdString(written.error().message)));
+        return false;
+    }
+    setError({});
+    return true;
+}
+
+bool ProjectLifecycle::revert() {
+    if (!m_document || !m_controller) {
+        return false;
+    }
+    if (m_demo || m_document->isUntitled()) {
+        setError(tr("Only a saved project can be reverted"));
+        return false;
+    }
+    if (m_controller->session().inGesture()) {
+        setError(tr("Finish the edit in progress first"));
+        return false;
+    }
+    waitForAutosave(); // an autosave being written lands before its files are removed
+    const std::filesystem::path file = m_document->file();
+    const int sequence = m_controller->currentSequenceIndex();
+    const Ticks playhead = m_controller->playhead();
+    m_controller->setSelection({});
+    // Read first: a file that cannot be read changes nothing (the unsaved work and its autosaves stay).
+    if (auto opened = m_document->open(file); !opened) {
+        setError(tr("Cannot revert to %1: %2").arg(toQString(file.filename()), QString::fromStdString(opened.error().message)));
+        return false;
+    }
+    // The user threw the changes away: their autosaves go too (no recovery offer for them), and what is on disk is the
+    // autosaved state again. Another session's lock: its autosaves are not this session's to remove.
+    if (!m_readOnly) {
+        m_document->removeAutosaves();
+    }
+    m_document->markClean();
+    setError({});
+    m_controller->setProjectFile(m_document->file());
+    if (sequence >= 0 && sequence < static_cast<int>(m_controller->sequenceNames().size())) {
+        m_controller->setCurrentSequenceIndex(sequence);
+    }
+    m_controller->setPlayhead(playhead);
+    m_autosaveText = tr("Reverted %1").arg(QDateTime::currentDateTime().toString(QStringLiteral("HH:mm")));
+    emit autosaveChanged();
+    adoptDocument();
+    if (const int offline = offlineCount(); offline > 0) {
+        emit offlineMediaFound(offline);
+    }
     return true;
 }
 
@@ -1375,22 +1727,20 @@ bool ProjectLifecycle::newProjectWith(const QVariantMap& sequence) {
     if (!m_document) {
         return false;
     }
-    edit::SequenceSettings settings;
-    if (const QString name = sequence.value(QStringLiteral("name")).toString().trimmed(); !name.isEmpty()) {
-        settings.name = name.toStdString();
-    }
-    settings.width = sequence.value(QStringLiteral("width"), settings.width).toInt();
-    settings.height = sequence.value(QStringLiteral("height"), settings.height).toInt();
-    settings.frameRate = Rate{sequence.value(QStringLiteral("rateNum"), settings.frameRate.num).toInt(),
-                              sequence.value(QStringLiteral("rateDen"), settings.frameRate.den).toInt()};
-    // The same checks as edit::addSequence, before anything changes.
-    if (auto check = edit::addSequence(ProjectState{}, settings); !check) {
-        setError(tr("Cannot create the sequence: %1").arg(QString::fromStdString(check.error().message)));
+    // The sequence and the Advanced settings, checked and applied before anything changes (UX rework).
+    auto state = newProjectState(sequence);
+    if (!state) {
+        setError(state.error());
         return false;
     }
     setError({});
-    startNewProjectWith(settings);
+    startNewProjectFrom(std::move(*state));
     return true;
+}
+
+QString ProjectLifecycle::checkNewProjectSettings(const QVariantMap& sequence) {
+    const auto state = newProjectState(sequence);
+    return state ? QString() : state.error();
 }
 
 // ---- Export Timeline (0.1.1) ----------------------------------------------------------------------------------------
@@ -1818,6 +2168,7 @@ bool ProjectLifecycle::dropMedia(const QString& mediaId, const QString& timecode
     drop.at = *at;
     drop.track = parseTrackKey(trackId).value_or(TrackId{});
     drop.mode = overwrite ? editor::DropMode::Overwrite : editor::DropMode::Insert;
+    drop.useSourceMarks = true; // 0.2 UX (stream T): the item's Source Monitor In and Out, as Premiere's drag does
     auto edited = editor::dropMedia(m_document->session(), drop);
     if (!edited) {
         setError(QString::fromStdString(edited.error().message));

@@ -161,6 +161,11 @@ public:
     /// 0.2 Media Browser: shows `file` (a file, or the first file of a camera card's clip) without importing it; false
     /// (with `message`) when it is not media Wabcut reads.
     Q_INVOKABLE bool loadFile(const QString& file);
+    /// 0.2 UX (stream T), files dropped from File Explorer onto the Source Monitor: loads the project's media item for
+    /// `file` (a file URL or a local path; the item whose file resolves to it), as load() does - QML imports the files
+    /// first (ProjectFile.importFiles) and then calls this with the first one. False (with `message`) when the project
+    /// has no item for that file.
+    Q_INVOKABLE bool loadFileItem(const QString& file);
     Q_INVOKABLE void unload();
     /// The Source Monitor panel's picture (a ProgramMonitor).
     Q_INVOKABLE void attachMonitor(QObject* monitor);
@@ -179,6 +184,11 @@ public:
     /// The mini timeline and the waveform: jump to (seek) or scrub through a fraction of the source.
     Q_INVOKABLE void seekFraction(double fraction);
     Q_INVOKABLE void scrubFraction(double fraction);
+    /// 0.2 UX (stream T), the Source Monitor timecode's typed entry (Premiere): pauses and moves to `text`, a source
+    /// timecode as positionText shows it ("00:00:02:10", "2:10", packed digits "210", ';' '.' ',' as separators, an
+    /// empty field is "00": "2." = two seconds), or with a leading '+' / '-' an offset from the frame shown ("+15",
+    /// "-1:00"). Clamped to the source. False (nothing moves) without a source or for text it cannot read.
+    Q_INVOKABLE bool seekToText(const QString& text);
 
     // ---- QML: marks ----
     Q_INVOKABLE void markIn();

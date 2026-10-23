@@ -79,7 +79,7 @@ TEST_CASE("Startup: each panel's creation cost, created alone in the shell's eng
                             "EssentialSoundPanel", "ReviewPanel",    "ScopesPanel",     "InspectorPanel",
                             "CaptionStylePanel", "FrameInspectorPanel", "AudioMixerPanel", "ExportPanel",
                             "ColorPanel",      "TimelinePanel",      "MonitorPanel",    "SourceMonitorPanel",
-                            "TopBar",          "LeftRail",           "HomeScreen",      "Onboarding",
+                            "TopBar",          "AppMenuBar",         "HomeScreen",      "Onboarding",
                             "PaletteOverlay",  "AssistantPanel",     "KeyboardShortcutsDialog", "SpeedDurationDialog",
                             "FitClipDialog",   "UnsavedChangesDialog", "ImportReportDialog", "RelinkDialog",
                             "RecoveryDialog",  "CrashNoticeDialog",  "FirstRunCheckDialog", "WindowFrame"};

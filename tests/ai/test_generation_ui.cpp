@@ -24,9 +24,8 @@ TEST_CASE("Generate cost preview and local model page screenshots", "[ai][ui][ge
         auto* ai = shell.engine.singletonInstance<AiController*>("Wabcut", "AiController"); REQUIRE(ai);
         auto* generation = shell.engine.singletonInstance<GenerateController*>("Wabcut", "GenerateController"); REQUIRE(generation);
         if (localPage) {
-            // 0.1.3: Settings > AI (the rail opens it on that page).
-            auto* rail = shell.object("leftRail"); REQUIRE(rail);
-            REQUIRE(QMetaObject::invokeMethod(rail, "openAiPreferences"));
+            // 0.1.3: Settings > AI (the window opens it on that page: window.openAiPreferences).
+            REQUIRE(QMetaObject::invokeMethod(shell.window.get(), "openAiPreferences"));
             auto* settings = shell.object("settingsWindowLoader")->property("item").value<QObject*>(); REQUIRE(settings);
             std::function<QQuickItem*(QQuickItem*)> walk = [&](QQuickItem* item) -> QQuickItem* {
                 if (!item || item->objectName() == QStringLiteral("aiPreferences")) return item;

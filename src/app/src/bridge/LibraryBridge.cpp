@@ -51,6 +51,7 @@
 #include <QUrl>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
 #include <map>
@@ -97,6 +98,8 @@ bool revealFile(const QString& path) {
 } // namespace
 
 void LibraryBridge::setRevealer(Revealer revealer) { revealOverride() = std::move(revealer); }
+
+bool LibraryBridge::revealPath(const QString& path) { return revealFile(path); }
 
 LibraryBridge::AnalysisProbe defaultAnalysisProbe(std::function<bool(std::uint64_t)> indexed) {
     return [indexed = std::move(indexed)](const MediaItem& item, const std::filesystem::path& file) {
@@ -358,7 +361,9 @@ void LibraryBridge::setHoverScrub(bool on) {
 
 void LibraryBridge::setThumbnailScale(qreal scale) {
     // Whole steps between 0.5 and 2 (NaN and junk from QML land on the default).
-    const qreal next = std::isfinite(scale) ? std::clamp(std::round(scale / kThumbnailScaleStep) * kThumbnailScaleStep, 0.5, 2.0) : 1.0;
+    const qreal next = std::isfinite(scale) ? std::clamp(std::round(scale / kThumbnailScaleStep) * kThumbnailScaleStep,
+                                                         kThumbnailScaleMin, kThumbnailScaleMax)
+                                            : 1.0;
     if (qFuzzyCompare(next, m_thumbnailScale))
         return;
     m_thumbnailScale = next;
@@ -2697,13 +2702,55 @@ void LibraryBridge::pruneSelection() {
 
 // ---- Commands ---------------------------------------------------------------------------------------------------------
 
+namespace {
+
+/// UX rework (L): Premiere's Project panel selection keys -> selectionMoveRequested(where, extend).
+struct SelectionMove {
+    const char* command;
+    const char* where;
+    bool extend;
+};
+constexpr std::array kSelectionMoves{
+    SelectionMove{"project.moveSelectionUp", "up", false},
+    SelectionMove{"project.moveSelectionDown", "down", false},
+    SelectionMove{"project.moveSelectionLeft", "left", false},
+    SelectionMove{"project.moveSelectionRight", "right", false},
+    SelectionMove{"project.moveSelectionHome", "home", false},
+    SelectionMove{"project.moveSelectionEnd", "end", false},
+    SelectionMove{"project.moveSelectionPageUp", "pageUp", false},
+    SelectionMove{"project.moveSelectionPageDown", "pageDown", false},
+    SelectionMove{"project.extendSelectionUp", "up", true},
+    SelectionMove{"project.extendSelectionDown", "down", true},
+    SelectionMove{"project.extendSelectionLeft", "left", true},
+    SelectionMove{"project.extendSelectionRight", "right", true},
+};
+
+const SelectionMove* selectionMoveOf(const QString& id) {
+    for (const SelectionMove& move : kSelectionMoves) {
+        if (id == QLatin1String(move.command))
+            return &move;
+    }
+    return nullptr;
+}
+
+/// +1 for the zoom-in keys, -1 for the zoom-out keys, 0 otherwise.
+int thumbnailStepOf(const QString& id) {
+    if (id == QLatin1String("project.thumbnailSizeNext") || id == QLatin1String("project.zoomIn"))
+        return 1;
+    if (id == QLatin1String("project.thumbnailSizePrevious") || id == QLatin1String("project.zoomOut"))
+        return -1;
+    return 0;
+}
+
+} // namespace
+
 bool LibraryBridge::handlesCommand(const QString& id) {
     static const QStringList kCommands{
         QStringLiteral("project.newBin"),   QStringLiteral("project.delete"),     QStringLiteral("project.listView"),
         QStringLiteral("project.iconView"), QStringLiteral("project.toggleView"), QStringLiteral("project.hoverScrub"),
         QStringLiteral("project.openInSourceMonitor"), QStringLiteral("clip.makeSubclip"), QStringLiteral("edit.find"),
     };
-    return kCommands.contains(id);
+    return kCommands.contains(id) || thumbnailStepOf(id) != 0 || selectionMoveOf(id) != nullptr;
 }
 
 QVariantMap LibraryBridge::commandAvailability(const QString& id) const {
@@ -2711,7 +2758,17 @@ QVariantMap LibraryBridge::commandAvailability(const QString& id) const {
         return {{QStringLiteral("handled"), false}};
     bool enabled = true;
     QString reason;
-    if (id == QStringLiteral("project.delete") && m_selection.isEmpty()) {
+    const int zoom = thumbnailStepOf(id);
+    if (zoom > 0 && m_thumbnailScale >= kThumbnailScaleMax) {
+        enabled = false;
+        reason = tr("The thumbnails are at their largest size");
+    } else if (zoom < 0 && m_thumbnailScale <= kThumbnailScaleMin) {
+        enabled = false;
+        reason = tr("The thumbnails are at their smallest size");
+    } else if (selectionMoveOf(id) && m_model->rowCount() == 0) {
+        enabled = false;
+        reason = tr("Nothing is listed in the Library");
+    } else if (id == QStringLiteral("project.delete") && m_selection.isEmpty()) {
         enabled = false;
         reason = tr("Select items in the Library first");
     } else if (id == QStringLiteral("project.openInSourceMonitor") && !mediaSelected()) {
@@ -2760,6 +2817,19 @@ bool LibraryBridge::runCommand(const QString& id) {
         if (!canMakeSubclip())
             return false;
         emit makeSubclipRequested(); // the panel asks for the name, then calls makeSubclip()
+        return true;
+    }
+    // UX rework (L): the zoom keys step the card size (at a bound they still count as handled, so "=" and "-" never
+    // fall through to the sequence's zoom while the Library has focus).
+    if (const int zoom = thumbnailStepOf(id); zoom != 0) {
+        setThumbnailScale(m_thumbnailScale + zoom * kThumbnailScaleStep);
+        return true;
+    }
+    // The selection keys: the panel knows its columns and page size, so it moves the selection.
+    if (const SelectionMove* move = selectionMoveOf(id)) {
+        if (m_model->rowCount() == 0)
+            return true; // nothing to move through; still the Library's key
+        emit selectionMoveRequested(QString::fromLatin1(move->where), move->extend);
         return true;
     }
     return false;

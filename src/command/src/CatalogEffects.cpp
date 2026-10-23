@@ -660,6 +660,10 @@ CommandOutput importPresets(ExecutionContext& c) {
         }
         if (c.has("bin")) {
             p.bin = into;
+        } else if (p.bin == "Lumetri Presets" || p.bin.starts_with("Lumetri Presets/")) {
+            // A built-in look exported from the Lumetri Presets bin: that bin holds the built-in looks only (checkedBin),
+            // so the copy goes in a presets bin of the rest of its path ("Filmstock"), which the user can rename or delete.
+            p.bin = p.bin.size() > 16 ? p.bin.substr(16) : std::string();
         }
         if (library.presets.size() >= kMaxEffectPresets) {
             fail(ErrorCode::EditRejected, "the library holds the most presets it can (" + std::to_string(kMaxEffectPresets) + ")");

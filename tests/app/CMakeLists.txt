@@ -63,7 +63,7 @@ wabcut_add_test_suite(app
         test_scope_view_hdr.cpp # I.9: the nits / HLG % waveform graticule
         test_color_management_ui.cpp # 0.2: the Color Management dialog and the Media color space menu
         test_screenshots.cpp
-        test_settings.cpp # 0.1.3: the Settings window, theme files, the rail's layout, the AI switch
+        test_settings.cpp # 0.1.3: the Settings window, theme files, the AI switch
         test_shell.cpp
         test_shortcuts_ui.cpp
         test_startup_ui.cpp
@@ -167,3 +167,15 @@ find_package(ZLIB REQUIRED) # ../media/PsdWriter.h
 target_link_libraries(wabcut_app_tests PRIVATE ZLIB::ZLIB)
 # P.2 (E6): the Source and Program Monitors (direct manipulation of Motion; Loop, Play In to Out and the monitor keys).
 target_sources(wabcut_app_tests PRIVATE test_motion_overlay.cpp test_monitors.cpp)
+# UX rework (stream S): the editor shell's C++ services - single instance (AppShell), the window's place between runs,
+# File > Save a Copy and Revert - and the title bar's menu bar (it replaced the left rail).
+target_sources(wabcut_app_tests PRIVATE test_shell_services.cpp test_menu_bar.cpp)
+# UX rework (stream S): the shell's feedback - the toast's action, open and save failures, the sample project's leave
+# prompt, the History panel keys, Reveal in Project.
+target_sources(wabcut_app_tests PRIVATE test_shell_feedback.cpp)
+# UX rework (stream L): AppSettings (start-up choice, the Settings search, palette rows) and the export memory and
+# finished-job details.
+target_sources(wabcut_app_tests PRIVATE test_qol_settings_export.cpp)
+# UX rework (stream T): typed playhead entry, gap selection, the track header menu, default transitions, Reveal in
+# Project, Library drops with marks, the Source Monitor drop and marker tooltips (C++ side), and their QML in the shell.
+target_sources(wabcut_app_tests PRIVATE test_timeline_qol.cpp test_timeline_qol_ui.cpp)

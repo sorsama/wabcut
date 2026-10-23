@@ -23,6 +23,10 @@ import QtQuick.Dialogs
 // I.1 behaviour kept: files dropped here are imported, "+" imports, media cards drag onto the timeline
 // (application/x-wabcut-media), a double-click shows the clip in the Source Monitor, a sequence opens in its tab.
 // I.3: the proxy chip on each card and the proxy queue pill under the grid.
+// UX rework (stream L): Premiere's thumbnail-size slider at the right of the row under the grid (zoom-out / zoom-in
+// buttons around it; the same steps as Ctrl+wheel, = / - and Shift+] / Shift+[), and the Project panel's selection
+// keys (Home, End, Page Up / Down, the arrows when a toolbar button has the focus): Library.selectionMoveRequested,
+// answered by moveSelection() in the view that shows.
 Panel {
     id: root
 
@@ -40,7 +44,7 @@ Panel {
 
     title: qsTr("Library")
 
-    // Focus target for the rail's "Library" shortcut: the list, or the selected (else the first) card.
+    // Focus target for Window > Library and its focus key: the list, or the selected (else the first) card.
     function focusContent() {
         if (Library.view === "list") {
             list.forceActiveFocus(Qt.TabFocusReason)
@@ -81,6 +85,73 @@ Panel {
     function showMenu(key, kind, target, point, fraction) {
         itemMenu.openFor(target, key, kind, point, fraction)
     }
+    /// The Project panel's selection keys (Library.selectionMoveRequested): moves the selection - extends it with
+    /// `extend` - "up", "down", "left", "right", "home", "end", "pageUp" or "pageDown" in the view that shows (the grid
+    /// by its columns and the rows in view, the list by rows, the Freeform view in list order). Nothing while the Text
+    /// tab or the Smart search results hide the items: a selection nobody can see is never moved (Delete acts on it).
+    function moveSelection(where: string, extend: bool) {
+        const count = Library.items.count
+        if (count === 0 || !content.visible)
+            return
+        const current = root.selectionLeadRow()
+        const columns = grid.visible ? grid.columns : 1
+        const pageRows = grid.visible ? Math.max(1, Math.floor(grid.height / grid.cellHeight))
+                       : list.visible ? list.pageRows : 1
+        const delta = where === "up" ? -columns
+                    : where === "down" ? columns
+                    : where === "left" ? -1
+                    : where === "right" ? 1
+                    : where === "home" ? -current
+                    : where === "end" ? count - 1 - current
+                    : where === "pageUp" ? -columns * pageRows
+                    : where === "pageDown" ? columns * pageRows : 0
+        if (grid.visible)
+            grid.step(delta, extend)
+        else if (list.visible)
+            list.showRow(root.stepSelection(delta, extend))
+        else if (freeform.visible)
+            root.stepSelection(delta, extend)
+    }
+
+    // The keyboard's place in the selection (Premiere's): Shift+arrows grow and shrink the range from the item the last
+    // arrow key went to (the lead), while the anchor (the item the range started from, LibraryBridge) stays put. A
+    // selection made any other way (a click, Select All, Find) starts over from its last item. Shared by the grid, the
+    // list and the Freeform view.
+    property string selectionLead: ""
+    property bool movingSelection: false
+    /// The row the selection keys move from: the lead while it is selected and listed, else the last selected row
+    /// (-1: nothing is selected).
+    function selectionLeadRow(): int {
+        if (root.selectionLead !== "" && Library.isSelected(root.selectionLead)) {
+            const row = Library.items.rowOf(root.selectionLead)
+            if (row >= 0)
+                return row
+        }
+        const keys = Library.selection
+        return keys.length > 0 ? Library.items.rowOf(keys[keys.length - 1]) : -1
+    }
+    /// Selects the item `delta` rows from the lead (`extend`: the range from the anchor to it); returns its row (-1 when
+    /// nothing is listed).
+    function stepSelection(delta: int, extend: bool): int {
+        const count = Library.items.count
+        if (count === 0)
+            return -1
+        const to = Math.max(0, Math.min(count - 1, root.selectionLeadRow() + delta))
+        const key = Library.items.keyOf(to)
+        root.movingSelection = true
+        Library.select(key, extend ? Library.Range : Library.Replace)
+        root.movingSelection = false
+        root.selectionLead = key
+        return to
+    }
+    // While the Text tab or the Smart search results hide the items, the Library's own keys (the selection keys, the
+    // card size) belong to the focused control (a Text tab slider takes its arrows) instead of the hidden grid.
+    Keys.onShortcutOverride: event => event.accepted = !content.visible
+                                                        && (event.modifiers & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier)) === 0
+                                                        && [Qt.Key_Left, Qt.Key_Right, Qt.Key_Up, Qt.Key_Down, Qt.Key_Home, Qt.Key_End,
+                                                            Qt.Key_PageUp, Qt.Key_PageDown, Qt.Key_Equal, Qt.Key_Minus,
+                                                            Qt.Key_BracketLeft, Qt.Key_BracketRight, Qt.Key_BraceLeft,
+                                                            Qt.Key_BraceRight].includes(event.key)
 
     Connections {
         target: Library
@@ -92,6 +163,13 @@ Panel {
         }
         function onMakeSubclipRequested() {
             root.makeSubclip()
+        }
+        function onSelectionMoveRequested(where, extend) {
+            root.moveSelection(where, extend)
+        }
+        function onSelectionChanged() {
+            if (!root.movingSelection)
+                root.selectionLead = "" // a click or another change: the keys start over from it
         }
     }
 
@@ -245,15 +323,16 @@ Panel {
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.top: binBar.bottom
-        anchors.bottom: proxyPill.visible ? proxyPill.top : parent.bottom
+        anchors.bottom: parent.bottom
         anchors.topMargin: Theme.space(1)
-        anchors.bottomMargin: proxyPill.visible ? Theme.space(2) : 0
+        anchors.bottomMargin: root.footerHeight > 0 ? root.footerHeight + Theme.space(2) : 0
         visible: tabs.currentIndex !== 2 && !smartResults.visible
 
         GridView {
             id: grid
             objectName: "libraryGrid"
-            // Premiere's Project panel zoom: Library.thumbnailScale sizes the cards (Ctrl+wheel here, or the tools menu).
+            // Premiere's Project panel zoom: Library.thumbnailScale sizes the cards (the slider under the grid, Ctrl+wheel
+            // here, = / - and Shift+] / Shift+[, or the tools menu).
             readonly property int columns: Math.max(1, Math.floor(width / (Theme.mediaCardMinWidth * Library.thumbnailScale)))
             anchors.fill: parent
             anchors.leftMargin: -Theme.space(1)
@@ -274,7 +353,8 @@ Panel {
             WheelHandler {
                 objectName: "libraryThumbnailZoom"
                 acceptedModifiers: Qt.ControlModifier
-                onWheel: event => Library.thumbnailScale += (event.angleDelta.y > 0 ? 0.25 : -0.25)
+                onWheel: event => Library.thumbnailScale += (event.angleDelta.y > 0 ? Library.thumbnailScaleStep
+                                                                                   : -Library.thumbnailScaleStep)
             }
 
             /// Keyboard focus on the card of `row` (the grid itself when there is none).
@@ -292,13 +372,9 @@ Panel {
                     grid.forceActiveFocus(Qt.TabFocusReason)
             }
             function step(delta, extend) {
-                const keys = Library.selection
-                const from = keys.length > 0 ? Library.items.rowOf(keys[keys.length - 1]) : -1
-                const to = Math.max(0, Math.min(count - 1, from + delta))
-                if (count === 0)
-                    return
-                Library.select(Library.items.keyOf(to), extend ? Library.Range : Library.Replace)
-                focusRow(to) // the focus ring follows the selection
+                const to = root.stepSelection(delta, extend) // from the lead: Shift+arrows grow and shrink the range
+                if (to >= 0)
+                    focusRow(to) // the focus ring follows the selection
             }
             Keys.onPressed: event => {
                 const extend = (event.modifiers & Qt.ShiftModifier) !== 0
@@ -334,6 +410,7 @@ Panel {
                 required property string binPath
                 required property string derivedFrom
                 required property bool searchBin
+                required property var marks // UX rework (stream T): the In/Out band
                 width: grid.cellWidth
                 height: grid.cellHeight
 
@@ -360,6 +437,7 @@ Panel {
                     binPath: cell.binPath
                     derivedFrom: cell.derivedFrom
                     searchBin: cell.searchBin
+                    marks: cell.marks
                     onActivated: root.activate(cell.key, cell.kind)
                     onMenuRequested: point => root.showMenu(cell.key, cell.kind, card, point, card.scrubFraction)
                 }
@@ -406,6 +484,7 @@ Panel {
             id: list
             anchors.fill: parent
             visible: Library.view === "list"
+            onStepRequested: (delta, extend) => list.showRow(root.stepSelection(delta, extend))
             onActivated: (key, kind) => root.activate(key, kind)
             onMenuRequested: (key, target, position) => root.showMenu(key, Library.details(key).kind ?? "", target, position, -1)
         }
@@ -427,8 +506,9 @@ Panel {
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.top: tabs.bottom
-        anchors.bottom: proxyPill.visible ? proxyPill.top : parent.bottom
+        anchors.bottom: parent.bottom
         anchors.topMargin: Theme.space(3)
+        anchors.bottomMargin: proxyPill.visible ? proxyPill.height + Theme.space(2) : 0
         visible: searchBar.smartActive && tabs.currentIndex !== 2
         results: Library.filterCount > 0 ? SmartSearch.results.filter(hit => Library.passesFilters(hit.mediaId))
                                          : SmartSearch.results
@@ -440,6 +520,9 @@ Panel {
         objectName: "proxyStatusPill"
         anchors.left: parent.left
         anchors.bottom: parent.bottom
+        // Never under the card-size buttons (a very narrow Library cuts the pill's text at its edge).
+        width: Math.min(implicitWidth, parent.width - (zoomRow.visible ? zoomRow.width + Theme.space(2) : 0))
+        clip: true
         visible: MediaReadiness.statusText !== "" && tabs.currentIndex !== 2
         label: MediaReadiness.statusText
         detail: MediaReadiness.statusDetail
@@ -469,6 +552,66 @@ Panel {
             loader: "build"
         }
     }
+
+    // The card size (Premiere's zoom slider): at the right of the row under the grid, with zoom-out / zoom-in buttons
+    // that step it like the keys. Grid view only (the list has rows; the Freeform view sizes its cards in the project).
+    Row {
+        id: zoomRow
+        objectName: "libraryZoomRow"
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        visible: content.visible && grid.visible
+        spacing: Theme.space(1)
+
+        IconButton {
+            objectName: "libraryZoomOut"
+            anchors.verticalCenter: parent.verticalCenter
+            compact: true
+            iconName: "zoom-out"
+            tooltip: qsTr("Smaller thumbnails")
+            command: "project.thumbnailSizePrevious"
+            enabled: Library.thumbnailScale > Library.thumbnailScaleMin
+            onClicked: Library.thumbnailScale -= Library.thumbnailScaleStep
+        }
+        ValueSlider {
+            id: zoomSlider
+            objectName: "libraryThumbnailSlider"
+            anchors.verticalCenter: parent.verticalCenter
+            width: Theme.space(24)
+            // A narrow Library with the proxy pill keeps the buttons only.
+            visible: !proxyPill.visible || zoomRow.parent.width >= proxyPill.implicitWidth + width
+                                                                  + 2 * Theme.controlHeightSmall + Theme.space(5)
+            from: Library.thumbnailScaleMin
+            to: Library.thumbnailScaleMax
+            stepSize: Library.thumbnailScaleStep
+            snapMode: Slider.SnapAlways
+            value: Library.thumbnailScale
+            onMoved: Library.thumbnailScale = value
+            Accessible.name: qsTr("Thumbnail size")
+            // The arrows step the slider while it has the focus (not the Library's selection keys).
+            Keys.onShortcutOverride: event => event.accepted = (event.modifiers & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier | Qt.ShiftModifier)) === 0
+                                                               && [Qt.Key_Left, Qt.Key_Right, Qt.Key_Up, Qt.Key_Down].includes(event.key)
+
+            Tooltip {
+                visible: zoomSlider.hovered || zoomSlider.pressed
+                //: The Library's card size, e.g. "Thumbnail size: 125%"
+                text: qsTr("Thumbnail size: %1%").arg(Math.round(zoomSlider.value * 100))
+            }
+        }
+        IconButton {
+            objectName: "libraryZoomIn"
+            anchors.verticalCenter: parent.verticalCenter
+            compact: true
+            iconName: "zoom-in"
+            tooltip: qsTr("Larger thumbnails")
+            command: "project.thumbnailSizeNext"
+            enabled: Library.thumbnailScale < Library.thumbnailScaleMax
+            onClicked: Library.thumbnailScale += Library.thumbnailScaleStep
+        }
+    }
+    // The row under the views (the proxy pill, the card size): the views end above it.
+    readonly property real footerHeight: Math.max(proxyPill.visible ? proxyPill.height : 0,
+                                                  zoomRow.visible ? zoomRow.height : 0)
 
     LibraryItemMenu {
         id: itemMenu

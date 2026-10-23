@@ -2,9 +2,11 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Layouts
 
-// Continue (design language v3): the project opened most recently that is still there (Home.recent), large: its
-// thumbnail, its name, when it was opened and its format, and Open. When it is the project open behind Home, Open goes
-// back to it (`returnRequested`) instead of loading it again. With no recent project it offers Open….
+// Continue (the Home page, design language v3): the project opened most recently that is still there (Home.recent),
+// large: its 16:9 picture, its name, when it was opened, its format and folder, Open and Show in Explorer. When it is
+// the project open behind Home, Open goes back to it (`returnRequested`) instead of loading it again. With no recent
+// project: the echo mark and one quiet line (Start beside it has New project and Open...). The card fills the height
+// its page gives it; the picture follows.
 HomeCard {
     id: card
     objectName: "homeContinueCard"
@@ -20,8 +22,10 @@ HomeCard {
     readonly property bool current: card.project !== null && ProjectFile.filePath !== ""
                                     && card.samePath(card.project.path, ProjectFile.filePath)
 
-    signal openRequested(url file)      // an empty url: choose a file
+    signal openRequested(url file)
     signal returnRequested()
+    signal chooseProjectRequested()
+    signal revealRequested(url file)
 
     function samePath(a: string, b: string): bool {
         const norm = s => String(s).replace(/\\/g, "/").toLowerCase()
@@ -29,27 +33,34 @@ HomeCard {
     }
     function openProject() {
         if (card.project === null)
-            card.openRequested("")
+            card.chooseProjectRequested()
         else if (card.current)
             card.returnRequested()
         else
             card.openRequested(card.project.url)
     }
 
+    title: qsTr("Continue")
+    hue: "violet"
+
+    // ---- The last project ----
     Item {
         id: row
         Layout.fillWidth: true
+        Layout.fillHeight: true
+        visible: card.project !== null
+        implicitHeight: Theme.space(40)
 
-        readonly property bool wide: width >= Theme.space(120)
         readonly property int gutter: Theme.space(5)
-        readonly property real thumbWidth: wide ? Math.round((width - gutter) * 0.56) : width
-
-        implicitHeight: wide ? Math.max(thumb.height, info.implicitHeight)
-                             : thumb.height + Theme.space(3) + info.implicitHeight
+        // The picture: 16:9 at the card's height, at most about 60% of its width; picture and text centred in the
+        // height the card has.
+        readonly property real thumbWidth: Math.max(0, Math.min(Math.round((width - gutter) * 0.6), Math.round(height * 16 / 9)))
+        readonly property real contentTop: Math.max(0, Math.round((height - Math.max(thumb.height, info.implicitHeight)) / 2))
 
         ProjectThumb {
             id: thumb
             objectName: "homeContinueThumb"
+            y: row.contentTop
             width: row.thumbWidth
             height: Math.round(thumb.width * 9 / 16)
             cornerRadius: Theme.radiusCard
@@ -60,26 +71,16 @@ HomeCard {
 
         ColumnLayout {
             id: info
-            x: row.wide ? thumb.width + row.gutter : 0
-            y: row.wide ? 0 : thumb.height + Theme.space(3)
-            width: row.wide ? row.width - x : row.width
-            height: row.wide ? Math.max(thumb.height, implicitHeight) : implicitHeight
+            x: thumb.width + row.gutter
+            y: row.contentTop
+            width: row.width - x
+            height: Math.max(thumb.height, Math.min(row.height, implicitHeight))
             spacing: Theme.space(2)
 
             Text {
-                Layout.fillWidth: true
-                text: card.project ? qsTr("Continue") : qsTr("Start here")
-                color: Theme.textTertiary
-                font.family: Theme.fontSans
-                font.pixelSize: Theme.textMicro + 1
-                font.weight: Theme.weightTitle
-                font.capitalization: Font.AllUppercase
-                font.letterSpacing: Theme.microTracking * 1.5
-            }
-            Text {
                 objectName: "homeContinueName"
                 Layout.fillWidth: true
-                text: card.project ? card.project.name : qsTr("No recent project yet")
+                text: card.project ? card.project.name : ""
                 elide: Text.ElideRight
                 maximumLineCount: 2
                 wrapMode: Text.Wrap
@@ -87,43 +88,91 @@ HomeCard {
                 font.family: Theme.fontDisplay
                 font.pixelSize: Theme.textDisplay + 2
                 font.weight: Theme.weightTitle
-                font.letterSpacing: -0.02 * (Theme.textDisplay + 2)
+                font.letterSpacing: -0.5
             }
             Text {
+                objectName: "homeContinueMeta"
                 Layout.fillWidth: true
-                text: card.project ? [card.project.openedText, card.project.format].filter(s => s !== "").join(" · ")
-                                   : qsTr("Projects you open or save appear here. Start a new one, import a timeline or open a project file.")
-                wrapMode: card.project ? Text.NoWrap : Text.Wrap
+                text: card.project ? [card.project.openedText, card.project.format].filter(s => s !== "").join(" · ") : ""
                 elide: Text.ElideRight
                 color: Theme.textSecondary
-                font.family: card.project ? Theme.fontMono : Theme.fontSans
+                font.family: Theme.fontMono
                 font.pixelSize: Theme.textSm
             }
-            Text {
+            RowLayout {
                 Layout.fillWidth: true
+                Layout.fillHeight: false
                 visible: card.project !== null && card.project.folder !== ""
-                text: card.project ? card.project.folder : ""
-                elide: Text.ElideMiddle
-                color: Theme.textTertiary
-                font.family: Theme.fontSans
-                font.pixelSize: Theme.textXs
+                spacing: Theme.space(1.5)
+                Icon {
+                    name: "folder"
+                    size: Theme.iconXs
+                    color: Theme.textTertiary
+                }
+                Text {
+                    objectName: "homeContinueFolder"
+                    Layout.fillWidth: true
+                    text: card.project ? card.project.folder : ""
+                    elide: Text.ElideMiddle
+                    color: Theme.textTertiary
+                    font.family: Theme.fontSans
+                    font.pixelSize: Theme.textXs
+                }
             }
             Item {
                 Layout.fillHeight: true
                 Layout.minimumHeight: Theme.space(2)
             }
-            PillButton {
-                objectName: "homeContinueOpen"
+            Flow {
                 Layout.fillWidth: true
-                Layout.preferredHeight: Theme.controlHeightLarge
-                variant: card.project ? "primary" : "secondary"
-                iconName: card.project ? "play" : "folder-open"
-                text: !card.project ? qsTr("Open a project…") : card.current ? qsTr("Back to the project") : qsTr("Open")
-                tooltip: !card.project ? qsTr("Open a project file")
-                       : card.current ? qsTr("Close Home and go back to %1").arg(card.project.name)
-                       : qsTr("Open %1").arg(card.project.name)
-                onClicked: card.openProject()
+                spacing: Theme.space(2)
+                PillButton {
+                    objectName: "homeContinueOpen"
+                    height: Theme.controlHeightLarge
+                    variant: "primary"
+                    iconName: card.current ? "arrow-right" : "play"
+                    text: card.current ? qsTr("Back to the project") : qsTr("Open")
+                    tooltip: card.current ? qsTr("Close Home and go back to %1").arg(card.project ? card.project.name : "")
+                                          : qsTr("Open %1").arg(card.project ? card.project.name : "")
+                    onClicked: card.openProject()
+                }
+                PillButton {
+                    objectName: "homeContinueReveal"
+                    height: Theme.controlHeightLarge
+                    variant: "ghost"
+                    iconName: "folder"
+                    text: Qt.platform.os === "osx" ? qsTr("Reveal in Finder") : qsTr("Show in Explorer")
+                    tooltip: qsTr("Show the project file in its folder")
+                    onClicked: card.revealRequested(card.project.url)
+                }
             }
         }
+    }
+
+    // ---- No recent project yet: one quiet line (Start, beside it, has New project and Open...) ----
+    ColumnLayout {
+        objectName: "homeContinueEmpty"
+        Layout.fillWidth: true
+        Layout.fillHeight: true
+        visible: card.project === null
+        spacing: Theme.space(3)
+
+        Item { Layout.fillHeight: true }
+        EchoMark {
+            Layout.alignment: Qt.AlignHCenter
+            size: Theme.space(12)
+            mono: !Theme.dark || Theme.highContrast
+        }
+        Text {
+            objectName: "homeContinueEmptyText"
+            Layout.fillWidth: true
+            horizontalAlignment: Text.AlignHCenter
+            text: qsTr("Your latest project will be here.")
+            elide: Text.ElideRight
+            color: Theme.textTertiary
+            font.family: Theme.fontSans
+            font.pixelSize: Theme.textMd
+        }
+        Item { Layout.fillHeight: true }
     }
 }

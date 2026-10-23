@@ -445,6 +445,9 @@ void ProjectController::syncAfterChange(const ChangeSet* changes, ChangeKind kin
     const bool transitionGone = m_selectedTransition && !findTransition(m_selectedTransition);
     if (transitionGone)
         m_selectedTransition = {};
+    // 0.2 UX (stream T): any change (an edit, undo, redo, another sequence) deselects the gap: it may not be one now.
+    const bool gapGone = m_gap.has_value();
+    m_gap.reset();
     const Sequence* newSeq = now ? now->findSequence(m_sequence) : nullptr;
 
     // What changed in the current sequence, from the model's ChangeSet (edits, undo and redo all carry one).
@@ -510,6 +513,8 @@ void ProjectController::syncAfterChange(const ChangeSet* changes, ChangeKind kin
         emit selectionChanged();
     if (transitionGone)
         emit selectedTransitionChanged();
+    if (gapGone)
+        emit selectedGapChanged();
     emit selectedClipChanged(); // the clip's parameters or name may have changed
     if (headerChanged || m_lastChange.markersChanged)
         emit playheadChanged(); // timecode format / marker index may differ
@@ -660,11 +665,15 @@ QVariantList ProjectController::markers() const {
     QVariantList list;
     if (const SequencePtr seq = currentSequence()) {
         for (const Marker& m : seq->markers) {
+            const std::string_view type = markerTypeName(m.type);
             list << QVariantMap{
                 {QStringLiteral("name"), QString::fromStdString(m.name)},
                 {QStringLiteral("comment"), QString::fromStdString(m.comment)},
                 {QStringLiteral("timecode"), formatTimecode(m.start)},
                 {QStringLiteral("colorIndex"), m.colorIndex},
+                // 0.2 UX (stream T): the hover tooltips (ruler, Program time bar) show the length and the type.
+                {QStringLiteral("durationText"), m.duration > Ticks{} ? formatTimecode(m.duration) : QString()},
+                {QStringLiteral("type"), QString::fromLatin1(type.data(), static_cast<qsizetype>(type.size()))},
             };
         }
     }
@@ -1089,6 +1098,8 @@ void ProjectController::setSelection(std::vector<ClipId> clips, ClipId primary) 
     const ClipId nextPrimary = primary && std::find(unique.begin(), unique.end(), primary) != unique.end()
                                    ? primary
                                    : (unique.empty() ? ClipId{} : unique.front());
+    if (!unique.empty())
+        setGapSelection(std::nullopt); // clips and a gap are selected one or the other (0.2 UX)
     if (unique == m_selection && nextPrimary == m_primary)
         return;
     m_selection = std::move(unique);
@@ -1150,6 +1161,7 @@ void ProjectController::selectAll() {
 }
 
 void ProjectController::clearSelection() {
+    setGapSelection(std::nullopt);
     setSelection({});
 }
 

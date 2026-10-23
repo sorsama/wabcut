@@ -283,7 +283,9 @@ class TimelineView : public QQuickItem {
     // ---- M5i ----
     /// Bumps whenever a row's position or height changes (track headers bind their height through it).
     Q_PROPERTY(int layoutRevision READ layoutRevision NOTIFY layoutChanged FINAL)
-    /// Sequence markers for the ruler: [{ index, x, endX (= x for a point marker), colorIndex, name, type }].
+    /// Sequence markers for the ruler: [{ index, x, endX (= x for a point marker), colorIndex, name, type, comment,
+    /// timecode (its start), durationText ("" for a point marker), nextX (the next marker's x, +Infinity for the last:
+    /// where the name label must end) }]. 0.2 UX (stream T): the ruler shows the names and a hover tooltip.
     Q_PROPERTY(QVariantList markerItems READ markerItems NOTIFY viewChanged FINAL)
     /// Premiere's Video Head / Head and Tail / Continuous thumbnails: "off", "head", "headTail" or "continuous".
     Q_PROPERTY(QString filmstripMode READ filmstripMode WRITE setFilmstripMode NOTIFY displayChanged FINAL)
@@ -594,6 +596,12 @@ signals:
     void gestureChanged();
     /// Right click on a clip (already selected): QML opens the clip context menu at (x, y).
     void contextMenuRequested(const QString& clipId, double x, double y);
+    /// 0.2 UX (stream T): right click on a transition (already selected: ProjectController.selectedTransition): QML opens
+    /// the transition menu at (x, y) (ProjectController.transitionInfo describes it).
+    void transitionContextMenuRequested(const QString& transitionId, double x, double y);
+    /// 0.2 UX (stream T): right click in a gap between clips (already selected: ProjectController.selectedGap): QML opens
+    /// the gap menu (Ripple Delete: ProjectController.rippleDeleteGap()) at (x, y).
+    void gapContextMenuRequested(const QString& trackId, double x, double y);
     /// A double-click on a clip (M5l: a nested or multi-camera clip opens its sequence).
     void clipDoubleClicked(const QString& clipId);
     /// M5m, the Remix tool: the user dragged music clip `clipId`'s end to propose a new length (seconds); (x, y) is where

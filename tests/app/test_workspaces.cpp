@@ -1,8 +1,9 @@
 // 0.1.3 workspaces (Workspaces.qml, DockManager, WorkspaceTabs): none is built in, the first start makes one from the
 // Edit preset and the presets (their keys, the Export button, the former built-in ids) make the others when first
 // needed; workspaces are made from a preset or as a copy (its layout too), renamed, reordered, reset and deleted, the
-// last one staying; the rail and the Window menu open panels as tabs where panels like them are; closing the monitors
-// or the timeline gives their room to the rest; everything is kept and comes back at the next start.
+// last one staying; the focus keys open panels as tabs where panels like them are and the Window menu as tabs of the
+// group the user worked in last (UX rework); closing the monitors or the timeline gives their room to the rest;
+// everything is kept and comes back at the next start.
 
 #include "ShellFixture.h"
 
@@ -121,8 +122,8 @@ TEST_CASE("Workspaces: none is built in; the presets lay their panels out", "[ap
     CHECK(groupsText(shell) == QStringLiteral("program export timeline"));
     CHECK(evaluate(shell, QStringLiteral("window.railPanel")).toString().isEmpty());
 
-    // Color (a former built-in id still works): the Scopes, the Program Monitor and the Color panel; the rail lights
-    // nothing. A rail panel opens as a tab with the Scopes.
+    // Color (a former built-in id still works): the Scopes, the Program Monitor and the Color panel; no browser panel
+    // is in the left column (window.railPanel). A browser panel opens as a tab with the Scopes.
     shell.window->setProperty("workspace", 3);
     spin(200);
     CHECK(evaluate(shell, QStringLiteral("window.workspaceSpec.preset")).toString() == QStringLiteral("color"));
@@ -226,7 +227,8 @@ TEST_CASE("Workspaces: made from a preset or as a copy, renamed, reordered, rese
     CHECK(messages.isEmpty());
 }
 
-TEST_CASE("Workspaces: the rail and the Window menu open panels as tabs where panels like them are", "[app][workspaces][qml]") {
+TEST_CASE("Workspaces: the focus keys and the Window menu open panels as tabs where panels like them are",
+          "[app][workspaces][qml]") {
     resetSettings();
     clearMessages();
     Shell shell;
@@ -235,21 +237,25 @@ TEST_CASE("Workspaces: the rail and the Window menu open panels as tabs where pa
     spin(50);
     QQuickItem* library = shell.item("libraryPanel");
     REQUIRE(library != nullptr);
+    // Startup focus makes no group the active one (UX rework: only the user's presses, tabs, drops and focus keys do).
+    CHECK(evaluate(shell, QStringLiteral("docking.activeGroup")).toString().isEmpty());
 
-    // The rail: Effects joins the Library's group as a tab and shows; the rail lights it.
+    // A focus key (showBrowserPanel): Effects joins the Library's group as a tab and shows; that group is the active one.
     REQUIRE(QMetaObject::invokeMethod(shell.window.get(), "showBrowserPanel", Q_ARG(QVariant, QVariant(QStringLiteral("effects")))));
     spin(100);
     CHECK(groupsText(shell) == QStringLiteral("library+effects source program effectControls timeline"));
-    CHECK(shell.window->property("railPanel").toString() == QStringLiteral("effects"));
+    CHECK(shell.window->property("browserPanel").toString() == QStringLiteral("effects"));
+    CHECK(evaluate(shell, QStringLiteral("docking.activeGroup === docking.groupOfPanel('library').group")).toBool());
     CHECK_FALSE(showing(library));
     // Back to the Library: its tab, the same panel (it kept its state).
     REQUIRE(QMetaObject::invokeMethod(shell.window.get(), "showBrowserPanel", Q_ARG(QVariant, QVariant(QStringLiteral("library")))));
     spin(100);
     CHECK(showing(library));
     CHECK(shell.item("libraryPanel") == library);
-    CHECK(shell.window->property("railPanel").toString() == QStringLiteral("library"));
+    CHECK(shell.window->property("browserPanel").toString() == QStringLiteral("library"));
 
-    // Explain this frame: a tab next to Effect Controls; its close button closes it.
+    // Explain this frame: a tab next to Effect Controls (a programmatic reveal: the column rule, not the active group);
+    // its close button closes it.
     REQUIRE(QMetaObject::invokeMethod(shell.window.get(), "showFrameInspector"));
     spin(100);
     CHECK(groupsText(shell) == QStringLiteral("library+effects source program effectControls+frameInspector timeline"));
@@ -257,7 +263,8 @@ TEST_CASE("Workspaces: the rail and the Window menu open panels as tabs where pa
     spin(50);
     CHECK(groupsText(shell) == QStringLiteral("library+effects source program effectControls timeline"));
 
-    // The Window menu lists every panel, checked when it is open; choosing a closed one opens it.
+    // The Window menu lists every panel, checked when it is open; choosing a closed one opens it as a tab of the
+    // active group (here the Library's, from the focus key above).
     QObject* scopesItem = shell.object("windowMenu_scopes");
     QObject* libraryItem = shell.object("windowMenu_library");
     REQUIRE(scopesItem != nullptr);
@@ -268,6 +275,19 @@ TEST_CASE("Workspaces: the rail and the Window menu open panels as tabs where pa
     spin(100);
     CHECK(scopesItem->property("checked").toBool());
     CHECK(groupsText(shell) == QStringLiteral("library+effects+scopes source program effectControls timeline"));
+
+    // The Program Monitor's focus key makes its group the active one: the Window menu's Markers lands there, not with
+    // the browser panels where the column rule would put it.
+    REQUIRE(QMetaObject::invokeMethod(shell.window.get(), "runCommand", Q_ARG(QVariant, QVariant(QStringLiteral("window.programMonitor")))));
+    spin(100);
+    CHECK(evaluate(shell, QStringLiteral("docking.activeGroup === docking.groupOfPanel('program').group")).toBool());
+    QObject* markersItem = shell.object("windowMenu_markers");
+    REQUIRE(markersItem != nullptr);
+    REQUIRE(QMetaObject::invokeMethod(markersItem, "triggered"));
+    spin(100);
+    CHECK(groupsText(shell) == QStringLiteral("library+effects+scopes source program+markers effectControls timeline"));
+    CHECK(evaluate(shell, QStringLiteral("docking.shownPanel(docking.groupOfPanel('program').group)")).toString() ==
+          QStringLiteral("markers"));
 
     const QStringList messages = takeMessages();
     INFO(join(messages));

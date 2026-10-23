@@ -13,8 +13,8 @@ This guide has four parts:
 
 Names in quotes are the exact labels you see in the app. Shortcuts are the Windows defaults.
 
-> **Wabcut 0.2 is made and tested on Windows** (Windows 10 22H2 or 11, x64); the Linux and macOS downloads are
-> previews. See the [release notes](release-notes-0.2.md) for what is in this release and its known issues.
+> **Wabcut 0.3 is made and tested on Windows** (Windows 10 22H2 or 11, x64); the Linux and macOS downloads are
+> previews. See the [release notes](release-notes-0.3.md) for what is in this release and its known issues.
 
 ## Install
 
@@ -29,8 +29,8 @@ Names in quotes are the exact labels you see in the app. Shortcuts are the Windo
 
 | Package | How |
 |---|---|
-| `wabcut-0.2.0-windows-x64.msi` | Double-click it. It installs **for your user only**, with no administrator rights, to `%LOCALAPPDATA%\Programs\Wabcut` (or a folder you choose). Wabcut appears in the Start menu and in Settings > Apps. The options page has an unticked *Open .wabcut project files with Wabcut* box: tick it to open projects by double-clicking them. |
-| `wabcut-0.2.0-windows-x64-portable.zip` | Unzip it anywhere, for example a USB drive, and run `bin\wabcut.exe`. Nothing is installed. |
+| `wabcut-0.3.0-windows-x64.msi` | Double-click it. It installs **for your user only**, with no administrator rights, to `%LOCALAPPDATA%\Programs\Wabcut` (or a folder you choose). Wabcut appears in the Start menu and in Settings > Apps. The options page has an unticked *Open .wabcut project files with Wabcut* box: tick it to open projects by double-clicking them. |
+| `wabcut-0.3.0-windows-x64-portable.zip` | Unzip it anywhere, for example a USB drive, and run `bin\wabcut.exe`. Nothing is installed. |
 
 **SmartScreen.** The packages are not code-signed yet, so Windows SmartScreen may say "Windows protected your PC".
 Choose **More info**, then **Run anyway**.
@@ -39,21 +39,49 @@ Choose **More info**, then **Run anyway**.
 downloaded AI models, settings and API keys stay.
 
 Admins can install silently:
-`msiexec /i wabcut-0.2.0-windows-x64.msi /qn [INSTALL_ROOT="D:\Apps\Wabcut"] [WABCUT_ASSOCIATE=1]`.
+`msiexec /i wabcut-0.3.0-windows-x64.msi /qn [INSTALL_ROOT="D:\Apps\Wabcut"] [WABCUT_ASSOCIATE=1]`.
 
 ## First run
 
-1. **The Home screen** ("Bring your edit into Wabcut") comes first. It has five cards:
+1. **The Home screen** comes first. It is a start window with three pages in the bar on the left - **Home**,
+   **Projects** and **Learn** - and, along the top, a search over your projects, **"Open…"** (Ctrl+O), **"Import…"**
+   (Ctrl+I) and **"New project"** (Ctrl+N); Ctrl+, opens Settings, as in the editor. Nothing on it scrolls the whole
+   window; long lists scroll inside their own area.
 
-   | Card | What it does |
+   | Page | What it has |
    |---|---|
-   | **"One-click import"** | "Drop a timeline here, or choose a file" from Premiere Pro, DaVinci Resolve or Final Cut Pro: Final Cut Pro XML, FCPXML, OpenTimelineIO, EDL and (experimental) Premiere `.prproj`, nested and multicam sequences included. A report says what was carried, approximated or dropped. |
-   | **"Recent projects"** | Your recent projects, and **"Open…"** for others. |
-   | **"New gaming video"** | "Drop a game recording here" (or **"Choose a recording…"**). The sequence matches the recording's size and frame rate, and every audio stream gets its own named track. See [A](#a-a-long-form-gaming-video-from-an-obs-recording). |
-   | **"New project"** | A name, a location and a sequence preset ("1080p", "4K UHD", "Vertical 9:16", "Square 1:1", "Custom"), then **"Create"**. |
-   | **"Learn"** | "Import from other editors", "Keyboard shortcuts" and "What's new". |
+   | **Home** | **"Continue"**: the project you opened last, large, with **"Open"** and **"Show in Explorer"**. **"Start"**: New project, Open project…, Import… and a drop well ("Drop files here": media, game recordings, timelines or projects), **"Import folder…"** and a link to the guide for timelines from Premiere, Resolve or Final Cut. **"Recent"**: your latest projects as cards, and **"All projects"**. With no projects yet, Continue and Recent say so in one line, and Recent points to Learn. |
+   | **Projects** | Every recent project as a grid or a list, **All** or **Starred**, sorted by **Last opened** or **Name**; Wabcut remembers your choice. Typing in the search shows this page. Click a project to open it; its **"…"** button, a right-click, the Menu key or Shift+F10 opens its menu: Open, Open Next to This One, Show in Explorer, Copy Path, Star / Unstar, **Locate…** (a project whose file moved) and Remove from List. The arrows move between projects, Enter opens, Delete removes it from the list (with **Undo** for a few seconds). The **"…"** in the page's toolbar holds **"Clear Unstarred Projects…"**. Starred projects stay even when the list is full. |
+   | **Learn** | **"Start here"**: **"Explore the sample project"**, "Take the tour", "Keyboard Trainer", "What's new". **"User guide"**: the guides on the Wabcut website (getting started, the window, coming from Premiere Pro, moving timelines between editors, keyboard shortcuts, gaming videos, Shorts, video essays, documentaries). **"Support"**: release notes, the roadmap and reporting an issue. |
 
-   **"Explore the demo project"** (top right) closes Home and opens the demo; Esc does the same.
+   **"New project"** (or File > New Project, Ctrl+Alt+N) opens the **New project page**: pick a **format** tile
+   (Landscape: 1080p at 23.976 / 25 / 29.97 / 30 / 60 fps, 4K UHD, 1440p60, 4K UHD 60; Vertical & square: 9:16, 1:1,
+   9:16 at 60 fps; Custom), check the **name** (a free one is filled in: "Untitled Project", "Untitled Project 2"…) and
+   the **location** (**"Browse…"**), then **"Create project"**. **"Advanced settings"** opens the rest: frame size, frame
+   rate (up to 240 fps) and drop-frame timecode, pixel aspect, fields, start timecode, audio sample rate, audio master
+   (stereo or 5.1), the number of video and audio tracks and their format, colour management and the preview file
+   format; **"Reset to defaults"** puts them back. Wabcut remembers your last format and settings for the next project.
+
+   **One Import for everything.** "Import…", "Import folder…" or files dropped anywhere on Home:
+   - a Wabcut project opens;
+   - a timeline (Final Cut Pro XML, FCPXML, OpenTimelineIO, EDL) becomes a new project with its first sequence open and
+     a report of what was carried, approximated or dropped (nested and multicam sequences included);
+   - a Premiere `.prproj` first asks whether to use the experimental reader;
+   - files Wabcut cannot read (a DaVinci Resolve `.drp`, a Final Cut library, AAF…) say what to export instead, with
+     **"How to export"**;
+   - media (video, audio, pictures, captions, Lottie JSON, Photoshop) open the New project page in **"Start with
+     media"**: the files are listed (remove any with ×), **"Match my media"** is chosen (the first video's size and frame
+     rate, as its tile shows), the name is the first file's, and **"Add the clips to the sequence"** puts them on the
+     timeline one after another. A game recording with several audio streams also shows the **audio streams**: each on
+     its own named track ("Game", "Mic", "Discord"), or left out; the project gets one audio track per stream you keep
+     (unless you set the number in Advanced settings). Going to another page and back keeps the page as it was; Cancel
+     or Esc drops it. A dotLottie archive (`.lottie`) or a picture dragged from a web browser says what to do instead.
+
+   Messages (an import that failed, guidance) show in a strip under the top bar; a long one scrolls. **"Back to
+   <project>"** (or Esc) returns to the project open behind Home, the sample project too when you came to Home from it
+   (File > Home; Cancel or Esc on a New project page opened with File > New Project goes back to the editor). When
+   Wabcut has just started, the sample project waits behind Home: open it from **Learn > "Explore the sample
+   project"**. In **Settings > General**, "When Wabcut starts" can **reopen the last project** instead of showing Home.
 
 2. **The welcome** follows, with five short pages. "Skip" or Esc leaves it at any time.
    1. **"Coming from Premiere?"**: Wabcut uses Premiere's keys, Premiere's edits, and your own look. Choose **"Let's go"**.
@@ -68,16 +96,41 @@ Admins can install silently:
    and nothing leaves the computer) and recommends proxy and preview settings. Choose **"Use these settings"** or
    **"Keep my settings"**. You can run it again from **Settings > "Media & cache…"**.
 
-Everything here can be reopened later from **Help** (bottom of the left rail): "Welcome and setup…", "Take the tour",
-"Keyboard Trainer…", "What's new", "Keyboard shortcuts…".
+Everything here can be reopened later from the **Help** menu: "Welcome and Setup…", "Take the Tour", "Keyboard
+Trainer…", "What's New", "Keyboard Shortcuts…".
 
 ## The window
 
-Wabcut has no menu bar.
+**The menu bar** sits in the title bar after the logo, in Premiere's order: **File, Edit, Clip, Sequence, Markers,
+Graphics, View, Window, Help**. Click a title (or press **Alt** and its letter: Alt+F, E, C, S, M, G, V, W, H; on
+Windows and Linux) to open its menu; while one is open, point at another title to open that one, or use **Left** and
+**Right**. If you give one of these Alt+letter keys to a command in Keyboard Shortcuts, the key runs that command and
+the menu opens with a click. On macOS there are no Alt (Option) letters for the menus: Option+letter types accented
+characters there. Every row shows its shortcut, and rows that cannot run right now are greyed out (no clip selected,
+nothing to undo). A command you choose acts where you were before the menu opened, and whether it can run is judged
+there too: Markers > "Mark In" or "Clear In" with the Source Monitor focused works on the source's marks, with the
+Timeline focused on the sequence's. The titles are in the Tab order too (Space, Enter or Down opens one).
+When the window is too narrow for the titles and the workspace tabs, they fold into one **"Menu"** button with the same
+menus inside. The logo opens the File menu as well.
 
-**The File menu** opens with **Alt+F** or by clicking the logo, top left. It has:
-- "Home", "New Project" (Ctrl+Alt+N), "Open Project…" (Ctrl+O), "Open Project Next to This One…", "Close Project";
-- "Save" (Ctrl+S), "Save As…" (Ctrl+Shift+S);
+**File:**
+- "Home", "New Project…" (Ctrl+Alt+N), "New Sequence…" (Ctrl+N), "New Sequence From Clip";
+- "Open Project…" (Ctrl+O), **"Open Recent"** (the last ten projects, and "Clear Recent"), "Open Project Next to This
+  One…". A `.wabcut` you double-click in File Explorer while Wabcut runs opens in that window (not in a second
+  Wabcut). Choosing the project you are working in (from Open Recent, the palette or Explorer) only brings it forward:
+  it is not read again, so its undo history and unsaved changes stay. "Open Project…", "Import…" or a drop of that
+  project's own file does not read it again either (they may ask about unsaved changes first); "Revert" is the way to go
+  back to the saved file. A project open next to it comes into the panels;
+  one that asks about unsaved changes waits until you have answered the question already on screen;
+- "Close Panel" (Ctrl+W: the panel shown in the group you clicked last); **"Close Project"** (Ctrl+Shift+W): with other
+  projects open, the current one closes; with only one, it closes and Home shows (the sample project waits behind
+  it). Unsaved changes are asked about first;
+- "Save" (Ctrl+S), "Save As…" (Ctrl+Shift+S), **"Save a Copy…"** (Ctrl+Alt+S: the project as it is now goes to another
+  file; you keep working in this one), **"Revert"** (back to the version last saved, after a confirmation: the unsaved
+  changes and the undo history go). A project that cannot be opened or saved says why in a message at the bottom
+  right (on Home while Home is open); a save that failed offers **"Save As…"** there. Leaving the sample project after
+  editing it (opening, creating or importing a project) first asks **"Discard your changes to the sample project?"**:
+  "Save As…" keeps them as a project of your own;
 - "Import…" (Ctrl+I, for media and timelines);
   numbered stills (an image sequence from a renderer, a game's photo mode or a timelapse) come in as one clip from the
   Library's ··· menu, **"Import image sequence…"** (Premiere's Import with "Image Sequence" ticked): choose the first
@@ -95,7 +148,7 @@ Wabcut has no menu bar.
   32 bits import, with their blend modes. The clips read the file each time, so what you save in Photoshop comes
   through. Commands: `media.layeredFileInfo`, `media.importLayeredFile`.
 
-  The **Media Browser** (the rail's folder icon, Shift+8) browses drives and folders. A camera card (AVCHD, Canon XF,
+  The **Media Browser** (Window > "Media Browser", Shift+8) browses drives and folders. A camera card (AVCHD, Canon XF,
   P2, XDCAM, XAVC) shows its clips instead of its folders, and a recording the camera split into several files (GoPro
   chapters, an AVCHD span, Canon XF parts) is one clip. Hover a thumbnail to scrub through the clip. Double-click a
   clip to watch it in the Source Monitor without importing it: the first mark, marker or edit you make there imports
@@ -104,12 +157,47 @@ Wabcut has no menu bar.
   beside it to choose what an import does first: **Copy** the clips into a folder (so the card can be taken out),
   **Transcode** them into a folder with an export preset (they import at once and switch to the new files when the
   export queue has made them), or **Create Proxies**. Commands: `media.browse`, `media.importCameraClips`.
-- "Relink Offline Media…", "Recover…", "Export Timeline…", "Collect Files…";
-- "Settings…" (Ctrl+,), "Keyboard Shortcuts…" (Ctrl+Alt+K);
-- "New Sequence From Clip", "Sequence Settings…", "History", "Media and Timeline Preferences…";
-- "Window" (every panel; a checked one is open in this workspace, choosing a closed one opens it), "Reset Panel
-  Layout";
+- "Import Lottie…"; **"Export"**: "Media…" (Ctrl+M), "Frame…", "Send to Export Queue", "Timeline (XML, EDL, OTIO)…";
+- "Relink Offline Media…", "Recover…", "Collect Files…";
 - "Exit" (Ctrl+Q).
+
+**Edit:** "Undo", "Redo", "Cut", "Copy", "Paste", "Paste Insert", "Paste Attributes…", "Remove Attributes…", "Clear",
+"Ripple Delete", "Duplicate", "Select All", "Deselect All", "Find…", "Edit Original", "Keyboard Shortcuts…"
+(Ctrl+Alt+K), "Media and Timeline Preferences…" and **"Settings…"** (Ctrl+,). While you type in a text field (a
+search, a name, a title's text), "Undo", "Redo", "Cut", "Copy", "Paste", "Clear" and "Select All" work on its text,
+as their keys do there, not on the timeline.
+
+**Clip:** "Make Subclip…", "Speed/Duration…", "Audio Gain…", "Audio Channels…", "Video Options" (frame holds, field
+options, scale and fill), "Insert", "Overwrite", "Enable", "Link", "Group", "Ungroup", "Merge Clips…", "Interpret
+Footage…", "Source Settings…", "Modify Timecode…", "Replace Footage…", "Make Offline", "Reveal in Project", and the
+gaming moments "Slow-mo at Playhead" and "Punch-in at Playhead".
+
+**Sequence:** "Sequence Settings…", "Render Effects In to Out", "Match Frame", "Reverse Match Frame", "Add Edit", "Add
+Edit to All Tracks", "Trim Edit", the ripple trims to the playhead, the transitions, "Lift", "Extract", "Close Gap",
+"Join Through Edits", "Replace With Clip", "Make Subsequence", zoom, "Go to Gap", **"Snap in Timeline"**, "Select Clip at
+Playhead" and **"Selection Follows Playhead"** (the two switches show a dot while on).
+
+**Markers:** "Mark In", "Mark Out", "Mark Clip", "Mark Selection", "Go to In" / "Out", the Clear rows, "Add Marker", "Go
+to Next" / "Previous Marker", "Clear Selected Marker" and "Clear All Markers".
+
+**Graphics:** "New Layer" (Text, Rectangle, Ellipse; the Callouts panel opens), "Arrange" (Bring to Front, Bring Forward,
+Send Backward, Send to Back), "Select Next Layer" and "Select Previous Layer".
+
+**View:** the Program Monitor's "Show Rulers", "Show Guides", "Snap in Program Monitor", "Lock Guides", the guide rows
+("Add Guide…", "Clear Guides", "Save Guides as Template…", "Manage Guides…"), "Transparency Grid", "Overlays", "Show
+Dropped Frame Indicator", "Show Audio Time Units" and "Full Screen".
+
+**Window:** **"Workspaces"** (switch to one, "New Workspace" from a preset, "Duplicate Workspace", "Rename Workspace…",
+"Delete Workspace…"), **"Maximize Frame"** (Shift+`), **"Reset Panel Layout"** (Alt+Shift+0), "History", then every
+panel (a dot shows the ones open in this workspace; Generate is listed while AI is on). Choosing one opens it, or brings
+it forward where it is, and puts the keyboard in it.
+
+**Help:** "Wabcut User Guide", "Getting Started", "Coming from Premiere Pro" and "Keyboard Shortcuts Guide" (on
+[wabcut.zyphite.com](https://wabcut.zyphite.com/guide)), "Keyboard Shortcuts…", "Welcome and Setup…", "Take the Tour",
+"Keyboard Trainer…", "What's New", "Release Notes", **"Open the Sample Project"**, "Report an Issue" and "About Wabcut".
+
+The **command palette** (Ctrl+Shift+P) has these too, plus **"Open panel: …"** for every panel, **"Workspace: …"** for
+every workspace and **"Open Recent: …"** for the recent projects.
 
 **The title bar** has:
 - **The sequence pill.** Switches sequences. Its list has "New Sequence…" (Ctrl+N), "Reframe…", "Rough Cut from
@@ -141,25 +229,46 @@ Wabcut has no menu bar.
     the edge of the window to run along that whole side; outside the panels, or with **Ctrl** held, to give it a
     window of its own. Where it will land lights up while you drag. The pop-out button does the same; closing the
     window docks the panel back.
-  - **Closed panels come back** from the left rail, File > "Window", or their focus keys (Shift+1 Library, Shift+2
-    Source Monitor, Shift+3 Timeline, Shift+4 Program Monitor, Shift+7 Effects): next to panels like them.
+  - **The group you clicked last is the active one:** a violet outline runs around it (a click anywhere in it, one of
+    its tabs, a panel dropped there or a panel's focus key makes a group active). The Window menu opens a closed panel
+    there, as a tab; a panel that is open already comes forward where it is (in a narrow window, where the Source and
+    Program Monitors share one place, it goes next to panels like it instead). **Ctrl+W** closes the panel the active
+    group shows.
+  - **Closed panels come back** from the Window menu (into the active group), or their focus keys (Shift+1 Library,
+    Shift+2 Source Monitor, Shift+3 Timeline, Shift+4 Program Monitor, Shift+5 Effect Controls, Shift+7 Effects):
+    next to panels like them.
+  - **Maximize a group** to give it the whole work area: press **`** with the pointer over it, **Shift+`** for the
+    active group, double-click one of its tabs, or choose "Maximize Frame" (Window menu, tab menu); the keyboard focus
+    goes into it. The same again brings the other panels back, and so does a panel docked back from its own window.
+  - **Right-click a panel's tab** for "Close Panel", "Close Other Panels in Group", "Undock Panel" (that panel in a
+    window of its own), "Undock Panel Group" ("Dock Panel Group" while it has a window) and "Maximize Frame" /
+    "Restore Frame". On a group's tabs the Menu key or Shift+F10 opens it too. A lone panel's tab drags like a
+    group's.
   - **Dragging a gutter** between two groups shares the room between them; a double-click shares it evenly. A guide
     line follows the pointer and the panels resize when you let go (Settings > Interface > "Resize panels live" makes
     them follow the pointer instead).
-  - File > "Reset Panel Layout" puts the workspace back the way its preset lays it out.
+  - Window > **"Reset Panel Layout"** (Alt+Shift+0; Premiere's "Reset to Saved Layout", the name it has in the
+    command palette and the Keyboard Shortcuts) puts the workspace back the way its preset lays it out, and the
+    message it shows has **"Undo"**.
 
-**The left rail** opens panels:
-- "Library" (Shift+1), "Effects" (Shift+7), "Transcript", "Audio Tools", "Essential Sound", **"Callouts"** (titles,
-  templates and stickers), **"Highlights"**, "Markers", "Review", "Shorts", "Takes", "Generate".
-- Right-click the rail to hide an entry or move it up or down (or use Settings > Interface > "Left rail", which also
-  resets it).
-- At the bottom: **Help**, and **Settings** (also **Ctrl+,**), one window with these pages:
-  - **"General"**: the workspace Wabcut opens in, the native window frame, the save state and how often to autosave;
+**Panels** open from the **Window** menu: "Library" (Shift+1), "Effects" (Shift+7), "Transcript", "Audio Tools",
+"Essential Sound", **"Callouts"** (titles, templates and stickers), **"Highlights"**, "Markers", "Review", "Shorts",
+"Takes", "Generate" and the rest (they replace the former left rail).
+
+**Settings** (Edit > "Settings…", **Ctrl+,**, or Home's gear) is one window with these pages:
+  - **Search** (the field at the top, ready to type when Settings opens): type what you are after ("proxies",
+    "dark", "default folder") and pick a result: its page opens on that setting, which lights up for a moment.
+    The command palette lists every setting too ("Settings" rows);
+  - **"General"**: what Wabcut shows when it starts (**Home**, or **Reopen the last project**), the workspace it opens
+    in, the native window frame; **Projects**: the save state, how often to autosave, the default location for new
+    projects (Home's New project page starts there; **Automatic** = the last project's folder), how many recent
+    projects Home and File > Open Recent show (a lower number hides the older ones until you raise it again; starred
+    ones always show), and project locking;
   - **"Appearance"**: themes (Ultraviolet, Daylight, Graphite, Midnight, Paper, and your own), dark or light, the
     accent, high contrast, reduce motion, the interface size, and **"Custom colours"** for every colour of the
     interface and the clip labels. "Save theme" keeps your colours under a name; "Import…" and "Export…" read and
     write theme files you can share;
-  - **"Interface"**: the GPU and save status in the title bar, the left rail, and "Resize panels live";
+  - **"Interface"**: the GPU and save status in the title bar, and "Resize panels live";
   - **"Timeline & editing"**: linked selection, the snap line, trim offsets, thumbnails, waveforms and more;
   - **"Playback & performance"**: the GPU and video decoding in use, and "Media & cache…";
   - **"Audio"**: the microphone and voice-over, and the audio plug-ins;
@@ -180,6 +289,29 @@ in front, the playhead and markers while Snap is on. A drop overwrites only wher
 to insert instead): its picture goes on the track under the pointer and its sound on the matching audio track, or the
 next free one, so the clips on the other tracks stay whole. Files dropped from File Explorer are imported first, and
 several files go one after another.
+
+More of the Tracks panel, as in Premiere:
+
+- **Snap** stays the way you left it the next time Wabcut starts (so does the time remapping view).
+- **Type a time**: click the timecode left of the ruler and type a time, frames or an offset like `+15` or `-1:00`;
+  Enter goes there, Esc cancels ([the monitors](monitors.md#type-a-time-drop-a-clip-read-a-marker) work the same way).
+- **Track headers**: right-click one (or press the Menu key on its name) for **"Rename…"**, **"Add Video Track
+  Above"** / **"Add Audio Track Below"**, **"Add Tracks…"** (how many of each kind, where, and the audio format),
+  **"Delete Track"** (it asks first when the track has clips), **"Delete Empty Tracks"** and **"Sync Lock"**; an audio
+  track's menu also has its channel format. Double-click a header (or press F2 on its name) to rename the track; its
+  name shows beside V1 / A1 where there is room. Each is one undo step.
+- **Gaps**: click the empty space between two clips to select the gap; **Delete** (while the Tracks panel has the
+  focus) or right-click > **"Ripple Delete"** closes it. When another sync-locked track has clips in that time, nothing
+  moves and a message says why.
+- **Transitions**: right-click one for **"Set Duration…"**, its alignment on the cut, **"Replace with"** the default
+  transition, **"Set as Default Transition"** and **"Clear"**. The default video and audio transitions (what Ctrl+D,
+  Ctrl+Shift+D and Shift+D add) are also in Settings > Timeline & editing.
+- **Markers** show their names on the ruler (cut short before the next marker); point at one for its comment, time and
+  length.
+- **Clips**: right-click > **"Reveal in Project"** selects the clip's item in the Library and brings the Library
+  forward (assign it a key in Keyboard Shortcuts: `clip.revealInProject`); **"Reveal in File Explorer"** shows its
+  file. A Library item with an In and Out set in the Source Monitor shows the marked range as a band along its card,
+  and dragging it to the timeline edits in just that range.
 
 ### The command palette
 
@@ -209,13 +341,16 @@ moves are on a clip's right-click menu under **"Moments"**.
 The goal is a 10-20 minute YouTube video at 1440p60 from a long OBS recording with game, mic and Discord audio.
 
 **1. Start from the recording.**
-1. On the Home screen, drop the recording on **"New gaming video"** (or **"Choose a recording…"**). MP4, MKV, MOV, FLV
-   and TS from OBS, ShadowPlay, Game Bar or any capture tool work.
+1. Drop the recording anywhere on the Home screen (or **"Import…"**, Ctrl+I). MP4, MKV, MOV, FLV and TS from OBS,
+   ShadowPlay, Game Bar or any capture tool work. The New project page opens in **"Start with media"**.
 2. Wabcut reads it and shows:
-   - the sequence it will make, matching the recording ("Sequence 2560 × 1440 · 60 fps");
-   - one line per audio stream, with a box to leave it out and a **track name** you can change. The first three are
-     named "Game", "Mic" and "Discord", OBS's usual order.
-3. Choose **"Name"** and **"Location"**, then **"Create"**. The project opens with the recording on its timeline.
+   - **"Match my media"** chosen, and the sequence it will make ("2560 × 1440 · 60 fps · 48 kHz stereo · …");
+   - the recording's size, frame rate, length and codec, with chips for what it needs (4K, high fps, long: proxies,
+     VFR, HDR);
+   - one line per audio stream, with a switch to leave it out, a **track name** you can change and the track it lands
+     on ("→ A1"). The first three are named "Game", "Mic" and "Discord", OBS's usual order.
+3. Check the **name** and **location**, then **"Create project"**. The project opens with the recording on its
+   timeline.
 
 - **Frame rates and HDR.**
   - 60, 120, 144 and 240 fps play and export frame for frame.
@@ -233,7 +368,7 @@ The goal is a 10-20 minute YouTube video at 1440p60 from a long OBS recording wi
 2. Choose **"Remove"**. The stretches go in one undo step, keeping a short handle at each end, and markers move with
    the material.
 
-**3. Find the highlights.** Open **"Highlights"** in the left rail.
+**3. Find the highlights.** Open **"Highlights"** from the Window menu.
 1. **"Find options"** sets what to listen for:
    - **"Game audio"**: explosions, kills, crowd;
    - **"Your voice"**: you shouting or laughing on the mic track;
@@ -261,7 +396,7 @@ The goal is a 10-20 minute YouTube video at 1440p60 from a long OBS recording wi
 
 **5. Streamer voice and game under voice.**
 - **Streamer voice.**
-  1. Select the Mic clip(s) and open **"Essential Sound"** (left rail).
+  1. Select the Mic clip(s) and open **"Essential Sound"** (Window menu).
   2. Choose **"Dialogue"**.
   3. In **"Preset"** pick **"Streamer voice (mic: denoise, gate, EQ, compressor, de-esser, limiter)"**.
 
@@ -285,7 +420,7 @@ keyframes you can edit.
 | **"Instant replay"** | Replays the clip right after itself at half speed, with a REPLAY stinger. |
 
 **7. Callouts and templates.**
-1. Open **"Callouts"** in the left rail. **"Gaming"** has 12 animated templates: "Subscribe", "Kill streak", "Lower
+1. Open **"Callouts"** from the Window menu. **"Gaming"** has 12 animated templates: "Subscribe", "Kill streak", "Lower
    third", "Replay", "Countdown", "Chat bubble", "Emote pop", "Arrow callout", "Circle callout", "Webcam frame", "End
    card" and "Intro".
    - **"Search callouts"** finds one by name.
@@ -415,7 +550,7 @@ The goal is interviews shot on two or more cameras, edited by text, graded, with
 a file and as a timeline for Premiere or Resolve.
 
 **0. Log the footage (0.2).**
-- **Metadata.** The **"Metadata"** panel (rail) edits the selected clips' **Scene**, **Shot**, **Take**, **Log Note**,
+- **Metadata.** The **"Metadata"** panel (Window menu) edits the selected clips' **Scene**, **Shot**, **Take**, **Log Note**,
   **Good**, **Client**, **Tape Name**, **Status**, the camera fields (**Camera Angle**, **Label**, **Model**, **Shot
   Date**, **Shot Location**), **Comment** and **Description**, and shows what the file itself says (its XMP and container
   tags). The file's XMP can be edited there too, and **"+"** adds a property it does not have yet. **"Read from file"**
@@ -427,6 +562,9 @@ a file and as a timeline for Premiere or Resolve.
   listing whatever matches (for example Good takes of scene 12), from every bin, as you log more.
 - **Freeform view.** The Library's third view: drag thumbnails anywhere, pile alternates into stacks (Ctrl+wheel goes
   through a stack), and keep arrangements with **"Save as New Layout…"** in the canvas menu.
+- **Thumbnail size.** In the icon view, the slider under the cards (with its − and + buttons) sizes them from half to
+  double, as do Ctrl+wheel, **=** / **-** and **Shift+]** / **Shift+[** while the Library has the focus. **Home**,
+  **End**, **Page Up** and **Page Down** move the selection there (Shift extends it), as in Premiere's Project panel.
 - **Productions.** For a long project split into several (one per episode or reel), the **"Production"** panel makes a
   production folder and new projects in it. Double-click a project to open it next to the ones you have open: they all
   stay loaded with their own undo history and unsaved changes, and a click in **"Open projects"** switches between them
@@ -498,9 +636,9 @@ These work as in Premiere Pro; each is also a command for scripts and agents ([c
 
 - **Frame size.** Right-click a clip > **"Video Options"** > **"Scale to Frame Size"** (fits the picture, Scale stays
   100 %), **"Set to Frame Size"** or **"Set to Fill Frame"** (writes Motion's Scale).
-  **"Media and Timeline Preferences…"** (File menu, or Settings > Timeline & editing) > **"Media"** >
+  **"Media and Timeline Preferences…"** (Edit menu, or Settings > Timeline & editing) > **"Media"** >
   **"Default Media Scaling"** applies one of them to everything you import.
-- **Sequences.** **"Sequence Settings…"** (File menu, or a sequence's Library menu) changes the frame size, frame rate,
+- **Sequences.** **"Sequence Settings…"** (Sequence menu, or a sequence's Library menu) changes the frame size, frame rate,
   pixel aspect, fields, audio sample rate, preview format, start timecode and time display, with presets from 23.976 to
   240 fps, vertical 1080x1920 and square 1080x1080. A new frame rate keeps every cut where it was, on the new frames.
   **"New Sequence From Clip"** makes a sequence that matches a clip; **"Duplicate"** copies a sequence or a clip.
@@ -512,7 +650,8 @@ These work as in Premiere Pro; each is also a command for scripts and agents ([c
 - **Footage.** In the Library: **"Merge Clips…"** (a camera clip with separately recorded sound, synced by In points,
   Out points, timecode, markers or audio), **"Modify"** > **"Interpret Footage…"** (play a 120/144/240 fps capture as
   30 or 60 fps slow motion; pixel aspect, fields, alpha) and **"Timecode…"**.
-- **History.** File menu > **"History"** lists the undo steps; click one to go back to it.
+- **History.** Window menu > **"History"** lists the undo steps; click one to go back to it. While the History panel
+  has the focus, **Left** and **Right** step one state back or forward.
 - **Preferences > Timeline** sets the default still duration and the default video and audio transition durations.
   **Keyboard Shortcuts > Export…** saves a Premiere `.kys` key set when the file name ends in `.kys`.
 
@@ -535,7 +674,7 @@ Some download a model the first time; you are asked first.
 **Cloud models use your own key.** Wabcut has no account and no middleman.
 
 - **Where keys go.**
-  1. Open **Settings** (the gear at the bottom of the left rail, or **Ctrl+,**) > **"AI"**. Its tabs are
+  1. Open **Settings** (Edit > "Settings…", or **Ctrl+,**) > **"AI"**. Its tabs are
      **"Providers and keys"**, **"Models"**, **"Privacy"**, **"Usage"** and **"Local assistant"**.
   2. In **"Providers and keys"**, pick a provider: Anthropic, OpenAI, Google Gemini, Deepgram, ElevenLabs, AssemblyAI, or
      **"Ollama (this computer)"**.
@@ -610,7 +749,7 @@ Wabcut uses **Premiere Pro's default shortcuts** (Windows and macOS tables, per 
 | Ctrl+S | "Save" |
 | Ctrl+Z / Ctrl+Shift+Z | "Undo" / "Redo" |
 
-- **Change them.** **"Keyboard Shortcuts"** (**Ctrl+Alt+K**, also in the File menu and Help) shows a keyboard map of what
+- **Change them.** **"Keyboard Shortcuts"** (**Ctrl+Alt+K**, also in the Edit and Help menus) shows a keyboard map of what
   every key does.
   - The **key set** list has "Premiere Pro (default)" and "Wabcut", plus "Save as a new key set…".
   - **"Import…"** reads your Premiere **`.kys`** file (or a Wabcut `.json`).

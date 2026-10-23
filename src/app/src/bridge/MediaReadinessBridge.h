@@ -178,6 +178,9 @@ signals:
     /// 0.2: the preview cache's files may have changed (a render finished, or the project's cache was made anew): the
     /// timeline's render bar looks again.
     void previewFilesChanged();
+    /// UX rework (L): Render In to Out ended (after renderChanged): `outcome` "done", "cancelled" or "failed";
+    /// `message` is renderMessage ("" when done). For the editor's toast.
+    void renderFinished(const QString& outcome, const QString& message);
 
 private:
     void attachDocument();

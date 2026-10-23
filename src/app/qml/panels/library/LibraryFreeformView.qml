@@ -142,6 +142,7 @@ Flickable {
                 required property string binPath
                 required property string derivedFrom
                 required property bool searchBin
+                required property var marks // UX rework (stream T): the In/Out band
 
                 readonly property var place: Library.freeform[key] ?? ({ x: 0, y: 0, size: 1, z: 0 })
                 x: place.x
@@ -173,6 +174,7 @@ Flickable {
                     binPath: cell.binPath
                     derivedFrom: cell.derivedFrom
                     searchBin: cell.searchBin
+                    marks: cell.marks
                     metaLines: ProjectController.revision >= 0
                                ? Library.freeformLines.map(id => id !== "" ? Library.cellText(cell.key, id) : "") : []
                     onActivated: root.activated(cell.key, cell.kind)

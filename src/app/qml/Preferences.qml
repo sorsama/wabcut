@@ -17,6 +17,8 @@ import QtCore
 //     Trainer's best streak (M5j)
 //   appearance/launchIntro — the echo mark's intro plays when Wabcut starts (design language v3; reduce motion skips it)
 //   home/starred — the projects starred on Home, as a JSON list of file paths (design language v3)
+//   home/projectFilter, home/projectSort, home/projectView, home/advancedOpen, home/newProjectChoices — the Projects
+//     page's filter, sort and view, the New project page's Advanced state and last choices (UX rework)
 // The singleton is created when Main first reads it, which applies the saved appearance before the panels bind
 // to Theme, then turns on Theme.colorTransitions (start-up never animates).
 QtObject {
@@ -78,10 +80,24 @@ QtObject {
     // JSON list of project file paths (starredProjects() / setStarred()).
     property bool launchIntro: true
     property string homeStarred: "[]"
+    // UX rework (stream H, Home as a start window): the Projects page's filter ("all" | "starred"), sort ("opened" |
+    // "name") and view ("grid" | "list"); the New project page's Advanced settings open or closed, and its last
+    // choices as JSON ({ presetId, width, height, rateNum, rateDen, advanced: { Home.createProject's Advanced keys } }).
+    // (home/recentProjects, home/defaultFolder and home/recentLimit belong to HomeBridge, in C++.)
+    property string homeProjectFilter: "all"
+    property string homeProjectSort: "opened"
+    property string homeProjectView: "grid"
+    property bool homeAdvancedOpen: false
+    property string homeNewProjectChoices: "{}"
 
     readonly property Settings _home: Settings {
         category: "home"
         property alias starred: prefs.homeStarred
+        property alias projectFilter: prefs.homeProjectFilter
+        property alias projectSort: prefs.homeProjectSort
+        property alias projectView: prefs.homeProjectView
+        property alias advancedOpen: prefs.homeAdvancedOpen
+        property alias newProjectChoices: prefs.homeNewProjectChoices
     }
 
     /// The starred projects' file paths.
@@ -131,16 +147,15 @@ QtObject {
     // accent, colors, clipColors}).
     property string themeName: ""
     property string savedThemes: "[]"
-    // Interface: the title bar's GPU and save-status pills (moved into Settings; they can come back here) and the left
-    // rail's arrangement as JSON {order: [keys], hidden: [keys]} ("" = the default rail; LeftRail.visiblePanels).
+    // Interface: the title bar's GPU and save-status pills (moved into Settings; they can come back here). (The UX
+    // rework removed the left rail; the "interface/railLayout" key it left is not read any more.)
     property bool showGpuStatus: false
     property bool showSaveStatus: false
-    property string railLayout: ""
     // AI features (Settings > AI): off hides the AI entry points and turns AiController's offline mode on (no AI
     // request leaves the computer); `aiOfflineBefore` is the offline mode to restore when they are turned back on.
     property bool aiEnabled: true
     property bool aiOfflineBefore: false
-    // Settings > General: the autosave interval in seconds (0 = ProjectFile's built-in minute; LeftRail applies it).
+    // Settings > General: the autosave interval in seconds (0 = ProjectFile's built-in minute; Main applies it).
     property int autosaveSeconds: 0
 
     readonly property Settings _project: Settings {
@@ -148,37 +163,10 @@ QtObject {
         property alias autosaveSeconds: prefs.autosaveSeconds
     }
 
-    /// The left rail's entries in the user's order, [{key, label, icon, command, hidden}], from the rail's catalog
-    /// (LeftRail.panels) and railLayout: keys no longer offered are dropped, a panel the layout does not know yet (a
-    /// newer Wabcut's) joins after its default neighbour, shown.
-    function railEntries(panels: var): var {
-        const saved = prefs.parsedJson(prefs.railLayout !== "" ? prefs.railLayout : "{}", {})
-        const order = Array.isArray(saved.order) ? saved.order : []
-        const hidden = Array.isArray(saved.hidden) ? saved.hidden : []
-        const keys = (panels ?? []).map(p => p.key)
-        const ordered = order.filter((k, i) => keys.includes(k) && order.indexOf(k) === i)
-        for (let i = 0; i < keys.length; ++i) {
-            if (ordered.includes(keys[i]))
-                continue
-            const after = i > 0 ? ordered.indexOf(keys[i - 1]) : -1
-            ordered.splice(after + 1, 0, keys[i])
-        }
-        return ordered.map(k => {
-            const p = panels.find(q => q.key === k)
-            return { key: k, label: p.label, icon: p.icon, command: p.command ?? "", hidden: hidden.includes(k) }
-        })
-    }
-    /// Saves the rail's order (every key) and the hidden keys; [] and [] give the default rail back.
-    function setRailLayout(order: var, hidden: var) {
-        prefs.railLayout = order.length === 0 && hidden.length === 0 ? ""
-                                                                     : JSON.stringify({ order: order, hidden: hidden })
-    }
-
     readonly property Settings _interface: Settings {
         category: "interface"
         property alias showGpuStatus: prefs.showGpuStatus
         property alias showSaveStatus: prefs.showSaveStatus
-        property alias railLayout: prefs.railLayout
     }
     readonly property Settings _aiFeatures: Settings {
         category: "aiFeatures"
@@ -234,6 +222,17 @@ QtObject {
         property alias trimPostroll: prefs.trimPostroll
         property alias trackHeightPresets: prefs.trackHeightPresets
     }
+    // ---- UX rework 2026-10-23, stream T (timeline and monitor QoL) ----
+    // The Tracks panel's Snap toggle (S) and its time remapping view toggle, remembered between runs (timeline/snapping,
+    // timeline/showSpeed). The volume lanes are not here: each workspace says whether it shows them (Workspaces).
+    property bool timelineSnapping: true
+    property bool timelineShowSpeed: false
+    readonly property Settings _timelineView: Settings {
+        category: "timeline"
+        property alias snapping: prefs.timelineSnapping
+        property alias showSpeed: prefs.timelineShowSpeed
+    }
+
     readonly property Settings _review: Settings {
         category: "review"
         property alias author: prefs.reviewAuthor
@@ -301,5 +300,18 @@ QtObject {
         property alias monitor: prefs.voiceOverMonitor
         property alias monitorGainDb: prefs.voiceOverMonitorGainDb
         property alias calibrationMs: prefs.voiceOverCalibrationMs
+    }
+
+    // ---- UX rework 2026-10-23, stream E (the Effects panel) ----
+    // The Effects panel's view ("list", "compact" or "icons") and its panel menu's Show Audio Plug-ins, saved as
+    // effects/view and effects/showPlugins. The C++ keeps its own keys in the same group under other names
+    // (effects/expandedFolders, effects/lastOpenedFolder: EffectsTree; effects/pluginGroupBy: Plugins;
+    // effects/presetsFolder: EffectPresets). The filter is not saved: a filter left on would hide effects at the next start.
+    property string effectsView: "list"
+    property bool effectsShowPlugins: true
+    readonly property Settings _effects: Settings {
+        category: "effects"
+        property alias view: prefs.effectsView
+        property alias showPlugins: prefs.effectsShowPlugins
     }
 }

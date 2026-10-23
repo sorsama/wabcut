@@ -1,54 +1,109 @@
 pragma ComponentBehavior: Bound
 import QtQuick
-import QtQuick.Dialogs
 import QtQml.Models
 
-// The Effects panel's right-click menus (0.2, docs/effects.md "Presets, custom bins and favourites"):
-//   * on an effect, transition or preset: Add to / Remove from Favorites, Add to a custom bin (or a new one), Remove
-//     from this custom bin, Preset Properties… and Delete Preset (the user's presets), Export Preset…;
-//   * on a custom bin: Rename…, Delete Custom Bin; on one of the user's presets bins: Rename…, Delete (with its presets).
-// Everything goes through EffectPresets (the effects.* commands).
+// The Effects panel's right-click menus (0.2; UX rework, docs/effects.md "The Effects panel"):
+//   * on an effect, transition, preset or audio plug-in: Apply to Selected Clips, Set as Default Transition
+//     (transitions), Add to / Remove from Favorites, Add to Custom Bin ▸ (or a new one), Remove from <bin> (a copy in a
+//     custom bin), Preset Properties… (the user's presets), Export Preset… (presets), Delete… (the user's presets, not
+//     their copies in custom bins);
+//   * on a folder: New Presets Bin, Import Presets… and Export Presets… on the Presets folder and the user's presets
+//     bins; Rename and Delete… on custom bins and the user's presets bins; the grouping, Rescan and the settings on Audio
+//     Plug-ins; Expand All / Collapse All on every folder.
+// Library changes go through EffectPresets (the effects.* commands). What needs the panel (a confirmation, an in-place
+// rename, the file dialogs) is asked for with the signals, after the menu has closed.
 Item {
     id: root
 
-    /// The item: {id, name, kind, item ("effect:<id>" / "preset:<name>"), builtIn}.
-    property var item: ({})
-    /// The custom bin the item is shown in ("" elsewhere).
-    property string customBin: ""
-    property string presetsBin: ""
-    readonly property bool isPreset: (item.kind ?? "") === "preset"
-    readonly property bool userPreset: isPreset && item.builtIn === false
-    readonly property bool favorite: EffectPresets.revision >= 0 && (item.item ?? "") !== "" && EffectPresets.isFavorite(item.item)
-    signal status(string message)
+    /// The row the menu is for: an EffectsTree row map (rowType "folder" or "item").
+    property var row: ({})
+    /// The panel's tree (Expand All / Collapse All of a folder, Apply to Selected Clips).
+    property EffectsTree tree: null
 
-    function report(error, done) {
+    readonly property string itemId: row.itemId ?? ""
+    readonly property string itemRef: row.item ?? ""
+    readonly property string itemName: row.name ?? ""
+    readonly property string kind: row.kind ?? ""
+    readonly property bool isPreset: kind === "preset"
+    readonly property bool userPreset: isPreset && !(row.builtIn ?? true)
+    readonly property bool isTransition: kind === "videoTransition" || kind === "audioTransition"
+    readonly property bool isDefault: isTransition
+                                      && (Editing.defaultVideoTransition === itemId || Editing.defaultAudioTransition === itemId)
+    readonly property bool favorite: row.favorite ?? false
+    readonly property bool usable: (row.problem ?? "") === ""
+    readonly property string folderKind: row.folderKind ?? ""
+    readonly property bool holdsPresets: row.canHoldPresets ?? false
+
+    signal status(string message)
+    signal renameRequested(string key)
+    signal deleteRequested(string key)
+    signal newCustomBinRequested(string item)
+    signal newPresetsBinRequested(string parentPath)
+    signal importRequested(string bin)
+    signal exportBinRequested(string path, string title)
+    signal exportPresetRequested(string name)
+
+    function report(error: string, done: string) {
         root.status(error !== "" ? error : done)
     }
-    function popupForItem(target, x, y, entry, bin) {
-        item = entry
-        customBin = bin
-        itemMenu.popup(target, x, y)
+    function popupFor(entry: var, target: Item, x: real, y: real) {
+        root.row = entry
+        if ((entry.rowType ?? "") === "folder")
+            folderMenu.popup(target, x, y)
+        else
+            itemMenu.popup(target, x, y)
     }
-    function popupForCustomBin(target, x, y, bin) {
-        customBin = bin
-        binMenu.popup(target, x, y)
+
+    // Runs after the menu has closed (a dialog or an in-place rename then keeps the focus).
+    property var pending: null
+    function later(action: var) {
+        root.pending = action
     }
-    function popupForPresetsBin(target, x, y, bin) {
-        presetsBin = bin
-        presetsBinMenu.popup(target, x, y)
+    function runPending() {
+        const run = root.pending
+        root.pending = null
+        if (run)
+            Qt.callLater(run)
     }
 
     ContextMenu {
         id: itemMenu
         objectName: "effectItemMenu"
+        onClosed: root.runPending()
 
+        ContextMenuItem {
+            objectName: "applyToSelectedItem"
+            text: qsTr("Apply to Selected Clips")
+            iconName: "check"
+            enabled: root.usable
+            onTriggered: {
+                const result = root.tree ? root.tree.applyToSelection(root.itemId) : ({})
+                root.status(result.message ?? result.error ?? "")
+            }
+        }
+        ContextMenuItem {
+            objectName: "defaultTransitionItem"
+            visible: root.isTransition
+            height: visible ? implicitHeight : 0
+            enabled: !root.isDefault
+            text: root.isDefault ? qsTr("Default Transition") : qsTr("Set as Default Transition")
+            iconName: root.isDefault ? "check" : "blend"
+            onTriggered: root.report(Editing.setDefaultTransition(root.itemId) ? "" : qsTr("%1 cannot be the default transition").arg(root.itemName),
+                                     root.kind === "audioTransition"
+                                         ? qsTr("%1 is the default audio transition").arg(root.itemName)
+                                         : qsTr("%1 is the default video transition").arg(root.itemName))
+        }
+        ContextMenuSeparator {}
         ContextMenuItem {
             objectName: "favoriteItem"
             text: root.favorite ? qsTr("Remove from Favorites") : qsTr("Add to Favorites")
             iconName: "bookmark"
-            onTriggered: root.report(EffectPresets.setFavorite(root.item.item, !root.favorite),
-                                     root.favorite ? qsTr("Removed %1 from Favorites").arg(root.item.name)
-                                                   : qsTr("Added %1 to Favorites").arg(root.item.name))
+            onTriggered: {
+                const adding = !root.favorite
+                root.report(EffectPresets.setFavorite(root.itemRef, adding),
+                            adding ? qsTr("Added %1 to Favorites").arg(root.itemName)
+                                   : qsTr("Removed %1 from Favorites").arg(root.itemName))
+            }
         }
         ContextMenu {
             id: addToBin
@@ -59,8 +114,8 @@ Item {
                 text: qsTr("New Custom Bin")
                 iconName: "folder-plus"
                 onTriggered: {
-                    const name = EffectPresets.newCustomBin(root.item.item)
-                    root.status(name !== "" ? qsTr("Made %1").arg(name) : qsTr("Could not make a custom bin"))
+                    const item = root.itemRef
+                    root.later(() => root.newCustomBinRequested(item))
                 }
             }
             Instantiator {
@@ -69,8 +124,8 @@ Item {
                     required property string modelData
                     text: modelData
                     iconName: "folder"
-                    onTriggered: root.report(EffectPresets.addToCustomBin(modelData, root.item.item),
-                                             qsTr("Added %1 to %2").arg(root.item.name).arg(modelData))
+                    onTriggered: root.report(EffectPresets.addToCustomBin(modelData, root.itemRef),
+                                             qsTr("Added %1 to %2").arg(root.itemName).arg(modelData))
                 }
                 onObjectAdded: (index, object) => addToBin.insertItem(index + 1, object)
                 onObjectRemoved: (index, object) => addToBin.removeItem(object)
@@ -78,12 +133,12 @@ Item {
         }
         ContextMenuItem {
             objectName: "removeFromCustomBin"
-            visible: root.customBin !== ""
+            visible: root.row.removable ?? false
             height: visible ? implicitHeight : 0
-            text: qsTr("Remove from %1").arg(root.customBin)
+            text: qsTr("Remove from %1").arg(root.row.customBin ?? "")
             iconName: "x"
-            onTriggered: root.report(EffectPresets.deleteCustomItem({ customBin: root.customBin, item: root.item.item }),
-                                     qsTr("Removed %1 from %2").arg(root.item.name).arg(root.customBin))
+            onTriggered: root.report(EffectPresets.deleteCustomItem({ customBin: root.row.customBin, item: root.itemRef }),
+                                     qsTr("Removed %1 from %2").arg(root.itemName).arg(root.row.customBin))
         }
         ContextMenuSeparator {
             visible: root.isPreset
@@ -95,7 +150,10 @@ Item {
             height: visible ? implicitHeight : 0
             text: qsTr("Preset Properties…")
             iconName: "pencil"
-            onTriggered: propertiesDialog.openProperties(root.item.name)
+            onTriggered: {
+                const name = root.itemName
+                root.later(() => propertiesDialog.openProperties(name))
+            }
         }
         ContextMenuItem {
             objectName: "exportPresetItem"
@@ -103,76 +161,159 @@ Item {
             height: visible ? implicitHeight : 0
             text: qsTr("Export Preset…")
             iconName: "upload"
-            onTriggered: exportDialog.open()
+            onTriggered: {
+                const name = root.itemName
+                root.later(() => root.exportPresetRequested(name))
+            }
         }
+        // Not on a copy in a custom bin: there Delete (the key too) takes it out of the bin, which "Remove from" says.
         ContextMenuItem {
             objectName: "deletePresetItem"
-            visible: root.userPreset
+            visible: root.userPreset && !(root.row.removable ?? false)
             height: visible ? implicitHeight : 0
-            text: qsTr("Delete Preset")
+            text: qsTr("Delete…")
             iconName: "trash-2"
-            command: "effects.deleteCustomItem"
-            onTriggered: root.report(EffectPresets.deleteCustomItem({ preset: root.item.name }),
-                                     qsTr("Deleted %1").arg(root.item.name))
+            onTriggered: {
+                const key = root.row.rowKey ?? ""
+                root.later(() => root.deleteRequested(key))
+            }
         }
     }
 
     ContextMenu {
-        id: binMenu
-        objectName: "customBinMenu"
+        id: folderMenu
+        objectName: "effectFolderMenu"
+        onClosed: root.runPending()
 
+        // The Presets folder and the user's presets bins.
         ContextMenuItem {
-            text: qsTr("Rename…")
-            iconName: "pencil"
-            onTriggered: names.ask(qsTr("Rename custom bin"), root.customBin, qsTr("Rename"),
-                                   text => EffectPresets.renameCustomBin(root.customBin, text))
-        }
-        ContextMenuItem {
-            text: qsTr("Delete Custom Bin")
-            iconName: "trash-2"
-            command: "effects.deleteCustomItem"
-            onTriggered: root.report(EffectPresets.deleteCustomItem({ customBin: root.customBin }),
-                                     qsTr("Deleted %1").arg(root.customBin))
-        }
-    }
-
-    ContextMenu {
-        id: presetsBinMenu
-        objectName: "presetsBinMenu"
-
-        ContextMenuItem {
-            text: qsTr("New Presets Bin Inside…")
+            objectName: "folderNewPresetsBin"
+            visible: root.holdsPresets
+            height: visible ? implicitHeight : 0
+            text: (root.row.presetsBin ?? "") === "" ? qsTr("New Presets Bin") : qsTr("New Presets Bin Inside")
             iconName: "folder-plus"
-            onTriggered: names.ask(qsTr("New presets bin"), qsTr("Presets Bin"), qsTr("Make"),
-                                   text => EffectPresets.newPresetsBin(root.presetsBin + "/" + text))
+            onTriggered: {
+                const parentPath = root.row.presetsBin ?? ""
+                root.later(() => root.newPresetsBinRequested(parentPath))
+            }
         }
         ContextMenuItem {
-            text: qsTr("Rename…")
+            objectName: "folderImportPresets"
+            visible: root.holdsPresets
+            height: visible ? implicitHeight : 0
+            text: qsTr("Import Presets…")
+            iconName: "import"
+            onTriggered: {
+                const bin = root.row.presetsBin ?? ""
+                root.later(() => root.importRequested(bin))
+            }
+        }
+        ContextMenuItem {
+            objectName: "folderExportPresets"
+            visible: root.holdsPresets
+            height: visible ? implicitHeight : 0
+            enabled: (root.row.userPresets ?? 0) > 0
+            text: qsTr("Export Presets…")
+            iconName: "upload"
+            onTriggered: {
+                const path = root.row.presetsBin ?? ""
+                const title = path === "" ? "" : (root.row.title ?? "")
+                root.later(() => root.exportBinRequested(path, title))
+            }
+        }
+        // Audio Plug-ins: the grouping of its folders, a rescan and the settings.
+        ContextMenuItem {
+            id: byVendor
+            objectName: "folderGroupByVendor"
+            visible: root.folderKind === "plugins"
+            height: visible ? implicitHeight : 0
+            text: qsTr("Group by Vendor")
+            checkable: true
+            checked: Plugins.groupBy !== "category"
+            onTriggered: {
+                Plugins.groupBy = "vendor"
+                byVendor.checked = Qt.binding(() => Plugins.groupBy !== "category")
+            }
+        }
+        ContextMenuItem {
+            id: byCategory
+            objectName: "folderGroupByCategory"
+            visible: root.folderKind === "plugins"
+            height: visible ? implicitHeight : 0
+            text: qsTr("Group by Category")
+            checkable: true
+            checked: Plugins.groupBy === "category"
+            onTriggered: {
+                Plugins.groupBy = "category"
+                byCategory.checked = Qt.binding(() => Plugins.groupBy === "category")
+            }
+        }
+        ContextMenuItem {
+            objectName: "folderRescanPlugins"
+            visible: root.folderKind === "plugins"
+            height: visible ? implicitHeight : 0
+            enabled: !Plugins.scanning
+            text: qsTr("Rescan Audio Plug-ins")
+            iconName: "rotate-cw"
+            onTriggered: {
+                const message = Plugins.rescan()
+                root.status(message !== "" ? message : qsTr("Scanning the audio plug-ins"))
+            }
+        }
+        ContextMenuItem {
+            objectName: "folderPluginSettings"
+            visible: root.folderKind === "plugins"
+            height: visible ? implicitHeight : 0
+            text: qsTr("Audio Plug-in Settings…")
+            iconName: "settings"
+            onTriggered: root.later(() => Plugins.openSettings())
+        }
+        ContextMenuSeparator {
+            visible: root.holdsPresets || root.folderKind === "plugins"
+            height: visible ? implicitHeight : 0
+        }
+        // Custom bins and the user's presets bins.
+        ContextMenuItem {
+            objectName: "folderRename"
+            visible: root.row.renamable ?? false
+            height: visible ? implicitHeight : 0
+            text: qsTr("Rename")
             iconName: "pencil"
-            onTriggered: names.ask(qsTr("Rename presets bin"), root.presetsBin.split("/").pop(), qsTr("Rename"),
-                                   text => EffectPresets.renamePresetsBin(root.presetsBin, text))
+            onTriggered: {
+                const key = root.row.rowKey ?? ""
+                root.later(() => root.renameRequested(key))
+            }
         }
         ContextMenuItem {
-            text: qsTr("Delete Bin and Its Presets")
+            objectName: "folderDelete"
+            visible: root.row.deletable ?? false
+            height: visible ? implicitHeight : 0
+            text: qsTr("Delete…")
             iconName: "trash-2"
-            onTriggered: root.report(EffectPresets.deleteCustomItem({ presetsBin: root.presetsBin }),
-                                     qsTr("Deleted %1").arg(root.presetsBin))
+            onTriggered: {
+                const key = root.row.rowKey ?? ""
+                root.later(() => root.deleteRequested(key))
+            }
+        }
+        ContextMenuSeparator {
+            visible: (root.row.renamable ?? false) || (root.row.deletable ?? false)
+            height: visible ? implicitHeight : 0
+        }
+        ContextMenuItem {
+            objectName: "folderExpandAll"
+            text: qsTr("Expand All")
+            iconName: "unfold-vertical"
+            onTriggered: root.tree?.expandAll(root.row.rowKey ?? "")
+        }
+        ContextMenuItem {
+            objectName: "folderCollapseAll"
+            text: qsTr("Collapse All")
+            iconName: "fold-vertical"
+            onTriggered: root.tree?.collapseAll(root.row.rowKey ?? "")
         }
     }
 
     SavePresetDialog {
         id: propertiesDialog
-    }
-    EffectNameDialog {
-        id: names
-    }
-    FileDialog {
-        id: exportDialog
-        title: qsTr("Export Preset")
-        fileMode: FileDialog.SaveFile
-        defaultSuffix: "json"
-        nameFilters: [qsTr("Wabcut presets (*.wabcut-presets.json)")]
-        onAccepted: root.report(EffectPresets.exportPresets(selectedFile, [root.item.name]),
-                                qsTr("Exported %1").arg(root.item.name))
     }
 }

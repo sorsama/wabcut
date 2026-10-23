@@ -26,6 +26,8 @@
 #include <QKeyEvent>
 #include <QLinearGradient>
 #include <QPainter>
+#include <QQmlContext>
+#include <QQmlExpression>
 #include <QSettings>
 #include <QStyleHints>
 #include <QTemporaryDir>
@@ -275,7 +277,7 @@ TEST_CASE("Keyboard only: import, insert, edit and export", "[app][a11y][keyboar
     const QString output = QDir::toNativeSeparators(dir.filePath(QStringLiteral("keyboard.mp4")));
     bool onField = false;
     QStringList exportChain;
-    // Reachability, not a count: the window has about 60 Tab stops before the field (rail, monitors, presets).
+    // Reachability, not a count: the window has about 60 Tab stops before the field (menu bar, monitors, presets).
     for (int i = 0; i < 120 && !onField; ++i) {
         QQuickItem* f = w->activeFocusItem();
         exportChain << (f ? QStringLiteral("%1(%2)").arg(QString::fromLatin1(f->metaObject()->className()), f->objectName())
@@ -405,9 +407,8 @@ TEST_CASE("Appearance: high contrast and the interface size from Settings", "[ap
     Shell shell;
     REQUIRE(shell.window != nullptr);
     shell.resize(kShotWidth, kShotHeight);
-    QObject* rail = shell.object("leftRail");
-    REQUIRE(rail);
-    REQUIRE(QMetaObject::invokeMethod(rail, "openSettings", Q_ARG(QString, QStringLiteral("appearance"))));
+    REQUIRE(QMetaObject::invokeMethod(shell.window.get(), "openSettings", Q_ARG(QString, QStringLiteral("appearance")),
+                                      Q_ARG(QString, QString())));
     QObject* loader = shell.object("settingsWindowLoader");
     REQUIRE(loader);
     QObject* settings = loader->property("item").value<QObject*>();
@@ -476,12 +477,24 @@ TEST_CASE("Focus: Esc closes a popover and gives focus back; workspace switches 
         INFO("workspace " << workspace);
         CHECK(focusOk());
     }
-    // Panel switches from the rail put focus in the panel.
+    // Panel switches from the focus keys (showBrowserPanel) put focus in the panel.
     for (const char* key : {"effects", "markers", "library"}) {
         REQUIRE(QMetaObject::invokeMethod(w, "showBrowserPanel", Q_ARG(QVariant, QString::fromLatin1(key))));
         spin(60);
         INFO(key);
         CHECK(focusOk());
+    }
+    // UX rework: the Window menu too, for every kind of panel (an open one comes to the front, a closed one opens in
+    // the group clicked last): focus lands in that panel's group.
+    for (const char* key : {"scopes", "effectControls", "program", "timeline", "mixer", "library"}) {
+        REQUIRE(QMetaObject::invokeMethod(w, "openPanelFromWindowMenu", Q_ARG(QString, QString::fromLatin1(key))));
+        spin(60);
+        INFO(key);
+        CHECK(focusOk());
+        QQmlExpression inGroup(qmlContext(w), w,
+                               QStringLiteral("docking.groupOfItem(window.activeFocusItem) === docking.groupOfPanel('%1').group")
+                                   .arg(QLatin1String(key)));
+        CHECK(inGroup.evaluate().toBool());
     }
     const QStringList messages = takeMessages();
     INFO(join(messages));

@@ -21,6 +21,8 @@ FocusScope {
     signal menuRequested(string key, Item target, point position)
 
     readonly property var columns: Library.columns
+    /// Rows in view (Page Up / Page Down move by this many: LibraryPanel.moveSelection).
+    readonly property int pageRows: Math.max(1, Math.floor(table.height / Theme.rowHeight))
     property string editingKey: ""
     property string editingColumn: ""
 
@@ -57,25 +59,22 @@ FocusScope {
             root.pendingRename = ""
         }
     }
-    // Selects the row `delta` rows from the current one (keyboard).
-    function step(delta, extend) {
-        const keys = Library.selection
-        const from = keys.length > 0 ? Library.items.rowOf(keys[keys.length - 1]) : -1
-        const to = Math.max(0, Math.min(table.rows - 1, from + delta))
-        if (to < 0 || table.rows === 0)
-            return
-        const key = Library.items.keyOf(to)
-        Library.select(key, extend ? Library.Range : Library.Replace)
-        table.positionViewAtRow(to, TableView.Contain)
+    /// Up / Down (Shift extends): the selection moves `delta` rows. LibraryPanel moves it (it keeps the keyboard's place
+    /// in the selection for every view: Shift+Up / Shift+Down grow and shrink the range) and calls showRow.
+    signal stepRequested(int delta, bool extend)
+    /// Scrolls the row `row` into view (-1: nothing).
+    function showRow(row: int) {
+        if (row >= 0 && row < table.rows)
+            table.positionViewAtRow(row, TableView.Contain)
     }
 
     Keys.onPressed: event => {
         const extend = (event.modifiers & Qt.ShiftModifier) !== 0
         if (event.key === Qt.Key_Down) {
-            root.step(1, extend)
+            root.stepRequested(1, extend)
             event.accepted = true
         } else if (event.key === Qt.Key_Up) {
-            root.step(-1, extend)
+            root.stepRequested(-1, extend)
             event.accepted = true
         } else if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter) && Library.selection.length > 0) {
             const key = Library.selection[0]

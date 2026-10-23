@@ -946,3 +946,62 @@ TEST_CASE("Library: thumbnail zoom steps in quarters between half and double siz
     r.library.setThumbnailScale(std::numeric_limits<double>::quiet_NaN());
     CHECK(r.library.thumbnailScale() == 1.0);
 }
+// UX rework (L): Premiere's Project panel zoom keys (Shift+] / Shift+[ and = / -) step the card size, and its selection
+// keys (arrows, Home, End, PageUp, PageDown, Shift+arrows) ask the panel to move the selection in the view it shows.
+// Before, the keymap resolved them in the Library and nothing ran them: the keys were swallowed.
+TEST_CASE("Library keys: zoom keys step the card size and selection keys ask the panel", "[app][library][keys]") {
+    LibraryRig r;
+    for (const char* id : {"project.thumbnailSizeNext", "project.thumbnailSizePrevious", "project.zoomIn",
+                           "project.zoomOut", "project.moveSelectionUp", "project.moveSelectionDown",
+                           "project.moveSelectionLeft", "project.moveSelectionRight", "project.moveSelectionHome",
+                           "project.moveSelectionEnd", "project.moveSelectionPageUp", "project.moveSelectionPageDown",
+                           "project.extendSelectionUp", "project.extendSelectionDown", "project.extendSelectionLeft",
+                           "project.extendSelectionRight"}) {
+        INFO(id);
+        CHECK(LibraryBridge::handlesCommand(QString::fromLatin1(id)));
+        CHECK(r.library.commandAvailability(QString::fromLatin1(id)).value(QStringLiteral("handled")).toBool());
+    }
+    CHECK_FALSE(LibraryBridge::handlesCommand(QStringLiteral("project.nextColumnField")));
+
+    // The slider's bounds, and the keys stepping between them.
+    CHECK(r.library.thumbnailScaleMin() == 0.5);
+    CHECK(r.library.thumbnailScaleMax() == 2.0);
+    CHECK(r.library.thumbnailScaleStep() == 0.25);
+    REQUIRE(r.library.thumbnailScale() == 1.0);
+    REQUIRE(r.library.runCommand(QStringLiteral("project.thumbnailSizeNext")));
+    CHECK(r.library.thumbnailScale() == 1.25);
+    REQUIRE(r.library.runCommand(QStringLiteral("project.zoomIn")));
+    CHECK(r.library.thumbnailScale() == 1.5);
+    REQUIRE(r.library.runCommand(QStringLiteral("project.zoomOut")));
+    REQUIRE(r.library.runCommand(QStringLiteral("project.thumbnailSizePrevious")));
+    CHECK(r.library.thumbnailScale() == 1.0);
+    // At a bound the key stays the Library's (= never zooms the sequence instead) and the palette says why.
+    r.library.setThumbnailScale(2.0);
+    const QVariantMap atMax = r.library.commandAvailability(QStringLiteral("project.zoomIn"));
+    CHECK_FALSE(atMax.value(QStringLiteral("enabled")).toBool());
+    CHECK_FALSE(atMax.value(QStringLiteral("reason")).toString().isEmpty());
+    CHECK(r.library.commandAvailability(QStringLiteral("project.zoomOut")).value(QStringLiteral("enabled")).toBool());
+    CHECK(r.library.runCommand(QStringLiteral("project.zoomIn")));
+    CHECK(r.library.thumbnailScale() == 2.0);
+    r.library.setThumbnailScale(0.5);
+    CHECK_FALSE(r.library.commandAvailability(QStringLiteral("project.thumbnailSizePrevious")).value(QStringLiteral("enabled")).toBool());
+    CHECK(r.library.runCommand(QStringLiteral("project.thumbnailSizePrevious")));
+    CHECK(r.library.thumbnailScale() == 0.5);
+
+    // The selection keys: the panel moves the selection (it knows its columns and page size).
+    REQUIRE(r.library.items()->rowCount() > 0);
+    QStringList moves;
+    QObject::connect(&r.library, &LibraryBridge::selectionMoveRequested, [&](const QString& where, bool extend) {
+        moves << (extend ? where + QStringLiteral("+") : where);
+    });
+    for (const char* id : {"project.moveSelectionHome", "project.moveSelectionEnd", "project.moveSelectionPageUp",
+                           "project.moveSelectionPageDown", "project.moveSelectionDown", "project.moveSelectionRight",
+                           "project.extendSelectionLeft", "project.extendSelectionUp"}) {
+        INFO(id);
+        CHECK(r.library.commandAvailability(QString::fromLatin1(id)).value(QStringLiteral("enabled")).toBool());
+        CHECK(r.library.runCommand(QString::fromLatin1(id)));
+    }
+    CHECK(moves == (QStringList{QStringLiteral("home"), QStringLiteral("end"), QStringLiteral("pageUp"),
+                                QStringLiteral("pageDown"), QStringLiteral("down"), QStringLiteral("right"),
+                                QStringLiteral("left+"), QStringLiteral("up+")}));
+}

@@ -11,6 +11,8 @@
 
 #include <QColor>
 #include <QQmlEngine>
+#include <QSignalBlocker>
+#include <QTimer>
 
 #include <algorithm>
 #include <cctype>
@@ -25,9 +27,34 @@ namespace {
 double seconds(Ticks t) { return static_cast<double>(t.value) / static_cast<double>(kTicksPerSecond); }
 std::int64_t ticksOf(double s) { return static_cast<std::int64_t>(std::llround(std::max(0.0, s) * static_cast<double>(kTicksPerSecond))); }
 
+/// The engine's ProjectController, for the QML singleton. GraphicTools is registered with QML_SINGLETON and is
+/// default-constructible, so the engine constructs it directly and never calls create() (Qt 6.11: Constructor wins
+/// over Factory): the singleton looks the controller up itself once the engine has given it a context - 0 ms after
+/// it is made, and on first use. A bridge made outside QML (tests) has no engine and keeps the controller it is given.
+ProjectController* engineController(const QObject* bridge) {
+    QQmlEngine* engine = qmlEngine(bridge);
+    return engine ? engine->singletonInstance<ProjectController*>("Wabcut", "ProjectController") : nullptr;
+}
+
+/// First use before the 0 ms lookup (a binding, an action): takes the engine's controller quietly - `changed` now
+/// would re-run the binding that is reading.
+void adoptEngineController(const GraphicToolsBridge* bridge) {
+    auto* self = const_cast<GraphicToolsBridge*>(bridge);
+    if (ProjectController* controller = engineController(self)) {
+        const QSignalBlocker quiet(self);
+        self->setController(controller);
+    }
+}
+
 } // namespace
 
-GraphicToolsBridge::GraphicToolsBridge(QObject* parent) : QObject(parent) {}
+GraphicToolsBridge::GraphicToolsBridge(QObject* parent) : QObject(parent) {
+    // The QML singleton (see engineController): its controller once the engine has made it; the views read again.
+    QTimer::singleShot(0, this, [this] {
+        if (!m_controller)
+            setController(engineController(this));
+    });
+}
 
 GraphicToolsBridge* GraphicToolsBridge::create(QQmlEngine* qmlEngine, QJSEngine*) {
     auto* bridge = new GraphicToolsBridge;
@@ -48,6 +75,8 @@ void GraphicToolsBridge::setController(ProjectController* controller) {
 }
 
 QStringList GraphicToolsBridge::textStyles() const {
+    if (!m_controller)
+        adoptEngineController(this);
     QStringList out;
     if (const ProjectSnapshot snap = m_controller ? m_controller->snapshot() : nullptr) {
         for (const ProjectTextStyle& s : snap->textStyles)
@@ -57,6 +86,8 @@ QStringList GraphicToolsBridge::textStyles() const {
 }
 
 QString GraphicToolsBridge::run(const std::string& name, Json params) {
+    if (!m_controller)
+        adoptEngineController(this);
     if (!m_controller) {
         m_message = tr("No project");
         emit changed();
@@ -87,6 +118,8 @@ QString GraphicToolsBridge::align(const QString& clip, const QVariantList& layer
 }
 
 QVariantList GraphicToolsBridge::topLayers(const QString& clip) const {
+    if (!m_controller)
+        adoptEngineController(this);
     QVariantList out;
     const auto id = parseClipKey(clip);
     const SequencePtr seq = m_controller ? m_controller->currentSequence() : nullptr;
@@ -101,6 +134,8 @@ QVariantList GraphicToolsBridge::topLayers(const QString& clip) const {
 }
 
 QVariantMap GraphicToolsBridge::roll(const QString& clip) const {
+    if (!m_controller)
+        adoptEngineController(this);
     const auto id = parseClipKey(clip);
     const SequencePtr seq = m_controller ? m_controller->currentSequence() : nullptr;
     const auto loc = id && seq ? seq->findClip(*id) : std::nullopt;
@@ -133,6 +168,8 @@ QString GraphicToolsBridge::setRoll(const QString& clip, const QVariantMap& roll
 }
 
 QString GraphicToolsBridge::layerTextStyle(const QString& clip, int layer) const {
+    if (!m_controller)
+        adoptEngineController(this);
     const auto id = parseClipKey(clip);
     const SequencePtr seq = m_controller ? m_controller->currentSequence() : nullptr;
     const auto loc = id && seq ? seq->findClip(*id) : std::nullopt;
@@ -203,6 +240,8 @@ void textLayers(const std::vector<GraphicLayer>& layers, std::string_view name, 
 } // namespace
 
 QVariantList GraphicToolsBridge::textStyleItems() const {
+    if (!m_controller)
+        adoptEngineController(this);
     QVariantList out;
     const ProjectSnapshot snap = m_controller ? m_controller->snapshot() : nullptr;
     if (!snap)
@@ -235,6 +274,8 @@ QVariantList GraphicToolsBridge::textStyleItems() const {
 }
 
 QString GraphicToolsBridge::duplicateTextStyle(const QString& name) {
+    if (!m_controller)
+        adoptEngineController(this);
     const ProjectSnapshot snap = m_controller ? m_controller->snapshot() : nullptr;
     if (!snap)
         return {};
@@ -262,6 +303,8 @@ QString GraphicToolsBridge::duplicateTextStyle(const QString& name) {
 }
 
 QString GraphicToolsBridge::applyTextStyleToSelection(const QString& name) {
+    if (!m_controller)
+        adoptEngineController(this);
     if (!m_controller)
         return tr("No project");
     const ProjectSnapshot snap = m_controller->snapshot();

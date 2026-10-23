@@ -15,7 +15,9 @@
 #include <wabcut/command/SourceServices.h>
 #include <wabcut/editor/MediaImport.h>
 #include <wabcut/model/EditingOps.h>
+#include <wabcut/model/Effects.h>
 #include <wabcut/model/FrameScaling.h>
+#include <wabcut/model/MediaLocator.h>
 #include <wabcut/model/RawSourceSettings.h>
 #include <wabcut/model/SequencePresets.h>
 #include <wabcut/model/Timecode.h>
@@ -40,9 +42,24 @@ const QString kScalingKey = QStringLiteral("media/defaultMediaScaling");
 const QString kStillKey = QStringLiteral("timeline/stillImageDuration");
 const QString kVideoTransitionKey = QStringLiteral("timeline/videoTransitionDuration");
 const QString kAudioTransitionKey = QStringLiteral("timeline/audioTransitionDuration");
+// 0.2 UX (stream T): Set as Default Transition.
+const QString kDefaultVideoTransitionKey = QStringLiteral("timeline/defaultVideoTransition");
+const QString kDefaultAudioTransitionKey = QStringLiteral("timeline/defaultAudioTransition");
 /// Premiere's defaults: stills 5 seconds, transitions 1 second.
 constexpr double kStillSeconds = 5.0;
 constexpr double kTransitionSeconds = 1.0;
+
+/// The built-in transition `id` of `kind` (VideoTransition / AudioTransition), or null.
+const EffectDescriptor* transitionOfKind(const std::string& id, EffectKind kind) {
+    const EffectDescriptor* d = id.empty() ? nullptr : EffectRegistry::builtin().find(id);
+    return d && d->kind == kind ? d : nullptr;
+}
+
+/// The saved default transition of `kind`, or `fallback` when none is saved or it no longer resolves.
+std::string savedTransition(const QString& key, EffectKind kind, const std::string& fallback) {
+    const std::string saved = QSettings().value(key).toString().toStdString();
+    return transitionOfKind(saved, kind) ? saved : fallback;
+}
 
 QString text(std::string_view s) { return QString::fromUtf8(s.data(), static_cast<qsizetype>(s.size())); }
 
@@ -171,8 +188,12 @@ bool EditingBridge::handlesCommand(const QString& id) {
         QStringLiteral("clip.modifyTimecode"),
         QStringLiteral("clip.replaceFootage"),
         QStringLiteral("clip.makeOffline"),
-        // Window > History
+        // 0.2 UX (stream T): Reveal in Project (no default key)
+        QStringLiteral("clip.revealInProject"),
+        // Window > History, and the History panel's Step Backward / Step Forward (Left / Right in its scope)
         QStringLiteral("window.history"),
+        QStringLiteral("history.stepBackward"),
+        QStringLiteral("history.stepForward"),
     };
     return kCommands.contains(id);
 }
@@ -199,6 +220,9 @@ edit::DefaultTransitions EditingBridge::defaultTransitionsSetting() {
         out.videoDuration = Ticks{static_cast<std::int64_t>(std::llround(video * static_cast<double>(kTicksPerSecond)))};
     if (std::abs(audio - kTransitionSeconds) > 1e-9)
         out.audioDuration = Ticks{static_cast<std::int64_t>(std::llround(audio * static_cast<double>(kTicksPerSecond)))};
+    // 0.2 UX (stream T): the chosen transitions; one that no longer resolves falls back to the built-in default.
+    out.video = savedTransition(kDefaultVideoTransitionKey, EffectKind::VideoTransition, out.video);
+    out.audio = savedTransition(kDefaultAudioTransitionKey, EffectKind::AudioTransition, out.audio);
     return out;
 }
 
@@ -232,6 +256,64 @@ void EditingBridge::setAudioTransitionDuration(double s) {
         return;
     storeSeconds(kAudioTransitionKey, s);
     emit preferencesChanged();
+}
+
+// ---- Default transitions (0.2 UX, stream T) ------------------------------------------------------------------------
+
+QString EditingBridge::defaultVideoTransition() const { return QString::fromStdString(defaultTransitionsSetting().video); }
+QString EditingBridge::defaultAudioTransition() const { return QString::fromStdString(defaultTransitionsSetting().audio); }
+
+void EditingBridge::setDefaultVideoTransition(const QString& effectId) {
+    if (!transitionOfKind(effectId.toStdString(), EffectKind::VideoTransition) || effectId == defaultVideoTransition())
+        return;
+    QSettings().setValue(kDefaultVideoTransitionKey, effectId);
+    emit preferencesChanged();
+}
+
+void EditingBridge::setDefaultAudioTransition(const QString& effectId) {
+    if (!transitionOfKind(effectId.toStdString(), EffectKind::AudioTransition) || effectId == defaultAudioTransition())
+        return;
+    QSettings().setValue(kDefaultAudioTransitionKey, effectId);
+    emit preferencesChanged();
+}
+
+bool EditingBridge::setDefaultTransition(const QString& effectId) {
+    const std::string id = effectId.toStdString();
+    if (transitionOfKind(id, EffectKind::VideoTransition)) {
+        setDefaultVideoTransition(effectId);
+        return true;
+    }
+    if (transitionOfKind(id, EffectKind::AudioTransition)) {
+        setDefaultAudioTransition(effectId);
+        return true;
+    }
+    return false;
+}
+
+bool EditingBridge::isDefaultTransition(const QString& effectId) const {
+    return !effectId.isEmpty() && (effectId == defaultVideoTransition() || effectId == defaultAudioTransition());
+}
+
+QVariantList EditingBridge::transitionChoices(const QString& kind) const {
+    const EffectKind wanted = kind == QLatin1String("audio") ? EffectKind::AudioTransition : EffectKind::VideoTransition;
+    if (kind != QLatin1String("audio") && kind != QLatin1String("video"))
+        return {};
+    const QString current = wanted == EffectKind::AudioTransition ? defaultAudioTransition() : defaultVideoTransition();
+    std::vector<const EffectDescriptor*> found;
+    for (const EffectDescriptor& d : EffectRegistry::builtin().all()) {
+        if (d.kind == wanted && !d.intrinsic)
+            found.push_back(&d);
+    }
+    std::ranges::sort(found, [](const EffectDescriptor* a, const EffectDescriptor* b) { return a->displayName < b->displayName; });
+    QVariantList out;
+    for (const EffectDescriptor* d : found) {
+        const QString id = text(d->id);
+        out << QVariantMap{{QStringLiteral("id"), id},
+                           {QStringLiteral("name"), text(d->displayName)},
+                           {QStringLiteral("category"), text(d->category)},
+                           {QStringLiteral("isDefault"), id == current}};
+    }
+    return out;
 }
 
 void EditingBridge::setMessage(const QString& message) {
@@ -342,8 +424,16 @@ bool EditingBridge::runCommand(const QString& id) {
         openReplaceFootage(librarySelection.isEmpty() ? QString() : librarySelection.front());
     } else if (id == QLatin1String("clip.makeOffline")) {
         makeOffline(librarySelection);
+    } else if (id == QLatin1String("clip.revealInProject")) {
+        revealInProject({}); // the primary selected clip
     } else if (id == QLatin1String("window.history")) {
         emit historyRequested();
+    } else if (id == QLatin1String("history.stepBackward") || id == QLatin1String("history.stepForward")) {
+        // Premiere's History panel: one state back or forward (an undo or a redo); nothing at either end.
+        if (m_controller) {
+            const int current = static_cast<int>(m_controller->session().undoCount());
+            goToHistoryStep(current + (id == QLatin1String("history.stepForward") ? 1 : -1));
+        }
     }
     return true;
 }
@@ -989,6 +1079,76 @@ bool EditingBridge::goToHistoryStep(int index) {
             return false;
     }
     emit historyChanged();
+    return true;
+}
+
+// ---- Reveal in Project / File Explorer (0.2 UX, stream T) ----------------------------------------------------------
+
+QVariantMap EditingBridge::revealInfo(const QString& key) const {
+    const SequencePtr seq = m_controller ? m_controller->currentSequence() : nullptr;
+    const auto id = key.isEmpty() && m_controller ? std::optional<ClipId>(m_controller->primaryClip()) : parseClipKey(key);
+    const auto loc = seq && id && *id ? seq->findClip(*id) : std::nullopt;
+    if (!loc)
+        return {};
+    const Clip& clip = loc->clip();
+    const ProjectSnapshot snap = m_controller->snapshot();
+    QVariantMap info{{QStringLiteral("item"), QString()},
+                     {QStringLiteral("name"), QString()},
+                     {QStringLiteral("inProject"), false},
+                     {QStringLiteral("inExplorer"), false},
+                     {QStringLiteral("offline"), false}};
+    if (clip.sequence.isValid()) {
+        // A nested or multi-camera clip: its sequence (Nesting.revealInLibrary did this for nested clips only).
+        if (const Sequence* nested = snap->findSequence(clip.sequence)) {
+            info[QStringLiteral("item")] = sequenceKey(nested->id);
+            info[QStringLiteral("name")] = text(nested->name);
+            info[QStringLiteral("inProject")] = true;
+        }
+        return info;
+    }
+    const MediaItem* media = snap->findMedia(clip.media);
+    if (!media)
+        return info;
+    info[QStringLiteral("item")] = mediaKey(media->id);
+    info[QStringLiteral("name")] = text(media->name);
+    info[QStringLiteral("inProject")] = true;
+    if (!media->isGenerator()) {
+        const bool found = !media->locator.offline && resolveMediaPath(media->locator, m_controller->projectFile());
+        info[QStringLiteral("inExplorer")] = found;
+        info[QStringLiteral("offline")] = !found;
+    }
+    return info;
+}
+
+bool EditingBridge::revealInProject(const QString& key) {
+    const QVariantMap info = revealInfo(key);
+    if (!info.value(QStringLiteral("inProject")).toBool() || !m_library) {
+        setMessage(info.isEmpty() ? tr("Select a clip first") : tr("This clip has no item in the project"));
+        return false;
+    }
+    emit libraryRequested();
+    if (!m_library->showItem(info.value(QStringLiteral("item")).toString())) {
+        setMessage(tr("This clip has no item in the project"));
+        return false;
+    }
+    setMessage({});
+    return true;
+}
+
+bool EditingBridge::revealInExplorer(const QString& key) {
+    const QVariantMap info = revealInfo(key);
+    if (!info.value(QStringLiteral("inExplorer")).toBool() || !m_library) {
+        setMessage(info.isEmpty()                                       ? tr("Select a clip first")
+                   : info.value(QStringLiteral("offline")).toBool() ? tr("“%1” is offline: its file cannot be found.")
+                                                                          .arg(info.value(QStringLiteral("name")).toString())
+                                                                    : tr("This clip has no file to show"));
+        return false;
+    }
+    if (!m_library->reveal(info.value(QStringLiteral("item")).toString())) {
+        setMessage(tr("The file could not be shown"));
+        return false;
+    }
+    setMessage({});
     return true;
 }
 

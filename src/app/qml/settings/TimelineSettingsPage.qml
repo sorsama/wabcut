@@ -14,12 +14,17 @@ SettingsPage {
     description: qsTr("How edits behave and what the tracks show.")
 
     readonly property var filmstripModes: ["off", "head", "headTail", "continuous"]
+    // UX rework (stream T): the default transitions' pickers ({ id, name } per built-in transition of a kind).
+    function transitionOptions(kind: string): var {
+        return Editing.transitionChoices(kind).map(c => ({ id: c.id, name: c.name }))
+    }
     readonly property var keyframeLanes: ["off", "volume", "pan"]
 
     SettingsSection {
         title: qsTr("Editing")
 
         SettingsRow {
+            rowKey: "linkedSelection"
             label: qsTr("Linked selection")
             description: qsTr("Clicking a clip selects its linked audio or video too (Alt-click ignores links).")
             Toggle {
@@ -30,6 +35,7 @@ SettingsPage {
             }
         }
         SettingsRow {
+            rowKey: "snapIndicator"
             label: qsTr("Snap line")
             description: qsTr("Draw a line where a drag snaps to an edge, the playhead or a marker.")
             Toggle {
@@ -40,6 +46,7 @@ SettingsPage {
             }
         }
         SettingsRow {
+            rowKey: "trimLargeOffset"
             label: qsTr("Large trim offset")
             description: qsTr("Frames a Shift trim moves (Trim Backward/Forward Many).")
             NumberField {
@@ -54,6 +61,7 @@ SettingsPage {
             }
         }
         SettingsRow {
+            rowKey: "playAroundEdit"
             label: qsTr("Play around the edit")
             description: qsTr("Seconds played before and after an edit point in trim mode.")
             NumberField {
@@ -82,6 +90,7 @@ SettingsPage {
             }
         }
         SettingsRow {
+            rowKey: "fitClip"
             label: qsTr("Four-point edits that do not fit")
             description: Preferences.fitClipChoice === "" ? qsTr("Wabcut asks every time (the Fit Clip dialog).")
                                                           : qsTr("Wabcut uses the answer you chose to always use.")
@@ -100,6 +109,7 @@ SettingsPage {
         title: qsTr("Tracks")
 
         SettingsRow {
+            rowKey: "filmstrip"
             label: qsTr("Video thumbnails")
             PillTabs {
                 objectName: "settingsFilmstripMode"
@@ -112,6 +122,7 @@ SettingsPage {
             }
         }
         SettingsRow {
+            rowKey: "rectifiedWaveforms"
             label: qsTr("Rectified waveforms")
             description: qsTr("Draw audio from the bottom of the clip up, like Premiere.")
             Toggle {
@@ -121,6 +132,7 @@ SettingsPage {
             }
         }
         SettingsRow {
+            rowKey: "logarithmicWaveforms"
             label: qsTr("Logarithmic waveforms")
             description: qsTr("Quiet passages show more detail.")
             Toggle {
@@ -130,6 +142,7 @@ SettingsPage {
             }
         }
         SettingsRow {
+            rowKey: "throughEdits"
             label: qsTr("Through edits")
             description: qsTr("Mark cuts that continue the same source frames.")
             Toggle {
@@ -139,6 +152,7 @@ SettingsPage {
             }
         }
         SettingsRow {
+            rowKey: "duplicateFrames"
             label: qsTr("Duplicate frame markers")
             description: qsTr("A coloured band under clips that reuse the same source frames.")
             Toggle {
@@ -148,6 +162,7 @@ SettingsPage {
             }
         }
         SettingsRow {
+            rowKey: "clipMarkers"
             label: qsTr("Clip markers")
             Toggle {
                 tooltip: qsTr("Clip markers")
@@ -156,6 +171,7 @@ SettingsPage {
             }
         }
         SettingsRow {
+            rowKey: "audioTrackLane"
             label: qsTr("Audio track lane")
             description: qsTr("The track fader or pan drawn over audio tracks.")
             PillTabs {
@@ -174,6 +190,7 @@ SettingsPage {
         title: qsTr("Panels")
 
         SettingsRow {
+            rowKey: "keyframeLane"
             label: qsTr("Keyframe lane in Effect Controls")
             description: qsTr("Effect Controls widens to show each parameter's keyframes beside it.")
             Toggle {
@@ -184,6 +201,7 @@ SettingsPage {
             }
         }
         SettingsRow {
+            rowKey: "safeMargins"
             label: qsTr("Safe margins")
             description: qsTr("Action-safe and title-safe guides over the monitors.")
             Toggle {
@@ -198,6 +216,7 @@ SettingsPage {
         title: qsTr("Media and timeline defaults")
 
         SettingsRow {
+            rowKey: "editingDefaults"
             label: qsTr("Media scaling, durations and project locking")
             description: qsTr("How imported media is sized in a sequence of another frame size, how long stills and default transitions last, and whether open projects are locked for other sessions.")
             PillButton {
@@ -205,6 +224,34 @@ SettingsPage {
                 iconName: "sliders-horizontal"
                 text: qsTr("Open…")
                 onClicked: page.actionRequested("editing")
+            }
+        }
+        // UX rework (stream T): Premiere's Set as Default Transition, also here (Editing.defaultVideoTransition /
+        // defaultAudioTransition; the Effects panel's item menu and the timeline transition menu set them too).
+        SettingsRow {
+            rowKey: "defaultVideoTransition"
+            label: qsTr("Default video transition")
+            description: qsTr("What Apply Video Transition (Ctrl+D) and Apply Default Transitions (Shift+D) put on an edit.")
+            EditingChoice {
+                objectName: "settingsDefaultVideoTransition"
+                options: page.transitionOptions("video")
+                current: Editing.defaultVideoTransition
+                tooltip: qsTr("Default video transition")
+                Accessible.name: qsTr("Default video transition: %1").arg(text)
+                onChosen: id => Editing.setDefaultTransition(id)
+            }
+        }
+        SettingsRow {
+            rowKey: "defaultAudioTransition"
+            label: qsTr("Default audio transition")
+            description: qsTr("What Apply Audio Transition (Ctrl+Shift+D) and Apply Default Transitions put on an edit.")
+            EditingChoice {
+                objectName: "settingsDefaultAudioTransition"
+                options: page.transitionOptions("audio")
+                current: Editing.defaultAudioTransition
+                tooltip: qsTr("Default audio transition")
+                Accessible.name: qsTr("Default audio transition: %1").arg(text)
+                onChosen: id => Editing.setDefaultTransition(id)
             }
         }
     }

@@ -6,6 +6,8 @@ import QtQuick.Layouts
 // History (P.2, E5): Premiere's Window > History - every undo step by name, the project as it was opened first; the
 // current state is marked and the steps after it (undone, still redoable) are dimmed. A click goes back (or forward)
 // to that state, as many undos or redos at once. A floating panel that stays open while you edit (not modal).
+// UX rework: Premiere's History panel keys - with the panel focused, Left / Right step one state back / forward
+// (history.stepBackward / stepForward in the keymap's "history" scope).
 Popup {
     id: panel
     objectName: "historyPanel"
@@ -31,6 +33,8 @@ Popup {
         spacing: Theme.space(2)
         Accessible.role: Accessible.Pane
         Accessible.name: qsTr("History")
+        // The keymap's History panel keys (Left / Right step through the states) while focus is in here.
+        KeymapScope.scope: "history"
 
         RowLayout {
             Layout.fillWidth: true
@@ -51,6 +55,10 @@ Popup {
             objectName: "historySteps"
             Layout.fillWidth: true
             Layout.fillHeight: true
+            // Focus lands here when the panel opens, inside the "history" scope.
+            focus: true
+            Accessible.role: Accessible.List
+            Accessible.name: qsTr("History steps")
             clip: true
             model: Editing.historySteps
             spacing: 1

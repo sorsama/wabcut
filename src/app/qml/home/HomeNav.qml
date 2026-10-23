@@ -3,20 +3,28 @@ import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
 
-// The Home screen's left rail (design language v3): an island with the logo, one pill per section of the page (a hue
-// dot and its name; the section in view is lit, a click scrolls to it), and at the bottom where the work lives with a
-// round Settings button. With the custom window frame the logo area moves the window.
+// The Home screen's navigation (design language v3): an island with the logo, one pill per page (a hue dot and its
+// name; the page shown is lit, a click opens it), and at the bottom the version with a round Settings button. Keyboard:
+// Up/Down move between the pages, Enter or Space opens one. With the custom window frame the logo area moves the window.
 Rectangle {
     id: root
     objectName: "homeNav"
 
-    /// [{ key, label, hue }]: the sections, top to bottom.
+    /// [{ key, label, hue }]: the pages, top to bottom.
     property var sections: []
     property string current: ""
     property bool dragsWindow: false
 
     signal activated(string key)
     signal settingsRequested()
+
+    /// The entry `delta` away from `index` takes the keyboard focus.
+    function stepFrom(index: int, delta: int) {
+        const next = Math.max(0, Math.min(entries.count - 1, index + delta))
+        const item = entries.itemAt(next)
+        if (item)
+            item.forceActiveFocus(Qt.TabFocusReason)
+    }
 
     radius: Theme.radiusPanel
     color: Theme.panel
@@ -67,10 +75,12 @@ Rectangle {
             spacing: Theme.space(0.5)
 
             Repeater {
+                id: entries
                 model: root.sections
                 delegate: AbstractButton {
                     id: entry
                     required property var modelData
+                    required property int index
                     readonly property bool selected: root.current === modelData.key
                     objectName: "homeNav_" + modelData.key
                     Layout.fillWidth: true
@@ -79,10 +89,15 @@ Rectangle {
                     rightPadding: Theme.space(3.5)
                     focusPolicy: Qt.StrongFocus
                     hoverEnabled: true
+                    Accessible.role: Accessible.PageTab
                     Accessible.name: modelData.label
-                    Accessible.description: qsTr("Scroll to %1").arg(modelData.label)
+                    Accessible.description: qsTr("Open %1").arg(modelData.label)
                     Accessible.selected: selected
                     onClicked: root.activated(modelData.key)
+                    Keys.onReturnPressed: root.activated(entry.modelData.key)
+                    Keys.onEnterPressed: root.activated(entry.modelData.key)
+                    Keys.onUpPressed: root.stepFrom(entry.index, -1)
+                    Keys.onDownPressed: root.stepFrom(entry.index, 1)
 
                     background: Rectangle {
                         radius: height / 2
@@ -139,6 +154,7 @@ Rectangle {
                     font.weight: Theme.weightLabel
                 }
                 Text {
+                    objectName: "homeVersion"
                     Layout.fillWidth: true
                     text: qsTr("Wabcut %1").arg(Qt.application.version)
                     elide: Text.ElideRight

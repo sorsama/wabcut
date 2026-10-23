@@ -94,17 +94,20 @@ TEST_CASE("Design-review screenshots (1600x960)", "[app][screenshot]") {
         CHECK(image.width() == kShotWidth);
         CHECK(image.height() == kShotHeight);
 
-        // The canvas shows in the gutter right of the rail; the active workspace tab sits on the accent pill (sampled
-        // above its label, inside the pill's rounded end); the picture sits straight on the panel (0.1.3: no black well
-        // round it).
-        QQuickItem* rail = shell.item("leftRail");
+        // The canvas shows in the window's left gutter (UX rework: no rail, the work area starts there); the active
+        // workspace tab sits on the accent pill (sampled above its label, inside the pill's rounded end); the picture
+        // sits straight on the panel (0.1.3: no black well round it).
+        QQuickItem* content = shell.window->contentItem();
         QQuickItem* tab = findNamed(shell.window->contentItem(), QStringLiteral("workspaceTab_edit"));
         QQuickItem* slot = shell.item("programMonitorSlot");
-        REQUIRE(rail != nullptr);
         REQUIRE(tab != nullptr);
         REQUIRE(slot != nullptr);
+        // The menu bar shows its titles at this size (one workspace).
+        QQuickItem* fileTitle = findNamed(content, QStringLiteral("menuBar_file"));
+        REQUIRE(fileTitle != nullptr);
+        CHECK(fileTitle->isVisible());
         const QColor canvas = shell.themeColor("canvas");
-        const QColor gap = pixelAt(image, rail, QPointF(rail->width() + 3, rail->height() / 2), 1.0);
+        const QColor gap = pixelAt(image, content, QPointF(shell.theme->property("gap").toInt() / 2.0, content->height() / 2), 1.0);
         INFO("gap pixel " << describe(gap) << " vs canvas " << describe(canvas));
         CHECK(sameColor(gap, canvas));
         const QColor plate = pixelAt(image, tab, QPointF(tab->height() / 2, tab->height() / 4 - 1), 1.0);
@@ -131,7 +134,9 @@ TEST_CASE("Workspace, compact and popover screenshots", "[app][screenshot]") {
         const char* file;
         int workspace;
         QSize size;
-        const char* popup; // object to open before the grab, "settings:<page>" (0.1.3 Settings window), or nullptr
+        // Object to open before the grab, "settings:<page>" (0.1.3 Settings window), "menu:<index>" (a menu of the
+        // menu bar: AppMenuBar.open), or nullptr.
+        const char* popup;
     };
     const Shot shots[] = {
         {"workspace-audio.png", 1, QSize(kShotWidth, kShotHeight), nullptr},
@@ -142,6 +147,10 @@ TEST_CASE("Workspace, compact and popover screenshots", "[app][screenshot]") {
         {"settings-general.png", 0, QSize(kShotWidth, kShotHeight), "settings:general"},
         {"settings-appearance.png", 0, QSize(kShotWidth, kShotHeight), "settings:appearance"},
         {"menu-sequences.png", 0, QSize(kShotWidth, kShotHeight), "sequencePill"},
+        // UX rework: the menu bar's File and Window menus, and the collapsed bar (one Menu button) with File open.
+        {"menubar-file.png", 0, QSize(kShotWidth, kShotHeight), "menu:0"},
+        {"menubar-window.png", 0, QSize(kShotWidth, kShotHeight), "menu:7"},
+        {"menubar-collapsed.png", 0, QSize(1100, 700), "menu:0"},
     };
     for (const Shot& shot : shots) {
         INFO(shot.file);
@@ -151,10 +160,15 @@ TEST_CASE("Workspace, compact and popover screenshots", "[app][screenshot]") {
         shell.resize(shot.size.width(), shot.size.height());
         shell.window->setProperty("workspace", shot.workspace);
         if (shot.popup && QByteArray(shot.popup).startsWith("settings:")) {
-            QObject* rail = shell.object("leftRail");
-            REQUIRE(rail != nullptr);
-            REQUIRE(QMetaObject::invokeMethod(rail, "openSettings",
-                                              Q_ARG(QString, QString::fromLatin1(shot.popup).mid(int(qstrlen("settings:"))))));
+            REQUIRE(QMetaObject::invokeMethod(shell.window.get(), "openSettings",
+                                              Q_ARG(QString, QString::fromLatin1(shot.popup).mid(int(qstrlen("settings:")))),
+                                              Q_ARG(QString, QString())));
+        } else if (shot.popup && QByteArray(shot.popup).startsWith("menu:")) {
+            QObject* bar = shell.object("appMenuBar");
+            REQUIRE(bar != nullptr);
+            spin(50); // the title bar lays out (and collapses the menus when it is narrow) first
+            REQUIRE(QMetaObject::invokeMethod(bar, "open", Q_ARG(int, QByteArray(shot.popup).mid(5).toInt()),
+                                              Q_ARG(bool, false)));
         } else if (shot.popup) {
             QObject* target = shell.object(shot.popup);
             REQUIRE(target != nullptr);

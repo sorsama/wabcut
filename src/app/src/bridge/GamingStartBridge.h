@@ -1,19 +1,21 @@
 #pragma once
 
-// "New gaming video" (M5o, gaming): the Home screen's start from a game recording (GamingVideoCard, singleton
-// `GamingStart`).
+// The Home screen's start from a game recording (M5o's "New gaming video"; since the UX rework the New project page's
+// "Start with media" with its audio streams table), singleton `GamingStart`.
 //   inspect(url)  probes the recording off the GUI thread (media::probe) and publishes `recording`: its size, frame
 //                 rate (the nominal rate, also for a variable frame rate capture: the probe snaps it to a standard
 //                 rate), duration, codec, HDR (PQ / HLG, shown tone-mapped), the flags that suggest proxies (above
 //                 60 fps, 4K, 20 minutes or longer) with the reason, and one row per audio stream with a suggested
 //                 track name: Game, Mic, Discord, then "Audio n" (OBS's usual track order).
-//   create(...)   makes the project in one go, each step on the live project (Home and ProjectFile, then catalog
-//                 commands through CommandJob::runNow): Home.createProject at the recording's size and nominal rate
-//                 (saved and opened), ProjectFile.importFiles, one audio track per included stream (sequence.addTrack
-//                 while the sequence has fewer), the recording at 00:00 with V1 and the included streams on A1, A2, ...
-//                 in stream order (edit.insertFromSource with explicit patches: an excluded stream is not patched),
-//                 the track names (track.setState), proxies when suggested (MediaReadiness.generateProxies), then a
-//                 save. It returns "" or the failed step's message; no step is skipped silently.
+//   create(...)   makes the project in one go through Home's media start (HomeBridge::createFromMediaWith, UX rework):
+//                 Home.createProject at the recording's size and nominal rate (saved and opened),
+//                 ProjectFile.importFiles, one audio track per included stream (sequence.addTrack while the sequence has
+//                 fewer), the recording at 00:00 with V1 and the included streams on A1, A2, ... in stream order
+//                 (edit.insertFromSource with explicit patches: an excluded stream is not patched), the track names
+//                 (track.setState), proxies when suggested (MediaReadiness.generateProxies), then a save. It returns ""
+//                 or the failed step's message; no step is skipped silently (a step after the project was made leaves
+//                 it open). The Home screen's New project page ("Start with media") calls Home.createFromMedia itself;
+//                 inspect() still gives it the recording's streams, badges and notes.
 // Stream titles: FFmpeg's AudioStreamInfo carries no title, so the names are suggestions by position. A.10's OBS ingest
 // should provide the real track titles (OBS writes them as the streams' "title" tags) and replace these suggestions.
 
@@ -87,7 +89,7 @@ public:
     Q_INVOKABLE bool isRecording(const QUrl& file) const;
     /// Probes `file` off the GUI thread; `recording` changes when it is done (a later call wins).
     Q_INVOKABLE void inspect(const QUrl& file);
-    /// Forgets the recording (the card's Change…).
+    /// Forgets the recording (Home's New project page starting afresh or being left).
     Q_INVOKABLE void clear();
     /// Creates the project from the inspected recording. `tracks`: [{index, name, include}] per audio stream (index as
     /// in `recording.audio`; a stream left out of the list is included under its suggested name). Returns "" or the

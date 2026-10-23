@@ -14,6 +14,9 @@ import QtQuick.Layouts
 //     progress pills), so both stay in view while the tiles scroll.
 // Wide slots (760 px and up) put the tiles on the left and the rest in a column on the right; narrow ones stack them.
 // Export queues a job on the current sequence's snapshot; the queue renders in the background, so editing continues.
+// UX rework (stream L): the last choices come back (ExportController, per user): the preset or gaming preset picked
+// last, the range picked last (else In to Out when the sequence has marks; the Export button then says so), and the
+// folder exported to last (the default file name and Browse… start there). "Reset to defaults" forgets them.
 Panel {
     id: root
 
@@ -29,6 +32,14 @@ Panel {
     property string gamingPreset: ""
     /// The destination the tiles show: "all", a GamingExport group id or "general".
     property string filter: "all"
+    /// The range was picked in the drawer since the panel opened: the suggested range (the remembered one, or In to
+    /// Out for a marked sequence) no longer replaces it.
+    property bool rangeChosen: false
+    /// Anything remembered from earlier exports (for "Reset to defaults").
+    readonly property bool remembers: ExportController.lastPreset !== "match-source" || ExportController.lastGamingPreset !== ""
+                                      || ExportController.lastFolder !== "" || ExportController.lastRange !== ""
+    /// The range this export covers ("whole", "inOut", "workArea", "custom").
+    readonly property string range: overrides.range ?? "whole"
     /// The exporter's presets the gaming tiles already offer (I.9): left out of the built-in ones.
     readonly property var gamingDuplicates: ["youtube-1080p60", "youtube-1440p60", "youtube-4k60", "shorts-1080x1920-60",
                                              "twitch-1080p60", "discord-10mb", "discord-25mb", "discord-50mb",
@@ -98,15 +109,54 @@ Panel {
             next[key] = value
         overrides = next
     }
+    // The range (and a custom range's In and Out) outlive a preset change: the range is the sequence's, not the
+    // preset's.
+    function rangeOverrides() {
+        const kept = {}
+        for (const key of ["range", "rangeIn", "rangeOut"]) {
+            if (overrides[key] !== undefined)
+                kept[key] = overrides[key]
+        }
+        return kept
+    }
     function choosePreset(id) {
         gamingPreset = ""
         presetId = id
-        overrides = ({})
+        overrides = rangeOverrides()
+        ExportController.lastPreset = id
+        ExportController.lastGamingPreset = ""
     }
     // M5o: a gaming preset keeps the range the drawer chose (its size target depends on it).
     function chooseGamingPreset(id) {
         gamingPreset = id
-        overrides = overrides.range !== undefined ? { range: overrides.range } : ({})
+        overrides = rangeOverrides()
+        ExportController.lastGamingPreset = id
+    }
+    /// The drawer's range picker: this export's range, remembered for the next one ("custom" is not).
+    function chooseRange(value) {
+        rangeChosen = true
+        setOverride("range", value)
+        ExportController.lastRange = value === undefined ? "whole" : value
+    }
+    /// The range to start from (until one is picked here): the remembered one when the sequence has it, else In to Out
+    /// when it has marks, else the whole sequence (ExportController.suggestedRange).
+    function applySuggestedRange() {
+        if (rangeChosen)
+            return
+        const range = ExportController.suggestedRange(ProjectController.sequenceId)
+        const next = range === "" || range === "whole" ? undefined : range
+        if (overrides.range !== next)
+            setOverride("range", next)
+    }
+    /// Reset to defaults: forgets the remembered preset, range and folder, and starts over from Match Source.
+    function resetChoices() {
+        ExportController.forgetExportChoices()
+        gamingPreset = ""
+        presetId = "match-source"
+        outputPath = ""
+        overrides = ({})
+        rangeChosen = false
+        applySuggestedRange()
     }
     function startExport() {
         if (gamingPreset !== "" && gamingPlan.ok !== true)
@@ -123,8 +173,26 @@ Panel {
         queueDialog.openOn("queue")
     }
 
-    // The auto encoders are probed (in the background) the first time the workspace is shown.
-    onVisibleChanged: if (visible) ExportController.probeEncoders()
+    // The auto encoders are probed (in the background) the first time the workspace is shown. The suggested range
+    // follows the marks set since (until a range is picked here).
+    onVisibleChanged: {
+        if (!visible)
+            return
+        ExportController.probeEncoders()
+        applySuggestedRange()
+    }
+    // The last choices (UX rework): set once, so a pick here is never overwritten.
+    Component.onCompleted: {
+        presetId = ExportController.lastPreset
+        gamingPreset = ExportController.lastGamingPreset
+        applySuggestedRange()
+    }
+    Connections {
+        target: ProjectController
+        function onSequenceChanged() {
+            root.applySuggestedRange()
+        }
+    }
 
     Binding {
         target: ExportController
@@ -494,7 +562,12 @@ Panel {
                 Layout.fillWidth: true
                 summary: root.summary
                 overrides: root.overrides
-                onOverrideChanged: (key, value) => root.setOverride(key, value)
+                onOverrideChanged: (key, value) => {
+                    if (key === "range")
+                        root.chooseRange(value)
+                    else
+                        root.setOverride(key, value)
+                }
             }
 
             // 0.2: Effects (overlays, Lumetri Look/LUT, Video Limiter, Loudness Normalization), Metadata, render options.
@@ -537,6 +610,23 @@ Panel {
                             font.pixelSize: Theme.textMd
                             font.weight: Theme.weightLabel
                         }
+                        // UX rework: forget the remembered preset, range and folder.
+                        PillButton {
+                            objectName: "exportResetChoices"
+                            compact: true
+                            variant: "ghost"
+                            visible: root.remembers
+                            iconName: "rotate-ccw"
+                            text: qsTr("Reset to defaults")
+                            tooltip: qsTr("Forget the last preset, range and folder: Match Source, next to the project")
+                            onClicked: {
+                                // It hides once nothing is remembered: the keyboard focus goes on to Browse… first
+                                // (with its ring when the keyboard brought it here).
+                                if (activeFocus)
+                                    exportBrowse.forceActiveFocus(visualFocus ? Qt.TabFocusReason : Qt.OtherFocusReason)
+                                root.resetChoices()
+                            }
+                        }
                     }
 
                     RowLayout {
@@ -568,6 +658,8 @@ Panel {
                             }
                         }
                         PillButton {
+                            id: exportBrowse
+                            objectName: "exportBrowse"
                             iconName: "folder-open"
                             text: qsTr("Browse…")
                             tooltip: qsTr("Choose where to save the export")
@@ -676,7 +768,12 @@ Panel {
                             implicitHeight: Theme.controlHeightLarge
                             variant: "primary"
                             enabled: root.summary.ok === true
-                            text: ExportController.busy ? qsTr("Add to queue") : qsTr("Export")
+                            // The range when it is not the whole sequence (UX rework: In to Out is picked for a
+                            // marked sequence, so the button says so).
+                            text: ExportController.busy ? qsTr("Add to queue")
+                                  : root.range === "inOut" ? qsTr("Export In to Out")
+                                  : root.range === "workArea" ? qsTr("Export Work Area")
+                                  : root.range === "custom" ? qsTr("Export Range") : qsTr("Export")
                             iconName: "download"
                             tooltip: qsTr("Export media")
                             command: "file.exportMedia"
@@ -759,6 +856,8 @@ Panel {
         title: qsTr("Export to")
         fileMode: FileDialog.SaveFile
         nameFilters: [qsTr("Video, audio and image files (*.mp4 *.mov *.mkv *.webm *.gif *.wav *.mp3 *.m4a *.aif *.png *.tif *.dpx *.jpg *.tga *.exr)")]
+        // Where the file would go now: the folder exported to last, else next to the project (UX rework).
+        currentFolder: ExportController.folderUrlOf(root.summary.output ?? "")
         onAccepted: root.outputPath = selectedFile.toString()
     }
 

@@ -10,9 +10,12 @@
 //     Shift-drag from the Library onto a clip), Replace Footage..., Make Offline, Edit Original (Ctrl+E);
 //   * Make Subsequence (Shift+U), Join Through Edits, Go to Gap (Shift+; ...), Close Gap;
 //   * Merge Clips..., Modify > Interpret Footage... and Timecode...;
-//   * Window > History (the undo steps: click one to go back to it);
+//   * Window > History (the undo steps: click one to go back to it; history.stepBackward / stepForward, Left / Right
+//     in the History panel's keymap scope, go one step);
 //   * Preferences > Media (Default Media Scaling) and > Timeline (still image, video and audio transition default
-//     durations), read where they apply (ProjectLifecycle's import, ProjectController's default transitions).
+//     durations), read where they apply (ProjectLifecycle's import, ProjectController's default transitions);
+//   * 0.2 UX (stream T): Set as Default Transition (the default video and audio transition ids), and the clip menu's
+//     Reveal in Project / Reveal in File Explorer (clip.revealInProject).
 // The keymap commands it runs (handlesCommand) are routed by Main.qml's runCommand; the palette lists them as ready.
 //
 // Principle 9: QML sees keys ("c12", "m3", "s4") and names.
@@ -54,6 +57,13 @@ class EditingBridge : public QObject {
     Q_PROPERTY(double stillDuration READ stillDuration WRITE setStillDuration NOTIFY preferencesChanged FINAL)
     Q_PROPERTY(double videoTransitionDuration READ videoTransitionDuration WRITE setVideoTransitionDuration NOTIFY preferencesChanged FINAL)
     Q_PROPERTY(double audioTransitionDuration READ audioTransitionDuration WRITE setAudioTransitionDuration NOTIFY preferencesChanged FINAL)
+    /// 0.2 UX (stream T), Premiere's Set as Default Transition: the transition id Apply Video / Audio Transition
+    /// (Ctrl+D / Ctrl+Shift+D), Apply Default Transitions to Selection (Shift+D) and the timeline transition menu's
+    /// Replace with Default use (QSettings "timeline/defaultVideoTransition" / "timeline/defaultAudioTransition"). A saved
+    /// id that is no longer a transition of that kind reads as the built-in "crossDissolve" / "constantPower"; writing
+    /// such an id is ignored.
+    Q_PROPERTY(QString defaultVideoTransition READ defaultVideoTransition WRITE setDefaultVideoTransition NOTIFY preferencesChanged FINAL)
+    Q_PROPERTY(QString defaultAudioTransition READ defaultAudioTransition WRITE setDefaultAudioTransition NOTIFY preferencesChanged FINAL)
     /// The History panel: [{ label, state: "done" | "current" | "undone" }], the project as opened first.
     Q_PROPERTY(QVariantList historySteps READ historySteps NOTIFY historyChanged FINAL)
     /// What the last action reported ("" after success; why it could not run otherwise).
@@ -84,6 +94,10 @@ public:
     void setVideoTransitionDuration(double seconds);
     double audioTransitionDuration() const;
     void setAudioTransitionDuration(double seconds);
+    QString defaultVideoTransition() const;
+    void setDefaultVideoTransition(const QString& effectId);
+    QString defaultAudioTransition() const;
+    void setDefaultAudioTransition(const QString& effectId);
     QVariantList historySteps() const;
     QString message() const { return m_message; }
 
@@ -184,6 +198,31 @@ public:
     // ---- History ----
     /// Goes back (or forward) to the step `index` of historySteps.
     Q_INVOKABLE bool goToHistoryStep(int index);
+
+    // ---- Default transitions (0.2 UX, stream T) ----
+    /// Set as Default Transition (the Effects panel's item menu, the timeline transition menu): `effectId` becomes the
+    /// default video or audio transition, by its kind. False (nothing changes) for an id that is not a built-in
+    /// transition.
+    Q_INVOKABLE bool setDefaultTransition(const QString& effectId);
+    /// `effectId` is the default video or audio transition now (the Effects panel marks it).
+    Q_INVOKABLE bool isDefaultTransition(const QString& effectId) const;
+    /// The built-in transitions of `kind` ("video" | "audio") for a picker: [{ id, name, category, isDefault }], by name.
+    Q_INVOKABLE QVariantList transitionChoices(const QString& kind) const;
+
+    // ---- Reveal (0.2 UX, stream T: the clip menu's Reveal in Project / Reveal in File Explorer) ----
+    /// What a timeline clip can reveal: { item: its media item ("m12") or nested sequence ("s3") key, "" for none;
+    /// name (the item's); inProject (the item is in the project: Reveal in Project applies); inExplorer (a media file
+    /// that is found: Reveal in File Explorer applies); offline (its file is missing) }; {} for a clip that is not in the
+    /// current sequence.
+    Q_INVOKABLE QVariantMap revealInfo(const QString& clipKey) const;
+    /// Reveal in Project (Premiere; keymap clip.revealInProject, no default key): the clip's item - media, or the
+    /// nested sequence - shown in the Library (Library.showItem: its bin opens, filters clear, it is selected) and
+    /// libraryRequested emitted so the panel comes forward. `clipKey` "" = the primary selected clip. False (message)
+    /// when there is no such item.
+    Q_INVOKABLE bool revealInProject(const QString& clipKey = {});
+    /// Reveal in File Explorer (Finder on macOS): the clip's media file, selected in the system file manager
+    /// (Library.reveal). False (message) for a clip without a file or with an offline one.
+    Q_INVOKABLE bool revealInExplorer(const QString& clipKey = {});
 
 signals:
     void preferencesChanged();

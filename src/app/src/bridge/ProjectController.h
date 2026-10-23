@@ -183,7 +183,8 @@ class ProjectController : public QObject {
     Q_PROPERTY(int clipCount READ clipCount NOTIFY sequenceChanged FINAL)
     /// Audio tracks for the mixer: [{ trackId, shortName, name, colorIndex }].
     Q_PROPERTY(QVariantList audioTracks READ audioTracks NOTIFY revisionChanged FINAL)
-    /// [{ name, comment, timecode, colorIndex }] in time order.
+    /// [{ name, comment, timecode, colorIndex, durationText ("" for a point marker, else the range's length as a
+    /// timecode), type ("comment", "chapter", ...: markerTypeName) }] in time order.
     Q_PROPERTY(QVariantList markers READ markers NOTIFY markersChanged FINAL)
     /// Sequence In/Out marks as timecode ("" when unset). Out is shown as its last marked frame.
     Q_PROPERTY(QString markInText READ markInText NOTIFY marksChanged FINAL)
@@ -229,6 +230,12 @@ class ProjectController : public QObject {
     Q_PROPERTY(QString selectedEdge READ selectedEdge WRITE setSelectedEdge NOTIFY selectedEdgeChanged FINAL)
     /// The selected transition ("x…"), or "". Selecting a transition clears the clip selection and vice versa.
     Q_PROPERTY(QString selectedTransition READ selectedTransition NOTIFY selectedTransitionChanged FINAL)
+    /// 0.2 UX (stream T): the selected gap - the empty time on one track between two clips, or between the sequence start
+    /// and its first clip - as { track: "t3", trackName: "V1", start, end, duration (timecodes in the sequence's display
+    /// format) }, or an empty map. A click in a gap selects it (TimelineView); Delete, Backspace and Ripple Delete then
+    /// close it (rippleDeleteGap). Selecting clips or a transition, Deselect All, any edit, undo, redo and another
+    /// sequence clear it.
+    Q_PROPERTY(QVariantMap selectedGap READ selectedGap NOTIFY selectedGapChanged FINAL)
     /// Effect Controls (M5d): the selected clip's parameters, effect stack and keyframes, or the selected
     /// transition (EffectControls.h).
     Q_PROPERTY(wabcut::app::EffectControlsModel* effectControls READ effectControls CONSTANT FINAL)
@@ -307,6 +314,20 @@ public:
     };
     std::optional<TransitionLocation> findTransition(TransitionId id) const;
 
+    // ---- Gap selection (0.2 UX, stream T; ProjectControllerTimeline.cpp) ----
+    struct GapSelection {
+        TrackId track;
+        TimeRange range;
+        bool operator==(const GapSelection&) const = default;
+    };
+    /// The selected gap of the current sequence (see selectedGap), or nullopt.
+    const std::optional<GapSelection>& gapSelection() const { return m_gap; }
+    /// Selects the gap at `at` on `track` and clears the clip and transition selection. False, changing nothing, when
+    /// `at` is not in a gap followed by a clip (edit::rippleDeleteGap's rule) on a track of the current sequence.
+    bool selectGapAt(TrackId track, Ticks at);
+    /// The gap at `at` on `track` of the current sequence (as selectGapAt would select it), or nullopt.
+    std::optional<GapSelection> gapAt(TrackId track, Ticks at) const;
+
     // ---- Clipboard (C.11: Clipboard.h, the clipboard.* and clip.*Attributes commands) ----
     /// The session's clipboard. The assistant's engine bundles it (AgentController's services), so clips it copies
     /// paste with Ctrl+V and the other way round; call notifyClipboardChanged() after such an engine ran.
@@ -378,6 +399,7 @@ public:
     QString selectedEdge() const { return m_selectedEdge; }
     void setSelectedEdge(const QString& edge);
     QString selectedTransition() const;
+    QVariantMap selectedGap() const;
     EffectControlsModel* effectControls() const { return m_effectControls; }
     int clipCount() const;
     QVariantList markers() const;
@@ -424,6 +446,18 @@ public:
     /// Shift+Home / Shift+End: start or end of the primary selected clip.
     Q_INVOKABLE void goToSelectedClipStart();
     Q_INVOKABLE void goToSelectedClipEnd();
+    /// 0.2 UX (stream T), Premiere's typed playhead entry (the Timeline's and the Program Monitor's timecode): moves the
+    /// playhead to `text`, a time as the sequence displays it - timecode ("00:01:02:03", "1:02:03", ';' '.' ',' as
+    /// separators, digits packed from the right: "10203" = 00:01:02:03, "110" = 00:00:01:10), a frame count with the
+    /// Frames display format, feet+frames ("0012+05") with a feet display format - or, with a leading '+' or '-', an
+    /// offset from the playhead in the same units ("+15" = 15 frames later, "-1:00" = one second earlier, "+1." = one
+    /// second later: Premiere's '.' ends a field). With audio time units on, the audio time is read too
+    /// ("00:00:01:24000" samples, "00:00:01.500" milliseconds; offsets "+24000" count samples). Clamped at the sequence
+    /// start. False, moving nothing, for text it cannot read.
+    Q_INVOKABLE bool seekToText(const QString& text);
+    /// The time `text` names (as seekToText reads it, offsets from the playhead) in the display format ("" when it is
+    /// not a time): QML can show what Enter will do.
+    Q_INVOKABLE QString timeEntryText(const QString& text) const;
 
     /// Sequence In/Out marks (undoable model edits): I, O, X (around the clips under the playhead), / (around
     /// the selection), and clearing them.
@@ -518,6 +552,41 @@ public:
 
     /// Track header toggles (undoable edits): flag = "enabled" | "locked" | "muted" | "solo" | "targeted" | "syncLocked".
     Q_INVOKABLE void setTrackFlag(const QString& trackId, const QString& flag, bool value);
+
+    // ---- Track header menu (0.2 UX, stream T; ProjectControllerTimeline.cpp): one undo step each ----
+    /// What the menu of a track of the current sequence shows: { id, kind: "video" | "audio", shortName ("V2"), name
+    /// (the custom name, else "Video 2"), customName ("" for the default), index (0 = V1 / A1), clipCount, locked,
+    /// syncLocked, targeted, canDelete, deleteReason ("" or why Delete Track is off), emptyTracks, emptyVideoTracks,
+    /// emptyAudioTracks (what Delete Empty Tracks would remove) }; {} for a key that is not a track of the sequence.
+    Q_INVOKABLE QVariantMap trackInfo(const QString& trackId) const;
+    /// Rename...: the track's custom name ("" or only spaces: back to the default "Video n" / "Audio n"; at most 256
+    /// characters). Allowed on locked tracks (like the header toggles). False with lastError when refused.
+    Q_INVOKABLE bool renameTrack(const QString& trackId, const QString& name);
+    /// Add Track / Add Tracks... (Premiere's dialog) as one undo step "Add Tracks" ("Add Track" for one): `spec` =
+    ///   { video: 0..99, audio: 0..99 (default 0),
+    ///     videoPlacement, audioPlacement: "first" (before the first track: the new tracks become V1... / A1...) |
+    ///       "last" (above the top video track / below the last audio track; the default) | "after" | "before" (next to
+    ///       `track` in numbering: video "after" = above it, audio "after" = below it),
+    ///     track: "t3" - the track "after" / "before" refer to, per kind (a track of the other kind is ignored for that
+    ///       kind); default: the topmost targeted track of the kind, else the last one,
+    ///     audioFormat: "stereo" (default) | "mono" | "5.1" | "adaptive" - the new audio tracks' channel format }.
+    /// Returns the new tracks' keys (video first, each kind in the order made), [] when nothing was added (lastError
+    /// says why for a bad spec: counts out of range, an unknown placement or format).
+    Q_INVOKABLE QStringList addTracks(const QVariantMap& spec);
+    /// Delete Track: the track and its clips (their linked partners on other tracks stay, unlinked). Refused (false,
+    /// lastError) on a locked track or the only track of its kind; trackInfo().canDelete says so first.
+    Q_INVOKABLE bool deleteTrack(const QString& trackId);
+    /// Delete Empty Tracks: every unlocked track of `kind` ("video", "audio" or "" = both) without clips, keeping at
+    /// least one track of each kind (the lowest-numbered). One undo step; returns how many went (0: nothing changed).
+    Q_INVOKABLE int deleteEmptyTracks(const QString& kind = {});
+
+    // ---- Gap selection (0.2 UX, stream T) ----
+    /// Deselects the gap (selectedGap becomes {}).
+    Q_INVOKABLE void clearGapSelection();
+    /// Ripple Delete of the selected gap (timeline.rippleDelete with a gap): one undo step "Ripple Delete", the gap
+    /// selection goes. False with lastError (the model's reason: another sync-locked track has clips in that time, a
+    /// locked track) when it cannot close; nothing changes then and the gap stays selected.
+    Q_INVOKABLE bool rippleDeleteGap();
     /// Clip editor: sets a property of the selected clip in UI units (see selectedClip.properties). Consecutive
     /// changes of the same property merge into one undo step until endPropertyGesture().
     Q_INVOKABLE void setClipProperty(const QString& key, double value);
@@ -528,6 +597,15 @@ public:
     Q_INVOKABLE void selectTransition(const QString& transitionId);
     /// Removes the selected transition (Delete with a transition selected).
     Q_INVOKABLE bool deleteSelectedTransition();
+    /// 0.2 UX (stream T), the timeline transition menu: { id, kind: "video" | "audio", effect (its transition id),
+    /// name (display name), durationText (timecode), alignment: "center" | "startAtCut" | "endAtCut", twoSided (between
+    /// two clips: Alignment applies), locked (its track is locked), defaultEffect (Editing's default transition of its
+    /// kind), isDefault (effect == defaultEffect) } of a transition of the current sequence; {} when unknown. The menu's
+    /// actions run on the selected transition (a right-click selects it): Set Duration... ->
+    /// effectControls.setTransitionDuration(timecode), Alignment -> effectControls.setTransitionAlignment(alignment),
+    /// Replace with Default -> effectControls.setTransitionEffect(defaultEffect), Set as Default ->
+    /// Editing.setDefaultTransition(effect), Clear -> deleteSelectedTransition().
+    Q_INVOKABLE QVariantMap transitionInfo(const QString& transitionId) const;
     /// Apply Video / Audio Transition (Ctrl/Cmd+D, Ctrl/Cmd+Shift+D): the default transition at the edit point
     /// nearest the playhead on the targeted tracks.
     Q_INVOKABLE bool applyDefaultTransition(bool audio);
@@ -556,6 +634,7 @@ signals:
     void clipboardNotice(const QString& text);
     void selectedEdgeChanged();
     void selectedTransitionChanged();
+    void selectedGapChanged();
     /// timelineHighlights() changed (C++ only).
     void timelineHighlightsChanged();
     /// The peak source was replaced or has new peaks: views redraw their waveforms (C++ only).
@@ -604,6 +683,10 @@ private:
     Ticks lastMarkedFrame() const;
     /// Selection Follows Playhead: selects the clips under the playhead (setPlayhead calls it).
     void followPlayheadSelection();
+    /// Where seekToText(text) would put the playhead (clamped at 0), or nullopt when `text` is not a time.
+    std::optional<Ticks> timeEntryTarget(const QString& text) const;
+    /// Sets (or with nullopt clears) the gap selection and tells the views.
+    void setGapSelection(std::optional<GapSelection> gap);
 
     std::unique_ptr<EditSession> m_session;
     /// P.1: frees what the session lets go (evicted undo steps, the previous project) on a thread of its own; before
@@ -640,6 +723,7 @@ private:
     ClipAccessModel* m_clipList = nullptr;
     EffectControlsModel* m_effectControls = nullptr;
     TransitionId m_selectedTransition;
+    std::optional<GapSelection> m_gap; // 0.2 UX (stream T): the selected gap
     std::vector<TimelineHighlight> m_highlights;
     QString m_selectedEdge;
     bool m_selectionFollowsPlayhead = false;

@@ -172,6 +172,41 @@ TEST_CASE("Editing: the History steps list the undo steps and a click goes back 
     CHECK_FALSE(r.editing.goToHistoryStep(9));
 }
 
+// UX rework (stream S): Premiere's History panel keys, Step Backward / Step Forward (Left / Right in its scope), go one
+// state through the history; nothing happens at either end.
+TEST_CASE("Editing: the History panel keys step back and forward one state", "[app][editing][history]") {
+    EditingRig r(R"(
+        V1 tgt |Aaaaaaaaaa|
+    )");
+    r.controller.selectClip(r.key("V1@0"));
+    REQUIRE(r.editing.scaleToFrameSize({}, true).isEmpty());
+    REQUIRE(r.editing.applySequenceSettings(sequenceKey(r.tl.seq), {{QStringLiteral("width"), 1280},
+                                                                    {QStringLiteral("height"), 720}})
+                .isEmpty());
+    REQUIRE(r.undo() == 2);
+
+    REQUIRE(r.editing.runCommand(QStringLiteral("history.stepBackward")));
+    CHECK(r.undo() == 1);
+    CHECK(r.sequence().width == 1920);
+    CHECK(r.controller.session().redoCount() == 1);
+    REQUIRE(r.editing.runCommand(QStringLiteral("history.stepBackward")));
+    CHECK(r.undo() == 0);
+    CHECK_FALSE(r.now("V1@0").content().scaleToFrame);
+    REQUIRE(r.editing.runCommand(QStringLiteral("history.stepBackward"))); // the project as opened: nothing further
+    CHECK(r.undo() == 0);
+    CHECK(r.controller.session().redoCount() == 2);
+
+    REQUIRE(r.editing.runCommand(QStringLiteral("history.stepForward")));
+    CHECK(r.undo() == 1);
+    CHECK(r.now("V1@0").content().scaleToFrame);
+    REQUIRE(r.editing.runCommand(QStringLiteral("history.stepForward")));
+    REQUIRE(r.editing.runCommand(QStringLiteral("history.stepForward"))); // the newest state: nothing further
+    CHECK(r.undo() == 2);
+    CHECK(r.controller.session().redoCount() == 0);
+    // The step keys only move through the history: the steps stay as they were.
+    CHECK(r.editing.historySteps().size() == 3);
+}
+
 TEST_CASE("Editing: the Media and Timeline preferences are saved and read where they apply", "[app][editing][prefs]") {
     resetSettings();
     EditingBridge editing;
@@ -349,7 +384,7 @@ TEST_CASE("Editing: the keymap commands it runs are the ones it says", "[app][ed
           "sequence.makeSubsequenceFromInToOut", "sequence.joinThroughEdits", "sequence.nextInSequence",
           "sequence.previousInSequence", "sequence.nextInTrack", "sequence.previousInTrack", "sequence.closeGap",
           "clip.mergeClips", "clip.interpretFootage", "clip.modifyTimecode", "clip.replaceFootage", "clip.makeOffline",
-          "window.history"}) {
+          "window.history", "history.stepBackward", "history.stepForward"}) {
         INFO(id);
         CHECK(EditingBridge::handlesCommand(QString::fromLatin1(id)));
     }

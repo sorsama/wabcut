@@ -10,7 +10,10 @@
 //   * typed edit commands from the command catalog (CommandBridge), with parameter prompts, a dry-run preview and
 //     apply through CommandEngine;
 //   * "Ask AI…", a pinned row that opens the AI panel (a placeholder until the AI platform's AiController adds a
-//     provider of its own: providers may return their own rows for a query and refresh them later).
+//     provider of its own: providers may return their own rows for a query and refresh them later);
+//   * the shell's own rows (UX rework, stream S): QML hands over rows it knows and C++ does not - "Open panel: Library",
+//     "Workspace: Color", "Open Recent: My film" - with setShellActions(); choosing one emits shellActionRequested(id)
+//     for Main.qml to run.
 // Fuzzy providers are ranked here (fuzzyScore: subsequence matches with bonuses for word starts, runs, prefixes and
 // initials); recent commands come first for an empty query and get a boost otherwise.
 
@@ -88,10 +91,20 @@ public:
     KeymapCommandProvider(std::vector<Command> commands, std::function<QString(const QString&)> shortcutText,
                           std::function<QVariantMap(const QString&)> availability,
                           std::function<bool(const QString&)> trigger);
-    /// The keymap's commands, shortcut texts and trigger from the dispatcher; availability from the controller.
-    static std::shared_ptr<KeymapCommandProvider> forApp(KeymapDispatcher* dispatcher, ProjectController* controller);
-    /// Commands the shell runs outside ProjectController (the timeline view and Main.qml's router).
+    /// The keymap's commands, shortcut texts and trigger from the dispatcher; availability from the controller, then
+    /// from `moreAvailability` (the bridges with their own commandAvailability: the Library, Multi-Camera) for the
+    /// ids the controller does not handle.
+    static std::shared_ptr<KeymapCommandProvider> forApp(KeymapDispatcher* dispatcher, ProjectController* controller,
+                                                         std::function<QVariantMap(const QString&)> moreAvailability = {});
+    /// Commands the shell runs outside ProjectController: the timeline view, Main.qml's router (its runCommand switch and
+    /// the bridges it asks: Editing, Monitors, Library, Multi-Camera, Graphics, Moments, Markers, Trim) - the keys work,
+    /// so the palette lists them as ready.
     static bool viewHandles(const QString& id);
+    /// Whether keymap command `id` can run now, as its palette row says: { enabled, reason } - the controller's or a
+    /// bridge's answer for its own ids, ready for the ids the shell routes (viewHandles), else "Not available yet".
+    QVariantMap stateOf(const QString& id) const;
+    /// The current shortcut text of `id` ("" without one).
+    QString shortcutOf(const QString& id) const { return m_shortcutText ? m_shortcutText(id) : QString(); }
 
     QString id() const override { return QStringLiteral("command"); }
     std::vector<PaletteItem> items(const QString& query) const override;
@@ -134,6 +147,24 @@ public:
 
 private:
     std::vector<Action> m_actions;
+};
+
+/// Rows the shell (QML) hands over: panels, workspaces, recent projects - whatever Main.qml can run and C++ cannot list.
+/// Each has an id QML chose ("panel:library"); running one calls `run` with that id (the palette emits
+/// shellActionRequested).
+class ShellActionProvider final : public PaletteProvider {
+public:
+    explicit ShellActionProvider(std::function<void(const QString&)> run) : m_run(std::move(run)) {}
+    /// Replaces the rows: [{ id, title, group, detail, keywords: [string], shortcut, enabled (default true), reason }].
+    /// Rows without an id or a title are skipped, and so is a second row with the same id. Returns how many were kept.
+    int setActions(const QVariantList& actions);
+    QString id() const override { return QStringLiteral("shell"); }
+    std::vector<PaletteItem> items(const QString& query) const override;
+    QString activate(const PaletteItem& item, const QVariantMap& params) override;
+
+private:
+    std::vector<PaletteItem> m_items;
+    std::function<void(const QString&)> m_run;
 };
 
 /// "Ask AI…": one pinned row; activating it asks the palette to open the AI panel.
@@ -180,6 +211,16 @@ public:
     Q_INVOKABLE QVariantMap preview(const QString& key, const QVariantMap& params);
     /// Prompt values to start from (edit commands).
     Q_INVOKABLE QVariantMap defaults(const QString& key) const;
+    /// The shell's rows (ShellActionProvider), replacing the ones set before: [{ id, title, group, detail,
+    /// keywords: [string], shortcut, enabled (default true), reason }]. Their palette keys are "shell:<id>"; choosing
+    /// one emits shellActionRequested(id). Returns how many rows were kept (rows without id or title are skipped).
+    Q_INVOKABLE int setShellActions(const QVariantList& actions);
+    /// UX rework (stream S), for menus (the menu bar): the state of keymap command `id` now, as the palette would list
+    /// it: { known (a keymap command), title, group, shortcut, enabled, reason ("Nothing to undo", "Select a clip
+    /// first", "Not available yet") }. The typed edits' keys (marker.add, marker.clearAll, effects.newCustomBin, ...),
+    /// which the palette lists as edits with prompts, report enabled. A call, not a binding: re-read it when the menu
+    /// opens (e.g. `enabled: menu.visible && CommandPalette.commandState(id).enabled`).
+    Q_INVOKABLE QVariantMap commandState(const QString& id) const;
     /// Recent rows are remembered across runs (QSettings "palette/recent"); tests switch it off.
     void setPersistRecent(bool persist) { m_persistRecent = persist; }
 
@@ -191,6 +232,8 @@ signals:
     void aiRequested(const QString& query);
     /// A Help row (M5j onboarding): "welcome", "tour", "trainer" or "whatsNew".
     void helpRequested(const QString& what);
+    /// A shell row (setShellActions) was chosen: its id, as QML gave it ("panel:library").
+    void shellActionRequested(const QString& id);
 
 private:
     struct Entry {
@@ -202,6 +245,8 @@ private:
     void remember(const QString& key);
 
     std::vector<std::shared_ptr<PaletteProvider>> m_providers;
+    std::shared_ptr<ShellActionProvider> m_shell; // added at the first setShellActions (after the app's providers)
+    std::shared_ptr<KeymapCommandProvider> m_keymap; // the keymap's rows (commandState), the first one added
     std::vector<Entry> m_entries; // last collected rows (all providers)
     QString m_query;
     QVariantList m_results;

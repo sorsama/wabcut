@@ -84,6 +84,10 @@ class LibraryBridge : public QObject {
     /// 0.2, Premiere's Project panel zoom (icon and thumbnail size): the grid's card size, 0.5 .. 2 (1 = the default),
     /// in kThumbnailScaleStep steps. Per user (QSettings), like the view and hover scrub.
     Q_PROPERTY(qreal thumbnailScale READ thumbnailScale WRITE setThumbnailScale NOTIFY thumbnailScaleChanged FINAL)
+    /// UX rework (L): the bounds and step of thumbnailScale, for the toolbar's size slider (0.5, 2, 0.25).
+    Q_PROPERTY(qreal thumbnailScaleMin READ thumbnailScaleMin CONSTANT FINAL)
+    Q_PROPERTY(qreal thumbnailScaleMax READ thumbnailScaleMax CONSTANT FINAL)
+    Q_PROPERTY(qreal thumbnailScaleStep READ thumbnailScaleStep CONSTANT FINAL)
 
     /// The bin shown ("" = the project's root).
     Q_PROPERTY(QString currentBin READ currentBin NOTIFY binChanged FINAL)
@@ -161,6 +165,9 @@ public:
     /// How Reveal in File Explorer shows a file (tests replace it; by default Explorer, Finder or the folder).
     using Revealer = std::function<bool(const QString& path)>;
     static void setRevealer(Revealer revealer);
+    /// UX rework (H): shows `path` in the file manager the way Reveal in File Explorer does (the Revealer tests set, else
+    /// Explorer /select, Finder -R or the folder). Home's Show in Explorer uses it too.
+    static bool revealPath(const QString& path);
 
     explicit LibraryBridge(QObject* parent = nullptr);
     ~LibraryBridge() override;
@@ -199,11 +206,16 @@ public:
     QString ingestPreset() const { return m_ingestPreset; }
     void setIngestPreset(const QString& preset);
     static constexpr qreal kThumbnailScaleStep = 0.25;
+    static constexpr qreal kThumbnailScaleMin = 0.5;
+    static constexpr qreal kThumbnailScaleMax = 2.0;
     /// 0.2: the frames of a Media Browser clip's hover-scrub strip.
     static constexpr int kBrowserStripFrames = 10;
     int browserStripFrames() const { return kBrowserStripFrames; }
     qreal thumbnailScale() const { return m_thumbnailScale; }
     void setThumbnailScale(qreal scale);
+    qreal thumbnailScaleMin() const { return kThumbnailScaleMin; }
+    qreal thumbnailScaleMax() const { return kThumbnailScaleMax; }
+    qreal thumbnailScaleStep() const { return kThumbnailScaleStep; }
     QString currentBin() const { return binKey(m_bin); }
     QVariantList breadcrumb() const;
     QVariantList tabs() const;
@@ -387,6 +399,9 @@ public:
     Q_INVOKABLE void resetColumns();
 
     // ---- Keyboard (docs/keymap.md: project.*, clip.makeSubclip) ----
+    /// UX rework (L): also Premiere's Project panel zoom keys (project.thumbnailSizeNext / Previous, project.zoomIn /
+    /// Out: thumbnailScale one step up or down) and the selection keys (project.moveSelection* and
+    /// project.extendSelection*: selectionMoveRequested, which the panel answers in the view it shows).
     static bool handlesCommand(const QString& id);
     /// { handled, enabled, reason } for the command palette.
     Q_INVOKABLE QVariantMap commandAvailability(const QString& id) const;
@@ -435,6 +450,10 @@ signals:
     void findRequested();
     /// QML: ask for the subclip's name (Ctrl/Cmd+U).
     void makeSubclipRequested();
+    /// UX rework (L), Premiere's Project panel selection keys: move the selection in the view shown. `where`: "up",
+    /// "down", "left", "right" (one card / row; up and down are a row of cards in the grid), "home", "end" (the first /
+    /// last listed item), "pageUp", "pageDown" (a page of the view). `extend`: Shift (Range selection from the anchor).
+    void selectionMoveRequested(const QString& where, bool extend);
     /// QML: bring the Library forward and scroll `key` into view (showItem()).
     void itemShown(const QString& key);
     void embedXmpChanged();

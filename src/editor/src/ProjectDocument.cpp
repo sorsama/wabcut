@@ -296,6 +296,16 @@ std::expected<void, Error> ProjectDocument::saveAs(const std::filesystem::path& 
     return {};
 }
 
+std::expected<void, Error> ProjectDocument::saveCopy(const std::filesystem::path& file) const {
+    const std::filesystem::path absolute = absolutePath(file);
+    ProjectState state = rebased(m_session.stateForSave(), absolute);
+    if (m_saveFilter) {
+        m_saveFilter(state);
+    }
+    // A copy is a one-off file (the user confirmed replacing one that was there): no ".bakN" rotation next to it.
+    return io::saveProject(state, absolute, io::SaveOptions{0});
+}
+
 // ---- Autosave -----------------------------------------------------------------------------------------
 
 std::filesystem::path ProjectDocument::autosaveFile() const {

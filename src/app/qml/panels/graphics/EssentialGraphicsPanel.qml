@@ -2,7 +2,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Layouts
 
-// ● CALLOUTS (M5o, rail key "graphics"; bridge `Graphics`; Premiere's Essential Graphics panel, C.13, made simple for
+// ● CALLOUTS (M5o, panel key "graphics"; bridge `Graphics`; Premiere's Essential Graphics panel, C.13, made simple for
 //   gaming videos):
 //   * Browse: the built-in gaming callouts (Subscribe, Kill streak, Lower third, Arrow / Circle callout, Victory / GG,
 //     Countdown), Lottie stickers, the project's templates and the user's, with live thumbnails; drag one onto the

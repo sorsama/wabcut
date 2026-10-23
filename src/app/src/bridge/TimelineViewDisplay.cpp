@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace wabcut::app {
 
@@ -249,14 +250,23 @@ QVariantList TimelineView::markerItems() const {
     QVariantList list;
     if (!m_sequence)
         return list;
-    int index = 0;
-    for (const Marker& m : m_sequence->markers) {
-        list << QVariantMap{{QStringLiteral("index"), index++},
+    const auto& markers = m_sequence->markers;
+    for (std::size_t i = 0; i < markers.size(); ++i) {
+        const Marker& m = markers[i];
+        // 0.2 UX (stream T): what the ruler's name label and hover tooltip show.
+        const QString timecode = m_controller ? m_controller->formatTimecode(m.start) : QString();
+        const QString duration = m_controller && m.duration > Ticks{} ? m_controller->formatTimecode(m.duration) : QString();
+        const double nextX = i + 1 < markers.size() ? xOfTicks(markers[i + 1].start) : std::numeric_limits<double>::infinity();
+        list << QVariantMap{{QStringLiteral("index"), static_cast<int>(i)},
                             {QStringLiteral("x"), xOfTicks(m.start)},
                             {QStringLiteral("endX"), xOfTicks(m.end())},
                             {QStringLiteral("colorIndex"), m.colorIndex},
                             {QStringLiteral("name"), QString::fromStdString(m.name)},
-                            {QStringLiteral("type"), QString::fromLatin1(markerTypeName(m.type).data(), static_cast<qsizetype>(markerTypeName(m.type).size()))}};
+                            {QStringLiteral("type"), QString::fromLatin1(markerTypeName(m.type).data(), static_cast<qsizetype>(markerTypeName(m.type).size()))},
+                            {QStringLiteral("comment"), QString::fromStdString(m.comment)},
+                            {QStringLiteral("timecode"), timecode},
+                            {QStringLiteral("durationText"), duration},
+                            {QStringLiteral("nextX"), nextX}};
     }
     return list;
 }

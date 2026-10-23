@@ -494,4 +494,23 @@ std::expected<Created<SequenceId>, Error> newSequenceFromClip(const ProjectState
     return Created<SequenceId>{std::move(edited->state), created->id};
 }
 
+std::expected<Created<TrackId>, Error> insertTrack(const ProjectState& state, SequenceId sequenceId, TrackKind kind,
+                                                   std::size_t index, std::string name) {
+    const auto seq = detail::findSequence(state, sequenceId);
+    if (!seq) {
+        return std::unexpected(seq.error());
+    }
+    auto next = std::make_shared<Sequence>(**seq);
+    Created<TrackId> out{state, {}};
+    auto track = std::make_shared<Track>();
+    track->id = out.state.ids.allocate<TrackId>();
+    track->kind = kind;
+    track->name = std::move(name);
+    out.id = track->id;
+    auto& tracks = kind == TrackKind::Video ? next->videoTracks : next->audioTracks;
+    tracks.insert(tracks.begin() + static_cast<std::ptrdiff_t>(std::min(index, tracks.size())), std::move(track));
+    out.state = out.state.withSequence(std::move(next));
+    return out;
+}
+
 } // namespace wabcut::edit

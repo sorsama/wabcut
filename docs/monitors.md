@@ -9,6 +9,24 @@ Code: `src/app/qml/monitor/` (QML), the `Monitors` (`MonitorBridge`) and `Progra
 `src/app/src/bridge/`, `edit::setMotion` (`src/model/include/wabcut/model/MotionOps.h`), the playback loop and mirror
 (`PlaybackController::setLoop` / `addMirror`), and `exporter::writeStill` (`src/export/include/wabcut/export/StillExport.h`).
 
+## Type a time, drop a clip, read a marker
+
+- **Type a time to go there** (as in Premiere): click the timecode under either monitor, or the Timeline's timecode
+  left of its ruler (or Tab to it and type). The field opens with the time selected. Type a timecode
+  (`00:01:02:03`, `1:02:03`; `:` `;` `.` `,` all work as separators), digits packed from the right (`110` is
+  00:00:01:10), `2.` for two seconds, or an offset from where you are: `+15` goes 15 frames on, `-1:00` a second back.
+  A hint above the field says where Enter goes; Esc (or a click elsewhere) cancels; a time Wabcut cannot read keeps
+  the field open and says what it takes. The Source Monitor's timecode moves the source, in its own frames.
+- **Drop a clip on the Source Monitor**: drag a clip from the Library onto its picture to open it there (it joins the
+  recent sources). Files dragged from File Explorer are imported first, as File > Import does, then the first one
+  opens. Sequences cannot open in the Source Monitor.
+- **Markers on the time bar**: point at a marker on the Program Monitor's time bar to read its name, comment, time and
+  length.
+
+Code: `src/app/qml/components/TimecodeEntry.qml` (`ProjectController.seekToText`, `SourceMonitor.seekToText`),
+the drop area in `src/app/qml/panels/SourceMonitorPanel.qml` (`SourceMonitor.load` / `loadFileItem`) and
+`SequenceTimeBar.markerAt` in `src/app/qml/panels/ProgramTimeBar.qml`.
+
 ## Move, scale and rotate in the Program Monitor
 
 Premiere's direct manipulation of the Motion effect

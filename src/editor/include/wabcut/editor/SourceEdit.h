@@ -41,6 +41,9 @@ struct MediaDrop {
     std::optional<TimeRange> sourceRange;
     /// A sequence dropped instead of media (`media` is then ignored): a nested clip of it.
     SequenceId sourceSequence;
+    /// 0.2 UX (a drag from the Project panel, Premiere): without a `sourceRange`, the media's Source Monitor marks
+    /// (edit::storedSourceMarks) choose it - In (else the start) to Out (else the end). Off: the whole media.
+    bool useSourceMarks = false;
 };
 
 /// The patches a drop of `media` on `track` uses (see the file comment). Locked tracks are skipped. `landing`: where

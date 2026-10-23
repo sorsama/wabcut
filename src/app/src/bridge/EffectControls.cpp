@@ -1,6 +1,7 @@
 #include "EffectControls.h"
 
 #include "CommandPalette.h"
+#include "EditingBridge.h"
 #include "EffectPresetsBridge.h"
 #include "ProjectController.h"
 
@@ -63,6 +64,37 @@ const EffectDescriptor* descriptor(std::string_view id) {
     return EffectRegistry::builtin().find(id);
 }
 
+/// The Essential Sound panel's record of a clip (audio::edit::kEssentialSoundEffect): it does nothing to the sound.
+constexpr std::string_view kEssentialSoundRecord = "wabcut.audio.essentialSound";
+
+/// The clips of `selection` (existing in `seq`) that take an item of `kind` (Video / Audio): each selected clip of that
+/// kind, else its first linked partner of that kind; in selection order, once each.
+std::vector<ClipId> clipsOfKind(const Sequence& seq, const std::vector<ClipId>& selection, StreamKind kind) {
+    std::vector<ClipId> out;
+    const auto add = [&](ClipId id) {
+        if (std::find(out.begin(), out.end(), id) == out.end())
+            out.push_back(id);
+    };
+    for (const ClipId id : selection) {
+        const auto loc = seq.findClip(id);
+        if (!loc)
+            continue;
+        if (loc->clip().stream.kind == kind) {
+            add(id);
+            continue;
+        }
+        const ClipId ids[] = {id};
+        for (const ClipId partner : edit::withLinkedClips(seq, ids)) {
+            const auto p = seq.findClip(partner);
+            if (p && p->clip().stream.kind == kind) {
+                add(partner);
+                break;
+            }
+        }
+    }
+    return out;
+}
+
 /// Runs several edits on one state (one undo step): each sees the previous one's result.
 edit::EditOutcome chain(const ProjectState& state,
                         const std::vector<std::function<edit::EditOutcome(const ProjectState&)>>& steps) {
@@ -83,6 +115,16 @@ Qt::KeyboardModifiers mods(int modifiers) {
 }
 
 } // namespace
+
+bool isListedEffect(const EffectDescriptor& d) {
+    return !d.intrinsic && d.id != edit::kTitleStyleEffect && d.id != kEssentialSoundRecord;
+}
+
+QString effectLibraryIcon(const EffectDescriptor& d) {
+    if (d.id.starts_with(kPluginEffectPrefix))
+        return QStringLiteral("sliders-horizontal");
+    return categoryIcon(d.category, d.kind);
+}
 
 // ---- Rows -------------------------------------------------------------------------------------------
 
@@ -1032,10 +1074,15 @@ void EffectControlsModel::moveEffect(const QString& section, int stackIndex) {
 // ---- Adding effects ---------------------------------------------------------------------------------
 
 QVariantList EffectControlsModel::library(const QString& query) const {
+    struct Entry {
+        int score = 0;
+        QString categoryKey; ///< the untranslated category (the bin's stable key)
+        QVariantMap item;
+    };
     struct Group {
         EffectKind kind;
         QString title, icon;
-        std::vector<std::pair<int, QVariantMap>> items;
+        std::vector<Entry> items;
     };
     std::vector<Group> groups{
         {EffectKind::Video, tx("Video Effects"), QStringLiteral("sparkles"), {}},
@@ -1043,10 +1090,12 @@ QVariantList EffectControlsModel::library(const QString& query) const {
         {EffectKind::Audio, tx("Audio Effects"), QStringLiteral("audio-lines"), {}},
         {EffectKind::AudioTransition, tx("Audio Transitions"), QStringLiteral("blend"), {}},
     };
+    static const char* const kKinds[] = {"video", "audio", "videoTransition", "audioTransition"};
     const QString q = query.trimmed();
     for (const EffectDescriptor& d : EffectRegistry::builtin().all()) {
-        // Intrinsic effects are every clip's; the title style comes with each title (New Title).
-        if (d.intrinsic || d.id == edit::kTitleStyleEffect)
+        // Intrinsic effects are every clip's; the title style comes with each title (New Title); the Essential Sound
+        // record is the Essential Sound panel's (isListedEffect).
+        if (!isListedEffect(d))
             continue;
         auto group = std::find_if(groups.begin(), groups.end(), [&](const Group& g) { return g.kind == d.kind; });
         if (group == groups.end())
@@ -1059,55 +1108,60 @@ QVariantList EffectControlsModel::library(const QString& query) const {
             if (score <= 0)
                 continue;
         }
-        static const char* const kKinds[] = {"video", "audio", "videoTransition", "audioTransition"};
-        group->items.emplace_back(score, QVariantMap{
+        group->items.push_back(Entry{score, fromView(d.category), QVariantMap{
             {QStringLiteral("id"), fromView(d.id)},
             {QStringLiteral("name"), name},
             {QStringLiteral("category"), category},
             {QStringLiteral("description"), fromView(d.description)},
             {QStringLiteral("icon"), categoryIcon(d.category, d.kind)},
             {QStringLiteral("kind"), QString::fromLatin1(kKinds[static_cast<int>(d.kind)])},
-        });
+        }});
     }
     QVariantList out;
     for (Group& g : groups) {
         if (g.items.empty())
             continue;
+        const QString groupKey = QString::fromLatin1(kKinds[static_cast<int>(g.kind)]);
         // 0.2: Premiere's bins (the descriptors' categories) in alphabetical order, effects alphabetical inside, as
         // Premiere's Effects panel lists them; a search keeps its matches in their bins.
-        const auto text = [](const std::pair<int, QVariantMap>& e, const char* key) {
-            return e.second.value(QLatin1String(key)).toString();
-        };
-        std::stable_sort(g.items.begin(), g.items.end(), [&](const auto& a, const auto& b) {
+        const auto text = [](const Entry& e, const char* key) { return e.item.value(QLatin1String(key)).toString(); };
+        std::stable_sort(g.items.begin(), g.items.end(), [&](const Entry& a, const Entry& b) {
             const int bin = QString::compare(text(a, "category"), text(b, "category"), Qt::CaseInsensitive);
             return bin != 0 ? bin < 0 : QString::compare(text(a, "name"), text(b, "name"), Qt::CaseInsensitive) < 0;
         });
         QVariantList bins;
         QVariantList binItems;
         QString binTitle;
+        QString binKey;
         const auto closeBin = [&] {
-            if (!binItems.isEmpty())
-                bins.append(QVariantMap{{QStringLiteral("title"), binTitle}, {QStringLiteral("items"), binItems}});
+            if (!binItems.isEmpty()) {
+                bins.append(QVariantMap{{QStringLiteral("title"), binTitle},
+                                        {QStringLiteral("key"), groupKey + QLatin1Char('/') + binKey},
+                                        {QStringLiteral("count"), static_cast<int>(binItems.size())},
+                                        {QStringLiteral("items"), binItems}});
+            }
             binItems.clear();
         };
-        for (const auto& entry : g.items) {
+        for (const Entry& entry : g.items) {
             const QString category = text(entry, "category");
             if (category != binTitle) {
                 closeBin();
                 binTitle = category;
+                binKey = entry.categoryKey;
             }
-            binItems.append(entry.second);
+            binItems.append(entry.item);
         }
         closeBin();
         if (!q.isEmpty())
-            std::stable_sort(g.items.begin(), g.items.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+            std::stable_sort(g.items.begin(), g.items.end(), [](const Entry& a, const Entry& b) { return a.score > b.score; });
         QVariantList items;
-        for (auto& [score, item] : g.items)
-            items.append(item);
-        static const char* const kKinds[] = {"video", "audio", "videoTransition", "audioTransition"};
+        for (const Entry& entry : g.items)
+            items.append(entry.item);
         out.append(QVariantMap{{QStringLiteral("title"), g.title},
                                {QStringLiteral("icon"), g.icon},
-                               {QStringLiteral("kind"), QString::fromLatin1(kKinds[static_cast<int>(g.kind)])},
+                               {QStringLiteral("kind"), groupKey},
+                               {QStringLiteral("key"), groupKey},
+                               {QStringLiteral("count"), static_cast<int>(items.size())},
                                {QStringLiteral("items"), items},
                                {QStringLiteral("bins"), bins}});
     }
@@ -1190,6 +1244,98 @@ QString EffectControlsModel::addEffectToClip(const QString& clipId, const QStrin
         return tx("Drop transitions on an edit point");
     m_controller->selectClipById(*clip, ProjectController::Replace);
     return addEffect(effectId);
+}
+
+QVariantMap EffectControlsModel::applyToSelectedClips(const QString& itemId) {
+    const auto done = [](const QString& message, int clips) {
+        return QVariantMap{{QStringLiteral("ok"), true},
+                           {QStringLiteral("error"), QString()},
+                           {QStringLiteral("message"), message},
+                           {QStringLiteral("clips"), clips}};
+    };
+    const auto failed = [](const QString& error) {
+        return QVariantMap{{QStringLiteral("ok"), false},
+                           {QStringLiteral("error"), error},
+                           {QStringLiteral("message"), error},
+                           {QStringLiteral("clips"), 0}};
+    };
+    if (!m_controller)
+        return failed(tx("No project"));
+    const SequencePtr seq = m_controller->currentSequence();
+    if (!seq)
+        return failed(tx("No sequence"));
+    std::vector<ClipId> selection;
+    for (const ClipId id : m_controller->selection()) {
+        if (seq->findClip(id))
+            selection.push_back(id);
+    }
+    const SequenceId seqId = m_controller->currentSequenceId();
+    QString id = itemId.trimmed();
+    if (id.startsWith(QLatin1String("effect:")))
+        id = id.mid(7);
+
+    // A preset: one "Apply Preset" step over every clip of its kind.
+    if (id.startsWith(QLatin1String("preset:"))) {
+        const QString name = id.mid(7);
+        const auto preset = effectPresetForItem(m_controller, id);
+        if (!preset)
+            return failed(tx("There is no preset named %1").arg(name));
+        if (selection.empty())
+            return failed(tx("Select a clip first"));
+        const bool video = preset->kind() == EffectKind::Video;
+        const std::vector<ClipId> clips = clipsOfKind(*seq, selection, video ? StreamKind::Video : StreamKind::Audio);
+        if (clips.empty())
+            return failed(video ? tx("%1 is a video preset: select a video clip").arg(name)
+                                : tx("%1 is an audio preset: select an audio clip").arg(name));
+        if (const QString error = applyEffectPresetToClips(*m_controller, clips, name); !error.isEmpty())
+            return failed(error);
+        const int n = static_cast<int>(clips.size());
+        return done(n == 1 ? tx("Applied %1").arg(name) : tx("Applied %1 to %2 clips").arg(name).arg(n), n);
+    }
+
+    const EffectDescriptor* d = descriptor(id.toStdString());
+    if (!d || !isListedEffect(*d))
+        return failed(tx("Unknown effect"));
+    if (d->id.starts_with(kPluginEffectPrefix)) // PluginBridge::applyToSelectedClips keeps the plug-in's name with it
+        return failed(tx("%1 is an audio plug-in: apply it from the Audio Plug-ins folder").arg(fromView(d->displayName)));
+    const QString name = tx(d->displayName.data());
+
+    // A transition: on both ends of each selected clip of its kind (Apply Default Transitions to Selection with it).
+    if (isTransitionKind(d->kind)) {
+        const bool video = d->kind == EffectKind::VideoTransition;
+        if (selection.empty())
+            return failed(tx("Select clips, or drag %1 onto an edit point in the timeline").arg(name));
+        const std::vector<ClipId> clips = clipsOfKind(*seq, selection, video ? StreamKind::Video : StreamKind::Audio);
+        if (clips.empty())
+            return failed(video ? tx("%1 is a video transition: select video clips, or drag it onto an edit point").arg(name)
+                                : tx("%1 is an audio transition: select audio clips, or drag it onto an edit point").arg(name));
+        edit::DefaultTransitions defaults = EditingBridge::defaultTransitionsSetting();
+        (video ? defaults.video : defaults.audio) = std::string(d->id);
+        const bool ok = m_controller->applyEditFn(LABEL("Apply Transition"), [&](const ProjectState& state) {
+            return edit::applyDefaultTransitions(state, seqId, clips, defaults);
+        });
+        if (!ok)
+            return failed(m_controller->lastError());
+        const int n = static_cast<int>(clips.size());
+        return done(n == 1 ? tx("Added %1 to the clip's ends").arg(name) : tx("Added %1 to the ends of %2 clips").arg(name).arg(n), n);
+    }
+
+    // An effect: one "Add Effect" step, a new instance at the end of each clip's stack.
+    if (selection.empty())
+        return failed(tx("Select a clip first"));
+    const bool video = d->kind == EffectKind::Video;
+    const std::vector<ClipId> clips = clipsOfKind(*seq, selection, video ? StreamKind::Video : StreamKind::Audio);
+    if (clips.empty())
+        return failed(video ? tx("%1 is a video effect: select a video clip").arg(name)
+                            : tx("%1 is an audio effect: select an audio clip").arg(name));
+    const std::string effect(d->id);
+    const bool ok = m_controller->applyEditFn(LABEL("Add Effect"), [&](const ProjectState& state) {
+        return edit::addEffect(state, seqId, std::span<const ClipId>(clips), effect);
+    });
+    if (!ok)
+        return failed(m_controller->lastError());
+    const int n = static_cast<int>(clips.size());
+    return done(n == 1 ? tx("Added %1").arg(name) : tx("Added %1 to %2 clips").arg(name).arg(n), n);
 }
 
 // ---- Keyframe lane ----------------------------------------------------------------------------------

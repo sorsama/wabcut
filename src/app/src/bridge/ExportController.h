@@ -16,6 +16,9 @@
 //   defaultOutputPath(sequenceId, presetId, overrides)
 //   cancel(jobId) · cancelAll() · reveal(jobId) · clearFinished() · probeEncoders()
 //   signals jobQueued(jobId), jobFinished(jobId, succeeded, message)
+//   UX rework (L): job(jobId) -> the row as a map (for a toast) · openOutput(jobId) (the file in its default app);
+//   the last choices, per user: lastPreset, lastGamingPreset, lastQuickPreset, lastFolder (+ lastFolderUrl), lastRange,
+//   suggestedRange(sequenceId), forgetExportChoices(); defaultOutputPath() writes into lastFolder when it exists.
 //
 // `sequenceId` is ProjectController's opaque "s…" key ("" = the current sequence). `overrides`, all
 // optional (docs/export.md has the table):
@@ -44,6 +47,7 @@
 #include <QObject>
 #include <QPointer>
 #include <QString>
+#include <QUrl>
 #include <QVariantList>
 #include <QVariantMap>
 #include <QtQml/qqmlregistration.h>
@@ -81,6 +85,10 @@ public:
         EncoderRole,   ///< encoder actually used, e.g. "h264_nvenc"
         DetailRole,    ///< done: "0:10 · 5.7× realtime"; failed: the plain-language error
         FinishedRole,  ///< done, failed or cancelled
+        /// UX rework (L), "origin": what queued it - "export" (the Export workspace, queueExport), "quick" (Quick
+        /// Export), "queue" (Send to Media Encoder), "transcode" (Media Browser Ingest), "watch" (a watch folder) or
+        /// "command" (the export.* commands, queueRequest).
+        OriginRole,
     };
     Q_ENUM(Role)
 
@@ -99,6 +107,7 @@ public:
         QString detail;
         bool finished = false;
         bool held = false; ///< 0.2: sent to the queue, waiting for Start Queue (Media Encoder's "Ready")
+        QString origin = QStringLiteral("command"); ///< UX rework (L): OriginRole
     };
 
     explicit ExportJobModel(QObject* parent = nullptr);
@@ -166,6 +175,25 @@ class ExportController : public QObject {
     Q_PROPERTY(QString credentialsCertificate READ credentialsCertificate WRITE setCredentialsCertificate NOTIFY contentCredentialsChanged FINAL)
     Q_PROPERTY(QString credentialsKey READ credentialsKey WRITE setCredentialsKey NOTIFY contentCredentialsChanged FINAL)
 
+    // ---- UX rework (L): export remembers the last choices (global, per user; QSettings export/*) ----
+    /// The Export workspace's last built-in or user preset (export/lastPreset). Reads "match-source" when nothing is
+    /// stored or the preset is gone; writing an unknown id is ignored.
+    Q_PROPERTY(QString lastPreset READ lastPreset WRITE setLastPreset NOTIFY exportMemoryChanged FINAL)
+    /// The Export workspace's last gaming preset (a GamingExport id; "" = a built-in or user preset was chosen last)
+    /// (export/lastGamingPreset). Reads "" when the id is not a GamingExport preset (any more).
+    Q_PROPERTY(QString lastGamingPreset READ lastGamingPreset WRITE setLastGamingPreset NOTIFY exportMemoryChanged FINAL)
+    /// Quick Export's last preset (export/lastQuickPreset); "match-source" when none or gone.
+    Q_PROPERTY(QString lastQuickPreset READ lastQuickPreset WRITE setLastQuickPreset NOTIFY exportMemoryChanged FINAL)
+    /// The folder the last export with a chosen destination went to (export/lastFolder; native separators). Set by
+    /// queueExport / quickExport / sendToQueue whenever their overrides carry an "output"; "" when none was chosen or
+    /// the folder is gone. defaultOutputPath() writes there, else next to the project. Writable (a folder path or URL).
+    Q_PROPERTY(QString lastFolder READ lastFolder WRITE setLastFolder NOTIFY exportMemoryChanged FINAL)
+    /// lastFolder as a URL for FileDialog.currentFolder (empty when there is none).
+    Q_PROPERTY(QUrl lastFolderUrl READ lastFolderUrl NOTIFY exportMemoryChanged FINAL)
+    /// The range the user last chose in the Export workspace: "whole", "inOut", "workArea", or "" (never chosen; also
+    /// what "custom" and junk store) (export/lastRange). QML writes it only when the user picks a range.
+    Q_PROPERTY(QString lastRange READ lastRange WRITE setLastRange NOTIFY exportMemoryChanged FINAL)
+
 public:
     explicit ExportController(QObject* parent = nullptr);
     ~ExportController() override;
@@ -200,7 +228,9 @@ public:
     Q_INVOKABLE QString queueExport(const QString& sequenceId, const QString& presetId,
                                     const QVariantMap& overrides = {});
     /// 0.2, Premiere's Quick Export: the current sequence with `presetId` to `output` ("" = the default name).
-    Q_INVOKABLE QString quickExport(const QString& presetId, const QString& output = QString());
+    /// UX rework (L): `overrides` (queueExport's keys, e.g. { range: "inOut" }) apply on top; `output` wins over theirs.
+    Q_INVOKABLE QString quickExport(const QString& presetId, const QString& output = QString(),
+                                    const QVariantMap& overrides = {});
     /// 0.2, Send to Media Encoder / several destinations: one job per preset, the same overrides; `hold` = they wait
     /// for Start Queue. Returns the job ids ([] with lastError on a problem: nothing is queued then).
     Q_INVOKABLE QStringList sendToQueue(const QString& sequenceId, const QStringList& presetIds,
@@ -240,6 +270,35 @@ public:
     /// Probes which encoder "auto" picks per codec, in the background (autoEncodersChanged when done).
     Q_INVOKABLE void probeEncoders();
 
+    // ---- UX rework (L) ----
+    /// One job as a map, for a toast on jobFinished: { jobId, title, outputPath, outputUrl, folderUrl, presetName, state
+    /// ("held" | "queued" | "running" | "paused" | "done" | "failed" | "cancelled"), detail, finished, origin (OriginRole),
+    /// exists (the output file is on disk) }; {} for an unknown id (e.g. after clearFinished()).
+    Q_INVOKABLE QVariantMap job(const QString& jobId) const;
+    /// Opens the job's finished output in the system's default app for it ("Open"). False when the job is unknown,
+    /// not done, or the file is gone.
+    Q_INVOKABLE bool openOutput(const QString& jobId);
+    /// The range to preselect for `sequenceId` ("" = the current sequence) before the user picks one: lastRange when
+    /// that range is available for the sequence, else "inOut" when it has In/Out marks, else "whole".
+    Q_INVOKABLE QString suggestedRange(const QString& sequenceId) const;
+    /// The folder of `path` (a file or folder path, or a file URL) as a URL, for FileDialog.currentFolder ("" -> {}).
+    Q_INVOKABLE QUrl folderUrlOf(const QString& path) const;
+    /// "Reset to defaults": forgets lastPreset, lastGamingPreset, lastQuickPreset, lastFolder and lastRange.
+    Q_INVOKABLE void forgetExportChoices();
+    QString lastPreset() const;
+    void setLastPreset(const QString& id);
+    QString lastGamingPreset() const;
+    void setLastGamingPreset(const QString& id);
+    QString lastQuickPreset() const;
+    void setLastQuickPreset(const QString& id);
+    QString lastFolder() const;
+    void setLastFolder(const QString& folder);
+    QUrl lastFolderUrl() const;
+    QString lastRange() const;
+    void setLastRange(const QString& range);
+    /// Replaces "open the output" (tests must not launch apps). Receives the native output path.
+    void setOpenHandler(std::function<bool(const QString&)> handler) { m_open = std::move(handler); }
+
     // ---- C++ API ----
     void setProject(ProjectController* project);
     ProjectController* project() const;
@@ -267,9 +326,9 @@ public:
     static void setUserPresetFolder(const std::filesystem::path& folder);
     /// 0.2: the export.* commands' services over this controller's queue (the assistant and the command palette).
     std::shared_ptr<exporter::ExportCommandServices> commandServices();
-    /// Queues a request under a job id reserved before (the export commands). GUI thread.
+    /// Queues a request under a job id reserved before (the export commands). GUI thread. `origin`: OriginRole.
     QString queueRequestAs(const QString& jobId, exporter::ExportRequest request, const QString& presetName, bool hold,
-                           const QString& credentials = QString());
+                           const QString& credentials = QString(), const QString& origin = QStringLiteral("command"));
     /// 0.2 Media Browser Ingest > Transcode: queues `item` alone (its whole media, at its own size and rate: a project
     /// of its own, as a watch folder makes) with `presetId` into "<folder>/<name><extension>" (numbered when taken).
     /// Returns the job id and the output, or the error (InvalidArgument: preset; NotFound: the folder).
@@ -291,9 +350,14 @@ signals:
     void presetsChanged();
     void watchFoldersChanged();
     void cpuLimitChanged();
+    /// UX rework (L): lastPreset, lastGamingPreset, lastQuickPreset, lastFolder or lastRange changed.
+    void exportMemoryChanged();
 
 private:
     struct Relay;
+    /// queueExport with the row's origin (OriginRole).
+    QString queueExportAs(const QString& sequenceId, const QString& presetId, const QVariantMap& overrides,
+                          const QString& origin);
     void onStatus(const exporter::ExportJobStatus& status);
     void setLastError(const QString& text);
     SequencePtr sequenceFor(const QString& sequenceId) const;
@@ -312,6 +376,7 @@ private:
     QString m_lastError;
     exporter::VideoSourceFactory m_videoSource;
     std::function<bool(const QString&)> m_reveal;
+    std::function<bool(const QString&)> m_open; ///< UX rework (L): openOutput's handler (tests)
     std::atomic<std::uint64_t> m_nextJob{1};
     mutable std::mutex m_idsMutex; ///< 0.2: job ids <-> queue ids and the project file, read by the command thread
     std::map<QString, exporter::ExportJobId> m_queueIds;

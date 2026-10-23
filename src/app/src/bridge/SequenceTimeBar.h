@@ -14,6 +14,7 @@
 #include <QPointer>
 #include <QQuickItem>
 #include <QVariantList>
+#include <QVariantMap>
 #include <QtQml/qqmlregistration.h>
 
 namespace wabcut::app {
@@ -78,6 +79,10 @@ public:
     Q_INVOKABLE void seekToX(double x);
     /// The timecode of the frame under x ("" without a sequence), for the hover readout.
     Q_INVOKABLE QString timecodeAt(double x) const;
+    /// 0.2 UX (stream T), the marker hover tooltip: the sequence marker nearest x within `reach` px (a range marker
+    /// anywhere along its bar) as { index, x, endX, name, comment, timecode, durationText ("" for a point marker),
+    /// colorIndex, type }; {} when none is that close.
+    Q_INVOKABLE QVariantMap markerAt(double x, double reach = 6.0) const;
     /// Zooms the window by `factor` (> 1 in) keeping the time under x in place; the whole sequence at most.
     Q_INVOKABLE void zoomAt(double factor, double x);
     /// Sets the window (fractions; kept in [0, 1] and at least a few frames wide).

@@ -48,6 +48,9 @@ constexpr std::array kBuiltinCommands{
     CommandInfo{"edit.find", Scope::Application, "Edit", "Find…", "Find...", "context.global", "cmd.edit.find", false},
     CommandInfo{"edit.editOriginal", Scope::Application, "Edit", "Edit Original", "Edit Original", "context.global", "cmd.edit.editoriginal", false},
     CommandInfo{"edit.keyboardShortcuts", Scope::Application, "Edit", "Keyboard Shortcuts…", "Keyboard Shortcuts", "context.global", "cmd.edit.keyboardshortcuts", false},
+    // UX rework (L): Settings… (Premiere's Preferences > General; Cmd+, in the shipped macOS key set, Wabcut's Ctrl+,
+    // on Windows). Main.qml opens the Settings window.
+    CommandInfo{"edit.preferences", Scope::Application, "Edit", "Settings…", "General...", "context.global", "cmd.edit.preferences.general", false},
     // P.2 (E5): Edit > Preferences > Media (no default key; .kys name from the shipped macOS key set).
     CommandInfo{"edit.preferencesMedia", Scope::Application, "Edit", "Preferences: Media…", "Media...", "context.global", "cmd.edit.preferences.media", false},
     CommandInfo{"edit.preferencesTimeline", Scope::Application, "Edit", "Preferences: Timeline…", "Timeline...", "context.global", "cmd.edit.preferences.timeline", false},
@@ -77,6 +80,9 @@ constexpr std::array kBuiltinCommands{
     CommandInfo{"clip.modifyTimecode", Scope::Application, "Clip", "Modify Timecode…", "Timecode...", "context.global", "cmd.file.timecode", false},
     CommandInfo{"clip.replaceFootage", Scope::Application, "Clip", "Replace Footage…", "Replace Footage...", "context.global", "cmd.clip.replacefootage", false},
     CommandInfo{"clip.makeOffline", Scope::Application, "Clip", "Make Offline", "Make Offline...", "", "", false},
+    // UX rework (T): Reveal in Project (Premiere's timeline clip menu; no default key, no verified .kys item). The
+    // Editing bridge runs it on the primary selected clip.
+    CommandInfo{"clip.revealInProject", Scope::Application, "Clip", "Reveal in Project", "Reveal in Project", "", "", false},
     // M5o (gaming): the Moments presets on the clip at the playhead. Wabcut's, with no default key.
     CommandInfo{"moments.slowMo", Scope::Application, "Clip", "Slow-mo at Playhead", "", "", "", false},
     CommandInfo{"moments.punchIn", Scope::Application, "Clip", "Punch-in at Playhead", "", "", "", false},

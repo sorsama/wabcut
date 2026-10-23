@@ -16,7 +16,7 @@ table. Both JSON files are the editable source of truth and are compiled into th
 | `adobe-2024` | Adobe Help Center, Keyboard shortcuts in Premiere Pro, [archived copy](https://web.archive.org/web/20250102043957/https://helpx.adobe.com/premiere-pro/using/keyboard-shortcuts.html). It has the transport and timeline rows (J/K/L, Space, arrows, Q/W, D, Paste Insert) that the 2026 page dropped. The old URL now redirects to the 2026 page. | last updated 2024-10-01 |
 | `adobe-2017` | Adobe Help Center, Print Premiere Pro CC shortcuts, archived copies for [Windows](https://web.archive.org/web/20181022172806/https://helpx.adobe.com/premiere-pro/using/print-premiere-pro-cc-shortcuts-windows.html) and [macOS](https://web.archive.org/web/20181022154054/https://helpx.adobe.com/premiere-pro/using/print-premiere-pro-cc-shortcuts-mac.html). These are the last Adobe pages with a Tools table; they also list Zoom to Sequence. | last modified 2017-10-23 |
 | `premiere-kys` | Premiere's own default key sets: [Windows `Premiere_default_keys.kys`](https://github.com/michaelmickspad/PremiereProWithAutoHotKey/blob/152b37f497d1dbe6bab7c457cf2ba623dc751412/config/Premiere_default_keys.kys) and [macOS `Default Adobe.kys`](https://github.com/EthanManners/AdobeToKDEN-Keyboard-translator/blob/ed23daa0d2d73528d97f50e8e45de0b4e0a200eb/Default%20Adobe.kys). The source for the Type Tool (T), which no Adobe table lists, and for macOS Trim Edit and Make Subsequence, where the 2026 page disagrees with the shipped key set (lead decision, see below). Also used to cross-check everything else. | Premiere version not recorded in the files |
-| `wabcut` | Wabcut's own default where Premiere has none: the sequence tab cycle (Ctrl+Tab, M5i). | – |
+| `wabcut` | Wabcut's own default where Premiere has none: the sequence tab cycle (Ctrl+Tab, M5i), Settings on Windows (Ctrl+,). | – |
 
 The 2026 page has no Tools, playback or ripple-trim tables, so those rows come from the older Adobe pages. Every
 binding in the JSON names its source.
@@ -109,7 +109,7 @@ Control and "Ctrl" as Meta on macOS, and rejects Cmd/Opt on Windows/Linux so the
 
 ## Command table
 
-All 276 commands. *Source*: 2026, 2024 and 2017 are the Adobe pages above; † marks the 2026 "assign multiple"
+All 278 commands. *Source*: 2026, 2024 and 2017 are the Adobe pages above; † marks the 2026 "assign multiple"
 page; `.kys` means Premiere's shipped default key sets. *Premiere .kys item* is the `(context, command name)` pair
 the importer maps from; *(not mapped)* means no verified pair, so `.kys` import skips the command.
 
@@ -119,7 +119,7 @@ the importer maps from; *(not mapped)* means no verified pair, so `.kys` import 
 | New Sequence… | `file.newSequence` | Application | `Ctrl+N` | `Cmd+N` | 2026 | `global / cmd.file.new.sequence` |
 | New Sequence From Clip [^21] | `file.newSequenceFromClip` | Application | | | Wabcut | (not mapped) |
 | Open Project… | `file.openProject` | Application | `Ctrl+O` | `Cmd+O` | 2026 | `global / cmd.file.openproject` |
-| Close | `file.close` | Application | `Ctrl+W` | `Cmd+W` | 2026 | `global / cmd.file.closepanel` |
+| Close [^uxs] | `file.close` | Application | `Ctrl+W` | `Cmd+W` | 2026 | `global / cmd.file.closepanel` |
 | Close Project | `file.closeProject` | Application | `Ctrl+Shift+W` | `Shift+Cmd+W` | 2026 | `global / cmd.file.close` |
 | Save | `file.save` | Application | `Ctrl+S` | `Cmd+S` | 2026 | `global / cmd.file.save` |
 | Save As… | `file.saveAs` | Application | `Ctrl+Shift+S` | `Shift+Cmd+S` | 2026 | `global / cmd.file.saveas` |
@@ -147,6 +147,7 @@ the importer maps from; *(not mapped)* means no verified pair, so `.kys` import 
 | Find… | `edit.find` | Application | `Ctrl+F` | `Cmd+F` | 2026 | `global / cmd.edit.find` |
 | Edit Original | `edit.editOriginal` | Application | `Ctrl+E` | `Cmd+E` | 2026 | `global / cmd.edit.editoriginal` |
 | Keyboard Shortcuts… | `edit.keyboardShortcuts` | Application | `Ctrl+Alt+K` | `Opt+Cmd+K` | 2026 | `global / cmd.edit.keyboardshortcuts` |
+| Settings… [^ux] | `edit.preferences` | Application | `Ctrl+,` | `Cmd+,` | Wabcut / .kys | `global / cmd.edit.preferences.general` |
 | Preferences: Media… [^21] | `edit.preferencesMedia` | Application | | | .kys | `global / cmd.edit.preferences.media` |
 | Preferences: Timeline… [^21] | `edit.preferencesTimeline` | Application | | | .kys | `global / cmd.edit.preferences.timeline` |
 | Make Subclip… | `clip.makeSubclip` | Application | `Ctrl+U` | `Cmd+U` | 2026 | `global / cmd.clip.makesubclip` |
@@ -170,6 +171,7 @@ the importer maps from; *(not mapped)* means no verified pair, so `.kys` import 
 | Modify Timecode… [^21] | `clip.modifyTimecode` | Application | | | .kys | `global / cmd.file.timecode` |
 | Replace Footage… [^21] | `clip.replaceFootage` | Application | | | .kys | `global / cmd.clip.replacefootage` |
 | Make Offline [^21] | `clip.makeOffline` | Application | | | Wabcut | (not mapped) |
+| Reveal in Project [^uxt] | `clip.revealInProject` | Application | | | Wabcut | (not mapped) |
 | Slow-mo at Playhead [^20] | `moments.slowMo` | Application | | | Wabcut | (not mapped) |
 | Punch-in at Playhead [^20] | `moments.punchIn` | Application | | | Wabcut | (not mapped) |
 | Render Effects In to Out | `sequence.renderInToOut` | Application | `Enter` | `Return` | 2026 | `global / cmd.sequence.preview` |
@@ -266,12 +268,12 @@ the importer maps from; *(not mapped)* means no verified pair, so `.kys` import 
 | Workspace: Effects | `window.workspace7` | Application | `Alt+Shift+7` | `Opt+Shift+7` | 2026 | `global / cmd.window.user.workspace.6` |
 | Workspace: Essential | `window.workspace8` | Application | `Alt+Shift+8` | `Opt+Shift+8` | 2026 | `global / cmd.window.user.workspace.7` |
 | Workspace: Learning | `window.workspace9` | Application | `Alt+Shift+9` | `Opt+Shift+9` | 2026 | `global / cmd.window.user.workspace.8` |
-| Reset to Saved Layout | `window.resetToSavedLayout` | Application | `Alt+Shift+0` | `Opt+Shift+0` | 2026 | `global / cmd.window.workspace.revert` |
-| Maximize Frame [^7] | `window.maximizeFrame` | Application | `` Shift+` `` | `` Shift+` `` | 2026 | `global / cmd.toggle.maximize.focused.frame` |
+| Reset to Saved Layout [^uxs] | `window.resetToSavedLayout` | Application | `Alt+Shift+0` | `Opt+Shift+0` | 2026 | `global / cmd.window.workspace.revert` |
+| Maximize Frame [^7] [^uxs] | `window.maximizeFrame` | Application | `` Shift+` `` | `` Shift+` `` | 2026 | `global / cmd.toggle.maximize.focused.frame` |
 | Toggle Full Screen [^22] | `monitor.toggleFullScreen` | Application | `` Ctrl+` `` | `` Ctrl+` `` | .kys | `global / cmd.toggle.fullscreen.monitor` |
 | Audio Clip Mixer | `window.audioClipMixer` | Application | `Shift+9` | `Shift+9` | 2026 | `global / uif.window.Audio Clip Mixer` |
 | Audio Track Mixer | `window.audioTrackMixer` | Application | `Shift+6` | `Shift+6` | 2026 | `global / uif.window.Audio Mixers` |
-| Effect Controls | `window.effectControls` | Application | `Shift+5` | `Shift+5` | 2026 | `global / uif.window.Effect Controls` |
+| Effect Controls [^uxs] | `window.effectControls` | Application | `Shift+5` | `Shift+5` | 2026 | `global / uif.window.Effect Controls` |
 | Effects | `window.effects` | Application | `Shift+7` | `Shift+7` | 2026 | `global / uif.window.Effects` |
 | Media Browser | `window.mediaBrowser` | Application | `Shift+8` | `Shift+8` | 2026 | `global / uif.window.Media Browser` |
 | Program Monitor | `window.programMonitor` | Application | `Shift+4` | `Shift+4` | 2026 | `global / uif.window.Program Monitors` |
@@ -325,8 +327,8 @@ the importer maps from; *(not mapped)* means no verified pair, so `.kys` import 
 | Loop During Audio-Only Playback | `effectControls.loopAudioPlayback` | Effect Controls | `Ctrl+L` | `Cmd+L` | 2026 | `effectcontrols / cmd.effectcontrols.loop.audio` |
 | New Custom Bin | `effects.newCustomBin` | Effects | `Ctrl+/` | `Cmd+/` | 2026 | `effects / cmd.effects.createcustomfolder` |
 | Delete Custom Item | `effects.deleteCustomItem` | Effects | `Backspace` | `Backspace` | 2026 | `effects / cmd.edit.clear` |
-| Step Backward | `history.stepBackward` | History | `Left` | `Left` | 2026 | `history / cmd.history.step.backward` |
-| Step Forward | `history.stepForward` | History | `Right` | `Right` | 2026 | `history / cmd.history.step.forward` |
+| Step Backward [^uxs] | `history.stepBackward` | History | `Left` | `Left` | 2026 | `history / cmd.history.step.backward` |
+| Step Forward [^uxs] | `history.stepForward` | History | `Right` | `Right` | 2026 | `history / cmd.history.step.forward` |
 | Delete | `history.delete` | History | `Backspace` | `Backspace` | 2026 | `history / cmd.edit.clear` |
 | Open in Source Monitor | `mediaBrowser.openInSourceMonitor` | Media Browser | `Shift+O` | `Shift+O` | 2026 | `mediabrowser / cmd.mediabrowser.openinsourcemonitor` |
 | Select Directory List | `mediaBrowser.selectDirectoryList` | Media Browser | `Shift+Left` | `Shift+Left` | 2026 | `mediabrowser / cmd.mediabrowser.selectdirectorylist` |
@@ -433,6 +435,9 @@ the importer maps from; *(not mapped)* means no verified pair, so `.kys` import 
 [^19]: Remove Attributes (C.11, M5m): Premiere's Edit > Remove Attributes… has no default key, and neither shipped key set (Windows `Premiere_default_keys.kys`, macOS `Default Adobe.kys`) lists an item for it, so it has no `.kys` mapping. It opens the attributes dialog on the selection's own attributes (`clip.removeAttributes`).
 [^20]: Moments (M5o, gaming): Wabcut's, with no default key; Premiere has no counterpart. They act on the clip under the playhead (the selected one if several): Slow-mo at Playhead is the 25 % / 1 s slow motion centred on the playhead (one `timeRemap.*` undo step, later clips ripple); Punch-in at Playhead zooms to 130 % of the clip's scale for 1 s (Motion keyframes). The Timeline's Moments popover (the zap button in the tracks header) and the clip menu's Moments submenu list the other presets; a key assigned in Keyboard Shortcuts shows next to both.
 [^21]: P.2 (E5, Premiere editing parity): Premiere binds no key to these; Wabcut has none either. Every `.kys` pair is the command's item in Premiere's shipped macOS key set (`Default Adobe.kys`), which lists every command (the Windows set lists only bound ones), so a custom key set that binds one carries over. New Sequence From Clip and Make Offline have no verified item there. The Editing bridge runs them (`EditingBridge::handlesCommand`); Edit Original, Duplicate, Make Subsequence and Next / Previous in Sequence, listed above with their keys, now run too. Keyboard Shortcuts > Export… also saves a whole key set as a `.kys` (`exportKys`), which Premiere and Wabcut import.
+[^ux]: Settings… (UX rework, 2026-10-23): Premiere's Edit > Preferences > General. The shipped macOS key set (`Default Adobe.kys`) binds it to Cmd+, in `context.global`; the Windows set binds nothing, so Ctrl+, is Wabcut's (source `wabcut` in the Windows JSON, `premiere-kys` in the macOS one). `Main.qml` opens the Settings window; the command palette lists it. `tests/keymap/test_default_tables.cpp` checks both keys and the `.kys` pair.
+[^uxt]: Reveal in Project (UX rework, 2026-10-23): Premiere's timeline clip menu item, with no default key and no verified item in either shipped key set, so `.kys` import skips it. The Editing bridge runs it (`EditingBridge::revealInProject`): the primary selected clip's media item, or its nested sequence, is shown and selected in the Library, which comes forward.
+[^uxs]: UX rework (stream S, 2026-10-23): these keys act now. Close (Ctrl+W) closes the panel the active panel group shows (the group clicked last: a click in it, one of its tabs, a drop there, a focus key or the Window menu; else the group with the keyboard focus). Maximize Frame (Shift+`) gives the active group the whole work area, again restores it; ` alone (a window shortcut, not a keymap command: the key is free in both key sets) does it for the group under the pointer, and a double-click on a panel's tab too. Reset to Saved Layout (Alt+Shift+0) lays the workspace out as its preset does, with Undo on the message. Effect Controls (Shift+5) shows and focuses the panel, like the other focus keys. Step Backward / Step Forward (Left / Right) move one state through the History panel while it has the focus (`Editing.runCommand`).
 [^22]: The monitors (P.2, [monitors.md](monitors.md)): checked against both shipped key sets. Export Frame (`cmd.export.frame`, `context.global`) is Ctrl+Shift+E on Windows and Shift+E on macOS; Toggle Full Screen (`cmd.toggle.fullscreen.monitor`, `context.global`) is Ctrl+` on both (the physical Control key on macOS). Loop (`cmd.monitor.loop`), Enable Transmit (`cmd.toggletransmit`) and Toggle Crop Direct Manipulation (`cmd.monitor.toggle.crop.dm`) are in `context.global` without a key; Add Guide, Clear Guides (`cmd.monitor.removeguides`), Save Guides as Template, Manage Guides and Transparency Grid (`cmd.monitor.toggletransparencygrid`, in both monitors' contexts) have no key either, nor do Show Dropped Frame Indicator (`cmd.monitor.toggledroppedframeindicator`) and Overlays (`cmd.monitor.overlays`, `context.global`); Show Audio Time Units has no item in either key set, so no `.kys` mapping. Loop acts on the focused monitor (the Source Monitor's while it has the focus, else the Program Monitor's), Export Frame too. The Program Monitor's Show Rulers, Show Guides, Lock Guides, Snap and Nudge rows above now act (Motion direct manipulation, guides).
 
 ## How resolution works
@@ -582,7 +587,7 @@ a warning and is skipped. `KeymapDispatcher.scopeAt(item)` shows what applies to
 | The focused item, or an ancestor, accepts `QEvent::ShortcutOverride` | The item keeps the key. TextInput claims its editing sequences (Ctrl+Z, Ctrl+C, …); a custom control uses `Keys.onShortcutOverride: event => event.accepted = …`. Lists and grids that navigate with arrow keys are not text editors and must claim the arrows this way, or Up/Down reach edit-point navigation. The dispatcher sends the probe the way Qt Quick does: focus item first, then parents. |
 | `KeymapScope.suppressShortcuts: true` on the focus item or an ancestor | No editor shortcut fires (for controls that handle every key themselves). |
 | IME composition (`preeditText` not empty) | Nothing fires. |
-| Focus inside a popup, menu or dialog (Qt Quick Controls overlay) | Nothing fires. Popups that should block shortcuts must take focus; Dialog and Menu do. |
+| Focus inside a popup, menu or dialog (Qt Quick Controls overlay) | Nothing fires. Popups that should block shortcuts must take focus; Dialog and Menu do. UX rework: a popup whose content declares a scope of its own (the History panel's `KeymapScope.scope: "history"`) gets the keys bound in that scope (Left / Right step through the history, rebindings included); every other key still stays with the popup. |
 | AltGr (Windows: Ctrl+Alt plus a printed character such as € or @) | Treated as typing, never as a Ctrl+Alt shortcut. macOS has no AltGr, so Option shortcuts that also type a character still fire there. |
 | Keypad Enter / keypad Delete | Act as Enter (Render In to Out) and Delete (Clear). |
 
@@ -593,6 +598,21 @@ a warning and is skipped. `KeymapDispatcher.scopeAt(item)` shows what applies to
   for StepFrames.
 - `trigger(commandId)` runs a command from a menu or button. Shuttle commands go through the gesture, so a
   transport-bar button climbs the same ladder.
+- **The menu bar (UX rework, `panels/menubar/`).** Its rows carry keymap ids (`BarMenuItem.command`), so each shows the
+  command's current key and greys out while it cannot run where it will act (`AppMenuBar.commandState(id)`: with the
+  Source Monitor focused, its clip and marks for the commands it runs itself - Mark In / Out / Clip, Add Marker, Go to
+  and Clear In / Out, Reverse Match Frame; otherwise `CommandPalette.commandState(id)`). Choosing a row closes the
+  menus, gives the focus back to the item that had it before the first menu opened, and then calls `trigger(id)`:
+  focus-routed commands (Add Marker on the timeline's clip, the Source Monitor's marks) act where you were. `trigger`
+  skips the text-editor rule of real key presses, so Edit's Undo, Redo, Cut, Copy, Paste, Clear and Select All are
+  not triggered when a text field had the focus: the bar runs the field's own undo / cut / copy / paste / select-all
+  instead, and their state is the field's (`AppMenuBar.isTextCommand`). The menus' own keys are not keymap commands:
+  Alt+F/E/C/S/M/G/V/W/H are window `Shortcut`s on Windows and Linux (Premiere's Windows keys bind none of them). A
+  `Shortcut` matches before the dispatcher sees the key, so each one is disabled while the keymap binds its chord
+  (`Shortcuts.commandsForKey`): a key the user assigns wins. macOS has none (`KeymapDispatcher.platform` "macos"):
+  Option+letter types characters there, and the macOS key set binds Opt+M (Clear Selected Marker). Left / Right
+  inside an open menu move to the neighbouring menu. Settings… is the keymap's `edit.preferences` (Ctrl+, / Cmd+,);
+  there is no window Shortcut for it any more, so rebinding it works.
 - `syncTransportSpeed(num, den)` reports the real transport speed, for example after Play/Stop or a seek.
 - `shortcutText(commandId)` and `shortcutTexts(commandId)` give display text for tooltips and menus (`Ctrl+K` on
   Windows/Linux, `⌘K` on macOS). Read `KeymapDispatcher.revision` in the same binding so it refreshes after edits.
@@ -696,6 +716,8 @@ focus. `Main.qml` sends every `project.*` command to the `Library` bridge (`Libr
 | `project.listView`, `project.iconView`, `project.toggleView` | list view, icon (grid) view, toggle |
 | `project.hoverScrub` (Shift+H) | hover scrub on grid cards on or off |
 | `project.openInSourceMonitor` (Shift+O) | the selected media in the Source Monitor |
+| `project.thumbnailSizeNext` / `Previous` (Shift+] / Shift+[), `project.zoomIn` / `zoomOut` (= / -) | the cards one size step bigger or smaller (`Library.thumbnailScale`, 0.5 .. 2 in quarters; UX rework). While the Library has focus these keys never fall through to the sequence's zoom |
+| `project.moveSelection*` (arrows, Home, End, PageUp, PageDown), `project.extendSelection*` (Shift+arrows) | `LibraryBridge::selectionMoveRequested(where, extend)`: the panel moves the selection in the view it shows (UX rework). The grid and the list still take the plain and Shift arrows themselves while they have focus. Shift+arrows grow and shrink the range from the item the keys went to last (the anchor stays), like Premiere. While the Text tab or the Smart search results hide the items, these keys and the card size keys leave the hidden selection alone and go to the focused control (a Text tab slider) |
 
 Two Application commands are the Library's too: `edit.find` (Ctrl/Cmd+F) shows the Library and focuses its Find bar,
 and `clip.makeSubclip` (Ctrl/Cmd+U) asks for the subclip's name and makes it from the Source Monitor's marks. In the
@@ -833,7 +855,7 @@ applies to virtual keys 5 and 19–30, which export leaves out (`KysExport::skip
 ## Keyboard Shortcuts editor (UI)
 
 Edit > Keyboard Shortcuts: `edit.keyboardShortcuts`, Ctrl+Alt+K on Windows/Linux and ⌥⌘K (Opt+Cmd+K) on macOS, as in
-Premiere. It is also in the logo's File menu and the command palette. M5f; owner: Timeline/UI.
+Premiere. It is also in the Edit and Help menus and the command palette. M5f; owner: Timeline/UI.
 
 - **Code:** `ShortcutsBridge` (QML singleton `Shortcuts`, `src/app/src/bridge/ShortcutsBridge.*`) and
   `src/app/qml/shortcuts/`.

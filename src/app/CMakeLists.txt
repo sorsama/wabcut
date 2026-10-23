@@ -161,6 +161,7 @@ qt_add_qml_module(wabcut_ui
         qml/components/DockHolder.qml
         qml/components/DockSlot.qml
         qml/components/DockTabs.qml
+        qml/components/DockTabMenu.qml
         qml/components/PanelTab.qml
         qml/components/TabFlare.qml
         qml/components/FocusRing.qml
@@ -191,9 +192,24 @@ qt_add_qml_module(wabcut_ui
         qml/home/HomeNav.qml
         qml/home/ProjectThumb.qml
         qml/home/HomeScreen.qml
-        qml/home/ImportCard.qml
-        qml/home/NewProjectCard.qml
         qml/home/RecentProjects.qml
+        qml/home/AdvancedSettings.qml
+        qml/home/HomeLink.qml
+        qml/home/HomeMessageStrip.qml
+        qml/home/HomePage.qml
+        qml/home/LearnPage.qml
+        qml/home/LimeButton.qml
+        qml/home/MissingBadge.qml
+        qml/home/NewProjectPage.qml
+        qml/home/PresetTile.qml
+        qml/home/ProjectCard.qml
+        qml/home/ProjectGrid.qml
+        qml/home/ProjectMenu.qml
+        qml/home/ProjectRow.qml
+        qml/home/ProjectsHeaderMenu.qml
+        qml/home/StarButton.qml
+        qml/home/StartCard.qml
+        qml/home/StartWithMedia.qml
         qml/panels/AudioMixerPanel.qml
         qml/panels/CaptionsPage.qml
         qml/panels/CleanupPage.qml
@@ -206,7 +222,6 @@ qt_add_qml_module(wabcut_ui
         qml/panels/InspectorPanel.qml
         qml/panels/TimeRemapControls.qml
         qml/panels/KeyframeMenu.qml
-        qml/panels/LeftRail.qml
         qml/panels/LibraryPanel.qml
         qml/panels/FrameInspectorPanel.qml
         qml/panels/multicam/MulticamView.qml
@@ -470,9 +485,7 @@ target_link_libraries(wabcut_ui PUBLIC
     wabcut_command    # typed edit commands for the command palette (CommandBridge)
     wabcut_playback   # ProgramMonitor: PlaybackController, CompositeMailbox, Compositor (wabcut_render)
 )
-target_compile_definitions(wabcut_ui PRIVATE WABCUT_VERSION="${PROJECT_VERSION}"
-    # Home screen "Learn / What's new" links: the docs next to the app, else these (development builds).
-    WABCUT_DOCS_DIR="${PROJECT_SOURCE_DIR}/docs")
+target_compile_definitions(wabcut_ui PRIVATE WABCUT_VERSION="${PROJECT_VERSION}")
 wabcut_target_defaults(wabcut_ui)
 
 qt_add_executable(wabcut WIN32 MACOSX_BUNDLE
@@ -635,6 +648,10 @@ wabcut_ui_qml_sources(
 )
 target_link_libraries(wabcut_ui PUBLIC wabcut_export)
 
+# UX rework (L, 2026-10-23): the AppSettings singleton - the Settings window's search index and the General page's
+# start-up, default project folder and recent-projects choices (src/bridge/AppSettingsBridge.h).
+target_sources(wabcut_ui PRIVATE src/bridge/AppSettingsBridge.h src/bridge/AppSettingsBridge.cpp)
+
 # AI bridge (owner: AI platform): the AiController singleton over wabcut_ai / wabcut_ai_net, and the AI pages in
 # qml/panels/ai/ (0.1.3: shown in Settings > AI, qml/settings/AiSettingsPage.qml). With WABCUT_WITH_CLOUD_AI, keys live in the OS keychain
 # through QtKeychain (overlay port cmake/ports/qtkeychain); otherwise for the session only.
@@ -796,7 +813,6 @@ wabcut_ui_qml_sources(
         qml/panels/review/VersionCompareView.qml
         qml/panels/review/ReviewMarkOverlay.qml
         qml/panels/plugins/PluginBrowser.qml
-        qml/panels/plugins/PluginRow.qml
         qml/panels/plugins/PluginBadge.qml
         qml/dialogs/AudioPluginsSettings.qml
         qml/panels/EssentialSoundPanel.qml
@@ -922,14 +938,12 @@ wabcut_ui_qml_sources(
 
 # M5o gaming: new gaming video (Fork H) - the Home screen's start from a game recording (`GamingStart`: the probe off
 # the GUI thread, the project at the recording's size and nominal rate, one named audio track per included stream,
-# proxies when suggested) and its card.
+# proxies when suggested). UX rework: its card became the New project page's "Start with media" (qml/home/).
 target_sources(wabcut_ui PRIVATE
     src/bridge/GamingStartBridge.h
     src/bridge/GamingStartBridge.cpp
 )
 wabcut_ui_qml_sources(
-    QML_FILES
-        qml/home/GamingVideoCard.qml
     RESOURCES
         resources/icons/gamepad-2.svg
 )
@@ -950,10 +964,11 @@ wabcut_ui_qml_sources(
         qml/panels/highlights/HighlightShortOptions.qml
 )
 
-# 0.1.3 Settings window (WP-S): one window for every preference, hosted by the left rail (its Settings button,
-# File > Settings…, Ctrl+,): General, Appearance (themes, custom colours, theme files through ThemeFiles), Interface
-# (title bar status, the rail's entries), Timeline & editing, Playback & performance, Audio, AI, Keyboard, Plugins &
-# extensions. It replaced the rail's Settings popover, the title bar's Appearance popover and Preferences > AI.
+# 0.1.3 Settings window (WP-S): one window for every preference, hosted by Main.qml since the UX rework (Edit >
+# Settings…, Ctrl+, - edit.preferences -, Home's gear): General, Appearance (themes, custom colours, theme files through
+# ThemeFiles), Interface (title bar status), Timeline & editing, Playback & performance, Audio, AI, Keyboard, Plugins &
+# extensions, with a search over every row. It replaced 0.1's Settings popover, the title bar's Appearance popover and
+# Preferences > AI.
 target_sources(wabcut_ui PRIVATE
     src/bridge/ThemeFiles.h
     src/bridge/ThemeFiles.cpp
@@ -971,10 +986,45 @@ wabcut_ui_qml_sources(
         qml/settings/ColorPickerPopover.qml
         qml/settings/PickerStrip.qml
         qml/settings/InterfaceSettingsPage.qml
-        qml/settings/RailCustomizer.qml
         qml/settings/TimelineSettingsPage.qml
         qml/settings/PerformanceSettingsPage.qml
         qml/settings/AiSettingsPage.qml
+)
+
+# UX rework (stream S, editor shell): `AppShell` (files another launch hands over), the single-instance handshake
+# (SingleInstance: a local socket, so Qt Network) and the main window's place kept between runs (WindowPlacement); the
+# last two are used by main() only (and their tests).
+find_package(Qt6 REQUIRED COMPONENTS Network)
+target_sources(wabcut_ui PRIVATE
+    src/bridge/AppShell.h
+    src/bridge/AppShell.cpp
+    src/SingleInstance.h
+    src/SingleInstance.cpp
+    src/WindowPlacement.h
+    src/WindowPlacement.cpp
+)
+target_link_libraries(wabcut_ui PRIVATE Qt6::Network)
+
+# UX rework (stream S, editor shell): the title bar's menu bar (Premiere's File, Edit, Clip, Sequence, Markers, Graphics,
+# View, Window and Help; AppMenuBar in TopBar), its rows and titles, and the dialogs its menus open. QtQuick-only files:
+# a file importing QtQuick.Controls would get Qt's ContextMenu instead of Wabcut's.
+wabcut_ui_qml_sources(
+    QML_FILES
+        qml/panels/menubar/AppMenuBar.qml
+        qml/panels/menubar/MenuBarButton.qml
+        qml/panels/menubar/MenuBarMenu.qml
+        qml/panels/menubar/BarMenuItem.qml
+        qml/panels/menubar/FileMenu.qml
+        qml/panels/menubar/EditMenu.qml
+        qml/panels/menubar/ClipMenu.qml
+        qml/panels/menubar/SequenceBarMenu.qml
+        qml/panels/menubar/MarkersMenu.qml
+        qml/panels/menubar/GraphicsMenu.qml
+        qml/panels/menubar/ViewMenu.qml
+        qml/panels/menubar/WindowMenu.qml
+        qml/panels/menubar/HelpMenu.qml
+        qml/panels/menubar/MenuConfirmDialog.qml
+        qml/panels/menubar/AboutDialog.qml
 )
 
 # Timeline toolbar and edit cursors (0.1.3, owner: Timeline): the Tracks panel's tool palette (Premiere's tool groups
@@ -1086,10 +1136,13 @@ wabcut_ui_qml_sources(
 )
 # 0.2 graphics, captions and effects workflow (Premiere parity, docs/effects.md, docs/graphics.md): effect presets, the
 # Effects panel's Presets / Lumetri Presets bins, custom bins and favourites (`EffectPresets`, the user's effects
-# library shared with the assistant) and their menus and dialogs under qml/panels/effects/.
+# library shared with the assistant) and their menus and dialogs under qml/panels/effects/. UX rework: the panel's
+# folder tree as a flat list of visible rows (`EffectsTree`, EffectsTreeModel).
 target_sources(wabcut_ui PRIVATE
     src/bridge/EffectPresetsBridge.h
     src/bridge/EffectPresetsBridge.cpp
+    src/bridge/EffectsTreeModel.h
+    src/bridge/EffectsTreeModel.cpp
     src/bridge/GraphicToolsBridge.h
     src/bridge/GraphicToolsBridge.cpp
 )
@@ -1111,8 +1164,27 @@ wabcut_ui_qml_sources(
         qml/panels/effects/EffectSectionMenu.qml
         qml/panels/effects/EffectsPanelMenu.qml
         qml/panels/effects/SavePresetDialog.qml
+        qml/panels/effects/EffectsConfirmDialog.qml
+        qml/panels/effects/EffectsDragSource.qml
+        qml/panels/effects/EffectsPresetFiles.qml
+        qml/panels/effects/EffectsTreeFolderRow.qml
+        qml/panels/effects/EffectsTreeItemRow.qml
+        qml/panels/effects/EffectsTreeTile.qml
+        qml/panels/effects/EffectsTreeTilesRow.qml
         qml/panels/graphics/GraphicToolsSection.qml
         qml/panels/graphics/TextStyleItems.qml
+)
+
+# UX rework (stream T, timeline and monitor QoL): the typed timecode entry of the Timeline and both monitors, the track
+# header's Add Tracks and Delete Track dialogs, the timeline transition and gap menus and the transition duration dialog.
+wabcut_ui_qml_sources(
+    QML_FILES
+        qml/components/TimecodeEntry.qml
+        qml/dialogs/AddTracksDialog.qml
+        qml/dialogs/DeleteTrackDialog.qml
+        qml/dialogs/TransitionDurationDialog.qml
+        qml/panels/timeline/GapContextMenu.qml
+        qml/panels/timeline/TransitionContextMenu.qml
 )
 
 # Every block's QML files and resources (wabcut_ui_qml_sources above), in one call.

@@ -17,6 +17,7 @@
 #include <wabcut/playback/video/PlaybackController.h>
 
 #include <QDir>
+#include <QFileInfo>
 #include <QGuiApplication>
 #include <QHash>
 #include <QQmlEngine>
@@ -44,6 +45,32 @@ constexpr int kTickMs = 33;
 constexpr std::size_t kMaxRecent = 10;
 constexpr std::int32_t kMaxLadder = 8;
 constexpr const char* kSourceLoopKey = "monitor/sourceLoop"; // P.2: the Source Monitor's Loop button
+
+/// 0.2 UX: typed timecode with Premiere's shorthand - an empty field is "00" ("2." = two seconds).
+std::string filledTimecode(const QString& text) {
+    const auto separator = [](QChar c) { return c == u':' || c == u';' || c == u'.' || c == u','; };
+    if (std::none_of(text.begin(), text.end(), separator))
+        return text.toStdString();
+    QStringList fields;
+    QString field;
+    for (const QChar c : text) {
+        if (separator(c)) {
+            fields << (field.isEmpty() ? QStringLiteral("00") : field);
+            field.clear();
+        } else {
+            field += c;
+        }
+    }
+    fields << (field.isEmpty() ? QStringLiteral("00") : field);
+    return fields.join(u':').toStdString();
+}
+
+/// A file path in a form two paths to the same file compare equal in (canonical when it exists).
+QString comparablePath(const QString& path) {
+    const QFileInfo info(path);
+    const QString canonical = info.canonicalFilePath();
+    return canonical.isEmpty() ? QDir::cleanPath(info.absoluteFilePath()) : canonical;
+}
 
 editor::PlaybackSessionOptions sessionOptions() {
     editor::PlaybackSessionOptions options;
@@ -244,6 +271,30 @@ bool SourceMonitorBridge::loadFile(const QString& file) {
         return false;
     }
     return true;
+}
+
+bool SourceMonitorBridge::loadFileItem(const QString& file) {
+    if (!m_controller)
+        return false;
+    const QString local = QUrl(file).isLocalFile() ? QUrl(file).toLocalFile() : file;
+    const QString wanted = comparablePath(local);
+    const Qt::CaseSensitivity sensitivity =
+#if defined(Q_OS_WIN) || defined(Q_OS_MACOS)
+        Qt::CaseInsensitive;
+#else
+        Qt::CaseSensitive;
+#endif
+    const ProjectSnapshot snap = m_controller->snapshot();
+    for (const MediaPtr& m : snap->media) {
+        // The item for the file itself: not a subclip of it, nor a synthetic item.
+        if (m->isGenerator() || m->isSubclip())
+            continue;
+        const auto resolved = resolveMediaPath(m->locator, m_controller->projectFile());
+        if (resolved && comparablePath(QString::fromStdU16String(resolved->u16string())).compare(wanted, sensitivity) == 0)
+            return load(mediaKey(m->id));
+    }
+    setMessage(tr("%1 is not in the project").arg(QFileInfo(local).fileName()));
+    return false;
 }
 
 bool SourceMonitorBridge::adoptPreview() {
@@ -740,6 +791,27 @@ void SourceMonitorBridge::scrubFraction(double fraction) {
     const Ticks last = std::max(Ticks{}, *m_length - frame());
     m_playback->scrub(snapToFrame(std::min(t, last), m_rate));
     tick();
+}
+
+bool SourceMonitorBridge::seekToText(const QString& text) {
+    if (!m_playback || !loaded())
+        return false;
+    QString body = text.trimmed();
+    int sign = 0;
+    if (!body.isEmpty() && (body.front() == u'+' || body.front() == u'-')) {
+        sign = body.front() == u'+' ? 1 : -1;
+        body = body.mid(1).trimmed();
+    }
+    if (body.isEmpty() || body.front() == u'+' || body.front() == u'-')
+        return false;
+    // Source timecode counts from the source's first frame at its own rate, without drop-frame labels (positionText).
+    const auto parsed = parseTimecode(filledTimecode(body), m_rate, false);
+    if (!parsed || *parsed < Ticks{})
+        return false;
+    const Ticks target = sign == 0 ? *parsed : positionTicks() + (sign > 0 ? *parsed : -*parsed);
+    pause();
+    seek(std::max(Ticks{}, target));
+    return true;
 }
 
 // ---- Marks --------------------------------------------------------------------------------------------------

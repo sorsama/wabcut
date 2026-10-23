@@ -4,7 +4,7 @@ import QtQuick
 // grip onto another group's tabs or middle to join it, near its edge to dock beside it, to the work area's edge to run
 // along that side, or outside the panels (or with Ctrl held) to give the group a window of its own; a floating group's
 // grip docks it back the same way. The pop-out button gives the group a window (or docks it back); the close button
-// closes the panel shown (the Window menu and the rail open it again).
+// closes the panel shown (the Window menu opens it again).
 Row {
     id: root
 

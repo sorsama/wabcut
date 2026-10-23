@@ -226,6 +226,62 @@ picture per echo; the text effects add one caption raster per distinct text (kep
 passes are Camera Blur, Median, Turbulent Displace and the Transform effect's motion blur; `[library][perf]` in
 `test_library_effects.cpp` reports their 1080p times.
 
+## The Effects panel
+
+The Effects panel (Shift+7) is Premiere's folder tree. `panels/EffectsPanel.qml` draws the rows of the `EffectsTree`
+model (`EffectsTreeModel.cpp`: the visible rows, the order, the nested presets bins, the open folders, the search and
+the filter), so the list is virtualized and keeps its selection when the library changes.
+
+- **Folders**, in Premiere's order: **Favorites** (when it has items), **Presets**, **Lumetri Presets**, **Audio
+  Effects**, **Audio Transitions**, **Video Effects**, **Video Transitions**, **Audio Plug-ins** (the CLAP and VST3
+  plug-ins this computer has, by vendor or by category), then each **custom bin**. Inside a folder its sub-folders come
+  first: the effect categories (one folder each: "Noise Reduction/Restoration" is one name) and the presets bins, nested
+  by their path ("PiPs" > "25%"). A folder shows how many items it holds (its matches while searching). Click a folder,
+  or press Left / Right, to open or close it. Wabcut remembers the open folders; at the next start the top-level folders
+  are closed except Favorites and the one opened last.
+- **Toolbar:** the search (fuzzy over names and categories, plug-ins also by vendor) opens every folder with a match and
+  says how many there are; Esc clears it and the folders come back as they were. Then the view switch, the filter menu
+  (All, Video, Audio, Transitions, Presets, Favorites, Audio Plug-ins; not kept between runs), New Custom Bin and the
+  panel menu (…): New Custom Bin, New Presets Bin, Import Presets…, Export Presets… (all of yours; off while you have
+  none), Expand All, Collapse All, Show Audio Plug-ins and Audio Plug-in Settings….
+- **Views** (kept in the settings, `effects/view`): **List** (icon and name; the category while searching and on copies
+  in Favorites or a custom bin; the description as a tooltip), **Compact** (denser rows) and **Icons** (tiles under each
+  folder: the category icon, the name, a bookmark on favourites; the tooltip shows the whole name, then the
+  description). A name cut short in a narrow panel shows whole in its tooltip in every view.
+- **Applying:** double-click an effect, transition, preset or plug-in, or press Enter, to put it on every selected clip
+  in one undo step. A selected clip of the other kind stands for its linked partner, and a transition goes on both ends
+  of each selected clip at the default length. Or drag it onto a clip or an edit point in the timeline, onto Effect
+  Controls or onto a mixer strip. The status line under the list says what happened and clears after a few seconds.
+- **Item menu** (right-click): Apply to Selected Clips, **Set as Default Transition** (transitions; DEFAULT marks the
+  current video and audio defaults, which Ctrl+D, Ctrl+Shift+D and Shift+D use), Add to / Remove from Favorites, Add to
+  Custom Bin ▸ (or a new one), Remove from *bin* (a copy in a custom bin), Preset Properties…, Export Preset… and
+  Delete… (your presets; on a copy in a custom bin, Remove from *bin* takes its place).
+- **Folder menu:** on Presets and your presets bins, New Presets Bin, **Import Presets…** (into that bin) and **Export
+  Presets…** (that bin's presets and the bins inside it, as "*bin*.wabcut-presets.json"); on custom bins and your
+  presets bins, Rename and Delete…; on Audio Plug-ins, Group by Vendor / Category, Rescan and the plug-in settings; on
+  every folder, Expand All and Collapse All. The file dialogs open in the folder used last and add the
+  `.wabcut-presets.json` suffix to a typed name.
+- **Bins:** New Custom Bin (Ctrl+/, the toolbar's folder button, or an item's Add to Custom Bin > New Custom Bin) and New
+  Presets Bin make the bin, show it and put its name in an edit field. F2 renames a custom bin or one of your presets
+  bins in place (Enter keeps the name, Esc goes back). Drag an effect onto a custom bin to add it, drag one of your
+  presets onto another presets bin to move it, and drop a `.wabcut-presets.json` file from Explorer on a presets bin to
+  import it there (elsewhere in the list each preset goes back to the bin it was exported from).
+- **Deleting asks first.** Delete (and Backspace, the keymap's Delete Custom Item) on one of your presets, an item in a
+  custom bin, a custom bin or one of your presets bins opens a confirmation. Built-in items and folders cannot be
+  deleted; the status line says so. In the panel Delete belongs to the panel, wherever its keyboard focus is (the
+  toolbar's buttons too): it never reaches Edit > Clear, which would delete the selected timeline clips. After a delete
+  the selection goes to the row's folder (in the Icons view, to the tile now in its place).
+- **Keyboard:** Tab reaches the search, the toolbar buttons and the list. In the list, Up / Down move through the rows,
+  Home / End and Page Up / Page Down jump, Left / Right close or open a folder or go to its parent (in the Icons view they
+  also move between tiles), Enter applies or opens, F2 renames, Delete deletes and Menu or Shift+F10 opens the row's
+  menu. Down in the search goes to the first match; Up on the first row goes back to the search. A rename in place left
+  with a click elsewhere keeps the new name and leaves the keyboard where you clicked. Screen readers follow the
+  selected row: it is the accessible focus while the list has the keyboard.
+- **Problems:** a library file that cannot be read shows as a banner above the list. A plug-in that cannot be used is
+  dimmed, cannot be dragged and says why in its tooltip. The Audio Plug-ins folder shows
+  its tools while it is open: the grouping, Rescan, the settings, the scan's progress and how many plug-ins were blocked
+  because they crashed or hung while scanned.
+
 ## Presets, custom bins and favourites
 
 Premiere's effect presets (Adobe's help, "Effect presets": Save Preset, the three preset types, the Presets bin,
@@ -250,15 +306,13 @@ panel and Effect Controls use them through the `EffectPresets` bridge.
   step ("Apply Preset"); `effects.applyPreset`. 0.2: a preset anchored to the In or Out point whose fixed-effect values
   are keyed replaces only the clip's keys inside the preset's own keyed time, so an In and an Out animation (the
   Animations bin) both stay on one clip; Scale presets still replace the whole curve.
-- **Presets bin.** The Effects panel lists **Favorites**, **Presets** (Wabcut's built-in bins, then the user's presets
-  bins and presets), **Lumetri Presets**, then Premiere's effect groups, then the **custom bins**. Right-click a preset for
-  Preset Properties… (name, type, description), Export Preset…, Delete Preset, Add to Favorites, Add to Custom Bin; a
-  presets bin for New Presets Bin Inside…, Rename… and Delete; the panel's menu (…) for New Custom Bin, New Presets Bin…,
-  Import Presets… and Export Presets….
+- **Presets bin.** The Effects panel's **Presets** folder holds Wabcut's built-in bins, then the user's presets bins
+  (nested by path) and presets; **Lumetri Presets** the built-in looks ([The Effects panel](#the-effects-panel) for the
+  menus, Import / Export Presets of one bin and moving a preset by dragging it onto another bin).
 - **Custom bins** (Premiere's New Custom Bin, Ctrl+/ in the Effects panel; "Custom Bin 01", "Custom Bin 02", ...) hold
-  shortcuts to effects, transitions and presets; **Delete Custom Item** (Backspace in the panel) takes the current item out
-  of its custom bin or deletes the current user preset. **Favorites** is Wabcut's: any effect, transition or preset can
-  be starred.
+  shortcuts to effects, transitions, presets and audio plug-ins; **Delete Custom Item** (Backspace in the panel) takes the
+  current item out of its custom bin or deletes the current user preset, after asking. **Favorites** is Wabcut's: any
+  effect, transition, preset or plug-in can be added.
 - **Where they live.** The user's, not the project's (Premiere keeps presets with the user's profile): one JSON file,
   `effects-library.json` in the app's data folder (`WABCUT_EFFECTS_LIBRARY` overrides it; wabcut-cli and MCP sessions
   keep theirs in memory unless the host gives one). Saving a preset or changing a bin is therefore not an undo step.

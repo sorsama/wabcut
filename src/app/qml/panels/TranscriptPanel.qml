@@ -2,7 +2,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Layouts
 
-// ● TRANSCRIPT (rail key "captions"): edit the video by editing its text (M5e).
+// ● TRANSCRIPT (panel key "captions"): edit the video by editing its text (M5e).
 //   Transcript   the sequence's words by speaker and time; click to seek, select to light the timeline, Delete / Keep
 //                only with a dry-run preview (struck-through words, red ghost on the timeline), drag a paragraph to
 //                move it, find; or, without a transcript, transcribe the sequence or the selected clips.
@@ -19,7 +19,7 @@ Panel {
     /// The user asked to set up a transcription provider (Main opens Preferences > AI).
     signal setupRequested()
 
-    // Focus target for the rail's shortcut.
+    // Focus target for Window > Transcript.
     function focusContent() {
         tabs.forceActiveFocus(Qt.TabFocusReason)
     }

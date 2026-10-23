@@ -2,7 +2,7 @@
 // recording; no model, no decoder): the "Rough cut" sheet makes a cut from a script, shows the alignment report, swaps a
 // take and creates the sequence as one undo step; the Takes panel finds repeated lines and stages "keep best takes";
 // the Auto zoom dialog previews the zoom window over the recording and applies it. The sheet, panel and dialog are made
-// from the Wabcut module directly (their menu and rail hooks are Main.qml's). Screenshots: <build>/test-output/ui/
+// from the Wabcut module directly (their menu hooks are Main.qml's). Screenshots: <build>/test-output/ui/
 // rough-cut-report.png, takes-panel.png and auto-zoom-preview.png.
 
 #include "ShellFixture.h"

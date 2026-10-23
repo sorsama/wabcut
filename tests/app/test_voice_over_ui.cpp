@@ -534,7 +534,7 @@ TEST_CASE("Settings Audio: devices, voice-over options and calibration, saved fo
     resetSettings();
 }
 
-TEST_CASE("Voice-over in the window: the Program Monitor's record button, the microphone pill, Settings Audio from the rail",
+TEST_CASE("Voice-over in the window: the Program Monitor's record button, the microphone pill, Settings Audio from Settings",
           "[app][voiceover][qml]") {
     resetSettings();
     clearMessages();
@@ -551,7 +551,8 @@ TEST_CASE("Voice-over in the window: the Program Monitor's record button, the mi
     REQUIRE(pill);
     CHECK_FALSE(pill->isVisible());
 
-    // Settings > Audio: the rail asks, the window opens the dialog (the devices are not enumerated here).
+    // Settings > Audio: the Settings window asks (its "Open…"), the window opens the dialog once Settings closed (the
+    // devices are not enumerated here).
     QObject* loader = r.shell.object("audioSettingsLoader");
     REQUIRE(loader);
     CHECK_FALSE(loader->property("active").toBool());
@@ -559,9 +560,11 @@ TEST_CASE("Voice-over in the window: the Program Monitor's record button, the mi
     auto* dialog = loader->property("item").value<QObject*>();
     REQUIRE(dialog);
     dialog->setProperty("refreshOnOpen", false);
-    QObject* rail = r.shell.object("leftRail");
-    REQUIRE(rail);
-    REQUIRE(QMetaObject::invokeMethod(rail, "audioSettingsRequested"));
+    REQUIRE(QMetaObject::invokeMethod(r.shell.window.get(), "openSettings", Q_ARG(QString, QStringLiteral("audio")),
+                                      Q_ARG(QString, QString())));
+    QObject* settings = r.shell.object("settingsWindowLoader")->property("item").value<QObject*>();
+    REQUIRE(settings);
+    REQUIRE(QMetaObject::invokeMethod(settings, "audioSettingsRequested"));
     REQUIRE(waitFor([&] { return dialog->property("opened").toBool(); }, 3000));
     CHECK_FALSE(r.voiceOver->inputOpen()); // opening the dialog does not open the microphone
     REQUIRE(QMetaObject::invokeMethod(dialog, "close"));
