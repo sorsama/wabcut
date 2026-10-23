@@ -14,7 +14,11 @@ import QtQuick.Controls.Basic
 //   * Track height (M5i): the row follows TimelineView's height for the track; drag the bottom edge to resize it,
 //     double-click the edge to reset it.
 //   * Channel format (A.9, M5n): an audio track that is not stereo shows its format beside the name chip (1.0 mono,
-//     5.1, 1:1 adaptive); right-click the header (or the Menu key on the chip) for the format menu (track.setFormat).
+//     5.1, 1:1 adaptive), set in the header menu (track.setFormat).
+//   * UX rework (stream T): right-click a header of either kind (or the Menu key / Shift+F10 on the chip) for the track
+//     menu (TrackHeaderMenu: Rename..., Add Track, Add Tracks..., Delete Track, Delete Empty Tracks, Sync Lock, the
+//     channel format). A custom name shows beside the chip where it fits (below it on a tall row); double-click the
+//     header or Rename... edits it in place (Enter keeps it, Esc cancels; empty = back to "Video n").
 Item {
     id: root
 
@@ -33,13 +37,44 @@ Item {
     /// A.9: "mono" | "stereo" | "5.1" | "adaptive".
     readonly property string channelFormat: audio ? (AudioChannels.trackFormats[trackId] ?? "stereo") : ""
 
-    /// The audio track's format menu (created on first use).
-    function openFormatMenu(target, point) {
-        if (!root.audio)
-            return
+    /// The track's own name ("" while it has the default "Video n" / "Audio n"; re-read when the name changes).
+    readonly property string customName: {
+        root.name
+        return ProjectController.trackInfo(root.trackId).customName ?? ""
+    }
+    /// The name field is open (Rename...).
+    property bool renaming: false
+
+    /// Add Tracks...: the Tracks panel opens its dialog for this track.
+    signal addTracksRequested(string trackId)
+    /// Delete Track on a track with clips (`info`: ProjectController.trackInfo): the Tracks panel asks first.
+    signal deleteRequested(var info)
+    /// An edit from the menu was refused: the Tracks panel shows `text`.
+    signal messageRequested(string text)
+
+    /// The track menu (created on first use), for both kinds; the audio channel formats at its end.
+    function openMenu(target, point) {
         formatMenu.active = true
         const menu = formatMenu.item as TrackHeaderMenu
         menu.openFor(target, root.trackId, root.shortName, point)
+    }
+    /// The menu, as A.9 named it (an audio track's format menu): kept for callers and tests.
+    function openFormatMenu(target, point) {
+        root.openMenu(target, point)
+    }
+    function startRename() {
+        root.renaming = true
+    }
+    /// Closes the name field: `keep` renames (one undo step; "" = the default name), `refocus` puts focus back on the
+    /// chip (Enter, Esc; not when focus went elsewhere).
+    function finishRename(name: string, keep: bool, refocus: bool) {
+        if (!root.renaming)
+            return
+        root.renaming = false
+        if (keep && name.trim() !== root.customName && !ProjectController.renameTrack(root.trackId, name))
+            root.messageRequested(ProjectController.lastError)
+        if (refocus)
+            chip.forceActiveFocus(Qt.OtherFocusReason)
     }
     /// The lanes (TimelinePanel sets it): the row height comes from there.
     property TimelineView view: null
@@ -54,23 +89,37 @@ Item {
     // Design language v3: the row is a pill on the raised surface, inset a little from the lane's height (like the
     // reference's track headers), so neighbouring rows read as separate pills.
     Rectangle {
+        id: plate
         anchors.fill: parent
         anchors.topMargin: root.height >= Theme.space(8) ? Theme.space(0.75) : Theme.hairline
         anchors.bottomMargin: anchors.topMargin
         radius: height / 2
         color: Theme.raised
     }
-    // Right-click on an audio header: its channel format.
+    // Right-click on a header: the track menu. A double-click on its background (or the name) renames the track.
     TapHandler {
         acceptedButtons: Qt.RightButton
-        enabled: root.audio
-        onTapped: eventPoint => root.openFormatMenu(root, eventPoint.position)
+        onTapped: eventPoint => root.openMenu(root, eventPoint.position)
+    }
+    TapHandler {
+        acceptedButtons: Qt.LeftButton
+        onDoubleTapped: eventPoint => {
+            // Only on the background or the name: the chip, the toggles and the resize edge keep their own clicks.
+            const hit = root.childAt(eventPoint.position.x, eventPoint.position.y)
+            if (hit === null || hit === plate || hit === nameLabel)
+                root.startRename()
+        }
     }
     Loader {
         id: formatMenu
         objectName: "trackHeaderMenuLoader"
         active: false
-        sourceComponent: TrackHeaderMenu {}
+        sourceComponent: TrackHeaderMenu {
+            onRenameRequested: root.startRename()
+            onAddTracksRequested: root.addTracksRequested(root.trackId)
+            onDeleteRequested: info => root.deleteRequested(info)
+            onFailed: message => root.messageRequested(message)
+        }
     }
 
     // ---- Source patching column ----
@@ -219,16 +268,21 @@ Item {
         focusPolicy: Qt.StrongFocus
         hoverEnabled: true
         Accessible.role: Accessible.CheckBox
-        Accessible.name: qsTr("Target %1").arg(root.shortName)
+        Accessible.name: root.customName !== "" ? qsTr("Target %1 (%2)").arg(root.shortName).arg(root.customName)
+                                                : qsTr("Target %1").arg(root.shortName)
+        Accessible.description: qsTr("Menu key: the track menu; F2: rename")
         Accessible.checked: root.targeted
         onClicked: {
             checked = Qt.binding(() => root.targeted)
             SourceMonitor.setTargeted(root.trackId, !root.targeted)
         }
-        // The context menu key (or Shift+F10) opens the audio track's format menu from the keyboard.
+        // The context menu key (or Shift+F10) opens the track menu from the keyboard; F2 renames the track.
         Keys.onPressed: event => {
-            if (root.audio && (event.key === Qt.Key_Menu || (event.key === Qt.Key_F10 && (event.modifiers & Qt.ShiftModifier)))) {
-                root.openFormatMenu(chip, Qt.point(0, chip.height))
+            if (event.key === Qt.Key_Menu || (event.key === Qt.Key_F10 && (event.modifiers & Qt.ShiftModifier))) {
+                root.openMenu(chip, Qt.point(0, chip.height))
+                event.accepted = true
+            } else if (event.key === Qt.Key_F2 && event.modifiers === Qt.NoModifier) {
+                root.startRename()
                 event.accepted = true
             }
         }
@@ -260,8 +314,9 @@ Item {
 
         Tooltip {
             visible: chip.hovered
-            text: root.targeted ? qsTr("%1 is targeted: Lift, Extract, paste, Up/Down and Match Frame use it").arg(root.shortName)
-                                : qsTr("Target %1 (Lift, Extract, paste, Up/Down and Match Frame)").arg(root.shortName)
+            text: (root.customName !== "" ? root.customName + "\n" : "")
+                  + (root.targeted ? qsTr("%1 is targeted: Lift, Extract, paste, Up/Down and Match Frame use it").arg(root.shortName)
+                                   : qsTr("Target %1 (Lift, Extract, paste, Up/Down and Match Frame)").arg(root.shortName))
         }
         FocusRing {
             anchors.fill: parent
@@ -326,11 +381,63 @@ Item {
         }
     }
 
+    // UX rework (stream T): the track's own name - beside the chip where it fits, else under it on a tall row (a short
+    // row shows it in the chip's tooltip only). A double-click renames.
+    Text {
+        id: nameLabel
+        objectName: "trackName_" + root.shortName
+        readonly property real inlineX: chip.x + chip.width + (formatBadge.visible ? formatBadge.width : 0) + Theme.space(1.5)
+        readonly property bool fitsInline: toggles.x - Theme.space(1) - inlineX >= Theme.space(8)
+        readonly property bool fitsBelow: chip.y + chip.height + Theme.space(1) + implicitHeight <= root.height - Theme.space(1)
+        x: fitsInline ? inlineX : chip.x + Theme.space(1)
+        y: fitsInline ? Math.round((root.height - height) / 2) : chip.y + chip.height + Theme.space(1)
+        width: fitsInline ? toggles.x - Theme.space(1) - x : root.width - x - Theme.space(3)
+        visible: root.customName !== "" && !root.renaming && (fitsInline || fitsBelow)
+        text: root.customName
+        elide: Text.ElideRight
+        color: root.trackEnabled && !root.muted ? Theme.textSecondary : Theme.textTertiary
+        font.family: Theme.fontSans
+        font.pixelSize: Theme.textSm
+        font.weight: Font.DemiBold
+    }
+    // Rename...: a field over the header (Enter keeps the name, Esc cancels, leaving it keeps it too).
+    Loader {
+        id: renameField
+        objectName: "trackRenameLoader"
+        active: root.renaming
+        x: chip.x
+        width: root.width - chip.x - Theme.space(1)
+        anchors.verticalCenter: parent.verticalCenter
+        z: 3
+        sourceComponent: FieldInput {
+            objectName: "trackRenameField"
+            text: root.customName
+            placeholderText: root.name
+            Accessible.name: qsTr("Name of %1").arg(root.shortName)
+            Component.onCompleted: {
+                forceActiveFocus()
+                selectAll()
+            }
+            onAccepted: root.finishRename(text, true, true)
+            onActiveFocusChanged: {
+                if (!activeFocus)
+                    root.finishRename(text, true, false)
+            }
+            Keys.onEscapePressed: event => {
+                root.finishRename("", false, true)
+                event.accepted = true
+            }
+            Keys.onShortcutOverride: event => event.accepted = true
+        }
+    }
+
     Row {
+        id: toggles
         anchors.right: parent.right
         anchors.rightMargin: Theme.space(1)
         anchors.verticalCenter: parent.verticalCenter
         spacing: 0
+        visible: !root.renaming
 
         IconButton {
             visible: !root.audio

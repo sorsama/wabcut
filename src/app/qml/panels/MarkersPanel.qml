@@ -18,7 +18,7 @@ Panel {
     readonly property var typeLabels: ({ chapter: qsTr("Chapter"), segmentation: qsTr("Segmentation"),
                                           webLink: qsTr("Web link"), comment: "" })
 
-    // Focus target for the rail's "Markers" shortcut.
+    // Focus target for Window > Markers.
     function focusContent() {
         search.forceActiveFocus(Qt.TabFocusReason)
     }

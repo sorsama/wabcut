@@ -5,6 +5,7 @@
 #include "BridgeIds.h"
 #include "CaptionStyleMapping.h"
 #include "CaptionsBridge.h"
+#include "GamingExport.h"
 #include "PlaybackBridge.h"
 #include "ProjectController.h"
 #include "TranscriptBridge.h"
@@ -334,6 +335,8 @@ QVariant ExportJobModel::data(const QModelIndex& index, int role) const {
         return r.detail;
     case FinishedRole:
         return r.finished;
+    case OriginRole:
+        return r.origin;
     default:
         return {};
     }
@@ -343,7 +346,8 @@ QHash<int, QByteArray> ExportJobModel::roleNames() const {
     return {{JobIdRole, "jobId"},           {TitleRole, "title"},     {OutputPathRole, "outputPath"},
             {PresetNameRole, "presetName"}, {StateRole, "jobState"},  {PhaseTextRole, "phaseText"},
             {ProgressRole, "progress"},     {FpsTextRole, "fpsText"}, {EtaTextRole, "etaText"},
-            {EncoderRole, "encoder"},       {DetailRole, "detail"},   {FinishedRole, "finished"}};
+            {EncoderRole, "encoder"},       {DetailRole, "detail"},   {FinishedRole, "finished"},
+            {OriginRole, "origin"}};
 }
 
 int ExportJobModel::activeCount() const {
@@ -505,6 +509,8 @@ ExportController::ExportController(QObject* parent)
     ex::WatchFolderService::Options watchOptions;
     m_watch = std::make_shared<ex::WatchFolderService>(*m_queue, watchOptions);
     connect(m_jobs, &ExportJobModel::activeCountChanged, this, &ExportController::busyChanged);
+    // UX rework (L): a deleted user preset changes what lastPreset / lastQuickPreset read.
+    connect(this, &ExportController::presetsChanged, this, &ExportController::exportMemoryChanged);
     // AI-15: the Content Credentials setting ("ai" until the user picks another).
     QSettings settings;
     const QString credentials = settings.value(QStringLiteral("export/contentCredentials"), QStringLiteral("ai")).toString();
@@ -673,8 +679,9 @@ QString ExportController::defaultOutputPath(const QString& sequenceId, const QSt
                                             const QVariantMap& overrides) const {
     const auto settings = settingsFor(presetId, overrides);
     const SequencePtr sequence = sequenceFor(sequenceId);
-    QString folder;
-    if (!m_projectFile.empty()) {
+    // UX rework (L): the folder the user last exported to, then next to the project.
+    QString folder = lastFolder();
+    if (folder.isEmpty() && !m_projectFile.empty()) {
         folder = pathToQString(m_projectFile.parent_path());
     }
     if (folder.isEmpty()) {
@@ -841,6 +848,11 @@ QVariantMap ExportController::describe(const QString& sequenceId, const QString&
 
 QString ExportController::queueExport(const QString& sequenceId, const QString& presetId,
                                       const QVariantMap& rawOverrides) {
+    return queueExportAs(sequenceId, presetId, rawOverrides, QStringLiteral("export"));
+}
+
+QString ExportController::queueExportAs(const QString& sequenceId, const QString& presetId,
+                                        const QVariantMap& rawOverrides, const QString& origin) {
     if (!project()) {
         setLastError(translate("There is no project to export."));
         return {};
@@ -912,17 +924,23 @@ QString ExportController::queueExport(const QString& sequenceId, const QString& 
     request.videoSource = m_videoSource;
     setLastError({});
     const auto user = settings->presetId.starts_with("user-") ? userPresetStore()->find(settings->presetId) : std::nullopt;
-    return queueRequestAs(newJobId(), std::move(request), user ? fromUtf8(user->name) : presetName(settings->presetId),
-                          overrides.value(QStringLiteral("hold")).toBool(),
-                          overrides.value(QStringLiteral("contentCredentials")).toString());
+    const bool chosenOutput = overrides.contains(QStringLiteral("output"));
+    const QString job = queueRequestAs(newJobId(), std::move(request), user ? fromUtf8(user->name) : presetName(settings->presetId),
+                                       overrides.value(QStringLiteral("hold")).toBool(),
+                                       overrides.value(QStringLiteral("contentCredentials")).toString(), origin);
+    // UX rework (L): a destination the user chose is where the next export goes by default.
+    if (!job.isEmpty() && chosenOutput) {
+        setLastFolder(pathToQString(output.parent_path()));
+    }
+    return job;
 }
 
-QString ExportController::quickExport(const QString& presetId, const QString& output) {
-    QVariantMap overrides;
+QString ExportController::quickExport(const QString& presetId, const QString& output, const QVariantMap& extra) {
+    QVariantMap overrides = extra;
     if (!output.isEmpty()) {
         overrides[QStringLiteral("output")] = output;
     }
-    return queueExport(QString(), presetId, overrides);
+    return queueExportAs(QString(), presetId, overrides, QStringLiteral("quick"));
 }
 
 std::expected<ExportController::Transcode, Error> ExportController::queueTranscode(const MediaItem& source,
@@ -990,7 +1008,8 @@ std::expected<ExportController::Transcode, Error> ExportController::queueTransco
     request.videoSource = m_videoSource;
     const auto user = settings->presetId.starts_with("user-") ? userPresetStore()->find(settings->presetId) : std::nullopt;
     const QString job = queueRequestAs(newJobId(), std::move(request),
-                                       user ? fromUtf8(user->name) : presetName(settings->presetId), false);
+                                       user ? fromUtf8(user->name) : presetName(settings->presetId), false, QString(),
+                                       QStringLiteral("transcode"));
     return Transcode{job, output};
 }
 
@@ -1011,7 +1030,7 @@ QStringList ExportController::sendToQueue(const QString& sequenceId, const QStri
         if (presetIds.size() > 1) {
             o.remove(QStringLiteral("output")); // each destination gets its own default name
         }
-        const QString job = queueExport(sequenceId, id, o);
+        const QString job = queueExportAs(sequenceId, id, o, QStringLiteral("queue"));
         if (!job.isEmpty()) {
             jobs << job;
         }
@@ -1174,10 +1193,11 @@ QString ExportController::queueRequest(ex::ExportRequest request, const QString&
 }
 
 QString ExportController::queueRequestAs(const QString& jobIdIn, ex::ExportRequest request, const QString& presetLabel,
-                                         bool hold, const QString& credentials) {
+                                         bool hold, const QString& credentials, const QString& origin) {
     ExportJobModel::Row row;
     row.jobId = jobIdIn;
     row.held = hold;
+    row.origin = origin;
     if (hold) {
         row.state = QStringLiteral("held");
     }
@@ -1246,6 +1266,7 @@ void ExportController::onStatus(const ex::ExportJobStatus& status) {
         row.outputPath = pathToQString(status.output);
         row.presetName = presetName(status.presetId);
         row.phaseText = translate("Queued");
+        row.origin = QStringLiteral("watch");
         {
             std::lock_guard lock(m_idsMutex);
             m_queueIds[row.jobId] = row.queueId;
@@ -1335,15 +1356,25 @@ void ExportController::resume(const QString& jobId) {
     }
 }
 
+// UX rework fix (L): `jobId` may also be the absolute path of an export's file. A toast's "Show in Explorer" whose job
+// row went meanwhile (Clear Finished, an export "remove" command) shows the file it remembered that way; false when
+// that file is gone (the toast says so) - a job's own file falls back to its folder, as before.
 bool ExportController::reveal(const QString& jobId) {
-    const ExportJobModel::Row* row = m_jobs->find(jobId);
-    if (!row) {
+    QString path;
+    if (const ExportJobModel::Row* row = m_jobs->find(jobId)) {
+        path = row->outputPath;
+    } else if (const QString given = QDir::fromNativeSeparators(jobId); QDir::isAbsolutePath(given)) {
+        if (!QFileInfo(given).isFile()) {
+            return false;
+        }
+        path = QDir::toNativeSeparators(QDir::cleanPath(given));
+    } else {
         return false;
     }
     if (m_reveal) {
-        return m_reveal(row->outputPath);
+        return m_reveal(path);
     }
-    const QFileInfo file(row->outputPath);
+    const QFileInfo file(path);
 #if defined(Q_OS_WIN)
     if (file.exists()) {
         return QProcess::startDetached(
@@ -1360,6 +1391,181 @@ bool ExportController::reveal(const QString& jobId) {
 
 void ExportController::clearFinished() {
     m_jobs->removeFinished();
+}
+
+// ---- UX rework (L): finished jobs for toasts, and the remembered choices ---------------------------------------------
+
+namespace {
+
+const QString kLastPresetKey = QStringLiteral("export/lastPreset");
+const QString kLastGamingPresetKey = QStringLiteral("export/lastGamingPreset");
+const QString kLastQuickPresetKey = QStringLiteral("export/lastQuickPreset");
+const QString kLastFolderKey = QStringLiteral("export/lastFolder");
+const QString kLastRangeKey = QStringLiteral("export/lastRange");
+const QString kDefaultPreset = QStringLiteral("match-source");
+
+bool presetExists(const QString& id) {
+    return !id.isEmpty() && ExportController::userPresetStore()->findAny(id.toStdString()).has_value();
+}
+
+bool gamingPresetExists(const QString& id) {
+    if (id.isEmpty())
+        return false;
+    const GamingExport gaming;
+    const QVariantList presets = gaming.presets();
+    return std::any_of(presets.begin(), presets.end(),
+                       [&](const QVariant& p) { return p.toMap().value(QStringLiteral("id")).toString() == id; });
+}
+
+/// A local folder from a path or a file URL ("" for anything else).
+QString localFolderOf(const QString& pathOrUrl) {
+    if (pathOrUrl.isEmpty())
+        return {};
+    const QUrl url(pathOrUrl);
+    const QString path = url.isLocalFile() ? url.toLocalFile() : pathOrUrl;
+    return QDir::isAbsolutePath(path) ? QDir::cleanPath(path) : QString();
+}
+
+} // namespace
+
+QVariantMap ExportController::job(const QString& jobId) const {
+    const ExportJobModel::Row* row = m_jobs->find(jobId);
+    if (!row) {
+        return {};
+    }
+    const QFileInfo file(row->outputPath);
+    return {{QStringLiteral("jobId"), row->jobId},
+            {QStringLiteral("title"), row->title},
+            {QStringLiteral("outputPath"), QDir::toNativeSeparators(row->outputPath)},
+            {QStringLiteral("outputUrl"), QUrl::fromLocalFile(file.absoluteFilePath())},
+            {QStringLiteral("folderUrl"), QUrl::fromLocalFile(file.absolutePath())},
+            {QStringLiteral("presetName"), row->presetName},
+            {QStringLiteral("state"), row->state},
+            {QStringLiteral("detail"), row->detail},
+            {QStringLiteral("finished"), row->finished},
+            {QStringLiteral("origin"), row->origin},
+            {QStringLiteral("exists"), file.exists()}};
+}
+
+bool ExportController::openOutput(const QString& jobId) {
+    const ExportJobModel::Row* row = m_jobs->find(jobId);
+    if (!row || row->state != QLatin1String("done") || !QFileInfo::exists(row->outputPath)) {
+        return false;
+    }
+    if (m_open) {
+        return m_open(row->outputPath);
+    }
+    return QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(row->outputPath).absoluteFilePath()));
+}
+
+QString ExportController::suggestedRange(const QString& sequenceId) const {
+    const SequencePtr sequence = sequenceFor(sequenceId);
+    const QString remembered = lastRange();
+    if (sequence && !remembered.isEmpty()) {
+        if (remembered == QLatin1String("whole")) {
+            return remembered;
+        }
+        if (remembered == QLatin1String("inOut") && sequence->markedRange().has_value()) {
+            return remembered;
+        }
+        if (remembered == QLatin1String("workArea") && sequence->workArea.has_value()) {
+            return remembered;
+        }
+    }
+    return sequence && sequence->markedRange().has_value() ? QStringLiteral("inOut") : QStringLiteral("whole");
+}
+
+QUrl ExportController::folderUrlOf(const QString& pathOrUrl) const {
+    const QString path = localFolderOf(pathOrUrl);
+    if (path.isEmpty()) {
+        return {};
+    }
+    const QFileInfo info(path);
+    return QUrl::fromLocalFile(info.isDir() ? info.absoluteFilePath() : info.absolutePath());
+}
+
+void ExportController::forgetExportChoices() {
+    QSettings settings;
+    for (const QString& key : {kLastPresetKey, kLastGamingPresetKey, kLastQuickPresetKey, kLastFolderKey, kLastRangeKey}) {
+        settings.remove(key);
+    }
+    emit exportMemoryChanged();
+}
+
+QString ExportController::lastPreset() const {
+    const QString id = QSettings().value(kLastPresetKey).toString();
+    return presetExists(id) ? id : kDefaultPreset;
+}
+
+void ExportController::setLastPreset(const QString& id) {
+    if (!presetExists(id) || QSettings().value(kLastPresetKey).toString() == id) {
+        return;
+    }
+    QSettings().setValue(kLastPresetKey, id);
+    emit exportMemoryChanged();
+}
+
+QString ExportController::lastGamingPreset() const {
+    const QString id = QSettings().value(kLastGamingPresetKey).toString();
+    return gamingPresetExists(id) ? id : QString();
+}
+
+void ExportController::setLastGamingPreset(const QString& id) {
+    if ((!id.isEmpty() && !gamingPresetExists(id)) || QSettings().value(kLastGamingPresetKey).toString() == id) {
+        return;
+    }
+    QSettings().setValue(kLastGamingPresetKey, id);
+    emit exportMemoryChanged();
+}
+
+QString ExportController::lastQuickPreset() const {
+    const QString id = QSettings().value(kLastQuickPresetKey).toString();
+    return presetExists(id) ? id : kDefaultPreset;
+}
+
+void ExportController::setLastQuickPreset(const QString& id) {
+    if (!presetExists(id) || QSettings().value(kLastQuickPresetKey).toString() == id) {
+        return;
+    }
+    QSettings().setValue(kLastQuickPresetKey, id);
+    emit exportMemoryChanged();
+}
+
+QString ExportController::lastFolder() const {
+    const QString folder = QSettings().value(kLastFolderKey).toString();
+    return !folder.isEmpty() && QFileInfo(folder).isDir() ? QDir::toNativeSeparators(folder) : QString();
+}
+
+void ExportController::setLastFolder(const QString& folder) {
+    const QString path = localFolderOf(folder);
+    if (QDir::cleanPath(QSettings().value(kLastFolderKey).toString()) == path) {
+        return;
+    }
+    QSettings().setValue(kLastFolderKey, path);
+    emit exportMemoryChanged();
+}
+
+QUrl ExportController::lastFolderUrl() const {
+    const QString folder = lastFolder();
+    return folder.isEmpty() ? QUrl() : QUrl::fromLocalFile(QDir::fromNativeSeparators(folder));
+}
+
+QString ExportController::lastRange() const {
+    const QString range = QSettings().value(kLastRangeKey).toString();
+    return range == QLatin1String("whole") || range == QLatin1String("inOut") || range == QLatin1String("workArea")
+               ? range
+               : QString();
+}
+
+void ExportController::setLastRange(const QString& range) {
+    const QString next = range == QLatin1String("whole") || range == QLatin1String("inOut") || range == QLatin1String("workArea")
+                             ? range
+                             : QString();
+    if (QSettings().value(kLastRangeKey).toString() == next) {
+        return;
+    }
+    QSettings().setValue(kLastRangeKey, next);
+    emit exportMemoryChanged();
 }
 
 void ExportController::probeEncoders() {

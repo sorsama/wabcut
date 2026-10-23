@@ -43,8 +43,11 @@ void captureMessage(QtMsgType type, const QMessageLogContext& context, const QSt
     if (type == QtWarningMsg || type == QtCriticalMsg || type == QtFatalMsg) {
         const QString category = context.category ? QString::fromUtf8(context.category) : QStringLiteral("default");
         // The Windows clipboard is one per desktop: test processes run in parallel retry it while another holds it.
-        // Not the app's message; it would fail whichever window test happens to touch the clipboard then.
-        if (category == QLatin1String("qt.qpa.mime") && message.startsWith(QLatin1String("Retrying to obtain clipboard")))
+        // Not the app's message; it would fail whichever window test happens to touch the clipboard then (and when the
+        // retries run out, "Unable to obtain clipboard": the same contention, seen under parallel ctest runs).
+        if (category == QLatin1String("qt.qpa.mime") &&
+            (message.startsWith(QLatin1String("Retrying to obtain clipboard")) ||
+             message.startsWith(QLatin1String("Unable to obtain clipboard"))))
             return;
         QMutexLocker lock(&g_messagesMutex);
         g_messages << QStringLiteral("[%1] %2").arg(category, message);

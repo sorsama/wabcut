@@ -82,6 +82,10 @@ std::vector<ClipId> ProjectController::selectedClipIds() const {
 
 void ProjectController::deleteSelection() {
     const std::vector<ClipId> clips = selectedClipIds();
+    if (clips.empty() && m_gap) {
+        rippleDeleteGap(); // 0.2 UX: Delete on a selected gap closes it (Premiere)
+        return;
+    }
     if (clips.empty())
         return;
     const SequenceId seq = m_sequence;
@@ -91,6 +95,10 @@ void ProjectController::deleteSelection() {
 
 void ProjectController::rippleDeleteSelection() {
     const std::vector<ClipId> clips = selectedClipIds();
+    if (clips.empty() && m_gap) {
+        rippleDeleteGap(); // 0.2 UX: the selected gap
+        return;
+    }
     if (clips.empty())
         return;
     const SequenceId seq = m_sequence;
@@ -678,6 +686,9 @@ QVariantMap ProjectController::commandAvailability(const QString& id) const {
     static const QStringList kDeletes{QStringLiteral("edit.clear"), QStringLiteral("timeline.clearSelection"),
                                       QStringLiteral("edit.rippleDelete"), QStringLiteral("timeline.rippleDelete")};
     if (transitionSelected && kDeletes.contains(id))
+        return state(true, true);
+    // 0.2 UX (stream T): a selected gap - the deletes close it, Deselect All deselects it.
+    if (m_gap && !hasSelection && (kDeletes.contains(id) || id == QLatin1String("edit.deselectAll")))
         return state(true, true);
     static const QStringList kNeedsSelection{
         QStringLiteral("edit.clear"), QStringLiteral("timeline.clearSelection"), QStringLiteral("edit.rippleDelete"),

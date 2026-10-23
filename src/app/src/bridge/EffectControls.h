@@ -49,6 +49,14 @@ namespace wabcut::app {
 
 class ProjectController;
 
+/// UX rework: whether the Effects panel lists an effect (its own bins, Favorites, custom bins): not intrinsic effects
+/// (every clip's), not Title Style (it comes with each title) and not the Essential Sound record (it does nothing to the
+/// sound; the Essential Sound panel adds it).
+bool isListedEffect(const EffectDescriptor& descriptor);
+/// The Effects panel's icon of an effect or transition: its category's, the same in its own bin, Favorites and custom
+/// bins ("sliders-horizontal" for an audio plug-in).
+QString effectLibraryIcon(const EffectDescriptor& descriptor);
+
 class EffectControlsModel : public QAbstractListModel {
     Q_OBJECT
     QML_ELEMENT
@@ -169,14 +177,23 @@ public:
     Q_INVOKABLE void moveEffect(const QString& section, int stackIndex);
 
     // ---- Adding effects ----
-    /// The effect library for the Effects panel, grouped: [{ title, icon, kind, items: [{ id, name, category,
-    /// description, icon, kind }], bins: [{ title, items }] }], filtered by a fuzzy `query`. `items` are by relevance
-    /// to the query (else by bin and name); `bins` are Premiere's bins (the categories), alphabetical, each with its
-    /// effects in alphabetical order (0.2).
+    /// The effect library for the Effects panel, grouped: [{ title, icon, kind, key, count, items: [{ id, name,
+    /// category, description, icon, kind }], bins: [{ title, key, count, items }] }], filtered by a fuzzy `query`.
+    /// `items` are by relevance to the query (else by bin and name); `bins` are Premiere's bins (the categories),
+    /// alphabetical, each with its effects in alphabetical order (0.2). UX rework: `key` is stable and untranslated
+    /// (a group's is its kind, a bin's "<kind>/<English category>"); `count` is the number of items.
     Q_INVOKABLE QVariantList library(const QString& query = {}) const;
     /// Adds an effect to the selected clip (to its partner of the effect's kind); `stackIndex` -1 appends.
     /// Returns "" or a message saying why not.
     Q_INVOKABLE QString addEffect(const QString& effectId, int stackIndex = -1);
+    /// UX rework (the Effects panel's double-click / Enter): applies an Effects panel item to EVERY selected clip as one
+    /// undo step. `itemId`: an effect id (or "effect:<id>"), "preset:<name>", or a transition id. Each selected clip of
+    /// the item's kind gets it; a selected clip of the other kind stands for its linked partner of that kind (as
+    /// addEffect does for the primary clip). A transition goes on both ends of each selected clip of its kind (Apply
+    /// Default Transitions to Selection with this transition, at the default length). Plug-ins: PluginBridge.
+    /// Returns { ok, error ("" or why not), message (the status line's text: the result or the error), clips (how many
+    /// clips got it) }.
+    Q_INVOKABLE QVariantMap applyToSelectedClips(const QString& itemId);
     /// Adds an effect to a clip (or its linked partner of the effect's kind): a drop on the timeline.
     Q_INVOKABLE QString addEffectToClip(const QString& clipId, const QString& effectId);
     /// Whether `effectId` is a transition.

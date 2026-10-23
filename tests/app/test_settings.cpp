@@ -1,6 +1,7 @@
 // 0.1.3 Settings window (WP-S): theme files (ThemeFiles: validation, export/import round trip), every Settings page
-// opening warning-free, custom colours reaching Theme and its saved settings, the title bar's status pills coming
-// back from Settings > Interface, the left rail's order and hidden entries, and the AI features switch.
+// opening warning-free (from Edit > Settings…), custom colours reaching Theme and its saved settings, the title bar's
+// status pills coming back from Settings > Interface, and the AI features switch (UX rework: it hides Generate in the
+// Window menu; the left rail and its customization are gone).
 
 #include "ShellFixture.h"
 
@@ -42,7 +43,7 @@ QVariant stored(const char* group, const char* key) {
     return settings.value(QLatin1String(key));
 }
 
-/// The Settings window once the rail created it (its Loader's item), else null.
+/// The Settings window once the window created it (its Loader's item), else null.
 QObject* settingsWindow(const Shell& shell) {
     QObject* loader = shell.object("settingsWindowLoader");
     return loader ? loader->property("item").value<QObject*>() : nullptr;
@@ -53,24 +54,9 @@ QQuickItem* inSettings(QObject* window, const QString& name) {
     return findNamed(window->property("contentItem").value<QQuickItem*>(), name);
 }
 
-/// `name` in the main window's visual tree (the rail's entries are delegates).
-QQuickItem* onScreen(const Shell& shell, const QString& name) {
-    return findNamed(shell.window->contentItem(), name);
-}
-
-/// The keys of the rail's shown entries, top to bottom (LeftRail.visiblePanels).
-QStringList railKeys(const Shell& shell) {
-    QStringList keys;
-    for (const QVariant& entry : shell.object("leftRail")->property("visiblePanels").toList())
-        keys << entry.toMap().value(QStringLiteral("key")).toString();
-    return keys;
-}
-
-/// Opens Settings on `page` through the rail (as the Settings button and File > Settings… do); returns the window.
+/// Opens Settings on `page` (window.openSettings, as Edit > Settings… and Home's Settings button do); returns the window.
 QObject* openSettings(Shell& shell, const QString& page) {
-    QObject* rail = shell.object("leftRail");
-    REQUIRE(rail != nullptr);
-    REQUIRE(QMetaObject::invokeMethod(rail, "openSettings", Q_ARG(QString, page)));
+    REQUIRE(QMetaObject::invokeMethod(shell.window.get(), "openSettings", Q_ARG(QString, page), Q_ARG(QString, QString())));
     QObject* window = settingsWindow(shell);
     REQUIRE(window != nullptr);
     REQUIRE(waitFor([&] { return window->property("opened").toBool(); }));
@@ -168,10 +154,12 @@ TEST_CASE("Settings window: every page opens without warnings", "[app][settings]
     shell.resize(kShotWidth, kShotHeight);
     shell.theme->setProperty("reduceMotion", true);
 
-    // The rail's Settings button opens it.
-    QObject* button = shell.object("settingsButton");
-    REQUIRE(button != nullptr);
-    REQUIRE(QMetaObject::invokeMethod(button, "clicked"));
+    // Edit > Settings… opens it (once the menu has closed).
+    QObject* item = shell.object("editMenuSettings");
+    REQUIRE(item != nullptr);
+    CHECK(item->property("command").toString() == QStringLiteral("edit.preferences"));
+    REQUIRE(QMetaObject::invokeMethod(item, "triggered"));
+    REQUIRE(waitFor([&] { return settingsWindow(shell) != nullptr; }));
     QObject* window = settingsWindow(shell);
     REQUIRE(window != nullptr);
     REQUIRE(waitFor([&] { return window->property("opened").toBool(); }));
@@ -198,8 +186,7 @@ TEST_CASE("Settings window: every page opens without warnings", "[app][settings]
     // Escape-free close and reopen on a given page (the transcript's "set up transcription" opens AI).
     REQUIRE(QMetaObject::invokeMethod(window, "close"));
     REQUIRE(waitFor([&] { return !window->property("visible").toBool(); }));
-    QObject* rail = shell.object("leftRail");
-    REQUIRE(QMetaObject::invokeMethod(rail, "openAiPreferences"));
+    REQUIRE(QMetaObject::invokeMethod(shell.window.get(), "openAiPreferences"));
     REQUIRE(waitFor([&] { return window->property("opened").toBool(); }));
     CHECK(window->property("currentPage").toString() == QStringLiteral("ai"));
     QObject* ai = inSettings(window, QStringLiteral("aiPreferences"));
@@ -331,60 +318,6 @@ TEST_CASE("Settings Interface: the title bar status pills come back on request",
     CHECK(messages.isEmpty());
 }
 
-TEST_CASE("Left rail: entries reorder and hide and the arrangement is kept", "[app][settings][qml]") {
-    resetSettings();
-    clearMessages();
-    {
-        Shell shell;
-        REQUIRE(shell.window != nullptr);
-        shell.resize(kShotWidth, kShotHeight);
-        QQuickItem* library = onScreen(shell, QStringLiteral("railButton_library"));
-        QQuickItem* effects = onScreen(shell, QStringLiteral("railButton_effects"));
-        REQUIRE(library != nullptr);
-        REQUIRE(effects != nullptr);
-        CHECK(library->y() < effects->y());
-
-        QObject* window = openSettings(shell, QStringLiteral("interface"));
-        QQuickItem* page = nullptr;
-        REQUIRE(waitFor([&] { return (page = settingsPage(window, QStringLiteral("interface"))) != nullptr; }));
-        QQuickItem* customizer = findNamed(page, QStringLiteral("railCustomizer"));
-        REQUIRE(customizer != nullptr);
-        // Effects above Library (two steps up: past the Media Browser, 0.2), Markers hidden (the customizer's buttons do
-        // the same).
-        REQUIRE(QMetaObject::invokeMethod(findNamed(customizer, QStringLiteral("railUp_effects")), "clicked"));
-        REQUIRE(QMetaObject::invokeMethod(findNamed(customizer, QStringLiteral("railUp_effects")), "clicked"));
-        REQUIRE(QMetaObject::invokeMethod(findNamed(customizer, QStringLiteral("railVisible_markers")), "clicked"));
-        spin(30);
-        CHECK(railKeys(shell).indexOf(QStringLiteral("effects")) < railKeys(shell).indexOf(QStringLiteral("library")));
-        CHECK_FALSE(railKeys(shell).contains(QStringLiteral("markers")));
-        QQuickItem* markers = onScreen(shell, QStringLiteral("railButton_markers"));
-        CHECK((markers == nullptr || !markers->isVisible()));
-        CHECK(waitFor([] { return stored("interface", "railLayout").toString().contains(QStringLiteral("markers")); }));
-    }
-    {
-        clearMessages();
-        Shell shell; // the next start keeps it
-        REQUIRE(shell.window != nullptr);
-        shell.resize(kShotWidth, kShotHeight);
-        CHECK(railKeys(shell).indexOf(QStringLiteral("effects")) < railKeys(shell).indexOf(QStringLiteral("library")));
-        QQuickItem* markers = onScreen(shell, QStringLiteral("railButton_markers"));
-        CHECK((markers == nullptr || !markers->isVisible()));
-        // Reset from the rail's menu.
-        QObject* reset = shell.object("railMenuReset");
-        REQUIRE(reset != nullptr);
-        REQUIRE(QMetaObject::invokeMethod(reset, "triggered"));
-        spin(30);
-        CHECK(shell.preferences->property("railLayout").toString().isEmpty());
-        markers = onScreen(shell, QStringLiteral("railButton_markers"));
-        REQUIRE(markers != nullptr);
-        CHECK(markers->isVisible());
-    }
-    resetSettings();
-    const QStringList messages = takeMessages();
-    INFO(join(messages));
-    CHECK(messages.isEmpty());
-}
-
 TEST_CASE("Settings AI: one switch turns the AI features off and on again", "[app][settings][ai][qml]") {
     qputenv("WABCUT_AI_KEYSTORE", "memory");
     resetSettings();
@@ -395,7 +328,8 @@ TEST_CASE("Settings AI: one switch turns the AI features off and on again", "[ap
     auto* ai = shell.engine.singletonInstance<AiController*>("Wabcut", "AiController");
     REQUIRE(ai != nullptr);
     ai->setOfflineMode(false);
-    REQUIRE(onScreen(shell, QStringLiteral("railButton_generate")) != nullptr);
+    // The Window menu lists Generate while AI is on (UX rework: it replaced the left rail's entry).
+    REQUIRE(shell.object("windowMenu_generate") != nullptr);
 
     QObject* window = openSettings(shell, QStringLiteral("ai"));
     QObject* page = inSettings(window, QStringLiteral("aiPreferences"));
@@ -404,16 +338,14 @@ TEST_CASE("Settings AI: one switch turns the AI features off and on again", "[ap
     CHECK_FALSE(shell.preferences->property("aiEnabled").toBool());
     CHECK(ai->offlineMode());
     spin(30);
-    QQuickItem* generate = onScreen(shell, QStringLiteral("railButton_generate"));
-    CHECK((generate == nullptr || !generate->isVisible()));
+    CHECK(shell.object("windowMenu_generate") == nullptr);
+    CHECK(shell.object("windowMenu_library") != nullptr); // the other panels stay
 
     REQUIRE(QMetaObject::invokeMethod(page, "setAiEnabled", Q_ARG(bool, true)));
     CHECK(shell.preferences->property("aiEnabled").toBool());
     CHECK_FALSE(ai->offlineMode()); // what it was before
     spin(30);
-    generate = onScreen(shell, QStringLiteral("railButton_generate"));
-    REQUIRE(generate != nullptr);
-    CHECK(generate->isVisible());
+    CHECK(shell.object("windowMenu_generate") != nullptr);
 
     // A model by name becomes the assistant's.
     bool used = false;

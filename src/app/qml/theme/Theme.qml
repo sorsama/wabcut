@@ -270,7 +270,6 @@ QtObject {
     readonly property int windowResizeMargin: 6
     readonly property int compactBelowHeight: 820   // window heights below this use the compact density
     readonly property int titleBarHeight: compact ? 44 : 52   // holds the workspace switcher and the 40 px buttons
-    readonly property int railWidth: 48
     // v1's floating dock is gone (the workspace tabs live in the title bar); kept for code that still reads them.
     readonly property int dockHeight: 0
     readonly property int dockMargin: gap

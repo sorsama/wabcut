@@ -10,12 +10,17 @@ import QtQuick.Window
 //     panels into the group they belong to (hostOf()); a closed panel waits, alive, outside the layout.
 //   * Dragging a group's grip (DockHandle) or one of its tabs (DockTabs) shows where it would go: onto another group's
 //     header or middle it joins that group as tabs, near its edge it docks beside it (that group's room is split), at
-//     the work area's edge it runs along that whole side, and anywhere else (over the title bar or the rail, outside the
-//     main window, or with Ctrl held) it gets a window of its own there (FloatingDock). Closing that window, or the
+//     the work area's edge it runs along that whole side, and anywhere else (over the title bar, outside the main
+//     window, or with Ctrl held) it gets a window of its own there (FloatingDock). Closing that window, or the
 //     button in its header, docks it back where it was; dragging its grip onto the workbench docks it there.
 //   * A panel's close button (its tab's ×, or the one in its header) closes it; openPanel() opens it again where it fits
-//     (the rail, the Window menu, the panel focus keys).
-//   * Every change is kept in the workspace (Workspaces.update): its layout and its floating windows' places.
+//     (the panel focus keys and other reveals).
+//   * UX rework (Premiere's frames): the group the user worked in last is the active one (`activeGroup`, drawn with an
+//     accent outline): the Window menu opens a closed panel there (openPanelInActiveGroup), Shift+` maximizes it and
+//     Ctrl+W closes its panel. A group can be maximized (`maximizedGroup`: it takes the whole work area, the others
+//     hide) and restored. A tab's menu closes, undocks and maximizes (tabMenuAction).
+//   * Every change is kept in the workspace (Workspaces.update): its layout and its floating windows' places. The active
+//     and the maximized group are not kept.
 QtObject {
     id: manager
 
@@ -35,10 +40,21 @@ QtObject {
     property var unavailable: []
     /// Where each group is in the work area now (Main.qml's layout: { group id: {x, y, width, height} }).
     property var rects: ({})
+    /// The groups that share one place now (Main.qml's layout: two monitors next to each other in too little room, one
+    /// shown with a Source/Program switch). The Window menu opens no panel into them (it would split them apart).
+    property var sharedGroups: []
     /// A gutter is being dragged.
     property bool resizing: false
     /// Writing the workspace (Main.qml then knows the change is ours and keeps the layout as it is).
     property bool saving: false
+    /// UX rework: the group the user worked in last ("" none): a press in it (DockSlot's glass), one of its tabs chosen,
+    /// a panel dropped there, or a panel of it focused through a focus key, the Window menu or Main.showBrowserPanel.
+    /// Focus given at startup does not set it. Cleared when its group goes away and when a workspace loads.
+    property string activeGroup: ""
+    /// UX rework: the group that takes the whole work area while the others hide ("" none; Main.qml lays it out alone).
+    /// Restored by toggling again, and when a workspace loads, a new group appears, its group goes away or floats, or a
+    /// panel of another group is shown.
+    property string maximizedGroup: ""
 
     // A grip or tab being dragged: its group's slot, the one panel being dragged ("": the whole group), the pointer
     // (work-area and screen coordinates), whether it left the main window, and what a drop would do now:
@@ -87,6 +103,8 @@ QtObject {
             }
             return qsTr("Put %1 along the bottom").arg(what)
         }
+        if (manager.drop.shared === true)
+            return qsTr("The two monitors share this space: drop left or right of them, or make the window wider to add tabs to a monitor")
         return qsTr("Drop on a panel's tabs or middle to add it there, near an edge to dock beside it, or outside the panels (or hold Ctrl) for a window")
     }
 
@@ -162,7 +180,15 @@ QtObject {
             if (!keep.includes(id) && slot && slot.floating)
                 manager.dockBack(slot, false)
         }
+        const before = Workspaces.groupsOf(manager.tree).map(g => g.group)
         manager.tree = Workspaces.normalizedLayout(next)
+        const after = Workspaces.groupsOf(manager.tree).map(g => g.group)
+        // Group ids come back (Workspaces.newGroupId): the active one goes with its group. A maximized group gone, or a
+        // new group (it would stay hidden), restores the layout.
+        if (manager.activeGroup !== "" && !after.includes(manager.activeGroup))
+            manager.activeGroup = ""
+        if (manager.maximizedGroup !== "" && (!after.includes(manager.maximizedGroup) || after.some(id => !before.includes(id))))
+            manager.maximizedGroup = ""
         manager.syncGroups()
         manager.save()
     }
@@ -297,8 +323,12 @@ QtObject {
         if (slot && slot.floating)
             manager.dockBack(slot, false)
         const rest = manager.withoutGroup(manager.tree, gid)
-        if (rest && Workspaces.groupsOf(rest).some(x => x.group === targetId))
+        if (rest && Workspaces.groupsOf(rest).some(x => x.group === targetId)) {
+            // It shows where it lands: a maximized group gives the room back (the group keeps its id, so setTree sees
+            // nothing new: a group back from its window would stay hidden).
+            manager.expose(gid)
             manager.setTree(manager.insertBeside(rest, targetId, Workspaces.copy(g), side))
+        }
     }
     /// The panel `key` docks on `side` of the group `targetId` in a group of its own.
     function movePanelBeside(key: string, targetId: string, side: string) {
@@ -320,6 +350,7 @@ QtObject {
             const slot = manager.slotOf(gid)
             if (slot && slot.floating)
                 manager.dockBack(slot, false)
+            manager.expose(gid) // it shows along that edge (see moveGroupBeside)
             manager.setTree(manager.insertAtEdge(manager.withoutGroup(manager.tree, gid), Workspaces.copy(g), side))
         } else {
             const leaf = { group: Workspaces.newGroupId(manager.tree), panels: [key], current: key }
@@ -339,11 +370,13 @@ QtObject {
         return id
     }
 
-    /// Shows the panel `key` in its group (its tab), raising its window when it floats.
+    /// Shows the panel `key` in its group (its tab), raising its window when it floats (and restoring the layout when
+    /// another group is maximized).
     function activate(key: string) {
         const g = manager.groupOfPanel(key)
         if (!g)
             return
+        manager.expose(g.group)
         if (g.current !== key) {
             const next = Workspaces.copy(manager.tree)
             Workspaces.groupsOf(next).find(x => x.group === g.group).current = key
@@ -356,8 +389,13 @@ QtObject {
     /// Opens the panel `key` (and shows it): where it is, else as a tab where panels like it are (Workspaces.catalog's
     /// `column`: with the browser panels, with the clip editors; none there: beside the monitors, left or right), a
     /// monitor beside the other one, the timeline along the bottom, else as a tab in the largest group. Returns the
-    /// group's id.
+    /// group's id. A maximized group other than that one is restored (the panel would stay hidden).
     function openPanel(key: string): string {
+        const id = manager.placePanel(key)
+        manager.expose(id)
+        return id
+    }
+    function placePanel(key: string): string {
         const open = manager.groupOfPanel(key)
         if (open) {
             manager.activate(key)
@@ -416,6 +454,125 @@ QtObject {
             return
         manager.setTree(manager.withoutPanel(manager.tree, key))
     }
+    /// Closes the other panels of `key`'s group (the tab menu's Close Other Panels in Group); `key` shows.
+    function closeOthers(key: string) {
+        const g = manager.groupOfPanel(key)
+        if (!g || g.panels.length < 2)
+            return
+        let next = manager.tree
+        for (const k of g.panels) {
+            if (k !== key)
+                next = manager.withoutPanel(next, k)
+        }
+        manager.setTree(next)
+    }
+
+    // ---- UX rework: the active group, the Window menu, the maximized frame, the tab menu ----
+
+    /// `gid` becomes the active group (when it exists).
+    function setActiveGroup(gid: string) {
+        if (gid !== "" && manager.leafOf(gid))
+            manager.activeGroup = gid
+    }
+    /// The group whose panels hold `item` (up to its DockHolder), or "".
+    function groupOfItem(item: Item): string {
+        for (let p = item; p; p = p.parent) {
+            if (p instanceof DockHolder)
+                return ((p as DockHolder).dockSlot as DockSlot)?.dockKey ?? ""
+        }
+        return ""
+    }
+    /// The docked group under the mouse pointer (its slot's glass is hovered), or "".
+    function groupUnderPointer(): string {
+        for (const id of Object.keys(manager.docked)) {
+            const slot = manager.slotOf(id)
+            if (slot && slot.pointerInside && slot.visible && !slot.floating)
+                return id
+        }
+        return ""
+    }
+    /// The Window menu (Premiere): a closed panel opens as a tab of the active group and shows there; an open one comes
+    /// to the front where it is (its tab; its window raised). Without an active group, or when it is a monitor sharing
+    /// its place with the other one (a tab there would split them into two narrow columns): where it fits (openPanel's
+    /// column rule). The panel's group becomes the active one; returns its id.
+    function openPanelInActiveGroup(key: string): string {
+        const target = manager.leafOf(manager.activeGroup)
+        if (manager.isOpen(key) || !target || !Workspaces.panelKeys.includes(key)
+                || manager.sharedGroups.includes(target.group)) {
+            const id = manager.openPanel(key)
+            manager.setActiveGroup(id)
+            return id
+        }
+        manager.expose(target.group)
+        manager.setTree(manager.withTabs(manager.tree, target.group, [key]))
+        const slot = manager.slotOf(target.group)
+        if (slot && slot.floating)
+            slot.floatWindow.requestActivate()
+        return target.group
+    }
+    /// A maximized group other than `gid` gives the room back (so that `gid` shows).
+    function expose(gid: string) {
+        if (manager.maximizedGroup !== "" && gid !== "" && gid !== manager.maximizedGroup)
+            manager.maximizedGroup = ""
+    }
+    /// Maximize / Restore Frame: the group `gid` takes the whole work area (the others hide), or, with a group maximized,
+    /// the layout comes back (whichever group asks: a floating one too). A floating group is not maximized: it keeps its
+    /// window. Returns whether a group is maximized.
+    function toggleMaximize(gid: string): bool {
+        if (manager.maximizedGroup !== "") {
+            manager.maximizedGroup = ""
+            return false
+        }
+        const slot = manager.slotOf(gid)
+        if (slot && slot.floating)
+            return false
+        if (!manager.leafOf(gid) || manager.shownPanel(gid) === "")
+            return false
+        manager.maximizedGroup = gid
+        manager.activeGroup = gid
+        return true
+    }
+    /// A tab menu's choice (DockTabMenu) for the panel `key` of the group `gid`: "close", "closeOthers", "undock" (the
+    /// panel in a window of its own), "undockGroup" (the group in a window, or docked back from one) or "maximize".
+    function tabMenuAction(what: string, gid: string, key: string) {
+        const slot = manager.slotOf(gid)
+        switch (what) {
+        case "close":
+            manager.closePanel(key)
+            return
+        case "closeOthers":
+            manager.closeOthers(key)
+            return
+        case "undock": {
+            const g = manager.groupOfPanel(key)
+            if (!g)
+                return
+            if (g.panels.length === 1) {
+                const own = manager.slotOf(g.group)
+                if (own && !own.floating)
+                    manager.popOut(own)
+                return
+            }
+            const id = manager.detach(key)
+            const own = manager.slotOf(id)
+            if (own)
+                manager.popOut(own)
+            manager.setActiveGroup(id)
+            return
+        }
+        case "undockGroup":
+            if (!slot)
+                return
+            if (slot.floating)
+                manager.dockBack(slot, true)
+            else
+                manager.popOut(slot)
+            return
+        case "maximize":
+            manager.toggleMaximize(gid)
+            return
+        }
+    }
 
     /// Moves a gutter between two children (`before`, `after`: their indexes in the split at `path`, sizes in px) by
     /// `delta` px, each keeping at least `least`.
@@ -461,11 +618,12 @@ QtObject {
     /// Lays `root` out in a w × h work area. `present[id]`: the group takes room now; `gap`: the gutter; `dualMin`: the
     /// least room two monitors side by side take (two single-monitor groups next to each other in less share it, one
     /// shown); `least`: what a child keeps at least. Returns { rects: { group id: {x, y, width, height} },
-    /// gutters: [{ vertical, x, y, length, path, before, after, sizeBefore, sizeAfter }], merged }: `vertical` gutters lie
-    /// between stacked children (dragged up and down).
+    /// gutters: [{ vertical, x, y, length, path, before, after, sizeBefore, sizeAfter }], merged, shared: [group ids] }:
+    /// `vertical` gutters lie between stacked children (dragged up and down); `shared`: the groups sharing a place.
     function layout(root: var, w: real, h: real, present: var, gap: real, dualMin: real, least: real): var {
         const rects = {}
         const gutters = []
+        const sharing = []
         let merged = false
         const takesRoom = node => manager.isGroup(node) ? present[node.group] === true : node.children.some(c => takesRoom(c))
         const monitorOf = node => {
@@ -533,6 +691,7 @@ QtObject {
                 const r = { x: kids[k].start, y: y, width: kids[k + 1].end - kids[k].start, height: height }
                 rects[kids[k].node.group] = r
                 rects[kids[k + 1].node.group] = r
+                sharing.push(kids[k].node.group, kids[k + 1].node.group)
                 merged = true
             }
             for (let k = 0; k + 1 < kids.length; ++k) {
@@ -549,7 +708,7 @@ QtObject {
         }
         if (root)
             place(root, 0, 0, w, h, [])
-        return { rects: rects, gutters: gutters, merged: merged }
+        return { rects: rects, gutters: gutters, merged: merged, shared: sharing }
     }
 
     // ---- Dragging a grip or a tab ----
@@ -631,7 +790,7 @@ QtObject {
         const at = t.mapToItem(a, 0, 0)
         // Its tabs (or the header of its one panel) and its middle: join it.
         if (p.y - at.y < manager.headerZone)
-            return own ? { kind: "none" } : { kind: "join", target: t }
+            return own ? { kind: "none" } : manager.besideShared({ kind: "join", target: t })
         const fx = (p.x - at.x) / t.width
         const fy = (p.y - at.y) / t.height
         const near = { left: fx, right: 1 - fx, top: fy, bottom: 1 - fy }
@@ -641,8 +800,23 @@ QtObject {
                 side = s
         }
         if (near[side] < manager.sideZone)
-            return { kind: "beside", target: t, side: side }
-        return own ? { kind: "none" } : { kind: "join", target: t }
+            return manager.besideShared({ kind: "beside", target: t, side: side })
+        return own ? { kind: "none" } : manager.besideShared({ kind: "join", target: t })
+    }
+    /// A drop onto one of two monitors that share their place (sharedGroups, in left-right pairs): a tab there or a
+    /// group above or below it would split them into two narrow columns, so it does nothing (the overlay says why); left
+    /// of the pair or right of it, it docks beside the pair's outer monitor so they keep sharing.
+    function besideShared(d: var): var {
+        const i = manager.sharedGroups.indexOf(d.target.dockKey)
+        if (i < 0 || (manager.dragged === d.target && manager.draggingWhole()))
+            return d
+        if (d.kind === "beside" && (d.side === "left" || d.side === "right")) {
+            const pair = i - (i % 2)
+            const outer = manager.slotOf(manager.sharedGroups[d.side === "left" ? pair : pair + 1])
+            if (outer && outer !== manager.dragged)
+                return { kind: "beside", target: outer, side: d.side }
+        }
+        return { kind: "none", shared: true }
     }
 
     /// Where a drop would put the panel, in the work area's coordinates.
@@ -692,6 +866,8 @@ QtObject {
         const whole = manager.draggingWhole()
         const key = manager.draggedPanel
         const gid = slot.dockKey
+        // The panel that moves (a whole group: the one it shows): its group is the active one after the drop.
+        const moved = key !== "" ? key : manager.shownPanel(gid)
         manager.dragged = null
         manager.draggedPanel = ""
         manager.drop = { kind: "none" }
@@ -730,6 +906,8 @@ QtObject {
             manager.putAtEdge(gid, whole ? "" : key, d.side)
             break
         }
+        if (d.kind !== "none")
+            manager.setActiveGroup(manager.groupOfPanel(moved)?.group ?? "")
     }
 
     // ---- Floating windows ----
@@ -747,6 +925,9 @@ QtObject {
     function popOutAt(slot: DockSlot, rect: rect) {
         if (slot.floating)
             return
+        // A maximized group leaving the work area gives the room back.
+        if (manager.maximizedGroup === slot.dockKey)
+            manager.maximizedGroup = ""
         const w = Math.max(480, Math.round(rect.width))
         const h = Math.max(320, Math.round(rect.height))
         const win = manager.floatComponent.createObject(manager.mainWindow, {
@@ -760,7 +941,9 @@ QtObject {
         manager.save()
     }
 
-    /// The slot's panels back in the main window (`keep`: the workspace remembers it; a group going away does not).
+    /// The slot's panels back in the main window (`keep`: the group stays where it was docked - it shows there, so a
+    /// maximized group gives the room back - and the workspace remembers it; a group going away or moving elsewhere
+    /// does neither: its caller does).
     function dockBack(slot: DockSlot, keep: bool) {
         const win = slot.floatWindow
         if (!win)
@@ -770,6 +953,7 @@ QtObject {
         win.visible = false
         win.destroy()
         if (keep) {
+            manager.expose(slot.dockKey)
             manager.save()
             manager.mainWindow.requestActivate()
         }
@@ -791,6 +975,9 @@ QtObject {
         }
         const w = Workspaces.find(id)
         manager.workspace = id
+        // Another layout: no group is active or maximized there yet.
+        manager.activeGroup = ""
+        manager.maximizedGroup = ""
         manager.tree = w ? Workspaces.copy(w.layout) : null
         manager.syncGroups()
         return w ? w.floating : ({})

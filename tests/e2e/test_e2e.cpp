@@ -1261,19 +1261,54 @@ TEST_CASE("e2e: captions drawn in the monitor, the recovery dashboard, a collect
     const QString shots = QString::fromStdU16String((fs::path(WABCUT_TEST_OUTPUT_DIR) / "e2e" / "screenshots").u16string());
     QDir().mkpath(shots);
     CHECK(captioned.copy(sceneRect(monitorPanel)).save(shots + QStringLiteral("/monitor_captions.png")));
-    // The caption is in the picture: the karaoke highlight colour (the words already spoken) appears in the
-    // monitor, which the test pattern itself does not contain.
+    // The caption is in the picture: the same frame with the captions hidden (Captions.overlay off) differs only where
+    // the caption is drawn - a box in the lower part of the picture, with the karaoke highlight colour (the words already
+    // spoken) on some of its letters and white on the rest. (The test pattern itself has orange-ish pixels along its
+    // diagonal, so a colour count over the whole monitor does not tell whether the caption is there.)
+    QObject* captionsBridge = engine.singletonInstance<QObject*>("Wabcut", "Captions");
+    REQUIRE(captionsBridge);
+    REQUIRE(captionsBridge->setProperty("overlay", false));
+    REQUIRE(waitFor([&] { return !playback->captionsShown(); }, 5000));
+    spin(600); // the paused frame is composited again without them
+    QQuickWindowPrivate::get(window.get())->polishItems();
+    (void)window->grabWindow();
+    spin(100);
+    QQuickWindowPrivate::get(window.get())->polishItems();
+    const QImage plain = window->grabWindow();
+    REQUIRE_FALSE(plain.isNull());
+    CHECK(plain.copy(sceneRect(monitorPanel)).save(shots + QStringLiteral("/monitor_captions_off.png")));
     {
-        const QImage monitorArea = captioned.copy(sceneRect(monitor));
-        int highlighted = 0;
-        for (int y = 0; y < monitorArea.height(); ++y) {
-            for (int x = 0; x < monitorArea.width(); ++x) {
-                const QColor c = monitorArea.pixelColor(x, y);
-                highlighted += std::abs(c.red() - 255) < 30 && std::abs(c.green() - 209) < 30 && std::abs(c.blue() - 64) < 30 ? 1 : 0;
+        const QImage withCaption = captioned.copy(sceneRect(monitor));
+        const QImage without = plain.copy(sceneRect(monitor));
+        REQUIRE(withCaption.size() == without.size());
+        int changed = 0;
+        int highlighted = 0; // the karaoke highlight (255, 209, 64), anti-aliased against the caption's box
+        int white = 0;       // the words still to come
+        QRect box;
+        for (int y = 0; y < withCaption.height(); ++y) {
+            for (int x = 0; x < withCaption.width(); ++x) {
+                const QColor c = withCaption.pixelColor(x, y);
+                const QColor o = without.pixelColor(x, y);
+                if (std::abs(c.red() - o.red()) + std::abs(c.green() - o.green()) + std::abs(c.blue() - o.blue()) < 48) {
+                    continue;
+                }
+                ++changed;
+                box = box.united(QRect(x, y, 1, 1));
+                highlighted += c.red() > 170 && c.green() > 130 && c.blue() < 140 && c.red() - c.blue() > 80 ? 1 : 0;
+                white += c.red() > 190 && c.green() > 190 && c.blue() > 190 ? 1 : 0;
             }
         }
-        CHECK(highlighted > 30);
+        INFO("changed " << changed << " in " << box.x() << "," << box.y() << " " << box.width() << "x" << box.height()
+                        << " of " << withCaption.width() << "x" << withCaption.height() << "; highlighted " << highlighted
+                        << " white " << white);
+        CHECK(changed > 300);                                   // a caption box, not a few stray pixels
+        CHECK(box.center().y() > withCaption.height() / 2);     // in the lower part of the picture
+        CHECK(box.width() > box.height() * 3);                  // a line of text
+        CHECK(highlighted > 10);
+        CHECK(white > 5);
     }
+    REQUIRE(captionsBridge->setProperty("overlay", true));
+    REQUIRE(waitFor([&] { return playback->captionsShown(); }, 5000));
     project->setPlayhead(Ticks::fromSeconds(4));
     spin(800);
     QQuickWindowPrivate::get(window.get())->polishItems();
@@ -1769,7 +1804,8 @@ TEST_CASE("e2e: the Color workspace - grade, scopes, before/after, reference, Au
     REQUIRE(reference.startsWith(QStringLiteral("asset:")));
     REQUIRE(file->save());
     fs::rename(looks, dir / "moved");
-    REQUIRE(file->open(urlOf(projectFile)));
+    // File > Revert reads the saved project again (opening the project that is already open leaves it as it is).
+    REQUIRE(file->revert());
     spin(300);
     CHECK(file->offlineCount() == 1);
     const QVariantList offline = file->offlineMedia();

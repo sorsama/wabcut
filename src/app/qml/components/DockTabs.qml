@@ -5,7 +5,8 @@ import QtQuick
 // (DockSlot lays them there). The shown panel's tab rises from the strip in the panel's colour with flared feet; the
 // others are a hue dot and a name, divided by hairlines. A click (or Left / Right) shows a panel; its × (or a middle
 // click) closes it; dragging a tab moves just that panel: onto another group's tabs or middle to join it, near its edge
-// to dock beside it, or outside the panels (or with Ctrl held) for a window of its own (DockManager).
+// to dock beside it, or outside the panels (or with Ctrl held) for a window of its own (DockManager). UX rework: a
+// right-click (or the Menu key / Shift+F10) opens the tab's menu (DockTabMenu); a double-click maximizes the group.
 Item {
     id: root
 
@@ -27,15 +28,33 @@ Item {
     Accessible.role: Accessible.PageTabList
     Accessible.name: qsTr("Panels in this group")
 
-    // Arrow keys move between the tabs here: claim them so the keymap does not move the playhead.
+    // Arrow keys move between the tabs here: claim them so the keymap does not move the playhead. The Menu key and
+    // Shift+F10 open the shown tab's menu.
     Keys.onShortcutOverride: event => event.accepted = event.key === Qt.Key_Left || event.key === Qt.Key_Right
+                                                       || root.isMenuKey(event)
     Keys.onLeftPressed: root.step(-1)
     Keys.onRightPressed: root.step(1)
+    Keys.onPressed: event => {
+        if (root.isMenuKey(event)) {
+            event.accepted = true
+            root.openMenuFor(root.current)
+        }
+    }
+    function isMenuKey(event: KeyEvent): bool {
+        return event.key === Qt.Key_Menu || (event.key === Qt.Key_F10 && (event.modifiers & Qt.ShiftModifier) !== 0)
+    }
     function step(delta: int) {
         const i = root.panels.indexOf(root.current)
         const next = root.panels[Math.max(0, Math.min(root.panels.length - 1, i + delta))]
         if (next && next !== root.current)
             root.activated(next)
+    }
+    /// The tab menu of `key`'s tab, under it.
+    function openMenuFor(key: string) {
+        const i = root.panels.indexOf(key)
+        if (i < 0)
+            return
+        root.slot?.openTabMenu(key, root, root.tabX(i), root.height)
     }
 
     FocusRing {
@@ -150,10 +169,17 @@ Item {
 
                     TapHandler {
                         onTapped: root.activated(tab.modelData)
+                        // Premiere: a double-click on a panel's tab maximizes its frame (again: restores).
+                        onDoubleTapped: root.slot?.toggleMaximize()
                     }
                     TapHandler {
                         acceptedButtons: Qt.MiddleButton
                         onTapped: root.closeRequested(tab.modelData)
+                    }
+                    TapHandler {
+                        acceptedButtons: Qt.RightButton
+                        onTapped: eventPoint => root.slot?.openTabMenu(tab.modelData, grabArea, eventPoint.position.x,
+                                                                        eventPoint.position.y)
                     }
                     DragHandler {
                         id: drag

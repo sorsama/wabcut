@@ -4,7 +4,7 @@ import QtQuick
 // Settings > AI (0.1.3; it replaces the Preferences > AI popup): one switch for every AI feature, the assistant's model
 // with a field for any model by name (a provider's newest model, an OpenRouter or Ollama id), then the AI platform's
 // pages: Providers (keys, checked and kept in the OS keychain, never shown; server addresses), Models, Privacy, Usage
-// and the local assistant. Turning AI off hides the AI entry points (the rail's Generate, the sequence menu's script
+// and the local assistant. Turning AI off hides the AI entry points (the Window menu's Generate, the sequence menu's script
 // tools) and turns AiController's offline mode on, so no AI request leaves the computer; turning it back on restores
 // the offline mode it had. objectName and currentTab keep the old popup's names (tests, the transcript's "set up").
 Item {
@@ -62,6 +62,30 @@ Item {
         page.messageOk = ok
         page.message = text
     }
+    /// The Settings search (SettingsPage.reveal's counterpart; AppSettings.index rows of page "ai"): "aiFeatures" and
+    /// "assistantModel" flash their row and focus its control; "aiProviders", "aiModels", "aiPrivacy", "aiUsage" and
+    /// "localAssistant" show that tab. False for another key.
+    function reveal(target: var): bool {
+        const tab = ["aiProviders", "aiModels", "aiPrivacy", "aiUsage", "localAssistant"].indexOf(target)
+        if (tab >= 0) {
+            tabs.currentIndex = tab
+            if (tabs.enabled)
+                tabs.forceActiveFocus(Qt.TabFocusReason)
+            return true
+        }
+        const row = target === "aiFeatures" ? featuresRow : target === "assistantModel" ? modelRow : null
+        if (!row)
+            return false
+        row.flash()
+        const control = row.nextItemInFocusChain(true)
+        for (let p = control; p; p = p.parent) {
+            if (p === row) {
+                control.forceActiveFocus(Qt.TabFocusReason)
+                break
+            }
+        }
+        return true
+    }
 
     Component.onCompleted: {
         if (page.customProvider === "" && page.providerList.length > 0)
@@ -101,6 +125,8 @@ Item {
 
         SettingsSection {
             SettingsRow {
+                id: featuresRow
+                rowKey: "aiFeatures"
                 label: qsTr("AI features")
                 description: Preferences.aiEnabled
                              ? qsTr("On. %1").arg(AiController.statusLabel)
@@ -113,7 +139,9 @@ Item {
                 }
             }
             SettingsRow {
+                id: modelRow
                 objectName: "aiAssistantModelRow"
+                rowKey: "assistantModel"
                 enabled: Preferences.aiEnabled
                 opacity: enabled ? 1 : Theme.disabledOpacity
                 label: qsTr("Assistant model")

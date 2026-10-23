@@ -33,6 +33,11 @@ AbstractButton {
     readonly property bool hasPicture: frame.status === Image.Ready && frame.implicitWidth > 1
     /// M5l: a stem's source ("separated from"), or "".
     required property string derivedFrom
+    /// UX rework (stream T): the item's Source Monitor In/Out (Library.items `marks`: { in, out (0..1 of the card's
+    /// range), inText, outText, durationText }, {} when unmarked): an accent band along the thumbnail's foot and the
+    /// marked length in the badge. A drag onto the timeline edits in that range.
+    property var marks: ({})
+    readonly property bool marked: (card.marks.durationText ?? "") !== ""
     /// 0.2 (P.3): a search bin (its icon), and the Freeform view's metadata lines under the name (Freeform View
     /// Options; empty: the usual line).
     property bool searchBin: false
@@ -150,7 +155,20 @@ AbstractButton {
                 height: parent.height
                 color: Theme.scrimText
             }
-            // Duration, or the timecode under the pointer.
+            // UX rework (stream T): the marked In to Out along the foot of the thumbnail.
+            Rectangle {
+                objectName: "libraryCardMarks"
+                visible: card.marked && !card.isBin
+                x: Math.round(thumb.border.width + (card.marks.in ?? 0) * (thumb.width - 2 * thumb.border.width))
+                width: Math.max(Theme.space(1), Math.round(((card.marks.out ?? 1) - (card.marks.in ?? 0))
+                                                           * (thumb.width - 2 * thumb.border.width)))
+                height: Theme.space(1)
+                anchors.bottom: parent.bottom
+                anchors.bottomMargin: thumb.border.width
+                radius: height / 2
+                color: Theme.accentFill
+            }
+            // Duration (the marked length when In/Out are set), or the timecode under the pointer.
             Rectangle {
                 visible: badgeText.text !== ""
                 anchors.right: parent.right
@@ -163,7 +181,8 @@ AbstractButton {
                 Text {
                     id: badgeText
                     anchors.centerIn: parent
-                    text: card.scrubbing && scrub.timecode !== "" ? scrub.timecode : card.durationText
+                    text: card.scrubbing && scrub.timecode !== "" ? scrub.timecode
+                          : card.marked ? card.marks.durationText : card.durationText
                     color: Theme.scrimText
                     font.family: Theme.fontMono
                     font.pixelSize: Theme.textXs

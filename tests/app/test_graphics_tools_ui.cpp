@@ -20,6 +20,10 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <QQmlComponent>
+
+#include <memory>
+
 using namespace wabcut;
 using namespace wabcut::app;
 using namespace wabcut::test;
@@ -186,6 +190,52 @@ TEST_CASE("Text Styles are Library items: apply to the selected graphics, duplic
     CHECK(rig.layer(4).textStyle == "Heading");
     CHECK(rig.tools.removeTextStyle(QStringLiteral("Heading")) == QString());
     CHECK(rig.tools.textStyleItems().size() == 1);
+}
+
+// The QML singleton: Qt 6.11 constructs GraphicTools itself (it is default-constructible, so create() never runs) and the
+// bridge has to find the shell's ProjectController on its own - else every tool said "No project".
+TEST_CASE("GraphicTools in the shell works on the open project", "[app][graphics][textStyles][qml]") {
+    resetSettings();
+    clearMessages();
+    Shell shell;
+    REQUIRE(shell.window);
+    auto* controller = shell.engine.singletonInstance<ProjectController*>("Wabcut", "ProjectController");
+    REQUIRE(controller);
+    Timeline tl{kPicture};
+    Graphic g;
+    g.layers = {text(4, "Around the world", 960, 540)};
+    auto added = edit::addGraphic(tl.state, tl.seq, tl.track("V2"), Ticks{}, seconds(2), g);
+    REQUIRE(added);
+    const ClipId clip = added->placed.at(0);
+    controller->resetProject(added->state, tl.seq);
+    controller->selectClip(clipKey(clip));
+
+    auto* tools = shell.engine.singletonInstance<GraphicToolsBridge*>("Wabcut", "GraphicTools");
+    REQUIRE(tools);
+    // On first use (no event loop yet): the action reaches the project, one undo step.
+    const auto before = controller->session().undoCount();
+    CHECK(tools->createTextStyle(clipKey(clip), 4, QStringLiteral("Title")) == QString());
+    CHECK(tools->message().isEmpty());
+    CHECK(controller->session().undoCount() == before + 1);
+    CHECK(tools->textStyles() == QStringList{QStringLiteral("Title")});
+    // QML sees the project's text styles, and the Library's Text Style items act on the selected graphic.
+    QQmlComponent component(&shell.engine);
+    component.setData("import QtQuick\nimport Wabcut\nQtObject { property var styles: GraphicTools.textStyles\n"
+                      "property var items: GraphicTools.textStyles.length >= 0 ? GraphicTools.textStyleItems() : [] }\n",
+                      QUrl());
+    std::unique_ptr<QObject> probe(component.create());
+    INFO(component.errorString().toStdString());
+    REQUIRE(probe);
+    CHECK(probe->property("styles").toStringList() == QStringList{QStringLiteral("Title")});
+    CHECK(probe->property("items").toList().size() == 1);
+    CHECK(tools->duplicateTextStyle(QStringLiteral("Title")) == QStringLiteral("Title copy"));
+    spin(20);
+    CHECK(probe->property("styles").toStringList() == QStringList{QStringLiteral("Title"), QStringLiteral("Title copy")});
+    CHECK(tools->applyTextStyleToSelection(QStringLiteral("Title copy")) == QString());
+
+    const QStringList messages = takeMessages();
+    INFO(join(messages));
+    CHECK(messages.isEmpty());
 }
 
 TEST_CASE("The Caption Style panel's Track Style follows a preset and pushes to it", "[app][captions][trackStyle]") {

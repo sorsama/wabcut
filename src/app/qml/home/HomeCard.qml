@@ -2,8 +2,8 @@ import QtQuick
 import QtQuick.Layouts
 
 // A card on the Home screen (design language v3): an island (the panel surface on the black stage, radius 22, no edge,
-// no slice) headed by a small caps label ("NEW PROJECT"), optionally after a hue dot, with tools at the right of that
-// row, then its content.
+// no slice) headed by a small caps label ("CONTINUE", "RECENT"), optionally after a hue dot, with tools at the right of
+// that row, then its content. Home's pages give their islands a fixed height; the content fills it.
 // When the Home screen opens (`revealed`), cards rise 12 px and fade in, one after another (`order`), with the soft
 // ease-out; under reduce-motion they simply appear.
 Item {
@@ -50,6 +50,7 @@ Item {
 
         RowLayout {
             Layout.fillWidth: true
+            Layout.fillHeight: false
             Layout.minimumHeight: Theme.controlHeightSmall
             visible: root.title !== ""
             spacing: Theme.space(2)
@@ -78,9 +79,12 @@ Item {
             }
         }
 
+        // Fills the card when it is given more than its content's height (Home's pages): a child with
+        // Layout.fillHeight takes the room (a list that scrolls inside).
         ColumnLayout {
             id: body
             Layout.fillWidth: true
+            Layout.fillHeight: true
             spacing: Theme.space(3)
         }
     }

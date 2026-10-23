@@ -174,15 +174,156 @@ TEST_CASE("Command availability explains why a command cannot run now", "[app][p
     const auto find = [&](const char* id) {
         return std::ranges::find_if(items, [&](const PaletteItem& i) { return i.key == QStringLiteral("command:") + QLatin1String(id); });
     };
-    REQUIRE(find("sequence.renderInToOut") != items.end());
-    CHECK_FALSE(find("sequence.renderInToOut")->enabled);
-    CHECK(find("sequence.renderInToOut")->reason == QStringLiteral("Not available yet"));
+    REQUIRE(find("metadata.loop") != items.end()); // the Metadata panel's Loop: nothing runs it yet
+    CHECK_FALSE(find("metadata.loop")->enabled);
+    CHECK(find("metadata.loop")->reason == QStringLiteral("Not available yet"));
+    REQUIRE(find("sequence.renderInToOut") != items.end()); // UX rework: Main.qml routes it (its key works)
+    CHECK(find("sequence.renderInToOut")->enabled);
     REQUIRE(find("file.save") != items.end()); // Main.qml runs the File menu (ProjectFile)
     CHECK(find("file.save")->enabled);
     REQUIRE(find("tool.razor") != items.end());
     CHECK(find("tool.razor")->enabled);
     REQUIRE(find("edit.undo") != items.end());
     CHECK(find("edit.undo")->enabled);
+}
+
+// UX rework (stream S): what Main.qml routes - the panel and workspace keys, the shell's window and file commands, Render
+// In to Out, the timeline's track keys, Graphics and Moments - is listed as ready, not "Not available yet"; the Library
+// and Multi-Camera answer for their own keys.
+TEST_CASE("Palette: the window and workspace commands Main.qml routes are ready", "[app][palette]") {
+    for (const char* id :
+         {"window.projects", "window.effects", "window.mediaBrowser", "window.timeline", "window.audioTrackMixer",
+          "window.audioClipMixer", "window.workspace1", "window.workspace5", "window.workspace9",
+          "window.effectControls", "window.resetToSavedLayout", "window.maximizeFrame", "file.close",
+          "file.closeProject", "file.saveCopy", "file.sendToMediaEncoder", "edit.preferences", "edit.find",
+          "clip.makeSubclip", "sequence.renderInToOut", "sequence.trimEdit", "sequence.toggleTrimType",
+          "timeline.showVideoFadeHandles", "timeline.expandAllTracks", "timeline.nextSequenceTab", "marker.goToNext",
+          "marker.clearSelected", "graphics.newTextLayer", "graphics.selectPreviousLayer", "moments.slowMo",
+          "history.stepBackward", "history.stepForward", "project.newBin", "multicam.toggleView",
+          "multicam.cutToCamera3"}) {
+        INFO(id);
+        CHECK(KeymapCommandProvider::viewHandles(QString::fromLatin1(id)));
+    }
+    // Typed edits keep their prompts (Add Marker asks for a name and a colour); nothing routes these yet.
+    for (const char* id : {"marker.add", "effects.newCustomBin", "history.delete", "metadata.loop"}) {
+        INFO(id);
+        CHECK_FALSE(KeymapCommandProvider::viewHandles(QString::fromLatin1(id)));
+    }
+
+    // The app's provider: ready rows, and a bridge's own answer for its ids (the Multi-Camera view is off).
+    ProjectController controller;
+    QStringList asked;
+    const auto provider = KeymapCommandProvider::forApp(nullptr, &controller, [&](const QString& id) -> QVariantMap {
+        asked << id;
+        if (!id.startsWith(QLatin1String("multicam.")))
+            return {};
+        return {{QStringLiteral("handled"), true},
+                {QStringLiteral("enabled"), id == QLatin1String("multicam.toggleView")},
+                {QStringLiteral("reason"), QStringLiteral("Turn on the multi-camera view first")}};
+    });
+    const auto items = provider->items({});
+    const auto find = [&](const char* id) {
+        return std::ranges::find_if(items, [&](const PaletteItem& i) { return i.key == QStringLiteral("command:") + QLatin1String(id); });
+    };
+    for (const char* id : {"window.workspace3", "window.effectControls", "file.saveCopy", "file.closeProject",
+                           "timeline.expandAllTracks", "graphics.newTextLayer"}) {
+        INFO(id);
+        REQUIRE(find(id) != items.end());
+        CHECK(find(id)->enabled);
+    }
+    REQUIRE(find("multicam.cutToCamera2") != items.end());
+    CHECK_FALSE(find("multicam.cutToCamera2")->enabled);
+    CHECK(find("multicam.cutToCamera2")->reason == QStringLiteral("Turn on the multi-camera view first"));
+    REQUIRE(find("multicam.toggleView") != items.end());
+    CHECK(find("multicam.toggleView")->enabled);
+    // The controller answers first: the bridges are not asked for its ids.
+    CHECK_FALSE(asked.contains(QStringLiteral("edit.undo")));
+    CHECK(asked.contains(QStringLiteral("multicam.toggleView")));
+}
+
+TEST_CASE("Palette: rows the shell hands over run through shellActionRequested", "[app][palette]") {
+    PaletteRig rig;
+    CommandPalette& p = rig.palette;
+    QStringList requested;
+    QObject::connect(&p, &CommandPalette::shellActionRequested, [&](const QString& id) { requested << id; });
+
+    const QVariantList rows{
+        QVariantMap{{QStringLiteral("id"), QStringLiteral("panel:library")},
+                    {QStringLiteral("title"), QStringLiteral("Open panel: Library")},
+                    {QStringLiteral("group"), QStringLiteral("Window")},
+                    {QStringLiteral("shortcut"), QStringLiteral("Shift+1")},
+                    {QStringLiteral("keywords"), QStringList{QStringLiteral("project panel"), QStringLiteral("bins")}}},
+        QVariantMap{{QStringLiteral("id"), QStringLiteral("workspace:7")},
+                    {QStringLiteral("title"), QStringLiteral("Workspace: Color grading")},
+                    {QStringLiteral("group"), QStringLiteral("Window")},
+                    {QStringLiteral("detail"), QStringLiteral("From the Color preset")}},
+        QVariantMap{{QStringLiteral("id"), QStringLiteral("panel:generate")},
+                    {QStringLiteral("title"), QStringLiteral("Open panel: Generate")},
+                    {QStringLiteral("enabled"), false},
+                    {QStringLiteral("reason"), QStringLiteral("AI features are off")}},
+        QVariantMap{{QStringLiteral("id"), QStringLiteral("panel:library")}, {QStringLiteral("title"), QStringLiteral("Twice")}},
+        QVariantMap{{QStringLiteral("id"), QStringLiteral("no-title")}},
+        QVariantMap{{QStringLiteral("title"), QStringLiteral("No id")}},
+    };
+    CHECK(p.setShellActions(rows) == 3); // the second "panel:library" and the rows without id or title are skipped
+
+    // Found by title, keywords and shortcut like the keymap's rows.
+    p.setQuery(QStringLiteral("open panel lib"));
+    CHECK(titles(p.results(), 1) == QStringList{QStringLiteral("Open panel: Library")});
+    p.setQuery(QStringLiteral("bins"));
+    CHECK(!rowWithKey(p.results(), QStringLiteral("shell:panel:library")).isEmpty());
+    p.setQuery(QStringLiteral("color grading"));
+    const QVariantMap workspace = rowWithKey(p.results(), QStringLiteral("shell:workspace:7"));
+    CHECK(workspace.value(QStringLiteral("detail")).toString() == QStringLiteral("From the Color preset"));
+    CHECK(workspace.value(QStringLiteral("enabled")).toBool());
+
+    // Running one hands its id back to the shell and makes it recent; a disabled one gives its reason.
+    CHECK(p.activate(QStringLiteral("shell:panel:library")).isEmpty());
+    CHECK(requested == QStringList{QStringLiteral("panel:library")});
+    CHECK(p.recent().first() == QStringLiteral("shell:panel:library"));
+    CHECK(p.activate(QStringLiteral("shell:panel:generate")) == QStringLiteral("AI features are off"));
+    CHECK(requested.size() == 1);
+    CHECK(rig.triggered.isEmpty()); // no keymap command ran
+
+    // Setting them again replaces them.
+    CHECK(p.setShellActions({QVariantMap{{QStringLiteral("id"), QStringLiteral("recent:1")},
+                                         {QStringLiteral("title"), QStringLiteral("Open Recent: My film")}}}) == 1);
+    p.setQuery(QStringLiteral("open"));
+    CHECK(rowWithKey(p.results(), QStringLiteral("shell:panel:library")).isEmpty());
+    CHECK(!rowWithKey(p.results(), QStringLiteral("shell:recent:1")).isEmpty());
+    CHECK(p.activate(QStringLiteral("shell:panel:library")) == QStringLiteral("Unknown command"));
+}
+
+// UX rework (stream S): the menu bar asks the palette whether a command can run now (commandState), so a menu item and
+// its palette row agree.
+TEST_CASE("Palette: menus read whether a command can run now from commandState", "[app][palette]") {
+    ProjectController controller;
+    controller.clearSelection();
+    CommandPalette p;
+    CHECK_FALSE(p.commandState(QStringLiteral("edit.undo")).value(QStringLiteral("enabled")).toBool()); // no keymap rows
+    p.addProvider(KeymapCommandProvider::forApp(nullptr, &controller));
+    const auto state = [&](const char* id) { return p.commandState(QString::fromLatin1(id)); };
+
+    // The controller's answer, with its reason.
+    CHECK(state("edit.undo").value(QStringLiteral("known")).toBool());
+    CHECK_FALSE(state("edit.undo").value(QStringLiteral("enabled")).toBool());
+    CHECK(state("edit.undo").value(QStringLiteral("reason")).toString() == QStringLiteral("Nothing to undo"));
+    CHECK(state("edit.clear").value(QStringLiteral("reason")).toString() == QStringLiteral("Select a clip first"));
+    controller.selectAdjacentClip(1);
+    CHECK(state("edit.clear").value(QStringLiteral("enabled")).toBool());
+    // What the shell routes is ready; the registry's title and group come along.
+    const QVariantMap workspace = state("window.workspace3");
+    CHECK(workspace.value(QStringLiteral("enabled")).toBool());
+    CHECK(workspace.value(QStringLiteral("title")).toString() == QStringLiteral("Workspace: Audio"));
+    CHECK(workspace.value(QStringLiteral("group")).toString() == QStringLiteral("Window"));
+    CHECK(state("file.saveCopy").value(QStringLiteral("enabled")).toBool());
+    // The key of a typed edit (Add Marker) runs: enabled, although its palette row is the edit with prompts.
+    CHECK(state("marker.add").value(QStringLiteral("enabled")).toBool());
+    // Nothing runs it yet; not a command at all.
+    CHECK_FALSE(state("metadata.loop").value(QStringLiteral("enabled")).toBool());
+    CHECK(state("metadata.loop").value(QStringLiteral("reason")).toString() == QStringLiteral("Not available yet"));
+    CHECK_FALSE(state("no.suchCommand").value(QStringLiteral("known")).toBool());
+    CHECK_FALSE(state("no.suchCommand").value(QStringLiteral("enabled")).toBool());
 }
 
 // ---- Command bridge: catalog, dry run, apply, undo -----------------------------------------------------------------

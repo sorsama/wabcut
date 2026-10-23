@@ -21,6 +21,7 @@ SettingsPage {
 
         SettingsRow {
             objectName: "settingsRenderApi"
+            rowKey: "rendering"
             label: qsTr("Rendering")
             description: renderer.ready ? qsTr("%1 on %2").arg(renderer.api).arg(renderer.adapter || qsTr("an unknown adapter"))
                                         : qsTr("Detected when the window shows its first frame.")
@@ -35,6 +36,7 @@ SettingsPage {
         }
         SettingsRow {
             objectName: "settingsDecodeBackend"
+            rowKey: "decoding"
             label: qsTr("Video decoding")
             description: Playback.decodeBackend !== ""
                          ? qsTr("Now: %1").arg(Playback.decodeBackend)
@@ -46,6 +48,7 @@ SettingsPage {
         title: qsTr("Media & cache")
 
         SettingsRow {
+            rowKey: "mediaCache"
             label: qsTr("Proxies, preview quality and disk caches")
             description: qsTr("When Wabcut makes proxies, the playback resolution, and where caches live and how big they get.")
             PillButton {

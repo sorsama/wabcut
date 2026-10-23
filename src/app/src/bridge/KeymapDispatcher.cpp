@@ -661,9 +661,17 @@ bool KeymapDispatcher::isSuppressed(QKeyEvent* event, QQuickItem* focus) const {
     if (focus == nullptr) {
         return false;
     }
-    // Popups and dialogs (Qt Quick Controls put them under the overlay) and opted-out items keep every key.
+    // Popups and dialogs (Qt Quick Controls put them under the overlay) and opted-out items keep every key. UX rework:
+    // a popup whose content declares a keymap scope of its own (the History panel: "history") gets the keys bound in
+    // that scope (its Left / Right, user rebindings too); every other key stays with the popup.
     if (isInPopup(focus)) {
-        return true;
+        const km::Scope own = scopeFor(focus);
+        if (own == km::Scope::Application) {
+            return true;
+        }
+        const auto chord = chordOf(event);
+        const km::CommandInfo* info = chord ? m_keymap->resolveCommand(own, *chord) : nullptr;
+        return info == nullptr || info->scope != own;
     }
     for (const QQuickItem* item = focus; item != nullptr; item = item->parentItem()) {
         if (const KeymapScopeAttached* scope = attachedScope(item); scope && scope->suppressShortcuts()) {

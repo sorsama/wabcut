@@ -1,4 +1,5 @@
-// M5o (gaming): "New gaming video" from the Home screen (GamingStart, GamingVideoCard), offscreen; no window is shown.
+// M5o (gaming): "New gaming video" from the Home screen (GamingStart; since the UX rework the New project page's
+// "Start with media"), offscreen; no window is shown.
 //   * describe(): size, the nominal frame rate (60 fps kept, 59.94 named), duration, codec, HDR, the flags that suggest
 //     proxies (above 60 fps, 4K, 20 minutes) with the reason, one row per audio stream with Game / Mic / Discord /
 //     "Audio n" suggested.
@@ -7,8 +8,14 @@
 //     sequence matches the recording's size and rate, each included stream is on its own named audio track in order,
 //     an excluded stream is left out, tracks are added when the sequence has too few, proxies are asked for when
 //     suggested; each step's failure is returned.
-//   * The card in the Home screen: a dropped recording lands on it, the rows and badges, include / leave out and the
-//     target tracks, Create with the keyboard (gamingRequested), the error line; accessibility; a screenshot.
+//   * UX rework, Home.createFromMedia (the New project page's "Start with media", which create() now goes through):
+//     matched to the first video, its streams on named tracks, the next clip after it, captions on a caption track,
+//     a Photoshop file left for Main, given settings, Library only, proxies, a clash refused, a failure after the save
+//     as a warning with the project open.
+//   * On screen (UX rework: the gaming card became the New project page's "Start with media"): a recording dropped on
+//     Home opens the page matched to it, the rows and badges, include / leave out and the target tracks, Create with
+//     the keyboard (createFromMediaRequested), a failure after the project exists as a toast; accessibility; the
+//     home-new-media screenshot.
 
 #include "A11yAudit.h"
 #include "ShellFixture.h"
@@ -28,6 +35,7 @@
 #include <QDir>
 #include <QDragEnterEvent>
 #include <QDropEvent>
+#include <QFile>
 #include <QFileInfo>
 #include <QJSValue>
 #include <QMimeData>
@@ -471,9 +479,155 @@ TEST_CASE("Gaming start: a multi-stream recording becomes a saved project with o
     CHECK(rig.controller.currentSequence()->audioTracks.size() == 4);
 }
 
-// ---- The card in the Home screen ----------------------------------------------------------------------------------
+// ---- Home's media start (UX rework: the New project page in "Start with media" mode) -------------------------------
 
-TEST_CASE("Home screen: the gaming card reads a dropped recording - rows and badges and Create - accessibility and a screenshot",
+TEST_CASE("Home: createFromMedia makes a saved project with the clips in order", "[app][home][gaming]") {
+    const QString ffmpeg = findFfmpeg();
+    if (ffmpeg.isEmpty())
+        SKIP("no ffmpeg (the vcpkg tools/ffmpeg of this build, $WABCUT_FFMPEG or PATH)");
+    Rig rig;
+    REQUIRE(rig.dir.isValid());
+    rig.home.setProxyRequester([&rig](const QStringList& keys) {
+        rig.proxyRequests << keys;
+        return rig.proxyAnswer;
+    });
+
+    // A two-stream recording (game stereo, mic mono) at 60 fps, a plain clip at 30 fps, captions and a Photoshop file.
+    const QString match = rig.dir.filePath(QStringLiteral("Match 1.mkv"));
+    const QString clip = rig.dir.filePath(QStringLiteral("Clip.mp4"));
+    const QString captions = rig.dir.filePath(QStringLiteral("Match 1.srt"));
+    REQUIRE(makeRecording(ffmpeg, match, 320, 180, 60, {2, 1}));
+    REQUIRE(makeRecording(ffmpeg, clip, 160, 90, 30, {2}));
+    {
+        QFile file(captions);
+        REQUIRE(file.open(QIODevice::WriteOnly));
+        file.write("1\n00:00:00,100 --> 00:00:00,900\nGG\n\n");
+    }
+    const QString psd = rig.dir.filePath(QStringLiteral("Cover.psd"));
+    const auto url = [](const QString& path) { return QUrl::fromLocalFile(path); };
+
+    // Matched to the first video, its streams on named tracks, the next clip after it, the captions on a caption track,
+    // the Photoshop file left for Main's importUrls.
+    const QVariantList plan{QVariantMap{{"index", 0}, {"name", QStringLiteral("Game")}},
+                            QVariantMap{{"index", 1}, {"name", QStringLiteral("Mic")}, {"include", true}}};
+    QVariantMap r = rig.home.createFromMedia(QStringLiteral("Session"), rig.folder(), {},
+                                             {url(match), url(clip), url(captions), url(psd)},
+                                             {{QStringLiteral("tracks"), plan}});
+    INFO(r.value("error").toString().toStdString() << " / " << r.value("warning").toString().toStdString());
+    REQUIRE(r.value("ok").toBool());
+    CHECK(r.value("warning").toString().isEmpty());
+    CHECK(r.value("project").toUrl() == url(rig.dir.filePath(QStringLiteral("Session.wabcut"))));
+    CHECK(QFile::exists(rig.dir.filePath(QStringLiteral("Session.wabcut"))));
+    CHECK_FALSE(rig.lifecycle.dirty());
+    CHECK_FALSE(rig.lifecycle.demo());
+    CHECK(r.value("added").toInt() == 2);
+    CHECK(r.value("captionTracks").toInt() == 1);
+    CHECK(r.value("placed").toInt() == 2);
+    REQUIRE(r.value("deferred").toList().size() == 1);
+    CHECK(r.value("deferred").toList()[0].toUrl() == url(psd));
+    SequencePtr seq = rig.controller.currentSequence();
+    REQUIRE(seq);
+    CHECK(seq->width == 320);
+    CHECK(seq->height == 180);
+    CHECK(seq->frameRate.num == 60);
+    CHECK(seq->frameRate.den == 1);
+    const ProjectSnapshot snapshot = rig.controller.snapshot();
+    REQUIRE(snapshot->media.size() == 2);
+    MediaId matchId;
+    MediaId clipId;
+    for (const MediaPtr& m : snapshot->media)
+        (QFileInfo(QString::fromStdString(m->locator.path)).fileName() == QStringLiteral("Clip.mp4") ? clipId : matchId) = m->id;
+    REQUIRE_FALSE(seq->videoTracks.empty());
+    const Track& v1 = *seq->videoTracks.front();
+    REQUIRE(v1.clips.size() == 2);
+    CHECK(v1.clips[0].media == matchId);
+    CHECK(v1.clips[0].start() == Ticks{});
+    CHECK(v1.clips[1].media == clipId);
+    // Right after it: on the next frame boundary at most one frame later (nothing of the first clip is overwritten).
+    CHECK(v1.clips[1].start().value >= v1.clips[0].end().value);
+    CHECK(v1.clips[1].start().value < v1.clips[0].end().value + framesToTicks(1, seq->frameRate).value);
+    REQUIRE(seq->audioTracks.size() >= 2);
+    CHECK(seq->audioTracks[0]->name == "Game");
+    CHECK(seq->audioTracks[1]->name == "Mic");
+    CHECK(streamsOn(*seq->audioTracks[1]) == std::vector<int>{1});
+    REQUIRE_FALSE(seq->audioTracks[0]->clips.empty());
+    CHECK(seq->audioTracks[0]->clips[0].media == matchId);
+    CHECK(seq->audioTracks[0]->clips[0].stream.index == 0);
+    CHECK(rig.proxyRequests.isEmpty()); // 60 fps, one second: nothing calls for proxies
+
+    // The same name again: refused, nothing changes.
+    r = rig.home.createFromMedia(QStringLiteral("Session"), rig.folder(), {}, {url(clip)});
+    CHECK_FALSE(r.value("ok").toBool());
+    CHECK_FALSE(r.value("error").toString().isEmpty());
+    CHECK(QDir::fromNativeSeparators(rig.lifecycle.filePath()) == rig.dir.filePath(QStringLiteral("Session.wabcut")));
+    // Nothing to start with.
+    r = rig.home.createFromMedia(QStringLiteral("Nothing"), rig.folder(), {}, {});
+    CHECK_FALSE(r.value("ok").toBool());
+    CHECK_FALSE(QFile::exists(rig.dir.filePath(QStringLiteral("Nothing.wabcut"))));
+
+    // Given settings, only into the Library, proxies asked for.
+    r = rig.home.createFromMedia(QStringLiteral("Library only"), rig.folder(),
+                                 {{QStringLiteral("width"), 1080},
+                                  {QStringLiteral("height"), 1920},
+                                  {QStringLiteral("rateNum"), 30},
+                                  {QStringLiteral("rateDen"), 1}},
+                                 {url(clip)},
+                                 {{QStringLiteral("addToSequence"), false}, {QStringLiteral("proxies"), QStringLiteral("on")}});
+    REQUIRE(r.value("ok").toBool());
+    CHECK(r.value("placed").toInt() == 0);
+    seq = rig.controller.currentSequence();
+    CHECK(seq->width == 1080);
+    CHECK(seq->height == 1920);
+    CHECK(seq->videoTracks.front()->clips.empty());
+    REQUIRE(rig.controller.snapshot()->media.size() == 1);
+    CHECK(rig.proxyRequests == QStringList{mediaKey(rig.controller.snapshot()->media.front()->id)});
+
+    // A step after the save fails: the project is made and open, and the warning says what went wrong.
+    rig.proxyAnswer = 0;
+    r = rig.home.createFromMedia(QStringLiteral("Partly"), rig.folder(), {},
+                                 {url(clip), url(rig.dir.filePath(QStringLiteral("missing.mov")))},
+                                 {{QStringLiteral("proxies"), QStringLiteral("on")}});
+    REQUIRE(r.value("ok").toBool());
+    CHECK(r.value("warning").toString().contains(QStringLiteral("missing.mov")));
+    CHECK(r.value("warning").toString().contains(QStringLiteral("proxies")));
+    CHECK(r.value("failed").toList().size() == 1);
+    CHECK(r.value("placed").toInt() == 1);
+    CHECK(QFile::exists(rig.dir.filePath(QStringLiteral("Partly.wabcut"))));
+    CHECK(QDir::fromNativeSeparators(rig.lifecycle.filePath()) == rig.dir.filePath(QStringLiteral("Partly.wabcut")));
+    CHECK_FALSE(rig.lifecycle.dirty());
+    seq = rig.controller.currentSequence();
+    CHECK(seq->width == 160); // matched to the clip
+    CHECK(seq->frameRate.num == 30);
+
+    // "Match my media" with a video whose extension Wabcut does not list (classifyImport probes it, and the New project
+    // page's tile reads it): matched all the same, as the tile shows it.
+    const QString odd = rig.dir.filePath(QStringLiteral("Clip copy.vid"));
+    REQUIRE(QFile::copy(clip, odd));
+    r = rig.home.createFromMedia(QStringLiteral("Odd"), rig.folder(), {{QStringLiteral("match"), true}}, {url(odd)});
+    INFO(r.value("error").toString().toStdString() << " / " << r.value("warning").toString().toStdString());
+    REQUIRE(r.value("ok").toBool());
+    seq = rig.controller.currentSequence();
+    CHECK(seq->width == 160);
+    CHECK(seq->height == 90);
+    CHECK(seq->frameRate == Rate{30, 1});
+
+    // The project's file cannot be written (a folder is in the way of the save): the project exists (it replaced the
+    // one shown), so the media still go in; it stays open, untitled, and the warning says to Save As.
+    REQUIRE(QDir(rig.dir.path()).mkpath(QStringLiteral("Unsaved.wabcut.tmp")));
+    r = rig.home.createFromMedia(QStringLiteral("Unsaved"), rig.folder(), {}, {url(clip)});
+    INFO(r.value("error").toString().toStdString() << " / " << r.value("warning").toString().toStdString());
+    REQUIRE(r.value("ok").toBool());
+    CHECK(r.value("warning").toString().contains(QStringLiteral("Save As")));
+    CHECK(r.value("project").toUrl().isEmpty());
+    CHECK(r.value("placed").toInt() == 1);
+    CHECK(rig.lifecycle.untitled());
+    CHECK_FALSE(rig.lifecycle.demo());
+    CHECK_FALSE(QFile::exists(rig.dir.filePath(QStringLiteral("Unsaved.wabcut"))));
+}
+
+// ---- "Start with media" on Home's New project page ------------------------------------------------------------------
+
+TEST_CASE("Home screen: a game recording dropped on Home opens New project matched to it with its streams - rows and badges and Create - accessibility and a screenshot",
           "[app][gaming][screenshots][qml]") {
     A11yScope a11y;
     resetSettings();
@@ -505,21 +659,11 @@ TEST_CASE("Home screen: the gaming card reads a dropped recording - rows and bad
     QQuickItem* screen = shell.item("homeScreen");
     REQUIRE(screen != nullptr);
     CHECK(screen->property("opened").toBool());
-    QQuickItem* card = visibleItem(shell, QStringLiteral("homeGamingCard"));
-    REQUIRE(card != nullptr);
-    // First in the right column, above New project.
-    QQuickItem* newProject = visibleItem(shell, QStringLiteral("homeNewProjectCard"));
-    REQUIRE(newProject != nullptr);
-    const QRectF cardRect = card->mapRectToScene(QRectF(0, 0, card->width(), card->height()));
-    const QRectF newRect = newProject->mapRectToScene(QRectF(0, 0, newProject->width(), newProject->height()));
-    CHECK(cardRect.bottom() <= newRect.top());
-    CHECK(qAbs(cardRect.left() - newRect.left()) < 1);
-    REQUIRE(visibleItem(shell, QStringLiteral("gamingDropZone")) != nullptr);
-    REQUIRE(visibleItem(shell, QStringLiteral("gamingChooseButton")) != nullptr);
-    CHECK(visibleItem(shell, QStringLiteral("gamingCreateButton")) == nullptr); // nothing to create from yet
+    CHECK(screen->property("page").toString() == QStringLiteral("home"));
 
-    // Drag the recording over Home: the gaming card lights up, not the import.
-    QQuickItem* zone = visibleItem(shell, QStringLiteral("gamingDropZone"));
+    // Drag the recording over Home: the drop well lights up.
+    QQuickItem* zone = visibleItem(shell, QStringLiteral("homeDropZone"));
+    REQUIRE(zone != nullptr);
     const QPoint at = zone->mapToScene(QPointF(zone->width() / 2, zone->height() / 2)).toPoint();
     QMimeData mime;
     mime.setUrls({QUrl::fromLocalFile(recording)});
@@ -528,29 +672,35 @@ TEST_CASE("Home screen: the gaming card reads a dropped recording - rows and bad
     QDragMoveEvent move(at, Qt::CopyAction, &mime, Qt::NoButton, Qt::NoModifier);
     QCoreApplication::sendEvent(shell.window.get(), &move);
     spin(150);
-    CHECK(screen->property("dragRecording").toBool());
-    CHECK(card->property("dragActive").toBool());
-    QObject* importCard = shell.object("homeImportCard");
-    REQUIRE(importCard != nullptr);
-    CHECK_FALSE(importCard->property("dragActive").toBool());
+    QObject* startCard = shell.object("homeStartCard");
+    REQUIRE(startCard != nullptr);
+    CHECK(startCard->property("dragActive").toBool());
 
-    // Drop: the card reads it.
+    // Drop: the New project page in "Start with media" mode, Match my media chosen once the video is read.
     QDropEvent dropped(at, Qt::CopyAction, &mime, Qt::NoButton, Qt::NoModifier);
     QCoreApplication::sendEvent(shell.window.get(), &dropped);
-    REQUIRE(waitFor([&] { return start->recording().value("ok").toBool(); }));
+    REQUIRE(waitFor([&] { return start->recording().value("ok").toBool() && !start->inspecting(); }));
     spin(200);
-    CHECK(screen->property("opened").toBool()); // still Home: nothing imported yet
-    CHECK_FALSE(card->property("dragActive").toBool());
-    CHECK(visibleItem(shell, QStringLiteral("gamingDropZone")) == nullptr);
-    QQuickItem* name = visibleItem(shell, QStringLiteral("gamingProjectName"));
+    CHECK(screen->property("opened").toBool()); // still Home: nothing created yet
+    CHECK(screen->property("page").toString() == QStringLiteral("new"));
+    CHECK_FALSE(startCard->property("dragActive").toBool());
+    QQuickItem* page = visibleItem(shell, QStringLiteral("homeNewProjectPage"));
+    REQUIRE(page != nullptr);
+    REQUIRE(visibleItem(shell, QStringLiteral("homeStartWithMedia")) != nullptr);
+    REQUIRE(visibleItem(shell, QStringLiteral("homeMediaFile_0")) != nullptr);
+    QQuickItem* match = visibleItem(shell, QStringLiteral("homePreset_match"));
+    REQUIRE(match != nullptr);
+    CHECK(page->property("presetId").toString() == QStringLiteral("match"));
+    CHECK(match->property("detail").toString() == QStringLiteral("2560 × 1440 · 60 fps"));
+    QQuickItem* name = visibleItem(shell, QStringLiteral("homeProjectName"));
     REQUIRE(name != nullptr);
     CHECK(name->property("text").toString() == QStringLiteral("Ranked match 2026-10-12"));
     QQuickItem* summary = visibleItem(shell, QStringLiteral("gamingSummary"));
     REQUIRE(summary != nullptr);
     CHECK(summary->property("text").toString().startsWith(QStringLiteral("2560 × 1440 · 60 fps · 42:17 · HEVC")));
-    QQuickItem* sequenceSummary = visibleItem(shell, QStringLiteral("gamingSequenceSummary"));
+    QQuickItem* sequenceSummary = visibleItem(shell, QStringLiteral("homeSequenceSummary"));
     REQUIRE(sequenceSummary != nullptr);
-    CHECK(sequenceSummary->property("text").toString() == QStringLiteral("Sequence 2560 × 1440 · 60 fps"));
+    CHECK(sequenceSummary->property("text").toString().startsWith(QStringLiteral("2560 × 1440 · 60 fps")));
     for (const char* badge : {"gamingBadge_long", "gamingBadge_vfr", "gamingBadge_hdr", "gamingNote_proxies",
                               "gamingNote_vfr", "gamingNote_hdr"}) {
         INFO(badge);
@@ -558,6 +708,9 @@ TEST_CASE("Home screen: the gaming card reads a dropped recording - rows and bad
     }
     CHECK(visibleItem(shell, QStringLiteral("gamingBadge_4k")) == nullptr);
     CHECK(visibleItem(shell, QStringLiteral("gamingBadge_highFps")) == nullptr);
+    QQuickItem* addClips = visibleItem(shell, QStringLiteral("homeAddClips"));
+    REQUIRE(addClips != nullptr);
+    CHECK(addClips->property("checked").toBool());
     const QStringList suggested{QStringLiteral("Game"), QStringLiteral("Mic"), QStringLiteral("Discord")};
     for (int i = 0; i < 3; ++i) {
         INFO("stream " << i);
@@ -569,7 +722,10 @@ TEST_CASE("Home screen: the gaming card reads a dropped recording - rows and bad
         CHECK(target->property("text").toString() == QStringLiteral("→ A%1").arg(i + 1));
     }
 
-    // Leave the mic out with the keyboard: the voice chat moves up to A2.
+    // One audio track per stream: three, as the summary says.
+    CHECK(sequenceSummary->property("text").toString().endsWith(QStringLiteral("3 video / 3 audio tracks")));
+
+    // Leave the mic out with the keyboard: the voice chat moves up to A2, and the project needs two audio tracks.
     QQuickItem* includeMic = visibleItem(shell, QStringLiteral("gamingInclude_1"));
     REQUIRE(includeMic != nullptr);
     REQUIRE(pressWithKey(shell.window.get(), includeMic, Qt::Key_Space, QStringLiteral(" ")));
@@ -578,6 +734,7 @@ TEST_CASE("Home screen: the gaming card reads a dropped recording - rows and bad
     CHECK(visibleItem(shell, QStringLiteral("gamingTarget_1"))->property("text").toString() == QStringLiteral("Left out"));
     CHECK(visibleItem(shell, QStringLiteral("gamingTarget_2"))->property("text").toString() == QStringLiteral("→ A2"));
     CHECK_FALSE(visibleItem(shell, QStringLiteral("gamingTrackName_1"))->isEnabled());
+    CHECK(sequenceSummary->property("text").toString().endsWith(QStringLiteral("3 video / 2 audio tracks")));
     // Rename the voice chat track by typing.
     QQuickItem* chat = visibleItem(shell, QStringLiteral("gamingTrackName_2"));
     REQUIRE(chat != nullptr);
@@ -590,39 +747,62 @@ TEST_CASE("Home screen: the gaming card reads a dropped recording - rows and bad
     spin(50);
     CHECK(chat->property("text").toString() == QStringLiteral("Squad"));
 
+    // Leaving for another page (Projects) and coming back with New project keeps all of it.
+    REQUIRE(QMetaObject::invokeMethod(screen, "showPage", Q_ARG(QString, QStringLiteral("projects"))));
+    spin(150);
+    CHECK(screen->property("page").toString() == QStringLiteral("projects"));
+    REQUIRE(QMetaObject::invokeMethod(screen, "openPage", Q_ARG(QString, QStringLiteral("new"))));
+    spin(150);
+    REQUIRE(visibleItem(shell, QStringLiteral("homeMediaFile_0")) != nullptr);
+    CHECK(page->property("presetId").toString() == QStringLiteral("match"));
+    CHECK_FALSE(visibleItem(shell, QStringLiteral("gamingInclude_1"))->property("checked").toBool());
+    CHECK(visibleItem(shell, QStringLiteral("gamingTrackName_2"))->property("text").toString() == QStringLiteral("Squad"));
+    CHECK(visibleItem(shell, QStringLiteral("homeProjectName"))->property("text").toString() == QStringLiteral("Ranked match 2026-10-12"));
+
     {
         const QImage image = shell.grab();
         REQUIRE_FALSE(image.isNull());
-        REQUIRE(image.save(outputDir() + QStringLiteral("/gaming-new-video.png")));
+        REQUIRE(image.save(outputDir() + QStringLiteral("/home-new-media.png")));
     }
 
     // Accessibility: every control named, the keyboard reaches each one.
-    const QStringList issues = auditAccessibility(card);
+    const QStringList issues = auditAccessibility(page);
     INFO(issues.join(QLatin1Char('\n')).toStdString());
     CHECK(issues.isEmpty());
-    for (const char* control : {"gamingChangeButton", "gamingInclude_0", "gamingTrackName_0", "gamingInclude_2",
-                                "gamingProjectName", "gamingBrowseButton", "gamingCreateButton"}) {
-        INFO(control << ": " << describeTabChain(card).toStdString());
-        CHECK(tabReaches(card, QString::fromLatin1(control)));
+    for (const char* control : {"homeMediaRemove_0", "homeAddClips", "gamingInclude_0", "gamingTrackName_0",
+                                "gamingInclude_2", "homePreset_match", "homeProjectName", "homeBrowseFolder",
+                                "homeCreateButton"}) {
+        INFO(control << ": " << describeTabChain(page).toStdString());
+        CHECK(tabReaches(page, QString::fromLatin1(control)));
     }
 
-    // Create (Space on the button): Home asks Main with the name, the folder and the plan.
-    card->setProperty("folder", QUrl::fromLocalFile(dir.path()));
+    // Advanced agrees with the summary: two audio tracks (one per stream included).
+    REQUIRE(QMetaObject::invokeMethod(page, "setAdvancedOpen", Q_ARG(bool, true)));
+    spin(100);
+    QQuickItem* audioTracks = visibleItem(shell, QStringLiteral("homeAudioTracks"));
+    REQUIRE(audioTracks != nullptr);
+    CHECK(audioTracks->property("value").toInt() == 2);
+    REQUIRE(QMetaObject::invokeMethod(page, "setAdvancedOpen", Q_ARG(bool, false)));
+    spin(100);
+
+    // Create (Space on the button): Home asks Main with the name, the folder, the size and rate Match my media shows,
+    // the tracks the streams need, the file and the plan.
+    page->setProperty("folder", QUrl::fromLocalFile(dir.path()));
     QQmlComponent spyComponent(&shell.engine);
     spyComponent.setData(QByteArrayLiteral("import QtQuick\n"
                                            "Connections {\n"
                                            "    property var last: null\n"
                                            "    property int count: 0\n"
-                                           "    function onGamingRequested(name, folder, tracks) {\n"
-                                           "        last = { name: name, folder: folder, tracks: tracks }\n"
+                                           "    function onCreateFromMediaRequested(name, folder, settings, files, options) {\n"
+                                           "        last = { name: name, folder: folder, settings: settings, files: files, options: options }\n"
                                            "        ++count\n"
                                            "    }\n"
                                            "}\n"),
-                         QUrl(QStringLiteral("qrc:/wabcut-test/GamingSpy.qml")));
+                         QUrl(QStringLiteral("qrc:/wabcut-test/MediaSpy.qml")));
     INFO(spyComponent.errorString().toStdString());
     std::unique_ptr<QObject> spy(spyComponent.createWithInitialProperties({{QStringLiteral("target"), QVariant::fromValue<QObject*>(screen)}}));
     REQUIRE(spy != nullptr);
-    QQuickItem* createButton = visibleItem(shell, QStringLiteral("gamingCreateButton"));
+    QQuickItem* createButton = visibleItem(shell, QStringLiteral("homeCreateButton"));
     REQUIRE(createButton != nullptr);
     REQUIRE(pressWithKey(shell.window.get(), createButton, Qt::Key_Space, QStringLiteral(" ")));
     spin(100);
@@ -630,29 +810,42 @@ TEST_CASE("Home screen: the gaming card reads a dropped recording - rows and bad
     const QVariantMap request = toMap(spy->property("last"));
     CHECK(request.value("name").toString() == QStringLiteral("Ranked match 2026-10-12"));
     CHECK(QDir::fromNativeSeparators(request.value("folder").toUrl().toLocalFile()) == dir.path());
-    const QVariantList tracks = request.value("tracks").toList();
+    const QVariantMap settings = toMap(request.value("settings"));
+    CHECK_FALSE(settings.contains(QStringLiteral("match")));
+    CHECK(settings.value("width").toInt() == 2560);
+    CHECK(settings.value("height").toInt() == 1440);
+    CHECK(settings.value("rateNum").toInt() == 60);
+    CHECK(settings.value("rateDen").toInt() == 1);
+    CHECK(settings.value("audioTracks").toInt() == 2);
+    const QVariantList files = request.value("files").toList();
+    REQUIRE(files.size() == 1);
+    CHECK(QDir::fromNativeSeparators(files[0].toUrl().toLocalFile()) == recording);
+    const QVariantMap options = toMap(request.value("options"));
+    CHECK(options.value("addToSequence").toBool());
+    const QVariantList tracks = options.value("tracks").toList();
     REQUIRE(tracks.size() == 3);
     CHECK(tracks[0].toMap().value("include").toBool());
     CHECK_FALSE(tracks[1].toMap().value("include").toBool());
     CHECK(tracks[2].toMap().value("name").toString() == QStringLiteral("Squad"));
     CHECK(tracks[2].toMap().value("index").toInt() == 2);
 
-    // Main runs it (GamingStart.create): the file is not really there, so the import step fails and says so; Home
-    // shows it on the card and stays open.
-    QQuickItem* errorLine = nullptr;
-    REQUIRE(waitFor([&] {
-        errorLine = visibleItem(shell, QStringLiteral("gamingError"));
-        return errorLine != nullptr
-               && errorLine->property("text").toString().contains(QStringLiteral("Ranked match 2026-10-12.mkv"));
-    }, 5000));
+    // Main runs it (Home.createFromMedia): the file is not really there, so its import fails. The project is made all
+    // the same (the failure comes after it exists): Home closes and the editor says what went wrong.
+    QObject* toast = shell.object("toast");
+    REQUIRE(toast != nullptr);
+    REQUIRE(waitFor([&] { return !screen->property("opened").toBool(); }, 5000));
+    CHECK(QFile::exists(dir.filePath(QStringLiteral("Ranked match 2026-10-12.wabcut"))));
+    CHECK(toast->property("text").toString().contains(QStringLiteral("Ranked match 2026-10-12.mkv")));
     CHECK(proxyRequests.isEmpty());
-    CHECK(screen->property("opened").toBool());
 
-    // Home opening again starts from an empty card.
+    // Home opening again starts afresh: no recording, no media on the New project page.
     REQUIRE(QMetaObject::invokeMethod(shell.window.get(), "showHome"));
     spin(200);
     CHECK(start->recording().isEmpty());
-    CHECK(visibleItem(shell, QStringLiteral("gamingDropZone")) != nullptr);
+    REQUIRE(QMetaObject::invokeMethod(screen, "openPage", Q_ARG(QString, QStringLiteral("new"))));
+    spin(200);
+    CHECK(visibleItem(shell, QStringLiteral("homeStartWithMedia")) == nullptr);
+    CHECK(visibleItem(shell, QStringLiteral("homePreset_match")) == nullptr);
 
     spy.reset();
     const QStringList messages = takeMessages();

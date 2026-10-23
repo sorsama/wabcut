@@ -39,6 +39,8 @@ Panel {
     // Narrow windows show one monitor at a time: the Source/Program switch in the header.
     property bool single: false
     signal monitorRequested(string monitor)
+    /// UX rework (stream T): a typed time moved the playhead (Main brings it into view in the Timeline).
+    signal playheadMoved()
 
     // 0 = fit the well; otherwise monitor pixels per sequence pixel (Premiere's zoom levels).
     property real zoom: 0
@@ -548,25 +550,24 @@ Panel {
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: Theme.space(2)
 
-                // The playhead timecode on an accent pill (design language v3).
-                Rectangle {
+                // The playhead timecode on an accent pill (design language v3). UX rework (stream T): click it to type a
+                // time or a +/- offset (TimecodeEntry, ProjectController.seekToText: the field starts from the
+                // sequence's own time, which it reads also when the pill shows audio units); Esc cancels.
+                TimecodeEntry {
+                    id: timecodeText
+                    objectName: "programTimecode"
                     anchors.verticalCenter: parent.verticalCenter
-                    width: timecodeText.implicitWidth + Theme.space(4)
                     height: Theme.controlHeightSmall
-                    radius: height / 2
-                    color: Theme.accentFill
-
-                    Text {
-                        id: timecodeText
-                        anchors.centerIn: parent
-                        text: Monitors.audioTimeUnits ? Monitors.programTimeText : ProjectController.playheadText // P.2
-                        color: Theme.accentOnFill
-                        font.family: Theme.fontMono
-                        font.pixelSize: Theme.textMd
-                        font.weight: Font.Bold
-                        Accessible.role: Accessible.StaticText
-                        Accessible.name: qsTr("Playhead %1").arg(text)
+                    text: Monitors.audioTimeUnits ? Monitors.programTimeText : ProjectController.playheadText // P.2
+                    editText: ProjectController.playheadText
+                    label: qsTr("Playhead")
+                    seek: typed => {
+                        const moved = ProjectController.seekToText(typed)
+                        if (moved)
+                            root.playheadMoved()
+                        return moved
                     }
+                    preview: typed => ProjectController.timeEntryText(typed)
                 }
 
                 Text {

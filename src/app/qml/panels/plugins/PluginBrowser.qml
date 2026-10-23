@@ -2,82 +2,66 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Layouts
 
-// "Audio Plugins" in the Effects panel (A.6, bridge `Plugins`): the CLAP and VST3 effects this computer has, scanned
-// by the helper (a plugin that crashes or hangs while scanned goes on the blocklist instead), grouped by vendor or
-// category and filtered by the panel's search. Rows drag onto clips, Effect Controls and mixer strips like any
-// effect. The header rescans and opens the settings (folders, the blocklist with "Try again").
+// The Audio Plug-ins folder's tools in the Effects panel (A.6; UX rework, bridge `Plugins`), shown under the folder's
+// row while it is open: the grouping of its sub-folders (by vendor or by category, remembered), Rescan, the plug-in
+// settings (folders, the blocklist with "Try again"), the scan's progress, the notice about plug-ins that crashed or
+// hung while scanned (they go on the blocklist), and what to do when there are none. The plug-ins themselves are rows
+// of the panel's tree (EffectsTree): searched, dragged, favourited, put in custom bins and applied like any effect.
 Column {
     id: root
     objectName: "pluginBrowser"
     Accessible.role: Accessible.Grouping
-    Accessible.name: qsTr("Audio plugins")
+    Accessible.name: qsTr("Audio plug-ins")
 
-    /// The Effects panel's search text.
-    property string query: ""
-
-    /// A row's double-click outcome, for the panel's status line.
+    /// Rescan's outcome, for the panel's status line.
     signal status(string message)
 
-    spacing: Theme.space(1)
+    spacing: Theme.space(1.5)
 
-    Binding {
-        target: Plugins
-        property: "query"
-        value: root.query
-    }
-
-    // ---- Header: title, count, rescan, settings ----
     RowLayout {
         width: root.width
-        spacing: Theme.space(1.5)
+        spacing: Theme.space(1)
+        visible: Plugins.available
 
-        Icon {
-            name: "sliders-horizontal"
-            size: Theme.iconXs
-            color: Theme.textTertiary
-        }
-        Text {
+        PillTabs {
+            id: grouping
+            objectName: "pluginGrouping"
             Layout.fillWidth: true
-            text: Plugins.available && Plugins.pluginCount > 0 ? qsTr("Audio Plugins · %1").arg(Plugins.pluginCount) : qsTr("Audio Plugins")
-            elide: Text.ElideRight
-            color: Theme.textTertiary
-            font.family: Theme.fontSans
-            font.pixelSize: Theme.textSm
-            font.weight: Font.DemiBold
-            font.letterSpacing: Theme.labelTracking
+            Layout.minimumWidth: 0
+            visible: Plugins.pluginCount > 0
+            compact: true
+            model: [qsTr("By vendor"), qsTr("By category")]
+            currentIndex: Plugins.groupBy === "category" ? 1 : 0
+            Accessible.name: qsTr("Group audio plug-ins by")
+            onActivated: index => {
+                Plugins.groupBy = index === 1 ? "category" : "vendor"
+                grouping.currentIndex = Qt.binding(() => Plugins.groupBy === "category" ? 1 : 0)
+            }
+        }
+        Item {
+            Layout.fillWidth: true
+            visible: !grouping.visible
         }
         IconButton {
             objectName: "pluginRescan"
-            visible: Plugins.available
             enabled: !Plugins.scanning
             compact: true
             iconName: "rotate-cw"
             iconSize: Theme.iconSm
-            tooltip: qsTr("Rescan audio plugins")
-            onClicked: root.status(Plugins.rescan())
+            tooltip: qsTr("Rescan audio plug-ins")
+            onClicked: {
+                const message = Plugins.rescan()
+                root.status(message !== "" ? message : qsTr("Scanning the audio plug-ins"))
+            }
         }
         IconButton {
             objectName: "pluginSettings"
-            visible: Plugins.available
             compact: true
             iconName: "settings"
             iconSize: Theme.iconSm
-            tooltip: qsTr("Plugin folders and the blocklist")
+            tooltip: qsTr("Plug-in folders and the blocklist")
             onClicked: Plugins.openSettings()
         }
-    }
-
-    // Grouping, on its own row so the title keeps its room in a narrow panel.
-    PillTabs {
-        id: grouping
-        objectName: "pluginGrouping"
-        width: root.width
-        visible: Plugins.available && Plugins.pluginCount > 0
-        compact: true
-        model: [qsTr("By vendor"), qsTr("By category")]
-        currentIndex: Plugins.groupBy === "category" ? 1 : 0
-        onCurrentIndexChanged: Plugins.groupBy = currentIndex === 1 ? "category" : "vendor"
-        Accessible.name: qsTr("Group audio plugins by")
     }
 
     // ---- Scanning ----
@@ -92,44 +76,48 @@ Column {
         label: Plugins.scanText
     }
 
-    // ---- Blocked plugins (crashed or hung while scanned) ----
-    AbstractButtonLink {
+    // ---- Blocked plug-ins (crashed or hung while scanned) ----
+    Text {
+        id: blocked
         objectName: "pluginBlockedNotice"
         width: root.width
         visible: Plugins.available && Plugins.blocked.length > 0
-        text: qsTr("%n plugin(s) blocked: they crashed or hung while scanned. Review…", "", Plugins.blocked.length)
-        onClicked: Plugins.openSettings()
-    }
+        wrapMode: Text.Wrap
+        text: Plugins.blocked.length === 1 ? qsTr("1 plug-in blocked: it crashed or hung while scanned. Review…")
+              : qsTr("%1 plug-ins blocked: they crashed or hung while scanned. Review…").arg(Plugins.blocked.length)
+        color: blockedHover.hovered || blocked.activeFocus ? Theme.textPrimary : Theme.textSecondary
+        font.family: Theme.fontSans
+        font.pixelSize: Theme.textSm
+        font.underline: blockedHover.hovered
+        leftPadding: Theme.iconSm + Theme.space(1.5)
+        activeFocusOnTab: true
+        Accessible.role: Accessible.Link
+        Accessible.name: text
+        Accessible.onPressAction: Plugins.openSettings()
+        // Space (Play/Stop) and Enter (Render) are the keymap's elsewhere: here they open the settings.
+        Keys.onShortcutOverride: event => event.accepted = event.key === Qt.Key_Space || event.key === Qt.Key_Return
+                                                           || event.key === Qt.Key_Enter
+        Keys.onReturnPressed: Plugins.openSettings()
+        Keys.onEnterPressed: Plugins.openSettings()
+        Keys.onSpacePressed: Plugins.openSettings()
 
-    // ---- Groups ----
-    Repeater {
-        model: Plugins.available ? Plugins.groups : []
-
-        delegate: Column {
-            id: group
-            required property var modelData
-            width: root.width
-            spacing: Theme.space(1) / 2
-
-            Text {
-                leftPadding: Theme.space(3)
-                text: qsTr("%1 · %2").arg(group.modelData.title).arg(group.modelData.count)
-                elide: Text.ElideRight
-                width: group.width
-                color: Theme.textSecondary
-                font.family: Theme.fontSans
-                font.pixelSize: Theme.textXs
-                font.weight: Font.Medium
-            }
-            Repeater {
-                model: group.modelData.items
-                delegate: PluginRow {
-                    required property var modelData
-                    width: group.width
-                    plugin: modelData
-                    onApplied: message => root.status(message)
-                }
-            }
+        Icon {
+            anchors.left: parent.left
+            y: (blocked.fontInfo.pixelSize * 1.35 - height) / 2
+            name: "triangle-alert"
+            size: Theme.iconSm
+            color: Theme.warning
+        }
+        HoverHandler {
+            id: blockedHover
+            cursorShape: Qt.PointingHandCursor
+        }
+        TapHandler {
+            onTapped: Plugins.openSettings()
+        }
+        FocusRing {
+            targetRadius: Theme.radiusBadge
+            visible: blocked.activeFocus
         }
     }
 
@@ -138,9 +126,8 @@ Column {
         objectName: "pluginsUnavailable"
         width: root.width
         visible: !Plugins.available
-        leftPadding: Theme.space(3)
         wrapMode: Text.Wrap
-        text: qsTr("Audio plugins (CLAP and VST3) are not available in this build.")
+        text: qsTr("Audio plug-ins (CLAP and VST3) are not available in this build.")
         color: Theme.textTertiary
         font.family: Theme.fontSans
         font.pixelSize: Theme.textSm
@@ -149,43 +136,10 @@ Column {
         objectName: "pluginsNone"
         width: root.width
         visible: Plugins.available && !Plugins.scanning && Plugins.pluginCount === 0
-        leftPadding: Theme.space(3)
         wrapMode: Text.Wrap
-        text: qsTr("No audio plugins found. Install CLAP or VST3 effects, or add their folder in the plugin settings.")
+        text: qsTr("No audio plug-ins found. Install CLAP or VST3 effects, or add their folder in the plug-in settings.")
         color: Theme.textTertiary
         font.family: Theme.fontSans
         font.pixelSize: Theme.textSm
-    }
-    Text {
-        objectName: "pluginsNoMatch"
-        width: root.width
-        visible: Plugins.available && Plugins.pluginCount > 0 && Plugins.plugins.length === 0 && root.query !== ""
-        leftPadding: Theme.space(3)
-        wrapMode: Text.Wrap
-        text: qsTr("No audio plugin matches “%1”").arg(root.query)
-        color: Theme.textTertiary
-        font.family: Theme.fontSans
-        font.pixelSize: Theme.textSm
-    }
-
-    // A text button (the blocked notice): secondary text, accent on hover.
-    component AbstractButtonLink: Text {
-        id: link
-        signal clicked()
-        leftPadding: Theme.space(3)
-        wrapMode: Text.Wrap
-        color: linkHover.hovered ? Theme.accentStroke : Theme.warning
-        font.family: Theme.fontSans
-        font.pixelSize: Theme.textSm
-        Accessible.role: Accessible.Link
-        Accessible.name: text
-        Accessible.onPressAction: link.clicked()
-        HoverHandler {
-            id: linkHover
-            cursorShape: Qt.PointingHandCursor
-        }
-        TapHandler {
-            onTapped: link.clicked()
-        }
     }
 }

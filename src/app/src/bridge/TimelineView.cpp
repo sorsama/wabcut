@@ -415,6 +415,7 @@ void TimelineView::setController(ProjectController* controller) {
         connect(m_controller, &ProjectController::selectionChanged, this, &TimelineView::refreshSelection);
         connect(m_controller, &ProjectController::selectedEdgeChanged, this, &TimelineView::refreshSelection);
         connect(m_controller, &ProjectController::selectedTransitionChanged, this, &TimelineView::refreshSelection);
+        connect(m_controller, &ProjectController::selectedGapChanged, this, &TimelineView::refreshSelection); // 0.2 UX
         connect(m_controller, &ProjectController::timelineHighlightsChanged, this, [this] {
             ++m_selectionRevision; // drawn with the overlay
             update();
@@ -2713,6 +2714,22 @@ QSGNode* TimelineView::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
                     mesh.addRect(QRectF(rect.left(), rect.bottom() - 2, rect.width(), 2), base);
                     if (removal)
                         mesh.addRect(QRectF(rect.left(), rect.center().y() - 1, rect.width(), 2), base);
+                }
+            }
+            // 0.2 UX (stream T): the selected gap - an accent wash over the empty time on its track, outlined like a
+            // selected clip, so Delete / Ripple Delete visibly act on it.
+            if (const auto& gap = m_controller->gapSelection();
+                gap && gap->range.end() > builtStart && gap->range.start < builtEnd) {
+                for (const Row& row : m_rows) {
+                    if (row.track->id != gap->track)
+                        continue;
+                    const double x0 = gap->range.start.toSeconds() * m_pps - root->originX;
+                    const double x1 = std::max(x0 + 2.0, gap->range.end().toSeconds() * m_pps - root->originX);
+                    const QRectF rect(x0, row.y + 3, x1 - x0, std::max(4.0, row.height - 6));
+                    mesh.addRoundedRect(rect, m_style.clipRadius, withAlpha(m_style.selectionColor, 0.22));
+                    mesh.addOutline(rect, m_style.clipRadius, m_style.selectionGap, m_style.selectionWidth,
+                                    m_style.selectionColor);
+                    break;
                 }
             }
         }

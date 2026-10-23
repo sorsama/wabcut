@@ -79,6 +79,46 @@ Rectangle {
             surfaceColor: root.color
             trailingSpace: Theme.space(4)
         }
+        // UX rework: a lone panel's tab works like a group's tab (DockTabs): dragging it moves the group, a right-click
+        // opens the tab menu (DockTabMenu), a double-click maximizes the group. Docked panels only.
+        Loader {
+            active: root.dockHost !== null && !root.tabbed
+            x: ownTab.x
+            y: ownTab.y
+            width: ownTab.width
+            height: ownTab.height
+            sourceComponent: Item {
+                id: ownTabArea
+                objectName: "panelTabArea"
+
+                HoverHandler {
+                    cursorShape: ownTabDrag.active ? Qt.ClosedHandCursor : Qt.PointingHandCursor
+                }
+                TapHandler {
+                    onDoubleTapped: root.dockHost?.toggleMaximize()
+                }
+                TapHandler {
+                    acceptedButtons: Qt.RightButton
+                    onTapped: eventPoint => root.dockHost?.openTabMenu(root.dockHost.currentPanel, ownTabArea,
+                                                                       eventPoint.position.x, eventPoint.position.y)
+                }
+                DragHandler {
+                    id: ownTabDrag
+                    target: null
+                    onActiveChanged: {
+                        if (active)
+                            root.dockHost?.beginPanelDrag(root.dockHost.currentPanel)
+                        else
+                            root.dockHost?.endDrag()
+                    }
+                    onCentroidChanged: {
+                        if (active)
+                            root.dockHost?.moveDrag(ownTabArea.mapToGlobal(centroid.position.x, centroid.position.y),
+                                                    centroid.modifiers)
+                    }
+                }
+            }
+        }
     }
 
     Item {

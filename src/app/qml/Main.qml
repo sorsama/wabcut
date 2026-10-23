@@ -2,8 +2,10 @@ import QtQuick
 import QtQuick.Dialogs
 import QtQuick.Window
 
-// Wabcut main window (design language v2): the title bar (TopBar) with the workspace tabs, the left rail (panel
-// switcher) and a docked workbench of panels with 6px gutters you can drag (docs/design-language.md, "Geometry").
+// Wabcut main window (design language v3): the title bar (TopBar) with the menu bar (File … Help; UX rework: it replaced
+// the left rail) and the workspace tabs, and a docked workbench of panels with gutters you can drag
+// (docs/design-language.md, "Geometry"). Main also hosts the Settings window (openSettings) and what the menus ask of
+// the window (menuAction).
 //
 // Frame: frameless with custom chrome by default; Preferences.nativeFrame switches to the platform's decorations.
 // Density: below Theme.compactBelowHeight the shell turns compact (tighter panel chrome and track heights) and gives
@@ -12,7 +14,7 @@ import QtQuick.Window
 // Audio, Captions, Export) or as a copy of another, and each keeps its own panel layout: a tree of panel groups
 // (DockManager) the user rearranges by dragging a group's grip or a panel's tab (beside another group, into its tabs,
 // along an edge, or into a window of its own) and changes by closing panels (their tabs' ×, the close button in their
-// header) and opening them again (the rail, File > Window, the panel focus keys). The panels are declared once
+// header) and opening them again (the Window menu, the panel focus keys). The panels are declared once
 // (panelPool) and move into the group they belong to, so they keep their state; the title bar's tabs create, rename,
 // reorder, reset and delete workspaces.
 Window {
@@ -26,13 +28,14 @@ Window {
     /// The former built-in id of the current workspace's preset (the welcome and the tour compare with it).
     readonly property int workspacePreset: Workspaces.legacyIdOf(workspace)
     readonly property bool timelineShown: docking.isOpen("timeline")
-    /// The rail's panel: the browser panel shown in the group of the browser panels, else "".
+    /// The browser panel shown in the group of the browser panels (the left column), else "" (the tests read it; the
+    /// name is the former left rail's).
     readonly property string railPanel: {
         const g = docking.groupOfColumn("left")
         const key = g ? docking.shownPanel(g.group) : ""
         return Workspaces.isBrowserPanel(key) ? key : ""
     }
-    /// The browser panel shown (the rail's).
+    /// The browser panel shown (railPanel).
     readonly property string browserPanel: railPanel
     onWorkspaceChanged: {
         if (Workspaces.find(workspace) === null) {
@@ -112,19 +115,121 @@ Window {
     }
 
     function showBrowserPanel(key) {
-        revealPanel(key)
+        window.focusPanel(key)
+    }
+
+    // UX rework: shows the panel `key` (its tab; opened where it fits when it is closed: DockManager.openPanel), makes
+    // its group the active one (DockManager.activeGroup) and puts keyboard focus in it: a browser panel's own focus
+    // target (focusContent), the monitor, the timeline's lanes, else the panel itself (its keymap scope applies; Tab
+    // goes on into it). The panel focus keys, the Window menu and showBrowserPanel come here.
+    function focusPanel(key: string) {
+        if (key === "source" || key === "program") {
+            monitorArea.show(key)
+            return
+        }
+        window.revealPanel(key)
+        docking.setActiveGroup(docking.groupOfPanel(key)?.group ?? "")
         Qt.callLater(() => {
-            if (key === "library") {
+            switch (key) {
+            case "library":
                 libraryPanel.focusContent()
                 return
+            case "timeline":
+                timeline.focusLanes()
+                return
+            case "effectControls":
+                inspectorPanel.forceActiveFocus(Qt.OtherFocusReason)
+                return
             }
-            // The other tabs are LazyPanels (M5n): focused once created.
-            const loaders = { effects: effectsLoader, captions: captionsLoader, audio: audioToolsLoader,
-                              markers: markersLoader, shorts: shortsLoader, generate: generateLoader, takes: takesLoader,
-                              essential: essentialLoader, review: reviewLoader, graphics: graphicsLoader,
-                              highlights: highlightsLoader, mediaBrowser: mediaBrowserLoader,
-                              metadata: metadataLoader, production: productionLoader }
-            loaders[key]?.withItem(panel => panel.focusContent())
+            // The other panels are LazyPanels (M5n): focused once created.
+            window.panelLoaders[key]?.withItem(panel => {
+                if (typeof panel.focusContent === "function")
+                    panel.focusContent()
+                else
+                    panel.forceActiveFocus(Qt.OtherFocusReason)
+            })
+        })
+    }
+    readonly property var panelLoaders: ({ effects: effectsLoader, captions: captionsLoader, audio: audioToolsLoader,
+                                           markers: markersLoader, shorts: shortsLoader, generate: generateLoader,
+                                           takes: takesLoader, essential: essentialLoader, review: reviewLoader,
+                                           graphics: graphicsLoader, highlights: highlightsLoader,
+                                           mediaBrowser: mediaBrowserLoader, metadata: metadataLoader,
+                                           production: productionLoader, scopes: scopesLoader,
+                                           captionStyle: captionStyleLoader, frameInspector: frameInspectorLoader,
+                                           mixer: mixerLoader, export: exportLoader, color: colorLoader })
+    // UX rework (Premiere's Window menu): a closed panel opens as a tab of the active group (the group clicked last;
+    // none: where it fits, DockManager.openPanel) and shows; an open one comes to the front where it is. Either way it
+    // gets keyboard focus.
+    function openPanelFromWindowMenu(key: string) {
+        docking.openPanelInActiveGroup(key)
+        window.focusPanel(key)
+    }
+    // UX rework: Maximize / Restore Frame for the group `gid` (with a group maximized, any toggle restores; keyboard focus
+    // follows, see below). No group to maximize: the toast says how to pick one.
+    function toggleMaximizeFrame(gid: string) {
+        if (docking.maximizedGroup === "" && gid === "") {
+            toast.show(qsTr("Click a panel first: Maximize Frame works on the panel group you clicked last"))
+            return
+        }
+        docking.toggleMaximize(gid)
+    }
+    // UX rework: whatever maximized a group (Shift+`, `, a double-click on a tab, the tab menu), keyboard focus left in a
+    // group that hides now moves into the maximized one: hidden panels keep their focus, and keys would edit what the
+    // user cannot see.
+    Connections {
+        target: docking
+
+        function onMaximizedGroupChanged() {
+            const gid = docking.maximizedGroup
+            if (gid !== "" && docking.groupOfItem(window.activeFocusItem) !== gid)
+                window.focusPanel(docking.shownPanel(gid))
+        }
+    }
+    // UX rework: Window > Workspaces > Reset to Saved Layout - the current workspace's preset layout again (its floating
+    // windows dock back); Undo on the toast puts the layout as it was back.
+    function resetToSavedLayout() {
+        const id = window.workspace
+        const before = Workspaces.find(id)
+        if (!before)
+            return
+        const layout = Workspaces.copy(before.layout)
+        const floating = Workspaces.copy(before.floating)
+        docking.reset()
+        toast.show(qsTr("The %1 workspace is back to its saved layout").arg(before.name), undefined, {
+            actionText: qsTr("Undo"),
+            action: () => {
+                if (Workspaces.find(id))
+                    Workspaces.update(id, { layout: layout, floating: floating })
+            }
+        })
+    }
+    // UX rework: a problem the user must see (an open or save that failed): a warning toast, or Home's message strip
+    // while Home is open (`options`: Toast.show's, e.g. a Save As… action; Home's strip offers it too).
+    function showProblem(text: string, options: var) {
+        const message = text !== "" ? text : qsTr("Something went wrong, and Wabcut could not say what.")
+        window.notify(message, Theme.warning, options)
+    }
+    // UX rework: a message that must not go unseen (a problem, background work that ended): the editor's toast
+    // (Toast.show's arguments), or Home's message strip while Home covers the editor - the toast would run out unseen
+    // behind it - with the same action. The colour gives the strip's tone (danger, warning, else info).
+    function notify(message: string, color: var, options: var) {
+        if (!home.opened) {
+            toast.show(message, color, options)
+            return
+        }
+        const tone = color === undefined ? "info" : Qt.colorEqual(color, Theme.danger) ? "danger"
+                                                  : Qt.colorEqual(color, Theme.warning) ? "warning" : "info"
+        home.showMessageWithAction(message, tone, options)
+    }
+    // UX rework: Save failed (`then`: what was to follow): say why and offer Save As….
+    function saveFailed(then: var) {
+        window.showProblem(ProjectFile.lastError, {
+            actionText: qsTr("Save As…"),
+            action: () => {
+                saveAsDialog.then = then
+                saveAsDialog.open()
+            }
         })
     }
 
@@ -193,6 +298,40 @@ Window {
         running: window.deferPanels && !window.preloadPanels
         onTriggered: window.preloadPanels = true
     }
+    // UX rework (stream L): Settings > General "Reopen the last project" at launch. Opening is synchronous and nothing
+    // paints while it runs, so the window shows first: Home with "Opening project" (the chase loader, from the first
+    // frame), then the project opens like Home's Open (home.runBusy) once a frame is on screen (or after 2 s without
+    // one). Home closes when it is open, else stays with the reason.
+    property url launchReopen
+    function reopenAtLaunch(file: url) {
+        home.busyText = qsTr("Opening project")
+        window.launchReopen = file
+        if (window.firstFrameShown)
+            window.runLaunchReopen()
+    }
+    function runLaunchReopen() {
+        const file = window.launchReopen
+        if (file.toString() === "")
+            return
+        window.launchReopen = ""
+        home.runBusy(qsTr("Opening project"), () => {
+            if (ProjectFile.open(file))
+                home.close()
+            else
+                home.showMessage(ProjectFile.lastError, "danger")
+        })
+    }
+    Connections {
+        target: window
+        function onFirstFrameShownChanged() {
+            window.runLaunchReopen()
+        }
+    }
+    Timer {
+        interval: 2000
+        running: window.launchReopen.toString() !== "" && !window.firstFrameShown
+        onTriggered: window.runLaunchReopen()
+    }
 
     // ---- Keyboard: KeymapDispatcher (docs/keymap.md, "App integration") ----
     // Panels declare their KeymapScope; the dispatcher resolves keys against the focused panel and emits
@@ -220,11 +359,18 @@ Window {
         else
             window.workspace = start
         // The app opens on the Home screen (main() asks for it; the tests start on the editor). On first run the
-        // welcome follows it (M5j).
+        // welcome follows it (M5j). UX rework: Settings > General "When Wabcut starts: Reopen the last project" opens
+        // the newest recent project instead (AppSettings.projectToReopen; never after a crash or with autosaves to
+        // recover, and a project Wabcut was started with wins): Home shows "Opening project" until it is open
+        // (reopenAtLaunch); if it cannot open, Home stays with the reason.
         if (Home.showAtLaunch) {
+            window.performanceCheckDue = PerformanceCheck.offerAtStartup
+            const reopen = ProjectFile.launchProject().toString() === "" && !CrashNotice.pending
+                           && ProjectFile.recoveryFiles.length === 0 ? AppSettings.projectToReopen(Home.recent) : ""
             home.open()
             window.welcomeAfterHome = true
-            window.performanceCheckDue = PerformanceCheck.offerAtStartup
+            if (reopen.toString() !== "")
+                window.reopenAtLaunch(reopen)
         }
         // After a crash or an unclean exit, the crash notice first (I.7; it leads to the Recovery dashboard); else the
         // work an unclean exit left in autosaves (ProjectFile scans at startup).
@@ -235,13 +381,37 @@ Window {
         // A .wabcut the app was started with (the installer's opt-in file association): opened like File > Open, with
         // its recovery check; unknown arguments are ignored (I.7).
         const launched = ProjectFile.launchProject()
-        if (launched.toString() !== "") {
-            window.whenSaved(() => {
-                if (ProjectFile.open(launched))
-                    home.close()
-                else
-                    home.showImportError(ProjectFile.lastError)
-            })
+        if (launched.toString() !== "")
+            window.openLaunchedProject(launched)
+        // 0.1.3: with AI turned off (Settings > AI), its offline mode stays on, also if something reset it since (the
+        // left rail did this before the UX rework).
+        if (!Preferences.aiEnabled && !AiController.offlineMode)
+            AiController.offlineMode = true
+        CommandPalette.setShellActions(window.paletteShellRows) // the palette's shell rows (paletteShellRows)
+    }
+    // A project file named from outside File > Open's dialog: the launch arguments, a .wabcut opened in Explorer while
+    // Wabcut runs (single instance: AppShell.openRequested), File > Open Recent and the palette's "Open Recent" rows.
+    // The project the panels show is not read again (its undo history, selection and playhead stay; only Home closes,
+    // as Home's own list does); one open next to it comes into the panels with its unsaved changes (nothing closes, so
+    // no prompt); any other opens like File > Open, after the unsaved-changes prompt (and the sample project's edits
+    // prompt). A failure shows on Home or as a toast.
+    function openLaunchedProject(file: url) {
+        const open = ProjectFile.indexOfProject(file)
+        if (open >= 0) {
+            if (open === ProjectFile.activeProject || ProjectFile.switchTo(open))
+                home.close()
+            else
+                window.showProblem(ProjectFile.lastError)
+            return
+        }
+        window.whenSaved(() => window.openProjectNow(file))
+    }
+    Connections {
+        target: AppShell
+
+        function onOpenRequested(files) {
+            if (files.length > 0)
+                window.openLaunchedProject(files[0])
         }
     }
 
@@ -349,12 +519,11 @@ Window {
         case "effects.newCustomBin":
             EffectPresets.newCustomBin("")
             return
-        case "effects.deleteCustomItem":
-            EffectPresets.deleteCurrentItem()
+        case "effects.deleteCustomItem": // the Effects panel asks first (deleteCurrentItemRequested)
+            EffectPresets.requestDeleteCurrentItem()
             return
         case "window.timeline":
-            window.revealPanel("timeline")
-            Qt.callLater(() => timeline.focusLanes())
+            window.focusPanel("timeline")
             return
         case "window.sourceMonitor":
             monitorArea.show("source")
@@ -362,10 +531,36 @@ Window {
         case "window.programMonitor":
             monitorArea.show("program")
             return
+        // UX rework (stream S): Shift+5, Effect Controls.
+        case "window.effectControls":
+            window.focusPanel("effectControls")
+            return
+        // UX rework (stream S): Premiere's Window > Maximize Frame (Shift+`): the active group (else the one with
+        // keyboard focus) takes the whole work area; again restores. ` alone: the group under the pointer (a Shortcut).
+        case "window.maximizeFrame":
+            window.toggleMaximizeFrame(docking.activeGroup !== "" ? docking.activeGroup
+                                                                  : docking.groupOfItem(window.activeFocusItem))
+            return
+        // UX rework (stream S): Window > Workspaces > Reset to Saved Layout (Alt+Shift+0): the workspace's preset
+        // layout again, with Undo on the toast.
+        case "window.resetToSavedLayout":
+            window.resetToSavedLayout()
+            return
+        // UX rework (stream S): Premiere's File > Close (Ctrl+W) closes the active panel: the one the active group shows
+        // (else the one with keyboard focus).
+        case "file.close": {
+            const gid = docking.activeGroup !== "" ? docking.activeGroup : docking.groupOfItem(window.activeFocusItem)
+            const key = docking.shownPanel(gid)
+            if (key !== "") {
+                docking.closePanel(key)
+                Qt.callLater(window.keepFocus)
+            }
+            return
+        }
         // p02 audio: Shift+6 / Shift+9, the Audio Track Mixer and the Audio Clip Mixer (the mixer panel's two views).
         case "window.audioTrackMixer":
         case "window.audioClipMixer":
-            window.revealPanel("mixer")
+            window.focusPanel("mixer")
             mixerLoader.withItem(panel => panel.view = commandId === "window.audioClipMixer" ? 1 : 0)
             return
         // Premiere's workspace keys (Alt+Shift+1..9) onto the first workspace made from the matching preset.
@@ -401,8 +596,8 @@ Window {
             return
         // 0.1.2: Premiere's G (Audio Gain…) and Shift+G (Audio Channels…) on the selected clips.
         case "clip.audioGain":
-            audioGainDialog.active = true
-            audioGainDialog.item.openFor(ClipAudio.selectedClips())
+            audioGainDialog.active = true;
+            (audioGainDialog.item as AudioGainDialog)?.openFor(ClipAudio.selectedClips())
             return
         case "clip.audioChannels":
             AudioChannels.openDialog(ClipAudio.selectedClips())
@@ -427,6 +622,14 @@ Window {
             saveAsDialog.then = null
             saveAsDialog.open()
             return
+        // UX rework (stream S): File > Save a Copy… (Ctrl+Alt+S): the project as it is now, to another file.
+        case "file.saveCopy":
+            window.saveCopy()
+            return
+        // UX rework (stream S): File > Close Project (Ctrl+Shift+W), with one project open too (Home, the demo behind).
+        case "file.closeProject":
+            window.closeCurrentProject()
+            return
         case "file.import":
             importDialog.open()
             return
@@ -435,6 +638,10 @@ Window {
             return
         case "edit.keyboardShortcuts":
             shortcutsDialog.openDialog()
+            return
+        // UX rework (streams L, S): Edit > Settings… (Ctrl+, / ⌘,: the keymap's key, so it can be rebound).
+        case "edit.preferences":
+            window.openSettings("", "")
             return
         // Voice-over (M5m, A.8): a pass records onto the first armed audio track.
         case "record.toggle":
@@ -474,6 +681,14 @@ Window {
     Shortcut {
         sequences: ["Ctrl+Shift+P"]
         onActivated: palette.openPalette()
+    }
+    // UX rework (Premiere): ` maximizes the panel group under the pointer (else the active one); again restores. A window
+    // shortcut: the keymap leaves the key unbound (Shift+` is window.maximizeFrame). Text fields keep the character.
+    Shortcut {
+        objectName: "maximizeFrameShortcut"
+        sequence: "`"
+        enabled: !home.opened
+        onActivated: window.toggleMaximizeFrame(docking.groupUnderPointer() || docking.activeGroup)
     }
 
     PaletteOverlay {
@@ -553,21 +768,56 @@ Window {
     // ---- Project file (ProjectFile singleton, I.1): New / Open / Save / Save As / Import, unsaved changes ----
     property var pendingAction: null   // continues New / Open / Quit after the unsaved-changes prompt
     property bool closeConfirmed: false
+    // UX rework: the sample project's question was answered with Discard. While the action that follows runs, what it
+    // leads to (an import that holds a project, the open after it) does not ask about the same edits again.
+    property bool demoAnswered: false
+    // UX rework (stream S): a whenSaved request that came while the prompt (or the Save As it led to) waited on another
+    // action - a project handed over from Explorer while "Save changes?" asks about a Quit. That action stays (a Quit
+    // stays a Quit); this one runs once the prompt is done (asking again if there still are unsaved changes), unless
+    // the window is closing. The latest request wins.
+    property var deferredAction: null
+    function promptBusy(): bool {
+        return window.pendingAction !== null && (unsavedDialog.visible || saveAsDialog.visible)
+    }
+    function runDeferred() {
+        if (window.deferredAction === null || window.promptBusy())
+            return
+        const action = window.deferredAction
+        window.deferredAction = null
+        if (!window.closeConfirmed)
+            window.whenSaved(action)
+    }
 
     // Runs `action` now, or after the user saved or discarded the unsaved changes (Cancel drops it).
+    // UX rework (stream S): leaving the sample project after edits (it is never "unsaved": ProjectController.canUndo
+    // tells) asks "Discard your changes to the sample project?" (Save As… / Discard / Cancel) the same way.
+    // A request while the prompt is busy with another action (deferredAction) waits its turn instead of replacing it.
     function whenSaved(action) {
-        if (!ProjectFile.dirty) {
+        if (window.promptBusy()) {
+            window.deferredAction = action
+            return
+        }
+        const demoEdits = ProjectFile.demo && ProjectController.canUndo && !window.demoAnswered
+        if (!ProjectFile.dirty && !demoEdits) {
             action()
             return
         }
         pendingAction = action
+        unsavedDialog.demo = !ProjectFile.dirty && demoEdits
         unsavedDialog.open()
     }
     function continuePending() {
         const action = pendingAction
         pendingAction = null
-        if (action)
+        if (!action)
+            return
+        // Still the sample project after the answer: that was Discard (Save As… made it a project of its own).
+        window.demoAnswered = ProjectFile.demo
+        try {
             action()
+        } finally {
+            window.demoAnswered = false
+        }
     }
     // Saves (asking for a file while untitled), then runs `then`.
     function saveProject(then) {
@@ -576,19 +826,34 @@ Window {
             saveAsDialog.open()
             return
         }
-        if (ProjectFile.save() && then)
+        if (!ProjectFile.save()) {
+            window.saveFailed(then) // never silent (UX rework): why, and Save As…
+            return
+        }
+        if (then)
             then()
     }
+    // File > New Project (Ctrl+Alt+N): Home's New project page (formats, name, location, Advanced); its Create runs the
+    // unsaved-changes prompt (UX rework). Opened from the editor: Cancel and Esc go back to it, the sample project too.
     function newProject() {
-        whenSaved(() => ProjectFile.newProject())
+        home.openFromEditor("new")
     }
     function openProject() {
         whenSaved(() => openDialog.open())
     }
     // 0.2 (P.3): a project chosen in the Production panel (or File > Open Project Next to This One) opens next to the
-    // ones open and comes into the panels; the others stay loaded with their undo history and unsaved changes.
+    // ones open and comes into the panels; the others stay loaded with their undo history and unsaved changes. UX
+    // rework: over the sample project it takes the sample's place (ProjectFile.openAlongside), so the sample's edits
+    // are asked about first.
     function openProjectFile(url) {
-        ProjectFile.openAlongside(url) // a failure shows as ProjectFile.lastError, like File > Open
+        const open = () => {
+            if (!ProjectFile.openAlongside(url))
+                window.showProblem(ProjectFile.lastError) // never silent (UX rework, stream S)
+        }
+        if (ProjectFile.demo)
+            window.whenSaved(open)
+        else
+            open()
     }
     // Closes open project `index`, asking first about its unsaved changes (it comes into the panels for that).
     function closeOpenProject(index) {
@@ -602,31 +867,85 @@ Window {
         if (ProjectFile.switchTo(index))
             whenSaved(() => ProjectFile.closeProject(ProjectFile.activeProject))
     }
-    function showHome() {
-        home.open()
+    // UX rework (stream S): File > Close Project. With other projects open, the active one closes (closeOpenProject);
+    // the only one is replaced by the sample project (ProjectFile.openDemo) and Home shows, after the unsaved-changes
+    // prompt.
+    function closeCurrentProject() {
+        if (ProjectFile.openProjects.length > 1) {
+            window.closeOpenProject(ProjectFile.activeProject)
+            return
+        }
+        window.whenSaved(() => {
+            if (ProjectFile.openDemo())
+                home.open()
+            else
+                window.showProblem(ProjectFile.lastError)
+        })
     }
-    // File > Import and drops on the Library. A .wabcut project among the files is opened instead.
+    // UX rework (stream S): File > Save a Copy… - the file dialog, "<name> copy" in the project's folder suggested.
+    function saveCopy() {
+        const name = ProjectFile.name !== "" ? ProjectFile.name : qsTr("Untitled project")
+        saveCopyDialog.selectedFile = ProjectFile.folder.toString() + "/" + encodeURIComponent(qsTr("%1 copy").arg(name))
+                                      + ".wabcut"
+        saveCopyDialog.open()
+    }
+    // File > Home: Back and Esc go back to the project the user was in, the sample project too (UX rework).
+    function showHome() {
+        home.openFromEditor("home")
+    }
+    // File > Import and drops on the Library. A .wabcut project among the files is opened instead. One argument: tests
+    // and callers reach it through invokeMethod, which needs the exact count (importUrlsThen takes the callback).
     function importUrls(urls) {
+        return window.importUrlsThen(urls, null)
+    }
+    // importUrls with `after` (the Source Monitor's drop opens the first file with it): it runs with the import's result
+    // once the import has run: at once, or after the unsaved-changes answer (then { pending: true } is returned).
+    function importUrlsThen(urls, after) {
         // C.13 (M5o): Lottie animations become graphic clips, with their own report. 0.2: Photoshop files open Import
         // Layered File (in turn when several come together).
         const rest = []
+        const lottie = []
         const layered = []
         for (const url of urls) {
             if (GraphicsImport.isLottie(url))
-                GraphicsImport.importLottie(url)
+                lottie.push(url)
             else if (Library.isLayeredFile(url))
                 layered.push(url)
             else
                 rest.push(url)
         }
+        // UX rework (stream S): media, timelines or a project imported over the edited sample project take its place (a
+        // new project, or the one opened): its edits are asked about first (whenSaved), before anything is imported, and
+        // the whole import runs after the answer.
+        if (rest.length > 0 && ProjectFile.demo && ProjectController.canUndo && !window.demoAnswered) {
+            whenSaved(() => window.importUrlsThen(urls, after))
+            return ({ pending: true })
+        }
+        // Those go first (over the sample project they start the new project), then the animations and the layered
+        // files go into the project that is open then.
+        const result = rest.length > 0 ? window.importFilesNow(rest) : ({})
+        for (const url of lottie)
+            GraphicsImport.importLottie(url)
         if (layered.length > 0)
             importLayeredFileDialog.openFor(layered)
-        if (rest.length === 0)
-            return ({})
-        const result = ProjectFile.importFiles(rest)
-        if (result.projects && result.projects.length > 0)
-            whenSaved(() => ProjectFile.open(result.projects[0]))
+        if (after)
+            after(result)
         return result
+    }
+    function importFilesNow(urls) {
+        const result = ProjectFile.importFiles(urls)
+        if (result.projects && result.projects.length > 0)
+            whenSaved(() => window.openProjectNow(result.projects[0]))
+        return result
+    }
+    // Opens the project `file` (File > Open and the other ways in); Home closes, or (never silent) the reason shows.
+    function openProjectNow(file: url): bool {
+        if (ProjectFile.open(file)) {
+            home.close()
+            return true
+        }
+        window.showProblem(ProjectFile.lastError)
+        return false
     }
 
     // Whether the window may close now. 0.2 (P.3): else every open project with unsaved changes is asked about in turn
@@ -670,189 +989,161 @@ Window {
         }
     }
 
-    // File menu (Alt+F, or a click on the logo).
-    ContextMenu {
-        id: fileMenu
-        objectName: "fileMenu"
-
-        ContextMenuItem {
-            objectName: "fileMenuHome"
-            text: qsTr("Home")
-            iconName: "house"
-            onTriggered: window.showHome()
+    // ---- The menu bar (UX rework, stream S): the title bar's menus (panels/menubar/, AppMenuBar) run keymap commands
+    // (runCommand above); what only the window can do comes here, once the menus have closed ----
+    /// A menu bar action (AppMenuBar.actionRequested): `argument` is its url, panel key, workspace id or Help item.
+    function menuAction(action: string, argument: var) {
+        switch (action) {
+        case "home":
+            window.showHome()
+            return
+        case "openRecent":
+            window.openLaunchedProject(argument) // the project open now is not read again
+            return
+        case "openAlongside":
+            openAlongsideDialog.open()
+            return
+        case "revert":
+            menuConfirm.ask(qsTr("Revert to the saved version?"),
+                            qsTr("Your unsaved changes and the undo history are lost; the project opens as it was last saved."),
+                            qsTr("Revert"), () => {
+                if (!ProjectFile.revert())
+                    window.showProblem(ProjectFile.lastError)
+            })
+            return
+        case "importLottie":
+            lottieDialog.open()
+            return
+        case "exportTimeline":
+            exportTimelineDialog.openForCurrent()
+            return
+        case "relink":
+            relinkDialog.open()
+            return
+        case "recover":
+            recoveryDialog.openDashboard()
+            return
+        case "collectFiles":
+            collectFilesDialog.active = true;
+            (collectFilesDialog.item as CollectFilesDialog)?.open()
+            return
+        case "openPanel":
+            window.openPanelFromWindowMenu(String(argument))
+            return
+        case "workspace":
+            window.workspace = Number(argument)
+            return
+        case "newWorkspace": {
+            const id = Workspaces.createFromPreset(String(argument), "")
+            window.workspace = id
+            topBar.renameWorkspace(id)
+            return
         }
-        ContextMenuSeparator {}
-        ContextMenuItem {
-            text: qsTr("New Project")
-            command: "file.newProject"
-            onTriggered: window.newProject()
+        case "duplicateWorkspace": {
+            const id = Workspaces.create(Number(argument), "")
+            window.workspace = id
+            topBar.renameWorkspace(id)
+            return
         }
-        ContextMenuItem {
-            text: qsTr("Open Project…")
-            command: "file.openProject"
-            onTriggered: window.openProject()
+        case "renameWorkspace":
+            topBar.renameWorkspace(Number(argument))
+            return
+        case "deleteWorkspace": {
+            const id = Number(argument)
+            menuConfirm.ask(qsTr("Delete the %1 workspace?").arg(Workspaces.label(id)),
+                            qsTr("Its panel layout goes with it. Your projects are not touched."),
+                            qsTr("Delete"), () => Workspaces.remove(id))
+            return
         }
-        // 0.2 (P.3): several projects open at once (the Production panel lists them and switches between them).
-        ContextMenuItem {
-            objectName: "fileMenuOpenAlongside"
-            text: qsTr("Open Project Next to This One…")
-            onTriggered: openAlongsideDialog.open()
-        }
-        ContextMenuItem {
-            objectName: "fileMenuCloseProject"
-            text: qsTr("Close Project")
-            enabled: ProjectFile.openProjects.length > 1
-            onTriggered: window.closeOpenProject(ProjectFile.activeProject)
-        }
-        ContextMenuItem {
-            text: qsTr("Save")
-            iconName: "save"
-            command: "file.save"
-            onTriggered: window.saveProject(null)
-        }
-        ContextMenuItem {
-            text: qsTr("Save As…")
-            command: "file.saveAs"
-            onTriggered: {
-                saveAsDialog.then = null
-                saveAsDialog.open()
-            }
-        }
-        ContextMenuSeparator {}
-        ContextMenuItem {
-            text: qsTr("Import…")
-            iconName: "plus"
-            command: "file.import"
-            onTriggered: importDialog.open()
-        }
-        ContextMenuItem {
-            objectName: "importLottieMenuItem"
-            text: qsTr("Import Lottie…")
-            iconName: "plus"
-            onTriggered: lottieDialog.open()
-        }
-        ContextMenuItem {
-            text: qsTr("Relink Offline Media…")
-            enabled: ProjectFile.offlineCount > 0
-            onTriggered: relinkDialog.open()
-        }
-        // I.4: every saved/autosaved/backup version (the recovery dashboard), and the portable project capsule.
-        ContextMenuItem {
-            objectName: "recoverMenuItem"
-            text: qsTr("Recover…")
-            onTriggered: recoveryDialog.openDashboard()
-        }
-        // 0.1.1: Premiere's File > Export > Final Cut Pro XML / EDL / OTIO (interchange.export, on a worker).
-        ContextMenuItem {
-            objectName: "exportTimelineMenuItem"
-            text: qsTr("Export Timeline…")
-            iconName: "file-down"
-            enabled: ProjectController.sequenceNames.length > 0
-            onTriggered: exportTimelineDialog.openForCurrent()
-        }
-        ContextMenuItem {
-            objectName: "collectFilesMenuItem"
-            text: qsTr("Collect Files…")
-            enabled: !ProjectFile.demo
-            onTriggered: {
-                collectFilesDialog.active = true
-                collectFilesDialog.item.open()
-            }
-        }
-        ContextMenuSeparator {}
-        // 0.1.3: the Settings window (the rail hosts it).
-        ContextMenuItem {
-            objectName: "fileMenuSettings"
-            text: qsTr("Settings…")
-            iconName: "settings"
-            shortcut: Qt.platform.os === "osx" ? "⌘," : "Ctrl+,"
-            onTriggered: rail.openSettings("")
-        }
-        ContextMenuItem {
-            objectName: "fileMenuShortcuts"
-            text: qsTr("Keyboard Shortcuts…")
-            iconName: "keyboard"
-            command: "edit.keyboardShortcuts"
-            onTriggered: shortcutsDialog.openDialog()
-        }
-        // P.2 (E5): Premiere's File > New > Sequence From Clip, Sequence > Sequence Settings and Window > History.
-        ContextMenuItem {
-            objectName: "newSequenceFromClipMenuItem"
-            text: qsTr("New Sequence From Clip")
-            iconName: "clapperboard"
-            command: "file.newSequenceFromClip"
-            enabled: Library.mediaSelected
-            onTriggered: Editing.runCommand("file.newSequenceFromClip")
-        }
-        ContextMenuItem {
-            objectName: "sequenceSettingsMenuItem"
-            text: qsTr("Sequence Settings…")
-            iconName: "sliders-horizontal"
-            command: "sequence.settings"
-            enabled: ProjectController.sequenceNames.length > 0
-            onTriggered: Editing.runCommand("sequence.settings")
-        }
-        ContextMenuItem {
-            objectName: "historyMenuItem"
-            text: qsTr("History")
-            iconName: "undo-2"
-            command: "window.history"
-            onTriggered: Editing.runCommand("window.history")
-        }
-        ContextMenuItem {
-            objectName: "editingPreferencesMenuItem"
-            text: qsTr("Media and Timeline Preferences…")
-            iconName: "settings"
-            command: "edit.preferencesMedia"
-            onTriggered: Editing.runCommand("edit.preferencesMedia")
-        }
-        // 0.1.3 panel docking: Window: every panel, checked when it is open in this workspace; choosing one opens it (or
-        // shows it where it is).
-        ContextMenu {
-            id: windowMenu
-            objectName: "windowMenu"
-            title: qsTr("Window")
-
-            Instantiator {
-                model: Workspaces.catalog
-                delegate: ContextMenuItem {
-                    required property var modelData
-                    objectName: "windowMenu_" + modelData.key
-                    text: modelData.label
-                    iconName: modelData.icon
-                    checkable: true
-                    checked: docking.isOpen(modelData.key)
-                    onTriggered: {
-                        window.revealPanel(modelData.key)
-                        checked = Qt.binding(() => docking.isOpen(modelData.key))
-                    }
-                }
-                onObjectAdded: (index, object) => windowMenu.insertItem(index, object as ContextMenuItem)
-                onObjectRemoved: (index, object) => windowMenu.removeItem(object as ContextMenuItem)
-            }
-        }
-        // The current workspace's panels back where its preset puts them.
-        ContextMenuItem {
-            objectName: "resetPanelLayoutMenuItem"
-            text: qsTr("Reset Panel Layout")
-            iconName: "layout-grid"
-            onTriggered: docking.reset()
-        }
-        ContextMenuSeparator {}
-        ContextMenuItem {
-            text: qsTr("Exit")
-            command: "file.exit"
-            onTriggered: window.close()
+        case "help":
+            window.showHelp(String(argument))
+            return
+        case "sample":
+            window.whenSaved(() => {
+                if (!ProjectFile.openDemo())
+                    window.showProblem(ProjectFile.lastError)
+            })
+            return
+        case "about":
+            aboutDialog.open()
+            return
         }
     }
-    Shortcut {
-        sequence: "Alt+F"
-        onActivated: fileMenu.popup(topBar, Theme.gap, topBar.height)
+    MenuConfirmDialog {
+        id: menuConfirm
     }
-    // 0.1.3: Settings (Cmd+, on macOS).
-    Shortcut {
-        sequence: "Ctrl+,"
-        onActivated: rail.openSettings("")
+    AboutDialog {
+        id: aboutDialog
+    }
+    // File > Save a Copy… (saveCopy()): the project as it is now goes to another file; this one stays open as it was.
+    FileDialog {
+        id: saveCopyDialog
+        objectName: "saveCopyDialog"
+        fileMode: FileDialog.SaveFile
+        defaultSuffix: "wabcut"
+        nameFilters: [qsTr("Wabcut projects (*.wabcut)")]
+        currentFolder: ProjectFile.folder
+        onAccepted: {
+            if (ProjectFile.saveCopy(selectedFile))
+                toast.show(qsTr("Copy saved: %1").arg(decodeURIComponent(selectedFile.toString().split("/").pop())))
+            else
+                window.showProblem(ProjectFile.lastError)
+        }
+    }
+
+    // ---- The Settings window (0.1.3; hosted here since the UX rework removed the left rail) ----
+    // Created on first use, then kept (its pages remember where they were scrolled). Opened from Edit > Settings…
+    // (edit.preferences: Ctrl+, / ⌘,), Home's Settings button, the transcript's "set up transcription" (AI) and the
+    // command palette's Settings rows (AppSettings.openRequested: a page and a row). It is a popup over the window, so it
+    // works while Home covers the editor.
+    Loader {
+        id: settingsLoader
+        objectName: "settingsWindowLoader"
+        active: false
+        sourceComponent: SettingsWindow {}
+    }
+    // Its Audio "Open…" and the Keyboard page's shortcuts editor and trainer (after it has closed).
+    Connections {
+        target: settingsLoader.item as SettingsWindow
+
+        function onAudioSettingsRequested() {
+            window.openAudioSettings()
+        }
+        function onHelpRequested(what: string) {
+            window.showHelp(what)
+        }
+    }
+    /// Opens the Settings window on page `key` ("" keeps the page it showed last; SettingsWindow.categories) and, with a
+    /// `row` (an AppSettings.index row key, "" for none), shows that setting.
+    function openSettings(key: string, row: string) {
+        settingsLoader.active = true
+        // Its own statement: a line that starts with "(" would continue the one above ("true(...)").
+        const settings = settingsLoader.item as SettingsWindow
+        if (!settings)
+            return
+        if (row !== "")
+            settings.revealSetting(key, row)
+        else
+            settings.openAt(key)
+    }
+    /// Settings > AI (the transcript panel's "set up transcription").
+    function openAiPreferences() {
+        window.openSettings("ai", "")
+    }
+    Connections {
+        target: AppSettings
+
+        function onOpenRequested(page, row) {
+            window.openSettings(page, row)
+        }
+    }
+    // Settings > General's autosave interval (0: ProjectFile's own). From startup, not with the Settings window.
+    Binding {
+        target: ProjectFile
+        property: "autosaveIntervalSeconds"
+        value: Preferences.autosaveSeconds
+        when: Preferences.autosaveSeconds > 0
+        restoreMode: Binding.RestoreNone
     }
 
     FileDialog {
@@ -860,10 +1151,7 @@ Window {
         fileMode: FileDialog.OpenFile
         nameFilters: [qsTr("Wabcut projects (*.wabcut)"), qsTr("All files (*)")]
         currentFolder: ProjectFile.folder
-        onAccepted: {
-            if (ProjectFile.open(selectedFile))
-                home.close()
-        }
+        onAccepted: window.openProjectNow(selectedFile)
     }
     FileDialog {
         id: openAlongsideDialog
@@ -882,10 +1170,18 @@ Window {
         onAccepted: {
             const next = then
             then = null
-            if (ProjectFile.saveAs(selectedFile) && next)
+            Qt.callLater(window.runDeferred) // a request that waited on the prompt's Save As (whenSaved)
+            if (!ProjectFile.saveAs(selectedFile)) {
+                window.saveFailed(next) // never silent (UX rework): why, and Save As… again (another place)
+                return
+            }
+            if (next)
                 next()
         }
-        onRejected: then = null
+        onRejected: {
+            then = null
+            Qt.callLater(window.runDeferred)
+        }
     }
     FileDialog {
         id: importDialog
@@ -898,6 +1194,7 @@ Window {
         id: unsavedDialog
         onSaveChosen: window.saveProject(() => window.continuePending())
         onDiscardChosen: window.continuePending()
+        onClosed: Qt.callLater(window.runDeferred) // a request that waited on the prompt (whenSaved)
     }
     ImportLayeredFileDialog {
         id: importLayeredFileDialog
@@ -991,8 +1288,8 @@ Window {
         target: Clipboard
 
         function onAttributesRequested(mode) {
-            attributesDialog.active = true
-            attributesDialog.item.openFor(mode)
+            attributesDialog.active = true;
+            (attributesDialog.item as AttributesDialog)?.openFor(mode)
         }
     }
     // Gaming (M5o, C.15 layout.apply): the layout picker (facecam corner, vertical split, vertical blur fill), loaded on
@@ -1007,8 +1304,8 @@ Window {
         target: Layouts
 
         function onOpenRequested() {
-            layoutPicker.active = true
-            layoutPicker.item.openFor(window.contentItem, monitor)
+            layoutPicker.active = true;
+            (layoutPicker.item as LayoutPicker)?.openFor(window.contentItem, monitor)
         }
         function onMessageChanged() {
             if (Layouts.message !== "")
@@ -1091,8 +1388,8 @@ Window {
         target: AudioChannels
 
         function onDialogRequested(mode, keys) {
-            audioChannelsDialog.active = true
-            audioChannelsDialog.item.openFor(mode, keys)
+            audioChannelsDialog.active = true;
+            (audioChannelsDialog.item as AudioChannelsDialog)?.openFor(mode, keys)
         }
     }
     // M5n (C.12): Settings > Extensions (Extensions.openManager(): the Settings popover, the palette's "Manage Extensions…").
@@ -1106,8 +1403,8 @@ Window {
         target: Extensions
 
         function onManagerRequested() {
-            extensionsManager.active = true
-            extensionsManager.item.open()
+            extensionsManager.active = true;
+            (extensionsManager.item as ExtensionsManager)?.open()
         }
     }
     // M5m (A.6): Settings > Audio plugins (Plugins.openSettings(): the Effects panel's plugin section, the Settings popover).
@@ -1121,8 +1418,8 @@ Window {
         target: Plugins
 
         function onSettingsRequested() {
-            audioPluginsSettings.active = true
-            audioPluginsSettings.item.open()
+            audioPluginsSettings.active = true;
+            (audioPluginsSettings.item as AudioPluginsSettings)?.open()
         }
     }
     // M5m (A.8): Settings > Audio (microphone, count-in, pre/post-roll, monitoring, latency); VoiceOverSync loads the
@@ -1134,38 +1431,47 @@ Window {
         sourceComponent: AudioSettings {}
     }
     function openAudioSettings() {
-        audioSettings.active = true
-        audioSettings.item.open()
+        audioSettings.active = true;
+        (audioSettings.item as AudioSettings)?.open()
     }
     VoiceOverSync {}
     Connections {
         target: Multicam
 
         function onCreateRequested(media) {
-            multicamCreateDialog.active = true
-            multicamCreateDialog.item.openFor(media)
+            multicamCreateDialog.active = true;
+            (multicamCreateDialog.item as MulticamCreateDialog)?.openFor(media)
         }
     }
     Connections {
         target: ClipAudio
 
         function onEnhanceRequested(clips) {
-            enhanceSpeechDialog.active = true
-            enhanceSpeechDialog.item.openFor(clips)
+            enhanceSpeechDialog.active = true;
+            (enhanceSpeechDialog.item as EnhanceSpeechDialog)?.openFor(clips)
         }
         function onStemsRequested(clip) {
-            stemsDialog.active = true
-            stemsDialog.item.openFor(clip)
+            stemsDialog.active = true;
+            (stemsDialog.item as StemsDialog)?.openFor(clip)
         }
         function onSyncReportChanged() {
             if (ClipAudio.syncReport.ok === undefined)
                 return
-            syncReportDialog.active = true
-            syncReportDialog.item.open()
+            syncReportDialog.active = true;
+            (syncReportDialog.item as SyncReportDialog)?.open()
         }
     }
     Connections {
         target: Nesting
+
+        function onLibraryRequested() {
+            window.showBrowserPanel("library")
+        }
+    }
+    // UX rework (stream T): Reveal in Project (the clip menu, clip.revealInProject), Make Subsequence and Merge Clips
+    // bring the Library forward.
+    Connections {
+        target: Editing
 
         function onLibraryRequested() {
             window.showBrowserPanel("library")
@@ -1192,16 +1498,16 @@ Window {
         target: RoughCut
 
         function onOpenRequested() {
-            roughCutSheet.active = true
-            roughCutSheet.item.open()
+            roughCutSheet.active = true;
+            (roughCutSheet.item as RoughCutSheet)?.open()
         }
     }
     Connections {
         target: AutoZoom
 
         function onOpenRequested(clip) {
-            autoZoomDialog.active = true
-            autoZoomDialog.item.openFor(clip)
+            autoZoomDialog.active = true;
+            (autoZoomDialog.item as AutoZoomDialog)?.openFor(clip)
         }
     }
     Connections {
@@ -1230,20 +1536,20 @@ Window {
         target: TranslateCaptions
 
         function onOpenRequested() {
-            translateDialog.active = true
-            translateDialog.item.open()
+            translateDialog.active = true;
+            (translateDialog.item as TranslateDialog)?.open()
         }
     }
     Connections {
         target: Dub
 
         function onOpenRequested(mode) {
-            dubDialog.active = true
-            dubDialog.item.openFor(mode)
+            dubDialog.active = true;
+            (dubDialog.item as DubDialog)?.openFor(mode)
         }
         function onProposalRequested() {
-            dubDialog.active = true
-            dubDialog.item.openFor(Dub.proposal.kind ?? "dub")
+            dubDialog.active = true;
+            (dubDialog.item as DubDialog)?.openFor(Dub.proposal.kind ?? "dub")
         }
     }
     // Podcast and interview editing (AI-13), loaded on first use: the clip menu's Auto Switch… on a multicam clip
@@ -1264,16 +1570,16 @@ Window {
         target: AutoSwitch
 
         function onOpenRequested(clip) {
-            autoSwitchDialog.active = true
-            autoSwitchDialog.item.openFor(clip)
+            autoSwitchDialog.active = true;
+            (autoSwitchDialog.item as AutoSwitchDialog)?.openFor(clip)
         }
     }
     Connections {
         target: PodcastWorkflow
 
         function onOpenRequested() {
-            podcastWorkflowSheet.active = true
-            podcastWorkflowSheet.item.open()
+            podcastWorkflowSheet.active = true;
+            (podcastWorkflowSheet.item as PodcastWorkflowSheet)?.open()
         }
     }
     // Settings > Media & cache: proxies, preview quality, disk caches (MediaReadiness.openSettings()).
@@ -1287,8 +1593,8 @@ Window {
         target: MediaReadiness
 
         function onSettingsRequested() {
-            mediaCacheSettings.active = true
-            mediaCacheSettings.item.open()
+            mediaCacheSettings.active = true;
+            (mediaCacheSettings.item as MediaCacheSettings)?.open()
         }
     }
 
@@ -1318,10 +1624,11 @@ Window {
             onExportRequested: window.openPreset("export")
             onCommandPaletteRequested: palette.openPalette()
             onSaveRequested: window.saveProject(null)
+            docking: docking
+            onMenuActionRequested: (action, argument) => window.menuAction(action, argument)
         }
 
-        // The mark and the project's name open the File menu (the shell has no menu bar; the logo is the conventional
-        // app menu).
+        // The mark and the project's name open the File menu too (the logo is the conventional app menu).
         Item {
             objectName: "fileMenuTarget"
             readonly property point at: topBar.brandArea.mapToItem(topBar, 0, 0)
@@ -1334,30 +1641,17 @@ Window {
             Accessible.name: qsTr("File menu")
 
             TapHandler {
-                onTapped: fileMenu.popup(topBar, Theme.gap, topBar.height)
+                onTapped: topBar.menuBar.open(0, false)
             }
             HoverHandler {
                 cursorShape: Qt.PointingHandCursor
             }
         }
 
-        LeftRail {
-            id: rail
-            anchors.left: parent.left
-            anchors.top: topBar.bottom
-            anchors.bottom: parent.bottom
-            anchors.leftMargin: Theme.gap
-            anchors.bottomMargin: Theme.gap
-            width: Theme.railWidth
-            panel: window.railPanel   // nothing highlighted while the browser is hidden (Export) or shows the scopes (Color)
-            onPanelRequested: key => window.showBrowserPanel(key)
-            onHelpRequested: what => window.showHelp(what)
-            onAudioSettingsRequested: window.openAudioSettings()
-        }
-
+        // UX rework: no left rail - the work area starts at the window's gutter (the Window menu opens the panels).
         Item {
             id: workArea
-            anchors.left: rail.right
+            anchors.left: parent.left
             anchors.right: parent.right
             anchors.top: topBar.bottom
             anchors.bottom: parent.bottom
@@ -1366,9 +1660,11 @@ Window {
             anchors.bottomMargin: Theme.gap
 
             // 0.1.3 panel docking: the current workspace's layout (DockManager) in the work area: each group's rectangle and
-            // the gutters between them.
+            // the gutters between them. UX rework: a maximized group (Maximize Frame) is laid out alone, over the whole area.
             readonly property real leastFlexible: Theme.space(30)
-            readonly property var dockLayout: docking.layout(docking.tree, width, height, docking.presence(), Theme.gap,
+            readonly property var dockLayout: docking.layout(docking.maximizedGroup !== "" ? docking.leafOf(docking.maximizedGroup)
+                                                                                           : docking.tree,
+                                                             width, height, docking.presence(), Theme.gap,
                                                              Theme.dualMonitorMinWidth, leastFlexible)
             /// Where the group `gid` is in the work area ({x, y, width, height}), or null while it takes no room.
             function rectOf(gid: string): var {
@@ -1444,7 +1740,7 @@ Window {
                     Behavior on opacity { NumberAnimation { duration: Theme.durState } }
                     sourceComponent: EffectsPanel {}
                 }
-                // Transcript and captions (M5e); the rail key stays "captions".
+                // Transcript and captions (M5e); the panel key stays "captions".
                 LazyPanel {
                     id: captionsLoader
                     name: "captions"
@@ -1456,8 +1752,14 @@ Window {
                     visible: shown || opacity > 0
                     enabled: shown
                     Behavior on opacity { NumberAnimation { duration: Theme.durState } }
-                    sourceComponent: TranscriptPanel {
-                        onSetupRequested: rail.openAiPreferences()
+                    sourceComponent: TranscriptPanel {}
+                }
+                // The transcript's "set up transcription": Settings > AI.
+                Connections {
+                    target: captionsLoader.item as TranscriptPanel
+
+                    function onSetupRequested() {
+                        window.openAiPreferences()
                     }
                 }
                 // Audio Tools (M5g): loudness, normalize, auto-duck, reduce noise.
@@ -1632,9 +1934,16 @@ Window {
                     visible: shown || opacity > 0
                     enabled: shown
                     Behavior on opacity { NumberAnimation { duration: Theme.durState } }
-                    sourceComponent: ProductionPanel {
-                        onOpenProjectRequested: url => window.openProjectFile(url)
-                        onCloseProjectRequested: index => window.closeOpenProject(index)
+                    sourceComponent: ProductionPanel {}
+                }
+                Connections {
+                    target: productionLoader.item as ProductionPanel
+
+                    function onOpenProjectRequested(file: url) {
+                        window.openProjectFile(file)
+                    }
+                    function onCloseProjectRequested(index: int) {
+                        window.closeOpenProject(index)
                     }
                 }
                 // Scopes (I.5): the Color workspace's left column.
@@ -1693,7 +2002,13 @@ Window {
                     Behavior on opacity { NumberAnimation { duration: Theme.durState } }
                     sourceComponent: FrameInspectorPanel {
                         objectName: "frameInspector"
-                        onCloseRequested: docking.closePanel("frameInspector")
+                    }
+                }
+                Connections {
+                    target: frameInspectorLoader.item as FrameInspectorPanel
+
+                    function onCloseRequested() {
+                        docking.closePanel("frameInspector")
                     }
                 }
                 LazyPanel {
@@ -1745,7 +2060,7 @@ Window {
                     // Two monitors sharing a narrow place: the one chosen with the switch.
                     visible: workArea.panelShown("source") && !(monitorArea.single && monitorArea.current !== "source")
                     single: monitorArea.single
-                    onMonitorRequested: which => monitorArea.current = which
+                    onMonitorRequested: which => monitorArea.choose(which)
                     onEditRequested: insert => window.sourceEdit(insert)
                     onEditHovered: (insert, hovered) => {
                         if (hovered)
@@ -1753,6 +2068,9 @@ Window {
                         else
                             SourceMonitor.clearPreview()
                     }
+                    // UX rework (stream T): files dropped from File Explorer import as File > Import does; the panel
+                    // then opens the first one (after the unsaved-changes answer when the sample project had edits).
+                    importFiles: (urls, after) => window.importUrlsThen(urls, after)
                 }
                 MonitorPanel {
                     id: monitor
@@ -1763,7 +2081,8 @@ Window {
                     typeTool: timeline.tool === "type"
                     project: project
                     single: monitorArea.single
-                    onMonitorRequested: which => monitorArea.current = which
+                    onMonitorRequested: which => monitorArea.choose(which)
+                    onPlayheadMoved: timeline.revealPlayhead() // UX rework (stream T): a typed time
                 }
                 // The timeline, with what can be dropped on it.
                 Item {
@@ -1777,6 +2096,7 @@ Window {
                         id: timeline
                         anchors.fill: parent
                         onImportRequested: importDialog.open()
+                        onMessageRequested: text => toast.show(text, Theme.warning) // UX rework (stream T)
                     }
 
                     // Library -> timeline (I.1): a media card dropped on the lanes is edited in at the frame under the
@@ -1848,20 +2168,34 @@ Window {
                             if (!drop.hasUrls)
                                 return
                             drop.accept(Qt.CopyAction)
-                            // C.13 (M5o): Lottie animations become graphic clips, with their own report.
+                            // C.13 (M5o): Lottie animations become graphic clips, with their own report - after the other
+                            // files, which may start a new project for them.
                             const files = []
+                            const lottie = []
                             for (const url of drop.urls) {
                                 if (GraphicsImport.isLottie(url))
-                                    GraphicsImport.importLottie(url)
+                                    lottie.push(url)
                                 else
                                     files.push(url)
                             }
-                            if (files.length === 0)
-                                return
-                            const result = ProjectFile.dropFiles(files, at ? at.time : ProjectController.playheadText,
-                                                                 at ? at.track : "", !ProjectFile.insertModifierHeld())
-                            if (result.projects && result.projects.length > 0)
-                                window.whenSaved(() => ProjectFile.open(result.projects[0]))
+                            const time = at ? at.time : ProjectController.playheadText
+                            const track = at ? at.track : ""
+                            const overwrite = !ProjectFile.insertModifierHeld()
+                            const dropNow = () => {
+                                if (files.length > 0) {
+                                    const result = ProjectFile.dropFiles(files, time, track, overwrite)
+                                    if (result.projects && result.projects.length > 0)
+                                        window.whenSaved(() => window.openProjectNow(result.projects[0]))
+                                }
+                                for (const url of lottie)
+                                    GraphicsImport.importLottie(url)
+                            }
+                            // UX rework: files over the edited sample project take its place (a new project, or the
+                            // project dropped): whenSaved asks about its edits first, before anything is imported.
+                            if (files.length > 0 && ProjectFile.demo)
+                                window.whenSaved(dropNow)
+                            else
+                                dropNow()
                         }
                     }
 
@@ -1918,7 +2252,10 @@ Window {
                     y: place ? place.y : 0
                     width: place ? place.width : 0
                     height: place ? place.height : 0
-                    visible: place !== null && width > 0 && height > 0
+                    // UX rework: the monitor a shared place does not show (monitorArea.hiddenGroup) hides with its
+                    // group: its glass, outline and hover would otherwise lie over the shown one and take its presses,
+                    // drops, ` and hover (DockManager.slotAt and groupUnderPointer skip hidden groups).
+                    visible: place !== null && width > 0 && height > 0 && gid !== monitorArea.hiddenGroup
                     // The tabs follow the group's panels, and only when they change (a tab being dragged stays).
                     onGroupChanged: {
                         const next = groupSlot.group ? groupSlot.group.panels : []
@@ -1992,6 +2329,24 @@ Window {
                 readonly property bool single: sourceDocked && programDocked && workArea.dockLayout.merged
                 // The monitor a single layout shows: "source" or "program".
                 property string current: "program"
+                // UX rework: the group of the monitor a single layout does not show ("" while each has a place of its
+                // own). Its slot hides; the active group and the keyboard focus never stay on it (the one shown takes
+                // over), so the Window menu, Shift+`, Ctrl+W and the monitor keys act on the monitor the user sees.
+                readonly property string hiddenGroup: single ? (docking.groupOfPanel(current === "source" ? "program" : "source")?.group ?? "")
+                                                             : ""
+                onHiddenGroupChanged: {
+                    if (hiddenGroup === "")
+                        return
+                    if (docking.activeGroup === hiddenGroup)
+                        docking.setActiveGroup(docking.groupOfPanel(current)?.group ?? "")
+                    if (docking.groupOfItem(window.activeFocusItem) === hiddenGroup)
+                        Qt.callLater(() => monitorArea.current === "source" ? sourceMonitor.focusMonitor() : monitor.focusMonitor())
+                }
+                // The Source/Program switch in a monitor's header: that monitor shows, and its group is the active one.
+                function choose(which: string) {
+                    current = which
+                    docking.setActiveGroup(docking.groupOfPanel(which)?.group ?? "")
+                }
                 function placeOf(docked: bool, key: string): var {
                     const slot = docked ? docking.slotOfPanel(key) : null
                     return slot ? workArea.rectOf(slot.dockKey) : null
@@ -2002,9 +2357,10 @@ Window {
                 width: bounds.width
                 height: bounds.height
 
-                // Shows (and focuses) a monitor: its tab, opened again when it is closed.
+                // Shows (and focuses) a monitor: its tab, opened again when it is closed; its group is the active one.
                 function show(which) {
                     window.revealPanel(which)
+                    docking.setActiveGroup(docking.groupOfPanel(which)?.group ?? "")
                     current = which
                     Qt.callLater(() => which === "source" ? sourceMonitor.focusMonitor() : monitor.focusMonitor())
                 }
@@ -2139,6 +2495,7 @@ Window {
             mainWindow: window
             area: workArea
             rects: workArea.dockLayout.rects
+            sharedGroups: workArea.dockLayout.shared
             unavailable: Trim.viewOpen ? ["source"] : []
         }
 
@@ -2264,6 +2621,71 @@ Window {
                     toast.show(AudioChannels.message, Theme.warning)
             }
         }
+        // UX rework (stream L): background work is visible wherever you are. A Quick Export says it started (Cancel);
+        // an export that ends says so with "Show in <file manager>", or why it failed (the Export panel's queue has the
+        // details); Render In to Out says when the previews are ready or why not (Try Again). Watch folders and
+        // transcodes report elsewhere; a cancelled job needs no word; a finished export from the Export workspace
+        // while its queue is in view is already shown there. While Home covers the editor these go to Home's message
+        // strip (window.notify), action included.
+        Connections {
+            target: ExportController
+
+            function onJobQueued(jobId) {
+                const job = ExportController.job(jobId)
+                if (job.origin !== "quick")
+                    return
+                window.notify(qsTr("Exporting %1 in the background").arg(job.title), Theme.accentStroke,
+                              { actionText: qsTr("Cancel"), action: () => ExportController.cancel(jobId) })
+            }
+            function onJobFinished(jobId, succeeded, message) {
+                const job = ExportController.job(jobId)
+                if (job.origin === "transcode" || job.origin === "watch" || job.state === "cancelled")
+                    return
+                if (succeeded) {
+                    if (job.origin === "export" && workArea.panelShown("export") && !home.opened)
+                        return
+                    const title = job.title || qsTr("the sequence")
+                    const output = job.outputPath ?? "" // kept: the job's row may be gone when the action runs
+                    window.notify(qsTr("Exported %1").arg(title), Theme.success,
+                                  { actionText: qsTr("Show in %1").arg(ExportController.fileManagerName),
+                                    action: () => {
+                                        if (ExportController.reveal(jobId))
+                                            return
+                                        // Its row went meanwhile (Clear Finished): the file it wrote, or why not.
+                                        if (ExportController.job(jobId).jobId === undefined
+                                                && !ExportController.reveal(output))
+                                            window.notify(qsTr("%1 is no longer there: it was moved or deleted.").arg(title),
+                                                          Theme.warning, undefined)
+                                    } })
+                } else {
+                    // The queue is in the editor: from Home, Show the queue goes there. The Export workspace shows it
+                    // (or the Export panel where this workspace has one already): the user's layout never gets an
+                    // Export panel docked into it.
+                    window.notify(qsTr("Export failed: %1").arg(job.detail || message), Theme.danger,
+                                  { actionText: qsTr("Show the queue"),
+                                    action: () => {
+                                        home.close()
+                                        if (docking.isOpen("export"))
+                                            window.focusPanel("export")
+                                        else
+                                            window.openPreset("export")
+                                    },
+                                    timeoutMs: 10000 })
+                }
+            }
+        }
+        Connections {
+            target: MediaReadiness
+
+            function onRenderFinished(outcome, message) {
+                if (outcome === "done")
+                    window.notify(qsTr("Previews rendered: In to Out plays in real time"), Theme.success, undefined)
+                else if (outcome === "failed")
+                    window.notify(qsTr("Render In to Out failed: %1").arg(message), Theme.warning,
+                                  { actionText: qsTr("Try Again"), action: () => MediaReadiness.renderInToOut(),
+                                    timeoutMs: 10000 })
+            }
+        }
         // C.12 (M5n): forms extensions open (ui.prompt, non-modal), their notifications and crashes.
         ExtensionPromptHost {
             anchors.fill: parent
@@ -2309,58 +2731,114 @@ Window {
                 performanceOffer.restart()
             }
         }
-        onSettingsRequested: rail.openSettings("")
-        onCreateRequested: (name, folder, sequence) => window.whenSaved(() => {
-            const error = Home.createProject(name, folder, sequence)
-            if (error === "")
+        // What Home's import left out (the other files beside an opened project, a .prproj beside timelines) shows in
+        // the editor once the import or the open succeeded. The note goes with its request (taken when it comes in): an
+        // open that is cancelled or fails drops it, and a later open never shows it.
+        function showClosingNote(note: string) {
+            if (note !== "")
+                toast.show(note, Theme.warning)
+        }
+        onSettingsRequested: window.openSettings("", "")
+        // UX rework (Home's New project page): the backend creates, saves and opens. A refusal before the project
+        // exists (the name, the folder - one that cannot be made too - the settings) keeps Home open with the error; a
+        // failure after it exists (it replaced the project shown; only its first save can fail then) closes Home and
+        // says so in the editor. Whether it exists is what decides: the project shown changed while it ran.
+        onCreateRequested: (name, folder, settings) => window.whenSaved(() => home.runBusy(qsTr("Creating project"), () => {
+            let replaced = false
+            const watch = () => { replaced = true }
+            ProjectFile.documentChanged.connect(watch)
+            const error = Home.createProject(name, folder, settings)
+            ProjectFile.documentChanged.disconnect(watch)
+            if (error === "") {
                 home.close()
-            else
+            } else if (!replaced) {
                 home.showCreateError(error)
-        })
-        // Gaming (M5o): New gaming video - a project at the recording's size and rate, its audio as named tracks.
-        onGamingRequested: (name, folder, tracks) => window.whenSaved(() => {
-            const error = GamingStart.create(name, folder, tracks)
-            if (error === "")
+            } else {
                 home.close()
-            else
-                home.showGamingError(error)
-        })
-        onOpenRequested: file => window.whenSaved(() => {
-            if (file.toString() === "") {
-                openDialog.open()
+                toast.show(error, Theme.warning, { timeoutMs: 9000 })
+            }
+        }))
+        // "Start with media" (the all-in-one Import with media; the old New gaming video): the project matched to the
+        // first video (or the chosen format), the files imported and edited in, a recording's streams on named tracks.
+        // A step after the save that went wrong is a warning in the editor; Lottie and Photoshop files then go through
+        // importUrls (their own dialogs).
+        onCreateFromMediaRequested: (name, folder, settings, files, options) => window.whenSaved(() => home.runBusy(qsTr("Creating project"), () => {
+            const result = Home.createFromMedia(name, folder, settings, files, options)
+            if (!result.ok) {
+                home.showCreateError(result.error)
                 return
             }
-            // Opening is synchronous: show "Opening project" (the chase loader) for a frame or two first, then open.
-            home.busyText = qsTr("Opening project")
-            homeOpenLater.file = file
-            homeOpenLater.restart()
-        })
-        Timer {
-            id: homeOpenLater
-            property url file
-            interval: 48
-            onTriggered: {
-                const opened = ProjectFile.open(homeOpenLater.file)
-                home.busyText = ""
-                if (opened)
+            home.close()
+            if ((result.warning ?? "") !== "")
+                toast.show(result.warning, Theme.warning, { timeoutMs: 9000 })
+            const deferred = result.deferred ?? []
+            if (deferred.length > 0)
+                Qt.callLater(() => window.importUrls(deferred))
+        }))
+        // Opening is synchronous: "Opening project" (the chase loader) shows for a frame or two first.
+        onOpenRequested: file => {
+            const note = home.takeClosingNote()
+            window.whenSaved(() => {
+                if (file.toString() === "") {
+                    openDialog.open()
+                    return
+                }
+                home.runBusy(qsTr("Opening project"), () => {
+                    if (ProjectFile.open(file)) {
+                        home.close()
+                        home.showClosingNote(note)
+                    } else {
+                        home.showMessage(ProjectFile.lastError, "danger")
+                    }
+                })
+            })
+        }
+        // Open Next to This One: the project opens beside the ones open (no unsaved prompt: nothing closes) - but over
+        // the sample project it takes the sample's place, so the sample's edits are asked about first (whenSaved).
+        onOpenAlongsideRequested: file => {
+            const open = () => home.runBusy(qsTr("Opening project"), () => {
+                if (ProjectFile.openAlongside(file))
                     home.close()
                 else
-                    home.showImportError(ProjectFile.lastError)
-            }
+                    home.showMessage(ProjectFile.lastError, "danger")
+            })
+            if (ProjectFile.demo)
+                window.whenSaved(open)
+            else
+                open()
         }
-
-        // A timeline (or media) becomes a new project; its first imported sequence opens and the import report
-        // shows (ProjectFile.importReport).
-        onImportRequested: (urls, experimental) => window.whenSaved(() => {
-            const result = ProjectFile.importFiles(urls, { newProject: true, openImported: true,
-                                                           experimentalPremiereProject: experimental })
-            if ((result.timelines ?? 0) > 0 || (result.added ?? 0) > 0)
+        // Timelines become a new project; its first imported sequence opens and the import report shows
+        // (ProjectFile.importReport). Lottie and Photoshop files that came along go through importUrls afterwards.
+        onImportRequested: (urls, experimental, deferred) => {
+            const note = home.takeClosingNote()
+            window.whenSaved(() => home.runBusy(qsTr("Importing"), () => {
+                const result = ProjectFile.importFiles(urls, { newProject: true, openImported: true,
+                                                               experimentalPremiereProject: experimental })
+                if ((result.timelines ?? 0) > 0 || (result.added ?? 0) > 0 || (result.captionTracks ?? 0) > 0) {
+                    home.close()
+                    home.showClosingNote(note)
+                    if (deferred && deferred.length > 0)
+                        Qt.callLater(() => window.importUrls(deferred))
+                } else {
+                    home.showMessage(result.failed && result.failed.length > 0
+                                     ? qsTr("%1: %2").arg(result.failed[0].name).arg(result.failed[0].error)
+                                     : ProjectFile.lastError, "danger")
+                }
+            }))
+        }
+        // Learn > Explore the sample project: the demo as at launch.
+        onSampleRequested: window.whenSaved(() => {
+            if (ProjectFile.openDemo())
                 home.close()
             else
-                home.showImportError(result.failed && result.failed.length > 0
-                                     ? qsTr("%1: %2").arg(result.failed[0].name).arg(result.failed[0].error)
-                                     : ProjectFile.lastError)
+                home.showMessage(ProjectFile.lastError, "danger")
         })
+        // Learn > the tour, the Keyboard Trainer, What's new: Home closes first (they run over the editor).
+        onHelpRequested: what => {
+            window.welcomeAfterHome = false
+            home.close()
+            Qt.callLater(() => window.showHelp(what))
+        }
     }
 
     // ---- Onboarding (M5j): the welcome, the tour, the Keyboard Trainer and What's new ----
@@ -2395,18 +2873,50 @@ Window {
             }
         }
     }
-    // Help (the left rail, the palette).
+    // Help (the Help menu, the palette, Settings > Keyboard): "welcome", "tour", "trainer", "whatsNew" or "shortcuts".
     function showHelp(what) {
         if (what === "shortcuts")
             shortcutsDialog.openDialog()
         else
             onboarding.run(what)
     }
+    // ---- The command palette's shell rows (UX rework, stream S): "Open panel: <name>" for the Window menu's panels
+    // (no Generate while AI is off), every workspace, and the recent projects; kept in step with what they come from.
+    // Running one comes back as CommandPalette.shellActionRequested ----
+    readonly property var paletteShellRows: {
+        const rows = []
+        const commands = topBar.menuBar.panelCommands
+        for (const p of Workspaces.catalog) {
+            if (p.key === "generate" && !Preferences.aiEnabled)
+                continue
+            const command = commands[p.key] ?? ""
+            rows.push({ id: "panel:" + p.key, title: qsTr("Open panel: %1").arg(p.label), group: qsTr("Window"),
+                        keywords: [p.key, "panel", "window", "show"],
+                        shortcut: command !== "" && KeymapDispatcher.revision >= 0 ? KeymapDispatcher.shortcutText(command) : "" })
+        }
+        for (const w of Workspaces.all)
+            rows.push({ id: "workspace:" + w.id, title: qsTr("Workspace: %1").arg(w.name), group: qsTr("Window"),
+                        keywords: ["workspace", "layout"] })
+        for (const r of Home.recent.slice(0, 10))
+            rows.push({ id: "recent:" + r.url, title: qsTr("Open Recent: %1").arg(r.name), group: qsTr("File"),
+                        detail: String(r.folder ?? ""), keywords: ["recent", "project", "open"],
+                        enabled: r.missing !== true, reason: qsTr("The file is missing") })
+        return rows
+    }
+    onPaletteShellRowsChanged: CommandPalette.setShellActions(window.paletteShellRows)
     Connections {
         target: CommandPalette
 
         function onHelpRequested(what) {
             window.showHelp(what)
+        }
+        function onShellActionRequested(id) {
+            if (id.startsWith("panel:"))
+                window.openPanelFromWindowMenu(id.slice("panel:".length))
+            else if (id.startsWith("workspace:"))
+                window.workspace = Number(id.slice("workspace:".length))
+            else if (id.startsWith("recent:"))
+                window.openLaunchedProject(id.slice("recent:".length)) // the project open now is not read again
         }
     }
 

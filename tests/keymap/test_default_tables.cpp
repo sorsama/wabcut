@@ -376,3 +376,25 @@ TEST_CASE("Verified (M5m): Remove Attributes has no default key, as in Premiere"
     REQUIRE(registry.find("edit.removeAttributes") != nullptr);
     CHECK(registry.find("edit.removeAttributes")->kysName.empty());
 }
+
+TEST_CASE("Verified (UX rework): Settings is Cmd+Comma in the shipped macOS key set and Ctrl+Comma on Windows",
+          "[keymap][tables][verified]") {
+    // Default Adobe.kys (context.global) binds Preferences > General to Cmd+, (virtual key 0x8000002C with Command);
+    // Premiere_default_keys.kys binds nothing there on Windows, so Ctrl+, is Wabcut's own (source "wabcut").
+    CHECK(keysOf(Platform::Windows, "edit.preferences") == Keys{"Ctrl+,"});
+    CHECK(keysOf(Platform::MacOS, "edit.preferences") == Keys{"Cmd+,"});
+    for (const Platform p : {Platform::Windows, Platform::MacOS}) {
+        INFO(platformId(p));
+        const std::string key = p == Platform::MacOS ? "Cmd+," : "Ctrl+,";
+        CHECK(resolved(p, Scope::Application, key) == "edit.preferences");
+        CHECK(resolved(p, Scope::Timeline, key) == "edit.preferences"); // from any panel
+        CHECK(resolved(p, Scope::Project, key) == "edit.preferences");
+        CHECK(resolved(p, Scope::Application, ",") == "clip.insert"); // the plain key keeps Insert
+    }
+    const CommandRegistry& registry = CommandRegistry::builtin();
+    const CommandInfo* settings = registry.find("edit.preferences");
+    REQUIRE(settings != nullptr);
+    CHECK(settings->scope == Scope::Application);
+    CHECK(settings->group == "Edit");
+    CHECK(registry.findKys("context.global", "cmd.edit.preferences.general") == settings);
+}

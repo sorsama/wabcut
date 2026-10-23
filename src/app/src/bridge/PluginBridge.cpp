@@ -19,6 +19,7 @@
 #include <QFileInfo>
 #include <QLocale>
 #include <QQmlEngine>
+#include <QSettings>
 
 #include <algorithm>
 #include <condition_variable>
@@ -32,6 +33,8 @@ namespace wabcut::app {
 namespace {
 
 QString text(const std::string& s) { return QString::fromStdString(s); }
+/// QSettings key of the remembered plug-in grouping (UX rework).
+constexpr const char* kGroupByKey = "effects/pluginGroupBy";
 [[maybe_unused]] QString pathText(const std::filesystem::path& p) { return QDir::toNativeSeparators(QString::fromStdWString(p.wstring())); }
 [[maybe_unused]] std::filesystem::path toPath(const QString& s) { return std::filesystem::path(QDir::toNativeSeparators(s).toStdWString()); }
 bool isPluginEffect(std::string_view effect) { return effect.starts_with(kPluginEffectPrefix); }
@@ -83,6 +86,9 @@ struct PluginBridge::EditorWork {
 };
 
 PluginBridge::PluginBridge(QObject* parent) : QObject(parent) {
+    // UX rework: the Effects panel's plug-in grouping is remembered.
+    if (QSettings().value(QLatin1String(kGroupByKey)).toString() == QLatin1String("category"))
+        m_groupBy = QStringLiteral("category");
     m_editorTimer.setInterval(500);
     connect(&m_editorTimer, &QTimer::timeout, this, &PluginBridge::pollEditors);
     m_statusTimer.setInterval(1000);
@@ -244,7 +250,15 @@ void PluginBridge::setGroupBy(const QString& groupBy) {
     if (next == m_groupBy)
         return;
     m_groupBy = next;
+    if (m_persistent)
+        QSettings().setValue(QLatin1String(kGroupByKey), m_groupBy);
     emit pluginsChanged();
+}
+
+QString PluginBridge::groupKey(const QVariantMap& plugin, const QString& groupBy) {
+    const bool byCategory = groupBy == QLatin1String("category");
+    return (byCategory ? QStringLiteral("category:") : QStringLiteral("vendor:"))
+        + plugin.value(byCategory ? QStringLiteral("category") : QStringLiteral("vendor")).toString();
 }
 
 void PluginBridge::refresh() {
@@ -303,12 +317,14 @@ void PluginBridge::refresh() {
 QVariantList PluginBridge::groups() const {
     const bool byCategory = m_groupBy == QLatin1String("category");
     std::map<QString, QVariantList> grouped;
+    std::map<QString, QString> keys;
     for (const QVariant& v : m_plugins) {
         const QVariantMap p = v.toMap();
         QString title = p.value(byCategory ? QStringLiteral("category") : QStringLiteral("vendor")).toString();
         if (title.isEmpty())
             title = byCategory ? tr("Other") : tr("Unknown vendor");
         grouped[title].append(p);
+        keys.emplace(title, groupKey(p, m_groupBy));
     }
     std::vector<std::pair<QString, QVariantList>> ordered(grouped.begin(), grouped.end());
     std::sort(ordered.begin(), ordered.end(),
@@ -316,6 +332,7 @@ QVariantList PluginBridge::groups() const {
     QVariantList out;
     for (auto& [title, items] : ordered) {
         out.append(QVariantMap{{QStringLiteral("title"), title},
+                               {QStringLiteral("key"), keys[title]},
                                {QStringLiteral("count"), static_cast<int>(items.size())},
                                {QStringLiteral("items"), items}});
     }
@@ -568,6 +585,93 @@ QString PluginBridge::applyToSelection(const QString& pluginId) {
     if (!target)
         return tr("Select an audio clip first");
     return apply(pluginId, clipKey(*target));
+}
+
+QVariantMap PluginBridge::applyToSelectedClips(const QString& pluginId) {
+    const auto failed = [](const QString& error) {
+        return QVariantMap{{QStringLiteral("ok"), false},
+                           {QStringLiteral("error"), error},
+                           {QStringLiteral("message"), error},
+                           {QStringLiteral("clips"), 0}};
+    };
+    if (!available() || !m_controller)
+        return failed(tr("Audio plugins are not available here"));
+#if defined(WABCUT_WITH_AUDIO_PLUGINS)
+    const auto plugin = m_catalog->find(pluginId.toStdString());
+    if (!plugin)
+        return failed(tr("This plugin is not on this computer: rescan the plugin folders"));
+    if (!plugin->effect)
+        return failed(tr("%1 is an instrument, not an effect").arg(text(plugin->name)));
+    if (!plugin->problem.empty())
+        return failed(text(plugin->problem));
+    const SequencePtr seq = m_controller->currentSequence();
+    if (!seq)
+        return failed(tr("No sequence"));
+    // Every selected audio clip; a selected video clip stands for its (first) linked audio clip. Once each.
+    std::vector<ClipId> clips;
+    const auto add = [&](ClipId id) {
+        if (std::find(clips.begin(), clips.end(), id) == clips.end())
+            clips.push_back(id);
+    };
+    bool anySelected = false;
+    for (const ClipId id : m_controller->selection()) {
+        const auto loc = seq->findClip(id);
+        if (!loc)
+            continue;
+        anySelected = true;
+        if (loc->clip().stream.kind == StreamKind::Audio) {
+            add(id);
+            continue;
+        }
+        const ClipId ids[] = {id};
+        for (const ClipId partner : edit::withLinkedClips(*seq, ids)) {
+            const auto p = seq->findClip(partner);
+            if (p && p->clip().stream.kind == StreamKind::Audio) {
+                add(partner);
+                break;
+            }
+        }
+    }
+    if (!anySelected)
+        return failed(tr("Select a clip first"));
+    if (clips.empty())
+        return failed(tr("%1 is an audio effect: select an audio clip").arg(text(plugin->name)));
+    const SequenceId sequence = seq->id;
+    const std::string effect = plugin->effectId();
+    // The name it was added with, for the "missing plugin" badge on a computer that does not have it (as apply()).
+    const std::string savedName = plugin->vendor.empty() ? plugin->name : plugin->name + " (" + plugin->vendor + ")";
+    const bool ok = m_controller->applyEditFn(
+        QT_TRANSLATE_NOOP("wabcut::app::PluginBridge", "Add Plugin"), [&](const ProjectState& state) -> edit::EditOutcome {
+            auto added = edit::addEffect(state, sequence, std::span<const ClipId>(clips), effect);
+            if (!added || added->createdEffects.size() != clips.size())
+                return added;
+            ProjectState current = added->state;
+            for (std::size_t i = 0; i < clips.size(); ++i) {
+                edit::EffectChange change;
+                change.data.push_back(EffectData{std::string(plughost::kPluginNameKey), savedName});
+                auto named = edit::setEffect(current, sequence, edit::EffectTarget::ofClip(clips[i]), added->createdEffects[i], change);
+                if (!named)
+                    return added;
+                current = std::move(named->state);
+            }
+            edit::EditResult result = std::move(*added);
+            result.changes = diff(state, current);
+            result.state = std::move(current);
+            return result;
+        });
+    if (!ok)
+        return failed(m_controller->lastError());
+    const int n = static_cast<int>(clips.size());
+    const QString message = n == 1 ? tr("Added %1").arg(text(plugin->name)) : tr("Added %1 to %2 clips").arg(text(plugin->name)).arg(n);
+    setMessage(message);
+    return QVariantMap{{QStringLiteral("ok"), true},
+                       {QStringLiteral("error"), QString()},
+                       {QStringLiteral("message"), message},
+                       {QStringLiteral("clips"), n}};
+#else
+    (void)pluginId;
+    return failed(tr("Audio plugins are not available here"));
+#endif
 }
 
 QVariantMap PluginBridge::effectInfo(const QString& effectKey) const {

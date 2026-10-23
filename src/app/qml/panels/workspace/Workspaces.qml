@@ -35,8 +35,8 @@ QtObject {
     readonly property var shown: root.all
 
     // ---- The panel catalog ----
-    // Every panel a layout can hold. `browser`: a rail panel (the rail opens it as a tab in the group of the browser
-    // panels). `column`: where a closed panel opens again when nothing says otherwise ("left": with the browser panels,
+    // Every panel a layout can hold. `browser`: a browser panel (it opens as a tab in the group of the browser panels;
+    // the former left rail's panels). `column`: where a closed panel opens again when nothing says otherwise ("left": with the browser panels,
     // "right": with the clip editors, "monitors": beside the other monitor, "timeline": along the bottom). `hue`: the dot
     // on its tab (design language v3; Theme.hue, "accent" follows the accent).
     readonly property var catalog: [

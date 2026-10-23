@@ -11,10 +11,15 @@
 #include <wabcut/model/EffectPresets.h>
 #include <wabcut/model/MediaLocator.h>
 
+#include <wabcut/model/ProjectIO.h>
+
 #include <QCoreApplication>
 #include <QDir>
+#include <QFileInfo>
 #include <QQmlEngine>
+#include <QSettings>
 #include <QStandardPaths>
+#include <QTimer>
 
 #include <algorithm>
 #include <map>
@@ -26,9 +31,21 @@ using Json = nlohmann::json;
 
 namespace {
 
+/// QSettings key of the presets file dialogs' folder.
+constexpr const char* kPresetsFolderKey = "effects/presetsFolder";
+
 QString tx(const char* text) { return QCoreApplication::translate("wabcut::app::EffectPresetsBridge", text); }
 
 QString fromUtf8(const std::string& text) { return QString::fromUtf8(text.data(), static_cast<qsizetype>(text.size())); }
+
+/// The engine's ProjectController, for the QML singleton. EffectPresets is registered with QML_SINGLETON and is
+/// default-constructible, so the engine constructs it directly and never calls create() (Qt 6.11: Constructor wins
+/// over Factory): the singleton looks the controller up itself once the engine has given it a context. A bridge
+/// made outside QML (tests) has no engine and keeps the controller it is given.
+ProjectController* engineController(const QObject* bridge) {
+    QQmlEngine* engine = qmlEngine(bridge);
+    return engine ? engine->singletonInstance<ProjectController*>("Wabcut", "ProjectController") : nullptr;
+}
 
 std::pair<std::int32_t, std::int32_t> frameOf(const ProjectController* controller) {
     if (controller) {
@@ -36,19 +53,6 @@ std::pair<std::int32_t, std::int32_t> frameOf(const ProjectController* controlle
             return {seq->width, seq->height};
     }
     return {1920, 1080};
-}
-
-QString effectIcon(const EffectDescriptor& d) {
-    switch (d.kind) {
-    case EffectKind::VideoTransition:
-    case EffectKind::AudioTransition:
-        return QStringLiteral("blend");
-    case EffectKind::Audio:
-        return QStringLiteral("audio-lines");
-    case EffectKind::Video:
-        break;
-    }
-    return QStringLiteral("sparkles");
 }
 
 QString kindName(EffectKind kind) {
@@ -95,15 +99,23 @@ QVariantMap presetItem(const EffectPreset& p, bool builtIn, const QString& categ
 
 std::optional<QVariantMap> effectItem(const std::string& id) {
     const EffectDescriptor* d = EffectRegistry::builtin().find(id);
-    if (!d || d->intrinsic)
+    if (!d || !isListedEffect(*d))
         return std::nullopt;
+    // An audio plug-in (its descriptor comes from the plug-in catalog): its own names, untranslated; applied through
+    // PluginBridge (`plugin`), which keeps the plug-in's name with the effect.
+    const bool plugin = d->id.starts_with(kPluginEffectPrefix);
+    const auto text = [&](std::string_view s) {
+        return plugin ? fromUtf8(std::string(s))
+                      : QCoreApplication::translate("wabcut::app::EffectControlsModel", std::string(s).c_str());
+    };
     return QVariantMap{
         {QStringLiteral("id"), fromUtf8(std::string(d->id))},
-        {QStringLiteral("name"), QCoreApplication::translate("wabcut::app::EffectControlsModel", d->displayName.data())},
-        {QStringLiteral("category"), QCoreApplication::translate("wabcut::app::EffectControlsModel", d->category.data())},
+        {QStringLiteral("name"), text(d->displayName)},
+        {QStringLiteral("category"), text(d->category)},
         {QStringLiteral("description"), fromUtf8(std::string(d->description))},
-        {QStringLiteral("icon"), effectIcon(*d)},
+        {QStringLiteral("icon"), effectLibraryIcon(*d)},
         {QStringLiteral("kind"), kindName(d->kind)},
+        {QStringLiteral("plugin"), plugin},
         {QStringLiteral("item"), QStringLiteral("effect:") + fromUtf8(std::string(d->id))},
     };
 }
@@ -128,6 +140,18 @@ std::optional<QVariantMap> itemFor(const std::string& reference, const EffectsLi
 }
 
 } // namespace
+
+// ---- Folder keys --------------------------------------------------------------------------------------------------------
+
+QString effectsCustomBinKey(const QString& name) { return QStringLiteral("custom:") + name; }
+
+QString effectsPresetsBinKey(const QString& path) {
+    return path.isEmpty() ? QStringLiteral("presets") : QStringLiteral("presets/u:") + path;
+}
+
+QString effectsBuiltInPresetsBinKey(const QString& path, bool lumetri) {
+    return (lumetri ? QStringLiteral("lumetriPresets/b:") : QStringLiteral("presets/b:")) + path;
+}
 
 // ---- The app's library ------------------------------------------------------------------------------------------------
 
@@ -177,6 +201,17 @@ QString applyEffectPresetToClips(ProjectController& controller, const std::vecto
 
 EffectPresetsBridge::EffectPresetsBridge(QObject* parent) : QObject(parent), m_library(sharedEffectLibrary()) {
     m_seen = m_library->revision();
+    // The QML singleton (see engineController): its controller once the engine has made it, then the views read the
+    // built-in presets again for the sequence's frame size.
+    QTimer::singleShot(0, this, [this] {
+        if (m_controller)
+            return;
+        setController(engineController(this));
+        if (m_controller) {
+            ++m_revision;
+            emit changed();
+        }
+    });
 }
 
 EffectPresetsBridge::~EffectPresetsBridge() = default;
@@ -251,7 +286,45 @@ void EffectPresetsBridge::setCurrentBin(const QString& bin) {
 
 QString EffectPresetsBridge::libraryError() const { return fromUtf8(m_library->error()); }
 
+int EffectPresetsBridge::userPresetCount() const { return static_cast<int>(m_library->library().presets.size()); }
+
+QUrl EffectPresetsBridge::presetsFolder() const {
+    QString folder = m_persistent ? QSettings().value(QLatin1String(kPresetsFolderKey)).toString() : m_folder;
+    if (folder.isEmpty() || !QFileInfo(folder).isDir())
+        folder = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+    return QUrl::fromLocalFile(folder);
+}
+
+void EffectPresetsBridge::rememberFolder(const QString& filePath) {
+    const QString folder = QFileInfo(filePath).absolutePath();
+    if (folder.isEmpty())
+        return;
+    if (m_persistent) {
+        if (QSettings().value(QLatin1String(kPresetsFolderKey)).toString() == folder)
+            return;
+        QSettings().setValue(QLatin1String(kPresetsFolderKey), folder);
+    } else {
+        if (m_folder == folder)
+            return;
+        m_folder = folder;
+    }
+    emit presetsFolderChanged();
+}
+
+void EffectPresetsBridge::setLastError(const QString& error) {
+    if (error == m_lastError)
+        return;
+    m_lastError = error;
+    emit lastErrorChanged();
+}
+
+QString EffectPresetsBridge::customBinKey(const QString& name) const { return effectsCustomBinKey(name); }
+
+QString EffectPresetsBridge::presetsBinKey(const QString& path) const { return effectsPresetsBinKey(path); }
+
 QVariantList EffectPresetsBridge::leadingGroups(const QString& query) const {
+    if (!m_controller)
+        const_cast<EffectPresetsBridge*>(this)->setController(engineController(this));
     const QString q = query.trimmed();
     const EffectsLibrary library = m_library->library();
     const auto [w, h] = frameOf(m_controller);
@@ -264,10 +337,18 @@ QVariantList EffectPresetsBridge::leadingGroups(const QString& query) const {
             favorites.append(*item);
     }
     if (!favorites.isEmpty()) {
+        const QString key = QStringLiteral("favorites");
+        const int count = static_cast<int>(favorites.size());
         out.append(QVariantMap{{QStringLiteral("title"), tx("Favorites")},
                                {QStringLiteral("icon"), QStringLiteral("bookmark")},
-                               {QStringLiteral("kind"), QStringLiteral("favorites")},
+                               {QStringLiteral("kind"), key},
+                               {QStringLiteral("key"), key},
+                               {QStringLiteral("count"), count},
                                {QStringLiteral("bins"), QVariantList{QVariantMap{{QStringLiteral("title"), QString()},
+                                                                                 {QStringLiteral("key"), key},
+                                                                                 {QStringLiteral("path"), QString()},
+                                                                                 {QStringLiteral("builtIn"), false},
+                                                                                 {QStringLiteral("count"), count},
                                                                                  {QStringLiteral("items"), favorites}}}}});
     }
 
@@ -275,6 +356,9 @@ QVariantList EffectPresetsBridge::leadingGroups(const QString& query) const {
     struct Bin {
         QString title;
         QString presetsBin; // the user's bin path ("" for built-in bins and the Presets bin itself)
+        QString key;        // stable folder key
+        QString path;       // untranslated bin path ("" for the Presets bin itself)
+        bool builtIn = false;
         QVariantList items;
     };
     std::map<QString, Bin> presetBins;
@@ -287,38 +371,60 @@ QVariantList EffectPresetsBridge::leadingGroups(const QString& query) const {
             continue;
         Bin& bin = (lumetri ? lumetriBins : presetBins)[QStringLiteral("0") + title];
         bin.title = title;
+        bin.key = effectsBuiltInPresetsBinKey(title, lumetri);
+        bin.path = title;
+        bin.builtIn = true;
         bin.items.append(item);
     }
-    // The user's presets bins (also empty ones) after the built-in bins; the Presets bin's own presets last.
-    for (const std::string& path : library.presetBins) {
-        Bin& bin = presetBins[QStringLiteral("1") + fromUtf8(path)];
-        bin.title = fromUtf8(path);
-        bin.presetsBin = fromUtf8(path);
-    }
+    // The user's presets bins (also empty ones) after the built-in bins; the Presets bin's own presets last. Bin paths
+    // compare without case (as the commands do), so "Mine" and "mine" are one bin, under the first spelling seen.
+    const auto userBin = [&](const std::string& path) -> Bin& {
+        const QString title = fromUtf8(path);
+        Bin& bin = presetBins[QStringLiteral("1") + title.toCaseFolded()];
+        if (bin.key.isEmpty()) {
+            bin.title = title;
+            bin.presetsBin = title;
+            bin.key = effectsPresetsBinKey(title);
+            bin.path = title;
+        }
+        return bin;
+    };
+    for (const std::string& path : library.presetBins)
+        userBin(path);
     for (const EffectPreset& p : library.presets) {
         QVariantMap item = presetItem(p, false, p.bin.empty() ? tx("Presets") : fromUtf8(p.bin));
         if (!matches(q, item))
             continue;
-        const QString key = p.bin.empty() ? QStringLiteral("2") : QStringLiteral("1") + fromUtf8(p.bin);
-        Bin& bin = presetBins[key];
-        bin.title = p.bin.empty() ? QString() : fromUtf8(p.bin);
-        bin.presetsBin = fromUtf8(p.bin);
-        bin.items.append(item);
+        if (p.bin.empty()) {
+            Bin& bin = presetBins[QStringLiteral("2")];
+            bin.key = effectsPresetsBinKey({});
+            bin.items.append(item);
+        } else {
+            userBin(p.bin).items.append(item);
+        }
     }
     const auto group = [&](const QString& title, const QString& icon, const QString& kind, const std::map<QString, Bin>& bins) {
         QVariantList list;
+        int count = 0;
         for (const auto& [key, bin] : bins) {
             // A search hides empty bins; without one, the user's empty bins show (to drop presets in later).
             if (bin.items.isEmpty() && (!q.isEmpty() || bin.presetsBin.isEmpty()))
                 continue;
+            count += static_cast<int>(bin.items.size());
             list.append(QVariantMap{{QStringLiteral("title"), bin.title},
                                     {QStringLiteral("presetsBin"), bin.presetsBin},
+                                    {QStringLiteral("key"), bin.key},
+                                    {QStringLiteral("path"), bin.path},
+                                    {QStringLiteral("builtIn"), bin.builtIn},
+                                    {QStringLiteral("count"), static_cast<int>(bin.items.size())},
                                     {QStringLiteral("items"), bin.items}});
         }
         if (!list.isEmpty()) {
             out.append(QVariantMap{{QStringLiteral("title"), title},
                                    {QStringLiteral("icon"), icon},
                                    {QStringLiteral("kind"), kind},
+                                   {QStringLiteral("key"), kind},
+                                   {QStringLiteral("count"), count},
                                    {QStringLiteral("bins"), list}});
         }
     };
@@ -328,6 +434,8 @@ QVariantList EffectPresetsBridge::leadingGroups(const QString& query) const {
 }
 
 QVariantList EffectPresetsBridge::customGroups(const QString& query) const {
+    if (!m_controller)
+        const_cast<EffectPresetsBridge*>(this)->setController(engineController(this));
     const QString q = query.trimmed();
     const EffectsLibrary library = m_library->library();
     const auto [w, h] = frameOf(m_controller);
@@ -340,11 +448,17 @@ QVariantList EffectPresetsBridge::customGroups(const QString& query) const {
         }
         if (!q.isEmpty() && items.isEmpty())
             continue;
+        const QString key = effectsCustomBinKey(fromUtf8(b.name));
+        const int count = static_cast<int>(items.size());
         out.append(QVariantMap{{QStringLiteral("title"), fromUtf8(b.name)},
                                {QStringLiteral("icon"), QStringLiteral("folder")},
                                {QStringLiteral("kind"), QStringLiteral("custom")},
+                               {QStringLiteral("key"), key},
+                               {QStringLiteral("count"), count},
                                {QStringLiteral("customBin"), fromUtf8(b.name)},
                                {QStringLiteral("bins"), QVariantList{QVariantMap{{QStringLiteral("title"), QString()},
+                                                                                 {QStringLiteral("key"), key},
+                                                                                 {QStringLiteral("count"), count},
                                                                                  {QStringLiteral("items"), items}}}}});
     }
     return out;
@@ -355,6 +469,8 @@ bool EffectPresetsBridge::isFavorite(const QString& item) const {
 }
 
 QVariantMap EffectPresetsBridge::preset(const QString& name) const {
+    if (!m_controller)
+        const_cast<EffectPresetsBridge*>(this)->setController(engineController(this));
     const auto p = effectPresetForItem(m_controller, QStringLiteral("preset:") + name);
     if (!p)
         return {};
@@ -376,7 +492,11 @@ QString EffectPresetsBridge::itemReference(const QString& itemId) const {
 
 QString EffectPresetsBridge::run(const std::string& name, Json params, Json* data) {
     if (!m_controller)
-        return tx("No project");
+        setController(engineController(this));
+    if (!m_controller) {
+        setLastError(tx("No project"));
+        return m_lastError;
+    }
     command::EnginePolicy policy;
     policy.services = m_library;
     command::CommandEngine engine(m_controller->session(), command::builtinCommands(), policy);
@@ -387,16 +507,21 @@ QString EffectPresetsBridge::run(const std::string& name, Json params, Json* dat
     request.params = std::move(params);
     const command::CommandResult result = engine.execute(request);
     noteChange();
-    if (!result.ok())
-        return fromUtf8(result.error->message);
+    if (!result.ok()) {
+        setLastError(fromUtf8(result.error->message));
+        return m_lastError;
+    }
     if (data)
         *data = result.data;
+    setLastError({});
     return {};
 }
 
 // ---- Applying -----------------------------------------------------------------------------------------------------------
 
 QString EffectPresetsBridge::applyToSelection(const QString& name) {
+    if (!m_controller)
+        setController(engineController(this));
     if (!m_controller)
         return tx("No project");
     return applyEffectPresetToClips(*m_controller, m_controller->selection(), name);
@@ -405,6 +530,8 @@ QString EffectPresetsBridge::applyToSelection(const QString& name) {
 // ---- Save Preset ----------------------------------------------------------------------------------------------------------
 
 QStringList EffectPresetsBridge::sectionsOfClip(const QString& section) const {
+    if (!m_controller)
+        const_cast<EffectPresetsBridge*>(this)->setController(engineController(this));
     QStringList out;
     if (!m_controller)
         return out;
@@ -414,6 +541,8 @@ QStringList EffectPresetsBridge::sectionsOfClip(const QString& section) const {
 }
 
 QString EffectPresetsBridge::sectionTitle(const QString& section) const {
+    if (!m_controller)
+        const_cast<EffectPresetsBridge*>(this)->setController(engineController(this));
     if (!m_controller || !m_controller->effectControls())
         return {};
     return m_controller->effectControls()->row(QStringLiteral("h:") + section).value(QStringLiteral("title")).toString();
@@ -421,6 +550,8 @@ QString EffectPresetsBridge::sectionTitle(const QString& section) const {
 
 QString EffectPresetsBridge::savePreset(const QStringList& sections, const QString& name, const QString& type,
                                         const QString& description, const QString& bin) {
+    if (!m_controller)
+        setController(engineController(this));
     if (!m_controller || !m_controller->effectControls())
         return tx("No project");
     if (sections.isEmpty())
@@ -468,6 +599,8 @@ QString EffectPresetsBridge::savePreset(const QStringList& sections, const QStri
 QString EffectPresetsBridge::saveEffectOfClip(const QString& clip, const QString& effect, const QString& name,
                                               const QString& type, const QString& description, const QString& bin) {
     if (!m_controller)
+        setController(engineController(this));
+    if (!m_controller)
         return tx("No project");
     const auto id = parseClipKey(clip);
     const SequencePtr seq = m_controller->currentSequence();
@@ -488,6 +621,8 @@ QString EffectPresetsBridge::saveEffectOfClip(const QString& clip, const QString
 }
 
 QString EffectPresetsBridge::suggestName(const QString& base) const {
+    if (!m_controller)
+        const_cast<EffectPresetsBridge*>(this)->setController(engineController(this));
     const EffectsLibrary library = m_library->library();
     const auto [w, h] = frameOf(m_controller);
     const QString stem = base.trimmed().isEmpty() ? tx("Preset") : base.trimmed();
@@ -519,7 +654,12 @@ QString EffectPresetsBridge::newCustomBin(const QString& item) {
         params["items"] = Json::array({itemReference(item).toStdString()});
     Json data;
     const QString error = run("effects.newCustomBin", std::move(params), &data);
-    return error.isEmpty() && data.contains("customBin") ? fromUtf8(data["customBin"].get<std::string>()) : QString();
+    const QString name = error.isEmpty() && data.contains("customBin") ? fromUtf8(data["customBin"].get<std::string>()) : QString();
+    if (!name.isEmpty())
+        emit customBinCreated(name);
+    else
+        emit statusMessage(error.isEmpty() ? tx("Could not make a custom bin") : error);
+    return name;
 }
 
 QString EffectPresetsBridge::newPresetsBin(const QString& path) {
@@ -531,11 +671,19 @@ QString EffectPresetsBridge::addToCustomBin(const QString& bin, const QString& i
 }
 
 QString EffectPresetsBridge::renameCustomBin(const QString& bin, const QString& name) {
-    return run("effects.renameCustomItem", Json{{"customBin", bin.toStdString()}, {"name", name.trimmed().toStdString()}});
+    Json data;
+    const QString error = run("effects.renameCustomItem", Json{{"customBin", bin.toStdString()}, {"name", name.trimmed().toStdString()}}, &data);
+    if (error.isEmpty() && data.contains("customBin"))
+        emit binRenamed(effectsCustomBinKey(bin), effectsCustomBinKey(fromUtf8(data["customBin"].get<std::string>())));
+    return error;
 }
 
 QString EffectPresetsBridge::renamePresetsBin(const QString& path, const QString& name) {
-    return run("effects.renameCustomItem", Json{{"presetsBin", path.toStdString()}, {"name", name.trimmed().toStdString()}});
+    Json data;
+    const QString error = run("effects.renameCustomItem", Json{{"presetsBin", path.toStdString()}, {"name", name.trimmed().toStdString()}}, &data);
+    if (error.isEmpty() && data.contains("presetsBin"))
+        emit binRenamed(effectsPresetsBinKey(path), effectsPresetsBinKey(fromUtf8(data["presetsBin"].get<std::string>())));
+    return error;
 }
 
 QString EffectPresetsBridge::deleteCustomItem(const QVariantMap& what) {
@@ -550,28 +698,120 @@ QString EffectPresetsBridge::deleteCustomItem(const QVariantMap& what) {
 }
 
 QString EffectPresetsBridge::deleteCurrentItem() {
-    if (m_currentItem.isEmpty())
-        return tx("Select a custom item in the Effects panel");
-    if (!m_currentBin.isEmpty())
-        return deleteCustomItem(QVariantMap{{QStringLiteral("customBin"), m_currentBin}, {QStringLiteral("item"), m_currentItem}});
-    if (m_currentItem.startsWith(QLatin1String("preset:")))
-        return deleteCustomItem(QVariantMap{{QStringLiteral("preset"), m_currentItem.mid(7)}});
-    return tx("Only custom items can be deleted");
+    const QVariantMap info = currentItemInfo();
+    if (!info.value(QStringLiteral("deletable")).toBool()) {
+        setLastError(info.value(QStringLiteral("reason")).toString());
+        return m_lastError;
+    }
+    const QString error = info.value(QStringLiteral("action")).toString() == QLatin1String("removeFromBin")
+        ? deleteCustomItem(QVariantMap{{QStringLiteral("customBin"), m_currentBin}, {QStringLiteral("item"), m_currentItem}})
+        : deleteCustomItem(QVariantMap{{QStringLiteral("preset"), m_currentItem.mid(7)}});
+    if (error.isEmpty() && (!m_currentItem.isEmpty() || !m_currentBin.isEmpty())) {
+        // The item is gone (or out of the bin): nothing is current until the panel focuses another row.
+        m_currentItem.clear();
+        m_currentBin.clear();
+        emit currentItemChanged();
+    }
+    return error;
+}
+
+QVariantMap EffectPresetsBridge::currentItemInfo() const {
+    QString name;
+    if (m_currentItem.startsWith(QLatin1String("preset:"))) {
+        name = m_currentItem.mid(7);
+    } else if (!m_currentItem.isEmpty()) {
+        const std::string id = itemReference(m_currentItem).mid(7).toStdString();
+        const EffectDescriptor* d = EffectRegistry::builtin().find(id);
+        name = !d ? fromUtf8(id)
+            : d->id.starts_with(kPluginEffectPrefix) ? fromUtf8(std::string(d->displayName))
+                                                     : QCoreApplication::translate("wabcut::app::EffectControlsModel",
+                                                                                   std::string(d->displayName).c_str());
+    }
+    QString action;
+    QString question;
+    QString confirmText;
+    QString reason;
+    if (m_currentItem.isEmpty()) {
+        reason = tx("Select a custom item in the Effects panel");
+    } else if (!m_currentBin.isEmpty()) {
+        action = QStringLiteral("removeFromBin");
+        question = tx("Remove %1 from %2?").arg(name, m_currentBin);
+        confirmText = tx("Remove");
+    } else if (m_currentItem.startsWith(QLatin1String("preset:")) && m_library->library().findPreset(name.toStdString())) {
+        action = QStringLiteral("deletePreset");
+        question = tx("Delete the preset %1? It leaves your custom bins and Favorites too.").arg(name);
+        confirmText = tx("Delete");
+    } else if (m_currentItem.startsWith(QLatin1String("preset:"))) {
+        reason = tx("%1 is a built-in preset and cannot be deleted").arg(name);
+    } else {
+        reason = tx("Only custom items can be deleted");
+    }
+    return QVariantMap{{QStringLiteral("item"), m_currentItem},
+                       {QStringLiteral("bin"), m_currentBin},
+                       {QStringLiteral("name"), name},
+                       {QStringLiteral("deletable"), !action.isEmpty()},
+                       {QStringLiteral("action"), action},
+                       {QStringLiteral("question"), question},
+                       {QStringLiteral("confirmText"), confirmText},
+                       {QStringLiteral("reason"), reason}};
+}
+
+void EffectPresetsBridge::requestDeleteCurrentItem() {
+    const QVariantMap info = currentItemInfo();
+    if (info.value(QStringLiteral("deletable")).toBool()) {
+        emit deleteCurrentItemRequested(info);
+        return;
+    }
+    setLastError(info.value(QStringLiteral("reason")).toString());
+    emit statusMessage(m_lastError);
 }
 
 QString EffectPresetsBridge::setFavorite(const QString& item, bool favorite) {
     return run("effects.setFavorite", Json{{"item", itemReference(item).toStdString()}, {"favorite", favorite}});
 }
 
-QString EffectPresetsBridge::importPresets(const QUrl& file) {
+QString EffectPresetsBridge::importPresets(const QUrl& file, const QVariant& bin) {
     const QString path = file.isLocalFile() ? file.toLocalFile() : file.toString();
-    return run("effects.importPresets", Json{{"path", path.toStdString()}});
+    Json params{{"path", path.toStdString()}};
+    if (bin.isValid() && bin.typeId() == QMetaType::QString)
+        params["bin"] = bin.toString().trimmed().toStdString();
+    Json data;
+    const QString error = run("effects.importPresets", std::move(params), &data);
+    if (!error.isEmpty())
+        return error;
+    QStringList names;
+    if (data.contains("imported")) {
+        for (const Json& entry : data["imported"]) {
+            if (entry.contains("name"))
+                names << fromUtf8(entry["name"].get<std::string>());
+        }
+    }
+    m_lastImported = names;
+    emit lastImportedChanged();
+    rememberFolder(path);
+    return {};
+}
+
+QString EffectPresetsBridge::exportPath(const QUrl& file, bool* renamed) const {
+    QString path = file.isLocalFile() ? file.toLocalFile() : file.toString();
+    *renamed = false;
+    if (!path.isEmpty() && !path.endsWith(QLatin1String(".json"), Qt::CaseInsensitive)) {
+        path += fromUtf8(std::string(io::kEffectPresetsFileSuffix));
+        *renamed = true;
+    }
+    return path;
 }
 
 QString EffectPresetsBridge::exportPresets(const QUrl& file, const QStringList& names) {
-    const QString path = file.isLocalFile() ? file.toLocalFile() : file.toString();
-    Json params{{"path", path.toStdString()}, {"overwrite", true}}; // the save dialog asked already
+    bool renamed = false;
+    const QString path = exportPath(file, &renamed);
+    // The save dialog asked before replacing the file it showed; a name this bridge completed is never replaced silently.
+    Json params{{"path", path.toStdString()}, {"overwrite", !renamed}};
     if (names.isEmpty()) {
+        if (userPresetCount() == 0) {
+            setLastError(tx("You have no presets to export: save one from Effect Controls first"));
+            return m_lastError;
+        }
         params["presetsBin"] = "";
     } else {
         Json list = Json::array();
@@ -579,7 +819,66 @@ QString EffectPresetsBridge::exportPresets(const QUrl& file, const QStringList& 
             list.push_back(n.toStdString());
         params["presets"] = std::move(list);
     }
-    return run("effects.exportPresets", std::move(params));
+    const QString error = run("effects.exportPresets", std::move(params));
+    if (error.isEmpty())
+        rememberFolder(path);
+    return error;
+}
+
+QString EffectPresetsBridge::exportPresetsBin(const QUrl& file, const QString& bin) {
+    if (userPresetsIn(bin) == 0) {
+        setLastError(bin.isEmpty() ? tx("You have no presets to export: save one from Effect Controls first")
+                                   : tx("%1 has no presets of yours to export").arg(bin));
+        return m_lastError;
+    }
+    bool renamed = false;
+    const QString path = exportPath(file, &renamed);
+    const QString error = run("effects.exportPresets", Json{{"path", path.toStdString()},
+                                                            {"presetsBin", bin.toStdString()},
+                                                            {"overwrite", !renamed}});
+    if (error.isEmpty())
+        rememberFolder(path);
+    return error;
+}
+
+int EffectPresetsBridge::userPresetsIn(const QString& bin) const {
+    const std::string path = bin.toStdString();
+    int n = 0;
+    for (const EffectPreset& p : m_library->library().presets) {
+        // The commands' inBin(): the bin itself or a bin inside it, without case.
+        const bool inside = path.empty() || samePresetName(p.bin, path)
+            || (p.bin.size() > path.size() && p.bin[path.size()] == '/' && samePresetName(std::string_view(p.bin).substr(0, path.size()), path));
+        if (inside)
+            ++n;
+    }
+    return n;
+}
+
+QString EffectPresetsBridge::presetsFileName(const QString& name) const {
+    QString base = name.trimmed();
+    if (const qsizetype slash = base.lastIndexOf(QLatin1Char('/')); slash >= 0)
+        base = base.mid(slash + 1).trimmed();
+    if (base.isEmpty())
+        base = tx("Presets");
+    // Characters Windows (and the other systems) refuse in a file name.
+    for (QChar& c : base) {
+        if (c.unicode() < 0x20 || QStringLiteral("\\/:*?\"<>|").contains(c))
+            c = QLatin1Char('_');
+    }
+    while (base.endsWith(QLatin1Char('.')) || base.endsWith(QLatin1Char(' ')))
+        base.chop(1);
+    if (base.isEmpty())
+        base = tx("Presets");
+    return base + fromUtf8(std::string(io::kEffectPresetsFileSuffix));
+}
+
+QUrl EffectPresetsBridge::presetsFileUrl(const QString& name) const {
+    return QUrl::fromLocalFile(QDir(presetsFolder().toLocalFile()).filePath(presetsFileName(name)));
+}
+
+bool EffectPresetsBridge::isPresetsFile(const QUrl& file) const {
+    const QString path = file.isLocalFile() ? file.toLocalFile() : file.path();
+    return path.endsWith(QLatin1String(".json"), Qt::CaseInsensitive) && !QFileInfo(path).isDir();
 }
 
 } // namespace wabcut::app

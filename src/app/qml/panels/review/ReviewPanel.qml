@@ -2,7 +2,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Layouts
 
-// ● REVIEW (M5m, rail key "review"): client review and the version history (C.9).
+// ● REVIEW (M5m, panel key "review"): client review and the version history (C.9).
 //   Notes      frame-accurate review notes on the sequence: at the playhead or over In-Out, a point or rectangle drawn on
 //              the Program Monitor, threads, resolve, filters; notes to markers; review packages out and back in.
 //   Versions   the project's version history: save a named version, restore (one undo step) or restore a sequence as
@@ -19,7 +19,7 @@ Panel {
     function showPage(index) {
         tabs.currentIndex = index
     }
-    // Focus target for the rail's shortcut.
+    // Focus target for Window > Review.
     function focusContent() {
         tabs.forceActiveFocus(Qt.TabFocusReason)
     }

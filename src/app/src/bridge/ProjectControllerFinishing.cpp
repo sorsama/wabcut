@@ -29,14 +29,7 @@ Speed speedFromPercent(double percent) {
 
 // ---- Time helpers -----------------------------------------------------------------------------------
 
-std::optional<Ticks> ProjectController::parseTimecodeText(const QString& text) const {
-    const SequencePtr seq = currentSequence();
-    const Rate rate = seq ? seq->frameRate : kRate30;
-    const auto parsed = parseTimecode(text.trimmed().toStdString(), rate, seq && seq->dropFrame);
-    if (!parsed)
-        return std::nullopt;
-    return *parsed;
-}
+// parseTimecodeText() is in ProjectControllerTimeline.cpp: the typed-time reader of the sequence's Display Format.
 
 Ticks ProjectController::frameTicks() const {
     const SequencePtr seq = currentSequence();
@@ -142,8 +135,10 @@ std::optional<ProjectController::TransitionLocation> ProjectController::findTran
 void ProjectController::selectTransitionById(TransitionId transition) {
     if (transition && !findTransition(transition))
         transition = {};
-    if (transition)
+    if (transition) {
         setSelection({}); // a transition replaces the clip selection
+        setGapSelection(std::nullopt); // and a selected gap (0.2 UX)
+    }
     if (transition == m_selectedTransition)
         return;
     m_selectedTransition = transition;
@@ -162,6 +157,34 @@ bool ProjectController::deleteSelectedTransition() {
     applyEditFn(QT_TRANSLATE_NOOP("wabcut::app::ProjectController", "Delete Transition"),
                 [=](const ProjectState& state) { return edit::removeTransition(state, seq, id); });
     return true;
+}
+
+QVariantMap ProjectController::transitionInfo(const QString& transitionId) const {
+    const auto id = parseTransitionKey(transitionId);
+    const auto loc = id ? findTransition(*id) : std::nullopt;
+    if (!loc)
+        return {};
+    const Transition& t = *loc->transition;
+    const bool audio = loc->track->kind == TrackKind::Audio;
+    const EffectDescriptor* d = EffectRegistry::builtin().find(t.effect);
+    const edit::DefaultTransitions defaults = EditingBridge::defaultTransitionsSetting();
+    const std::string& fallback = audio ? defaults.audio : defaults.video;
+    const QString alignment = t.alignment == TransitionAlignment::StartAtCut ? QStringLiteral("startAtCut")
+                              : t.alignment == TransitionAlignment::EndAtCut ? QStringLiteral("endAtCut")
+                                                                             : QStringLiteral("center");
+    return {
+        {QStringLiteral("id"), transitionKey(t.id)},
+        {QStringLiteral("kind"), audio ? QStringLiteral("audio") : QStringLiteral("video")},
+        {QStringLiteral("effect"), QString::fromStdString(t.effect)},
+        {QStringLiteral("name"), d ? QString::fromUtf8(d->displayName.data(), static_cast<qsizetype>(d->displayName.size()))
+                                   : QString::fromStdString(t.effect)},
+        {QStringLiteral("durationText"), formatTimecode(t.duration())},
+        {QStringLiteral("alignment"), alignment},
+        {QStringLiteral("twoSided"), t.outgoing.isValid() && t.incoming.isValid()},
+        {QStringLiteral("locked"), loc->track->locked},
+        {QStringLiteral("defaultEffect"), QString::fromStdString(fallback)},
+        {QStringLiteral("isDefault"), t.effect == fallback},
+    };
 }
 
 bool ProjectController::applyDefaultTransition(bool audio) {

@@ -89,20 +89,67 @@ nav and project cards. Semantic: success mint (dark) / `#0B7A5C` (light), warnin
 - **`DockTabs`:** a group's browser-style tabs, one instance per `DockSlot` (`tabPanels`, `tabbed`, `tabsWidth`), laid
   over the shown panel's strip; the panel hides its own tab and leaves them `tabsWidth`. Click or Left/Right shows a
   panel, × or a middle click closes it, dragging a tab moves that panel. `DockManager.headerZone` is the strip.
+- **Active group, maximized frame, tab menu (UX rework):** `DockManager.activeGroup` is the group the user worked in
+  last (a press in it: the slot's top-most `dockGlass_<gid>` watches with a non-grabbing `PointHandler` and tracks the
+  pointer for the backtick key; a tab; a drop; a focus key, the Window menu, `showBrowserPanel`; never startup focus;
+  cleared when its group goes and on `load()`). Its slot draws `dockActiveOutline_<gid>`: 2 px `accentStroke`, radius
+  22, over the panels. The Window menu calls `Main.openPanelFromWindowMenu(key)` (`openPanelInActiveGroup`: a closed
+  panel joins the active group as a tab; an open one comes forward; then `Main.focusPanel(key)`); programmatic reveals
+  keep `openPanel`'s column rule. `DockManager.maximizedGroup` / `toggleMaximize(gid)`: Main lays that leaf out alone
+  (no gutters); restored by toggling, `load()`, a new group, its group going or floating, or showing another group's
+  panel. The backtick (a window `Shortcut`, `maximizeFrameShortcut`: the group under the pointer), Shift+backtick
+  (`window.maximizeFrame`: the active group), a double-click on a tab and the tab menu toggle it. `DockTabMenu` (made
+  per slot on first use; right-click a tab or a lone panel's tab, Menu key / Shift+F10 on `DockTabs`): `dockTabMenu*`
+  Close, CloseOthers, Undock, UndockGroup (Dock while floating), Maximize (Restore); the choice runs after the menu
+  closed (`DockManager.tabMenuAction`). A lone panel's tab (`panelTabArea`) drags, double-clicks and right-clicks like
+  a group's.
 - **`SectionHeader`:** a dot (`SliceMark` is now an 8 px dot) and a bold title.
 - **`PillTabs`:** a segmented pill track with a sliding accent pill (black text); `tabs: true` uses a hover-coloured pill.
 
 ## Chrome
 - **Title bar (`TopBar`):** the echo mark in a round badge plus the project name and `W×H · fps` (the File menu target,
-  `brandArea`), the sequence switcher, `WorkspaceTabs` (a segmented pill group, centred; `workspacePlate` slides under
-  the active one), job pills while something runs, round command palette / undo / redo, Save (unsaved dot) and Export,
-  round window controls.
-- **Workspaces, docking, the left rail, Settings:** behaviour as in 0.1.3 (see the feature records); the rail is an
-  island of round icon buttons, the active one on `hover`.
+  `brandArea`), the menu bar (`AppMenuBar`), the sequence switcher, `WorkspaceTabs` (a segmented pill group, centred;
+  `workspacePlate` slides under the active one), job pills while something runs, round command palette / undo / redo,
+  Save (unsaved dot) and Export, round window controls.
+- **Menu bar (UX rework; it replaced the left rail, `panels/menubar/`):** `AppMenuBar` holds Premiere's nine menus
+  (`FileMenu`, `EditMenu`, `ClipMenu`, `SequenceBarMenu`, `MarkersMenu`, `GraphicsMenu`, `ViewMenu`, `WindowMenu`,
+  `HelpMenu`; objectNames `fileMenu` … `helpMenu`, the Sequence one `sequenceMenuBar`) under `MenuBarButton` titles
+  (`menuBar_<key>`: Bold 13 px text pills, `hover` / `raised` while open, Tab-focusable with the focus ring, Space /
+  Enter / Down open, Left / Right move between titles). Each menu is a `MenuBarMenu` (Wabcut's `ContextMenu`; a press on
+  its own title is left to the title) of `BarMenuItem` rows: a keymap `command` shows its shortcut, greys out from
+  `CommandPalette.commandState` when the menu opens, and runs through `KeymapDispatcher.trigger`; rows have no icons
+  and a check gutter (the accent dot for switches). Running a row: the menus close, the focus from before the first menu
+  opened comes back, then the action runs (`AppMenuBar.run`), so focus-routed commands act on the panel you were in and
+  dialogs keep the focus. A row's state is judged where it will act (`AppMenuBar.commandState`: the Source Monitor's
+  marks while it had the focus; a focused text field's text for Edit's Undo / Redo / Cut / Copy / Paste / Clear /
+  Select All, which then act on that text). Alt+letter (`menuBarKey_<key>` Shortcuts; not on macOS, and not while the
+  keymap binds the chord) opens a menu with its first enabled row highlighted;
+  hovering a title while a menu is open switches to it. When `TopBar.menuRoom` is shorter than the titles
+  (`expandedWidth`), they fold into `menuBar_menu` ("Menu"), whose menu (`menuBarCollapsedMenu`, made only then) holds
+  copies of the nine as submenus. Window lists every catalog panel (`windowMenu_<key>`, focus keys shown, Generate only
+  while AI is on); Help's website rows come from `Home.links` / `Home.guideUrl`.
+- **Workspaces, docking, Settings:** behaviour as in 0.1.3 (see the feature records). Main hosts the Settings window
+  (`settingsWindowLoader`, `window.openSettings(page, row)`, `window.openAiPreferences()`).
+- **Settings search (UX rework):** a search pill (`settingsSearch`, search icon, Esc clears) tops the Settings sidebar
+  and has the focus when the window opens. With text, the categories give way to the matches (`AppSettings.search`:
+  the page's icon, the setting's title, "Page › Section" in tertiary; an external-link glyph on rows that open a
+  dialog of their own; "No setting matches …" when none). Up / Down walk them, Enter or a click shows the page,
+  scrolls to the row (`SettingsRow.rowKey` / `SettingsSection.rowKey`, `SettingsPage.reveal(rowKey)`), flashes it
+  (`Theme.accentWash` with an accent hairline for 1.2 s, then a fade; reduce motion: no fade) and focuses its control.
+  The palette's Settings rows land the same way (`SettingsWindow.revealSetting(page, row)`). General adds "When
+  Wabcut starts" (Show Home / Reopen the last project) and a Projects section (save state, autosave, default
+  location, recent projects to show, project locking).
 - **Appearance:** built-in themes (the default dark and light looks, Graphite, Midnight, Paper), saved themes, import /
   export (`ThemeFiles`), mode, accent, high contrast, reduce motion, interface size, the launch intro, and a colour
   picker for every colour token and the 16 clip labels.
-- **Toasts:** bottom-right `section` cards with a soft shadow.
+- **Toasts:** bottom-right `section` cards with a soft shadow. `toast.show(message, color)` (color: the dot; `warning`
+  / `danger` stay 7 s instead of 4 s) and `toast.show(message, color, { actionText, action, timeoutMs })` (UX rework):
+  `toastAction` is a compact primary pill that closes the toast and runs `action`, `toastClose` a round ×; 8 s by
+  default. The text (`toastText`) wraps to three lines; a pointer moved onto it holds it (one resting where it appears
+  does not). `Main.notify(message, color, options)` is the toast, or Home's message strip while Home covers the editor
+  (`home.showMessageWithAction(text, tone, options)`: the same action as a pill, `homeMessageAction`); export and
+  Render In to Out results go through it. `Main.showProblem(text, options)` sends open and save failures there (a
+  warning); `Main.saveFailed(then)` adds "Save As…".
 
 ## Brand, logo and motion
 - **Mark:** `resources/brand/wabcut-mark.svg` (and `-small`, `-mono`); `components/EchoMark.qml` draws the same geometry
@@ -125,15 +172,15 @@ The APIs are stable; v1/v2 names are kept so other panels do not break.
 |---|---|
 | `Panel` | Island, radius 22; docked → tab strip (`PanelTab` or the group's `DockTabs`), `leading` / `trailing` tools, `DockHandle`. |
 | `PanelTab` | A strip tab: rounded top, flared feet when active, hue dot, bold name. |
-| `DockTabs`, `DockSlot`, `DockHolder`, `DockHandle` | The group's tabs (one per slot), the slot, what floats, the grip / pop-out / close. |
+| `DockTabs`, `DockSlot`, `DockHolder`, `DockHandle`, `DockTabMenu` | The group's tabs (one per slot), the slot (active outline, glass), what floats, the grip / pop-out / close, the tab menu. |
 | `SectionHeader` / `SliceMark` | Dot + bold title / an 8 px dot. |
-| `PillButton` | Pill. `primary` accent + black ExtraBold, `secondary` raised, `ghost` transparent with a hairline. `beamAccent` is a no-op. |
+| `PillButton` | Pill. `primary` accent + black ExtraBold, `danger` (the confirm button of a destructive question: Delete, Remove) `Theme.danger` + black ExtraBold (white on a dark custom red), `secondary` raised, `ghost` transparent with a hairline. `beamAccent` is a no-op. |
 | `IconButton` | Circle; `ghost` / `secondary` / `primary`; checked = accent with a black glyph. |
 | `PillTabs` | Segmented pill track, sliding accent pill. |
 | `Toggle`, `ValueSlider`, `PropSlider`, `Swatch` | Pill track with a white round thumb or knob; swatches are circles. |
 | `FieldInput`, `NumberField` | Raised pills with a focus edge. |
 | `ContextMenu` / `ContextMenuItem` / `Popover` / `Tooltip` | Radius 20 with a soft shadow, pill highlights; tooltips are inverted pills with an accent keycap. |
-| `StatusPill`, `Toast`, `ThinScrollBar`, `FocusRing`, `EmptyState`, `Icon`, `KeyframeShape` | Raised pill / section card / `well` thumb / `Theme.focus` / illustration + action. |
+| `StatusPill`, `Toast`, `ThinScrollBar`, `FocusRing`, `EmptyState`, `Icon`, `KeyframeShape` | Raised pill / section card with an optional accent action pill / `well` thumb / `Theme.focus` / illustration + action. |
 | `EchoMark`, `EchoLoader`, `LoaderPill`, `BrandLogo`, `BeamProgress` | Brand mark, loaders, logo, pill progress. |
 | C++ items | `SliceShape`, `SvgArt` (tinted SVG), `BundledFonts` (singleton: type families). |
 
@@ -483,13 +530,28 @@ unlocked sync-locked track.
 - **Empty:** "Select a clip or a transition…". Effects dropped on the panel are added to the clip at the stack
   position under the pointer (accent wash and border while hovering).
 
-### Effects library (rail: Effects)
-- A search field (fuzzy, as in the palette) over the EffectRegistry: Video Effects, Video Transitions, Audio
-  Effects, Audio Transitions. Each row shows a category icon (`sun` colour, `droplet` blur, `crop`, `square`
-  perspective, `gauge` dynamics, `volume-2` amplitude, `blend`/`fold-horizontal` transitions) and its category,
-  dimmed. Intrinsic effects (Transform, Opacity, Volume, Panner) are not listed.
-- Rows drag with mime `application/x-wabcut-effect` (the effect id). Enter or a double-click adds an effect to the
-  selected clip.
+### Effects panel (Window > Effects, Shift+7; UX rework)
+- **Toolbar** (one row; under a width of 320 the tools wrap under the search): the search pill (`effectsSearch`, a
+  match count at its right while searching, Esc clears), the view switch as a segmented pill on `sunken` (List `list`,
+  Compact `align-left`, Icons `layout-grid`; the chosen view on the accent with a black glyph, `effectsView_*`), the
+  filter (`funnel`, accent while a filter is on), New Custom Bin (`folder-plus`) and the panel menu (`ellipsis`).
+- **Tree** (`EffectsTree` rows in one virtualized ListView, `effectsList`): folder rows (`effectFolder_<key>`) with a
+  chevron, `folder` / `folder-open`, the name (top-level folders bold and primary, sub-folders secondary) and the count in
+  mono at the right; item rows (`effectItem_<id>`, copies `effectItem_<folderKey>_<id>`, plug-ins `pluginItem_<id>`)
+  with the category icon (accent while hovered or selected), the name, the category in tertiary while searching or on a
+  copy, micro-tags (DEFAULT on the default transitions, CLAP / VST3 on plug-ins) and a `bookmark` on favourites. Rows
+  are pills: hover `raised`, the selection `hover`, the 2 px focus ring when the keyboard moved last. Indent 16 per level
+  (12 in Compact). List rows 32, Compact rows 24 with 12 px text.
+- **Icons view:** tiles of at least 88 px sharing the width evenly (radius 14, `section`, the selection with a 2 px
+  accent edge): the category icon at 28, the name in two lines of 11 px, a `bookmark` in the top-right corner on
+  favourites, DEFAULT / CLAP / VST3 at the top left.
+- **Drops** (mime `application/x-wabcut-effect`, files from Explorer): the folder that would take it gets an accent wash
+  and a 2 px accent edge; presets files over the list outline the whole list.
+- **Feedback:** the status line (`effectsStatus`, secondary 12 px, clears after 6 s); a library that cannot be read is a
+  warning banner (amber wash and edge, `triangle-alert`, primary text); no match is the `search` EmptyState with "Show
+  all". Deletes ask in a WabcutDialog (`effectsConfirmDialog`); bins are named in place with a FieldInput.
+- Rows drag with mime `application/x-wabcut-effect` (the item id) and the row as the drag image. Intrinsic effects
+  (Transform, Opacity, Volume, Panner), Title Style and Essential Sound's record are not listed.
 
 ### Transitions on the timeline
 - **Drawing:** a transition is a dark frame across the edit (`markerInkColor` at 62 %) with a light bow tie meeting
@@ -527,7 +589,8 @@ unlocked sync-locked track.
 ## M5e: the Transcript panel (edit the video by editing its text)
 
 ### Where it lives
-- **Placement:** the browser slot, opened from the rail's "Transcript" entry (key `captions`, icon `captions`). It sits
+- **Placement:** the browser slot, opened from Window > "Transcript" (key `captions`, icon `captions`; the left rail's
+  entry before the UX rework). It sits
   next to the Library and Effects, where Premiere puts its Text panel, so the timeline and the monitor stay in view
   while editing.
 - **Tabs:** Transcript, Clean up and Captions (PillTabs). Switching tabs drops a pending preview.
@@ -593,65 +656,83 @@ unlocked sync-locked track.
 
 ## M5f: the Home screen and the Keyboard Shortcuts editor
 
-### Home screen
-- **When:** the app opens on it (`main()` turns on `Home.showAtLaunch`; the shell tests start on the editor), and
-  File > Home shows it again.
-  - It covers the editor, which is disabled and, once covered, not drawn.
-  - "Back to <project>" / "Explore the demo project" and Esc return to the editor.
-  - No editor shortcut fires behind it (`KeymapScope.suppressShortcuts`).
-- **Look:** the canvas with a soft Wabcut Violet radial glow from the top right, and floating cards (`HomeCard`):
-  - the panel surface, `radiusPanel`, a soft `RectangularShadow`, an accent-wash icon chip and a title;
-  - on open, the cards rise 12 px and fade in one after another (60 ms apart, `durCollapse`/`durSpring` with
-    `easeOutSoft`). Under reduce-motion they simply appear;
-  - interactive cards lift `liftOffset` with a shadow on hover;
-  - the drop zone grows to `liftScale` with `easeSpring` when files are dragged over it (drops are where a bounce
-    is allowed).
-- **Layout:** two columns. The left (wider) column has the headline (`Theme.textDisplay`, Home only), One-click
-  import and Recent projects. The right column has New project and Learn.
-  - One column below 920 px. Content is at most 1440 px wide and scrolls vertically.
-  - At 1100×700 every card fits across (tested).
-- **One-click import (the headline):**
-  - **Drop zone:** a large dashed `sunken` zone with a round accent icon. Files dropped anywhere on Home land here,
-    and it turns accent-washed with an accent dashed border while dragging.
-  - **Editor buttons:** "Import from Premiere Pro / DaVinci Resolve / Final Cut Pro" cards. Each has a neutral
-    monogram chip (not the editor's logo) and one line on what to export there:
-    - "In Premiere: File › Export › Final Cut Pro XML";
-    - "In Resolve: File › Export › Timeline › FCPXML or OTIO";
-    - "In Final Cut Pro: File › Export XML…".
-
-    Each also lists the formats it accepts.
-  - **Checks before importing:** every file is checked first (`ProjectFile.detectImport`).
-    - Timelines and media import into a new project, and its first imported sequence opens (`importFiles` with
-      `newProject` and `openImported`; no empty "Sequence 01" is left).
-    - The import report dialog follows.
-    - A `.wabcut` file opens.
-  - **Experimental .prproj:** it never imports silently. A warning-tinted card names the file, says
-    "experimental reader", explains the trade-off and suggests Final Cut Pro XML. "Import with the experimental
-    reader" opts in.
-  - **Unreadable files:** Resolve `.drp` / AAF / `.fcpbundle` get the importer's guidance ("what to export
-    instead") in an info card. Import errors show in a danger card.
-- **New project:**
-  - Name, location (Browse… with a folder dialog; the path is shown elided in the middle), then the sequence
-    preset as a 3-column grid of radio cards.
-  - Each card has the frame's shape (landscape, portrait or square outline), the name and the rate in mono. The
-    selected card has an accent border and accent wash.
-  - Presets: 1080p at 23.976 / 25 / 29.97 / 30 / 60, 4K UHD, Vertical 9:16 (1080×1920), Square 1:1 and Custom.
-  - 4K, vertical, square and custom offer frame-rate pills; custom adds width × height fields.
-  - A mono summary ("1920 × 1080 · 23.976 fps") sits beside the primary Create button. Validation errors (name,
-    folder, an existing file) show in danger text.
-  - Create saves `<folder>/<name>.wabcut` and opens it (`Home.createProject` → `ProjectFile.newProjectWith` +
-    `saveAs`).
-- **Recent projects:**
-  - Cards are 16:9 thumbnails: the first video's frame through `image://wabcut-thumbnails`, else an accent-deep
-    gradient with the format in mono. Under each are the name, the folder (elided in the middle) and when it was
-    last opened ("Today, 10:21").
-  - A file that is gone is dimmed with a scrim "Missing" badge; a click offers "Remove from list". Hover shows ×
-    (remove).
-  - Open… is in the card header.
-  - The list is kept in QSettings `home/recentProjects`, at most 12, newest first. It is updated whenever the open
-    project's file changes (open, save as, new).
-- **Learn:** links to the local documents that exist (`docs/interchange.md`, `docs/keymap.md`, `docs/roadmap.md`),
-  each with a title, a line and an external-link icon.
+### Home screen (UX rework 2026-10-23: a start window with pages)
+- **When:** the app opens on it (`main()` turns on `Home.showAtLaunch`; the shell tests start on the editor) unless
+  Settings > General says "Reopen the last project" (`AppSettings.projectToReopen(Home.recent)`; never after a crash or
+  with autosaves to recover; a project Wabcut was started with wins): then Home shows "Opening project" (the chase
+  loader) from the first frame and the project opens once the window is on screen, like Home's Open; Home stays with
+  the reason when it cannot open. File > Home shows it again; File > New Project
+  opens it on the New project page (`home.openFromEditor(key)`).
+  - It covers the editor, which is disabled and, once covered, not drawn. No editor shortcut fires behind it
+    (`KeymapScope.suppressShortcuts`); Home's own keys go through its focus chain: Ctrl+N / Ctrl+Alt+N New project,
+    Ctrl+O Open…, Ctrl+I Import…, Ctrl+F search, Ctrl+, (⌘,) Settings, Ctrl+Z the Undo strip.
+  - "Back to <project>" and Esc return to the editor when a real project is behind Home, or when Home was opened from
+    the editor (File > Home, File > New Project: "Back to the sample project" then) - never at launch or after Close
+    Project, so nobody lands in the sample project without asking (`canReturn`). Esc first cancels the .prproj prompt,
+    then leaves the New project page (to the editor when File > New Project opened it).
+- **Frame** (`home/HomeScreen`): the black stage; `HomeNav` (the logo moves the window; the pages with hue dots, Up /
+  Down / Enter; the version; `homeSettingsButton`), the header row (`homeGreeting` / `homePageTitle`, `homeSearch` -
+  typing opens Projects -, `homeOpenButton`, `homeImportButton`, the accent `homeNewButton`, `homeBackButton`, the
+  window controls; Open and Import fold to icons when the header is narrow, and are ghost pills on the light stage), the
+  strips (`homeExperimentalPrompt`, `homeImportMessage` with "How to export", `homeMessage`; `HomeMessageStrip`: a
+  tinted card, radius 18, an icon, the text - at most four lines high, the rest scrolls - actions and ×), then the
+  pages. `page` is "home", "projects", "learn" or
+  "new"; pages cross-fade over `durState` (at once under reduce motion) and are made the first time they show. The
+  page never scrolls; lists scroll inside their own island. A chase `LoaderPill` covers Home while Main opens or
+  creates (`runBusy`). Projects removed show an Undo pill at the bottom (`homeUndoStrip`, 5 s).
+- **Islands:** `HomeCard` (the panel surface, `radiusPanel`, a 10 px caps label after a hue dot, tools at its right);
+  on open they rise 12 px and fade in one after another; under reduce motion they simply appear. Home's pages give
+  them fixed heights and their content fills them.
+- **Home page** (`HomePage`): Continue (`ContinueCard`: the 16:9 picture - the first video's frame, else a hue card
+  with a little timeline -, the name in display type, when and the format in mono, the folder, Open (accent) and Show
+  in Explorer (ghost); empty: the echo mark and one quiet line) beside Start (`StartCard`: three action rows - a
+  tinted icon circle, the label, the key in a mono chip - then the dashed drop well `homeDropZone`, accent-washed while
+  files are dragged over Home, then "Import folder…" and "From Premiere, Resolve or Final Cut?"). Recent below: the
+  newest projects as `ProjectCard`s, one or two rows (two when there are enough projects and room), with "All projects
+  (n)"; empty: one quiet line and a link to Learn (the sample project and the guides live there). The top row takes
+  the room Recent leaves, up to 440 px; on short windows Start's drop well gives up some height (to 56 px) and the
+  cards shrink so a row fits with room under it. At 1100×700 and 1600×960 all three islands fit without scrolling
+  (tested).
+- **Projects page** (`RecentProjects`): All / Starred and Last opened / Name (segmented pills), the count, grid / list
+  and a "…" menu (Clear Unstarred Projects…, confirmed). Filter, sort and view are remembered (Preferences
+  `home/projectFilter`, `projectSort`, `projectView`). `ProjectGrid` / `ProjectRow`: one card is the list's Tab stop;
+  the arrows move, Enter opens, Delete removes (Undo), the Menu key / Shift+F10 / right-click / "…" open
+  `ProjectMenu` (Open, Open Next to This One, Show in Explorer, Copy Path, Star / Unstar, Locate… for a missing
+  project, Remove from List). A missing project is dimmed with the Missing badge; a click opens its menu. The star is
+  lime and filled when starred; starred projects stay past the list's limit (`Home.projectEntries`). Tab goes card,
+  star, "…". After a removal (or Undo) the focus stays in the list, on the card now at its place.
+- **Learn page** (`LearnPage`): Start here (the sample project - `ProjectFile.openDemo()` after the unsaved prompt -,
+  the tour, the Keyboard Trainer, What's new: Home closes first), User guide and Support from `Home.links` (the website;
+  an external-link glyph). Rows are 50 px: a tinted icon circle, the title, one line, a chevron or external-link icon.
+- **New project page** (`NewProjectPage`): two columns, both islands as tall as the page.
+  - Format (`PresetTile`s in a grid, grouped Landscape / Vertical & square / Custom; the tiles at the top of the
+    island): the frame's shape in outline, the name and the rate in mono; the chosen tile is filled with the accent
+    (black text). The tiles are one radio group: only the chosen tile is a Tab stop, the arrows choose. With media,
+    "Match my media" (two tiles wide) comes first and is chosen; it creates the size and rate it shows.
+  - Details: name (a free one, `Home.uniqueProjectName`), location (Browse…), then the format: a small frame at its
+    shape with its ratio (`homeFramePreview`, 88×56 px at most, accent outline) beside the format's name and the mono
+    summary (`Home.settingsSummary`); then the "Advanced settings" disclosure (chevron; a "Changed" chip when the
+    values differ from the defaults; its open state remembered) with `AdvancedSettings`: a label and a pill control per
+    row (number pills, segmented pills, choice pills with a menu), "Reset to defaults". Open, the frame and the name
+    give way to the rows (the summary stays). The error line (danger) and Cancel (ghost) and the lime Create project
+    pill sit at the bottom. With a recording's streams, the audio tracks follow the streams kept (one each) unless
+    the field was changed, never fewer than they need: the field, the summary and the project agree.
+  - Leaving the page for another page keeps what it holds (the media of an import, the name); Cancel, Esc and the back
+    arrow drop it.
+  - The last choices are remembered (`home/newProjectChoices`, `home/advancedOpen`).
+  - "Start with media" (`StartWithMedia`, above Format): the files (an icon by kind, the name, the size; the first
+    video's size, rate, length and codec), chips (4K, High fps, Long · proxies, VFR, HDR · tone-mapped) and a line for
+    each, "Add the clips to the sequence", and for a recording with several audio streams the streams table.
+- **The all-in-one Import:** Import… (several files), Import folder… and drops all go through `Home.classifyImport`:
+  a project opens; timelines import into a new project with the report; a `.prproj` waits for the experimental reader
+  (a warning strip with Cancel / Import with the experimental reader); unreadable files (a dotLottie archive and a web
+  address dragged from a browser too) get guidance with "How to export"; media open the New project page in "Start
+  with media". Notes (files left out) show in the message strip; a note that goes with an open or an import shows in
+  the editor only when that request succeeds.
+- **Create:** a refusal before the project exists (the name, the folder - one that cannot be made too: a missing drive
+  or a file in the way is said live -, the settings) keeps Home on the page with the error; once the project exists
+  (it replaced the one shown; only its first save can fail then) Home closes and the editor shows a warning toast -
+  with media, the files still go in and the project stays open, untitled, for Save As.
 
 ### Keyboard Shortcuts editor
 - **Dialog:** a large modal over the scrim, at most 1320×960 px; it fits 1100×700. The header has the title, the
@@ -685,8 +766,8 @@ unlocked sync-locked track.
 ## M5g: the Audio workspace and Bezier keyframe handles
 
 ### Layout
-- **Where things go:** the Audio workspace (dock) opens **Audio Tools** in the browser slot. The rail also has it, as
-  "Audio Tools". The **Audio Track Mixer** goes in the side slot.
+- **Where things go:** the Audio workspace (dock) opens **Audio Tools** in the browser slot. The Window menu also has
+  it, as "Audio Tools". The **Audio Track Mixer** goes in the side slot.
   - The side slot widens to about half the work area (`Theme.sideMixerMinWidth` at least, animated with
     `durCollapse`).
   - The timeline's share drops to 0.38 (0.44 compact) so the strips get height.
@@ -988,8 +1069,9 @@ unlocked sync-locked track.
   (ShortcutOverride) except Tab and Esc, so nothing in the editor runs. The best streak is kept.
 - **What's new (`WhatsNewDialog`)**: static highlights, refreshed per build from the milestones merged since the last
   refresh (M5n: M5k-M5m, C.7-C.12, A.3-A.9, AI-9-AI-13); nothing is fetched.
-- **Help:** the rail's Help button (Welcome and setup, Take the tour, Keyboard Trainer, What's new, Keyboard
-  shortcuts) and the palette's Help rows run any of it again.
+- **Help:** the Help menu (`helpItem_welcome`, `helpItem_tour`, `helpItem_trainer`, `helpItem_whatsNew`,
+  `helpItem_shortcuts`; it replaced the rail's Help button) and the palette's Help rows run any of it again, once the
+  menu has closed.
 
 ### The v2 polish pass
 - **Sentence case everywhere:** all caps only for acronyms and file formats (LUFS, HEVC, SRT) and for micro-tags at
@@ -1005,7 +1087,7 @@ unlocked sync-locked track.
   queue pill, audio jobs and the assistant. Jobs without a percentage use `indeterminate` (the whole track lit, the
   highlight moving).
 - **Tooltips show shortcuts:** buttons and tabs with a keymap command show its key (`command:`), now including the
-  workspace tabs (Premiere's workspace keys, Export Media) and the rail's Library and Effects.
+  workspace tabs (Premiere's workspace keys, Export Media) and the menu bar's rows.
 - **Keymap rows (docs/keymap.md):** M5i's trim and all-track rows are verified against the shipped key sets: Toggle
   Trim Type is Ctrl+Shift+T (Control+T on macOS), the trims and Expand / Minimize All Tracks are `context.global`.
 
@@ -1051,7 +1133,9 @@ unlocked sync-locked track.
   smart results replace the grid and the same filters narrow them.
 - **Housekeeping (the tools menu):** Import image sequence… (0.2: ImageSequenceDialog, the first still and a frame rate
   as pill tabs, 29.97 selected); Larger / Smaller thumbnails (0.2, Premiere's Project panel zoom: the card size, 0.5x to 2x
-  in quarter steps, also Ctrl+wheel over the grid; per user); hover scrub; Show unused media / Remove unused media (a confirmation popover; one
+  in quarter steps, also Ctrl+wheel over the grid; per user; UX rework: the same size is the **thumbnail slider** at the
+  right of the row under the grid, a ValueSlider between zoom-out / zoom-in icon buttons, beside the proxy pill, grid
+  view only; it keeps its arrows while focused; the keys = / - and Shift+] / Shift+[ step it); hover scrub; Show unused media / Remove unused media (a confirmation popover; one
   undo step; the files stay on disk); Show duplicate media (the same file content imported twice; subclips do not
   count); Make subclip. Reveal in File Explorer (Finder on macOS) is in the item menu.
 - **Proxies (I.3) and analysis:** proxy state from MediaReadiness; transcript, search index and shot detection from a
@@ -1204,7 +1288,7 @@ unlocked sync-locked track.
   `correctRange`, and the Captions tab then suggests Update from transcript.
 
 ### Review and version history (C.9; bridges `Review` and `History`)
-- **The Review panel** (rail key "review", the message-square icon; `panels/review/`): Notes | Versions as PillTabs.
+- **The Review panel** (panel key "review", the message-square icon; `panels/review/`): Notes | Versions as PillTabs.
 - **Notes:** All / Open (n) / Resolved (n) tabs, a search field and "All sequences"; the notes in time order as cards
   (`ReviewNoteCard`: a timecode chip that seeks, the author and when, a mark badge, the text, the replies and a reply
   field, resolve and delete; a resolved note is dimmed with a green tag; the note at the playhead or the selected one
@@ -1225,11 +1309,13 @@ unlocked sync-locked track.
   An unsaved project has no history (the page says so).
 
 ### Audio plugins (A.6; bridge `Plugins`)
-- **Effects panel:** an "Audio Plugins · n" section under the effects (`panels/plugins/PluginBrowser`): By vendor / By
-  category tabs, Rescan and settings buttons, a warning line when files were blocked ("2 plugin(s) blocked: they
-  crashed or hung while scanned. Review…"), the groups, and rows (`PluginRow`: name, vendor, a CLAP / VST3 tag) that
-  drag onto clips, the timeline, Effect Controls and mixer strips like any effect (a plugin drop goes through
-  `Plugins.apply`, which stores the plugin's name for the missing badge). The panel's search filters them.
+- **Effects panel:** the **Audio Plug-ins** folder of the tree (UX rework), its vendors or categories as sub-folders
+  and its plug-ins as item rows with a CLAP / VST3 tag that drag onto clips, the timeline, Effect Controls and mixer
+  strips like any effect (a plugin drop goes through `Plugins.apply`, which stores the plugin's name for the missing
+  badge), go into Favorites and custom bins, and are found by the panel's search (name, vendor, category). While the
+  folder is open its tools show under its row (`panels/plugins/PluginBrowser`): By vendor / By category tabs, Rescan and
+  settings buttons, the scan's progress and a focusable warning line when files were blocked ("2 plug-ins blocked: they
+  crashed or hung while scanned. Review…").
 - **Effect Controls:** a plugin effect's header has its badge (`PluginBadge`: MISSING, CRASHED, FAILED, HUNG in danger
   or warning micro-tags; a dot for late blocks on the master) and "Edit plugin…" (external-link icon; disabled when the
   plugin has no editor window). The editor opens in the helper's own window; its state changes are saved into the
@@ -1240,7 +1326,7 @@ unlocked sync-locked track.
   (standard and the user's, Add folder…), Scan all again / Rescan, and the blocklist with the reason and "Try again".
 
 ### Essential Sound and Remix (A.7; bridge `EssentialSound`)
-- **The Essential Sound panel** (rail key "essential", the sliders icon): "n audio clip(s) selected", the type buttons
+- **The Essential Sound panel** (panel key "essential", the sliders icon): "n audio clip(s) selected", the type buttons
   (Dialogue, Music, SFX, Ambience as PillButtons, the current one primary; Clear), the preset menu, then the type's
   sections (`essential/EssentialSection`: a raised card with a title, one line of what it does and a switch that
   bypasses its effects; the controls inside): Loudness (target, Auto-match), Repair (reduce noise, Enhance Speech,
@@ -1415,19 +1501,21 @@ everything below uses the v2 tokens and components ("Ultraviolet Cut"). Not in t
 management UI, and deep layer editing of motion graphics (kept behind "Advanced").
 
 ### New gaming video (Home; bridge `GamingStart`)
-- **The card** (`home/GamingVideoCard`, first in Home's right column, the `gamepad-2` icon): drop a recording
-  (anywhere on Home: a single video goes to this card) or choose one. The probe runs off the GUI thread; the card shows
-  size, frame rate (the nominal one, kept: 60 stays 60, 59.94 is named), duration and codec, with pill badges tinted
-  by tone (4K and High fps `accentStroke`, Long · proxies `warning`, VFR `textSecondary`, HDR · tone-mapped `info`)
-  and a one-line note for each that changes what happens.
-- **One row per audio stream:** a `Toggle` (include it), the track name (Game / Mic / Discord suggested in order,
-  then "Audio n"; editable), the channel layout and the track it lands on (A1, A2... renumbered as rows are left out).
-- **Create** (primary) names the project after the recording, in the chosen folder, after the unsaved-changes prompt:
-  a project at the recording's size and rate, the recording placed at 0 with each included stream on its named track,
-  proxies started for long / 4K / high-fps files, then saved. A failure is a `danger` line on the card; Home stays.
-- Recent projects stay below, as before.
+- **Since the UX rework** it is the New project page's "Start with media" (`home/StartWithMedia`): a recording dropped
+  anywhere on Home (or chosen with Import…) opens the page with "Match my media" chosen. The probe runs off the GUI
+  thread; the first file's row shows its size, frame rate (the nominal one, kept: 60 stays 60, 59.94 is named),
+  duration and codec, with pill chips tinted by tone (4K and High fps `accentStroke`, Long · proxies `warning`, VFR
+  `textSecondary`, HDR · tone-mapped `info`) and a one-line note for each that changes what happens.
+- **The audio streams table** (a recording with two or more streams): a `Toggle` (include it), the track name (Game /
+  Mic / Discord suggested in order, then "Audio n"; editable), the channel layout and the track it lands on (→ A1,
+  → A2... renumbered as rows are left out).
+- **Create project** (the lime pill) runs `Home.createFromMedia` after the unsaved-changes prompt: a project at the
+  recording's size and rate, the files edited in one after another (the recording at 0 with each included stream on
+  its named track), proxies started for long / 4K / high-fps files, then saved. A refusal before anything exists stays
+  on the page in danger text; a problem after the project exists (an import, the proxies) closes Home and shows a
+  warning toast in the editor.
 
-### Highlights (rail "Highlights", `zap`; bridge `Highlights`; G.2)
+### Highlights (Window > "Highlights", `zap`; bridge `Highlights`; G.2)
 - **Header:** Find highlights (primary) with an options popover (signals: game audio, your voice, on screen, chat,
   stream markers; how many; how strict; the chat log: Import chat… runs `highlights.importChat` and shows "Twitch chat
   · 18,234 messages · Gameplay.mkv" plus its warnings). Find runs as a job: a progress bar with the step ("measuring
@@ -1456,7 +1544,7 @@ management UI, and deep layer editing of motion graphics (kept behind "Advanced"
 - **The monitor** shows the layout's schematic while the picker is open (`LayoutMonitorOverlay`; over the picture
   only the facecam box is labelled). Esc or Cancel closes it.
 
-### Callouts (rail "Callouts"; bridges `Graphics`, `GraphicCanvas`, `GraphicsImport`; C.13 / C.16)
+### Callouts (Window > "Callouts"; bridges `Graphics`, `GraphicCanvas`, `GraphicsImport`; C.13 / C.16)
 - **Browse:** Gaming (C.16's built-in callouts from `template.list`, category "gaming": subscribe, kill streak, lower
   third, arrow / circle callouts and more; read-only), Stickers (Lottie animations kept as project templates, with
   "Import Lottie sticker…"), This project and My templates, as cards with live thumbnails painted off the GUI thread
@@ -1499,6 +1587,11 @@ management UI, and deep layer editing of motion graphics (kept behind "Advanced"
   to know), the settings drawer (a section card; labels beside the rows, above them in a narrow slot) and "Save to".
   Pinned at the foot: the chosen preset with "≈ size · time to export" and the Export pill, then the queue. A slot
   760 px wide or more puts the tiles on the left and the rest in a column on the right.
+- **Remembered choices (UX rework):** the panel opens on the preset, range and folder picked last (docs/export.md); the
+  Export pill names a range that is not the whole sequence ("Export In to Out"); a ghost "Reset to defaults" pill in
+  the "Save to" card shows while something is remembered. Quick Export's popover adds a Range pill row when the
+  sequence has marks or a work area; its preset list is one Tab stop (Up / Down pick, Enter exports, a focus ring on
+  the current row). Finished and failed exports, and Render In to Out, end in a toast with one action.
 - **Gaming groups:** YouTube (1080p60, 1440p60, 4K60, pink), Shorts / TikTok / Reels (1080x1920, mint), Twitch
   (1080p60, violet), Discord size targets (10 / 25 / 50 MB, blue), GIF and WebM (lime). GIF and WebM are disabled
   with "Coming soon" until the exporter has those formats. The built-in presets are orange.

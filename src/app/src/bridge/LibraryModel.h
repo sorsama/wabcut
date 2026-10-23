@@ -173,6 +173,11 @@ public:
         DerivedRole,                ///< M5l: the source a stem was separated from (its name), or ""
         SearchBinRole,              ///< 0.2 (P.3): a search bin
         GoodRole,                   ///< 0.2 (P.3): media marked Good (the Good column's check box)
+        /// 0.2 UX (stream T): the item's Source Monitor marks for the card's In/Out band, or an empty map (none set, a
+        /// still or an item without a known length): { in, out (fractions 0..1 of the card's range: the media, or a
+        /// subclip's range), inText, outText (the last marked frame), durationText (the marked length) }. A Library
+        /// drag onto the timeline edits in that range (ProjectFile.dropMedia).
+        MarksRole,
     };
 
     explicit LibraryModel(QObject* parent = nullptr);

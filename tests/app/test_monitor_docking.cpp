@@ -5,7 +5,12 @@
 // too, and a closed panel opens again; each workspace (made from a preset, none built in) keeps its own layout, kept
 // between sessions (the first preview's workspaces too); File > Reset Panel Layout gives the preset's layout back; a
 // group popped out into a window of its own gets the keys there and docks back when that window closes or when its grip
-// is dragged onto the workbench.
+// is dragged onto the workbench. UX rework: a press, a tab, a drop or a focus key makes a group the active one (an
+// accent outline), where the Window menu opens closed panels; Maximize Frame (`, Shift+`, a double-click on a tab, the
+// tab menu) gives one group the whole work area and restores; the tab menu closes, undocks and maximizes; a lone
+// panel's tab drags like a grouped one; Ctrl+W closes the active panel; Reset to Saved Layout can be undone. Two
+// monitors sharing a narrow place: only the one shown takes presses, hover, drops and `; the Window menu keeps them
+// sharing. Every way to maximize moves the keyboard focus into the frame; a group docked back from its window shows.
 
 #include "ShellFixture.h"
 
@@ -29,6 +34,7 @@
 #include <QJsonObject>
 #include <QKeyEvent>
 #include <QMouseEvent>
+#include <QPointer>
 #include <QProcess>
 #include <QQmlContext>
 #include <QQmlExpression>
@@ -102,6 +108,73 @@ void click(const Shell& shell, QQuickItem* item, QPointF local) {
     mouseAt(shell.window.get(), QEvent::MouseButtonPress, p, Qt::LeftButton, Qt::LeftButton);
     mouseAt(shell.window.get(), QEvent::MouseButtonRelease, p, Qt::LeftButton, Qt::NoButton);
     spin(30);
+}
+
+/// A right click at `local` in `item`.
+void rightClick(const Shell& shell, QQuickItem* item, QPointF local) {
+    const QPointF p = item->mapToScene(local);
+    mouseAt(shell.window.get(), QEvent::MouseButtonPress, p, Qt::RightButton, Qt::RightButton);
+    mouseAt(shell.window.get(), QEvent::MouseButtonRelease, p, Qt::RightButton, Qt::NoButton);
+    spin(30);
+}
+/// A double click at `local` in `item` (two presses close together in time).
+void doubleClick(const Shell& shell, QQuickItem* item, QPointF local) {
+    const QPointF p = item->mapToScene(local);
+    QQuickWindow* window = shell.window.get();
+    ulong at = 100000;
+    for (int i = 0; i < 4; ++i) {
+        const bool press = i % 2 == 0;
+        QMouseEvent event(press ? QEvent::MouseButtonPress : QEvent::MouseButtonRelease, p, p, window->mapToGlobal(p),
+                          Qt::LeftButton, press ? Qt::MouseButtons(Qt::LeftButton) : Qt::MouseButtons(Qt::NoButton),
+                          Qt::NoModifier);
+        event.setTimestamp(at += 40);
+        QCoreApplication::sendEvent(window, &event);
+    }
+    spin(30);
+}
+/// The pointer moves (no button) to `local` in `item`: hover.
+void hoverAt(const Shell& shell, QQuickItem* item, QPointF local) {
+    const QPointF p = item->mapToScene(local);
+    mouseAt(shell.window.get(), QEvent::MouseMove, p, Qt::NoButton, Qt::NoButton);
+    spin(30);
+}
+/// The first item named `name` under `root`.
+QQuickItem* findUnder(QQuickItem* root, const QString& name) {
+    QList<QQuickItem*> found;
+    collect(root, name, found);
+    return found.isEmpty() ? nullptr : found.first();
+}
+/// The current layout's groups, in order: each one's panels joined with "+".
+QString groupsText(const Shell& shell) {
+    return evaluate(shell, QStringLiteral("Workspaces.groupsOf(docking.tree).map(g => g.panels.join('+')).join(' ')")).toString();
+}
+QString activeGroup(const Shell& shell) {
+    return evaluate(shell, QStringLiteral("docking.activeGroup")).toString();
+}
+QString maximizedGroup(const Shell& shell) {
+    return evaluate(shell, QStringLiteral("docking.maximizedGroup")).toString();
+}
+/// The group whose panels hold keyboard focus now ("" none).
+QString focusGroup(const Shell& shell) {
+    return evaluate(shell, QStringLiteral("docking.groupOfItem(window.activeFocusItem)")).toString();
+}
+/// The tab menu of the group that holds `panel`, once DockSlot made it (null before).
+QObject* tabMenuOf(const Shell& shell, const char* panel) {
+    return evaluate(shell, QStringLiteral("docking.slotOfPanel('%1').tabMenu").arg(QLatin1String(panel))).value<QObject*>();
+}
+/// Triggers the tab menu's item `name` (the menu is open) and waits until the menu closed and its choice ran.
+/// The menu goes with its group when the choice closes the group's last panel: watched through a QPointer.
+void chooseInMenu(QObject* menuObject, const char* name) {
+    const QPointer<QObject> menu(menuObject);
+    QObject* item = menu->findChild<QObject*>(QLatin1String(name));
+    REQUIRE(item != nullptr);
+    REQUIRE(item->property("enabled").toBool());
+    REQUIRE(QMetaObject::invokeMethod(item, "triggered"));
+    spin(30);
+    if (menu && menu->property("visible").toBool()) // a menu closes itself on a click; a triggered() call may not
+        QMetaObject::invokeMethod(menu, "close");
+    REQUIRE(waitFor([&] { return !menu || !menu->property("visible").toBool(); }));
+    spin(60);
 }
 
 /// A place beyond every screen: windows there put nothing on the desktop (the floating window test's).
@@ -284,7 +357,8 @@ TEST_CASE("Panels join another group as tabs, dock beside it or along an edge, c
         CHECK_FALSE(evaluate(shell, QStringLiteral("docking.isOpen('effectControls')")).toBool());
         CHECK_FALSE(tabs->isVisible());
         CHECK(evaluate(shell, QStringLiteral("docking.groupOfPanel('library').panels.length")).toInt() == 1);
-        // Opened again (the Window menu, Effect Controls' focus key): beside the monitors, on their right.
+        // Opened again where it fits (a programmatic reveal): beside the monitors, on their right. (The Window menu
+        // would open it in the group clicked last, here the Library's.)
         evaluate(shell, QStringLiteral("window.revealPanel('effectControls')"));
         spin(50);
         controls = groupOf(shell, "effectControls");
@@ -596,6 +670,652 @@ TEST_CASE("A panel popped out into its own window gets the keys there and docks 
     CHECK(monitorPanel->window() == shell.window.get());
     CHECK(scenePos(program).x() > scenePos(source).x());
     CHECK(area->property("dual").toBool());
+
+    const QStringList messages = takeMessages();
+    INFO(join(messages));
+    CHECK(messages.isEmpty());
+}
+
+TEST_CASE("Docking: a press in a group makes it the active one and the Window menu opens closed panels there",
+          "[app][docking][qml]") {
+    resetSettings();
+    clearMessages();
+    Shell shell;
+    REQUIRE(shell.window != nullptr);
+    shell.theme->setProperty("reduceMotion", true);
+    spin(50);
+
+    // Startup focus (the timeline's lanes) makes no group the active one.
+    CHECK(activeGroup(shell).isEmpty());
+    QQuickItem* program = groupOf(shell, "program");
+    REQUIRE(program != nullptr);
+    const QString programId = groupId(shell, "program");
+    QQuickItem* outline = findItem(shell, QStringLiteral("dockActiveOutline_") + programId);
+    REQUIRE(outline != nullptr);
+    CHECK_FALSE(outline->isVisible());
+
+    // A press in the Program Monitor (its picture keeps the press: the group's glass only watches): its group is the
+    // active one, with the accent outline.
+    click(shell, program, QPointF(program->width() / 2, program->height() / 2));
+    CHECK(activeGroup(shell) == programId);
+    CHECK(outline->isVisible());
+    QObject* pen = outline->property("border").value<QObject*>();
+    REQUIRE(pen != nullptr);
+    CHECK(sameColor(pen->property("color").value<QColor>(), shell.themeColor("accentStroke")));
+    CHECK(pen->property("width").toDouble() == 2.0);
+    REQUIRE(shell.grab().save(outputDir() + QStringLiteral("/docking-active-group.png")));
+
+    // Window > Markers (closed): a tab of the Program Monitor's group, shown there and focused.
+    evaluate(shell, QStringLiteral("window.openPanelFromWindowMenu('markers')"));
+    spin(100);
+    CHECK(groupId(shell, "markers") == programId);
+    CHECK(shownPanel(shell, "program") == QStringLiteral("markers"));
+    CHECK(focusGroup(shell) == programId);
+
+    // Window > Library (open elsewhere, behind Effects): it comes to the front where it is, focused, and its group is
+    // the active one now.
+    evaluate(shell, QStringLiteral("docking.joinPanel('effects', docking.groupOfPanel('library').group)"));
+    spin(50);
+    const QString libraryId = groupId(shell, "library");
+    CHECK(shownPanel(shell, "library") == QStringLiteral("effects"));
+    evaluate(shell, QStringLiteral("window.openPanelFromWindowMenu('library')"));
+    spin(100);
+    CHECK(groupId(shell, "library") == libraryId);
+    CHECK(shownPanel(shell, "library") == QStringLiteral("library"));
+    CHECK(activeGroup(shell) == libraryId);
+    CHECK(focusGroup(shell) == libraryId);
+    CHECK_FALSE(outline->isVisible());
+
+    // A tab chosen makes its group the active one.
+    QQuickItem* markersTab = findItem(shell, QStringLiteral("dockTab_markers"));
+    REQUIRE(markersTab != nullptr);
+    click(shell, markersTab, QPointF(grid(4), markersTab->height() / 2));
+    CHECK(activeGroup(shell) == programId);
+
+    // A drop makes the moved panel's group the active one: the Library's grip onto the Program Monitor's tabs.
+    evaluate(shell, QStringLiteral("docking.beginDrag(docking.slotOfPanel('library'), '')"));
+    evaluate(shell, QStringLiteral("docking.moveDrag(docking.slotOfPanel('library'), docking.slotOfPanel('program').mapToGlobal("
+                                   "docking.slotOfPanel('program').width / 2, docking.slotOfPanel('program').height / 2), 0)"));
+    evaluate(shell, QStringLiteral("docking.endDrag(docking.slotOfPanel('library'))"));
+    spin(50);
+    CHECK(groupId(shell, "library") == programId);
+    CHECK(activeGroup(shell) == programId);
+    evaluate(shell, QStringLiteral("docking.reset()"));
+    spin(50);
+
+    // The active group goes with its group (group ids come back).
+    CHECK(activeGroup(shell).isEmpty()); // a reset lays the workspace out again
+    click(shell, groupOf(shell, "source"), QPointF(40, 120));
+    CHECK(activeGroup(shell) == groupId(shell, "source"));
+    evaluate(shell, QStringLiteral("docking.closePanel('source')"));
+    spin(50);
+    CHECK(activeGroup(shell).isEmpty());
+
+    // Without an active group the Window menu opens a panel where panels like it are: Scopes with the browser panels.
+    evaluate(shell, QStringLiteral("window.openPanelFromWindowMenu('scopes')"));
+    spin(100);
+    CHECK(groupId(shell, "scopes") == groupId(shell, "library"));
+    CHECK(activeGroup(shell) == groupId(shell, "library"));
+
+    // Another workspace starts with none.
+    evaluate(shell, QStringLiteral("window.openPreset('audio')"));
+    spin(100);
+    CHECK(activeGroup(shell).isEmpty());
+
+    const QStringList messages = takeMessages();
+    INFO(join(messages));
+    CHECK(messages.isEmpty());
+}
+
+TEST_CASE("Docking: Maximize Frame gives one group the whole work area and restores the layout", "[app][docking][qml]") {
+    resetSettings();
+    clearMessages();
+    Shell shell;
+    REQUIRE(shell.window != nullptr);
+    shell.theme->setProperty("reduceMotion", true);
+    spin(50);
+    const double workWidth = evaluate(shell, QStringLiteral("workArea.width")).toDouble();
+    const double workHeight = evaluate(shell, QStringLiteral("workArea.height")).toDouble();
+    QQuickItem* timeline = groupOf(shell, "timeline");
+    QQuickItem* library = groupOf(shell, "library");
+    QQuickItem* program = groupOf(shell, "program");
+    REQUIRE(timeline != nullptr);
+    REQUIRE(library != nullptr);
+    REQUIRE(program != nullptr);
+    const QString timelineId = groupId(shell, "timeline");
+    const QString programId = groupId(shell, "program");
+    const QString layout = groupsText(shell);
+    QQuickItem* toast = shell.item("toast");
+    REQUIRE(toast != nullptr);
+    const auto fills = [&](QQuickItem* slot) {
+        return slot->isVisible() && std::abs(slot->width() - workWidth) <= 1.0 && std::abs(slot->height() - workHeight) <= 1.0;
+    };
+
+    // The keys: Shift+` (window.maximizeFrame); ` alone is a window shortcut (the group under the pointer).
+    auto* keymap = shell.engine.singletonInstance<KeymapDispatcher*>("Wabcut", "KeymapDispatcher");
+    REQUIRE(keymap != nullptr);
+    CHECK(keymap->shortcutText(QStringLiteral("window.maximizeFrame")).contains(QStringLiteral("`")));
+
+    // No group to maximize (none clicked, no focus in one): the toast says how to pick one, and nothing changes.
+    evaluate(shell, QStringLiteral("window.toggleMaximizeFrame('')"));
+    spin(50);
+    CHECK(maximizedGroup(shell).isEmpty());
+    CHECK(toast->property("shown").toBool());
+    CHECK(toast->property("text").toString().contains(QStringLiteral("Click a panel")));
+
+    // A click in the timeline, then Shift+`: the timeline takes the whole work area, the other groups hide.
+    click(shell, timeline, QPointF(timeline->width() / 2, timeline->height() / 2));
+    REQUIRE(activeGroup(shell) == timelineId);
+    REQUIRE(QMetaObject::invokeMethod(shell.window.get(), "runCommand", Q_ARG(QVariant, QVariant(QStringLiteral("window.maximizeFrame")))));
+    spin(50);
+    CHECK(maximizedGroup(shell) == timelineId);
+    CHECK(fills(timeline));
+    CHECK_FALSE(library->isVisible());
+    CHECK_FALSE(program->isVisible());
+    CHECK_FALSE(shell.item("libraryPanel")->isVisible());
+    CHECK(evaluate(shell, QStringLiteral("workArea.dockLayout.gutters.length")).toInt() == 0);
+    REQUIRE(shell.grab().save(outputDir() + QStringLiteral("/docking-maximized.png")));
+    // Again: the layout comes back as it was.
+    REQUIRE(QMetaObject::invokeMethod(shell.window.get(), "runCommand", Q_ARG(QVariant, QVariant(QStringLiteral("window.maximizeFrame")))));
+    spin(50);
+    CHECK(maximizedGroup(shell).isEmpty());
+    CHECK(library->isVisible());
+    CHECK(program->isVisible());
+    CHECK(scenePos(timeline).y() > scenePos(program).y());
+    CHECK(groupsText(shell) == layout);
+
+    // ` (a window shortcut: a hidden test window never gets it from the keyboard, so it is activated here) with the
+    // pointer over the Program Monitor: that group, not the active timeline; ` again restores.
+    QObject* backtick = shell.object("maximizeFrameShortcut");
+    REQUIRE(backtick != nullptr);
+    CHECK(backtick->property("sequence").toString() == QStringLiteral("`"));
+    hoverAt(shell, program, QPointF(program->width() / 2, program->height() / 2));
+    CHECK(evaluate(shell, QStringLiteral("docking.groupUnderPointer()")).toString() == programId);
+    REQUIRE(QMetaObject::invokeMethod(backtick, "activated"));
+    spin(50);
+    CHECK(maximizedGroup(shell) == programId);
+    CHECK(fills(program));
+    CHECK_FALSE(timeline->isVisible());
+    REQUIRE(QMetaObject::invokeMethod(backtick, "activated"));
+    spin(50);
+    CHECK(maximizedGroup(shell).isEmpty());
+    CHECK(timeline->isVisible());
+
+    // A double-click on a lone panel's tab maximizes its group; again restores.
+    QQuickItem* programTab = findUnder(program, QStringLiteral("panelTabArea"));
+    REQUIRE(programTab != nullptr);
+    doubleClick(shell, programTab, QPointF(programTab->width() / 2, programTab->height() / 2));
+    CHECK(maximizedGroup(shell) == programId);
+    doubleClick(shell, programTab, QPointF(programTab->width() / 2, programTab->height() / 2));
+    CHECK(maximizedGroup(shell).isEmpty());
+
+    // Maximized, the focus key of another group's panel restores the layout (the panel would stay hidden), and so
+    // does a new group or another workspace.
+    evaluate(shell, QStringLiteral("docking.toggleMaximize(docking.groupOfPanel('program').group)"));
+    spin(30);
+    REQUIRE(maximizedGroup(shell) == programId);
+    REQUIRE(QMetaObject::invokeMethod(shell.window.get(), "showBrowserPanel", Q_ARG(QVariant, QVariant(QStringLiteral("markers")))));
+    spin(50);
+    CHECK(maximizedGroup(shell).isEmpty());
+    CHECK(groupOf(shell, "markers") == library);
+    CHECK(library->isVisible());
+    evaluate(shell, QStringLiteral("docking.toggleMaximize(docking.groupOfPanel('program').group)"));
+    spin(30);
+    evaluate(shell, QStringLiteral("docking.detach('timeline')")); // a lone panel's group stays: nothing new
+    CHECK(maximizedGroup(shell) == programId);
+    evaluate(shell, QStringLiteral("docking.joinPanel('effects', docking.groupOfPanel('program').group)"));
+    evaluate(shell, QStringLiteral("docking.detach('effects')")); // a new group beside it
+    spin(30);
+    CHECK(maximizedGroup(shell).isEmpty());
+    evaluate(shell, QStringLiteral("docking.toggleMaximize(docking.groupOfPanel('program').group)"));
+    REQUIRE(maximizedGroup(shell) == programId);
+    evaluate(shell, QStringLiteral("window.openPreset('audio')"));
+    spin(50);
+    CHECK(maximizedGroup(shell).isEmpty());
+
+    const QStringList messages = takeMessages();
+    INFO(join(messages));
+    CHECK(messages.isEmpty());
+}
+
+TEST_CASE("Docking: the tab menu closes and undocks and maximizes and a lone panel's tab drags like a grouped one",
+          "[app][docking][qml]") {
+    resetSettings();
+    clearMessages();
+    Shell shell;
+    REQUIRE(shell.window != nullptr);
+    shell.theme->setProperty("reduceMotion", true);
+    // Off every screen: the windows the menu pops panels out into open there (nothing on the desktop).
+    shell.window->setPosition(offScreen());
+    spin(50);
+
+    // Effect Controls joins the Library's group: two tabs. The Library tab's right-click opens its menu.
+    evaluate(shell, QStringLiteral("docking.joinPanel('effectControls', docking.groupOfPanel('library').group)"));
+    spin(50);
+    const QString libraryId = groupId(shell, "library");
+    QQuickItem* libraryTab = findItem(shell, QStringLiteral("dockTab_library"));
+    REQUIRE(libraryTab != nullptr);
+    rightClick(shell, libraryTab, QPointF(grid(4), libraryTab->height() / 2));
+    QObject* menu = tabMenuOf(shell, "library");
+    REQUIRE(menu != nullptr);
+    CHECK(menu->property("visible").toBool());
+    CHECK(menu->property("panel").toString() == QStringLiteral("library"));
+    CHECK(activeGroup(shell) == libraryId);
+    CHECK(evaluate(shell, QStringLiteral("docking.slotOfPanel('library').tabMenu.several")).toBool());
+    for (const char* name : {"dockTabMenuClose", "dockTabMenuCloseOthers", "dockTabMenuUndock", "dockTabMenuUndockGroup",
+                             "dockTabMenuMaximize"}) {
+        INFO(name);
+        QObject* item = menu->findChild<QObject*>(QLatin1String(name));
+        REQUIRE(item != nullptr);
+        CHECK(item->property("enabled").toBool());
+        CHECK_FALSE(item->property("text").toString().isEmpty());
+    }
+    CHECK(menu->findChild<QObject*>(QStringLiteral("dockTabMenuMaximize"))->property("text").toString() ==
+          QStringLiteral("Maximize Frame"));
+    REQUIRE(shell.grab().save(outputDir() + QStringLiteral("/docking-tab-menu.png")));
+
+    // Close Other Panels in Group: Effect Controls goes, the Library stays (alone, no tabs).
+    chooseInMenu(menu, "dockTabMenuCloseOthers");
+    CHECK_FALSE(evaluate(shell, QStringLiteral("docking.isOpen('effectControls')")).toBool());
+    CHECK(evaluate(shell, QStringLiteral("docking.groupOfPanel('library').panels.length")).toInt() == 1);
+
+    // A lone panel's tab has the menu too: Maximize Frame, then Restore Frame from it again.
+    QQuickItem* libraryGroup = groupOf(shell, "library");
+    QQuickItem* loneTab = findUnder(libraryGroup, QStringLiteral("panelTabArea"));
+    REQUIRE(loneTab != nullptr);
+    rightClick(shell, loneTab, QPointF(grid(4), loneTab->height() / 2));
+    menu = tabMenuOf(shell, "library");
+    REQUIRE(menu != nullptr);
+    REQUIRE(menu->property("visible").toBool());
+    CHECK_FALSE(menu->findChild<QObject*>(QStringLiteral("dockTabMenuCloseOthers"))->property("enabled").toBool());
+    chooseInMenu(menu, "dockTabMenuMaximize");
+    CHECK(maximizedGroup(shell) == libraryId);
+    rightClick(shell, loneTab, QPointF(grid(4), loneTab->height() / 2));
+    REQUIRE(menu->property("visible").toBool());
+    CHECK(menu->findChild<QObject*>(QStringLiteral("dockTabMenuMaximize"))->property("text").toString() ==
+          QStringLiteral("Restore Frame"));
+    chooseInMenu(menu, "dockTabMenuMaximize");
+    CHECK(maximizedGroup(shell).isEmpty());
+
+    // Undock Panel Group: the group in a window of its own; its menu there docks it back.
+    rightClick(shell, loneTab, QPointF(grid(4), loneTab->height() / 2));
+    chooseInMenu(menu, "dockTabMenuUndockGroup");
+    CHECK(libraryGroup->property("floating").toBool());
+    evaluate(shell, QStringLiteral("docking.slotOfPanel('library').openTabMenu('library', docking.slotOfPanel('library').holder, 20, 20)"));
+    REQUIRE(waitFor([&] { return menu->property("visible").toBool(); }));
+    CHECK(menu->findChild<QObject*>(QStringLiteral("dockTabMenuUndockGroup"))->property("text").toString() ==
+          QStringLiteral("Dock Panel Group"));
+    CHECK_FALSE(menu->findChild<QObject*>(QStringLiteral("dockTabMenuMaximize"))->property("enabled").toBool());
+    chooseInMenu(menu, "dockTabMenuUndockGroup");
+    CHECK_FALSE(libraryGroup->property("floating").toBool());
+
+    // Undock Panel in a group of two: that panel alone in a window of its own; the other one stays docked.
+    evaluate(shell, QStringLiteral("docking.joinPanel('markers', docking.groupOfPanel('library').group)"));
+    spin(50);
+    QQuickItem* markersTab = findItem(shell, QStringLiteral("dockTab_markers"));
+    REQUIRE(markersTab != nullptr);
+    rightClick(shell, markersTab, QPointF(grid(4), markersTab->height() / 2));
+    menu = tabMenuOf(shell, "library");
+    REQUIRE(menu != nullptr);
+    chooseInMenu(menu, "dockTabMenuUndock");
+    QQuickItem* markersGroup = groupOf(shell, "markers");
+    REQUIRE(markersGroup != nullptr);
+    CHECK(markersGroup != groupOf(shell, "library"));
+    CHECK(markersGroup->property("floating").toBool());
+    CHECK_FALSE(groupOf(shell, "library")->property("floating").toBool());
+    CHECK(activeGroup(shell) == groupId(shell, "markers"));
+
+    // Close Panel (the window's lone tab): the panel closes and its window goes.
+    evaluate(shell, QStringLiteral("docking.slotOfPanel('markers').openTabMenu('markers', docking.slotOfPanel('markers').holder, 20, 20)"));
+    menu = tabMenuOf(shell, "markers");
+    REQUIRE(menu != nullptr);
+    REQUIRE(waitFor([&] { return menu->property("visible").toBool(); }));
+    chooseInMenu(menu, "dockTabMenuClose");
+    CHECK_FALSE(evaluate(shell, QStringLiteral("docking.isOpen('markers')")).toBool());
+
+    // A lone panel's tab drags like a grouped one: the Program Monitor's, released near the Source Monitor's left edge.
+    QQuickItem* source = groupOf(shell, "source");
+    QQuickItem* program = groupOf(shell, "program");
+    QQuickItem* programTab = findUnder(program, QStringLiteral("panelTabArea"));
+    REQUIRE(programTab != nullptr);
+    const QPointF from = programTab->mapToScene(QPointF(grid(4), programTab->height() / 2));
+    const QPointF to = source->mapToScene(QPointF(source->width() * 0.08, source->height() / 2));
+    mouseAt(shell.window.get(), QEvent::MouseButtonPress, from, Qt::LeftButton, Qt::LeftButton);
+    for (int i = 1; i <= 12; ++i) {
+        mouseAt(shell.window.get(), QEvent::MouseMove, from + (to - from) * (i / 12.0), Qt::NoButton, Qt::LeftButton);
+        spin(10);
+    }
+    CHECK(evaluate(shell, QStringLiteral("docking.draggedPanel")).toString() == QStringLiteral("program"));
+    CHECK(evaluate(shell, QStringLiteral("docking.drop.kind + '/' + (docking.drop.side ?? '')")).toString() ==
+          QStringLiteral("beside/left"));
+    mouseAt(shell.window.get(), QEvent::MouseButtonRelease, to, Qt::LeftButton, Qt::NoButton);
+    spin(50);
+    CHECK(scenePos(groupOf(shell, "program")).x() < scenePos(source).x());
+    CHECK(activeGroup(shell) == groupId(shell, "program"));
+
+    const QStringList messages = takeMessages();
+    INFO(join(messages));
+    CHECK(messages.isEmpty());
+}
+
+TEST_CASE("Docking: Ctrl+W closes the active panel and Shift+5 focuses Effect Controls and Reset to Saved Layout undoes",
+          "[app][docking][qml]") {
+    resetSettings();
+    clearMessages();
+    Shell shell;
+    REQUIRE(shell.window != nullptr);
+    shell.theme->setProperty("reduceMotion", true);
+    spin(50);
+    auto* keymap = shell.engine.singletonInstance<KeymapDispatcher*>("Wabcut", "KeymapDispatcher");
+    REQUIRE(keymap != nullptr);
+    CHECK(keymap->shortcutText(QStringLiteral("file.close")) == QStringLiteral("Ctrl+W"));
+    CHECK(keymap->shortcutText(QStringLiteral("window.effectControls")) == QStringLiteral("Shift+5"));
+    CHECK_FALSE(keymap->shortcutText(QStringLiteral("window.resetToSavedLayout")).isEmpty()); // Alt+Shift+0
+    const auto run = [&](const char* id) {
+        REQUIRE(QMetaObject::invokeMethod(shell.window.get(), "runCommand", Q_ARG(QVariant, QVariant(QString::fromLatin1(id)))));
+        spin(80);
+    };
+
+    // Ctrl+W: the panel the active group shows closes.
+    QQuickItem* library = groupOf(shell, "library");
+    click(shell, library, QPointF(library->width() / 2, library->height() / 2));
+    run("file.close");
+    CHECK_FALSE(evaluate(shell, QStringLiteral("docking.isOpen('library')")).toBool());
+    CHECK(activeGroup(shell).isEmpty()); // its group went with it
+
+    // Shift+5: Effect Controls shown and focused; its group is the active one.
+    evaluate(shell, QStringLiteral("docking.joinPanel('markers', docking.groupOfPanel('effectControls').group)"));
+    spin(50);
+    REQUIRE(evaluate(shell, QStringLiteral("docking.shownPanel(docking.groupOfPanel('effectControls').group)")).toString() ==
+            QStringLiteral("markers"));
+    run("window.effectControls");
+    const QString controlsId = groupId(shell, "effectControls");
+    CHECK(shownPanel(shell, "effectControls") == QStringLiteral("effectControls"));
+    CHECK(activeGroup(shell) == controlsId);
+    CHECK(focusGroup(shell) == controlsId);
+    CHECK(evaluate(shell, QStringLiteral("KeymapDispatcher.scopeAt(window.activeFocusItem)")).toString() ==
+          QStringLiteral("effectControls"));
+
+    // Window > Workspaces > Reset to Saved Layout (Alt+Shift+0): the preset's layout; Undo on the toast puts this one
+    // back.
+    const QString changed = groupsText(shell);
+    REQUIRE(changed == QStringLiteral("source program effectControls+markers timeline"));
+    run("window.resetToSavedLayout");
+    CHECK(groupsText(shell) == QStringLiteral("library source program effectControls timeline"));
+    QQuickItem* toast = shell.item("toast");
+    REQUIRE(toast != nullptr);
+    CHECK(toast->property("shown").toBool());
+    CHECK(toast->property("actionText").toString() == QStringLiteral("Undo"));
+    REQUIRE(QMetaObject::invokeMethod(toast, "runAction"));
+    spin(80);
+    CHECK(groupsText(shell) == changed);
+    CHECK_FALSE(toast->property("shown").toBool());
+
+    const QStringList messages = takeMessages();
+    INFO(join(messages));
+    CHECK(messages.isEmpty());
+}
+
+TEST_CASE("Docking: two monitors sharing a narrow place take presses and drops and the Window menu only for the one shown",
+          "[app][docking][qml]") {
+    resetSettings();
+    clearMessages();
+    Shell shell;
+    REQUIRE(shell.window != nullptr);
+    shell.theme->setProperty("reduceMotion", true);
+    // Narrow: the Edit workspace's Source and Program Monitors share one place (one shows, with a switch).
+    shell.resize(shell.theme->property("windowMinWidth").toInt(), 760);
+    spin(80);
+    QQuickItem* area = shell.item("monitorArea");
+    REQUIRE(area != nullptr);
+    REQUIRE(area->property("single").toBool());
+    QQuickItem* source = groupOf(shell, "source");
+    QQuickItem* program = groupOf(shell, "program");
+    QQuickItem* programPanel = shell.item("monitorPanel");
+    REQUIRE(source != nullptr);
+    REQUIRE(program != nullptr);
+    REQUIRE(programPanel != nullptr);
+    const QString sourceId = groupId(shell, "source");
+    const QString programId = groupId(shell, "program");
+    const QPointF middle(program->width() / 2, program->height() / 2);
+
+    // The Program Monitor shows; the Source Monitor's group hides with its monitor (it lay over or under the shown
+    // one, at the same place, and took its presses, hover and drops).
+    CHECK(evaluate(shell, QStringLiteral("docking.sharedGroups.length")).toInt() == 2);
+    CHECK(area->property("current").toString() == QStringLiteral("program"));
+    CHECK(evaluate(shell, QStringLiteral("monitorArea.hiddenGroup")).toString() == sourceId);
+    CHECK(program->isVisible());
+    CHECK_FALSE(source->isVisible());
+
+    // The pointer over it: the group under the pointer is the Program Monitor's (` maximizes that one).
+    hoverAt(shell, program, middle);
+    CHECK(evaluate(shell, QStringLiteral("docking.groupUnderPointer()")).toString() == programId);
+    // A panel dragged over its middle: a tab there would split the two monitors into narrow columns, so nothing happens
+    // there and the overlay says why.
+    evaluate(shell, QStringLiteral("docking.beginDrag(docking.slotOfPanel('library'), '')"));
+    evaluate(shell, QStringLiteral("docking.moveDrag(docking.slotOfPanel('library'), docking.slotOfPanel('program').mapToGlobal("
+                                   "docking.slotOfPanel('program').width / 2, docking.slotOfPanel('program').height / 2), 0)"));
+    CHECK(evaluate(shell, QStringLiteral("docking.drop.kind")).toString() == QStringLiteral("none"));
+    CHECK(evaluate(shell, QStringLiteral("docking.drop.shared === true")).toBool());
+    CHECK(evaluate(shell, QStringLiteral("docking.dropText")).toString().contains(QStringLiteral("share")));
+    // Over its tabs: the same.
+    evaluate(shell, QStringLiteral("docking.moveDrag(docking.slotOfPanel('library'), docking.slotOfPanel('program').mapToGlobal("
+                                   "docking.slotOfPanel('program').width / 2, docking.edgeBand + 8), 0)"));
+    INFO(evaluate(shell, QStringLiteral("JSON.stringify({ kind: docking.drop.kind, point: docking.dragPoint, "
+                                        "top: docking.slotOfPanel('program').mapToItem(docking.area, 0, 0) })")).toString().toStdString());
+    CHECK(evaluate(shell, QStringLiteral("docking.drop.kind")).toString() == QStringLiteral("none"));
+    // Near its right side: beside the pair's right-hand monitor, so the two keep sharing their place.
+    evaluate(shell, QStringLiteral("docking.moveDrag(docking.slotOfPanel('library'), docking.slotOfPanel('program').mapToGlobal("
+                                   "docking.slotOfPanel('program').width * 0.95, docking.slotOfPanel('program').height / 2), 0)"));
+    CHECK(evaluate(shell, QStringLiteral("docking.drop.kind")).toString() == QStringLiteral("beside"));
+    CHECK(evaluate(shell, QStringLiteral("docking.drop.side")).toString() == QStringLiteral("right"));
+    CHECK(evaluate(shell, QStringLiteral("docking.drop.target.dockKey")).toString()
+          == evaluate(shell, QStringLiteral("docking.sharedGroups[1]")).toString());
+    // Near its left side: beside the pair's left-hand monitor.
+    evaluate(shell, QStringLiteral("docking.moveDrag(docking.slotOfPanel('library'), docking.slotOfPanel('program').mapToGlobal("
+                                   "docking.slotOfPanel('program').width * 0.05, docking.slotOfPanel('program').height / 2), 0)"));
+    CHECK(evaluate(shell, QStringLiteral("docking.drop.kind")).toString() == QStringLiteral("beside"));
+    CHECK(evaluate(shell, QStringLiteral("docking.drop.side")).toString() == QStringLiteral("left"));
+    CHECK(evaluate(shell, QStringLiteral("docking.drop.target.dockKey")).toString()
+          == evaluate(shell, QStringLiteral("docking.sharedGroups[0]")).toString());
+    // Released over the Library itself: nothing moves.
+    evaluate(shell, QStringLiteral("docking.moveDrag(docking.slotOfPanel('library'), docking.slotOfPanel('library').mapToGlobal("
+                                   "docking.slotOfPanel('library').width / 2, docking.slotOfPanel('library').height / 2), 0)"));
+    evaluate(shell, QStringLiteral("docking.endDrag(docking.slotOfPanel('library'))"));
+    spin(30);
+    REQUIRE(area->property("single").toBool());
+
+    // A press on it makes its group the active one (the outline on the monitor shown).
+    click(shell, program, middle);
+    CHECK(activeGroup(shell) == programId);
+    REQUIRE(shell.grab().save(outputDir() + QStringLiteral("/docking-shared-monitors.png")));
+
+    // The switch in its header: the Source Monitor shows, its group is the active one now, and the keyboard focus that
+    // was in the Program Monitor goes along (its keys would act on the monitor that hides).
+    evaluate(shell, QStringLiteral("monitor.focusMonitor()"));
+    spin(30);
+    REQUIRE(focusGroup(shell) == programId);
+    QQuickItem* programSwitch = findUnder(programPanel, QStringLiteral("monitorSwitch"));
+    REQUIRE(programSwitch != nullptr);
+    REQUIRE(QMetaObject::invokeMethod(programSwitch, "activated", Q_ARG(int, 0)));
+    spin(50);
+    CHECK(area->property("current").toString() == QStringLiteral("source"));
+    CHECK(source->isVisible());
+    CHECK_FALSE(program->isVisible());
+    CHECK(activeGroup(shell) == sourceId);
+    CHECK(focusGroup(shell) == sourceId);
+    click(shell, source, middle);
+    CHECK(activeGroup(shell) == sourceId);
+    hoverAt(shell, source, middle);
+    CHECK(evaluate(shell, QStringLiteral("docking.groupUnderPointer()")).toString() == sourceId);
+    // ` over it maximizes the monitor shown; again restores, and the monitors share their place again.
+    QObject* backtick = shell.object("maximizeFrameShortcut");
+    REQUIRE(backtick != nullptr);
+    REQUIRE(QMetaObject::invokeMethod(backtick, "activated"));
+    spin(50);
+    CHECK(maximizedGroup(shell) == sourceId);
+    REQUIRE(QMetaObject::invokeMethod(backtick, "activated"));
+    spin(50);
+    CHECK(maximizedGroup(shell).isEmpty());
+    REQUIRE(area->property("single").toBool());
+
+    // A switch that does not come from the user (a clip loaded into the Source Monitor shows it; here back to the
+    // Program Monitor): the active group does not stay on the monitor that hides.
+    REQUIRE(focusGroup(shell) == sourceId);
+    evaluate(shell, QStringLiteral("monitorArea.current = 'program'"));
+    spin(30);
+    CHECK(activeGroup(shell) == programId);
+    CHECK(focusGroup(shell) == programId);
+
+    // Window > Markers while that shared monitor is the active group: not a tab of it (that would split the monitors
+    // into two narrow columns) but where panels like it are; the monitors keep sharing their place.
+    evaluate(shell, QStringLiteral("window.openPanelFromWindowMenu('markers')"));
+    spin(100);
+    CHECK(groupId(shell, "markers") != programId);
+    CHECK(groupId(shell, "markers") == groupId(shell, "library"));
+    CHECK(evaluate(shell, QStringLiteral("docking.groupOfPanel('program').panels.length")).toInt() == 1);
+    CHECK(area->property("single").toBool());
+    CHECK(activeGroup(shell) == groupId(shell, "library"));
+
+    // Wide again: each monitor has its place, nothing is hidden, and nothing is shared.
+    shell.resize(kShotWidth, kShotHeight);
+    spin(80);
+    CHECK(area->property("dual").toBool());
+    CHECK(source->isVisible());
+    CHECK(program->isVisible());
+    CHECK(evaluate(shell, QStringLiteral("monitorArea.hiddenGroup")).toString().isEmpty());
+    CHECK(evaluate(shell, QStringLiteral("docking.sharedGroups.length")).toInt() == 0);
+
+    const QStringList messages = takeMessages();
+    INFO(join(messages));
+    CHECK(messages.isEmpty());
+}
+
+TEST_CASE("Docking: every way to maximize moves the focus into the frame and a group docked back from its window shows",
+          "[app][docking][qml]") {
+    resetSettings();
+    clearMessages();
+    Shell shell;
+    REQUIRE(shell.window != nullptr);
+    shell.theme->setProperty("reduceMotion", true);
+    // Off every screen: the windows panels pop out into open there (nothing on the desktop).
+    shell.window->setPosition(offScreen());
+    spin(50);
+    QQuickItem* timeline = groupOf(shell, "timeline");
+    QQuickItem* program = groupOf(shell, "program");
+    QQuickItem* library = groupOf(shell, "library");
+    REQUIRE(timeline != nullptr);
+    REQUIRE(program != nullptr);
+    REQUIRE(library != nullptr);
+    const QString timelineId = groupId(shell, "timeline");
+    const QString programId = groupId(shell, "program");
+    const QString libraryId = groupId(shell, "library");
+    const auto run = [&](const char* id) {
+        REQUIRE(QMetaObject::invokeMethod(shell.window.get(), "runCommand", Q_ARG(QVariant, QVariant(QString::fromLatin1(id)))));
+        spin(80);
+    };
+    const auto focusTimeline = [&] {
+        evaluate(shell, QStringLiteral("timeline.focusLanes()"));
+        spin(50);
+        REQUIRE(focusGroup(shell) == timelineId);
+    };
+
+    // The keyboard focus in the timeline's lanes, a double-click on the Program Monitor's tab maximizes it: the focus
+    // goes along (keys must not edit the timeline that hides).
+    focusTimeline();
+    QQuickItem* programTab = findUnder(program, QStringLiteral("panelTabArea"));
+    REQUIRE(programTab != nullptr);
+    doubleClick(shell, programTab, QPointF(programTab->width() / 2, programTab->height() / 2));
+    spin(50);
+    REQUIRE(maximizedGroup(shell) == programId);
+    CHECK_FALSE(timeline->isVisible());
+    CHECK(focusGroup(shell) == programId);
+    doubleClick(shell, programTab, QPointF(programTab->width() / 2, programTab->height() / 2));
+    spin(50);
+    REQUIRE(maximizedGroup(shell).isEmpty());
+
+    // The tab menu's Maximize Frame too (the Library's lone tab); its Restore Frame gives the layout back.
+    focusTimeline();
+    QQuickItem* libraryTab = findUnder(library, QStringLiteral("panelTabArea"));
+    REQUIRE(libraryTab != nullptr);
+    rightClick(shell, libraryTab, QPointF(grid(4), libraryTab->height() / 2));
+    QObject* menu = tabMenuOf(shell, "library");
+    REQUIRE(menu != nullptr);
+    chooseInMenu(menu, "dockTabMenuMaximize");
+    REQUIRE(maximizedGroup(shell) == libraryId);
+    CHECK(focusGroup(shell) == libraryId);
+    rightClick(shell, libraryTab, QPointF(grid(4), libraryTab->height() / 2));
+    chooseInMenu(menu, "dockTabMenuMaximize");
+    REQUIRE(maximizedGroup(shell).isEmpty());
+
+    // A floating group is the active one (a press in its window): Shift+` (Window > Maximize Frame) still restores a
+    // maximized frame - and with none maximized it leaves the floating group in its window.
+    evaluate(shell, QStringLiteral("docking.popOut(docking.slotOfPanel('library'))"));
+    spin(50);
+    REQUIRE(library->property("floating").toBool());
+    click(shell, timeline, QPointF(timeline->width() / 2, timeline->height() / 2));
+    run("window.maximizeFrame");
+    REQUIRE(maximizedGroup(shell) == timelineId);
+    evaluate(shell, QStringLiteral("docking.setActiveGroup(docking.groupOfPanel('library').group)"));
+    run("window.maximizeFrame");
+    CHECK(maximizedGroup(shell).isEmpty());
+    CHECK(program->isVisible());
+    CHECK(timeline->isVisible());
+    run("window.maximizeFrame");
+    CHECK(maximizedGroup(shell).isEmpty());
+    CHECK(library->property("floating").toBool());
+
+    // A floating group docked back while a frame is maximized shows again (the layout comes back): its window closed
+    // (the window's close button, Dock Panel Group) ...
+    const auto maximizeTimeline = [&] {
+        click(shell, timeline, QPointF(timeline->width() / 2, timeline->height() / 2));
+        run("window.maximizeFrame");
+        REQUIRE(maximizedGroup(shell) == timelineId);
+    };
+    const auto popOutLibrary = [&] {
+        evaluate(shell, QStringLiteral("docking.popOut(docking.slotOfPanel('library'))"));
+        spin(50);
+        REQUIRE(library->property("floating").toBool());
+    };
+    maximizeTimeline();
+    auto* floating = qobject_cast<QQuickWindow*>(library->property("floatWindow").value<QObject*>());
+    REQUIRE(floating != nullptr);
+    QCloseEvent close;
+    QCoreApplication::sendEvent(floating, &close);
+    spin(50);
+    CHECK_FALSE(library->property("floating").toBool());
+    CHECK(maximizedGroup(shell).isEmpty());
+    CHECK(library->isVisible());
+    popOutLibrary();
+    maximizeTimeline();
+    evaluate(shell, QStringLiteral("docking.tabMenuAction('undockGroup', docking.groupOfPanel('library').group, 'library')"));
+    spin(50);
+    CHECK_FALSE(library->property("floating").toBool());
+    CHECK(maximizedGroup(shell).isEmpty());
+    CHECK(library->isVisible());
+    // ... its grip dropped beside the maximized timeline (it becomes the active group: a visible one) ...
+    popOutLibrary();
+    maximizeTimeline();
+    evaluate(shell, QStringLiteral("docking.beginDrag(docking.slotOfPanel('library'), '')"));
+    evaluate(shell, QStringLiteral("docking.moveDrag(docking.slotOfPanel('library'), docking.slotOfPanel('timeline').mapToGlobal("
+                                   "docking.slotOfPanel('timeline').width * 0.05, docking.slotOfPanel('timeline').height / 2), 0)"));
+    CHECK(evaluate(shell, QStringLiteral("docking.drop.kind + '/' + docking.drop.side")).toString() ==
+          QStringLiteral("beside/left"));
+    evaluate(shell, QStringLiteral("docking.endDrag(docking.slotOfPanel('library'))"));
+    spin(50);
+    CHECK_FALSE(library->property("floating").toBool());
+    CHECK(maximizedGroup(shell).isEmpty());
+    CHECK(library->isVisible());
+    CHECK(activeGroup(shell) == libraryId);
+    CHECK(scenePos(library).x() < scenePos(timeline).x());
+    // ... or along an edge of the work area.
+    popOutLibrary();
+    maximizeTimeline();
+    evaluate(shell, QStringLiteral("docking.putAtEdge(docking.groupOfPanel('library').group, '', 'right')"));
+    spin(50);
+    CHECK_FALSE(library->property("floating").toBool());
+    CHECK(maximizedGroup(shell).isEmpty());
+    CHECK(library->isVisible());
 
     const QStringList messages = takeMessages();
     INFO(join(messages));

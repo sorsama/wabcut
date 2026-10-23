@@ -3,8 +3,9 @@ import QtQuick
 import QtQuick.Controls.Basic
 
 // Push button (design language v3): a pill. `variant`: "primary" (the accent fill with black text, ExtraBold),
-// "secondary" (a raised pill, bold) or "ghost" (transparent with a hairline outline). Optional `iconName` (an Icon
-// name). Press = scale 0.98 over 90 ms (snap-out), no overshoot.
+// "danger" (the confirm button of a destructive question - Delete, Remove: Theme.danger's fill with black or white text,
+// whichever reads better on it, ExtraBold), "secondary" (a raised pill, bold) or "ghost" (transparent with a hairline
+// outline). Optional `iconName` (an Icon name). Press = scale 0.98 over 90 ms (snap-out), no overshoot.
 Button {
     id: control
 
@@ -20,10 +21,20 @@ Button {
 
     readonly property bool iconOnly: iconName !== "" && text === ""
     readonly property real pillRadius: height / 2
+    readonly property bool filled: variant === "primary" || variant === "danger"
+    // Text and glyphs on the danger fill: black on the built-in red (5.7:1), white on a dark custom one.
+    readonly property color dangerInk: luminance(Theme.danger) > 0.179 ? Theme.clipInk : Theme.scrimText
     readonly property color foreground: !enabled ? Theme.textDisabled
                                       : variant === "primary" ? Theme.accentOnFill
+                                      : variant === "danger" ? dangerInk
                                       : variant === "ghost" && !hovered ? Theme.textSecondary
                                       : Theme.textPrimary
+
+    /// WCAG relative luminance of `c` (0 black .. 1 white).
+    function luminance(c: color): real {
+        const lin = v => v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4)
+        return 0.2126 * lin(c.r) + 0.7152 * lin(c.g) + 0.0722 * lin(c.b)
+    }
 
     implicitHeight: compact ? Theme.controlHeightSmall : Theme.controlHeight
     implicitWidth: Math.max(implicitHeight, implicitContentWidth + leftPadding + rightPadding)
@@ -36,7 +47,7 @@ Button {
 
     font.family: Theme.fontSans
     font.pixelSize: Theme.textMd
-    font.weight: variant === "primary" ? Theme.weightTitle : Theme.weightLabel
+    font.weight: filled ? Theme.weightTitle : Theme.weightLabel
 
     scale: control.down ? Theme.pressScale : 1.0
     Behavior on scale {
@@ -79,6 +90,8 @@ Button {
         opacity: control.enabled ? 1 : Theme.disabledOpacity
         color: control.variant === "primary"
                ? (control.down ? Theme.accentDeep : control.hovered ? Qt.lighter(Theme.accentFill, 1.08) : Theme.accentFill)
+               : control.variant === "danger"
+               ? (control.down ? Qt.darker(Theme.danger, 1.12) : control.hovered ? Qt.lighter(Theme.danger, 1.08) : Theme.danger)
                : control.variant === "secondary" ? (control.down ? Theme.well : control.hovered ? Theme.hover : Theme.raised)
                : (control.down ? Theme.raised : control.hovered ? Theme.hover : "transparent")
         border.width: control.variant === "ghost" ? Theme.hairline : 0

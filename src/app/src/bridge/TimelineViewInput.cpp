@@ -427,12 +427,19 @@ void TimelineView::mousePressEvent(QMouseEvent* event) {
         m_drag = Drag::None;
         if (hit.transition) {
             m_controller->selectTransitionById(hit.transition);
+            // 0.2 UX (stream T): the transition menu (Set Duration..., Alignment, Replace with Default, Clear).
+            emit transitionContextMenuRequested(transitionKey(hit.transition), m_pressPos.x(), m_pressPos.y());
             return;
         }
         if (hit.clip) {
             if (!m_controller->isSelected(hit.clip))
                 m_controller->selectClipById(hit.clip, ProjectController::Replace, followLinks(m_pressMods));
             emit contextMenuRequested(clipKey(hit.clip), m_pressPos.x(), m_pressPos.y());
+        } else if (hit.row >= 0) {
+            // 0.2 UX: a gap between clips is selected and offers Ripple Delete (Premiere).
+            const TrackId track = m_rows[static_cast<std::size_t>(hit.row)].track->id;
+            if (m_controller->selectGapAt(track, ticksAtX(m_pressPos.x())))
+                emit gapContextMenuRequested(trackKey(track), m_pressPos.x(), m_pressPos.y());
         }
         return;
     }
@@ -715,6 +722,11 @@ void TimelineView::mouseReleaseEvent(QMouseEvent* event) {
             ++m_marqueeRevision;
             emit marqueeChanged();
             update();
+        } else if (m_controller && m_tool == TimelineTool::Select
+                   && !(m_pressMods & (Qt::ShiftModifier | Qt::ControlModifier | Qt::MetaModifier))) {
+            // 0.2 UX (stream T): a click (no drag) in a gap between clips selects the gap (Delete closes it).
+            if (const int row = rowAt(m_pressPos.y()); row >= 0)
+                m_controller->selectGapAt(m_rows[static_cast<std::size_t>(row)].track->id, ticksAtX(m_pressPos.x()));
         }
         break;
     case Drag::Gesture:

@@ -8,6 +8,7 @@ import QtQuick
 // Pointer: press seeks, drag scrubs, the wheel steps frames, Ctrl/Alt+wheel zooms at the pointer, Shift+wheel pans
 // a zoomed bar; the zoom bar under it (shown while zoomed) drags the window, a double-click shows the whole sequence.
 // Keys (while focused): Left/Right a frame (Shift: five), Home/End, Up/Down the previous/next edit, +/- zoom, 0 all.
+// UX rework (stream T): over a marker, the hover pill shows its name, comment, time and length (SequenceTimeBar.markerAt).
 FocusScope {
     id: root
     objectName: "programTimeBar"
@@ -143,26 +144,71 @@ FocusScope {
         }
     }
 
-    // The timecode under the pointer.
+    // The timecode under the pointer; over a marker (within a few pixels), the marker: name, comment, time and length,
+    // on an opaque card like the tooltips (it is taller and reaches over the readouts above).
     Rectangle {
+        id: hoverPill
         objectName: "programTimeHover"
+        readonly property var marker: pointer.containsMouse && !pointer.pressed ? bar.markerAt(pointer.barX(pointer.mouseX))
+                                                                                : ({})
+        readonly property bool atMarker: marker.index !== undefined
         visible: pointer.containsMouse && !pointer.pressed
         readonly property real at: Math.max(0, Math.min(root.width - width, pointer.mouseX - width / 2))
         x: at
         y: track.y - height - Theme.space(1)
         z: 2
-        width: hoverText.implicitWidth + Theme.space(3)
-        height: hoverText.implicitHeight + Theme.space(1)
-        radius: height / 2
-        color: Theme.scrim
+        width: hoverColumn.implicitWidth + Theme.space(3)
+        height: hoverColumn.implicitHeight + Theme.space(1)
+        radius: atMarker ? Theme.radiusClip : height / 2
+        color: atMarker ? Theme.textPrimary : Theme.scrim
+        readonly property color ink: atMarker ? Theme.canvas : Theme.scrimText
 
-        Text {
-            id: hoverText
+        Column {
+            id: hoverColumn
             anchors.centerIn: parent
-            text: pointer.containsMouse ? bar.timecodeAt(pointer.barX(pointer.mouseX)) : ""
-            color: Theme.scrimText
-            font.family: Theme.fontMono
-            font.pixelSize: Theme.textXs
+            spacing: 0
+
+            Row {
+                objectName: "programTimeHoverMarker"
+                visible: hoverPill.atMarker
+                spacing: Theme.space(1)
+                Rectangle {
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: Theme.dotSize
+                    height: Theme.dotSize
+                    radius: width / 2
+                    color: Theme.markerColor(hoverPill.marker.colorIndex ?? 0)
+                }
+                Text {
+                    text: (hoverPill.marker.name ?? "") !== "" ? hoverPill.marker.name : qsTr("Marker")
+                    color: hoverPill.ink
+                    font.family: Theme.fontSans
+                    font.pixelSize: Theme.textSm
+                    font.weight: Font.DemiBold
+                }
+            }
+            Text {
+                visible: hoverPill.atMarker && (hoverPill.marker.comment ?? "") !== ""
+                width: Math.min(implicitWidth, Theme.space(70))
+                text: hoverPill.marker.comment ?? ""
+                wrapMode: Text.Wrap
+                maximumLineCount: 3
+                elide: Text.ElideRight
+                color: Qt.alpha(hoverPill.ink, 0.72)
+                font.family: Theme.fontSans
+                font.pixelSize: Theme.textXs
+            }
+            Text {
+                id: hoverText
+                text: !pointer.containsMouse ? ""
+                      : hoverPill.atMarker ? ((hoverPill.marker.durationText ?? "") !== ""
+                                              ? qsTr("%1 · %2 long").arg(hoverPill.marker.timecode).arg(hoverPill.marker.durationText)
+                                              : hoverPill.marker.timecode)
+                      : bar.timecodeAt(pointer.barX(pointer.mouseX))
+                color: hoverPill.ink
+                font.family: Theme.fontMono
+                font.pixelSize: Theme.textXs
+            }
         }
     }
 

@@ -217,10 +217,9 @@ TEST_CASE("Preferences > AI screenshots", "[ai][ui][screenshot]") {
         log.add(call);
         ai->platform().spend().record("anthropic", 3'420'000, wabcut::ai::todayUtc());
 
-        // Open the page the way a user does (0.1.3): the Settings window's AI page, as the rail opens it.
-        QObject* rail = shell.object("leftRail");
-        REQUIRE(rail != nullptr);
-        REQUIRE(QMetaObject::invokeMethod(rail, "openAiPreferences"));
+        // Open the page the way a user does (0.1.3): the Settings window's AI page (window.openAiPreferences: the
+        // transcript's "set up transcription"; UX rework: the window hosts Settings since the left rail went).
+        REQUIRE(QMetaObject::invokeMethod(shell.window.get(), "openAiPreferences"));
         QObject* settings = shell.object("settingsWindowLoader")->property("item").value<QObject*>();
         REQUIRE(settings != nullptr);
         QObject* page = nullptr;

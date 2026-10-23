@@ -20,8 +20,10 @@
 
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <mutex>
 #include <span>
+#include <utility>
 #include <vector>
 
 using namespace wabcut;
@@ -142,4 +144,76 @@ TEST_CASE("Render In to Out without marks renders the whole sequence", "[app][re
     REQUIRE_FALSE(renderer->ranges.empty());
     CHECK(renderer->ranges.front().start == Ticks{});
     CHECK(renderer->ranges.back().end() == f(10));
+}
+
+namespace {
+
+/// A preview renderer whose render() runs `during` first (to cancel the job) and can fail.
+class ScriptedPreviewRenderer final : public PreviewRenderer {
+public:
+    std::expected<std::int64_t, Error> render(const ProjectState&, SequenceId, TimeRange, const fs::path& file,
+                                              const std::function<bool(double)>& progress) override {
+        if (during)
+            during();
+        if (progress && !progress(0.5))
+            return std::unexpected(Error(ErrorCode::Cancelled, "cancelled"));
+        if (fail)
+            return std::unexpected(Error(ErrorCode::IoError, "the disk is full"));
+        std::ofstream(file, std::ios::binary) << "preview";
+        return std::int64_t{7};
+    }
+    std::function<void()> during;
+    bool fail = false;
+};
+
+} // namespace
+
+// UX rework (L): the editor shows a toast when Render In to Out ends, so the bridge says how it ended.
+TEST_CASE("Render In to Out reports done failed and cancelled for the toast", "[app][render][preview]") {
+    const fs::path dir = fs::path(WABCUT_TEST_OUTPUT_DIR) / "app" / "render-in-to-out-finished";
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+    fs::create_directories(dir);
+    Timeline tl(R"(
+        V1 tgt |Aaaaaaaaaa|
+    )");
+    const ClipId clip = clipAt(tl.state, tl.seq, "V1@0");
+    const ProjectState blurred = ok(edit::addEffect(tl.state, tl.seq, std::span(&clip, 1), "wabcut.blur.gaussian")).state;
+    const fs::path project = dir / "film.wabcut";
+    REQUIRE(io::saveProject(blurred, project, io::SaveOptions{0}));
+    ProjectController controller;
+    ProjectLifecycle lifecycle(&controller);
+    REQUIRE(lifecycle.open(QUrl::fromLocalFile(QString::fromStdU16String(project.u16string()))));
+    PlaybackBridge playback(&controller);
+    MediaReadinessBridge readiness(&lifecycle, &playback);
+    auto renderer = std::make_shared<ScriptedPreviewRenderer>();
+    readiness.setPreviewRendererForTests(renderer);
+    readiness.setRenderSynchronous(true);
+    std::vector<std::pair<QString, QString>> finished;
+    QObject::connect(&readiness, &MediaReadinessBridge::renderFinished, [&](const QString& outcome, const QString& message) {
+        finished.emplace_back(outcome, message);
+    });
+
+    // A failing render: "failed" with the reason.
+    renderer->fail = true;
+    REQUIRE(readiness.renderInToOut().isEmpty());
+    REQUIRE(finished.size() == 1);
+    CHECK(finished.back().first == QStringLiteral("failed"));
+    CHECK_FALSE(finished.back().second.isEmpty());
+    CHECK(finished.back().second == readiness.renderMessage());
+
+    // Cancelled while it renders: "cancelled".
+    renderer->fail = false;
+    renderer->during = [&] { readiness.cancelRender(); };
+    REQUIRE(readiness.renderInToOut().isEmpty());
+    REQUIRE(finished.size() == 2);
+    CHECK(finished.back().first == QStringLiteral("cancelled"));
+
+    // Done: no message.
+    renderer->during = nullptr;
+    REQUIRE(readiness.renderInToOut().isEmpty());
+    REQUIRE(finished.size() == 3);
+    CHECK(finished.back().first == QStringLiteral("done"));
+    CHECK(finished.back().second.isEmpty());
+    CHECK_FALSE(readiness.rendering());
 }

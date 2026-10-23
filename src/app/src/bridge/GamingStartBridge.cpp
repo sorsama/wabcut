@@ -28,8 +28,6 @@
 
 namespace wabcut::app {
 
-using command::Json;
-
 /// The worker's way back: cleared when the bridge goes, under the mutex the worker posts under.
 struct GamingStartBridge::Gate {
     std::mutex mutex;
@@ -103,26 +101,6 @@ QString layoutText(const AudioStreamInfo& audio) {
     if (layout.startsWith(QLatin1String("7.1")))
         return QStringLiteral("7.1");
     return GamingStartBridge::tr("%n channels", "", audio.channels);
-}
-
-bool sameFile(const QString& a, const QString& b) {
-    const QString ca = QFileInfo(a).canonicalFilePath();
-    const QString cb = QFileInfo(b).canonicalFilePath();
-#ifdef Q_OS_WIN
-    constexpr Qt::CaseSensitivity sensitivity = Qt::CaseInsensitive;
-#else
-    constexpr Qt::CaseSensitivity sensitivity = Qt::CaseSensitive;
-#endif
-    return !ca.isEmpty() && ca.compare(cb, sensitivity) == 0;
-}
-
-/// One catalog command on the live project (one undo step); "" or the engine's message.
-QString runCommand(ProjectController* controller, const std::string& command, Json params) {
-    return commandErrorText(CommandJob::runNow(controller, nullptr, command, std::move(params)));
-}
-
-std::string audioLabel(std::size_t position) {
-    return "A" + std::to_string(position + 1);
 }
 
 } // namespace
@@ -206,8 +184,14 @@ QVariantMap GamingStartBridge::describe(const MediaInfo& info, const QString& fi
     const int height = turned ? video.width : video.height;
     // The nominal rate: a variable rate capture's measured rate snapped to a standard one (C.15's nominalRate; the
     // sequence then conforms the capture by timestamp, so nothing drifts).
+    // A constant rate a sequence cannot run at (not a whole number of ticks per frame) is snapped the same way, so the
+    // rate shown is the one "Match my media" creates (UX rework).
     const bool rateKnown = video.frameRate.isValid();
-    const Rate rate = !rateKnown ? Rate{60, 1} : video.variableFrameRate ? nominalRate(video.frameRate) : video.frameRate;
+    Rate rate = !rateKnown ? Rate{60, 1} : video.variableFrameRate ? nominalRate(video.frameRate) : video.frameRate;
+    if (rateKnown && !rate.isExact()) {
+        if (const Rate snapped = nominalRate(video.frameRate); snapped.isExact())
+            rate = snapped;
+    }
     const double fps = static_cast<double>(rate.num) / rate.den;
     const double seconds = (info.duration.value > 0 ? info.duration : video.duration).toSeconds();
     const bool highFps = fps > kHighFps + 0.5;
@@ -347,122 +331,46 @@ QString GamingStartBridge::create(const QString& name, const QUrl& folder, const
     const QVariantMap recording = m_recording; // copies: the steps below change the project, not these
     const QString file = QDir::fromNativeSeparators(recording.value(QStringLiteral("file")).toString());
 
-    // The plan per audio stream: included or not, and its track's name.
-    struct Stream {
-        bool include = true;
-        QString name;
-    };
-    std::vector<Stream> plan(m_info->audio.size());
-    for (std::size_t i = 0; i < plan.size(); ++i)
-        plan[i].name = suggestedTrackName(static_cast<int>(i));
+    // The plan per audio stream (checked against the recording before anything is made): every stream, included under
+    // its suggested name unless `tracks` says otherwise.
+    QVariantList plan;
+    std::vector<bool> given(m_info->audio.size(), false);
     for (const QVariant& value : tracks) {
         const QVariantMap track = value.toMap();
         bool ok = false;
         const int index = track.value(QStringLiteral("index")).toInt(&ok);
-        if (!ok || index < 0 || index >= static_cast<int>(plan.size()))
+        if (!ok || index < 0 || index >= static_cast<int>(given.size()))
             return tr("The recording has no audio stream %1.").arg(track.value(QStringLiteral("index")).toString());
-        if (track.contains(QStringLiteral("include")))
-            plan[index].include = track.value(QStringLiteral("include")).toBool();
-        if (const QString trackName = track.value(QStringLiteral("name")).toString().trimmed(); !trackName.isEmpty())
-            plan[index].name = trackName;
+        given[static_cast<std::size_t>(index)] = true;
+        plan.append(track);
+    }
+    for (std::size_t i = 0; i < given.size(); ++i) {
+        if (!given[i])
+            plan.append(QVariantMap{{QStringLiteral("index"), static_cast<int>(i)},
+                                    {QStringLiteral("name"), suggestedTrackName(static_cast<int>(i))},
+                                    {QStringLiteral("include"), true}});
     }
 
-    // 1. The project at the recording's size and nominal frame rate, saved and opened.
+    // Home's media start does the steps (UX rework): the project at the recording's size and nominal frame rate (saved
+    // and opened), the recording imported, one audio track per included stream, the picture on V1 and the included
+    // streams on A1, A2, ... named, proxies when the recording asks for them, and a save. A failure after the project
+    // was made comes back as its message (the project stays open).
     const QVariantMap fps = recording.value(QStringLiteral("fps")).toMap();
-    const QString made = m_home->createProject(name, folder,
-                                               QVariantMap{{QStringLiteral("width"), recording.value(QStringLiteral("width"))},
-                                                           {QStringLiteral("height"), recording.value(QStringLiteral("height"))},
-                                                           {QStringLiteral("rateNum"), fps.value(QStringLiteral("num"))},
-                                                           {QStringLiteral("rateDen"), fps.value(QStringLiteral("den"))}});
-    if (!made.isEmpty())
-        return made;
-    const QUrl projectFile = m_home->projectUrl(name, folder);
-
-    // 2. The recording in the project.
-    const QVariantMap imported = m_lifecycle->importFiles({QUrl::fromLocalFile(file)});
-    if (const QVariantList failed = imported.value(QStringLiteral("failed")).toList(); !failed.isEmpty()) {
-        const QVariantMap first = failed.front().toMap();
-        return tr("The project was created, but %1 could not be imported: %2")
-            .arg(first.value(QStringLiteral("name")).toString(), first.value(QStringLiteral("error")).toString());
-    }
-    MediaPtr media;
-    if (const ProjectSnapshot snapshot = m_controller->snapshot()) {
-        for (const MediaPtr& item : snapshot->media) {
-            if (item && sameFile(QString::fromStdString(item->locator.path), file)) {
-                media = item;
-                break;
-            }
-        }
-    }
-    if (!media)
-        return tr("The project was created, but %1 is not in it after the import.").arg(QFileInfo(file).fileName());
-
-    // The streams the import found (the plan's names and choices by position).
-    const std::size_t audioCount = media->info.audio.size();
-    std::vector<std::size_t> included;
-    for (std::size_t i = 0; i < audioCount; ++i) {
-        if (i >= plan.size() || plan[i].include)
-            included.push_back(i);
-    }
-    const auto trackName = [&](std::size_t stream) {
-        return stream < plan.size() ? plan[stream].name : suggestedTrackName(static_cast<int>(stream));
-    };
-
-    // 3. One audio track per included stream: new ones get their names now.
-    const SequencePtr sequence = m_controller->currentSequence();
-    if (!sequence)
-        return tr("The project was created, but it has no sequence.");
-    const std::size_t existing = sequence->audioTracks.size();
-    for (std::size_t have = existing; have < included.size(); ++have) {
-        const QString track = trackName(included[have]);
-        if (const QString error = runCommand(m_controller, "sequence.addTrack",
-                                             Json{{"kind", "audio"}, {"name", track.toStdString()}});
-            !error.isEmpty())
-            return tr("The project was created, but the audio track \"%1\" could not be added: %2").arg(track, error);
-    }
-
-    // 4. The recording at 00:00: the picture on V1, the included streams on A1, A2, ... in order, the others off.
-    Json patches = Json::array();
-    if (media->info.hasVideo())
-        patches.push_back(Json{{"source", "V1"}, {"track", "V1"}});
-    std::size_t next = 0;
-    for (std::size_t i = 0; i < audioCount; ++i) {
-        if (i >= plan.size() || plan[i].include)
-            patches.push_back(Json{{"source", audioLabel(i)}, {"track", audioLabel(next++)}});
-        else
-            patches.push_back(Json{{"source", audioLabel(i)}, {"track", nullptr}});
-    }
-    if (const QString error = runCommand(m_controller, "edit.insertFromSource",
-                                         Json{{"media", media->id.value},
-                                              {"at", 0},
-                                              {"patches", std::move(patches)},
-                                              {"sequenceMarks", false}});
-        !error.isEmpty())
-        return tr("The project was created, but the recording could not be placed on the timeline: %1").arg(error);
-
-    // 5. The names of the tracks the sequence already had.
-    for (std::size_t j = 0; j < std::min(existing, included.size()); ++j) {
-        const QString track = trackName(included[j]);
-        if (const QString error = runCommand(m_controller, "track.setState",
-                                             Json{{"track", audioLabel(j)}, {"name", track.toStdString()}});
-            !error.isEmpty())
-            return tr("The project was created, but track %1 could not be named \"%2\": %3")
-                .arg(QString::fromStdString(audioLabel(j)), track, error);
-    }
-
-    // 6. Proxies when the recording asks for them (unless the file already has one). A refusal is reported after the
-    // save: the project itself is complete.
-    QString proxyError;
-    if (recording.value(QStringLiteral("proxies")).toBool() && !media->locator.proxy &&
-        requestProxies({mediaKey(media->id)}) <= 0)
-        proxyError = tr("The project is ready, but its proxies could not be started: use Proxy > Create proxy on the "
-                        "recording in the Library.");
-
-    // 7. Saved as it is now.
-    if (!m_lifecycle->save())
-        return tr("The project was created, but it could not be saved: %1").arg(m_lifecycle->lastError());
-    emit created(projectFile);
-    return proxyError;
+    const QVariantMap result = m_home->createFromMediaWith(
+        name, folder,
+        QVariantMap{{QStringLiteral("width"), recording.value(QStringLiteral("width"))},
+                    {QStringLiteral("height"), recording.value(QStringLiteral("height"))},
+                    {QStringLiteral("rateNum"), fps.value(QStringLiteral("num"))},
+                    {QStringLiteral("rateDen"), fps.value(QStringLiteral("den"))}},
+        {QUrl::fromLocalFile(file)},
+        QVariantMap{{QStringLiteral("tracks"), plan},
+                    {QStringLiteral("proxies"),
+                     recording.value(QStringLiteral("proxies")).toBool() ? QStringLiteral("on") : QStringLiteral("off")}},
+        [this](const QStringList& keys) { return requestProxies(keys); });
+    if (!result.value(QStringLiteral("ok")).toBool())
+        return result.value(QStringLiteral("error")).toString();
+    emit created(result.value(QStringLiteral("project")).toUrl());
+    return result.value(QStringLiteral("warning")).toString();
 }
 
 } // namespace wabcut::app

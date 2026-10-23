@@ -3,13 +3,15 @@ import QtQuick
 import QtQuick.Layouts
 
 // Title bar of the main window (design language v3): the echo mark (it opens the File menu) with the project's name and
-// its sequence's frame size and rate, the sequence switcher, the workspace switcher (a segmented pill group, centred),
-// the transient status pills (rendering, an extension's job, the microphone), command palette, round undo/redo,
-// Save/Export pills and the window controls. 0.1.3: the GPU and autosave pills and the Appearance button moved
-// into the Settings window (Settings > Interface can show the two pills here again); the Save button carries a dot
-// while there are unsaved changes. With the custom (frameless) frame, empty areas drag the window
-// (startSystemMove, so OS snapping/tiling works) and a double-click toggles maximize; with the native frame
-// (Preferences.nativeFrame) it is a plain toolbar and the OS draws the window controls.
+// its sequence's frame size and rate, the menu bar (UX rework: File, Edit, Clip, Sequence, Markers, Graphics, View,
+// Window, Help - AppMenuBar; one "Menu" button when the bar is short of room, so the workspace tabs keep theirs), the
+// sequence switcher, the workspace switcher (a segmented pill group, centred), the transient status pills (rendering,
+// an extension's job, the microphone), command palette, round undo/redo, Save/Export pills and the window controls.
+// 0.1.3: the GPU and autosave pills and the Appearance button moved into the Settings window (Settings > Interface can
+// show the two pills here again); the Save button carries a dot while there are unsaved changes. With the custom
+// (frameless) frame, empty areas drag the window (startSystemMove, so OS snapping/tiling works) and a double-click
+// toggles maximize; with the native frame (Preferences.nativeFrame) it is a plain toolbar and the OS draws the window
+// controls.
 Item {
     id: root
 
@@ -25,6 +27,29 @@ Item {
     signal saveRequested()
     signal exportRequested()
     signal commandPaletteRequested()
+    /// A menu bar action only the window can do (AppMenuBar.actionRequested: Main.menuAction).
+    signal menuActionRequested(string action, var argument)
+    /// The editor's docking, for the Window menu (open panels, the maximized frame).
+    property DockManager docking: null
+
+    /// The menu bar (Main opens its menus: the logo, the palette).
+    readonly property AppMenuBar menuBar: appMenuBar
+    /// The room the menu bar's titles have once everything else has its own (implicit sizes: what the menu bar shows
+    /// does not change it). Short of it, the titles fold into one Menu button.
+    readonly property real menuRoom: {
+        const others = [brandBlock, sequencePill, renderPill, workspaceTabs, trailing]
+        // The row's margins, the sequence pill's own margin, and the gaps of the menu bar and the two spacers (each
+        // other item adds its own below).
+        let used = Theme.space(2) + Theme.gap + Theme.space(1) + 2 * barRow.spacing
+        for (const item of others) {
+            if (!item.visible)
+                continue
+            used += (item === sequencePill ? Math.min(item.implicitWidth, Theme.space(56)) : item.implicitWidth)
+                    + barRow.spacing
+        }
+        return root.width - used
+    }
+    readonly property bool menusCollapsed: root.width > 0 && appMenuBar.expandedWidth > root.menuRoom
 
     /// Where Export is (the onboarding tour points at it; M5j): the tab of a workspace made from the Export preset, else
     /// the Export button.
@@ -36,6 +61,10 @@ Item {
     /// Keyboard focus to the workspace tabs (M5j).
     function focusWorkspaceTabs() {
         workspaceTabs.focusCurrent()
+    }
+    /// The workspace `id`'s tab is renamed in place (Window > Workspaces > Rename Workspace…).
+    function renameWorkspace(id: int) {
+        workspaceTabs.startRename(id)
     }
 
     function toggleMaximized() {
@@ -79,6 +108,7 @@ Item {
     }
 
     RowLayout {
+        id: barRow
         anchors.fill: parent
         anchors.leftMargin: Theme.space(2)
         anchors.rightMargin: Theme.gap
@@ -138,6 +168,17 @@ Item {
                     font.pixelSize: Theme.textXs
                 }
             }
+        }
+
+        // UX rework: the menu bar (Premiere's menus), or one Menu button when the bar is short of room.
+        AppMenuBar {
+            id: appMenuBar
+            Layout.alignment: Qt.AlignVCenter
+            Layout.preferredWidth: implicitWidth
+            collapsed: root.menusCollapsed
+            docking: root.docking
+            workspace: root.workspace
+            onActionRequested: (action, argument) => root.menuActionRequested(action, argument)
         }
 
         // Sequence switcher.
@@ -280,172 +321,179 @@ Item {
 
         Item { Layout.fillWidth: true }
 
-        // An extension's AI-model command running as a command job (C.14), with its progress and Cancel.
-        StatusPill {
-            id: extensionJobPill
-            objectName: "extensionJobPill"
-            readonly property var job: Extensions.longCommand
+        // The right side: job pills, the palette, undo / redo, Save, Export and the window controls.
+        RowLayout {
+            id: trailing
             Layout.alignment: Qt.AlignVCenter
-            visible: job.running === true
-            label: job.extension ?? ""
-            detail: (job.progress ?? -1) >= 0 ? qsTr("%1 %2 %").arg(job.text ?? "").arg(Math.round(job.progress * 100))
-                                              : (job.text ?? "")
-            dotColor: Theme.accentStroke
-            tooltip: (job.queued ?? 0) > 0 ? qsTr("%1 is running an AI command; %n more waiting", "", job.queued).arg(label)
-                                           : qsTr("%1 is running an AI command").arg(label)
-        }
-        IconButton {
-            objectName: "extensionJobCancel"
-            Layout.alignment: Qt.AlignVCenter
-            visible: extensionJobPill.visible
-            compact: true
-            iconName: "x"
-            tooltip: qsTr("Stop %1's command (nothing is changed)").arg(extensionJobPill.label)
-            onClicked: Extensions.cancelLongCommand()
-        }
+            spacing: Theme.space(2)
 
-        // Voice-over (M5m, A.8): shown while the microphone is open (Test input, a pass, monitoring).
-        StatusPill {
-            objectName: "microphonePill"
-            Layout.alignment: Qt.AlignVCenter
-            visible: VoiceOver.inputOpen
-            label: VoiceOver.recording ? qsTr("Recording") : qsTr("Microphone")
-            dotColor: Theme.danger
-            tooltip: qsTr("The microphone is open: %1").arg(VoiceOver.inputName)
-        }
-
-        // 0.1.3: shown when Settings > Interface turns them on (the same facts are in Settings).
-        StatusPill {
-            objectName: "gpuPill"
-            Layout.alignment: Qt.AlignVCenter
-            visible: Preferences.showGpuStatus
-            label: qsTr("GPU")
-            detail: renderer.ready ? renderer.summary : qsTr("detecting…")
-            dotColor: renderer.ready ? Theme.success : Theme.textTertiary
-            tooltip: renderer.ready
-                     ? qsTr("Render: %1 on %2 · Decode: %3").arg(renderer.api).arg(renderer.adapter || qsTr("unknown adapter"))
-                                                             .arg(root.project.decodeBackend)
-                     : qsTr("Waiting for the first frame")
-        }
-
-        StatusPill {
-            objectName: "autosavePill"
-            Layout.alignment: Qt.AlignVCenter
-            visible: Preferences.showSaveStatus
-            label: ProjectFile.demo ? qsTr("Demo") : ProjectFile.dirty ? qsTr("Unsaved") : qsTr("Saved")
-            detail: ProjectFile.demo ? "" : ProjectFile.autosaveText
-            dotColor: ProjectFile.dirty ? Theme.warning : Theme.success
-            tooltip: ProjectFile.filePath
-        }
-
-        // Command palette, then undo / redo (EditSession history; Ctrl/⌘+Z and Shift+Ctrl/⌘+Z are handled in Main.qml):
-        // round raised buttons.
-        IconButton {
-            objectName: "commandPaletteButton"
-            Layout.alignment: Qt.AlignVCenter
-            Layout.preferredWidth: root.barControl
-            Layout.preferredHeight: root.barControl
-            variant: "secondary"
-            iconName: "search"
-            tooltip: qsTr("Command palette")
-            shortcut: Qt.platform.os === "osx" ? "⇧⌘P" : "Ctrl+Shift+P"
-            onClicked: root.commandPaletteRequested()
-        }
-        IconButton {
-            objectName: "undoButton"
-            Layout.alignment: Qt.AlignVCenter
-            Layout.preferredWidth: root.barControl
-            Layout.preferredHeight: root.barControl
-            variant: "secondary"
-            iconName: "undo-2"
-            enabled: ProjectController.canUndo
-            tooltip: ProjectController.undoText
-            command: "edit.undo"
-            onClicked: ProjectController.undo()
-        }
-        IconButton {
-            objectName: "redoButton"
-            Layout.alignment: Qt.AlignVCenter
-            Layout.preferredWidth: root.barControl
-            Layout.preferredHeight: root.barControl
-            variant: "secondary"
-            iconName: "redo-2"
-            enabled: ProjectController.canRedo
-            tooltip: ProjectController.redoText
-            command: "edit.redo"
-            onClicked: ProjectController.redo()
-        }
-
-        Item { Layout.preferredWidth: Theme.space(1) }
-
-        PillButton {
-            id: saveButton
-            objectName: "saveButton"
-            Layout.alignment: Qt.AlignVCenter
-            Layout.preferredHeight: root.barControl
-            variant: "secondary"
-            text: qsTr("Save")
-            iconName: "save"
-            // The save state the autosave pill used to show (0.1.3).
-            tooltip: ProjectFile.demo ? qsTr("Save project (the demo is not saved on its own)")
-                   : [ProjectFile.dirty ? qsTr("Unsaved changes") : qsTr("All changes saved"), ProjectFile.autosaveText,
-                      ProjectFile.filePath].filter(s => s !== "").join(" · ")
-            Accessible.description: ProjectFile.dirty ? qsTr("Unsaved changes") : qsTr("All changes saved")
-            command: "file.save"
-            onClicked: root.saveRequested()
-
-            // Unsaved changes: a dot on the button's corner.
-            Rectangle {
-                objectName: "unsavedDot"
-                visible: ProjectFile.dirty && !ProjectFile.demo
-                anchors.right: parent.right
-                anchors.top: parent.top
-                anchors.rightMargin: -Theme.space(0.5)
-                anchors.topMargin: -Theme.space(0.5)
-                width: Theme.dotSize + Theme.space(0.5)
-                height: width
-                radius: width / 2
-                color: Theme.warning
-                border.width: Theme.hairline + 1
-                border.color: Theme.canvas
+            // An extension's AI-model command running as a command job (C.14), with its progress and Cancel.
+            StatusPill {
+                id: extensionJobPill
+                objectName: "extensionJobPill"
+                readonly property var job: Extensions.longCommand
+                Layout.alignment: Qt.AlignVCenter
+                visible: job.running === true
+                label: job.extension ?? ""
+                detail: (job.progress ?? -1) >= 0 ? qsTr("%1 %2 %").arg(job.text ?? "").arg(Math.round(job.progress * 100))
+                                                  : (job.text ?? "")
+                dotColor: Theme.accentStroke
+                tooltip: (job.queued ?? 0) > 0 ? qsTr("%1 is running an AI command; %n more waiting", "", job.queued).arg(label)
+                                               : qsTr("%1 is running an AI command").arg(label)
             }
-        }
+            IconButton {
+                objectName: "extensionJobCancel"
+                Layout.alignment: Qt.AlignVCenter
+                visible: extensionJobPill.visible
+                compact: true
+                iconName: "x"
+                tooltip: qsTr("Stop %1's command (nothing is changed)").arg(extensionJobPill.label)
+                onClicked: Extensions.cancelLongCommand()
+            }
 
-        // 0.2: Premiere's Quick Export (a preset, a file, one click).
-        QuickExportButton {
-            Layout.alignment: Qt.AlignVCenter
-        }
+            // Voice-over (M5m, A.8): shown while the microphone is open (Test input, a pass, monitoring).
+            StatusPill {
+                objectName: "microphonePill"
+                Layout.alignment: Qt.AlignVCenter
+                visible: VoiceOver.inputOpen
+                label: VoiceOver.recording ? qsTr("Recording") : qsTr("Microphone")
+                dotColor: Theme.danger
+                tooltip: qsTr("The microphone is open: %1").arg(VoiceOver.inputName)
+            }
 
-        PillButton {
-            id: exportButton
-            objectName: "topBarExportButton"
-            Layout.alignment: Qt.AlignVCenter
-            Layout.preferredHeight: root.barControl
-            variant: "primary"
-            text: qsTr("Export")
-            iconName: "download"
-            tooltip: qsTr("Export media")
-            command: "file.exportMedia"
-            onClicked: root.exportRequested()
-        }
+            // 0.1.3: shown when Settings > Interface turns them on (the same facts are in Settings).
+            StatusPill {
+                objectName: "gpuPill"
+                Layout.alignment: Qt.AlignVCenter
+                visible: Preferences.showGpuStatus
+                label: qsTr("GPU")
+                detail: renderer.ready ? renderer.summary : qsTr("detecting…")
+                dotColor: renderer.ready ? Theme.success : Theme.textTertiary
+                tooltip: renderer.ready
+                         ? qsTr("Render: %1 on %2 · Decode: %3").arg(renderer.api).arg(renderer.adapter || qsTr("unknown adapter"))
+                                                                 .arg(root.project.decodeBackend)
+                         : qsTr("Waiting for the first frame")
+            }
 
-        Rectangle {
-            visible: root.customFrame
-            Layout.alignment: Qt.AlignVCenter
-            Layout.leftMargin: Theme.space(1)
-            Layout.rightMargin: Theme.space(1)
-            implicitWidth: Theme.hairline
-            implicitHeight: Theme.controlHeightSmall - Theme.space(2)
-            color: Theme.borderStrong
-        }
+            StatusPill {
+                objectName: "autosavePill"
+                Layout.alignment: Qt.AlignVCenter
+                visible: Preferences.showSaveStatus
+                label: ProjectFile.demo ? qsTr("Demo") : ProjectFile.dirty ? qsTr("Unsaved") : qsTr("Saved")
+                detail: ProjectFile.demo ? "" : ProjectFile.autosaveText
+                dotColor: ProjectFile.dirty ? Theme.warning : Theme.success
+                tooltip: ProjectFile.filePath
+            }
 
-        WindowControls {
-            visible: root.customFrame
-            Layout.alignment: Qt.AlignVCenter
-            maximized: root.maximized
-            onMinimizeRequested: root.Window.window?.showMinimized()
-            onMaximizeRequested: root.toggleMaximized()
-            onCloseRequested: root.Window.window?.close()
+            // Command palette, then undo / redo (EditSession history; Ctrl/⌘+Z and Shift+Ctrl/⌘+Z are handled in Main.qml):
+            // round raised buttons.
+            IconButton {
+                objectName: "commandPaletteButton"
+                Layout.alignment: Qt.AlignVCenter
+                Layout.preferredWidth: root.barControl
+                Layout.preferredHeight: root.barControl
+                variant: "secondary"
+                iconName: "search"
+                tooltip: qsTr("Command palette")
+                shortcut: Qt.platform.os === "osx" ? "⇧⌘P" : "Ctrl+Shift+P"
+                onClicked: root.commandPaletteRequested()
+            }
+            IconButton {
+                objectName: "undoButton"
+                Layout.alignment: Qt.AlignVCenter
+                Layout.preferredWidth: root.barControl
+                Layout.preferredHeight: root.barControl
+                variant: "secondary"
+                iconName: "undo-2"
+                enabled: ProjectController.canUndo
+                tooltip: ProjectController.undoText
+                command: "edit.undo"
+                onClicked: ProjectController.undo()
+            }
+            IconButton {
+                objectName: "redoButton"
+                Layout.alignment: Qt.AlignVCenter
+                Layout.preferredWidth: root.barControl
+                Layout.preferredHeight: root.barControl
+                variant: "secondary"
+                iconName: "redo-2"
+                enabled: ProjectController.canRedo
+                tooltip: ProjectController.redoText
+                command: "edit.redo"
+                onClicked: ProjectController.redo()
+            }
+
+            Item { Layout.preferredWidth: Theme.space(1) }
+
+            PillButton {
+                id: saveButton
+                objectName: "saveButton"
+                Layout.alignment: Qt.AlignVCenter
+                Layout.preferredHeight: root.barControl
+                variant: "secondary"
+                text: qsTr("Save")
+                iconName: "save"
+                // The save state the autosave pill used to show (0.1.3).
+                tooltip: ProjectFile.demo ? qsTr("Save project (the demo is not saved on its own)")
+                       : [ProjectFile.dirty ? qsTr("Unsaved changes") : qsTr("All changes saved"), ProjectFile.autosaveText,
+                          ProjectFile.filePath].filter(s => s !== "").join(" · ")
+                Accessible.description: ProjectFile.dirty ? qsTr("Unsaved changes") : qsTr("All changes saved")
+                command: "file.save"
+                onClicked: root.saveRequested()
+
+                // Unsaved changes: a dot on the button's corner.
+                Rectangle {
+                    objectName: "unsavedDot"
+                    visible: ProjectFile.dirty && !ProjectFile.demo
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    anchors.rightMargin: -Theme.space(0.5)
+                    anchors.topMargin: -Theme.space(0.5)
+                    width: Theme.dotSize + Theme.space(0.5)
+                    height: width
+                    radius: width / 2
+                    color: Theme.warning
+                    border.width: Theme.hairline + 1
+                    border.color: Theme.canvas
+                }
+            }
+
+            // 0.2: Premiere's Quick Export (a preset, a file, one click).
+            QuickExportButton {
+                Layout.alignment: Qt.AlignVCenter
+            }
+
+            PillButton {
+                id: exportButton
+                objectName: "topBarExportButton"
+                Layout.alignment: Qt.AlignVCenter
+                Layout.preferredHeight: root.barControl
+                variant: "primary"
+                text: qsTr("Export")
+                iconName: "download"
+                tooltip: qsTr("Export media")
+                command: "file.exportMedia"
+                onClicked: root.exportRequested()
+            }
+
+            Rectangle {
+                visible: root.customFrame
+                Layout.alignment: Qt.AlignVCenter
+                Layout.leftMargin: Theme.space(1)
+                Layout.rightMargin: Theme.space(1)
+                implicitWidth: Theme.hairline
+                implicitHeight: Theme.controlHeightSmall - Theme.space(2)
+                color: Theme.borderStrong
+            }
+
+            WindowControls {
+                visible: root.customFrame
+                Layout.alignment: Qt.AlignVCenter
+                maximized: root.maximized
+                onMinimizeRequested: root.Window.window?.showMinimized()
+                onMaximizeRequested: root.toggleMaximized()
+                onCloseRequested: root.Window.window?.close()
+            }
         }
     }
 

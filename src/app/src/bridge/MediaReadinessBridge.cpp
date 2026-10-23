@@ -410,6 +410,11 @@ QString MediaReadinessBridge::renderInToOut() {
             self->applyPreview(true); // the monitor picks up the new files
             emit self->renderChanged();
             emit self->previewFilesChanged(); // the render bar turns green there (0.2)
+            // UX rework (L): the toast's cue.
+            const QString outcome = result.ok() ? QStringLiteral("done")
+                                    : result.error->code == command::ErrorCode::Cancelled ? QStringLiteral("cancelled")
+                                                                                          : QStringLiteral("failed");
+            emit self->renderFinished(outcome, self->m_renderMessage);
         });
     if (!started) {
         m_rendering = false;

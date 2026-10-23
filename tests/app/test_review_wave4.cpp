@@ -152,11 +152,18 @@ TEST_CASE("Review P1-8: a dialog opened from Settings keeps the focus", "[app][r
     QQuickWindow* w = shell.window.get();
     REQUIRE_FALSE(shell.grab().isNull());
 
-    // 0.1.3: the Settings window (it replaced the Settings popover) on Playback & performance, from the rail's button.
-    QQuickItem* settings = findNamed(w->contentItem(), QStringLiteral("settingsButton"));
+    // 0.1.3: the Settings window (it replaced the Settings popover) on Playback & performance. UX rework: from the
+    // keyboard through the menu bar - Tab to Edit, Space opens it, Settings… (once the menu has closed).
+    QQuickItem* settings = findNamed(w->contentItem(), QStringLiteral("menuBar_edit"));
     REQUIRE(settings);
     settings->forceActiveFocus(Qt::TabFocusReason);
     tap(w, Qt::Key_Space, {}, QStringLiteral(" "));
+    QObject* editMenu = shell.object("editMenu");
+    REQUIRE(editMenu);
+    REQUIRE(waitUntil([&] { return editMenu->property("opened").toBool(); }, 5000));
+    QObject* settingsItem = shell.object("editMenuSettings");
+    REQUIRE(settingsItem);
+    REQUIRE(QMetaObject::invokeMethod(settingsItem, "clicked"));
     QObject* popover = nullptr;
     QObject* settingsLoader = shell.object("settingsWindowLoader");
     REQUIRE(settingsLoader);
@@ -349,9 +356,8 @@ TEST_CASE("Review P2-47: the interface size shows what was applied, not a raw st
     shell.resize(kShotWidth, kShotHeight);
     CHECK(shell.theme->property("uiScale").toInt() == 100);
     // 0.1.3: the sizes are in Settings > Appearance.
-    QObject* rail = shell.object("leftRail");
-    REQUIRE(rail);
-    REQUIRE(QMetaObject::invokeMethod(rail, "openSettings", Q_ARG(QString, QStringLiteral("appearance"))));
+    REQUIRE(QMetaObject::invokeMethod(shell.window.get(), "openSettings", Q_ARG(QString, QStringLiteral("appearance")),
+                                      Q_ARG(QString, QString())));
     QObject* settings = shell.object("settingsWindowLoader")->property("item").value<QObject*>();
     REQUIRE(settings);
     spin(50);

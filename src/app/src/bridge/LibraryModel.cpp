@@ -2,6 +2,7 @@
 
 #include "BridgeIds.h"
 
+#include <wabcut/model/EditOps.h>
 #include <wabcut/model/Timecode.h>
 
 #include <QDateTime>
@@ -315,6 +316,7 @@ QHash<int, QByteArray> LibraryModel::roleNames() const {
         {DerivedRole, "derivedFrom"},
         {SearchBinRole, "searchBin"},
         {GoodRole, "good"},
+        {MarksRole, "marks"},
     };
 }
 
@@ -611,6 +613,37 @@ QVariant LibraryModel::data(const QModelIndex& index, int role) const {
         return row.kind == Row::Kind::Bin && row.bin->isSearch();
     case GoodRole:
         return row.kind == Row::Kind::Media && row.media->metadata.good;
+    case MarksRole: {
+        // 0.2 UX (stream T): the In/Out band on the card.
+        if (row.kind != Row::Kind::Media || row.media->isGenerator())
+            return QVariantMap{};
+        const MediaItem& m = *row.media;
+        const edit::SourceMarks marks = edit::storedSourceMarks(m);
+        const auto extent = edit::sourceMarkExtent(m);
+        if ((!marks.in && !marks.out) || !extent || extent->value <= 0)
+            return QVariantMap{};
+        const Ticks start = m.subclip ? m.subclip->range.start : Ticks{};
+        const Ticks length = m.subclip ? m.subclip->range.duration : *extent;
+        if (length.value <= 0)
+            return QVariantMap{};
+        const Ticks in = std::clamp(marks.in.value_or(start), start, start + length);
+        const Ticks out = std::clamp(marks.out.value_or(start + length), in, start + length);
+        // Marks around the whole card's range mark nothing (Make Subclip stores the subclip's range as its marks).
+        if (in == start && out == start + length)
+            return QVariantMap{};
+        const auto fraction = [&](Ticks t) {
+            return std::clamp(static_cast<double>((t - start).value) / static_cast<double>(length.value), 0.0, 1.0);
+        };
+        const Rate rate = displayRate(m);
+        const auto lastFrame = ticksToFrames(out, rate, Rounding::Ceil).value_or(1) - 1;
+        return QVariantMap{
+            {QStringLiteral("in"), fraction(in)},
+            {QStringLiteral("out"), fraction(out)},
+            {QStringLiteral("inText"), timecodeText(in, rate)},
+            {QStringLiteral("outText"), text(framesToTimecode(std::max<std::int64_t>(0, lastFrame), rate, false))},
+            {QStringLiteral("durationText"), timecodeText(out - in, rate)},
+        };
+    }
     case CountRole: {
         if (row.kind != Row::Kind::Bin || !m_snapshot)
             return 0;

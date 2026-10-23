@@ -1,10 +1,13 @@
 #include "CommandPalette.h"
 
+#include "AppSettingsBridge.h"
 #include "CommandBridge.h"
 #include "EditingBridge.h"
 #include "ExtensionsBridge.h"
 #include "KeymapDispatcher.h"
+#include "LibraryBridge.h"
 #include "MonitorBridge.h"
+#include "MulticamEditBridge.h"
 #include "ProjectController.h"
 #include "Titles.h"
 
@@ -123,14 +126,54 @@ bool KeymapCommandProvider::viewHandles(const QString& id) {
         QStringLiteral("edit.pasteAttributes"),      QStringLiteral("edit.removeAttributes"),
         QStringLiteral("record.toggle"),             QStringLiteral("record.start"),
         QStringLiteral("record.stop"),
+        // UX rework (stream S): the rest of what Main.qml's runCommand routes, whose keys already worked while the
+        // palette said "Not available yet". The panel focus keys and Premiere's workspace keys (Alt+Shift+1..9) ...
+        QStringLiteral("window.projects"),           QStringLiteral("window.effects"),
+        QStringLiteral("window.mediaBrowser"),       QStringLiteral("window.timeline"),
+        QStringLiteral("window.audioTrackMixer"),    QStringLiteral("window.audioClipMixer"),
+        QStringLiteral("window.workspace1"),         QStringLiteral("window.workspace2"),
+        QStringLiteral("window.workspace3"),         QStringLiteral("window.workspace4"),
+        QStringLiteral("window.workspace5"),         QStringLiteral("window.workspace6"),
+        QStringLiteral("window.workspace7"),         QStringLiteral("window.workspace8"),
+        QStringLiteral("window.workspace9"),
+        // ... the shell's window and file commands (Effect Controls Shift+5, Reset to Saved Layout Alt+Shift+0,
+        // Maximize Frame Shift+`, Close Ctrl+W = the active panel, Close Project Ctrl+Shift+W, Save a Copy Ctrl+Alt+S),
+        // Send to Media Encoder (the export queue) and Settings (Edit > Settings..., Ctrl+,) ...
+        QStringLiteral("window.effectControls"),     QStringLiteral("window.resetToSavedLayout"),
+        QStringLiteral("window.maximizeFrame"),      QStringLiteral("file.close"),
+        QStringLiteral("file.closeProject"),         QStringLiteral("file.saveCopy"),
+        QStringLiteral("file.sendToMediaEncoder"),   QStringLiteral("edit.preferences"),
+        // ... Sequence > Render In to Out, Trim Edit and the trim keys (Trim), the timeline's display, track height
+        // and sequence tab keys (TimelinePanel.runCommand) ...
+        QStringLiteral("sequence.renderInToOut"),    QStringLiteral("sequence.trimEdit"),
+        QStringLiteral("sequence.toggleTrimType"),   QStringLiteral("sequence.trimBackward"),
+        QStringLiteral("sequence.trimForward"),      QStringLiteral("sequence.trimBackwardMany"),
+        QStringLiteral("sequence.trimForwardMany"),  QStringLiteral("timeline.showVideoFadeHandles"),
+        QStringLiteral("timeline.showAudioFadeHandles"),
+        QStringLiteral("timeline.increaseVideoTrackHeight"), QStringLiteral("timeline.decreaseVideoTrackHeight"),
+        QStringLiteral("timeline.increaseAudioTrackHeight"), QStringLiteral("timeline.decreaseAudioTrackHeight"),
+        QStringLiteral("timeline.expandAllTracks"),  QStringLiteral("timeline.minimizeAllTracks"),
+        QStringLiteral("timeline.nextSequenceTab"),  QStringLiteral("timeline.previousSequenceTab"),
+        // ... the markers the Markers bridge runs (Add Marker and Clear All stay typed edits, see above), Essential
+        // Graphics' layer keys (Graphics) and the gaming moments (Moments).
+        QStringLiteral("marker.goToNext"),           QStringLiteral("marker.goToPrevious"),
+        QStringLiteral("marker.clearSelected"),
+        QStringLiteral("graphics.newTextLayer"),     QStringLiteral("graphics.newRectangleLayer"),
+        QStringLiteral("graphics.newEllipseLayer"),  QStringLiteral("graphics.bringToFront"),
+        QStringLiteral("graphics.bringForward"),     QStringLiteral("graphics.sendBackward"),
+        QStringLiteral("graphics.sendToBack"),       QStringLiteral("graphics.selectNextLayer"),
+        QStringLiteral("graphics.selectPreviousLayer"),
+        QStringLiteral("moments.slowMo"),            QStringLiteral("moments.punchIn"),
     };
     // P.2: Premiere's editing and sequence commands (E5) and the monitors' commands (E6), which Main.qml routes to the
-    // Editing and Monitors bridges.
-    return kView.contains(id) || EditingBridge::handlesCommand(id) || MonitorBridge::handlesCommand(id);
+    // Editing and Monitors bridges; the Library's (Project panel) and Multi-Camera's keys, which it routes to them.
+    return kView.contains(id) || EditingBridge::handlesCommand(id) || MonitorBridge::handlesCommand(id) ||
+           LibraryBridge::handlesCommand(id) || MulticamEditBridge::handlesCommand(id);
 }
 
 std::shared_ptr<KeymapCommandProvider> KeymapCommandProvider::forApp(KeymapDispatcher* dispatcher,
-                                                                    ProjectController* controller) {
+                                                                    ProjectController* controller,
+                                                                    std::function<QVariantMap(const QString&)> moreAvailability) {
     std::vector<Command> commands;
     for (const keymap::CommandInfo& info : keymap::CommandRegistry::builtin().all()) {
         const QString id = QString::fromUtf8(info.id.data(), static_cast<qsizetype>(info.id.size()));
@@ -146,7 +189,12 @@ std::shared_ptr<KeymapCommandProvider> KeymapCommandProvider::forApp(KeymapDispa
     QPointer<ProjectController> project(controller);
     return std::make_shared<KeymapCommandProvider>(
         std::move(commands), [keys](const QString& id) { return keys ? keys->shortcutText(id) : QString(); },
-        [project](const QString& id) { return project ? project->commandAvailability(id) : QVariantMap{}; },
+        [project, more = std::move(moreAvailability)](const QString& id) {
+            QVariantMap state = project ? project->commandAvailability(id) : QVariantMap{};
+            if (!state.value(QStringLiteral("handled")).toBool() && more)
+                state = more(id);
+            return state;
+        },
         [keys](const QString& id) { return keys && keys->trigger(id); });
 }
 
@@ -161,17 +209,22 @@ std::vector<PaletteItem> KeymapCommandProvider::items(const QString&) const {
         item.shortcut = m_shortcutText ? m_shortcutText(c.id) : QString();
         item.section = QStringLiteral("commands");
         item.keywords = {c.id, c.premiereName};
-        const QVariantMap state = m_availability ? m_availability(c.id) : QVariantMap{};
-        if (state.value(QStringLiteral("handled")).toBool()) {
-            item.enabled = state.value(QStringLiteral("enabled")).toBool();
-            item.reason = state.value(QStringLiteral("reason")).toString();
-        } else if (!viewHandles(c.id)) {
-            item.enabled = false;
-            item.reason = CommandPalette::tr("Not available yet");
-        }
+        const QVariantMap state = stateOf(c.id);
+        item.enabled = state.value(QStringLiteral("enabled")).toBool();
+        item.reason = state.value(QStringLiteral("reason")).toString();
         out.push_back(std::move(item));
     }
     return out;
+}
+
+QVariantMap KeymapCommandProvider::stateOf(const QString& id) const {
+    const QVariantMap state = m_availability ? m_availability(id) : QVariantMap{};
+    if (state.value(QStringLiteral("handled")).toBool())
+        return {{QStringLiteral("enabled"), state.value(QStringLiteral("enabled")).toBool()},
+                {QStringLiteral("reason"), state.value(QStringLiteral("reason")).toString()}};
+    if (viewHandles(id))
+        return {{QStringLiteral("enabled"), true}, {QStringLiteral("reason"), QString()}};
+    return {{QStringLiteral("enabled"), false}, {QStringLiteral("reason"), CommandPalette::tr("Not available yet")}};
 }
 
 QString KeymapCommandProvider::activate(const PaletteItem& item, const QVariantMap&) {
@@ -259,6 +312,47 @@ QString ActionProvider::activate(const PaletteItem& item, const QVariantMap&) {
     return CommandPalette::tr("Unknown command");
 }
 
+int ShellActionProvider::setActions(const QVariantList& actions) {
+    std::vector<PaletteItem> rows;
+    QSet<QString> seen;
+    for (const QVariant& value : actions) {
+        const QVariantMap a = value.toMap();
+        const QString id = a.value(QStringLiteral("id")).toString();
+        const QString title = a.value(QStringLiteral("title")).toString();
+        if (id.isEmpty() || title.isEmpty() || seen.contains(id))
+            continue;
+        seen.insert(id);
+        PaletteItem item;
+        item.key = QStringLiteral("shell:") + id;
+        item.title = title;
+        item.group = a.value(QStringLiteral("group")).toString();
+        item.detail = a.value(QStringLiteral("detail")).toString();
+        item.shortcut = a.value(QStringLiteral("shortcut")).toString();
+        item.section = QStringLiteral("commands");
+        item.keywords = a.value(QStringLiteral("keywords")).toStringList();
+        item.enabled = a.value(QStringLiteral("enabled"), true).toBool();
+        if (!item.enabled) {
+            item.reason = a.value(QStringLiteral("reason")).toString();
+            if (item.reason.isEmpty())
+                item.reason = CommandPalette::tr("Not available now");
+        }
+        rows.push_back(std::move(item));
+    }
+    m_items = std::move(rows);
+    notifyChanged();
+    return static_cast<int>(m_items.size());
+}
+
+std::vector<PaletteItem> ShellActionProvider::items(const QString&) const {
+    return m_items;
+}
+
+QString ShellActionProvider::activate(const PaletteItem& item, const QVariantMap&) {
+    if (m_run)
+        m_run(item.key.mid(item.key.indexOf(QLatin1Char(':')) + 1));
+    return {};
+}
+
 // ---- Palette --------------------------------------------------------------------------------------------------------
 
 CommandPalette::CommandPalette(QObject* parent) : QObject(parent) {}
@@ -277,7 +371,23 @@ CommandPalette* CommandPalette::create(QQmlEngine* qmlEngine, QJSEngine*) {
         auto* keys = qmlEngine->singletonInstance<KeymapDispatcher*>("Wabcut", "KeymapDispatcher");
         auto* bridge = qmlEngine->singletonInstance<CommandBridge*>("Wabcut", "CommandBridge");
         palette->m_bridge = bridge;
-        palette->addProvider(KeymapCommandProvider::forApp(keys, controller));
+        // The Library's and Multi-Camera's keys say themselves whether they can run now ("Select items in the Library
+        // first", "Turn on the multi-camera view first"); their bridges are asked when the palette lists them.
+        QPointer<QQmlEngine> engine(qmlEngine);
+        const auto bridgeAvailability = [engine](const QString& id) -> QVariantMap {
+            if (!engine)
+                return {};
+            if (LibraryBridge::handlesCommand(id)) {
+                auto* library = engine->singletonInstance<LibraryBridge*>("Wabcut", "Library");
+                return library ? library->commandAvailability(id) : QVariantMap{};
+            }
+            if (MulticamEditBridge::handlesCommand(id)) {
+                auto* multicam = engine->singletonInstance<MulticamEditBridge*>("Wabcut", "Multicam");
+                return multicam ? multicam->commandAvailability(id) : QVariantMap{};
+            }
+            return {};
+        };
+        palette->addProvider(KeymapCommandProvider::forApp(keys, controller, bridgeAvailability));
         if (bridge)
             palette->addProvider(std::make_shared<EditCommandProvider>(bridge));
         if (auto* titles = qmlEngine->singletonInstance<TitlesBridge*>("Wabcut", "Titles")) {
@@ -293,6 +403,10 @@ CommandPalette* CommandPalette::create(QQmlEngine* qmlEngine, QJSEngine*) {
         // C.12 (M5n): the extensions' commands ("ext:<extension>/<command>"), an "Extensions" group.
         if (auto* extensions = qmlEngine->singletonInstance<ExtensionsBridge*>("Wabcut", "Extensions"))
             palette->addProvider(extensions->paletteProvider());
+        // UX rework (L): every row of the Settings window ("action:settings.<id>", a "Settings" group); running one
+        // asks Main to show it (AppSettings.openRequested).
+        if (auto* settings = qmlEngine->singletonInstance<AppSettingsBridge*>("Wabcut", "AppSettings"))
+            palette->addProvider(AppSettingsBridge::paletteProvider(settings));
     }
     // Help (M5j onboarding): Main runs them (Onboarding.run()).
     const auto help = [palette](const char* what) {
@@ -330,6 +444,8 @@ CommandPalette* CommandPalette::create(QQmlEngine* qmlEngine, QJSEngine*) {
 
 void CommandPalette::addProvider(std::shared_ptr<PaletteProvider> provider) {
     provider->setChangedCallback([this] { refresh(); });
+    if (!m_keymap) // commandState answers from the keymap's rows
+        m_keymap = std::dynamic_pointer_cast<KeymapCommandProvider>(provider);
     m_providers.push_back(std::move(provider));
     refresh();
 }
@@ -473,6 +589,37 @@ QVariantMap CommandPalette::defaults(const QString& key) const {
     if (key.startsWith(QLatin1String("edit:")) && m_bridge)
         return m_bridge->defaults(key.mid(5));
     return {};
+}
+
+int CommandPalette::setShellActions(const QVariantList& actions) {
+    if (m_shell)
+        return m_shell->setActions(actions); // refreshes the rows
+    // First call: after the app's providers, so an empty query lists the keymap's commands first.
+    m_shell = std::make_shared<ShellActionProvider>([this](const QString& id) { emit shellActionRequested(id); });
+    const int kept = m_shell->setActions(actions);
+    addProvider(m_shell);
+    return kept;
+}
+
+QVariantMap CommandPalette::commandState(const QString& id) const {
+    const QByteArray utf8 = id.toUtf8();
+    const keymap::CommandInfo* info = keymap::CommandRegistry::builtin().find(std::string_view(utf8.constData(), static_cast<std::size_t>(utf8.size())));
+    QVariantMap out{{QStringLiteral("known"), info != nullptr}};
+    if (info) {
+        out.insert(QStringLiteral("title"),
+                   QString::fromUtf8(info->displayName.data(), static_cast<qsizetype>(info->displayName.size())));
+        out.insert(QStringLiteral("group"), QString::fromUtf8(info->group.data(), static_cast<qsizetype>(info->group.size())));
+    }
+    out.insert(QStringLiteral("shortcut"), m_keymap ? m_keymap->shortcutOf(id) : QString());
+    QVariantMap state = m_keymap ? m_keymap->stateOf(id)
+                                 : QVariantMap{{QStringLiteral("enabled"), false},
+                                               {QStringLiteral("reason"), tr("Not available yet")}};
+    // A key whose command the palette lists as a typed edit (Add Marker asks for a name there): Main.qml runs the key.
+    if (!state.value(QStringLiteral("enabled")).toBool() &&
+        state.value(QStringLiteral("reason")).toString() == tr("Not available yet") && info && CommandBridge::offers(id))
+        state = {{QStringLiteral("enabled"), true}, {QStringLiteral("reason"), QString()}};
+    out.insert(state);
+    return out;
 }
 
 void CommandPalette::remember(const QString& key) {

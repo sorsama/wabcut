@@ -514,6 +514,50 @@ TEST_CASE("Document: save, open, dirty state and Save As", "[editor][document]")
     CHECK(loaded->media[0]->locator.relativePath == "../../../../media/h264_1080p60_aac.mp4");
 }
 
+// UX rework: File > Save a Copy writes the project somewhere else and leaves the document as it was (its file, its
+// unsaved changes, what it autosaves); the copy's relative media paths are for its own folder.
+TEST_CASE("Document: Save a Copy writes another file and leaves the document as it was", "[editor][document]") {
+    const fs::path dir = workDir("save-copy");
+    SequenceId seqId;
+    ProjectState initial = projectWithSequence(&seqId);
+    const MediaId voice = addSound(initial, "voice");
+    for (MediaPtr& media : initial.media) { // the sound file in the work folder (it need not exist)
+        if (media->id == voice) {
+            auto item = std::make_shared<MediaItem>(*media);
+            item->locator.path = pathToUtf8(dir / "media" / "voice.wav");
+            item->info.path = item->locator.path;
+            media = std::move(item);
+        }
+    }
+    EditSession session(std::move(initial));
+    ProjectDocument doc(session, {.saveBackups = 2});
+    const fs::path file = dir / "film.wabcut";
+    REQUIRE(doc.saveAs(file));
+    REQUIRE(session.apply("New Sequence",
+                          [](const ProjectState& s) { return edit::addSequence(s, edit::SequenceSettings{}); }));
+    REQUIRE(doc.isDirty());
+    const auto autosaveBefore = doc.prepareAutosave().has_value();
+
+    const fs::path copy = dir / "copies" / "deeper" / "film copy.wabcut";
+    fs::create_directories(copy.parent_path());
+    REQUIRE(doc.saveCopy(copy));
+    auto copied = io::loadProject(copy);
+    REQUIRE(copied);
+    CHECK(copied->sequences.size() == 2); // the project as it is now
+    REQUIRE(copied->media.size() == 1);
+    CHECK(copied->media[0]->locator.relativePath == "../../media/voice.wav"); // from the copy's folder
+    // The document is as it was: same file, still unsaved, still to autosave; the project file has one sequence.
+    CHECK(doc.file() == fs::absolute(file).lexically_normal());
+    CHECK(doc.isDirty());
+    CHECK(doc.prepareAutosave().has_value() == autosaveBefore);
+    auto original = io::loadProject(file);
+    REQUIRE(original);
+    CHECK(original->sequences.size() == 1);
+    // A copy rotates no backups next to itself, even over an earlier copy.
+    REQUIRE(doc.saveCopy(copy));
+    CHECK_FALSE(fs::exists(io::backupPath(copy, 1)));
+}
+
 TEST_CASE("Document: autosave rotates recovery copies, recovery reopens them", "[editor][document]") {
     if (!haveMedia()) {
         SKIP("test media missing");

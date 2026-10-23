@@ -557,7 +557,7 @@ TEST_CASE("Essential Sound in the shell: the panel on a dialogue clip; screensho
     REQUIRE(es->applyPreset(QStringLiteral("podcastVoice")).isEmpty());
     REQUIRE(es->setOption(QStringLiteral("creative.reverb"), QStringLiteral("smallRoom")).isEmpty());
 
-    // The browser panel "essential" (the rail's Essential Sound).
+    // The browser panel "essential" (Window > Essential Sound).
     REQUIRE(QMetaObject::invokeMethod(shell.window.get(), "showBrowserPanel", Q_ARG(QVariant, QVariant(QStringLiteral("essential")))));
     spin(400);
     QQuickWindow* w = shell.window.get();

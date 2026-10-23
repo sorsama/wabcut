@@ -1,29 +1,39 @@
 pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls.Basic
+import QtQuick.Effects
 
-// The Settings window (0.1.3; it replaces the rail's Settings popover and the title bar's Appearance popover): a
+// The Settings window (0.1.3; it replaced the rail's Settings popover and the title bar's Appearance popover): a
 // modal sheet over the window with the categories on the left (the slice mark on the current one) and the page on the
-// right. Opened from the rail's Settings button, File > Settings… (Ctrl+,) and openAt(key) (e.g. "ai" from the
-// transcript's "set up transcription"). Pages are created when first shown and kept while the window lives.
+// right. Opened from Edit > Settings… (Ctrl+,), Home's Settings button and openAt(key) (e.g. "ai" from the
+// transcript's "set up transcription"); Main hosts it (window.openSettings). Pages are created when first shown and kept while the window lives.
 // Things outside the window (Settings Audio, Media & cache, the plug-in and extension managers, the shortcuts editor)
 // open once it has closed, so they keep the focus (review P1-8).
+// UX rework (stream L): a search field tops the sidebar (it has the focus when the window opens). While it has text,
+// the sidebar lists the settings it finds (AppSettings.search: title, "Page › Section", a mark on rows that open a
+// dialog of their own) instead of the categories; choosing one shows its page, scrolls to the row, flashes it and
+// focuses its control. revealSetting(page, row) does the same from outside (AppSettings.openRequested: the command
+// palette's Settings rows).
 Popup {
     id: root
     objectName: "settingsWindow"
 
     /// The page shown: one of `categories`' keys.
     property string currentPage: "general"
-    /// The left rail's panel catalog (LeftRail.panels), for Settings > Interface's rail editor.
-    property var railPanels: []
     /// Pages created so far ({key: true}).
     property var visited: ({ general: true })
     // What to run once the window has closed (runAction).
     property string pending: ""
+    /// The Settings search's text ("" = the categories show).
+    property alias searchText: searchField.text
+    /// What the search finds (AppSettings.search: { id, page, row, title, detail, opens, ... }), best first.
+    readonly property var results: searchText.trim() !== "" ? AppSettings.search(searchText, 12) : []
+    // A row to show once the window has opened ({ page, row }; revealSetting before the window was open).
+    property var pendingReveal: null
 
-    /// Settings Audio (the rail forwards it to the window's dialog).
+    /// Settings Audio (Main opens the window's dialog).
     signal audioSettingsRequested()
-    /// Help items the rail owns ("shortcuts", "trainer").
+    /// Help items the window owns ("shortcuts", "trainer": Main.showHelp).
     signal helpRequested(string what)
 
     readonly property var categories: [
@@ -61,6 +71,33 @@ Popup {
         }
         return null
     }
+    /// Opens the window on page `pageKey` and shows its setting `row` (an AppSettings.index `row`): the row scrolls into
+    /// view, flashes, and its control takes the focus. The search is cleared, so the categories show. Used for
+    /// AppSettings.openRequested (the command palette's Settings rows); "" = the page only, like openAt.
+    function revealSetting(pageKey: string, row: string) {
+        root.searchText = ""
+        root.showRow(pageKey, row)
+        root.open()
+    }
+    /// Shows page `pageKey` and then its row `row`, now if the window is open, else once it has opened.
+    function showRow(pageKey: string, row: string) {
+        if (!root.categories.some(c => c.key === pageKey))
+            return
+        root.showPage(pageKey)
+        if (row === "")
+            return
+        if (root.opened)
+            Qt.callLater(() => root.revealRow(pageKey, row))
+        else
+            root.pendingReveal = { page: pageKey, row: row }
+    }
+    /// The row `row` of the page `pageKey` (created and shown): scroll, flash, focus. False when it has no such row.
+    function revealRow(pageKey: string, row: string): bool {
+        const item = root.page(pageKey)
+        if (pageKey === "ai")
+            return (item as AiSettingsPage)?.reveal(row) ?? false
+        return (item as SettingsPage)?.reveal(row) ?? false
+    }
     /// Runs `what` once the window has closed (see the header): "media", "plugins", "audio", "extensions",
     /// "shortcuts", "trainer" or "editing" (0.2: Preferences > Media and Timeline).
     function runAction(what: string) {
@@ -96,8 +133,18 @@ Popup {
     padding: 0
     closePolicy: Popup.CloseOnEscape
 
-    onOpened: Qt.callLater(() => categoryList.focusCurrent())
+    // Opened from outside on a row: that row (with its control focused); else the search field, ready to type.
+    onOpened: {
+        const reveal = root.pendingReveal
+        root.pendingReveal = null
+        if (reveal)
+            Qt.callLater(() => root.revealRow(reveal.page, reveal.row))
+        else
+            Qt.callLater(() => searchField.forceActiveFocus(Qt.PopupFocusReason))
+    }
     onClosed: {
+        root.searchText = "" // the categories show again next time
+        root.pendingReveal = null
         const what = root.pending
         root.pending = ""
         if (what !== "")
@@ -109,11 +156,24 @@ Popup {
         color: Theme.scrim
     }
 
+    // A raised sheet (design language: dialogs and menus cast a soft shadow): the hairline ring and a soft shadow under
+    // it, so the window reads as lifted off what is behind it (in the light theme its white edge met the light editor).
     background: Rectangle {
+        objectName: "settingsWindowBackground"
         radius: Theme.radiusPanel
         color: Theme.panel
         border.width: Theme.hairline
         border.color: Theme.borderStrong
+
+        RectangularShadow {
+            objectName: "settingsWindowShadow"
+            z: -1
+            anchors.fill: parent
+            radius: parent.radius
+            offset.y: Theme.space(3)
+            blur: Theme.space(14)
+            color: Theme.shadow
+        }
     }
 
     enter: Transition {
@@ -159,14 +219,190 @@ Popup {
                 Accessible.name: text
             }
 
-            Column {
-                id: categoryList
+            // ---- Search ----
+            FieldInput {
+                id: searchField
+                objectName: "settingsSearch"
                 anchors.top: windowTitle.bottom
-                anchors.topMargin: Theme.space(4)
+                anchors.topMargin: Theme.space(3)
                 anchors.left: parent.left
                 anchors.right: parent.right
                 anchors.leftMargin: Theme.space(2)
                 anchors.rightMargin: Theme.space(2)
+                iconName: "search"
+                clearOnEscape: true
+                placeholderText: qsTr("Search settings")
+                Accessible.name: qsTr("Search settings")
+                Accessible.description: root.searchText.trim() === "" ? ""
+                                        : qsTr("%n setting(s) found", "", root.results.length)
+                // Enter shows the best match; Down goes into the results (or the categories).
+                Keys.onShortcutOverride: event => event.accepted = event.key === Qt.Key_Down
+                onAccepted: {
+                    if (root.results.length > 0)
+                        resultList.choose(0)
+                }
+                Keys.onDownPressed: {
+                    if (root.searchText.trim() !== "")
+                        resultList.focusResult(0)
+                    else
+                        categoryList.focusCurrent()
+                }
+            }
+
+            // ---- Search results (while the field has text) ----
+            ListView {
+                id: resultList
+                objectName: "settingsResults"
+                anchors.top: searchField.bottom
+                anchors.topMargin: Theme.space(3)
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                anchors.leftMargin: Theme.space(2)
+                anchors.rightMargin: Theme.space(2)
+                anchors.bottomMargin: Theme.space(3)
+                visible: root.searchText.trim() !== ""
+                clip: true
+                spacing: Theme.space(0.5)
+                boundsBehavior: Flickable.StopAtBounds
+                model: root.results
+                ScrollBar.vertical: ThinScrollBar {}
+                Accessible.role: Accessible.List
+                Accessible.name: qsTr("Settings found")
+
+                function focusResult(index: int) {
+                    if (index < 0) {
+                        searchField.forceActiveFocus(Qt.TabFocusReason)
+                        return
+                    }
+                    if (index >= count)
+                        return
+                    positionViewAtIndex(index, ListView.Contain)
+                    itemAtIndex(index)?.forceActiveFocus(Qt.TabFocusReason)
+                }
+                function choose(index: int) {
+                    const hit = root.results[index]
+                    if (!hit)
+                        return
+                    root.showPage(hit.page)
+                    Qt.callLater(() => root.revealRow(hit.page, hit.row))
+                }
+
+                delegate: AbstractButton {
+                    id: resultButton
+                    required property var modelData
+                    required property int index
+                    readonly property var category: root.categories.find(c => c.key === modelData.page) ?? null
+                    readonly property bool opensDialog: (modelData.opens ?? "") !== ""
+
+                    objectName: "settingsResult_" + modelData.id
+                    width: resultList.width
+                    height: resultTexts.implicitHeight + Theme.space(4)
+                    hoverEnabled: true
+                    focusPolicy: Qt.StrongFocus
+                    Accessible.role: Accessible.ListItem
+                    Accessible.name: modelData.title
+                    Accessible.description: opensDialog ? qsTr("%1, opens its own window").arg(modelData.detail)
+                                                        : modelData.detail
+                    onClicked: resultList.choose(index)
+                    Keys.onUpPressed: resultList.focusResult(index - 1)
+                    Keys.onDownPressed: resultList.focusResult(index + 1)
+                    Keys.onReturnPressed: resultList.choose(index)
+                    Keys.onEnterPressed: resultList.choose(index)
+                    Keys.onShortcutOverride: event => event.accepted = [Qt.Key_Up, Qt.Key_Down, Qt.Key_Return, Qt.Key_Enter].includes(event.key)
+
+                    background: Rectangle {
+                        radius: Theme.radiusField
+                        color: resultButton.pressed ? Theme.hover
+                             : resultButton.hovered || resultButton.activeFocus ? Qt.alpha(Theme.hover, 0.6) : "transparent"
+                        Behavior on color { ColorAnimation { duration: Theme.durFast } }
+
+                        FocusRing {
+                            targetRadius: Theme.radiusField
+                            visible: resultButton.visualFocus
+                        }
+                    }
+                    contentItem: Item {
+                        Icon {
+                            id: resultIcon
+                            x: Theme.space(2.5)
+                            y: Theme.space(2)
+                            name: resultButton.category?.icon ?? "settings"
+                            size: Theme.iconSm
+                            color: Theme.textSecondary
+                        }
+                        Column {
+                            id: resultTexts
+                            anchors.left: resultIcon.right
+                            anchors.leftMargin: Theme.space(2)
+                            anchors.right: opensIcon.visible ? opensIcon.left : parent.right
+                            anchors.rightMargin: Theme.space(2)
+                            y: Theme.space(2)
+                            spacing: Theme.space(0.5)
+
+                            Text {
+                                width: parent.width
+                                text: resultButton.modelData.title
+                                wrapMode: Text.WordWrap
+                                maximumLineCount: 2
+                                elide: Text.ElideRight
+                                color: Theme.textPrimary
+                                font.family: Theme.fontSans
+                                font.pixelSize: Theme.textMd
+                                font.weight: Font.Medium
+                            }
+                            Text {
+                                width: parent.width
+                                text: resultButton.modelData.detail
+                                elide: Text.ElideRight
+                                color: Theme.textTertiary
+                                font.family: Theme.fontSans
+                                font.pixelSize: Theme.textXs
+                            }
+                        }
+                        // Rows that open a dialog of their own (Media & cache, the shortcuts editor...).
+                        Icon {
+                            id: opensIcon
+                            visible: resultButton.opensDialog
+                            anchors.right: parent.right
+                            anchors.rightMargin: Theme.space(2)
+                            y: Theme.space(2)
+                            name: "external-link"
+                            size: Theme.iconXs
+                            color: Theme.textTertiary
+                        }
+                    }
+                    HoverHandler {
+                        cursorShape: Qt.PointingHandCursor
+                    }
+                }
+            }
+            Text {
+                objectName: "settingsNoResults"
+                anchors.top: searchField.bottom
+                anchors.topMargin: Theme.space(4)
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.leftMargin: Theme.space(4)
+                anchors.rightMargin: Theme.space(4)
+                visible: resultList.visible && root.results.length === 0
+                //: Settings search without a match; %1 = what was typed
+                text: qsTr("No setting matches “%1”.").arg(root.searchText.trim())
+                wrapMode: Text.WordWrap
+                color: Theme.textTertiary
+                font.family: Theme.fontSans
+                font.pixelSize: Theme.textSm
+            }
+
+            Column {
+                id: categoryList
+                anchors.top: searchField.bottom
+                anchors.topMargin: Theme.space(3)
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.leftMargin: Theme.space(2)
+                anchors.rightMargin: Theme.space(2)
+                visible: !resultList.visible
                 spacing: Theme.space(0.5)
                 Accessible.role: Accessible.PageTabList
                 Accessible.name: qsTr("Settings categories")
@@ -316,9 +552,7 @@ Popup {
     }
     Component {
         id: interfacePage
-        InterfaceSettingsPage {
-            railPanels: root.railPanels
-        }
+        InterfaceSettingsPage {}
     }
     Component {
         id: timelinePage
@@ -342,6 +576,7 @@ Popup {
             SettingsSection {
                 title: qsTr("Voice-over")
                 SettingsRow {
+                    rowKey: "voiceOver"
                     label: qsTr("Microphone, count-in and latency")
                     description: qsTr("The input voice-over records from, its pre-roll and post-roll, monitoring, and the recording latency.")
                     PillButton {
@@ -355,6 +590,7 @@ Popup {
             SettingsSection {
                 title: qsTr("Plug-ins")
                 SettingsRow {
+                    rowKey: "audioPlugins"
                     label: qsTr("Audio plug-ins")
                     description: qsTr("Plug-in folders, rescanning, and plug-ins that are blocked after a crash.")
                     PillButton {
@@ -383,6 +619,7 @@ Popup {
             SettingsSection {
                 title: qsTr("Shortcuts")
                 SettingsRow {
+                    rowKey: "shortcuts"
                     label: qsTr("Keyboard shortcuts")
                     description: qsTr("Change keys, import a Premiere key set, or reset to the defaults.")
                     PillButton {
@@ -394,6 +631,7 @@ Popup {
                     }
                 }
                 SettingsRow {
+                    rowKey: "trainer"
                     label: qsTr("Keyboard trainer")
                     description: qsTr("A short game that teaches the editing keys.")
                     PillButton {
@@ -416,6 +654,7 @@ Popup {
             SettingsSection {
                 title: qsTr("Extensions")
                 SettingsRow {
+                    rowKey: "extensions"
                     label: qsTr("Installed and project extensions")
                     description: qsTr("Turn extensions on or off, review their permissions and read their logs.")
                     PillButton {
@@ -429,6 +668,7 @@ Popup {
             SettingsSection {
                 title: qsTr("Audio plug-ins")
                 SettingsRow {
+                    rowKey: "pluginFolders"
                     label: qsTr("Plug-in folders and scanning")
                     description: qsTr("Where Wabcut looks for VST3 and CLAP plug-ins, and the ones it blocks.")
                     PillButton {

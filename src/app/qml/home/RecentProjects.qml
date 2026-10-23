@@ -2,128 +2,91 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
-import QtQuick.Shapes
 
-// Projects (Home.recent, newest first), design language v3: a Recent / Starred filter, a count and a grid / list
-// switch over the cards. A card shows the project's picture (ProjectThumb), its name and when it was last opened, with
-// a star (Preferences.setStarred) at its corner. The search in Home's header narrows the list by name (`query`). A
-// project whose file is gone is dimmed and flagged "Missing"; clicking it offers to remove it from the list.
+// The Projects page (design language v3): every recent project (Home.recent, newest first) or only the starred ones
+// (Home.projectEntries: a starred project stays even after it left the recent list), sorted by when it was last opened
+// or by name, as a grid of cards (ProjectGrid) or a list of rows (ProjectRow), narrowed by Home's search (`query`, by
+// name). The filter, the sort and the view are remembered (Preferences "home/project*"). A project's menu, Locate...,
+// Remove and its Undo run in HomeScreen (`menuRequested`, `removeRequested`); the toolbar's "..." holds Clear Unstarred
+// Projects... (`clearUnstarredRequested`). Lists scroll inside the page; the page itself never does.
 HomeCard {
     id: card
-    objectName: "homeRecentCard"
+    objectName: "homeProjectsPage"
 
     /// Home's search text: only projects whose name contains it (any case).
     property string query: ""
-    /// 0: every recent project, 1: the starred ones.
-    property int filter: 0
-    property bool listView: false
-    // Read again whenever the starred list changes.
+    /// "all" or "starred" (remembered).
+    property string filter: Preferences.homeProjectFilter === "starred" ? "starred" : "all"
+    /// "opened" (last opened first) or "name" (remembered).
+    property string sort: Preferences.homeProjectSort === "name" ? "name" : "opened"
+    /// "grid" or "list" (remembered).
+    property string view: Preferences.homeProjectView === "list" ? "list" : "grid"
+    // Read again whenever the starred list or the recent list changes.
     readonly property var starredPaths: Preferences.homeStarred !== "" ? Preferences.starredProjects() : []
-    readonly property var matching: {
+    readonly property int starredCount: card.starredPaths.length
+    readonly property var source: card.filter === "starred"
+                                  ? (Home.recent.length >= 0 ? Home.projectEntries(card.starredPaths) : [])
+                                  : Home.recent
+    readonly property var shown: {
         const q = card.query.trim().toLowerCase()
-        return Home.recent.filter(p => q === "" || String(p.name).toLowerCase().includes(q))
+        const list = card.source.filter(p => q === "" || String(p.name).toLowerCase().includes(q))
+        if (card.sort === "name")
+            return list.slice().sort((a, b) => String(a.name).localeCompare(String(b.name)))
+        // Newest first; a starred project that left the recent list (no date) goes last.
+        return list.slice().sort((a, b) => String(b.opened ?? "").localeCompare(String(a.opened ?? "")))
     }
-    readonly property var shown: card.filter === 1 ? card.matching.filter(p => card.starredPaths.includes(p.path))
-                                                    : card.matching
-    readonly property int starredCount: Home.recent.filter(p => card.starredPaths.includes(p.path)).length
+    readonly property bool listView: card.view === "list"
 
-    signal openRequested(url file)      // an empty url: choose a file
+    signal openRequested(var project)
+    signal menuRequested(var project, Item item, real x, real y)
+    signal removeRequested(var project)
+    signal clearUnstarredRequested()
+    signal newProjectRequested()
+    signal chooseProjectRequested()
 
-    // The star in a project's corner: lime and filled when starred.
-    component StarButton: AbstractButton {
-        id: star
-
-        required property string path
-        required property string projectName
-        // Read again whenever the starred list changes (Preferences.homeStarred).
-        readonly property bool starred: Preferences.homeStarred !== "" && Preferences.isStarred(path)
-
-        objectName: "homeRecentStar"
-        implicitWidth: Theme.controlHeight
-        implicitHeight: Theme.controlHeight
-        focusPolicy: Qt.StrongFocus
-        hoverEnabled: true
-        Accessible.name: starred ? qsTr("Unstar %1").arg(projectName) : qsTr("Star %1").arg(projectName)
-        Accessible.checkable: true
-        Accessible.checked: starred
-        onClicked: Preferences.setStarred(star.path, !star.starred)
-
-        background: Rectangle {
-            radius: height / 2
-            color: star.starred ? Theme.brandLime : star.hovered ? Theme.hover : Theme.raised
-            Behavior on color { ColorAnimation { duration: Theme.durFast } }
-        }
-        contentItem: Item {
-            Shape {
-                id: glyph
-                anchors.centerIn: parent
-                width: Theme.iconXs
-                height: Theme.iconXs
-                preferredRendererType: Shape.CurveRenderer
-                readonly property real u: width / 24
-                ShapePath {
-                    strokeColor: star.starred ? Theme.clipInk : Theme.textSecondary
-                    strokeWidth: 2 * glyph.u
-                    joinStyle: ShapePath.RoundJoin
-                    fillColor: star.starred ? Theme.clipInk : "transparent"
-                    PathPolyline {
-                        path: [Qt.point(12, 2), Qt.point(15.1, 8.3), Qt.point(22, 9.3), Qt.point(17, 14.1),
-                               Qt.point(18.2, 21), Qt.point(12, 17.8), Qt.point(5.8, 21), Qt.point(7, 14.1),
-                               Qt.point(2, 9.3), Qt.point(8.9, 8.3), Qt.point(12, 2)]
-                               .map(p => Qt.point(p.x * glyph.u, p.y * glyph.u))
-                    }
-                }
-            }
-        }
-        FocusRing {
-            targetRadius: star.height / 2
-            visible: star.visualFocus
-        }
-        HoverHandler {
-            cursorShape: Qt.PointingHandCursor
-        }
+    function setFilter(value: string) {
+        card.filter = value
+        Preferences.homeProjectFilter = value
+    }
+    function setSort(value: string) {
+        card.sort = value
+        Preferences.homeProjectSort = value
+    }
+    function setView(value: string) {
+        card.view = value
+        Preferences.homeProjectView = value
+    }
+    /// The current card or row takes the keyboard focus.
+    function focusList() {
+        if (card.listView)
+            list.step(0)
+        else
+            grid.focusCurrent()
     }
 
-    // A missing project's badge.
-    component MissingBadge: Rectangle {
-        implicitWidth: missingRow.implicitWidth + Theme.space(3)
-        implicitHeight: Theme.space(5.5)
-        radius: height / 2
-        color: Theme.clipInk
+    padding: Theme.space(4)
 
-        Row {
-            id: missingRow
-            anchors.centerIn: parent
-            spacing: Theme.space(1)
-            Icon {
-                anchors.verticalCenter: parent.verticalCenter
-                name: "triangle-alert"
-                size: Theme.iconXs
-                color: Theme.warning
-            }
-            Text {
-                anchors.verticalCenter: parent.verticalCenter
-                text: qsTr("Missing")
-                color: Theme.contentWhite
-                font.family: Theme.fontSans
-                font.pixelSize: Theme.textXs
-                font.weight: Theme.weightLabel
-            }
-        }
-    }
-
-    // Filter, count, grid / list.
+    // Filter, sort, count, grid / list, the page's menu.
     RowLayout {
         Layout.fillWidth: true
+        Layout.fillHeight: false
         spacing: Theme.space(2)
 
         PillTabs {
             objectName: "homeProjectFilter"
-            Layout.preferredWidth: Theme.space(56)
-            model: [qsTr("Recent %1").arg(Home.recent.length), qsTr("Starred %1").arg(card.starredCount)]
-            currentIndex: card.filter
+            Layout.preferredWidth: Theme.space(48)
+            model: [qsTr("All"), card.starredCount > 0 ? qsTr("Starred %1").arg(card.starredCount) : qsTr("Starred")]
+            currentIndex: card.filter === "starred" ? 1 : 0
             Accessible.name: qsTr("Show projects")
-            onActivated: index => card.filter = index
+            onActivated: index => card.setFilter(index === 1 ? "starred" : "all")
+        }
+        PillTabs {
+            objectName: "homeProjectSort"
+            Layout.preferredWidth: Theme.space(52)
+            model: [qsTr("Last opened"), qsTr("Name")]
+            currentIndex: card.sort === "name" ? 1 : 0
+            Accessible.name: qsTr("Sort projects")
+            onActivated: index => card.setSort(index === 1 ? "name" : "opened")
         }
         Item { Layout.fillWidth: true }
         Text {
@@ -149,7 +112,7 @@ HomeCard {
                     iconSize: Theme.iconXs
                     checked: !card.listView
                     tooltip: qsTr("Show projects as a grid")
-                    onClicked: card.listView = false
+                    onClicked: card.setView("grid")
                 }
                 IconButton {
                     objectName: "homeListView"
@@ -158,334 +121,221 @@ HomeCard {
                     iconSize: Theme.iconXs
                     checked: card.listView
                     tooltip: qsTr("Show projects as a list")
-                    onClicked: card.listView = true
+                    onClicked: card.setView("list")
                 }
             }
         }
-    }
-
-    Text {
-        objectName: "homeProjectsEmpty"
-        Layout.fillWidth: true
-        Layout.topMargin: Theme.space(2)
-        Layout.bottomMargin: Theme.space(2)
-        visible: card.shown.length === 0
-        horizontalAlignment: Text.AlignHCenter
-        wrapMode: Text.Wrap
-        text: Home.recent.length === 0 ? qsTr("Projects you open or save appear here.")
-            : card.filter === 1 && card.query.trim() === "" ? qsTr("Star a project to keep it here.")
-            : qsTr("No projects match. Try another name or filter.")
-        color: Theme.textTertiary
-        font.family: Theme.fontSans
-        font.pixelSize: Theme.textMd
-    }
-
-    // ---- Grid ----
-    Flow {
-        id: flow
-        objectName: "homeRecentList"
-        Layout.fillWidth: true
-        visible: !card.listView && card.shown.length > 0
-        spacing: Theme.space(3)
-
-        readonly property int columns: Math.max(1, Math.floor((width + spacing) / (Theme.space(56) + spacing)))
-        readonly property real cardWidth: Math.floor((width - spacing * (columns - 1)) / columns)
-
-        Repeater {
-            model: card.listView ? [] : card.shown
-            delegate: AbstractButton {
-                id: recent
-                required property var modelData
-                required property int index
-                objectName: "homeRecent_" + index
-                width: flow.cardWidth
-                padding: Theme.space(2)
-                bottomPadding: Theme.space(3)
-                implicitHeight: thumb.height + info.implicitHeight + Theme.space(2.5) + topPadding + bottomPadding
-                focusPolicy: Qt.StrongFocus
-                hoverEnabled: true
-                Accessible.name: modelData.missing ? qsTr("%1 (missing)").arg(modelData.name) : modelData.name
-                Accessible.description: modelData.path
-                onClicked: {
-                    if (modelData.missing)
-                        removePrompt.visible = !removePrompt.visible
-                    else
-                        card.openRequested(modelData.url)
-                }
-
-                background: Rectangle {
-                    radius: Theme.radiusPanel
-                    color: recent.hovered || recent.visualFocus ? Theme.section : "transparent"
-                    Behavior on color { ColorAnimation { duration: Theme.durFast } }
-                }
-                contentItem: Item {
-                    opacity: recent.modelData.missing ? Theme.disabledOpacity + 0.2 : 1
-
-                    ProjectThumb {
-                        id: thumb
-                        width: parent.width
-                        height: Math.round(thumb.width * 10 / 16)
-                        source: recent.modelData.missing ? "" : recent.modelData.thumbnail
-                        hueName: Theme.hueOrder[recent.index % Theme.hueOrder.length]
-                        seed: recent.index + 1
-                        chip: recent.modelData.missing ? "" : recent.modelData.format
-                    }
-                    MissingBadge {
-                        visible: recent.modelData.missing
-                        x: Theme.space(2)
-                        y: Theme.space(2)
-                    }
-                    ColumnLayout {
-                        id: info
-                        anchors.left: parent.left
-                        anchors.right: parent.right
-                        anchors.top: thumb.bottom
-                        anchors.topMargin: Theme.space(2.5)
-                        anchors.leftMargin: Theme.space(1.5)
-                        anchors.rightMargin: Theme.controlHeight + Theme.space(1)
-                        spacing: Theme.space(0.5)
-
-                        Text {
-                            Layout.fillWidth: true
-                            text: recent.modelData.name
-                            elide: Text.ElideRight
-                            color: Theme.textPrimary
-                            font.family: Theme.fontSans
-                            font.pixelSize: Theme.textMd
-                            font.weight: Theme.weightTitle
-                        }
-                        Text {
-                            Layout.fillWidth: true
-                            text: recent.modelData.openedText
-                            elide: Text.ElideRight
-                            color: Theme.textTertiary
-                            font.family: Theme.fontSans
-                            font.pixelSize: Theme.textSm
-                        }
-                    }
-                }
-
-                StarButton {
-                    anchors.right: parent.right
-                    anchors.bottom: parent.bottom
-                    anchors.rightMargin: Theme.space(2)
-                    anchors.bottomMargin: Theme.space(2.5)
-                    path: recent.modelData.path
-                    projectName: recent.modelData.name
-                }
-
-                // A missing project: remove it from the list (or keep it, if its drive is just not connected).
-                Rectangle {
-                    id: removePrompt
-                    objectName: "homeRecentRemovePrompt"
-                    visible: false
-                    x: recent.leftPadding
-                    y: recent.topPadding
-                    width: thumb.width
-                    height: thumb.height
-                    radius: Theme.radiusCard - Theme.space(0.5)
-                    color: Theme.scrim
-
-                    Column {
-                        anchors.centerIn: parent
-                        spacing: Theme.space(2)
-                        Text {
-                            anchors.horizontalCenter: parent.horizontalCenter
-                            width: removePrompt.width - Theme.space(6)
-                            horizontalAlignment: Text.AlignHCenter
-                            wrapMode: Text.Wrap
-                            text: qsTr("The file is not there any more.")
-                            color: Theme.scrimText
-                            font.family: Theme.fontSans
-                            font.pixelSize: Theme.textSm
-                        }
-                        PillButton {
-                            anchors.horizontalCenter: parent.horizontalCenter
-                            compact: true
-                            variant: "primary"
-                            text: qsTr("Remove from list")
-                            onClicked: Home.removeRecent(recent.modelData.url)
-                        }
-                    }
-                }
-
-                // Remove (hover)
-                IconButton {
-                    objectName: "homeRecentRemove"
-                    x: recent.leftPadding + thumb.width - width - Theme.space(1.5)
-                    y: recent.topPadding + Theme.space(1.5)
-                    visible: recent.hovered && !recent.modelData.missing
-                    compact: true
-                    variant: "secondary"
-                    iconName: "x"
-                    iconSize: Theme.iconXs
-                    tooltip: qsTr("Remove from recent projects")
-                    onClicked: Home.removeRecent(recent.modelData.url)
-                }
-
-                FocusRing {
-                    targetRadius: Theme.radiusPanel
-                    visible: recent.visualFocus
-                }
-
-                HoverHandler {
-                    enabled: recent.enabled
-                    cursorShape: Qt.PointingHandCursor
-                }
-            }
+        IconButton {
+            id: moreButton
+            objectName: "homeProjectsMenuButton"
+            compact: true
+            variant: "secondary"
+            iconName: "ellipsis"
+            iconSize: Theme.iconXs
+            tooltip: qsTr("More project actions")
+            onClicked: headerMenu.popup(moreButton, 0, moreButton.height + Theme.space(1))
         }
     }
 
-    // ---- List ----
-    ColumnLayout {
-        objectName: "homeRecentRows"
+    // The projects (or what to do when there are none).
+    Item {
         Layout.fillWidth: true
-        visible: card.listView && card.shown.length > 0
-        spacing: Theme.space(0.5)
+        Layout.fillHeight: true
+        Layout.minimumHeight: Theme.space(40)
 
-        // Column labels.
-        RowLayout {
-            Layout.fillWidth: true
-            Layout.leftMargin: Theme.space(3)
-            Layout.rightMargin: Theme.space(3)
-            spacing: Theme.space(3.5)
-            Item { implicitWidth: Theme.space(16) }
+        ColumnLayout {
+            objectName: "homeProjectsEmpty"
+            anchors.centerIn: parent
+            width: Math.min(parent.width, Theme.space(120))
+            visible: card.shown.length === 0
+            spacing: Theme.space(3)
+
             Text {
                 Layout.fillWidth: true
-                text: qsTr("Name")
-                color: Theme.textTertiary
+                horizontalAlignment: Text.AlignHCenter
+                wrapMode: Text.Wrap
+                text: card.query.trim() !== "" ? qsTr("No projects match “%1”").arg(card.query.trim())
+                    : card.filter === "starred" ? qsTr("No starred projects")
+                    : qsTr("No projects yet")
+                color: Theme.textPrimary
                 font.family: Theme.fontSans
-                font.pixelSize: Theme.textMicro + 1
+                font.pixelSize: Theme.textTitle
                 font.weight: Theme.weightTitle
-                font.capitalization: Font.AllUppercase
-                font.letterSpacing: Theme.microTracking
             }
             Text {
-                Layout.preferredWidth: Theme.space(40)
-                text: qsTr("Opened")
+                Layout.fillWidth: true
+                horizontalAlignment: Text.AlignHCenter
+                wrapMode: Text.Wrap
+                text: card.query.trim() !== "" ? qsTr("Try another name or filter.")
+                    : card.filter === "starred" ? qsTr("Star a project to keep it here.")
+                    : qsTr("Projects you open or save show up here.")
                 color: Theme.textTertiary
                 font.family: Theme.fontSans
-                font.pixelSize: Theme.textMicro + 1
-                font.weight: Theme.weightTitle
-                font.capitalization: Font.AllUppercase
-                font.letterSpacing: Theme.microTracking
+                font.pixelSize: Theme.textMd
             }
-            Text {
-                Layout.preferredWidth: Theme.space(30)
-                text: qsTr("Format")
-                color: Theme.textTertiary
-                font.family: Theme.fontSans
-                font.pixelSize: Theme.textMicro + 1
-                font.weight: Theme.weightTitle
-                font.capitalization: Font.AllUppercase
-                font.letterSpacing: Theme.microTracking
+            RowLayout {
+                Layout.alignment: Qt.AlignHCenter
+                visible: Home.recent.length === 0 && card.query.trim() === "" && card.filter === "all"
+                spacing: Theme.space(2)
+                PillButton {
+                    objectName: "homeProjectsEmptyNew"
+                    variant: "primary"
+                    iconName: "plus"
+                    text: qsTr("New project")
+                    onClicked: card.newProjectRequested()
+                }
+                PillButton {
+                    objectName: "homeProjectsEmptyOpen"
+                    iconName: "folder-open"
+                    text: qsTr("Open…")
+                    tooltip: qsTr("Open a project file")
+                    onClicked: card.chooseProjectRequested()
+                }
             }
-            Item { implicitWidth: Theme.controlHeight * 2 + Theme.space(2) }
         }
 
-        Repeater {
-            model: card.listView ? card.shown : []
-            delegate: AbstractButton {
-                id: row
-                required property var modelData
-                required property int index
-                objectName: "homeRecent_" + index
+        // ---- Grid ----
+        ProjectGrid {
+            id: grid
+            anchors.fill: parent
+            visible: !card.listView && card.shown.length > 0
+            projects: card.listView ? [] : card.shown
+            onOpenRequested: project => card.openRequested(project)
+            onMenuRequested: (project, item, x, y) => card.menuRequested(project, item, x, y)
+            onRemoveRequested: project => card.removeRequested(project)
+        }
+
+        // ---- List ----
+        ColumnLayout {
+            anchors.fill: parent
+            visible: card.listView && card.shown.length > 0
+            spacing: Theme.space(1)
+
+            // Column labels (the rows use the same widths).
+            RowLayout {
                 Layout.fillWidth: true
-                implicitHeight: Theme.space(14)
-                leftPadding: Theme.space(3)
-                rightPadding: Theme.space(3)
-                focusPolicy: Qt.StrongFocus
-                hoverEnabled: true
-                Accessible.name: modelData.missing ? qsTr("%1 (missing)").arg(modelData.name) : modelData.name
-                Accessible.description: modelData.path
-                onClicked: {
-                    if (!modelData.missing)
-                        card.openRequested(modelData.url)
+                Layout.fillHeight: false
+                Layout.leftMargin: Theme.space(3)
+                Layout.rightMargin: Theme.space(2)
+                spacing: Theme.space(3.5)
+                Item { implicitWidth: Theme.space(16) }
+                Text {
+                    Layout.fillWidth: true
+                    text: qsTr("Name")
+                    color: Theme.textTertiary
+                    font.family: Theme.fontSans
+                    font.pixelSize: Theme.textMicro + 1
+                    font.weight: Theme.weightTitle
+                    font.capitalization: Font.AllUppercase
+                    font.letterSpacing: Theme.microTracking
+                }
+                Text {
+                    Layout.preferredWidth: list.openedWidth
+                    text: qsTr("Opened")
+                    color: Theme.textTertiary
+                    font.family: Theme.fontSans
+                    font.pixelSize: Theme.textMicro + 1
+                    font.weight: Theme.weightTitle
+                    font.capitalization: Font.AllUppercase
+                    font.letterSpacing: Theme.microTracking
+                }
+                Text {
+                    Layout.preferredWidth: list.formatWidth
+                    text: qsTr("Format")
+                    color: Theme.textTertiary
+                    font.family: Theme.fontSans
+                    font.pixelSize: Theme.textMicro + 1
+                    font.weight: Theme.weightTitle
+                    font.capitalization: Font.AllUppercase
+                    font.letterSpacing: Theme.microTracking
+                }
+                Item { implicitWidth: Theme.controlHeight + Theme.controlHeightSmall + Theme.space(3.5) }
+            }
+
+            ListView {
+                id: list
+                objectName: "homeRecentRows"
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                readonly property real openedWidth: list.width >= Theme.space(150) ? Theme.space(36) : Theme.space(28)
+                readonly property real formatWidth: list.width >= Theme.space(150) ? Theme.space(28) : Theme.space(22)
+                /// The projects the list shows (its model: given in takeRows, not bound).
+                readonly property var rows: card.listView ? card.shown : []
+
+                function step(delta: int) {
+                    list.forceLayout() // a new list's rows are made at the next layout: now
+                    const next = Math.max(0, Math.min(list.count - 1, list.currentIndex + delta))
+                    list.currentIndex = next
+                    list.positionViewAtIndex(next, ListView.Contain)
+                    const item = list.itemAtIndex(next)
+                    if (item)
+                        item.forceActiveFocus(Qt.TabFocusReason)
+                }
+                /// A new list (a project removed, unstarred under Starred, put back by Undo): the rows are made again
+                /// and the view sets the current one back to the first, so where the keyboard focus was is noted
+                /// first; the row now at that place takes it.
+                function takeRows() {
+                    const hadFocus = list.activeFocus
+                    const at = list.currentIndex
+                    list.model = list.rows
+                    if (hadFocus)
+                        Qt.callLater(list.keepFocusAt, at)
+                }
+                /// The row at `at` takes the focus, if the focus is still in the list.
+                function keepFocusAt(at: int) {
+                    if (!list.activeFocus || list.count === 0)
+                        return
+                    list.currentIndex = Math.max(0, Math.min(list.count - 1, at))
+                    list.step(0)
                 }
 
-                background: Rectangle {
-                    radius: Theme.radiusCard - Theme.space(0.5)
-                    color: row.hovered || row.visualFocus ? Theme.section : "transparent"
-                    Behavior on color { ColorAnimation { duration: Theme.durFast } }
-                }
-                contentItem: RowLayout {
-                    spacing: Theme.space(3.5)
-
-                    ProjectThumb {
-                        implicitWidth: Theme.space(16)
-                        implicitHeight: Theme.space(10)
-                        opacity: row.modelData.missing ? Theme.disabledOpacity : 1
-                        source: row.modelData.missing ? "" : row.modelData.thumbnail
-                        hueName: Theme.hueOrder[row.index % Theme.hueOrder.length]
-                        seed: row.index + 1
-                        cornerRadius: Theme.space(2.5)
-                        detailed: false
-                    }
-                    Text {
-                        Layout.fillWidth: true
-                        text: row.modelData.name
-                        elide: Text.ElideRight
-                        color: row.modelData.missing ? Theme.textTertiary : Theme.textPrimary
-                        font.family: Theme.fontSans
-                        font.pixelSize: Theme.textMd
-                        font.weight: Theme.weightTitle
-                    }
-                    Text {
-                        Layout.preferredWidth: Theme.space(40)
-                        text: row.modelData.openedText
-                        elide: Text.ElideRight
-                        color: Theme.textSecondary
-                        font.family: Theme.fontSans
-                        font.pixelSize: Theme.textSm
-                    }
-                    Item {
-                        Layout.preferredWidth: Theme.space(30)
-                        implicitHeight: Theme.controlHeightSmall
-                        Text {
-                            anchors.left: parent.left
-                            anchors.right: parent.right
-                            anchors.verticalCenter: parent.verticalCenter
-                            visible: !row.modelData.missing
-                            text: row.modelData.format
-                            elide: Text.ElideRight
-                            color: Theme.textSecondary
-                            font.family: Theme.fontMono
-                            font.pixelSize: Theme.textXs
-                        }
-                        MissingBadge {
-                            visible: row.modelData.missing
-                            anchors.verticalCenter: parent.verticalCenter
-                        }
-                    }
-                    Item {
-                        implicitWidth: Theme.controlHeight
-                        implicitHeight: Theme.controlHeight
-                        IconButton {
-                            objectName: "homeRecentRemove"
-                            anchors.centerIn: parent
-                            visible: row.hovered || row.modelData.missing
-                            compact: true
-                            iconName: row.modelData.missing ? "trash-2" : "x"
-                            iconSize: Theme.iconXs
-                            tooltip: row.modelData.missing ? qsTr("Remove from list") : qsTr("Remove from recent projects")
-                            onClicked: Home.removeRecent(row.modelData.url)
-                        }
-                    }
-                    StarButton {
-                        path: row.modelData.path
-                        projectName: row.modelData.name
-                    }
+                Component.onCompleted: list.model = list.rows
+                onRowsChanged: list.takeRows()
+                spacing: Theme.space(0.5)
+                clip: true
+                boundsBehavior: Flickable.StopAtBounds
+                keyNavigationEnabled: false
+                highlightFollowsCurrentItem: false
+                reuseItems: false
+                Accessible.role: Accessible.List
+                Accessible.name: qsTr("Projects")
+                ScrollBar.vertical: ThinScrollBar {}
+                onCountChanged: {
+                    if (list.currentIndex >= list.count)
+                        list.currentIndex = Math.max(0, list.count - 1)
                 }
 
-                FocusRing {
-                    targetRadius: Theme.radiusCard - Theme.space(0.5)
-                    visible: row.visualFocus
-                }
-                HoverHandler {
-                    enabled: row.enabled
-                    cursorShape: Qt.PointingHandCursor
+                delegate: ProjectRow {
+                    id: row
+                    required property var modelData
+                    required property int index
+                    objectName: "homeRecent_" + index
+                    width: list.width
+                    project: modelData
+                    hueName: Theme.hueOrder[index % Theme.hueOrder.length]
+                    seed: index + 1
+                    current: index === list.currentIndex
+                    openedWidth: list.openedWidth
+                    formatWidth: list.formatWidth
+                    onActiveFocusChanged: {
+                        if (activeFocus)
+                            list.currentIndex = index
+                    }
+                    onOpenRequested: card.openRequested(row.modelData)
+                    onRemoveRequested: card.removeRequested(row.modelData)
+                    onMenuRequested: (x, y) => card.menuRequested(row.modelData, row, x, y)
+                    onStepRequested: direction => list.step(direction)
                 }
             }
+        }
+    }
+
+    ProjectsHeaderMenu {
+        id: headerMenu
+        unstarredCount: Home.recent.filter(p => !card.starredPaths.includes(p.path)).length
+        onChosen: action => {
+            if (action === "clearUnstarred")
+                card.clearUnstarredRequested()
         }
     }
 }

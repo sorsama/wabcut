@@ -144,8 +144,33 @@ in vcpkg.json since M0), so no port feature changed.
 
 Premiere's header Quick Export: the top bar's ⚡ button opens a popover with every preset (built-in and the user's;
 not the HDR masters), what it writes, and the file name and location (default: next to the project, named after the
-sequence); Export queues it like the Export workspace does (`ExportController::quickExport(presetId, output)`; command
-`export.quick`).
+sequence); Export queues it like the Export workspace does (`ExportController::quickExport(presetId, output,
+overrides)`; command `export.quick`). The preset list is a keyboard list (Up / Down pick, Enter exports). A sequence
+with In / Out marks or a work area adds a **Range** row (Entire sequence / In to Out / Work Area; the Export button
+names the range). Quick Export says when it starts (a toast with Cancel) and when it is done.
+
+## Export remembers the last choices
+
+Per user, not per project (QSettings `export/*`, `ExportController` `lastPreset`, `lastGamingPreset`,
+`lastQuickPreset`, `lastFolder`, `lastRange`):
+
+- **Preset.** The Export workspace starts on the preset (or gaming preset) picked last; Quick Export on its own last
+  pick. A user preset deleted since falls back to Match Source.
+- **Folder.** An export to a folder you chose (Browse… or a typed path) makes it the default for the next one: the
+  default file name, both Browse… dialogs and Quick Export start there. When that folder is gone (an unplugged drive),
+  exports go next to the project again.
+- **Range.** The range picked last (Entire Source, In to Out, Work Area) when the sequence has it; with nothing picked
+  yet, a sequence with In / Out marks exports In to Out (`suggestedRange`). The Export button says so ("Export In to
+  Out", "Export Work Area"). The range stays when you pick another preset: it belongs to the sequence.
+- **Reset to defaults** (the Save to card) forgets all of it: Match Source, next to the project, the whole sequence
+  unless the sequence is marked.
+
+When an export ends anywhere in the app, a toast says so: "Exported <file>" with **Show in Explorer** (Finder on
+macOS; it still finds the file after the queue's **Clear finished**, and says so when the file was moved or deleted),
+or "Export failed: <why>" with **Show the queue** (the Export workspace, or the Export panel where your workspace has
+one; your layout is not changed). Watch folders and Media Browser transcodes report in their
+own places; a cancelled job says nothing; a finished export from the Export workspace while its queue is in view
+needs no toast. Render In to Out reports the same way ("Previews rendered", or why it failed with **Try Again**).
 
 ## Presets: Save, Import, Export, Delete
 
@@ -325,7 +350,9 @@ snapshot and runs jobs on its own export queue (one at a time, off the GUI threa
 | `presets` | `[{ id, name, description, icon }]`, the presets above (the six general ones with translated names) |
 | `jobs` | `ExportJobModel`: roles `jobId` ("j1"), `title`, `outputPath`, `presetName`, `jobState` (held / queued / running / paused / done / failed / cancelled), `phaseText`, `progress` (0..1), `fpsText`, `etaText`, `encoder`, `detail` (done: "0:10 · 6× realtime"; failed: the plain-language error), `finished`; properties `count`, `activeCount`; jobs a watch folder queued join it as they report |
 | `presets` (0.2: NOTIFY `presetsChanged`) | also `category` ("general", "hdr", "formats", "user") and `user`; the user's presets after the built-in ones |
-| `quickExport(presetId, output)`, `sendToQueue(sequenceId, presetIds, overrides, hold)` | 0.2: Quick Export; Send to Media Encoder / several destinations |
+| `quickExport(presetId, output, overrides)`, `sendToQueue(sequenceId, presetIds, overrides, hold)` | 0.2: Quick Export (UX rework: optional `overrides`, e.g. the range); Send to Media Encoder / several destinations |
+| `lastPreset`, `lastGamingPreset`, `lastQuickPreset`, `lastFolder` (+ `lastFolderUrl`), `lastRange`; `suggestedRange(sequenceId)`, `folderUrlOf(path)`, `forgetExportChoices()` | UX rework: [the last choices](#export-remembers-the-last-choices), NOTIFY `exportMemoryChanged` |
+| `job(jobId)`, `openOutput(jobId)` | UX rework: one job for its toast `{ jobId, title, outputPath, outputUrl, folderUrl, presetName, state, detail, finished, origin, exists }` (`origin`: export, quick, queue, transcode, watch, command; also a `jobs` role); opens a done job's file in its app |
 | `start(jobId)`, `startQueue()`, `pause(jobId)`, `resume(jobId)` | 0.2: the queue |
 | `savePreset(name, description, presetId, overrides, overwrite)`, `importPreset(file, overwrite)`, `exportPreset(id, file)`, `deletePreset(id)` | 0.2: Premiere's preset manager → `{ ok, id, name, error }` / bool |
 | `watchFolders`, `addWatchFolder(folder, presetId, output, moveSources)`, `removeWatchFolder(id)` | 0.2: watch folders (persisted) |
@@ -336,7 +363,7 @@ snapshot and runs jobs on its own export queue (one at a time, off the GUI threa
 | `describe(sequenceId, presetId, overrides)` | what it would write: `{ ok, error, container, videoCodec, format, resolution, frameRate, duration, frames, encoder, quality, audio, range, output, rangeAvailable, dynamicRange (text), dynamicRangeSetting, hdr, hdrAvailable }` |
 | `contentCredentials` | "off", "ai" (the default: exports that contain AI-generated media) or "always"; persisted ([Content Credentials](#content-credentials)) |
 | `credentialsProducer`, `credentialsThumbnail`, `credentialsDoNotTrain`, `credentialsCertificate`, `credentialsKey`, `signingIdentity()` | what the credentials say and who signs them; persisted |
-| `defaultOutputPath(sequenceId, presetId, overrides)` | next to the project file (else the Videos folder), named after the sequence, numbered when taken |
+| `defaultOutputPath(sequenceId, presetId, overrides)` | in `lastFolder` when it exists, else next to the project file (else the Videos folder), named after the sequence, numbered when taken |
 | `cancel(jobId)`, `cancelAll()`, `clearFinished()` | queue control |
 | `reveal(jobId)` | shows the output in Explorer (`/select`) / Finder (`-R`) / the file manager |
 | `jobQueued(jobId)`, `jobFinished(jobId, succeeded, message)` | signals |

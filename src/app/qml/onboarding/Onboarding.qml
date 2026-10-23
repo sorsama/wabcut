@@ -3,7 +3,7 @@ import QtQuick
 
 // Onboarding (M5j; fun, skippable, never in the way): the first-run welcome ("Coming from Premiere?"), the three-step
 // tour, the Keyboard Trainer and What's new. Main places it over the window, gives it the tour's targets and runs
-// what it asks for (a workspace, the Library). Help (the left rail) and the command palette run any of it again
+// what it asks for (a workspace, the Library). The Help menu and the command palette run any of it again
 // (run()).
 //   * firstRun(): the welcome, once, when it was never completed or skipped (Preferences.welcomeDone). Main calls it
 //     when the launch Home screen closes, so it never covers Home or a project being opened.

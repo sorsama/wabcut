@@ -150,6 +150,13 @@ public:
     // ---- File ----
     /// An empty untitled project with one sequence (1920x1080, 30 fps).
     Q_INVOKABLE void newProject();
+    /// UX rework (Home): the built-in demo project again, as at launch (Home's Learn page "Explore the sample
+    /// project", Help > Open the Sample Project, File > Close Project with one project open). It replaces the active
+    /// project without a question (QML asks about unsaved changes first): that project's autosaves are removed and its
+    /// lock released, as closeProject does; other open projects stay open. A demo already shown starts over (its edits
+    /// are dropped). `demo` is true afterwards, nothing is dirty and the history is empty. False (lastError) while an
+    /// edit gesture is in progress.
+    Q_INVOKABLE bool openDemo();
     Q_INVOKABLE bool open(const QUrl& file);
     /// The project file the app was started with (File Explorer's "Open" through the installer's opt-in .wabcut
     /// association runs `wabcut.exe "<file>"`), or an empty URL. Main.qml opens it through the normal path (I.7).
@@ -160,6 +167,16 @@ public:
     /// False while untitled (QML then asks for a file and calls saveAs) or when writing fails (lastError).
     Q_INVOKABLE bool save();
     Q_INVOKABLE bool saveAs(const QUrl& file);
+    /// UX rework (stream S), File > Save a Copy... (Ctrl+Alt+S): writes the project as it is now to `file` (".wabcut"
+    /// added when missing; relative media paths for that folder) and changes nothing else - the project keeps its file,
+    /// its unsaved changes, lock and autosaves; the copy is not opened. Works for untitled projects and the demo too.
+    /// False (lastError) when it cannot be written, or `file` is this project's own file or one open next to it.
+    Q_INVOKABLE bool saveCopy(const QUrl& file);
+    /// UX rework (stream S), File > Revert: the project as last saved, read again from its file (QML asks first). The
+    /// unsaved changes, the undo history and this project's autosaves are dropped (so no recovery offer follows); the
+    /// sequence shown and the playhead stay when they still exist. False (lastError) while untitled, for the demo,
+    /// during an edit gesture, or when the file cannot be read (nothing changes then).
+    Q_INVOKABLE bool revert();
     /// Writes the autosave now when something changed since the last one.
     Q_INVOKABLE bool autosaveNow();
     /// What the autosave timer runs (P.1): the job is prepared here and written on a worker, one at a time; its
@@ -246,8 +263,27 @@ public:
     // ---- Home screen (M5f) ----
     /// An empty untitled project whose one sequence comes from a preset: { name, width, height, rateNum,
     /// rateDen }. False (lastError) for an invalid size or rate; nothing changes then.
+    /// UX rework: the New project page's Advanced settings are applied before the project is shown (no undo step, not
+    /// dirty). Optional keys (unknown keys are ignored; a bad value is an error and nothing changes):
+    ///   preset          a model preset id (Editing.sequencePresets: "1080p29.97df", "2160p60", "shorts", ...): size,
+    ///                   rate and drop-frame at once; the other keys override it
+    ///   width, height   16 to 16384 pixels
+    ///   rateNum/rateDen an exact rate up to 1000 fps
+    ///   audioRate       Hz, 8000 to 384000 (44100, 48000, 96000)
+    ///   dropFrame       drop-frame timecode (kept only at 29.97 and 59.94)
+    ///   videoTracks, audioTracks  1 to 99 (default 3 each)
+    ///   trackFormat     the audio tracks' channel format: "stereo" (default), "mono", "5.1", "adaptive"
+    ///   masterFormat    "stereo" (default) or "5.1"
+    ///   pixelAspect     { num, den } or a ratio (1, 0.9091, 2), 0.1 to 10
+    ///   fields          "progressive" (default), "upperFirst", "lowerFirst"
+    ///   startTimecode   the first frame's timecode ("01:00:00:00"; "" = 00:00:00:00)
+    ///   previewFormat   "" or "auto" (default), "prores", "dnxhr", "h264"
+    ///   colorManagement { mode (Color.colorManagementModes ids: rec709, hdr-hlg, hdr-pq, aces, wide-gamut, off),
+    ///                   peakNits, referenceWhiteNits, autoDetectLog } or just the mode id
     Q_INVOKABLE bool newProjectWith(const QVariantMap& sequence);
-    /// What importing `file` would do, before importing it: { kind: "media" | "timeline" | "project",
+    /// What newProjectWith would refuse in `sequence` (the message it would give), or "" when it can be created.
+    static QString checkNewProjectSettings(const QVariantMap& sequence);
+    /// What importing `file` would do, before importing it: { kind: "media" | "timeline" | "project" | "captions",
     /// format (id, "fcp7-xml"…), formatName ("Final Cut Pro 7 XML"…), supported (can be read now),
     /// experimental (only with the experimental reader: Premiere .prproj), guidance (what to export instead,
     /// for files that cannot be read) }. Timeline fields are empty for media and projects.
@@ -303,6 +339,7 @@ private:
     void onRevisionChanged();
     void startNewProject(const QList<QUrl>& firstMedia);
     void startNewProjectWith(const edit::SequenceSettings& settings);
+    void startNewProjectFrom(ProjectState initial); // an untitled project with this content, not dirty, no history
     void rememberProject(); // the last project, for crash recovery at the next start
     void cleanExit();
     /// 0.2 (P.3): lets go of the lock held, then locks `project` (empty: none) when it is in a production or locking

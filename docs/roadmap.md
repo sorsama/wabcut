@@ -8,6 +8,21 @@ will change as people use the editor and tell us what matters to them.
 
 ## Shipped
 
+### 0.3.0 (23 October 2026)
+Wabcut works more like a desktop app:
+- Home is a start window with Home, Projects and Learn pages, one Import for files, folders and timelines, and a New
+  project page with Advanced settings that can start from your media.
+- Premiere's menu bar (File to Help) in the title bar, in place of the left rail. The Window menu opens panels in the
+  group you clicked last; Maximize Frame and a tab menu for every panel.
+- The Effects panel in Premiere's folders, with List, Compact and Icons views, presets imported and exported per bin,
+  and effects applied to every selected clip.
+- Type a timecode to jump, ripple-delete a gap, add and delete tracks from a track's menu, marker names on the ruler,
+  and default transitions you choose.
+- Export remembers your last choices, Settings has a search, and Wabcut can reopen the last project when it starts.
+- One Wabcut at a time, and the window opens where you left it.
+
+The full list is in the [0.3 release notes](release-notes-0.3.md).
+
 ### 0.2.0 (22 October 2026)
 Most of what Premiere Pro has for gaming videos, video essays and documentaries ([how it compares](premiere-parity.md)):
 - Premiere's editing and sequence commands, Group / Ungroup, fade handles, the Pen on video opacity and Selection
@@ -63,7 +78,7 @@ The full list is in the [release notes](release-notes-0.1.md).
 ## Next: toward a beta
 
 Make Wabcut safe to trust with real projects:
-- Fix what people find in real projects. 0.1 and 0.2 were tested with a demo project and scripted test media, not yet
+- Fix what people find in real projects. 0.1 to 0.3 were tested with a demo project and scripted test media, not yet
   with real users' projects.
 - Check AAF, OMF and broadcast caption files in Pro Tools, Media Composer and Resolve.
 - Code-signed installers, so Windows SmartScreen stops warning, and automatic updates.

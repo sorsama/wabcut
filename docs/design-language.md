@@ -82,7 +82,10 @@ Transitions are white with a black diagonal.
 - **Pills:** buttons and segmented controls are pills at control height (32, compact 26); the title bar's are 40.
   Icon buttons are circles. Single-line fields are pills; multi-line fields and wells use radius 14.
 - **Docking (0.1.3)** is unchanged in behaviour: groups, tabs, drag to join, dock beside, run along an edge or float.
-  The header zone that joins a group is its tab strip.
+  The header zone that joins a group is its tab strip. UX rework (Premiere's frames): the group clicked last is the
+  **active group**, drawn with a 2 px `accentStroke` outline along the island's edge (keyboard focus rings stay the white
+  / black rings inside); the Window menu opens closed panels there. A **maximized** group takes the whole work area
+  (the others hide, no gutters) until it is restored. A tab's right-click menu is the standard `ContextMenu` with icons.
 - Grid 4 px; dense rows 28; dots 8.
 
 ## Type
@@ -98,17 +101,32 @@ Transitions are white with a black diagonal.
 
 ## Chrome
 - **Title bar (52 px, compact 44):** the echo mark in a round raised badge (it opens the File menu) with the project's
-  name and its frame size and rate in mono; the sequence switcher; the workspace switcher as a segmented pill group in
-  the middle (the active workspace on a sliding accent pill); job pills while something runs; round command palette,
-  undo and redo; Save (with a dot while there are unsaved changes) and Export (the accent pill); round window controls.
-- **Left rail:** an island of round icon buttons; the active one on `hover` with a dot beside it.
-- **Home:** a nav island on the left (the logo, sections with hue dots, Settings at the bottom), a greeting, a search
-  pill, Open… and New project; Continue (the last project) beside New project (preset tiles, a lime Create pill); then
-  Import, Gaming and Learn; then every project as cards or rows, Recent or Starred.
+  name and its frame size and rate in mono; the menu bar; the sequence switcher; the workspace switcher as a segmented
+  pill group in the middle (the active workspace on a sliding accent pill); job pills while something runs; round
+  command palette, undo and redo; Save (with a dot while there are unsaved changes) and Export (the accent pill); round
+  window controls.
+- **Menu bar (UX rework, it replaced the left rail):** Premiere's File, Edit, Clip, Sequence, Markers, Graphics, View,
+  Window and Help as Bold 13 px text pills after the brand: `textSecondary` at rest, `hover` under the pointer, `raised`
+  while their menu is open (the menu is the same raised card, so title and menu read as one). Menus have no icons: a
+  check gutter on every row keeps the labels lined up, and a switch that is on shows the accent dot in it; shortcuts sit
+  right in mono `textTertiary`. Short of room the titles fold into one "Menu" pill with a chevron. The work area starts at
+  the window's gutter; panels open from the Window menu.
+- **Home:** a start window, not a scrolling page. A nav island on the left (the logo, the pages Home / Projects / Learn
+  with hue dots, the version and Settings at the bottom); a header with the page's title (the greeting on Home), a
+  search pill, Open…, Import… and the accent New project pill; the pages cross-fade below. Home: Continue (the last
+  project, large) beside Start (three big action rows with their keys, a dashed drop well), then Recent cards. Projects:
+  cards or rows, All or Starred, with a "…" menu per project. Learn: compact rows (a tinted icon circle, a title, one
+  line, where it leads). New project: format tiles with the frame's shape (the chosen one on the accent fill) and a
+  Details island (name, location, the mono summary, Advanced settings as label + pill rows, the frame drawn at its
+  shape, the lime Create pill). Messages are tinted strips under the header.
 - **Monitors:** a black well (radius 12), the timecode in an accent pill, round transport buttons around a white play
   button, a pill time bar with the In/Out range in accent and a white playhead.
 - **Timeline:** track headers are pills (the id chip in accent when targeted), the tool palette is a segmented pill
   group, the ruler's playhead is a white knob.
+- **Toasts:** a `section` card at the bottom right with a soft shadow, a dot (the accent; `warning` or `danger` for a
+  problem) and a DemiBold 13 px message that wraps to three lines. One thing to do is one compact accent pill ("Save
+  As…", "Show in Explorer", "Undo") with a round close button after it. Notes leave after 4 s, problems after 7 s, a
+  toast with an action after 8 s; a pointer moved onto it holds it.
 
 ## Brand: the echo mark
 - Geometry (`resources/brand/wabcut-mark.svg`, `components/EchoMark.qml`): a 120-unit box; five 12-unit clips at y 18,

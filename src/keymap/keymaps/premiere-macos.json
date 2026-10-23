@@ -41,6 +41,7 @@
     {"scope": "application", "command": "edit.find", "keys": ["Cmd+F"], "source": "adobe-2026"},
     {"scope": "application", "command": "edit.editOriginal", "keys": ["Cmd+E"], "source": "adobe-2026"},
     {"scope": "application", "command": "edit.keyboardShortcuts", "keys": ["Opt+Cmd+K"], "source": "adobe-2026"},
+    {"scope": "application", "command": "edit.preferences", "keys": ["Cmd+,"], "source": "premiere-kys"},
     {"scope": "application", "command": "clip.makeSubclip", "keys": ["Cmd+U"], "source": "adobe-2026"},
     {"scope": "application", "command": "clip.audioChannels", "keys": ["Shift+G"], "source": "adobe-2026"},
     {"scope": "application", "command": "clip.audioGain", "keys": ["G"], "source": "adobe-2026"},

@@ -10,6 +10,9 @@ import QtQuick.Layouts
 // Drag sources onto the timeline: the picture (video and audio) and the two handles beside the timecode (video only,
 // audio only). Its keymap scope is Premiere's Source Monitor: I, O, X, Shift+I/O, Ctrl+Shift+I/O/X and
 // Ctrl+Shift+Space mark and play the source, not the sequence (Main.qml routes them here while it has focus).
+// UX rework (stream T): click the timecode to type a source time or a +/- offset (TimecodeEntry,
+// SourceMonitor.seekToText); drop a Library clip on the picture to open it here, or files from File Explorer (imported
+// first, `importFiles`, then the first one opens).
 Panel {
     id: root
     objectName: "sourceMonitorPanel"
@@ -20,6 +23,10 @@ Panel {
     // Insert / Overwrite: Main runs them (a four-point edit may need the Fit Clip dialog first).
     signal editRequested(bool insert)
     signal editHovered(bool insert, bool hovered)
+    /// Imports files dropped from File Explorer (Main.importUrlsThen: `importFiles(urls, after)`): `after(result)` runs once
+    /// the import has run - at once, or after the unsaved-changes question when that runs first. Unset: file drops are
+    /// refused.
+    property var importFiles: null
 
     KeymapScope.scope: "sourceMonitor"
     // One monitor at a time: the switch takes the header's place.
@@ -214,12 +221,12 @@ Panel {
                 }
             }
 
-            // Nothing loaded yet.
+            // Nothing loaded yet (the drop label takes its place while a drag is over the picture).
             Column {
                 anchors.centerIn: parent
                 width: parent.width - Theme.space(8)
                 spacing: Theme.space(2)
-                visible: !SourceMonitor.loaded
+                visible: !SourceMonitor.loaded && !sourceDropHighlight.visible
 
                 Icon {
                     anchors.horizontalCenter: parent.horizontalCenter
@@ -231,7 +238,7 @@ Panel {
                     width: parent.width
                     horizontalAlignment: Text.AlignHCenter
                     wrapMode: Text.Wrap
-                    text: qsTr("Double-click a clip in the Library to open it here, or press F on the timeline to match a frame.")
+                    text: qsTr("Drag a clip here from the Library or File Explorer, or double-click it in the Library. F on the timeline matches a frame.")
                     color: Theme.textTertiary
                     font.family: Theme.fontSans
                     font.pixelSize: Theme.textSm
@@ -319,6 +326,82 @@ Panel {
                 targetRadius: Theme.radiusMonitor
                 visible: well.activeFocus && !well.pointerFocus
             }
+
+            // UX rework (stream T): drops onto the picture. A Library clip (application/x-wabcut-media, a media "m..." key;
+            // sequences cannot open here) opens here (SourceMonitor.load: the recent menu gets it too). Files from File
+            // Explorer import as File > Import does, then the first one opens (SourceMonitor.loadFileItem). While a drag
+            // that can land is over the picture, an accent frame and a label say what the drop does.
+            DropArea {
+                id: sourceDrop
+                objectName: "sourceMonitorDropArea"
+                anchors.fill: parent
+                keys: ["application/x-wabcut-media", "text/uri-list"]
+                /// "clip", "files" or "" (nothing that opens here).
+                property string kind: ""
+
+                function kindOf(drag: var): string {
+                    if (drag.formats.indexOf("application/x-wabcut-media") >= 0)
+                        return drag.getDataAsString("application/x-wabcut-media").startsWith("m") ? "clip" : ""
+                    return drag.hasUrls && root.importFiles ? "files" : ""
+                }
+                onEntered: drag => {
+                    sourceDrop.kind = sourceDrop.kindOf(drag)
+                    drag.accepted = sourceDrop.kind !== ""
+                }
+                onExited: sourceDrop.kind = ""
+                onDropped: drop => {
+                    const kind = sourceDrop.kindOf(drop)
+                    sourceDrop.kind = ""
+                    if (kind === "clip") {
+                        if (SourceMonitor.load(drop.getDataAsString("application/x-wabcut-media"))) {
+                            drop.accept(Qt.CopyAction)
+                            root.focusMonitor()
+                        }
+                        return
+                    }
+                    if (kind !== "files")
+                        return
+                    drop.accept(Qt.CopyAction)
+                    const urls = []
+                    for (const url of drop.urls)
+                        urls.push(url)
+                    // A project file opens instead (Main). The first media file opens here once it is imported: now, or
+                    // after the unsaved-changes question (edits on the sample project) has its answer.
+                    const media = urls.find(u => !u.toString().toLowerCase().endsWith(".wabcut"))
+                    root.importFiles(urls, () => {
+                        if (media !== undefined && SourceMonitor.loadFileItem(media.toString()))
+                            root.focusMonitor()
+                    })
+                }
+            }
+            Rectangle {
+                id: sourceDropHighlight
+                objectName: "sourceMonitorDropHighlight"
+                anchors.fill: parent
+                visible: sourceDrop.containsDrag && sourceDrop.kind !== ""
+                radius: Theme.radiusMonitor
+                color: Theme.accentWash
+                border.width: Theme.selectionWidth
+                border.color: Theme.accentStroke
+
+                Rectangle {
+                    anchors.centerIn: parent
+                    width: dropLabel.implicitWidth + Theme.space(6)
+                    height: Theme.controlHeight
+                    radius: height / 2
+                    color: Theme.accentFill
+
+                    Text {
+                        id: dropLabel
+                        anchors.centerIn: parent
+                        text: sourceDrop.kind === "files" ? qsTr("Drop to import and open here") : qsTr("Drop to open in the Source Monitor")
+                        color: Theme.accentOnFill
+                        font.family: Theme.fontSans
+                        font.pixelSize: Theme.textMd
+                        font.weight: Font.Bold
+                    }
+                }
+            }
         }
 
         // ---- Timecode and durations ----
@@ -327,27 +410,20 @@ Panel {
             Layout.fillWidth: true
             Layout.preferredHeight: Theme.controlHeightSmall
 
-            // The source position on an accent pill (design language v3).
-            Rectangle {
+            // The source position on an accent pill (design language v3). UX rework (stream T): click it to type a time
+            // or a +/- offset (TimecodeEntry, SourceMonitor.seekToText); Esc cancels.
+            TimecodeEntry {
+                id: timecode
+                objectName: "sourceTimecode"
                 anchors.left: parent.left
                 anchors.verticalCenter: parent.verticalCenter
-                width: timecode.implicitWidth + Theme.space(4)
                 height: Theme.controlHeightSmall
-                radius: height / 2
-                color: SourceMonitor.loaded ? Theme.accentFill : Theme.raised
-
-                Text {
-                    id: timecode
-                    objectName: "sourceTimecode"
-                    anchors.centerIn: parent
-                    text: SourceMonitor.loaded ? SourceMonitor.positionText : "--:--:--:--"
-                    color: SourceMonitor.loaded ? Theme.accentOnFill : Theme.textTertiary
-                    font.family: Theme.fontMono
-                    font.pixelSize: Theme.textMd
-                    font.weight: Font.Bold
-                    Accessible.role: Accessible.StaticText
-                    Accessible.name: qsTr("Source position %1").arg(text)
-                }
+                enabled: SourceMonitor.loaded
+                text: SourceMonitor.loaded ? SourceMonitor.positionText : "--:--:--:--"
+                label: qsTr("Source position")
+                fill: SourceMonitor.loaded ? Theme.accentFill : Theme.raised
+                color: SourceMonitor.loaded ? Theme.accentOnFill : Theme.textTertiary
+                seek: typed => SourceMonitor.seekToText(typed)
             }
 
             // In/Out duration (Premiere's right-hand readout) on a raised pill; the whole length too when there is room.

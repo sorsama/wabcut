@@ -243,3 +243,26 @@ TEST_CASE("Export Preset and Import Presets round trip through a file", "[comman
     CHECK(h.errorOf("effects.importPresets", Json{{"path", pathToUtf8(junk)}}) == "InvalidParams");
     CHECK(h.errorOf("effects.importPresets", Json{{"path", pathToUtf8(dir / "missing.json")}}) == "NotFound");
 }
+
+TEST_CASE("Import Presets puts a built-in Lumetri look in a presets bin of its own", "[command][effects][presets][io]") {
+    // The Lumetri Presets bin holds the built-in looks only: an exported look comes back in a user bin of the rest of
+    // its path, which can be renamed and deleted like any other.
+    const fs::path dir = scratch("lumetri");
+    LibraryHarness lh;
+    CommandHarness& h = lh.h;
+    const fs::path file = dir / ("look" + std::string(io::kEffectPresetsFileSuffix));
+    h.ok("effects.exportPresets", Json{{"path", pathToUtf8(file)}, {"presets", Json::array({"Bleach Bypass"})}});
+    const auto imported = h.ok("effects.importPresets", Json{{"path", pathToUtf8(file)}}).data["imported"];
+    REQUIRE(imported.size() == 1);
+    const std::string name = imported[0]["name"].get<std::string>();
+    CHECK(name == "Bleach Bypass 2");
+    REQUIRE(lh.services->library().findPreset(name));
+    CHECK(lh.services->library().findPreset(name)->bin == "Filmstock");
+    h.ok("effects.renameCustomItem", Json{{"presetsBin", "Filmstock"}, {"name", "Looks"}});
+    CHECK(lh.services->library().findPreset(name)->bin == "Looks");
+    h.ok("effects.deleteCustomItem", Json{{"presetsBin", "Looks"}});
+    CHECK_FALSE(lh.services->library().findPreset(name));
+    // A bin given in the request still wins.
+    h.ok("effects.importPresets", Json{{"path", pathToUtf8(file)}, {"bin", "Grades"}});
+    CHECK(lh.services->library().findPreset("Bleach Bypass 2")->bin == "Grades");
+}

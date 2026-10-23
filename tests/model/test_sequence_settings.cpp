@@ -361,3 +361,54 @@ TEST_CASE("A sequence's label colour is a Sequence Settings field, checked, save
     label.colorIndex = -1;
     CHECK_FALSE(edit::setSequenceSettings(tl.state, tl.seq, label));
 }
+
+TEST_CASE("Add Tracks with a placement inserts the track where asked and renumbers the others",
+          "[model][sequenceSettings][tracks]") {
+    Timeline tl(R"(
+        V2 |....Bbbb|
+        V1 |Aaaa....|
+        A1 |Aaaa....|
+        A2 |....Bbbb|
+    )");
+    const TrackId v1 = tl.track("V1");
+    const TrackId v2 = tl.track("V2");
+    const TrackId a1 = tl.track("A1");
+    const TrackId a2 = tl.track("A2");
+
+    // Before the first video track: the new track is V1, the old V1 and V2 move up with their clips.
+    const auto first = edit::insertTrack(tl.state, tl.seq, TrackKind::Video, 0, "B-roll");
+    REQUIRE(first);
+    requireValid(first->state);
+    const Sequence& s1 = *first->state.findSequence(tl.seq);
+    REQUIRE(s1.videoTracks.size() == 3);
+    CHECK(s1.videoTracks[0]->id == first->id);
+    CHECK(s1.videoTracks[0]->name == "B-roll");
+    CHECK(s1.videoTracks[0]->clips.empty());
+    CHECK(s1.videoTracks[1]->id == v1);
+    CHECK(s1.videoTracks[1]->clips.size() == 1);
+    CHECK(s1.videoTracks[2]->id == v2);
+    CHECK(s1.audioTracks.size() == 2);
+
+    // Between A1 and A2 (after A1): the new track is A2.
+    const auto middle = edit::insertTrack(first->state, tl.seq, TrackKind::Audio, 1);
+    REQUIRE(middle);
+    requireValid(middle->state);
+    const Sequence& s2 = *middle->state.findSequence(tl.seq);
+    REQUIRE(s2.audioTracks.size() == 3);
+    CHECK(s2.audioTracks[0]->id == a1);
+    CHECK(s2.audioTracks[1]->id == middle->id);
+    CHECK(s2.audioTracks[1]->name.empty());
+    CHECK(s2.audioTracks[2]->id == a2);
+
+    // Past the end: appended, like addTrack.
+    const auto last = edit::insertTrack(middle->state, tl.seq, TrackKind::Video, 99);
+    REQUIRE(last);
+    CHECK(last->state.findSequence(tl.seq)->videoTracks.back()->id == last->id);
+    // Saved and read back in the same order.
+    const auto back = io::fromJson(io::toJson(last->state).value());
+    REQUIRE(back);
+    CHECK(back->findSequence(tl.seq)->videoTracks[0]->id == first->id);
+    CHECK(back->findSequence(tl.seq)->audioTracks[1]->id == middle->id);
+
+    CHECK_FALSE(edit::insertTrack(tl.state, SequenceId{9999}, TrackKind::Video, 0));
+}

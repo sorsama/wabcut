@@ -135,6 +135,10 @@ public:
     std::expected<void, Error> save();
     /// Saves to `file` and makes it the project file. Relative media paths are recomputed for the new location.
     std::expected<void, Error> saveAs(const std::filesystem::path& file);
+    /// File > Save a Copy: writes the project as it is now to `file` (relative media paths recomputed for that
+    /// location, the save filter applied, like saveAs) and changes nothing here: the project file, the dirty state and
+    /// the autosave stay as they were.
+    std::expected<void, Error> saveCopy(const std::filesystem::path& file) const;
 
     // ---- Autosave and recovery ----
     /// Writes the autosave when the snapshot changed since the last write (or save). Returns true when a file was

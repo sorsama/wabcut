@@ -141,6 +141,7 @@ SettingsPage {
 
     // ---- Themes ----
     SettingsSection {
+        rowKey: "theme"
         title: qsTr("Theme")
         description: page.matchingTheme !== "" ? qsTr("Using %1.").arg(page.matchingTheme)
                    : Preferences.themeName !== "" ? qsTr("Edited from %1: save it to keep it as a theme.").arg(Preferences.themeName)
@@ -232,6 +233,7 @@ SettingsPage {
         title: qsTr("Mode and accent")
 
         SettingsRow {
+            rowKey: "mode"
             label: qsTr("Mode")
             PillTabs {
                 objectName: "themeTabs"
@@ -244,6 +246,7 @@ SettingsPage {
             }
         }
         SettingsRow {
+            rowKey: "accent"
             label: qsTr("Accent: %1").arg(page.accentLabels[Theme.canonicalAccent(Theme.accentName)])
             description: qsTr("Primary buttons, the active workspace and segment, selections and ranges take it.")
             Repeater {
@@ -263,6 +266,7 @@ SettingsPage {
             }
         }
         SettingsRow {
+            rowKey: "highContrast"
             label: qsTr("High contrast")
             description: qsTr("Black or white surfaces, brighter text and strong borders. Custom colours pause while it is on.")
             Toggle {
@@ -273,6 +277,7 @@ SettingsPage {
             }
         }
         SettingsRow {
+            rowKey: "reduceMotion"
             label: qsTr("Reduce motion")
             description: qsTr("No slides, glows, sparks or loops: loaders show the still mark; changes cross-fade quickly.")
             Toggle {
@@ -284,6 +289,7 @@ SettingsPage {
         }
         SettingsRow {
             objectName: "launchIntroRow"
+            rowKey: "launchIntro"
             label: qsTr("Play the intro when Wabcut starts")
             description: Theme.reduceMotion ? qsTr("Reduce motion skips it.")
                                             : qsTr("The mark assembles for two seconds; a click or Esc skips it.")
@@ -297,6 +303,7 @@ SettingsPage {
 
         SettingsRow {
             objectName: "uiScaleRow"
+            rowKey: "uiScale"
             label: qsTr("Interface size")
             description: Preferences.effectiveUiScale !== Theme.uiScale ? qsTr("The new size applies when Wabcut restarts.")
                                                                         : qsTr("Applies when Wabcut starts.")
@@ -314,6 +321,7 @@ SettingsPage {
 
     // ---- Every colour ----
     SettingsSection {
+        rowKey: "customColors"
         title: qsTr("Custom colours")
         description: Theme.highContrast ? qsTr("Custom colours are paused while high contrast is on.")
                                         : qsTr("Pick any colour; the interface follows as you drag. Reset brings back the theme's.")

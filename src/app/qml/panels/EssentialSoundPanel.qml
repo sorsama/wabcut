@@ -3,7 +3,7 @@ import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
 
-// ● ESSENTIAL SOUND (M5m, rail key "essential"; bridge `EssentialSound`; Premiere's Essential Sound panel, A.7):
+// ● ESSENTIAL SOUND (M5m, panel key "essential"; bridge `EssentialSound`; Premiere's Essential Sound panel, A.7):
 //   * tag the selected audio clips Dialogue, Music, SFX or Ambience (a video clip stands for its linked audio), or
 //     clear them; pick a preset of the type;
 //   * the type's sections, every control an option of audio.essentialSound and every result an ordinary effect the

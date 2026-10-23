@@ -1,10 +1,13 @@
+#include "AppShell.h"
 #include "CrashHandler.h"
 #include "CrashNotice.h"
 #include "HomeBridge.h"
 #include "RhiPolicy.h"
+#include "SingleInstance.h"
 #include "StartupProbe.h"
 #include "SystemInfo.h"
 #include "UiScale.h"
+#include "WindowPlacement.h"
 
 #include <wabcut/media/VideoDecoder.h>
 
@@ -73,6 +76,20 @@ int main(int argc, char* argv[]) {
     QGuiApplication app(argc, argv);
     QGuiApplication::setApplicationVersion(QStringLiteral(WABCUT_VERSION));
     startupProbe.mark("application");
+    // UX rework (stream S): one Wabcut opens the projects. A .wabcut double-clicked in File Explorer while Wabcut runs is
+    // handed to that Wabcut, which opens it in its window, and this process ends here; otherwise this one listens for
+    // later launches once its window is up (below). --new-instance starts a separate Wabcut; the startup benchmark always
+    // gets its own.
+    wabcut::app::SingleInstance instance(wabcut::app::SingleInstance::defaultServerName());
+    const bool takesLaunches =
+        !startupProbe.active() && !wabcut::app::SingleInstance::separateInstance(QCoreApplication::arguments());
+    if (takesLaunches) {
+        const QUrl project = wabcut::app::SingleInstance::projectToHandOver(QCoreApplication::arguments());
+        if (!project.isEmpty() && instance.handOver({project})) {
+            wabcut::crash::markCleanExit(); // this process only passed the file on
+            return 0;
+        }
+    }
 #if defined(WABCUT_WITH_AUDIO_PLUGINS)
     // A.6: the audio plugins - the catalog from its cache, new and changed plugin files scanned in the background (each
     // in its own wabcut-plughost, so a bad plugin only goes on the blocklist), plugin effects in the engine.
@@ -110,9 +127,15 @@ int main(int argc, char* argv[]) {
             Qt::QueuedConnection);
         QObject::connect(engine.get(), &QQmlApplicationEngine::objectCreated, &fallback,
                          [&fallback](QObject* object, const QUrl&) {
-                             if (auto* window = qobject_cast<QQuickWindow*>(object))
+                             if (auto* window = qobject_cast<QQuickWindow*>(object)) {
                                  fallback.watch(window);
+                                 // UX rework: its place is kept for the next start (a child of the window).
+                                 new WindowPlacementKeeper(window);
+                             }
                          });
+        // UX rework (stream S): the window opens where it was last time - size, position, maximized - fitted to the
+        // screens there are now (initial properties: set before it shows, so it does not jump).
+        engine->setInitialProperties(restoredWindowProperties());
         engine->loadFromModule("Wabcut", "Main");
         startupProbe.loaded(engine->rootObjects().isEmpty() ? nullptr
                                                             : qobject_cast<QQuickWindow*>(engine->rootObjects().constFirst()));
@@ -124,8 +147,11 @@ int main(int argc, char* argv[]) {
                 start();
             },
         .restartWithSoftwareRenderer =
-            [] {
-                // The scene graph adaptation is chosen once per process: start a new one on the software renderer.
+            [&instance] {
+                // The scene graph adaptation is chosen once per process: start a new one on the software renderer. It
+                // takes over the single-instance name (this one stops listening first, or the new one would hand its
+                // project straight back here).
+                instance.close();
                 QProcess process;
                 process.setProgram(QCoreApplication::applicationFilePath());
                 process.setArguments(QCoreApplication::arguments().mid(1));
@@ -137,7 +163,25 @@ int main(int argc, char* argv[]) {
             },
         .giveUp = [](const QString&) { QCoreApplication::exit(-1); },
     });
+    // A later launch handed its project over (SingleInstance): this window comes to the front and Main.qml opens it
+    // through the normal path, with the unsaved-changes prompt (AppShell.openRequested).
+    QObject::connect(&instance, &SingleInstance::filesRequested, &app, [&engine](const QList<QUrl>& files) {
+        if (!engine || engine->rootObjects().isEmpty())
+            return;
+        bringToFront(qobject_cast<QWindow*>(engine->rootObjects().constFirst()));
+        if (auto* shell = engine->singletonInstance<AppShell*>("Wabcut", "AppShell"))
+            shell->requestOpen(files);
+    });
     start();
+    // Later launches are taken from here on, with the window loaded: before, this process could not answer them (its
+    // event loop is not running yet), so they start on their own at once instead of waiting for it. A hand-over is only
+    // taken while there is a window to open it in (else "no": that launch starts on its own, nothing is dropped). A
+    // Wabcut already running keeps the name (listen() is false; this one is a separate Wabcut then). AppShell's
+    // singleInstance (C++ diagnostics; QML does not read it) is known from here on.
+    if (takesLaunches) {
+        instance.setReady([&engine] { return engine && !engine->rootObjects().isEmpty(); });
+        AppShell::setSingleInstance(instance.listen());
+    }
     const int code = QGuiApplication::exec();
     wabcut::crash::markCleanExit(); // the next start shows no notice for this run
     return code;

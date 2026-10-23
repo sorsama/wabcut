@@ -10,6 +10,8 @@ import QtQuick
 // M5n (A.9): Audio Channels, the submenu of clips with sound (Audio Channels…, Fill, Swap, Split to Mono), after Takes.
 // M5o (gaming): Moments, the submenu of one-click speed and zoom presets, after Speed/Duration….
 // P.2 (E5): Video Options, Replace With Clip, Join Through Edits and Make Subsequence (the Editing bridge).
+// UX rework (stream T): Reveal in Project (the clip's item selected in the Library, which comes forward; keymap
+// clip.revealInProject, no default key) and Reveal in File Explorer / Finder (its media file), after Rename...
 ContextMenu {
     id: clipMenu
     objectName: "clipContextMenu"
@@ -24,6 +26,8 @@ ContextMenu {
     // What the clip is (read when the menu opens).
     property var nestInfo: ({})
     property var audioInfo: ({})
+    /// Editing.revealInfo: { item, name, inProject, inExplorer, offline }.
+    property var revealInfo: ({})
     property var selection: []
 
     function openAt(target, id, point) {
@@ -31,6 +35,7 @@ ContextMenu {
         menuPoint = point
         nestInfo = Nesting.clipInfo(id)
         audioInfo = ClipAudio.clipInfo(id)
+        revealInfo = Editing.revealInfo(id)
         selection = ClipAudio.selectedClips()
         showChannels()
         showTakes()
@@ -330,6 +335,29 @@ ContextMenu {
         text: qsTr("Rename…")
         iconName: "pencil"
         onTriggered: clipMenu.renameRequested(clipMenu.clipId, clipMenu.menuPoint)
+    }
+    // A nested clip keeps "Reveal Nested Sequence in Library" above (the same action).
+    ContextMenuItem {
+        objectName: "revealInProjectMenuItem"
+        visible: clipMenu.nestInfo.nested !== true
+        height: visible ? implicitHeight : 0
+        text: qsTr("Reveal in Project")
+        iconName: "library"
+        command: "clip.revealInProject"
+        enabled: clipMenu.revealInfo.inProject === true
+        onTriggered: Editing.revealInProject(clipMenu.clipId)
+    }
+    ContextMenuItem {
+        objectName: "revealInExplorerMenuItem"
+        // Clips with a media file (not titles, generators or nested sequences); a missing file shows why it is off.
+        visible: clipMenu.revealInfo.inExplorer === true || clipMenu.revealInfo.offline === true
+        height: visible ? implicitHeight : 0
+        text: clipMenu.revealInfo.offline === true
+              ? (Qt.platform.os === "osx" ? qsTr("Reveal in Finder (file missing)") : qsTr("Reveal in File Explorer (file missing)"))
+              : (Qt.platform.os === "osx" ? qsTr("Reveal in Finder") : qsTr("Reveal in File Explorer"))
+        iconName: "folder-open"
+        enabled: clipMenu.revealInfo.inExplorer === true
+        onTriggered: Editing.revealInExplorer(clipMenu.clipId)
     }
     // Label colour swatches
     Item {

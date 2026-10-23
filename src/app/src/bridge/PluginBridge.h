@@ -69,12 +69,13 @@ class PluginBridge : public QObject {
     Q_PROPERTY(double progress READ progress NOTIFY scanChanged FINAL)
     /// Filter: name, vendor or category containing this (any case).
     Q_PROPERTY(QString query READ query WRITE setQuery NOTIFY pluginsChanged FINAL)
-    /// "vendor" or "category".
+    /// "vendor" or "category". UX rework: remembered (QSettings "effects/pluginGroupBy").
     Q_PROPERTY(QString groupBy READ groupBy WRITE setGroupBy NOTIFY pluginsChanged FINAL)
     /// The effect plugins matching `query`: [{ id ("plugin.clap.<id>"), name, vendor, category, format ("CLAP" | "VST3"),
     /// version, latencyText ("" or "5.3 ms"), hasEditor, problem }], by name.
     Q_PROPERTY(QVariantList plugins READ plugins NOTIFY pluginsChanged FINAL)
-    /// `plugins` grouped: [{ title, count, items: [...] }], by title.
+    /// `plugins` grouped: [{ title, key, count, items: [...] }], by title. UX rework: `key` is stable and untranslated
+    /// ("vendor:<vendor>" / "category:<category>"; "vendor:" / "category:" for the unknown ones).
     Q_PROPERTY(QVariantList groups READ groups NOTIFY pluginsChanged FINAL)
     /// Every effect plugin known (not filtered by `query`; the mixer's "+ Effect" menu), and how many.
     Q_PROPERTY(QVariantList allPlugins READ allPlugins NOTIFY pluginsChanged FINAL)
@@ -105,6 +106,8 @@ public:
     void setEditorHooks(EditorOpener opener, StateCapturer capturer, ChangeCounter counter);
     /// Scans on the calling thread (tests).
     void setSynchronous(bool synchronous) { m_synchronous = synchronous; }
+    /// Tests: whether groupBy is kept in QSettings (default true; the constructor read it).
+    void setPersistent(bool persistent) { m_persistent = persistent; }
 
     bool available() const;
     bool scanning() const;
@@ -137,6 +140,12 @@ public:
     Q_INVOKABLE QString apply(const QString& pluginId, const QString& target);
     /// Adds it to the selected audio clip (the primary selection, or its linked audio).
     Q_INVOKABLE QString applyToSelection(const QString& pluginId);
+    /// UX rework (the Effects panel's double-click / Enter): adds the plugin to EVERY selected audio clip (a selected
+    /// video clip stands for its linked audio clip), one instance each, as one undo step ("Add Plugin"). Returns { ok,
+    /// error ("" or why not), message (the status line's text), clips (how many clips got it) }.
+    Q_INVOKABLE QVariantMap applyToSelectedClips(const QString& pluginId);
+    /// The untranslated group key of a plugin row ({vendor, category}) for `groupBy` ("vendor:Wabcut").
+    static QString groupKey(const QVariantMap& plugin, const QString& groupBy);
     /// What an effect of the current sequence is: { plugin, name, vendor, format, hasEditor, kind ("" | "missing" |
     /// "crashed" | "failed" | "hung"), text (the badge's), missedBlocks }; plugin false for other effects.
     Q_INVOKABLE QVariantMap effectInfo(const QString& effectKey) const;
@@ -181,6 +190,7 @@ private:
     StateCapturer m_capturer;
     ChangeCounter m_counter;
     bool m_synchronous = false;
+    bool m_persistent = true;
 
     QString m_query;
     QString m_groupBy = QStringLiteral("vendor");

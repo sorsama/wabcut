@@ -169,6 +169,40 @@ QString SequenceTimeBar::timecodeAt(double x) const {
     return m_controller->formatTimecode(snapToFrame(timeAtX(x), seq->frameRate));
 }
 
+QVariantMap SequenceTimeBar::markerAt(double x, double reach) const {
+    const SequencePtr seq = m_controller ? m_controller->currentSequence() : nullptr;
+    if (!seq)
+        return {};
+    int best = -1;
+    double bestDistance = std::max(0.0, reach);
+    for (std::size_t i = 0; i < seq->markers.size(); ++i) {
+        const Marker& m = seq->markers[i];
+        // A range marker counts along its whole bar; a point marker within `reach` px.
+        const double x0 = xOf(m.start);
+        const double x1 = xOf(m.end());
+        const double distance = x >= x0 && x <= x1 ? 0.0 : std::min(std::abs(x - x0), std::abs(x - x1));
+        if (distance <= bestDistance) {
+            bestDistance = distance;
+            best = static_cast<int>(i);
+        }
+    }
+    if (best < 0)
+        return {};
+    const Marker& m = seq->markers[static_cast<std::size_t>(best)];
+    const std::string_view type = markerTypeName(m.type);
+    return {
+        {QStringLiteral("index"), best},
+        {QStringLiteral("x"), xOf(m.start)},
+        {QStringLiteral("endX"), xOf(m.end())},
+        {QStringLiteral("name"), QString::fromStdString(m.name)},
+        {QStringLiteral("comment"), QString::fromStdString(m.comment)},
+        {QStringLiteral("timecode"), m_controller->formatTimecode(m.start)},
+        {QStringLiteral("durationText"), m.duration > Ticks{} ? m_controller->formatTimecode(m.duration) : QString()},
+        {QStringLiteral("colorIndex"), m.colorIndex},
+        {QStringLiteral("type"), QString::fromLatin1(type.data(), static_cast<qsizetype>(type.size()))},
+    };
+}
+
 void SequenceTimeBar::setView(double start, double end) {
     const double whole = span().toSeconds();
     const double minimum = whole > 0 ? std::min(1.0, kMinWindowSeconds / whole) : 1.0;

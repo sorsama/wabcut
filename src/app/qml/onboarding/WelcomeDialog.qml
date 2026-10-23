@@ -263,7 +263,7 @@ Popup {
                 variant: "ghost"
                 compact: true
                 text: dialog.page === dialog.pageCount - 1 ? qsTr("Close") : qsTr("Skip")
-                tooltip: qsTr("Skip the welcome (Esc). Run it again from Help.")
+                tooltip: qsTr("Skip the welcome (Esc). Run it again from the Help menu.")
                 onClicked: dialog.finish(dialog.page === dialog.pageCount - 1 ? "done" : "skipped")
             }
         }
@@ -585,7 +585,7 @@ Popup {
                     onClicked: dialog.finish("trainer")
                 }
                 Body {
-                    text: qsTr("Run any of this again from Help in the left rail, or the command palette.")
+                    text: qsTr("Run any of this again from the Help menu, or the command palette.")
                     color: Theme.textTertiary
                     font.pixelSize: Theme.textSm
                 }
