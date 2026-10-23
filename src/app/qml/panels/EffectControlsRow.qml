@@ -280,7 +280,8 @@ Item {
                 enabled: row.header && row.sectionKind !== "transition"
                 onTapped: point => {
                     sectionMenu.active = true
-                    (sectionMenu.item as EffectSectionMenu).popupAt(sectionTap.parent, point.position.x, point.position.y, row.section)
+                    const menu = sectionMenu.item as EffectSectionMenu
+                    menu.popupAt(sectionTap.parent, point.position.x, point.position.y, row.section)
                 }
             }
             Loader {

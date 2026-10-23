@@ -479,6 +479,24 @@ TEST_CASE("Effect Controls in the shell: stopwatch click, lane drag with the mou
     CHECK(effectKey(stackOf(*controller, city)[0].id) == vignette);
     CHECK(controller->undoText() == QStringLiteral("Undo Move Effect"));
 
+    // Right-click a header's title: the section menu with Save Preset… (the way to a preset of the clip's animation).
+    scrollTo(QStringLiteral("h:") + blur);
+    QQuickItem* blurHeader = rowItem(shell, QStringLiteral("h:") + blur);
+    REQUIRE(blurHeader != nullptr);
+    const QString blurTitle = blurHeader->property("title").toString();
+    QQuickItem* titleText = findItem(blurHeader, [&](QQuickItem* i) {
+        return i->inherits("QQuickText") && i->property("text").toString() == blurTitle && i->isVisible();
+    });
+    REQUIRE(titleText != nullptr);
+    const QPointF titlePoint = titleText->mapToScene(QPointF(8.0, titleText->height() / 2));
+    sendMouse(shell, QEvent::MouseButtonPress, titlePoint, Qt::RightButton, Qt::RightButton);
+    sendMouse(shell, QEvent::MouseButtonRelease, titlePoint, Qt::RightButton, Qt::NoButton);
+    spin(60);
+    QQuickItem* savePreset = findItem(shell.window->contentItem(), [](QQuickItem* i) {
+        return i->objectName() == QLatin1String("savePresetItem") && i->isVisible();
+    });
+    CHECK(savePreset != nullptr);
+
     const QStringList messages = takeMessages();
     INFO(join(messages));
     CHECK(messages.isEmpty());
