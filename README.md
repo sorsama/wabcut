@@ -9,7 +9,7 @@
 Premiere Pro's shortcuts and edit rules · round trips with Premiere, Resolve and Final Cut · AI that runs on your own machine
 
 [![Status: alpha](https://img.shields.io/badge/status-alpha-D6F54C)](#project-status)
-[![Version 0.3.0](https://img.shields.io/badge/version-0.3.0-9B6CFF)](docs/release-notes-0.3.md)
+[![Version 0.3.1](https://img.shields.io/badge/version-0.3.1-9B6CFF)](docs/release-notes-0.3.md)
 [![Platforms: Windows, with Linux and macOS previews](https://img.shields.io/badge/platforms-Windows%20%7C%20Linux%20%7C%20macOS%20%28preview%29-1D1D20)](#install)
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue)](LICENSE)
 [![C++23](https://img.shields.io/badge/C%2B%2B-23-00599C?logo=cplusplus&logoColor=white)](docs/building.md)
@@ -21,7 +21,7 @@ Premiere Pro's shortcuts and edit rules · round trips with Premiere, Resolve an
 </div>
 
 > [!WARNING]
-> **Wabcut is in development. This is an alpha version (0.3.0).**
+> **Wabcut is in development. This is an alpha version (0.3.1).**
 > Expect bugs, missing features and changes between versions, including to shortcuts, settings and the project format.
 > Keep backups of your projects and media, and don't rely on it yet for deadline work or sensitive material.
 
@@ -98,11 +98,11 @@ captured by the automated UI tests.</sub>
 
 ## Project status
 
-Wabcut is an **alpha**. The current release is **0.3.0**: a new Home with pages and one Import for everything,
-Premiere's menu bar and Window menu, the Effects panel in Premiere's folders, and many everyday steps made shorter
-([release notes](docs/release-notes-0.3.md)). 0.2 brought most of what Premiere Pro has for gaming videos, video essays
-and documentaries ([0.2 release notes](docs/release-notes-0.2.md)). Most of the editor works, but it has only been
-tested on a small number of machines and projects. Known gaps in this version:
+Wabcut is an **alpha**. The current release is **0.3.1**, a fix for 0.3.0. 0.3 brought a new Home with pages and one
+Import for everything, Premiere's menu bar and Window menu, the Effects panel in Premiere's folders, and many everyday
+steps made shorter ([release notes](docs/release-notes-0.3.md)). 0.2 brought most of what Premiere Pro has for gaming
+videos, video essays and documentaries ([0.2 release notes](docs/release-notes-0.2.md)). Most of the editor works, but
+it has only been tested on a small number of machines and projects. Known gaps in this version:
 
 - **Made and tested on Windows.** Wabcut is built by a solo developer who works only on Windows 10 and 11. The Linux
   and macOS (Apple silicon) downloads are **previews**: GitHub's machines build, install, start and smoke-test them

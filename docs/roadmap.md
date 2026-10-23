@@ -8,6 +8,9 @@ will change as people use the editor and tell us what matters to them.
 
 ## Shipped
 
+### 0.3.1 (23 October 2026)
+- Save Preset… in Effect Controls' right-click menu works, so a clip's animation can be saved as a preset and exported.
+
 ### 0.3.0 (23 October 2026)
 Wabcut works more like a desktop app:
 - Home is a start window with Home, Projects and Learn pages, one Import for files, folders and timelines, and a New

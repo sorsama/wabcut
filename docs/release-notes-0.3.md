@@ -1,4 +1,4 @@
-# Wabcut 0.3: release notes (0.3.0)
+# Wabcut 0.3: release notes (0.3.1)
 
 Windows 10/11 x64, with preview builds for Linux x64 and macOS on Apple silicon. Free and open source
 (GPL-3.0-or-later). No account, no subscription.
@@ -10,6 +10,12 @@ fewer clicks, and several shortcuts that did nothing in 0.2 now work.
 
 The project file format has not changed since 0.2 (schema 18): Wabcut 0.3 and 0.2 open each other's projects, and
 Wabcut 0.3 opens 0.1 projects.
+
+## 0.3.1 (23 October 2026, evening)
+
+- **Save Preset… in Effect Controls works:** right-click an effect's header (or Motion, Opacity, Volume) for **Save
+  Preset…** and **Save All Effects as Preset…**. In 0.2.0 and 0.3.0 the menu did not open, so a clip's keyframed
+  animation could not be saved as a preset, nor exported from the Effects panel as a `.wabcut-presets.json` file.
 
 ## 0.3.0 (23 October 2026)
 
