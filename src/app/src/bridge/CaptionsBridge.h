@@ -195,6 +195,15 @@ public:
     /// Closes a typing undo step.
     Q_INVOKABLE void endEdit();
     Q_INVOKABLE void seekToCue(int index);
+    /// 0.4 Shift Captions…: moves the shown track's cues by `delta` - signed frames ("-12") or a signed timecode in the
+    /// sequence rate ("+00:00:00:12", "-1:12") - for `scope` "all" or "fromPlayhead" (the cue under the playhead, else
+    /// the first one after it, and every later one) (captions.shiftCues). One undo step "Shift Captions"; refused with
+    /// nothing changed when a cue would start before 0 or overlap. "" or why not (also `message`).
+    Q_INVOKABLE QString shiftCues(const QString& delta, const QString& scope);
+
+    // ---- C++ ----
+    /// The track the Captions page shows (invalid when there is none): the command palette's captionTrack.
+    CaptionTrackId shownTrackId() const { return m_track; }
 
     // ---- Export ----
     /// "srt" or "vtt" text of the shown track.

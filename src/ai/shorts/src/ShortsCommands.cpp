@@ -8,10 +8,12 @@
 #include <wabcut/model/EditSession.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <map>
 #include <set>
+#include <string_view>
 
 namespace wabcut::ai::shorts {
 
@@ -23,6 +25,15 @@ using command::Json;
 namespace schema = command::schema;
 
 namespace {
+
+/// 0.4: characters per caption line with the "Shorts" preset on a 1080x1920 short (its 72/1080-of-the-height heavy words
+/// in 85 % of the width; two lines at most). Fix round 1: checked against rendered frames (playback test "Caption style:
+/// vertical Short cue lines stay one line each..."): 12 wrapped ("Oh my god we" is wider than the 828 px the words get),
+/// 10 stays on one line (a line in capitals may still wrap).
+constexpr int kShortsCaptionChars = 10;
+/// Fix round 1: characters per caption line with any other preset on a vertical short (20 wrapped with every built-in
+/// preset; 14 stays on one line).
+constexpr int kVerticalCaptionChars = 14;
 
 double rounded(double v, double scale) { return std::round(v * scale) / scale; }
 Ticks fromSeconds(double s) { return Ticks{static_cast<std::int64_t>(std::llround(s * static_cast<double>(kTicksPerSecond)))}; }
@@ -239,8 +250,32 @@ CommandOutput createCommand(ExecutionContext& c) {
             }
         }
         if (captions) {
-            report["captions"] = runStep(engine, "captions.generate",
-                                         Json{{"sequence", id.value}, {"maxCharsPerLine", width < height ? 24 : 37}, {"maxLines", 2}}, notes);
+            // 0.4: vertical Shorts get the "Shorts" caption style (big outlined words two thirds down, above the
+            // platforms' buttons) and short cues; another preset on a vertical short gets mid-size cues; landscape keeps
+            // the default cues and look unless a preset is given. An unknown preset is a warning (the default look).
+            const bool vertical = width < height;
+            const std::string preset = c.has("captionPreset") ? c.string("captionPreset") : (vertical ? std::string("Shorts") : std::string());
+            const bool shortsPreset = std::ranges::equal(preset, std::string_view("shorts"), [](char a, char b) {
+                return std::tolower(static_cast<unsigned char>(a)) == b;
+            });
+            Json generate{{"sequence", id.value}, {"maxLines", 2}};
+            if (!vertical) {
+                generate["maxCharsPerLine"] = 37;
+            } else if (shortsPreset) {
+                generate["maxCharsPerLine"] = kShortsCaptionChars;
+                generate["maxDuration"] = 2.5;
+            } else {
+                generate["maxCharsPerLine"] = kVerticalCaptionChars;
+                generate["maxDuration"] = 4.0;
+            }
+            command::CommandResult generated;
+            report["captions"] = runStep(engine, "captions.generate", std::move(generate), notes, &generated);
+            if (report["captions"].get<bool>() && !preset.empty() &&
+                runStep(engine, "captions.applyPreset",
+                        Json{{"sequence", id.value}, {"captionTrack", generated.data.value("captionTrack", Json())}, {"preset", preset}},
+                        notes)) {
+                report["captionPreset"] = preset;
+            }
         }
         if (hookTitle && !title.empty()) {
             command::CommandResult track;
@@ -486,6 +521,12 @@ void registerShortsCommands(command::CommandRegistry& registry) {
                       {"cleanup", schema::boolean("Remove fillers and silences first (default false).", false)},
                       {"cleanupSilences", schema::number("With cleanup: the shortest pause removed, in seconds (default 0.8).", 0.2, 10.0)},
                       {"captions", schema::boolean("Add captions from the transcript (default true).", true)},
+                      {"captionPreset",
+                       Json{{"type", "string"},
+                            {"description", "The caption style: a built-in preset (Shorts, Clean, Bold Box, Podcast, Thai-friendly) or "
+                                            "one of the project's. Default \"Shorts\" for vertical output, none (the default look) "
+                                            "otherwise; \"\" = the default look."},
+                            {"maxLength", 64}}},
                       {"hookTitle", schema::boolean("Show the title for the first seconds (default true).", true)},
                       {"titleSeconds", schema::number("How long the hook title shows (default 3).", 0.5, 30.0)},
                       {"normalize", schema::boolean("Normalise the loudness to -14 LUFS (default false).", false)}}},
@@ -494,7 +535,8 @@ void registerShortsCommands(command::CommandRegistry& registry) {
     add(registry,
         command::runsModel({"shorts.create", 1, "Create Shorts",
          "Makes one new sequence per short (from shorts.find): the range cut out of the source sequence, reframed to 9:16 "
-         "(or \"aspect\") with editable keyframes following the speaker, captioned, with the title as a hook for its first "
+         "(or \"aspect\") with editable keyframes following the speaker, captioned (vertical shorts in the \"Shorts\" caption "
+         "style unless \"captionPreset\" says otherwise), with the title as a hook for its first "
          "seconds; optionally cleaned of fillers and silences and normalised to -14 LUFS. The source is not changed; all the "
          "shorts of one call are one undo step. Export them afterwards (vertical 1080x1920).",
          Capability::EditProject, create,

@@ -9,8 +9,9 @@
 //
 // Tools (Premiere): V select/move, A / Shift+A track select forward/backward, B ripple edit, N rolling edit,
 // Y slip, U slide, C razor, R rate stretch, P pen. On the selection tool an edge drag trims (Ctrl/Cmd: ripple trim), a
-// body drag moves (Ctrl/Cmd: insert instead of overwrite; Alt: ignore links). 0.1.2: the rate stretch tool's edge drag
-// changes the clip's speed so the same material fills the new length; the pen tool edits the volume rubber band.
+// body drag moves (Ctrl/Cmd at the drop: insert; Alt at the drop: copy; Ctrl+Alt: rearrange; Alt at the press: ignore
+// links; Shift during the drag: keep the time). 0.1.2: the rate stretch tool's edge drag changes the clip's speed so the
+// same material fills the new length; the pen tool edits the volume rubber band.
 
 #include <wabcut/model/EditOps.h>
 #include <wabcut/model/ProjectState.h>
@@ -41,6 +42,9 @@ struct GestureSpec {
     edit::Edge edge = edit::Edge::Tail;
     edit::MoveMode moveMode = edit::MoveMode::Overwrite;
     edit::LinkMode links = edit::LinkMode::FollowLinks;
+    /// 0.4, Move only: copy the clips instead of moving them (Alt held at the drop, Premiere): edit::duplicateClips with the
+    /// same delta, tracks and mode; the originals stay.
+    bool copy = false;
     /// Timeline delta of the drag (for Slip the source delta: dragging left shows later source frames).
     Ticks delta;
     /// Move only: tracks crossed, counted outward from the video/audio divider. The kind of the grabbed clip

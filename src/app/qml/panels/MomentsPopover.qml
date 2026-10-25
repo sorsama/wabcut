@@ -6,6 +6,10 @@ import QtQuick
 // footage), Speed ramp in, Freeze + replay, Fast forward (200 / 300 / 400 %; In to Out when both marks are on the
 // clip), Punch in, Punch in + hold and Shake. Each is one undo step; the result is ordinary remap keys and Motion
 // keyframes (the speed line, Effect Controls).
+// 0.4: Instant replay replays In to Out when both marks are on the clip, else the 5 seconds before the playhead on a
+// clip longer than 20 s, else the whole clip; its options under the button (25 / 50 % speed, Sound, Stinger) are
+// remembered (Moments.replaySpeed / replaySound / replayLabel) and used by the clip menu's Instant Replay too. The fast
+// forward speeds have their own full-width row.
 Popover {
     id: root
     objectName: "momentsPopover"
@@ -124,29 +128,26 @@ Popover {
                 onClicked: root.run("freezeReplay")
             }
         }
-        Row {
+        // 0.4: the speeds on their own full-width row (their labels never elide), the button under them.
+        PillTabs {
+            id: fastSpeed
+            objectName: "momentsFastSpeed"
             width: parent.width
-            spacing: Theme.space(2)
-            PillTabs {
-                id: fastSpeed
-                objectName: "momentsFastSpeed"
-                width: (parent.width - parent.spacing) / 2
-                compact: true
-                model: [{ label: qsTr("200 %") }, { label: qsTr("300 %") }, { label: qsTr("400 %") }]
-                currentIndex: 1
-                Accessible.name: qsTr("Fast forward speed")
-            }
-            PillButton {
-                objectName: "momentsFastForwardButton"
-                width: (parent.width - parent.spacing) / 2
-                compact: true
-                iconName: "skip-forward"
-                text: qsTr("Fast forward")
-                tooltip: qsTr("In to Out at %1 % when both marks are on the clip, else 3 seconds from the playhead")
-                         .arg(root.fastSpeeds[fastSpeed.currentIndex])
-                enabled: root.canRetime
-                onClicked: root.run("fastForward" + root.fastSpeeds[fastSpeed.currentIndex])
-            }
+            compact: true
+            model: [{ label: qsTr("200 %") }, { label: qsTr("300 %") }, { label: qsTr("400 %") }]
+            currentIndex: 1
+            Accessible.name: qsTr("Fast forward speed")
+        }
+        PillButton {
+            objectName: "momentsFastForwardButton"
+            width: parent.width
+            compact: true
+            iconName: "skip-forward"
+            text: qsTr("Fast forward")
+            tooltip: qsTr("In to Out at %1 % when both marks are on the clip, else 3 seconds from the playhead")
+                     .arg(root.fastSpeeds[fastSpeed.currentIndex])
+            enabled: root.canRetime
+            onClicked: root.run("fastForward" + root.fastSpeeds[fastSpeed.currentIndex])
         }
 
         GroupLabel { text: qsTr("Zoom") }
@@ -189,20 +190,65 @@ Popover {
                      || Moments.gamingEdits.deadTime === true
             text: qsTr("Replay and versions")
         }
-        Flow {
+        // Instant replay and its remembered options (0.4).
+        Column {
             width: parent.width
-            spacing: Theme.space(2)
-            visible: Moments.gamingEdits.replay === true || Moments.gamingEdits.version === true
+            spacing: Theme.space(1.5)
+            visible: Moments.gamingEdits.replay === true
             PillButton {
                 objectName: "momentsInstantReplayButton"
-                visible: Moments.gamingEdits.replay === true
+                width: parent.width
                 compact: true
                 iconName: "repeat"
                 text: qsTr("Instant replay")
-                tooltip: qsTr("Replays the clip right after itself at half speed, with a REPLAY stinger")
+                tooltip: qsTr("Replays In to Out when both marks are on the clip, else the 5 seconds before the playhead (the whole clip when it is short), at %1 %")
+                         .arg(Moments.replaySpeed < 0.4 ? 25 : 50)
                 enabled: root.canRetime
                 onClicked: root.run("instantReplay")
             }
+            Row {
+                objectName: "momentsReplayOptions"
+                width: parent.width
+                spacing: Theme.space(2)
+                visible: Moments.gamingEdits.replay === true
+                PillTabs {
+                    objectName: "momentsReplaySpeed"
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: Theme.space(30)
+                    compact: true
+                    model: [{ label: qsTr("25 %") }, { label: qsTr("50 %") }]
+                    currentIndex: Moments.replaySpeed < 0.4 ? 0 : 1
+                    Accessible.name: qsTr("Instant replay speed")
+                    onActivated: index => Moments.replaySpeed = index === 0 ? 0.25 : 0.5
+                }
+                Toggle {
+                    objectName: "momentsReplaySound"
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: qsTr("Sound")
+                    tooltip: qsTr("The replay plays its sound too, slowed down")
+                    checked: Moments.replaySound
+                    onToggled: {
+                        Moments.replaySound = checked
+                        checked = Qt.binding(() => Moments.replaySound)
+                    }
+                }
+                Toggle {
+                    objectName: "momentsReplayLabel"
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: qsTr("Stinger")
+                    tooltip: qsTr("A REPLAY title over the replay")
+                    checked: Moments.replayLabel
+                    onToggled: {
+                        Moments.replayLabel = checked
+                        checked = Qt.binding(() => Moments.replayLabel)
+                    }
+                }
+            }
+        }
+        Flow {
+            width: parent.width
+            spacing: Theme.space(2)
+            visible: Moments.gamingEdits.version === true
             PillButton {
                 objectName: "momentsShortsVersionButton"
                 visible: Moments.gamingEdits.version === true

@@ -20,7 +20,9 @@
 #include <chrono>
 #include <cmath>
 #include <filesystem>
+#include <fstream>
 #include <initializer_list>
+#include <optional>
 #include <string>
 #include <thread>
 #include <utility>
@@ -180,6 +182,12 @@ TEST_CASE("Import: timeline files are routed to the interchange importer", "[edi
     if (haveMedia()) {
         CHECK(classifyImportFile(testMedia("h264_1080p60_aac.mp4")) == ImportFileKind::Media);
     }
+    // 0.4: a folder is expanded by Import Folder; a timeline bundle folder stays a timeline (also without its content).
+    const fs::path folders = workDir("classify-folders");
+    fs::create_directories(folders / "Footage");
+    fs::create_directories(folders / "cut.otiod");
+    CHECK(classifyImportFile(folders / "Footage") == ImportFileKind::Folder);
+    CHECK(classifyImportFile(folders / "cut.otiod") == ImportFileKind::Interchange);
 
     SequenceId existing;
     EditSession session(projectWithSequence(&existing));
@@ -195,6 +203,299 @@ TEST_CASE("Import: timeline files are routed to the interchange importer", "[edi
 
     CHECK_FALSE(importTimelineFile(session, fixtures / "malformed.edl"));
     CHECK(session.undoCount() == 1);
+}
+
+// ---- 0.4: Import Folder ----
+
+namespace {
+
+void writeText(const fs::path& file, const std::string& text) {
+    fs::create_directories(file.parent_path());
+    std::ofstream(file, std::ios::binary) << text;
+}
+
+/// A folder tree under `root`: each (relative path, test media file to copy, or nullptr for a small text file).
+void makeTree(const fs::path& root, std::initializer_list<std::pair<const char*, const char*>> files) {
+    for (const auto& [relative, source] : files) {
+        const fs::path to = root / fs::path(relative);
+        fs::create_directories(to.parent_path());
+        if (source != nullptr) {
+            fs::copy_file(testMedia(source), to, fs::copy_options::overwrite_existing);
+        } else {
+            writeText(to, "not media");
+        }
+    }
+}
+
+/// Imports `folder` as File > Import Folder does: collectImportFolder, then importMediaFiles into `target`.
+MediaImportResult importFolderInto(EditSession& session, const fs::path& folder, BinId target) {
+    const FolderImportPlan plan = collectImportFolder(folder);
+    std::vector<fs::path> files;
+    std::vector<std::vector<std::string>> bins;
+    for (const FolderImportFile& f : plan.files) {
+        files.push_back(f.file);
+        bins.push_back(f.bins);
+    }
+    return importMediaFiles(session, files, {.bin = target, .binPaths = bins, .undoLabel = "Import Folder"});
+}
+
+std::optional<FolderSkip> skipReason(const FolderImportPlan& plan, const std::string& name) {
+    for (const FolderImportSkipped& s : plan.skipped) {
+        if (pathToUtf8(s.path.filename()) == name) {
+            return s.reason;
+        }
+    }
+    return std::nullopt;
+}
+
+const Bin* binNamed(const ProjectState& state, const std::string& name) {
+    for (const Bin& b : state.bins) {
+        if (b.name == name) {
+            return &b;
+        }
+    }
+    return nullptr;
+}
+
+} // namespace
+
+TEST_CASE("Import Folder: subfolders become nested bins under the target bin in one undo step", "[editor][import][folder]") {
+    if (!haveMedia()) {
+        SKIP("test media missing");
+    }
+    const fs::path footage = workDir("import-folder") / "Footage";
+    makeTree(footage, {{"a.mp4", "h264_1080p60_aac.mp4"},
+                       {"Interviews/b.mp4", "h264_1080p60_aac.mp4"},
+                       {"Interviews/Day2/c.wav", "sine_48k.wav"},
+                       {"notes.txt", nullptr},
+                       {".hidden.mp4", "h264_1080p60_aac.mp4"}});
+    auto made = edit::addBin(ProjectState{}, "Target");
+    REQUIRE(made);
+    const BinId target = made->id;
+    EditSession session(std::move(made->state));
+
+    // The plan: a folder's own files (by name) before its subfolders', each with its bins.
+    const FolderImportPlan plan = collectImportFolder(footage);
+    REQUIRE(plan.files.size() == 3);
+    CHECK(plan.files[0].file.filename() == "a.mp4");
+    CHECK(plan.files[0].bins == std::vector<std::string>{"Footage"});
+    CHECK(plan.files[1].file.filename() == "b.mp4");
+    CHECK(plan.files[1].bins == std::vector<std::string>{"Footage", "Interviews"});
+    CHECK(plan.files[2].file.filename() == "c.wav");
+    CHECK(plan.files[2].bins == std::vector<std::string>{"Footage", "Interviews", "Day2"});
+    CHECK(skipReason(plan, "notes.txt") == FolderSkip::NotMedia);
+    CHECK(skipReason(plan, ".hidden.mp4") == FolderSkip::Hidden);
+    CHECK_FALSE(plan.truncated);
+
+    const MediaImportResult r = importFolderInto(session, footage, target);
+    REQUIRE(r.failed.empty());
+    REQUIRE(r.added.size() == 3);
+    REQUIRE(r.createdBins.size() == 3);
+    CHECK(session.undoCount() == 1);
+    CHECK(session.undoLabel() == "Import Folder");
+    {
+        const ProjectSnapshot snap = session.snapshot();
+        const Bin* footageBin = snap->findBin(r.createdBins[0]);
+        const Bin* interviews = snap->findBin(r.createdBins[1]);
+        const Bin* day2 = snap->findBin(r.createdBins[2]);
+        REQUIRE(footageBin);
+        REQUIRE(interviews);
+        REQUIRE(day2);
+        CHECK(footageBin->name == "Footage");
+        CHECK(footageBin->parent == target);
+        CHECK(interviews->name == "Interviews");
+        CHECK(interviews->parent == footageBin->id);
+        CHECK(day2->name == "Day2");
+        CHECK(day2->parent == interviews->id);
+        CHECK(snap->findMedia(r.byFile[0])->bin == footageBin->id);
+        CHECK(snap->findMedia(r.byFile[1])->bin == interviews->id);
+        CHECK(snap->findMedia(r.byFile[2])->bin == day2->id);
+    }
+    // One undo removes every item and bin it made; redo brings them back.
+    REQUIRE(session.undo());
+    CHECK(session.snapshot()->media.empty());
+    CHECK(session.snapshot()->bins.size() == 1);
+    REQUIRE(session.redo());
+    CHECK(session.snapshot()->media.size() == 3);
+    CHECK(session.snapshot()->bins.size() == 4);
+}
+
+TEST_CASE("Import Folder: the same folder again adds nothing and makes no bins", "[editor][import][folder]") {
+    if (!haveMedia()) {
+        SKIP("test media missing");
+    }
+    const fs::path footage = workDir("import-folder-again") / "Footage";
+    makeTree(footage, {{"a.mp4", "h264_1080p60_aac.mp4"},
+                       {"Interviews/b.mp4", "h264_1080p60_aac.mp4"},
+                       {"Interviews/Day2/c.wav", "sine_48k.wav"}});
+    EditSession session(ProjectState{});
+    const MediaImportResult first = importFolderInto(session, footage, BinId{});
+    REQUIRE(first.added.size() == 3);
+    const std::size_t bins = session.snapshot()->bins.size();
+    CHECK(bins == 3);
+    CHECK(session.snapshot()->findBin(first.createdBins[0])->parent == BinId{}); // the root
+
+    const MediaImportResult again = importFolderInto(session, footage, BinId{});
+    CHECK(again.added.empty());
+    CHECK(again.alreadyInProject.size() == 3);
+    CHECK(again.createdBins.empty());
+    CHECK(session.snapshot()->bins.size() == bins);
+    CHECK(session.undoCount() == 1);
+}
+
+TEST_CASE("Import Folder: a new file goes into the bin made for its folder before", "[editor][import][folder]") {
+    if (!haveMedia()) {
+        SKIP("test media missing");
+    }
+    const fs::path footage = workDir("import-folder-new-file") / "Footage";
+    makeTree(footage, {{"a.mp4", "h264_1080p60_aac.mp4"}, {"Interviews/b.mp4", "h264_1080p60_aac.mp4"}});
+    EditSession session(ProjectState{});
+    REQUIRE(importFolderInto(session, footage, BinId{}).added.size() == 2);
+    const Bin* interviews = binNamed(*session.snapshot(), "Interviews");
+    REQUIRE(interviews);
+    const BinId interviewsId = interviews->id;
+
+    makeTree(footage, {{"Interviews/d.wav", "sine_48k.wav"}});
+    const MediaImportResult r = importFolderInto(session, footage, BinId{});
+    REQUIRE(r.added.size() == 1);
+    CHECK(r.alreadyInProject.size() == 2);
+    CHECK(r.createdBins.empty());
+    CHECK(session.snapshot()->findMedia(r.added.front())->bin == interviewsId);
+    CHECK(session.snapshot()->bins.size() == 2);
+    CHECK(session.undoCount() == 2);
+}
+
+TEST_CASE("Import Folder: bundles and camera cards are left out and the file cap is reported", "[editor][import][folder]") {
+    // Only names and folders matter here (nothing is probed): the files are small text files.
+    const fs::path dir = workDir("import-folder-skips");
+    const fs::path footage = dir / "Footage";
+    makeTree(footage, {{"a.mp4", nullptr},
+                       {"More/b.mp4", nullptr},
+                       {"More/c.mov", nullptr},
+                       {"x.otiod/content.otio", nullptr},
+                       {"DCIM/PRIVATE/AVCHD/BDMV/STREAM/00000.MTS", nullptr}});
+
+    const FolderImportPlan plan = collectImportFolder(footage);
+    REQUIRE(plan.files.size() == 3);
+    CHECK(plan.files[0].file.filename() == "a.mp4");
+    CHECK(plan.files[1].bins == std::vector<std::string>{"Footage", "More"});
+    CHECK(skipReason(plan, "x.otiod") == FolderSkip::TimelineBundle);
+    CHECK(skipReason(plan, "DCIM") == FolderSkip::CameraCard);
+    CHECK_FALSE(plan.truncated);
+
+    // At most maxFiles files are looked at.
+    const FolderImportPlan capped = collectImportFolder(footage, {.maxFiles = 2, .maxDepth = 8});
+    CHECK(capped.files.size() == 2);
+    CHECK(capped.truncated);
+
+    // Folders deeper than maxDepth are left out (bundles and cards are named as such first).
+    const FolderImportPlan shallow = collectImportFolder(footage, {.maxFiles = 1000, .maxDepth = 0});
+    CHECK(shallow.files.size() == 1);
+    CHECK(skipReason(shallow, "More") == FolderSkip::TooDeep);
+    CHECK(skipReason(shallow, "DCIM") == FolderSkip::CameraCard);
+
+    // A camera card chosen itself, or a folder inside one: all of it is left out.
+    const FolderImportPlan card = collectImportFolder(footage / "DCIM");
+    CHECK(card.files.empty());
+    REQUIRE(card.skipped.size() == 1);
+    CHECK(card.skipped.front().reason == FolderSkip::CameraCard);
+    CHECK(collectImportFolder(footage / "DCIM" / "PRIVATE" / "AVCHD").files.empty());
+
+    // Links are never followed (only when this system lets the test make one).
+    std::error_code ec;
+    fs::create_directory_symlink(footage / "More", footage / "Linked", ec);
+    if (!ec) {
+        const FolderImportPlan linked = collectImportFolder(footage);
+        CHECK(skipReason(linked, "Linked") == FolderSkip::Link);
+        CHECK(linked.files.size() == 3);
+    }
+}
+
+#ifdef _WIN32
+// kernel32, declared as the SDK does (no <windows.h> in this file).
+extern "C" __declspec(dllimport) int __stdcall SetFileAttributesW(const wchar_t* lpFileName, unsigned long dwFileAttributes);
+#endif
+
+TEST_CASE("Import Folder: Windows hidden files are left out as hidden and not as not media", "[editor][import][folder]") {
+#ifndef _WIN32
+    SKIP("Windows file attributes");
+#else
+    // Fix round 1 (D): Explorer hides desktop.ini and Thumbs.db (hidden, often system too); the toast's "N files were
+    // left out (not media)" must not count them.
+    constexpr unsigned long kHidden = 0x2; // FILE_ATTRIBUTE_HIDDEN
+    constexpr unsigned long kSystem = 0x4; // FILE_ATTRIBUTE_SYSTEM
+    const fs::path dir = workDir("import-folder-hidden");
+    const fs::path captures = dir / "Captures";
+    makeTree(captures, {{"a.mp4", nullptr},
+                        {"desktop.ini", nullptr},
+                        {"Thumbs.db", nullptr},
+                        {"notes.txt", nullptr},
+                        {"Old/b.mp4", nullptr},
+                        {"Session/c.mp4", nullptr}});
+    REQUIRE(SetFileAttributesW((captures / "desktop.ini").c_str(), kHidden | kSystem) != 0);
+    REQUIRE(SetFileAttributesW((captures / "Thumbs.db").c_str(), kHidden) != 0);
+    REQUIRE(SetFileAttributesW((captures / "Old").c_str(), kHidden) != 0);
+    // A customised folder carries the system attribute (its own desktop.ini sets it): Explorer shows it, so it is
+    // looked in.
+    REQUIRE(SetFileAttributesW((captures / "Session").c_str(), kSystem) != 0);
+
+    const FolderImportPlan plan = collectImportFolder(captures);
+    REQUIRE(plan.files.size() == 2);
+    CHECK(plan.files[0].file.filename() == "a.mp4");
+    CHECK(plan.files[1].file.filename() == "c.mp4");
+    CHECK(skipReason(plan, "desktop.ini") == FolderSkip::Hidden);
+    CHECK(skipReason(plan, "Thumbs.db") == FolderSkip::Hidden);
+    CHECK(skipReason(plan, "Old") == FolderSkip::Hidden);
+    CHECK(skipReason(plan, "notes.txt") == FolderSkip::NotMedia);
+    CHECK(std::ranges::count_if(plan.skipped, [](const FolderImportSkipped& s) { return s.reason == FolderSkip::NotMedia; }) == 1);
+#endif
+}
+
+TEST_CASE("Capture folders: Game Bar and ShadowPlay and OBS profiles that exist", "[editor][import][capture]") {
+    const fs::path dir = workDir("capture-folders");
+    const fs::path videos = dir / "Videos";
+    fs::create_directories(videos / "Captures");
+    fs::create_directories(videos / "NVIDIA");
+    const fs::path recordings = dir / "rec";
+    const fs::path advanced = dir / "adv";
+    fs::create_directories(recordings);
+    fs::create_directories(advanced);
+    const auto withSlashes = [](const fs::path& p, char slash) {
+        std::string text = pathToUtf8(p.lexically_normal());
+        std::ranges::replace(text, slash == '/' ? '\\' : '/', slash);
+        return text;
+    };
+    const fs::path obs = dir / "obs-studio";
+    // Two profiles at one folder, written with / and with \ (and a trailing one): one entry, the first profile's name.
+    writeText(obs / "basic" / "profiles" / "A" / "basic.ini",
+              "\xEF\xBB\xBF[General]\nName=Streaming\n\n[Output]\nMode=Simple\n\n[SimpleOutput]\nFilePath=" +
+                  withSlashes(recordings, '/') + "\n");
+    writeText(obs / "basic" / "profiles" / "B" / "basic.ini",
+              "[SimpleOutput]\r\nFilePath=" + withSlashes(recordings, '\\') + "\\\r\n");
+    // Advanced output: its recording path first.
+    writeText(obs / "basic" / "profiles" / "C" / "basic.ini",
+              "[Output]\nMode=Advanced\n[SimpleOutput]\nFilePath=" + withSlashes(recordings, '/') +
+                  "\n[AdvOut]\nRecFilePath=" + withSlashes(advanced, '/') + "\n");
+    // A folder that is not there: no entry.
+    writeText(obs / "basic" / "profiles" / "D" / "basic.ini",
+              "[SimpleOutput]\nFilePath=" + withSlashes(dir / "missing", '/') + "\n");
+
+    const std::vector<CaptureFolder> found = captureFolders(videos, obs);
+    REQUIRE(found.size() == 4);
+    CHECK(found[0].tool == CaptureTool::GameBar);
+    CHECK(fs::equivalent(found[0].path, videos / "Captures"));
+    CHECK(found[1].tool == CaptureTool::ShadowPlay);
+    CHECK(fs::equivalent(found[1].path, videos / "NVIDIA"));
+    CHECK(found[2].tool == CaptureTool::Obs);
+    CHECK(found[2].profile == "Streaming");
+    CHECK(fs::equivalent(found[2].path, recordings));
+    CHECK(found[3].tool == CaptureTool::Obs);
+    CHECK(found[3].profile == "C");
+    CHECK(fs::equivalent(found[3].path, advanced));
+
+    // Nothing there: nothing listed.
+    CHECK(captureFolders(dir / "none", dir / "none").empty());
+    CHECK(captureFolders({}, {}).empty());
 }
 
 TEST_CASE("Drop: library media lands on the tracks under the pointer, linked", "[editor][drop]") {

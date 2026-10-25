@@ -87,3 +87,110 @@ TEST_CASE("Color Management dialog: Premiere's colour setups in one undo step an
     REQUIRE(color->setColorManagement({{QStringLiteral("mode"), QStringLiteral("off")}}));
     REQUIRE(waitFor([&] { return color->monitorLabel() == QStringLiteral("Color management off"); }));
 }
+
+TEST_CASE("Color panel menu: Apply Grade to the selected clips and to all clips of the media", "[app][color][gradecopy]") {
+    resetSettings();
+    clearMessages();
+    Shell shell;
+    REQUIRE(shell.window);
+    shell.resize(kShotWidth, kShotHeight);
+    shell.theme->setProperty("reduceMotion", true);
+    auto* controller = shell.engine.singletonInstance<ProjectController*>("Wabcut", "ProjectController");
+    auto* color = shell.engine.singletonInstance<ColorBridge*>("Wabcut", "Color");
+    REQUIRE(controller);
+    REQUIRE(color);
+    // A1, A2 and A3 show media A; B1 media B.
+    Timeline tl(R"(
+        V1 tgt |AaaaaA5aaaBbbbbA10aaa|
+    )");
+    controller->resetProject(tl.state, tl.seq);
+    const ClipId a1 = tl.clip("V1@0");
+    const ClipId a2 = tl.clip("V1@5");
+    const ClipId b1 = tl.clip("V1@10");
+    const ClipId a3 = tl.clip("V1@15");
+    controller->selectClipById(a1, ProjectController::Replace);
+    REQUIRE(waitFor([&] { return color->targetClip() == a1; }));
+    const auto gradeOf = [&](ClipId id) -> const EffectInstance* {
+        for (const EffectInstance& e : controller->currentSequence()->findClip(id)->clip().effects()) {
+            if (e.effect == "wabcut.color.grade")
+                return &e;
+        }
+        return nullptr;
+    };
+
+    // What the menu rows count: the other selected video clips, the other clips of the media.
+    QVariantMap targets = color->gradeCopyTargets();
+    CHECK(targets.value(QStringLiteral("selection")).toInt() == 0);
+    CHECK(targets.value(QStringLiteral("media")).toInt() == 2);
+    CHECK(targets.value(QStringLiteral("mediaName")).toString().startsWith(QLatin1Char('A')));
+    // Nothing to copy yet.
+    CHECK_FALSE(color->applyGradeTo(QStringLiteral("media")));
+    CHECK_FALSE(color->status().isEmpty());
+
+    REQUIRE(color->setParam(QStringLiteral("basic.exposure"), 0.5));
+    REQUIRE(waitFor([&] { return color->hasGrade(); }));
+    controller->setSelection({a1, b1, a3}, a1);
+    REQUIRE(waitFor([&] { return color->targetClip() == a1 && color->hasGrade(); }));
+    targets = color->gradeCopyTargets();
+    CHECK(targets.value(QStringLiteral("selection")).toInt() == 2);
+    CHECK(targets.value(QStringLiteral("media")).toInt() == 2);
+
+    // The Color workspace's panel menu: the two rows above Export .cube…, enabled; a screenshot with it open.
+    REQUIRE(QMetaObject::invokeMethod(shell.window.get(), "runCommand", Q_ARG(QVariant, QStringLiteral("window.workspace5"))));
+    QQuickItem* panel = nullptr;
+    REQUIRE(waitFor([&] {
+        panel = findNamed(shell.window->contentItem(), QStringLiteral("colorPanel"));
+        return panel != nullptr && panel->isVisible();
+    }));
+    REQUIRE_FALSE(shell.grab().isNull()); // lays the workspace out
+    QQuickItem* menuButton = findNamed(panel, QStringLiteral("colorPanelMenuButton"));
+    REQUIRE(menuButton);
+    REQUIRE(QMetaObject::invokeMethod(menuButton, "clicked"));
+    QQuickItem* selectedRow = nullptr;
+    REQUIRE(waitFor([&] {
+        selectedRow = findNamed(shell.window->contentItem(), QStringLiteral("applyGradeSelectedItem"));
+        return selectedRow != nullptr && selectedRow->isVisible();
+    }));
+    QQuickItem* mediaRow = findNamed(shell.window->contentItem(), QStringLiteral("applyGradeMediaItem"));
+    REQUIRE(mediaRow);
+    CHECK(selectedRow->isEnabled());
+    CHECK(mediaRow->isEnabled());
+    CHECK(mediaRow->property("text").toString().startsWith(QStringLiteral("Apply Grade to All Clips of \"A")));
+    CHECK(findNamed(shell.window->contentItem(), QStringLiteral("exportCubeItem")) != nullptr);
+    spin(150);
+    {
+        const QImage image = shell.grab();
+        REQUIRE_FALSE(image.isNull());
+        REQUIRE(image.save(outputDir() + QStringLiteral("/color-apply-grade-menu.png")));
+    }
+    QObject* menu = selectedRow->property("menu").value<QObject*>();
+    REQUIRE(menu);
+    REQUIRE(QMetaObject::invokeMethod(menu, "close"));
+    spin(100);
+
+    // All clips of the media: A2 and A3 (not B1), one undo step.
+    const auto undos = controller->session().undoCount();
+    REQUIRE(color->applyGradeTo(QStringLiteral("media")));
+    CHECK(color->status() == QStringLiteral("Grade applied to 2 clips"));
+    CHECK(controller->session().undoCount() == undos + 1);
+    CHECK(controller->undoText() == QStringLiteral("Undo Apply Grade"));
+    REQUIRE(gradeOf(a2));
+    REQUIRE(gradeOf(a3));
+    CHECK_FALSE(gradeOf(b1));
+    CHECK(effectParameterAt(*gradeOf(a2), "basic.exposure", Ticks{}) == 0.5);
+    REQUIRE(controller->undo());
+    CHECK_FALSE(gradeOf(a2));
+    CHECK_FALSE(gradeOf(a3));
+
+    // The selected clips: B1 and A3.
+    REQUIRE(color->applyGradeTo(QStringLiteral("selection")));
+    CHECK(color->status() == QStringLiteral("Grade applied to 2 clips"));
+    CHECK(gradeOf(b1));
+    CHECK(gradeOf(a3));
+    CHECK_FALSE(gradeOf(a2));
+    CHECK(controller->undoText() == QStringLiteral("Undo Apply Grade"));
+
+    const QStringList messages = takeMessages();
+    INFO(join(messages));
+    CHECK(messages.isEmpty());
+}

@@ -407,6 +407,9 @@ void sortFile(const QFileInfo& info, bool inFolder, Sorted& out) {
             out.unsupported.append(entry);
         return;
     }
+    case editor::ImportFileKind::Folder: // 0.4: folders are expanded before (sortFolder); not reached
+        ++out.skipped;
+        return;
     case editor::ImportFileKind::Media:
         break;
     }
@@ -552,9 +555,11 @@ std::string audioLabel(std::size_t position) {
 QString placeWithPlan(ProjectController* controller, const MediaItem& media, const std::vector<StreamChoice>& plan, Ticks at) {
     const std::size_t audioCount = media.info.audio.size();
     const auto included = [&](std::size_t stream) { return stream >= plan.size() || plan[stream].include; };
+    // 0.4: a stream without a name in the plan gets the name later drops route by (its title, edit::sourceTrackNames).
     const auto trackName = [&](std::size_t stream) {
-        return stream < plan.size() && !plan[stream].name.isEmpty() ? plan[stream].name
-                                                                    : GamingStartBridge::suggestedTrackName(static_cast<int>(stream));
+        return stream < plan.size() && !plan[stream].name.isEmpty()
+                   ? plan[stream].name
+                   : GamingStartBridge::suggestedTrackName(media.info, static_cast<int>(stream));
     };
     std::vector<std::size_t> streams;
     for (std::size_t i = 0; i < audioCount; ++i) {
@@ -593,6 +598,17 @@ QString placeWithPlan(ProjectController* controller, const MediaItem& media, con
         if (const QString error = runCommand(controller, "track.setState", Json{{"track", audioLabel(j)}, {"name", track.toStdString()}});
             !error.isEmpty())
             return HomeBridge::tr("track %1 could not be named \"%2\": %3").arg(QString::fromStdString(audioLabel(j)), track, error);
+    }
+    // 0.4: each track gets the role its final name implies (Mic / Discord dialogue, Game / Alerts effects, Music music), so
+    // Essential Sound and "Game under my voice" work at once.
+    for (std::size_t j = 0; j < streams.size(); ++j) {
+        const QString track = trackName(streams[j]);
+        const QString role = GamingStartBridge::trackRoleOf(track);
+        if (role == QLatin1String("none"))
+            continue;
+        if (const QString error = runCommand(controller, "track.setRole", Json{{"track", audioLabel(j)}, {"role", role.toStdString()}});
+            !error.isEmpty())
+            return HomeBridge::tr("track %1 could not be given the %2 role: %3").arg(QString::fromStdString(audioLabel(j)), role, error);
     }
     return {};
 }

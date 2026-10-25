@@ -153,6 +153,14 @@ Premiere's Speech to Text **Hide profanity**: profane words in captions are show
   Waveforms Using Clip Volume". Waveforms are scaled by each clip's Audio Gain and its Volume, including keyframes, so
   they show what is heard. With logarithmic scaling, the dB scale is applied after the volume. Rectified waveforms
   and logarithmic scaling were already there.
+- **Clip volume keys (0.4).** `]` and `[` raise and lower the clip Volume Level (Effect Controls > Volume > Level) by
+  1 dB, Shift+`]` and Shift+`[` by 6 dB (Premiere's Increase / Decrease Clip Volume and its default Large Volume
+  Adjustment; no Settings row for the step yet). A keyframed level moves every keyframe by the step, so the shape stays;
+  the level stays within -144 to +24 dB. They act on the selected clips (a video clip stands for its linked audio), else
+  on the clips under the playhead on the targeted tracks (every track when none is targeted); clips on locked tracks are
+  left out. Presses on the same clips within a second are one undo step ("Clip Volume"), and a toast says what changed
+  ("Volume +1 dB (now -2.0 dB)"). They work while playing; the Library keeps Shift+`]` / Shift+`[` for its thumbnail
+  size, and text fields keep the characters. As in Premiere these change the clip's Volume, not its Audio Gain (G).
 - **Named source patching.** A multi-track recording patched to the timeline routes its streams by name (Game, Mic,
   Discord, Music, Track n; A.10's `audioPatchesByName`) when the sequence has tracks of those names. If there is none,
   a new track of that name is made. The Source Monitor's patch indicators and the track headers' tooltips show the name

@@ -11,6 +11,9 @@
 // panel's tab drags like a grouped one; Ctrl+W closes the active panel; Reset to Saved Layout can be undone. Two
 // monitors sharing a narrow place: only the one shown takes presses, hover, drops and `; the Window menu keeps them
 // sharing. Every way to maximize moves the keyboard focus into the frame; a group docked back from its window shows.
+// 0.4: a crowded group keeps readable tabs and lists every panel behind its tab list button; a lone panel's tab opens
+// its menu from the keyboard; header tools that do not fit go into the More tools menu (a chevron button), whose rows act
+// like a click on the tool (a checkable one toggles), and hidden tools leave the Tab chain.
 
 #include "ShellFixture.h"
 
@@ -27,7 +30,10 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QFileInfo>
+#include <QFont>
+#include <QFontMetricsF>
 #include <QGuiApplication>
+#include <QJSValue>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QCloseEvent>
@@ -1316,6 +1322,410 @@ TEST_CASE("Docking: every way to maximize moves the focus into the frame and a g
     CHECK_FALSE(library->property("floating").toBool());
     CHECK(maximizedGroup(shell).isEmpty());
     CHECK(library->isVisible());
+
+    const QStringList messages = takeMessages();
+    INFO(join(messages));
+    CHECK(messages.isEmpty());
+}
+
+TEST_CASE("Docking: crowded tab groups keep readable tabs and list every panel behind the tab list button",
+          "[app][docking][qml]") {
+    resetSettings();
+    clearMessages();
+    Shell shell;
+    REQUIRE(shell.window != nullptr);
+    shell.theme->setProperty("reduceMotion", true);
+    shell.resize(1100, 700);
+    spin(50);
+
+    // Six panels in the Library's group.
+    for (const char* key : {"effectControls", "markers", "mediaBrowser", "metadata", "effects"})
+        evaluate(shell, QStringLiteral("docking.joinPanel('%1', docking.groupOfPanel('library').group)").arg(QLatin1String(key)));
+    spin(50);
+    const QString gid = groupId(shell, "library");
+    REQUIRE(evaluate(shell, QStringLiteral("docking.groupOfPanel('library').panels.length")).toInt() == 6);
+    QQuickItem* group = groupOf(shell, "library");
+    REQUIRE(group != nullptr);
+    INFO("group width " << group->width());
+    QQuickItem* tabs = findItem(shell, QStringLiteral("dockTabs_") + gid);
+    REQUIRE(tabs != nullptr);
+    const QStringList panels = evaluate(shell, QStringLiteral("docking.groupOfPanel('library').panels")).toStringList();
+    REQUIRE(panels.size() == 6);
+    const auto inTabs = [&](const QString& code) {
+        QQmlExpression expression(qmlContext(tabs), tabs, code);
+        const QVariant result = expression.evaluate();
+        INFO(code.toStdString() << ": " << expression.error().toString().toStdString());
+        REQUIRE_FALSE(expression.hasError());
+        return result;
+    };
+    const auto current = [&] { return tabs->property("current").toString(); };
+
+    // Not every tab fits: the tab list button shows; every shown tab keeps its dot and four characters (the shown one
+    // its × too), and the shown one is always among them.
+    CHECK(tabs->property("overflowing").toBool());
+    QQuickItem* overflow = findUnder(tabs, QStringLiteral("dockTabsOverflow"));
+    REQUIRE(overflow != nullptr);
+    CHECK(overflow->isVisible());
+    int shownTabs = 0;
+    for (int i = 0; i < panels.size(); ++i) {
+        QQuickItem* tab = findUnder(tabs, QStringLiteral("dockTab_") + panels[i]);
+        REQUIRE(tab != nullptr);
+        INFO(panels[i].toStdString());
+        if (!tab->isVisible())
+            continue;
+        ++shownTabs;
+        const double minimum = inTabs(QStringLiteral("minTabWidth(%1)").arg(i)).toDouble();
+        CHECK(tab->width() >= minimum - 0.5);
+        // Its label shows at least its first four characters.
+        QQuickItem* text = nullptr;
+        QList<QQuickItem*> stack{tab};
+        while (!stack.isEmpty() && text == nullptr) {
+            QQuickItem* item = stack.takeLast();
+            if (QString::fromLatin1(item->metaObject()->className()).startsWith(QLatin1String("QQuickText"))
+                && item->property("text").toString() == tab->property("label").toString())
+                text = item;
+            stack << item->childItems();
+        }
+        REQUIRE(text != nullptr);
+        const QFontMetricsF fm(text->property("font").value<QFont>());
+        CHECK(text->width() + 1.0 >= fm.horizontalAdvance(tab->property("label").toString().left(4)));
+    }
+    CHECK(shownTabs >= 1);
+    CHECK(shownTabs < 6);
+    CHECK(findUnder(tabs, QStringLiteral("dockTab_") + current())->isVisible());
+    // The tab's tooltip names the panel and its focus key.
+    QQuickItem* libraryTab = findUnder(tabs, QStringLiteral("dockTab_library"));
+    REQUIRE(libraryTab != nullptr);
+    const QString key = evaluate(shell, QStringLiteral("KeymapDispatcher.shortcutText('window.projects')")).toString();
+    CHECK(libraryTab->property("tooltipText").toString() ==
+          (key.isEmpty() ? QStringLiteral("Library") : QStringLiteral("Library  [%1]").arg(key)));
+    spin(200);
+    REQUIRE(shell.grab().save(outputDir() + QStringLiteral("/docking-tabs-overflow.png")));
+
+    // The tab list: every panel of the group in tab order, the shown one checked.
+    REQUIRE(QMetaObject::invokeMethod(overflow, "clicked"));
+    QObject* menu = nullptr;
+    REQUIRE(waitFor([&] {
+        menu = tabs->findChild<QObject*>(QStringLiteral("dockTabsOverflowMenu"));
+        return menu != nullptr && menu->property("visible").toBool();
+    }));
+    CHECK(menu->property("count").toInt() == 6);
+    for (const QString& panel : panels) {
+        QObject* row = menu->findChild<QObject*>(QStringLiteral("dockTabsOverflow_") + panel);
+        INFO(panel.toStdString());
+        REQUIRE(row != nullptr);
+        CHECK(row->property("checked").toBool() == (panel == current()));
+    }
+    // Choosing a hidden one shows it: its tab is there now.
+    QString hidden;
+    for (const QString& panel : panels) {
+        if (!findUnder(tabs, QStringLiteral("dockTab_") + panel)->isVisible()) {
+            hidden = panel;
+            break;
+        }
+    }
+    REQUIRE_FALSE(hidden.isEmpty());
+    chooseInMenu(menu, ("dockTabsOverflow_" + hidden.toStdString()).c_str());
+    CHECK(current() == hidden);
+    CHECK(shownPanel(shell, "library") == hidden);
+    CHECK(findUnder(tabs, QStringLiteral("dockTab_") + hidden)->isVisible());
+
+    // Fewer panels in the group: every tab shows again, no tab list.
+    for (const char* closing : {"effects", "metadata", "mediaBrowser", "markers"})
+        evaluate(shell, QStringLiteral("docking.closePanel('%1')").arg(QLatin1String(closing)));
+    spin(100);
+    REQUIRE(evaluate(shell, QStringLiteral("docking.groupOfPanel('library').panels.length")).toInt() == 2);
+    CHECK_FALSE(tabs->property("overflowing").toBool());
+    CHECK_FALSE(overflow->isVisible());
+    CHECK(findUnder(tabs, QStringLiteral("dockTab_library"))->isVisible());
+    CHECK(findUnder(tabs, QStringLiteral("dockTab_effectControls"))->isVisible());
+
+    const QStringList messages = takeMessages();
+    INFO(join(messages));
+    CHECK(messages.isEmpty());
+}
+
+TEST_CASE("Docking: a lone panel tab opens its tab menu from the keyboard", "[app][docking][qml]") {
+    resetSettings();
+    clearMessages();
+    Shell shell;
+    REQUIRE(shell.window != nullptr);
+    shell.theme->setProperty("reduceMotion", true);
+    spin(50);
+    QQuickItem* libraryGroup = groupOf(shell, "library");
+    REQUIRE(libraryGroup != nullptr);
+    QQuickItem* loneTab = findUnder(libraryGroup, QStringLiteral("panelTabArea"));
+    REQUIRE(loneTab != nullptr);
+    CHECK(loneTab->activeFocusOnTab());
+    CHECK(loneTab->property("tooltipText").toString().startsWith(QStringLiteral("Library")));
+    const auto press = [&](int key, Qt::KeyboardModifiers modifiers) {
+        loneTab->forceActiveFocus(Qt::TabFocusReason);
+        REQUIRE(loneTab->hasActiveFocus());
+        QKeyEvent down(QEvent::KeyPress, key, modifiers);
+        QCoreApplication::sendEvent(shell.window.get(), &down);
+        QKeyEvent up(QEvent::KeyRelease, key, modifiers);
+        QCoreApplication::sendEvent(shell.window.get(), &up);
+        spin(50);
+    };
+
+    // Shift+F10 opens the lone tab's menu.
+    press(Qt::Key_F10, Qt::ShiftModifier);
+    QObject* menu = tabMenuOf(shell, "library");
+    REQUIRE(menu != nullptr);
+    REQUIRE(waitFor([&] { return menu->property("visible").toBool(); }));
+    CHECK(menu->property("panel").toString() == QStringLiteral("library"));
+    REQUIRE(QMetaObject::invokeMethod(menu, "close"));
+    REQUIRE(waitFor([&] { return !menu->property("visible").toBool(); }));
+    // The Menu key too.
+    press(Qt::Key_Menu, Qt::NoModifier);
+    REQUIRE(waitFor([&] { return menu->property("visible").toBool(); }));
+    REQUIRE(QMetaObject::invokeMethod(menu, "close"));
+    REQUIRE(waitFor([&] { return !menu->property("visible").toBool(); }));
+
+    const QStringList messages = takeMessages();
+    INFO(join(messages));
+    CHECK(messages.isEmpty());
+}
+
+TEST_CASE("Panel header: tools that do not fit go into the More tools menu", "[app][docking][qml]") {
+    resetSettings();
+    clearMessages();
+    Shell shell;
+    REQUIRE(shell.window != nullptr);
+    shell.theme->setProperty("reduceMotion", true);
+    shell.resize(kShotWidth, kShotHeight);
+    spin(50);
+    QQuickItem* panel = shell.item("libraryPanel");
+    REQUIRE(panel != nullptr);
+    QQuickItem* group = groupOf(shell, "library");
+    REQUIRE(group != nullptr);
+    INFO("library group width " << group->width());
+    QObject* library = evaluate(shell, QStringLiteral("Library")).value<QObject*>();
+    REQUIRE(library != nullptr);
+    const auto hiddenNames = [&] {
+        QQmlExpression expression(qmlContext(panel), panel, QStringLiteral("hiddenTools.map(t => t.objectName)"));
+        const QVariant result = expression.evaluate();
+        INFO(expression.error().toString().toStdString());
+        REQUIRE_FALSE(expression.hasError());
+        QStringList names;
+        const QVariant list = result.canConvert<QJSValue>() && result.metaType() == QMetaType::fromType<QJSValue>()
+                                  ? result.value<QJSValue>().toVariant()
+                                  : result;
+        for (const QVariant& v : list.toList())
+            names << v.toString();
+        return names;
+    };
+
+    // The Library at about 340 px: Import (the trailing row's last tool) and its neighbours show; the rest went into
+    // the "..." menu.
+    QQuickItem* overflow = findUnder(panel, QStringLiteral("panelToolsOverflow"));
+    REQUIRE(overflow != nullptr);
+    CHECK(overflow->isVisible());
+    const QStringList hidden = hiddenNames();
+    INFO(hidden.join(QLatin1Char(' ')).toStdString());
+    REQUIRE_FALSE(hidden.isEmpty());
+    CHECK(hidden.contains(QStringLiteral("libraryListButton")));
+    QQuickItem* gridButton = shell.item("libraryGridButton");
+    QQuickItem* moreButton = findUnder(panel, QStringLiteral("libraryMoreButton"));
+    REQUIRE(gridButton != nullptr);
+    REQUIRE(moreButton != nullptr);
+    // A hidden tool sits in a 0-wide slot and leaves the Tab chain; a shown one keeps its room.
+    CHECK(gridButton->parentItem()->width() == 0);
+    CHECK(gridButton->property("focusPolicy").toInt() == Qt::NoFocus);
+    CHECK(moreButton->parentItem()->width() > 0);
+    spin(200);
+    const QImage image = shell.grab();
+    REQUIRE_FALSE(image.isNull());
+    const QRectF rect = panel->mapRectToScene(QRectF(0, 0, panel->width(), 120)).intersected(QRectF(0, 0, kShotWidth, kShotHeight));
+    REQUIRE(image.copy(QRectF(rect.topLeft() * image.devicePixelRatio(), rect.size() * image.devicePixelRatio()).toRect())
+                .save(outputDir() + QStringLiteral("/panel-tools-overflow.png")));
+
+    // Its menu lists them (on-screen order) with their names; List view switches the Library to the list once the menu
+    // has closed.
+    REQUIRE(QMetaObject::invokeMethod(overflow, "clicked"));
+    QObject* menu = nullptr;
+    REQUIRE(waitFor([&] {
+        menu = panel->findChild<QObject*>(QStringLiteral("panelToolsMenu"));
+        return menu != nullptr && menu->property("visible").toBool();
+    }));
+    CHECK(menu->property("count").toInt() == hidden.size());
+    QObject* listRow = menu->findChild<QObject*>(QStringLiteral("panelToolsMenu_libraryListButton"));
+    REQUIRE(listRow != nullptr);
+    CHECK(listRow->property("text").toString() == QStringLiteral("List view"));
+    CHECK(listRow->property("checkable").toBool());
+    chooseInMenu(menu, "panelToolsMenu_libraryListButton");
+    REQUIRE(waitFor([&] { return library->property("view").toString() == QStringLiteral("list"); }));
+
+    // A wider group: everything fits again, the "..." button goes and the tools are back in the Tab chain.
+    shell.resize(2560, 1200);
+    spin(100);
+    CHECK(hiddenNames().isEmpty());
+    CHECK_FALSE(overflow->isVisible());
+    CHECK(gridButton->parentItem()->width() > 0);
+    CHECK(gridButton->property("focusPolicy").toInt() == Qt::StrongFocus);
+    library->setProperty("view", QStringLiteral("grid"));
+
+    const QStringList messages = takeMessages();
+    INFO(join(messages));
+    CHECK(messages.isEmpty());
+}
+
+TEST_CASE("Panel header: More tools rows act like a click and hidden tools leave the Tab chain", "[app][docking][qml]") {
+    resetSettings();
+    clearMessages();
+    Shell shell;
+    REQUIRE(shell.window != nullptr);
+    shell.theme->setProperty("reduceMotion", true);
+    shell.resize(kShotWidth, kShotHeight);
+    spin(50);
+    const auto inPanel = [&](QQuickItem* panel, const QString& code) {
+        QQmlExpression expression(qmlContext(panel), panel, code);
+        const QVariant result = expression.evaluate();
+        INFO(code.toStdString() << ": " << expression.error().toString().toStdString());
+        REQUIRE_FALSE(expression.hasError());
+        return result.canConvert<QJSValue>() && result.metaType() == QMetaType::fromType<QJSValue>()
+                   ? result.value<QJSValue>().toVariant()
+                   : result;
+    };
+    const auto hiddenNames = [&](QQuickItem* panel) {
+        QStringList names;
+        for (const QVariant& v : inPanel(panel, QStringLiteral("hiddenTools.map(t => t.objectName)")).toList())
+            names << v.toString();
+        return names;
+    };
+    const auto openMoreTools = [&](QQuickItem* panel) {
+        QQuickItem* overflow = findUnder(panel, QStringLiteral("panelToolsOverflow"));
+        REQUIRE(overflow != nullptr);
+        REQUIRE(overflow->isVisible());
+        REQUIRE(QMetaObject::invokeMethod(overflow, "clicked"));
+        QObject* menu = nullptr;
+        REQUIRE(waitFor([&] {
+            menu = panel->findChild<QObject*>(QStringLiteral("panelToolsMenu"));
+            return menu != nullptr && menu->property("visible").toBool();
+        }));
+        return menu;
+    };
+
+    // The Media Browser and Effect Controls join the Library's group (about 340 px): their header tools have no room.
+    evaluate(shell, QStringLiteral("docking.joinPanel('effectControls', docking.groupOfPanel('library').group)"));
+    evaluate(shell, QStringLiteral("docking.joinPanel('mediaBrowser', docking.groupOfPanel('library').group)"));
+    spin(100);
+    REQUIRE(shownPanel(shell, "library") == QStringLiteral("mediaBrowser"));
+    QQuickItem* browser = nullptr;
+    REQUIRE(waitFor([&] {
+        browser = findItem(shell, QStringLiteral("mediaBrowserPanel"));
+        return browser != nullptr && browser->isVisible();
+    }));
+    spin(50);
+    const QStringList browserHidden = hiddenNames(browser);
+    INFO("Media Browser hidden tools: " << browserHidden.join(QLatin1Char(' ')).toStdString());
+    REQUIRE(browserHidden.contains(QStringLiteral("mediaBrowserMetadataToggle")));
+    QQuickItem* metadataToggle = findUnder(browser, QStringLiteral("mediaBrowserMetadataToggle"));
+    REQUIRE(metadataToggle != nullptr);
+    CHECK_FALSE(browser->property("showMetadata").toBool());
+
+    // A checkable tool that acts in onToggled (the Metadata toggle): its row toggles it as a click would, both ways.
+    QObject* menu = openMoreTools(browser);
+    QObject* row = menu->findChild<QObject*>(QStringLiteral("panelToolsMenu_mediaBrowserMetadataToggle"));
+    REQUIRE(row != nullptr);
+    CHECK(row->property("checkable").toBool());
+    CHECK_FALSE(row->property("checked").toBool());
+    chooseInMenu(menu, "panelToolsMenu_mediaBrowserMetadataToggle");
+    REQUIRE(waitFor([&] { return browser->property("showMetadata").toBool(); }));
+    CHECK(metadataToggle->property("checked").toBool());
+    menu = openMoreTools(browser);
+    row = menu->findChild<QObject*>(QStringLiteral("panelToolsMenu_mediaBrowserMetadataToggle"));
+    REQUIRE(row != nullptr);
+    CHECK(row->property("checked").toBool());
+    chooseInMenu(menu, "panelToolsMenu_mediaBrowserMetadataToggle");
+    REQUIRE(waitFor([&] { return !browser->property("showMetadata").toBool(); }));
+    CHECK_FALSE(metadataToggle->property("checked").toBool());
+
+    // Effect Controls: its rows use the tools' short names - a checked "Keyframe lane" (the lane shows), not "Hide the
+    // keyframe lane" next to a check (Panel.menuLabel: the tool's menuText, else its text, else its tooltip).
+    evaluate(shell, QStringLiteral("window.revealPanel('effectControls')"));
+    spin(100);
+    REQUIRE(shownPanel(shell, "library") == QStringLiteral("effectControls"));
+    QQuickItem* inspector = shell.item("effectControls");
+    REQUIRE(inspector != nullptr);
+    REQUIRE(evaluate(shell, QStringLiteral("Preferences.keyframeLane")).toBool());
+    CHECK(inPanel(inspector, QStringLiteral("trailing[1].objectName")).toString() == QStringLiteral("keyframeLaneToggle"));
+    CHECK(inPanel(inspector, QStringLiteral("trailing[1].tooltip")).toString() == QStringLiteral("Hide the keyframe lane"));
+    CHECK(inPanel(inspector, QStringLiteral("menuLabel(trailing[1])")).toString() == QStringLiteral("Keyframe lane"));
+    CHECK(inPanel(inspector, QStringLiteral("menuLabel(trailing[0])")).toString() == QStringLiteral("Explain this frame"));
+    // A tool without a menuText: its tooltip (the Library's List view).
+    QQuickItem* libraryPanel = shell.item("libraryPanel");
+    REQUIRE(libraryPanel != nullptr);
+    CHECK(inPanel(libraryPanel, QStringLiteral("menuLabel(trailing[1])")).toString() == QStringLiteral("List view"));
+    // In a short header the row shows it so.
+    const QStringList inspectorHidden = hiddenNames(inspector);
+    if (inspectorHidden.contains(QStringLiteral("keyframeLaneToggle"))) {
+        menu = openMoreTools(inspector);
+        QObject* laneRow = menu->findChild<QObject*>(QStringLiteral("panelToolsMenu_keyframeLaneToggle"));
+        REQUIRE(laneRow != nullptr);
+        CHECK(laneRow->property("text").toString() == QStringLiteral("Keyframe lane"));
+        CHECK(laneRow->property("checked").toBool());
+        REQUIRE(QMetaObject::invokeMethod(menu, "close"));
+        REQUIRE(waitFor([&] { return !menu->property("visible").toBool(); }));
+    }
+
+    // The Timeline's group crowded with tabs: its edit-tool palette (an Item, not a button: it just hides) has no
+    // room, and the buttons inside it leave the Tab chain with it (Tab never lands on a button nobody can see).
+    const char* const crowd[] = {"effects", "captions", "audio",    "essential", "graphics", "highlights",
+                                 "markers", "metadata", "production", "review",  "shorts",   "takes"};
+    shell.resize(1100, 700);
+    spin(50);
+    for (const char* key : crowd)
+        evaluate(shell, QStringLiteral("docking.joinPanel('%1', docking.groupOfPanel('timeline').group)").arg(QLatin1String(key)));
+    evaluate(shell, QStringLiteral("window.revealPanel('timeline')"));
+    spin(150);
+    shell.grab();
+    spin(50);
+    REQUIRE(shownPanel(shell, "timeline") == QStringLiteral("timeline"));
+    QQuickItem* timeline = shell.item("timelinePanel");
+    REQUIRE(timeline != nullptr);
+    INFO("timeline width " << timeline->width() << ", its group's panels "
+                           << evaluate(shell, QStringLiteral("docking.groupOfPanel('timeline').panels.length")).toInt()
+                           << ", tabs width " << evaluate(shell, QStringLiteral("docking.slotOfPanel('timeline').tabsWidth")).toDouble()
+                           << ", room " << inPanel(timeline, QStringLiteral("toolFit.leading.length")).toInt());
+    REQUIRE_FALSE(inPanel(timeline, QStringLiteral("toolFit.leading[0] === true")).toBool());
+    QQuickItem* palette = findUnder(timeline, QStringLiteral("timelineToolPalette"));
+    REQUIRE(palette != nullptr);
+    QList<QQuickItem*> paletteButtons;
+    QList<QQuickItem*> stack{palette};
+    while (!stack.isEmpty()) {
+        QQuickItem* item = stack.takeLast();
+        if (QString::fromLatin1(item->metaObject()->className()).startsWith(QLatin1String("ToolGroupButton")))
+            paletteButtons << item;
+        stack << item->childItems();
+    }
+    REQUIRE_FALSE(paletteButtons.isEmpty());
+    const auto tabChain = [&] {
+        QList<QQuickItem*> chain;
+        QQuickItem* item = shell.window->contentItem()->nextItemInFocusChain(true);
+        for (int i = 0; i < 5000 && item != nullptr && !chain.contains(item); ++i) {
+            chain << item;
+            item = item->nextItemInFocusChain(true);
+        }
+        return chain;
+    };
+    const QList<QQuickItem*> crowded = tabChain();
+    REQUIRE(crowded.size() > 1);
+    for (QQuickItem* button : paletteButtons) {
+        CHECK_FALSE(button->isEnabled());
+        CHECK_FALSE(crowded.contains(button));
+    }
+
+    // Room again (the panels leave): the palette shows and its buttons are in the Tab chain again.
+    for (const char* key : crowd)
+        evaluate(shell, QStringLiteral("docking.closePanel('%1')").arg(QLatin1String(key)));
+    spin(150);
+    shell.grab();
+    spin(50);
+    REQUIRE(inPanel(timeline, QStringLiteral("toolFit.leading[0] === true")).toBool());
+    for (QQuickItem* button : paletteButtons)
+        CHECK(button->isEnabled());
+    CHECK(tabChain().contains(paletteButtons.front()));
 
     const QStringList messages = takeMessages();
     INFO(join(messages));

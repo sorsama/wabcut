@@ -30,6 +30,11 @@ import QtQuick.Layouts
 // M5h: Add Marker, Mark In/Out, Go to In/Out, frame steps, Lift and Extract (ProgramTools / ProjectController) and
 // Export Frame (the camera: a PNG of the frame at the playhead from the offscreen export renderer, next to the
 // project or in a chosen folder); zoom (Fit, 25–400 % of the sequence's pixels) and safe margins.
+//
+// 0.4: the In to Out length on a raised pill after the timecode (both sequence marks set); a numpad digit, + or - with
+// the monitor focused opens the timecode field seeded with it; on vertical sequences, the wrench's Platform Safe Zones
+// shade where Shorts, TikTok or Reels put their buttons and captions (PlatformSafeZoneOverlay); the transport always
+// fits: the lowest-priority buttons hide first and a "···" button at the row's end lists them (TransportOverflowButton).
 Panel {
     id: root
 
@@ -93,6 +98,11 @@ Panel {
     }
 
     KeymapScope.scope: "programMonitor"
+    // 0.4: numpad digits, + and - open the playhead timecode seeded with the key (Premiere's "type a timecode").
+    Keys.onPressed: event => {
+        if (timecodeText.openFromKeypad(event))
+            event.accepted = true
+    }
 
     // One preview quality entry of the quality menu.
     component QualityItem: ContextMenuItem {
@@ -432,6 +442,10 @@ Panel {
                     objectName: "programSafeMargins"
                     anchors.fill: parent
                 }
+                // 0.4: where Shorts, TikTok or Reels cover a vertical picture (wrench > Platform Safe Zones; no input).
+                PlatformSafeZoneOverlay {
+                    anchors.fill: parent
+                }
                 // Color workspace (I.5): before/after split handle, side-by-side labels, the HSL eyedropper.
                 ColorCompareOverlay {
                     anchors.fill: frameArea
@@ -536,13 +550,19 @@ Panel {
         }
 
         // ---- Readouts: timecode left; quality, zoom, safe margins, speed and stats right ----
-        // The right side drops its least important parts when space runs out.
+        // The right side drops its least important parts when space runs out: the stats, the J/K/L pill, then (0.4,
+        // so the In to Out pill keeps its place) the safe margins toggle and the zoom (unless zoomed in), and last the
+        // playback resolution (the wrench menu has Safe Margins and Playback Resolution too). The wrench always shows.
         Item {
             id: readouts
             Layout.fillWidth: true
             Layout.preferredHeight: Theme.controlHeightSmall
 
             readonly property real rightRoom: width - timecodeRow.width - Theme.space(3)
+            // What the wrench and the playback resolution button take (the button counts also while it gives way, so
+            // the less important parts are gone before it goes).
+            readonly property real coreWidth: settingsButton.implicitWidth
+                                              + (ProjectFile.demo ? 0 : rightRow.spacing + qualityButton.implicitWidth)
 
             Row {
                 id: timecodeRow
@@ -570,9 +590,43 @@ Panel {
                     preview: typed => ProjectController.timeEntryText(typed)
                 }
 
+                // 0.4: the sequence In to Out length (the Out frame counts, as in Premiere and the Source Monitor's pill),
+                // with both marks set. It stays at narrow widths; the "/ duration" text goes first.
+                Rectangle {
+                    id: inOutPill
+                    objectName: "programInOutDuration"
+                    anchors.verticalCenter: parent.verticalCenter
+                    visible: ProjectController.markDurationText !== ""
+                    width: inOutText.implicitWidth + Theme.space(4)
+                    height: Theme.controlHeightSmall
+                    radius: height / 2
+                    color: Theme.raised
+                    Accessible.role: Accessible.StaticText
+                    //: Program Monitor readout: the sequence In to Out length, e.g. "In to Out 00:00:02:13"
+                    Accessible.name: qsTr("In to Out %1").arg(ProjectController.markDurationText)
+
+                    Text {
+                        id: inOutText
+                        objectName: "programInOutDurationText"
+                        anchors.centerIn: parent
+                        text: ProjectController.markDurationText
+                        color: Theme.textSecondary
+                        font.family: Theme.fontMono
+                        font.pixelSize: Theme.textSm
+                    }
+                    HoverHandler {
+                        id: inOutHover
+                    }
+                    Tooltip {
+                        visible: inOutHover.hovered
+                        text: qsTr("In to Out")
+                    }
+                }
+
                 Text {
                     anchors.verticalCenter: parent.verticalCenter
-                    visible: readouts.width >= timecodeText.implicitWidth + implicitWidth + Theme.space(40)
+                    visible: readouts.width >= timecodeText.implicitWidth + (inOutPill.visible ? inOutPill.width + timecodeRow.spacing : 0)
+                             + implicitWidth + Theme.space(40)
                     //: Total sequence duration after the playhead timecode
                     text: qsTr("/ %1").arg(ProjectController.durationText)
                     color: Theme.textTertiary
@@ -603,8 +657,11 @@ Panel {
                 }
                 // Safe margins (action and title safe).
                 IconButton {
+                    id: safeMarginsToggle
                     objectName: "safeMarginsToggle"
                     anchors.verticalCenter: parent.verticalCenter
+                    visible: readouts.rightRoom >= readouts.coreWidth + rightRow.spacing + implicitWidth
+                             + (zoomButton.visible ? rightRow.spacing + zoomButton.implicitWidth : 0)
                     compact: true
                     checkable: true
                     checked: Preferences.safeMargins
@@ -618,6 +675,7 @@ Panel {
                     id: zoomButton
                     objectName: "programZoomButton"
                     anchors.verticalCenter: parent.verticalCenter
+                    visible: root.zoom > 0 || readouts.rightRoom >= readouts.coreWidth + rightRow.spacing + implicitWidth
                     compact: true
                     text: root.zoom > 0 ? qsTr("%1%").arg(Math.round(root.zoom * 100)) : qsTr("Fit")
                     tooltip: qsTr("Zoom")
@@ -651,12 +709,15 @@ Panel {
                     }
                 }
 
-                // Preview quality (Premiere's playback resolution): Auto / Full / 1/2 / 1/4 and proxies.
+                // Preview quality (Premiere's playback resolution): Auto / Full / 1/2 / 1/4 and proxies. 0.4: it gives
+                // way when the wrench (and the zoom while zoomed in) leave no room for it.
                 PillButton {
                     id: qualityButton
                     objectName: "previewQualityButton"
                     anchors.verticalCenter: parent.verticalCenter
                     visible: !ProjectFile.demo
+                             && readouts.rightRoom >= settingsButton.implicitWidth + rightRow.spacing + implicitWidth
+                                + (root.zoom > 0 ? rightRow.spacing + zoomButton.implicitWidth : 0)
                     compact: true
                     iconName: MediaReadiness.useProxies ? "film" : ""
                     text: {
@@ -775,19 +836,47 @@ Panel {
         }
 
         // ---- Transport (Premiere's Program Monitor buttons) ----
+        // 0.4: it always fits. Add Marker, Play, Lift, Extract and Record Voice-over always show; the rest show by rank
+        // (Mark In + Out, Go to In + Out, the frame steps, Play In to Out, Loop, Export Frame, Multi-Camera View) while
+        // there is room, and the "···" button at the row's end lists the hidden ones. The order on screen never changes.
         Item {
             id: transport
             Layout.fillWidth: true
             Layout.preferredHeight: Theme.space(11)
+            clip: true // a safety net: the row is sized to fit
 
             Row {
                 id: buttons
                 anchors.centerIn: parent
                 spacing: 0
-                // Narrow monitors drop the marks, Go to In/Out and the frame steps first.
-                readonly property bool roomy: transport.width >= Theme.controlHeight * 13 + Theme.space(11)
+
+                /// The optional units by rank (a pair's first button; its second binds to it).
+                readonly property list<Item> optional: [markIn, goToIn, stepBack, playInToOut, loop, exportFrameButton,
+                                                        multicamToggle]
+                /// How many units show: all when they fit without the overflow button, else as many as fit beside it.
+                /// From implicit widths only (no binding loop through `visible`).
+                readonly property int shown: {
+                    const units = [markIn.implicitWidth + markOut.implicitWidth, goToIn.implicitWidth + goToOut.implicitWidth,
+                                   stepBack.implicitWidth + stepForward.implicitWidth, playInToOut.implicitWidth,
+                                   loop.implicitWidth, exportFrameButton.implicitWidth, multicamToggle.implicitWidth]
+                    const fixed = addMarker.implicitWidth + play.implicitWidth + gap.width + lift.implicitWidth
+                                  + extract.implicitWidth + record.implicitWidth
+                    let all = fixed
+                    for (let i = 0; i < units.length; ++i)
+                        all += units[i]
+                    if (all <= transport.width)
+                        return units.length
+                    let used = fixed + overflow.implicitWidth
+                    let n = 0
+                    while (n < units.length && used + units[n] <= transport.width) {
+                        used += units[n]
+                        ++n
+                    }
+                    return n
+                }
 
                 IconButton {
+                    id: addMarker
                     objectName: "programAddMarker"
                     anchors.verticalCenter: parent.verticalCenter
                     compact: true
@@ -798,9 +887,11 @@ Panel {
                     onClicked: ProgramTools.addMarker()
                 }
                 IconButton {
+                    id: markIn
+                    readonly property int rank: 0
                     objectName: "programMarkIn"
                     anchors.verticalCenter: parent.verticalCenter
-                    visible: buttons.roomy
+                    visible: rank < buttons.shown
                     compact: true
                     implicitWidth: Theme.controlHeight
                     iconName: "mark-in"
@@ -809,9 +900,10 @@ Panel {
                     onClicked: ProjectController.markInAtPlayhead()
                 }
                 IconButton {
+                    id: markOut
                     objectName: "programMarkOut"
                     anchors.verticalCenter: parent.verticalCenter
-                    visible: buttons.roomy
+                    visible: markIn.visible
                     compact: true
                     implicitWidth: Theme.controlHeight
                     iconName: "mark-out"
@@ -820,9 +912,11 @@ Panel {
                     onClicked: ProjectController.markOutAtPlayhead()
                 }
                 IconButton {
+                    id: goToIn
+                    readonly property int rank: 1
                     objectName: "programGoToIn"
                     anchors.verticalCenter: parent.verticalCenter
-                    visible: buttons.roomy
+                    visible: rank < buttons.shown
                     compact: true
                     implicitWidth: Theme.controlHeight
                     iconName: "go-to-in"
@@ -832,8 +926,11 @@ Panel {
                     onClicked: ProjectController.goToMarkIn()
                 }
                 IconButton {
+                    id: stepBack
+                    readonly property int rank: 2
+                    objectName: "programStepBack"
                     anchors.verticalCenter: parent.verticalCenter
-                    visible: buttons.roomy
+                    visible: rank < buttons.shown
                     compact: true
                     implicitWidth: Theme.controlHeight
                     iconName: "step-back"
@@ -842,6 +939,7 @@ Panel {
                     onClicked: Playback.stepFrames(-1)
                 }
                 IconButton {
+                    id: play
                     objectName: "programPlay"
                     anchors.verticalCenter: parent.verticalCenter
                     variant: "primary"
@@ -856,8 +954,10 @@ Panel {
                     onClicked: Playback.togglePlay()
                 }
                 IconButton {
+                    id: stepForward
+                    objectName: "programStepForward"
                     anchors.verticalCenter: parent.verticalCenter
-                    visible: buttons.roomy
+                    visible: stepBack.visible
                     compact: true
                     implicitWidth: Theme.controlHeight
                     iconName: "step-forward"
@@ -866,9 +966,10 @@ Panel {
                     onClicked: Playback.stepFrames(1)
                 }
                 IconButton {
+                    id: goToOut
                     objectName: "programGoToOut"
                     anchors.verticalCenter: parent.verticalCenter
-                    visible: buttons.roomy
+                    visible: goToIn.visible
                     compact: true
                     implicitWidth: Theme.controlHeight
                     iconName: "go-to-out"
@@ -879,9 +980,11 @@ Panel {
                 }
                 // P.2: Premiere's Play In to Out and Loop (qml/monitor/).
                 IconButton {
+                    id: playInToOut
+                    readonly property int rank: 3
                     objectName: "programPlayInToOut"
                     anchors.verticalCenter: parent.verticalCenter
-                    visible: transport.width >= Theme.controlHeightSmall * 15 + Theme.controlHeight
+                    visible: rank < buttons.shown
                     compact: true
                     iconName: "play-in-out"
                     tooltip: qsTr("Play In to Out")
@@ -889,14 +992,18 @@ Panel {
                     onClicked: Playback.playInToOut()
                 }
                 LoopButton {
+                    id: loop
+                    readonly property int rank: 4
                     anchors.verticalCenter: parent.verticalCenter
-                    visible: transport.width >= Theme.controlHeightSmall * 15 + Theme.controlHeight
+                    visible: rank < buttons.shown
                 }
                 Item {
+                    id: gap
                     width: Theme.space(2)
                     height: 1
                 }
                 IconButton {
+                    id: lift
                     objectName: "programLift"
                     anchors.verticalCenter: parent.verticalCenter
                     compact: true
@@ -908,6 +1015,7 @@ Panel {
                     onClicked: ProgramTools.lift()
                 }
                 IconButton {
+                    id: extract
                     objectName: "programExtract"
                     anchors.verticalCenter: parent.verticalCenter
                     compact: true
@@ -920,6 +1028,7 @@ Panel {
                 }
                 // Voice-over (M5m, A.8): records onto the armed audio track; a second click stops and keeps the take.
                 IconButton {
+                    id: record
                     objectName: "programRecordVoiceOver"
                     anchors.verticalCenter: parent.verticalCenter
                     compact: true
@@ -939,8 +1048,10 @@ Panel {
                 // P.2: Premiere's Export Frame dialog (qml/monitor/ExportFrameDialog.qml; Ctrl+Shift+E).
                 IconButton {
                     id: exportFrameButton
+                    readonly property int rank: 5
                     objectName: "programExportFrame"
                     anchors.verticalCenter: parent.verticalCenter
+                    visible: rank < buttons.shown
                     compact: true
                     implicitWidth: Theme.controlHeight
                     iconName: "camera"
@@ -951,8 +1062,11 @@ Panel {
                 }
                 // M5l: Premiere's Toggle Multi-Camera View (Shift+0).
                 IconButton {
+                    id: multicamToggle
+                    readonly property int rank: 6
                     objectName: "multicamViewToggle"
                     anchors.verticalCenter: parent.verticalCenter
+                    visible: rank < buttons.shown
                     compact: true
                     implicitWidth: Theme.controlHeight
                     checkable: true
@@ -961,6 +1075,24 @@ Panel {
                     tooltip: qsTr("Multi-Camera View")
                     command: "multicam.toggleView"
                     onClicked: Multicam.viewOn = !Multicam.viewOn
+                }
+                // 0.4: the buttons that did not fit, in the row's order.
+                TransportOverflowButton {
+                    id: overflow
+                    objectName: "programTransportOverflow"
+                    anchors.verticalCenter: parent.verticalCenter
+                    visible: buttons.shown < buttons.optional.length
+
+                    TransportOverflowButton.Entry { button: markIn }
+                    TransportOverflowButton.Entry { button: markOut }
+                    TransportOverflowButton.Entry { button: goToIn }
+                    TransportOverflowButton.Entry { button: stepBack }
+                    TransportOverflowButton.Entry { button: stepForward }
+                    TransportOverflowButton.Entry { button: goToOut }
+                    TransportOverflowButton.Entry { button: playInToOut }
+                    TransportOverflowButton.Entry { button: loop }
+                    TransportOverflowButton.Entry { button: exportFrameButton }
+                    TransportOverflowButton.Entry { button: multicamToggle }
                 }
             }
         }

@@ -165,12 +165,38 @@ Per user, not per project (QSettings `export/*`, `ExportController` `lastPreset`
 - **Reset to defaults** (the Save to card) forgets all of it: Match Source, next to the project, the whole sequence
   unless the sequence is marked.
 
-When an export ends anywhere in the app, a toast says so: "Exported <file>" with **Show in Explorer** (Finder on
-macOS; it still finds the file after the queue's **Clear finished**, and says so when the file was moved or deleted),
-or "Export failed: <why>" with **Show the queue** (the Export workspace, or the Export panel where your workspace has
-one; your layout is not changed). Watch folders and Media Browser transcodes report in their
-own places; a cancelled job says nothing; a finished export from the Export workspace while its queue is in view
-needs no toast. Render In to Out reports the same way ("Previews rendered", or why it failed with **Try Again**).
+When an export ends anywhere in the app, a toast says so: "Exported <file>" with **Open** (the file in its default
+app) and **Show in Explorer** beside it (Finder on macOS; both still find the file after the queue's **Clear
+finished**, and say so when the file was moved or deleted), or "Export failed: <why>" - the same reason as its queue
+row, e.g. "Export failed: Some original media is offline or missing: sine_48k.wav. Relink it, then export again." -
+with **Show the queue** (the Export workspace, or the Export panel where your workspace has one; your layout is not
+changed). When the export failed because original media is offline, the toast offers **Relink…** first (Home closes
+and the Relink dialog opens) with Show the queue beside it. A failure toast is an error: it is never covered by a later
+message (those wait their turn) and it is kept in the title bar's **Background tasks** popover under Recent messages.
+Watch folders and Media Browser transcodes report in their own places; a cancelled job says nothing; a finished export
+from the Export workspace while its queue is in view needs no toast. Render In to Out reports the same way ("Previews
+rendered", or why it failed with **Try Again**). In the queue (the Export panel, the Export Queue dialog and the
+Background tasks popover) a finished job has **Open** before **Show**, and a double-click on it opens it too; a file
+that is gone says "The file was moved or deleted." under its row.
+
+**While it exports.** Wabcut keeps Windows from going to sleep on its own while exports (running or queued to run, not
+paused or held), Render In to Out, proxies, transcription, Highlights, Shorts or Collect Files run (Settings > General >
+Background work > **Keep the computer awake while exporting**, on by default; the screen can still turn off, and Sleep
+chosen by hand, closing the lid or a low battery still sleep). `powercfg /requests` names Wabcut while it holds the
+computer awake. The taskbar button shows the current export's progress (yellow while it is paused; Render In to Out's
+when no export runs), turns red when an export fails while you are in another app, and flashes when an export or Render
+In to Out ends while Wabcut is not the active window; that message's time starts only once you are back. Keeping the
+computer awake is Windows only for now; the taskbar flash (a Dock bounce on macOS, urgency on Linux) works everywhere.
+
+**Quitting while exporting.** Closing Wabcut (the title bar's ×, File > Exit, Alt+F4, the taskbar) while exports run,
+wait in the queue, are paused or wait for Start Queue, or while Render In to Out runs, asks first ("Quit while
+exporting?"): what is going on ("“Highlights.mp4” is exporting (38 %). 1 more export waits to start."), and that
+exports that have not finished are lost (previews rendered so far are kept). **Keep Wabcut Open** (Enter, Esc) changes
+nothing; **Quit When Done** (while something runs that ends on its own) keeps Wabcut open and closes it once the running
+work is done - paused and held exports are cancelled then, unsaved projects still ask, and a failure meanwhile calls it
+off ("… Wabcut stayed open."); **Cancel Exports and Quit** cancels every export (and stops Render In to Out), then the
+close goes on to the unsaved-projects questions. Closing a project, opening another or going Home does not ask: exports
+render a snapshot and keep running. The queue is not kept across restarts.
 
 ## Presets: Save, Import, Export, Delete
 
@@ -348,11 +374,11 @@ snapshot and runs jobs on its own export queue (one at a time, off the GUI threa
 | Member | Use |
 |---|---|
 | `presets` | `[{ id, name, description, icon }]`, the presets above (the six general ones with translated names) |
-| `jobs` | `ExportJobModel`: roles `jobId` ("j1"), `title`, `outputPath`, `presetName`, `jobState` (held / queued / running / paused / done / failed / cancelled), `phaseText`, `progress` (0..1), `fpsText`, `etaText`, `encoder`, `detail` (done: "0:10 · 6× realtime"; failed: the plain-language error), `finished`; properties `count`, `activeCount`; jobs a watch folder queued join it as they report |
+| `jobs` | `ExportJobModel`: roles `jobId` ("j1"), `title`, `outputPath`, `presetName`, `jobState` (held / queued / running / paused / done / failed / cancelled), `phaseText`, `progress` (0..1), `fpsText`, `etaText`, `encoder`, `detail` (done: "0:10 · 6× realtime"; failed: the plain-language error), `finished`, 0.4 `errorKind` (failed: "offline", "space", "access", "folder", "encoder" or ""); properties `count`, `activeCount`, 0.4 `runningCount` (running or queued to run), `pausedCount`, `heldCount`, the current job `currentJobId` / `currentTitle` / `currentState` (running, else paused, else queued; "" for none) / `currentProgress` (-1 for none) / `currentEta` (NOTIFY `summaryChanged`); jobs a watch folder queued join it as they report |
 | `presets` (0.2: NOTIFY `presetsChanged`) | also `category` ("general", "hdr", "formats", "user") and `user`; the user's presets after the built-in ones |
 | `quickExport(presetId, output, overrides)`, `sendToQueue(sequenceId, presetIds, overrides, hold)` | 0.2: Quick Export (UX rework: optional `overrides`, e.g. the range); Send to Media Encoder / several destinations |
 | `lastPreset`, `lastGamingPreset`, `lastQuickPreset`, `lastFolder` (+ `lastFolderUrl`), `lastRange`; `suggestedRange(sequenceId)`, `folderUrlOf(path)`, `forgetExportChoices()` | UX rework: [the last choices](#export-remembers-the-last-choices), NOTIFY `exportMemoryChanged` |
-| `job(jobId)`, `openOutput(jobId)` | UX rework: one job for its toast `{ jobId, title, outputPath, outputUrl, folderUrl, presetName, state, detail, finished, origin, exists }` (`origin`: export, quick, queue, transcode, watch, command; also a `jobs` role); opens a done job's file in its app |
+| `job(jobId)`, `openOutput(jobId)` | UX rework: one job for its toast `{ jobId, title, outputPath, outputUrl, folderUrl, presetName, state, detail, finished, origin, exists, errorKind }` (`origin`: export, quick, queue, transcode, watch, command; also a `jobs` role; 0.4 `errorKind` as the role); opens a done job's file in its app (0.4: `jobId` may also be the absolute path of an export's file, so Open works after Clear Finished; false when the file is gone) |
 | `start(jobId)`, `startQueue()`, `pause(jobId)`, `resume(jobId)` | 0.2: the queue |
 | `savePreset(name, description, presetId, overrides, overwrite)`, `importPreset(file, overwrite)`, `exportPreset(id, file)`, `deletePreset(id)` | 0.2: Premiere's preset manager → `{ ok, id, name, error }` / bool |
 | `watchFolders`, `addWatchFolder(folder, presetId, output, moveSources)`, `removeWatchFolder(id)` | 0.2: watch folders (persisted) |
@@ -366,7 +392,7 @@ snapshot and runs jobs on its own export queue (one at a time, off the GUI threa
 | `defaultOutputPath(sequenceId, presetId, overrides)` | in `lastFolder` when it exists, else next to the project file (else the Videos folder), named after the sequence, numbered when taken |
 | `cancel(jobId)`, `cancelAll()`, `clearFinished()` | queue control |
 | `reveal(jobId)` | shows the output in Explorer (`/select`) / Finder (`-R`) / the file manager |
-| `jobQueued(jobId)`, `jobFinished(jobId, succeeded, message)` | signals |
+| `jobQueued(jobId)`, `jobFinished(jobId, succeeded, message)` | signals (0.4: `message` is the failed job's reason, the row's `detail`) |
 | `project` | the ProjectController it reads (defaults to the singleton) |
 
 `sequenceId` is ProjectController's opaque `"s…"` key; `""` means the current sequence. `overrides` keys (all

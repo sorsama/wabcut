@@ -8,6 +8,8 @@ import QtQuick.Layouts
 // breakdown and an editable title. Create / Create all stage new 9:16 sequences (reframed, captioned, with the title
 // as a hook); Apply makes them one undo step, then Export all queues 1080x1920 exports. Laid out for the narrow
 // browser slot: controls stack, options wrap.
+// 0.4: the captions' style beside the Captions switch (a caption preset, "Shorts" by default: big outlined words above
+// the platforms' buttons; remembered in Preferences.shortsCaptionPreset).
 Panel {
     id: root
 
@@ -27,8 +29,16 @@ Panel {
         return out
     }
     function createOptions() {
-        return { aspect: "9:16", mode: "speaker", captions: captionsToggle.checked, hookTitle: hookToggle.checked,
-                 cleanup: cleanupToggle.checked, normalize: normalizeToggle.checked }
+        const o = { aspect: "9:16", mode: "speaker", captions: captionsToggle.checked, hookTitle: hookToggle.checked,
+                    cleanup: cleanupToggle.checked, normalize: normalizeToggle.checked }
+        if (captionsToggle.checked)
+            o.captionPreset = Preferences.shortsCaptionPreset
+        return o
+    }
+    /// The caption presets for the style menu: "Shorts" first, the other built-in ones, then the project's.
+    function captionPresetOptions(): var {
+        const names = Captions.presets.map(p => String(p.name))
+        return names.filter(n => n === "Shorts").concat(names.filter(n => n !== "Shorts")).map(n => ({ id: n, name: n }))
     }
 
     component Note: Text {
@@ -113,6 +123,26 @@ Panel {
                                                : qsTr("No cloud chat model, or this project is no-cloud")
             }
             Toggle { id: captionsToggle; objectName: "shortsCaptionsToggle"; text: qsTr("Captions"); checked: true }
+            PillButton {
+                id: captionStyleButton
+                objectName: "shortsCaptionStyle"
+                visible: captionsToggle.checked
+                compact: true
+                iconName: "chevron-down"
+                text: qsTr("Style: %1").arg(Preferences.shortsCaptionPreset)
+                tooltip: qsTr("The look of the shorts' captions: a caption preset")
+                Accessible.name: qsTr("Caption style: %1").arg(Preferences.shortsCaptionPreset)
+                onClicked: {
+                    captionStyleMenu.options = root.captionPresetOptions()
+                    captionStyleMenu.popup(captionStyleButton, 0, captionStyleButton.height + Theme.space(1))
+                }
+                OptionsMenu {
+                    id: captionStyleMenu
+                    objectName: "shortsCaptionStyleMenu"
+                    current: Preferences.shortsCaptionPreset
+                    onChosen: id => Preferences.shortsCaptionPreset = id
+                }
+            }
             Toggle { id: hookToggle; objectName: "shortsHookToggle"; text: qsTr("Hook title"); checked: true }
             Toggle { id: cleanupToggle; objectName: "shortsCleanupToggle"; text: qsTr("Remove fillers") }
             Toggle { id: normalizeToggle; objectName: "shortsNormalizeToggle"; text: qsTr("-14 LUFS") }

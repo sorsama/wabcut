@@ -13,6 +13,9 @@ import QtQuick.Layouts
 // UX rework (stream T): click the timecode to type a source time or a +/- offset (TimecodeEntry,
 // SourceMonitor.seekToText); drop a Library clip on the picture to open it here, or files from File Explorer (imported
 // first, `importFiles`, then the first one opens).
+// 0.4: a numpad digit, + or - with the monitor focused opens the timecode field seeded with it; the transport always
+// fits: the lowest-priority buttons hide first and a "···" button at the row's end lists them (TransportOverflowButton;
+// Redactions then opens its list from there, Settings is a submenu).
 Panel {
     id: root
     objectName: "sourceMonitorPanel"
@@ -29,6 +32,11 @@ Panel {
     property var importFiles: null
 
     KeymapScope.scope: "sourceMonitor"
+    // 0.4: numpad digits, + and - open the source timecode seeded with the key (with a source loaded).
+    Keys.onPressed: event => {
+        if (timecode.openFromKeypad(event))
+            event.accepted = true
+    }
     // One monitor at a time: the switch takes the header's place.
     title: single ? "" : qsTr("Source Monitor")
 
@@ -572,20 +580,56 @@ Panel {
         }
 
         // ---- Transport ----
+        // 0.4: it always fits. Mark In, Mark Out, Play, Insert and Overwrite always show; the rest show by rank (Go to In
+        // + Out, Play In to Out, the frame steps, Loop, Export Frame, Redact, Redactions, Settings) while there is room,
+        // and the "···" button at the row's end lists the hidden ones. The order on screen never changes.
         Item {
             id: transport
             Layout.fillWidth: true
             Layout.preferredHeight: Theme.space(11)
+            clip: true // a safety net: the row is sized to fit
+
+            /// Opens the redactions list above `opener` (the Redactions button, or "···" while that is hidden).
+            function openRedactions(opener: Item) {
+                // Where the button is now: a position from mapFromItem() is no binding dependency, so it is read here.
+                redactionsPopover.openerAt = transport.mapFromItem(opener, 0, 0)
+                redactionsPopover.open()
+            }
 
             Row {
                 id: buttons
                 anchors.centerIn: parent
                 spacing: 0
                 enabled: SourceMonitor.loaded
-                // Narrow monitors drop Go to In/Out and the frame steps first.
-                readonly property bool roomy: transport.width >= Theme.controlHeight * 11 + Theme.space(11)
+
+                /// The optional units by rank (a pair's first button; its second binds to it).
+                readonly property list<Item> optional: [goToIn, playInToOut, stepBack, loop, exportFrame, redact,
+                                                        redactionsButton, sourceSettingsButton]
+                /// How many units show: all when they fit without the overflow button, else as many as fit beside it.
+                /// From implicit widths only (no binding loop through `visible`).
+                readonly property int shown: {
+                    const units = [goToIn.implicitWidth + goToOut.implicitWidth, playInToOut.implicitWidth,
+                                   stepBack.implicitWidth + stepForward.implicitWidth, loop.implicitWidth,
+                                   exportFrame.implicitWidth, redactGap.width + redact.implicitWidth, redactionsButton.implicitWidth,
+                                   sourceSettingsButton.implicitWidth]
+                    const fixed = markIn.implicitWidth + markOut.implicitWidth + play.implicitWidth + editGap.width
+                                  + insert.implicitWidth + overwrite.implicitWidth
+                    let all = fixed
+                    for (let i = 0; i < units.length; ++i)
+                        all += units[i]
+                    if (all <= transport.width)
+                        return units.length
+                    let used = fixed + overflow.implicitWidth
+                    let n = 0
+                    while (n < units.length && used + units[n] <= transport.width) {
+                        used += units[n]
+                        ++n
+                    }
+                    return n
+                }
 
                 IconButton {
+                    id: markIn
                     objectName: "sourceMarkIn"
                     anchors.verticalCenter: parent.verticalCenter
                     compact: true
@@ -596,6 +640,7 @@ Panel {
                     onClicked: SourceMonitor.markIn()
                 }
                 IconButton {
+                    id: markOut
                     objectName: "sourceMarkOut"
                     anchors.verticalCenter: parent.verticalCenter
                     compact: true
@@ -606,8 +651,11 @@ Panel {
                     onClicked: SourceMonitor.markOut()
                 }
                 IconButton {
+                    id: goToIn
+                    readonly property int rank: 0
+                    objectName: "sourceGoToIn"
                     anchors.verticalCenter: parent.verticalCenter
-                    visible: buttons.roomy
+                    visible: rank < buttons.shown
                     compact: true
                     implicitWidth: Theme.controlHeight
                     iconName: "go-to-in"
@@ -617,8 +665,11 @@ Panel {
                     onClicked: SourceMonitor.goToIn()
                 }
                 IconButton {
+                    id: stepBack
+                    readonly property int rank: 2
+                    objectName: "sourceStepBack"
                     anchors.verticalCenter: parent.verticalCenter
-                    visible: buttons.roomy
+                    visible: rank < buttons.shown
                     compact: true
                     implicitWidth: Theme.controlHeight
                     iconName: "step-back"
@@ -627,6 +678,7 @@ Panel {
                     onClicked: SourceMonitor.stepFrames(-1)
                 }
                 IconButton {
+                    id: play
                     objectName: "sourcePlay"
                     anchors.verticalCenter: parent.verticalCenter
                     variant: "primary"
@@ -641,8 +693,10 @@ Panel {
                     onClicked: SourceMonitor.togglePlay()
                 }
                 IconButton {
+                    id: stepForward
+                    objectName: "sourceStepForward"
                     anchors.verticalCenter: parent.verticalCenter
-                    visible: buttons.roomy
+                    visible: stepBack.visible
                     compact: true
                     implicitWidth: Theme.controlHeight
                     iconName: "step-forward"
@@ -651,8 +705,10 @@ Panel {
                     onClicked: SourceMonitor.stepFrames(1)
                 }
                 IconButton {
+                    id: goToOut
+                    objectName: "sourceGoToOut"
                     anchors.verticalCenter: parent.verticalCenter
-                    visible: buttons.roomy
+                    visible: goToIn.visible
                     compact: true
                     implicitWidth: Theme.controlHeight
                     iconName: "go-to-out"
@@ -662,7 +718,11 @@ Panel {
                     onClicked: SourceMonitor.goToOut()
                 }
                 IconButton {
+                    id: playInToOut
+                    readonly property int rank: 1
+                    objectName: "sourcePlayInToOut"
                     anchors.verticalCenter: parent.verticalCenter
+                    visible: rank < buttons.shown
                     compact: true
                     implicitWidth: Theme.controlHeight
                     iconName: "play-in-out"
@@ -672,13 +732,19 @@ Panel {
                 }
                 // P.2: Premiere's Loop and the Source Monitor's settings (qml/monitor/).
                 LoopButton {
+                    id: loop
+                    readonly property int rank: 3
                     anchors.verticalCenter: parent.verticalCenter
+                    visible: rank < buttons.shown
                     source: true
                 }
                 // P.2: Premiere's Export Frame from the Source Monitor (qml/monitor/ExportFrameDialog.qml).
                 IconButton {
+                    id: exportFrame
+                    readonly property int rank: 4
                     objectName: "sourceExportFrame"
                     anchors.verticalCenter: parent.verticalCenter
+                    visible: rank < buttons.shown
                     compact: true
                     iconName: "camera"
                     tooltip: qsTr("Export Frame")
@@ -688,8 +754,10 @@ Panel {
                 }
                 IconButton {
                     id: sourceSettingsButton
+                    readonly property int rank: 7
                     objectName: "sourceMonitorSettingsButton"
                     anchors.verticalCenter: parent.verticalCenter
+                    visible: rank < buttons.shown
                     compact: true
                     iconName: "settings"
                     tooltip: qsTr("Settings")
@@ -700,10 +768,12 @@ Panel {
                     }
                 }
                 Item {
+                    id: editGap
                     width: Theme.space(2)
                     height: 1
                 }
                 IconButton {
+                    id: insert
                     objectName: "sourceInsertButton"
                     anchors.verticalCenter: parent.verticalCenter
                     compact: true
@@ -718,6 +788,7 @@ Panel {
                     onHoveredChanged: root.editHovered(true, hovered)
                 }
                 IconButton {
+                    id: overwrite
                     objectName: "sourceOverwriteButton"
                     anchors.verticalCenter: parent.verticalCenter
                     compact: true
@@ -732,14 +803,20 @@ Panel {
                     onClicked: root.editRequested(false)
                     onHoveredChanged: root.editHovered(false, hovered)
                 }
+                // The gap before the redaction buttons goes with them (part of Redact's unit).
                 Item {
+                    id: redactGap
+                    visible: redact.visible
                     width: Theme.space(2)
                     height: 1
                 }
                 // Redactions (I.6): the tool, and the list of this source's redactions.
                 IconButton {
+                    id: redact
+                    readonly property int rank: 5
                     objectName: "sourceRedactButton"
                     anchors.verticalCenter: parent.verticalCenter
+                    visible: rank < buttons.shown
                     compact: true
                     implicitWidth: Theme.controlHeight
                     checkable: true
@@ -751,20 +828,53 @@ Panel {
                 }
                 IconButton {
                     id: redactionsButton
+                    readonly property int rank: 6
                     objectName: "sourceRedactionsButton"
                     anchors.verticalCenter: parent.verticalCenter
+                    visible: rank < buttons.shown
                     compact: true
                     implicitWidth: Theme.controlHeight
                     enabled: SourceMonitor.hasVideo
                     iconName: "list"
                     tooltip: qsTr("Redactions of this source")
-                    onClicked: redactionsPopover.open()
+                    onClicked: transport.openRedactions(redactionsButton.visible ? redactionsButton : overflow)
+                }
+                // 0.4: the buttons that did not fit, in the row's order (Settings as a submenu).
+                TransportOverflowButton {
+                    id: overflow
+                    objectName: "sourceTransportOverflow"
+                    anchors.verticalCenter: parent.verticalCenter
+                    visible: buttons.shown < buttons.optional.length
 
-                    RedactionsPopover {
-                        id: redactionsPopover
-                        y: -height - Theme.space(1)
+                    TransportOverflowButton.Entry { button: goToIn }
+                    TransportOverflowButton.Entry { button: stepBack }
+                    TransportOverflowButton.Entry { button: stepForward }
+                    TransportOverflowButton.Entry { button: goToOut }
+                    TransportOverflowButton.Entry { button: playInToOut }
+                    TransportOverflowButton.Entry { button: loop }
+                    TransportOverflowButton.Entry { button: exportFrame }
+                    SourceSettingsMenu {
+                        namePrefix: "overflow_"
+                        title: qsTr("Settings")
+                    }
+                    TransportOverflowButton.Entry {
+                        button: redact
+                        text: qsTr("Redact")
+                    }
+                    TransportOverflowButton.Entry {
+                        button: redactionsButton
+                        text: qsTr("Redactions…")
                     }
                 }
+            }
+
+            // Redactions (I.6) of the loaded source, above the button that opened it.
+            RedactionsPopover {
+                id: redactionsPopover
+                /// The top-left of the button that opened it (Redactions, or "···" while that is hidden), in the transport.
+                property point openerAt
+                x: openerAt.x
+                y: openerAt.y - height - Theme.space(1)
             }
         }
     }

@@ -55,6 +55,8 @@ const std::vector<KeyboardTrainerBridge::Prompt>& KeyboardTrainerBridge::allProm
         {"sequence.extract", "editing"},
         {"sequence.extendEditToPlayhead", "editing"},
         {"clip.speedDuration", "editing"},
+        {"clip.increaseVolume", "editing"}, // 0.4: ] and [ (Increase / Decrease Clip Volume)
+        {"clip.decreaseVolume", "editing"},
         // Copy and paste (C.11: Paste Attributes; Remove Attributes has no key, as in Premiere)
         {"edit.cut", "clipboard"},
         {"edit.copy", "clipboard"},
@@ -100,6 +102,9 @@ const std::vector<KeyboardTrainerBridge::Prompt>& KeyboardTrainerBridge::allProm
         {"transport.goToNextEdit", "playback"},
         {"transport.goToPreviousEdit", "playback"},
         {"sequence.matchFrame", "playback"},
+        {"transport.shuttleSlowForward", "playback"},    // 0.4: Shift+L
+        {"transport.playAround", "playback"},            // 0.4: Shift+K
+        {"transport.playFromPlayheadToOut", "playback"}, // 0.4: Ctrl+Space
         // Tools
         {"tool.selection", "tools"},
         {"tool.trackSelectForward", "tools"},
@@ -121,6 +126,8 @@ const std::vector<KeyboardTrainerBridge::Prompt>& KeyboardTrainerBridge::allProm
         {"sequence.applyDefaultTransitions", "timeline"},
         {"timeline.nudgeClipLeft", "timeline"},
         {"timeline.nudgeClipRight", "timeline"},
+        {"timeline.nudgeClipUp", "timeline"},   // 0.4: Alt+Up / Opt+Up
+        {"timeline.nudgeClipDown", "timeline"}, // 0.4: Alt+Down / Opt+Down
         // Multi-camera (M5l: select an angle, cut to it, the multi-camera view; Cut to Camera 9 has no default key)
         {"multicam.selectCamera1", "multicam"},
         {"multicam.selectCamera2", "multicam"},

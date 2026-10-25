@@ -13,8 +13,8 @@ This guide has four parts:
 
 Names in quotes are the exact labels you see in the app. Shortcuts are the Windows defaults.
 
-> **Wabcut 0.3 is made and tested on Windows** (Windows 10 22H2 or 11, x64); the Linux and macOS downloads are
-> previews. See the [release notes](release-notes-0.3.md) for what is in this release and its known issues.
+> **Wabcut 0.4 is made and tested on Windows** (Windows 10 22H2 or 11, x64); the Linux and macOS downloads are
+> previews. See the [release notes](release-notes-0.4.md) for what is in this release and its known issues.
 
 ## Install
 
@@ -29,8 +29,8 @@ Names in quotes are the exact labels you see in the app. Shortcuts are the Windo
 
 | Package | How |
 |---|---|
-| `wabcut-0.3.1-windows-x64.msi` | Double-click it. It installs **for your user only**, with no administrator rights, to `%LOCALAPPDATA%\Programs\Wabcut` (or a folder you choose). Wabcut appears in the Start menu and in Settings > Apps. The options page has an unticked *Open .wabcut project files with Wabcut* box: tick it to open projects by double-clicking them. |
-| `wabcut-0.3.1-windows-x64-portable.zip` | Unzip it anywhere, for example a USB drive, and run `bin\wabcut.exe`. Nothing is installed. |
+| `wabcut-0.4.0-windows-x64.msi` | Double-click it. It installs **for your user only**, with no administrator rights, to `%LOCALAPPDATA%\Programs\Wabcut` (or a folder you choose). Wabcut appears in the Start menu and in Settings > Apps. The options page has an unticked *Open .wabcut project files with Wabcut* box: tick it to open projects by double-clicking them. |
+| `wabcut-0.4.0-windows-x64-portable.zip` | Unzip it anywhere, for example a USB drive, and run `bin\wabcut.exe`. Nothing is installed. |
 
 **SmartScreen.** The packages are not code-signed yet, so Windows SmartScreen may say "Windows protected your PC".
 Choose **More info**, then **Run anyway**.
@@ -39,7 +39,7 @@ Choose **More info**, then **Run anyway**.
 downloaded AI models, settings and API keys stay.
 
 Admins can install silently:
-`msiexec /i wabcut-0.3.1-windows-x64.msi /qn [INSTALL_ROOT="D:\Apps\Wabcut"] [WABCUT_ASSOCIATE=1]`.
+`msiexec /i wabcut-0.4.0-windows-x64.msi /qn [INSTALL_ROOT="D:\Apps\Wabcut"] [WABCUT_ASSOCIATE=1]`.
 
 ## First run
 
@@ -131,8 +131,23 @@ menus inside. The logo opens the File menu as well.
   right (on Home while Home is open); a save that failed offers **"Save As…"** there. Leaving the sample project after
   editing it (opening, creating or importing a project) first asks **"Discard your changes to the sample project?"**:
   "Save As…" keeps them as a project of your own;
-- "Import…" (Ctrl+I, for media and timelines);
-  numbered stills (an image sequence from a renderer, a game's photo mode or a timelapse) come in as one clip from the
+- **"Import from Media Browser"** (Ctrl+Alt+I): imports what is selected in the Media Browser (clips, and folders as
+  bins); with nothing selected there, or the Media Browser closed, it shows the Media Browser instead;
+- "Import…" (Ctrl+I, for media and timelines): the files go into the bin the Library has open, as in Premiere (0.3
+  always used the top of the Library);
+- **"Import Folder…"**: choose a folder; it comes in as a bin of its name in the bin the Library has open, each
+  subfolder as a bin inside it (up to 8 levels deep), with the media files in the bins they were in. Only media come in
+  (video, audio, stills, Photoshop files as their merged picture, RAW): timelines, captions, projects, documents,
+  hidden files (also those File Explorer hides, such as desktop.ini and Thumbs.db) and links are left out, and so are
+  camera cards inside the folder (import those from the Media Browser, which joins their clips). Importing the same
+  folder again adds only the files that are new, into the bins it made the first time. The whole import is one step:
+  Edit > "Undo Import Folder" removes every item and bin it made. A message says what came in and what was left out
+  ("Imported 12 files from Session1 into 3 bins. 2 files were left out (not media)."). The Library's ··· menu has
+  **"Import folder…"** too, and folders dropped on the Library from File Explorer come in the same way. A folder dropped
+  on the timeline comes in as bins at the top of the Library and is not edited in (the message says so; drag its clips
+  to the timeline from there); files dropped with it are edited in as before. Import… and Import Folder… open in the
+  folder your last import came from (for a folder: the one around it), else the project's folder;
+- numbered stills (an image sequence from a renderer, a game's photo mode or a timelapse) come in as one clip from the
   Library's ··· menu, **"Import image sequence…"** (Premiere's Import with "Image Sequence" ticked): choose the first
   file (PNG, JPEG, TIFF, DPX, Targa, OpenEXR or BMP) and the frame rate (29.97 fps by default, Premiere's Indeterminate
   Media Timebase). That file and the ones numbered after it, up to the first gap, play one still per frame. The clip is
@@ -152,11 +167,18 @@ menus inside. The logo opens the File menu as well.
   P2, XDCAM, XAVC) shows its clips instead of its folders, and a recording the camera split into several files (GoPro
   chapters, an AVCHD span, Canon XF parts) is one clip. Hover a thumbnail to scrub through the clip. Double-click a
   clip to watch it in the Source Monitor without importing it: the first mark, marker or edit you make there imports
-  it. Select clips (Ctrl-click) and press Import to bring them into the current bin. The list button shows the current
-  clip's metadata (format, duration, the video and audio streams). Turn on **Ingest** and open **Ingest Settings**
-  beside it to choose what an import does first: **Copy** the clips into a folder (so the card can be taken out),
-  **Transcode** them into a folder with an export preset (they import at once and switch to the new files when the
-  export queue has made them), or **Create Proxies**. Commands: `media.browse`, `media.importCameraClips`.
+  it. Select clips and folders (a click selects, Ctrl-click adds, Space adds the current row) and press **Import**
+  ("Import 3" for three rows), or Ctrl+Alt+I: clips come into the current bin, and each folder comes in as a bin with
+  its subfolders, as File > Import Folder… does; clips and folders chosen together are one undo step. The list button
+  shows the current clip's metadata (format, duration, the video and audio streams). Turn on **Ingest** and open
+  **Ingest Settings** beside it to choose what an import does first: **Copy** the clips into a folder (so the card can
+  be taken out), **Transcode** them into a folder with an export preset (they import at once and switch to the new files
+  when the export queue has made them), or **Create Proxies**; Ingest applies to clips, not to folders. The folder
+  button (**Drives and places**) lists Videos and your home folder, then the game capture folders that exist on this
+  computer: **"Game Bar captures"** (Videos\Captures), **"NVIDIA ShadowPlay"** (Videos\NVIDIA) and **"OBS recordings"**
+  (each OBS Studio profile's recording folder); then **"Recent: …"** for the folders your last imports came from, then
+  the drives (a recent folder that is a drive's root is listed as the drive). The Media Browser opens at the folder it
+  showed last, once you show it. Commands: `media.browse`, `media.importCameraClips`.
 - "Import Lottie…"; **"Export"**: "Media…" (Ctrl+M), "Frame…", "Send to Export Queue", "Timeline (XML, EDL, OTIO)…";
 - "Relink Offline Media…", "Recover…", "Collect Files…";
 - "Exit" (Ctrl+Q).
@@ -178,7 +200,9 @@ Edit to All Tracks", "Trim Edit", the ripple trims to the playhead, the transiti
 Playhead" and **"Selection Follows Playhead"** (the two switches show a dot while on).
 
 **Markers:** "Mark In", "Mark Out", "Mark Clip", "Mark Selection", "Go to In" / "Out", the Clear rows, "Add Marker", "Go
-to Next" / "Previous Marker", "Clear Selected Marker" and "Clear All Markers".
+to Next" / "Previous Marker", "Clear Selected Marker" and "Clear All Markers", then **"Ripple Sequence Markers"** (0.4,
+on by default: the sequence's markers move with insert, extract, ripple delete, ripple trims and transcript cuts, in
+the same undo step; a marker inside a removed range moves to the cut; the choice is saved with each sequence).
 
 **Graphics:** "New Layer" (Text, Rectangle, Ellipse; the Callouts panel opens), "Arrange" (Bring to Front, Bring Forward,
 Send Backward, Send to Back), "Select Next Layer" and "Select Previous Layer".
@@ -206,7 +230,27 @@ every workspace and **"Open Recent: …"** for the recent projects.
 - **Undo** (Ctrl+Z) and **Redo** (Ctrl+Shift+Z). Their tooltip names the step.
 - **"Save"** and **"Export"** (Ctrl+M). A dot on Save means there are unsaved changes; its tooltip says when the
   project was last autosaved. (The GPU and autosave status are in Settings; Settings > Interface can show them in the
-  title bar again.)
+  title bar again.) When autosave cannot write your project (a drive gone, a full disk, no permission), Wabcut says so
+  once with **"Save As…"**, the dot turns red and the tooltip gives the reason; it keeps trying, and the next autosave
+  or save that works clears it (0.4).
+- **The Background tasks pill** (0.4, after the sequence pill) shows while exports, Render In to Out, proxies,
+  transcription, Highlights, Shorts, Collect Files or an extension's AI command run or wait: "Exporting 38 % · 0:42
+  left", "Rendering 60 %", "2 exports waiting", with **+N** when more run (only the percentage when the title bar is
+  short of room). When nothing runs, **"1 problem"** with a warning sign means an error message went by while you were
+  not looking. Click it (or run **"Background Tasks"** from the command palette) for the popover: every export with its
+  own buttons (pause / resume / start, cancel, **Open**, Show) and **Start Queue**, **Clear Finished** and
+  **Export Queue…**; a row for each other job with its progress and a stop (proxies: **Settings…**); and **Recent
+  messages** - every toast, also those Home's message strip showed in its place (not Home's own open and import
+  messages), newest first, with its action (a click on a long one shows all of it). An error toast is never covered
+  by a later message: those wait their turn behind it (on Home's message strip too). Errors stay in Recent messages
+  however many notes follow.
+- **Closing Wabcut while exports or Render In to Out run or wait asks first** (0.4): **Keep Wabcut Open**, **Quit
+  When Done** (Wabcut closes by itself once the running work is done) or **Cancel Exports and Quit**. The answer is for
+  that close only: if you then cancel at "Save changes?", the next close asks again. When the work ends while Wabcut
+  asks, the question goes and Wabcut closes (it stays open when the work failed). A finished
+  export's message offers **Open** with **Show in Explorer**; a failed one says why (with **Relink…** when media is
+  offline). While an export runs, Windows does not go to sleep on its own and the taskbar button shows the progress
+  (Settings > General > Background work).
 
 **Workspaces.** The tabs in the title bar are your workspaces; none is built in. The first start makes one from the
 **Edit** preset. **"+"** after the tabs makes a new one from a preset, or as a copy of the current one:
@@ -242,8 +286,18 @@ every workspace and **"Open Recent: …"** for the recent projects.
     goes into it. The same again brings the other panels back, and so does a panel docked back from its own window.
   - **Right-click a panel's tab** for "Close Panel", "Close Other Panels in Group", "Undock Panel" (that panel in a
     window of its own), "Undock Panel Group" ("Dock Panel Group" while it has a window) and "Maximize Frame" /
-    "Restore Frame". On a group's tabs the Menu key or Shift+F10 opens it too. A lone panel's tab drags like a
-    group's.
+    "Restore Frame". On a group's tabs the Menu key or Shift+F10 opens it too, and so it does on a lone panel's tab
+    (0.4: Tab reaches it). A lone panel's tab drags like a group's.
+  - **Crowded groups keep readable tabs** (0.4): only the shown tab keeps room for its **×** (another tab shows it
+    under the pointer); tabs shrink but keep their dot and a few letters; the tabs that do not fit go into the **tab
+    list** (the **⌄** at the end of the tabs), which lists every panel of the group with its focus key - choose one to
+    show it (a tab in the list is dragged once it is shown). Every tab's tooltip gives the panel's full name and its
+    focus key ("Library [Shift+1]").
+  - **Header tools that do not fit** (0.4) move into **More tools** (the chevron button **›** before the grip; its
+    tooltip says "More tools") instead of disappearing: the leading tools go first, the trailing row's last tool (the
+    Library's Import) last. Its menu runs the button you choose as a click would (a toggle, such as the Media
+    Browser's metadata view, turns on or off); badges, switches and the Timeline's tool palette just hide until there
+    is room, and Tab skips what is hidden.
   - **Dragging a gutter** between two groups shares the room between them; a double-click shares it evenly. A guide
     line follows the pointer and the panels resize when you let go (Settings > Interface > "Resize panels live" makes
     them follow the pointer instead).
@@ -263,7 +317,10 @@ every workspace and **"Open Recent: …"** for the recent projects.
     in, the native window frame; **Projects**: the save state, how often to autosave, the default location for new
     projects (Home's New project page starts there; **Automatic** = the last project's folder), how many recent
     projects Home and File > Open Recent show (a lower number hides the older ones until you raise it again; starred
-    ones always show), and project locking;
+    ones always show), and project locking; the save state says **"Autosave failed"** (red) with the reason while
+    autosave cannot write; **Background work** (0.4): **"Keep the computer awake while exporting"** (on by default;
+    Windows only) - while exports, Render In to Out, proxies, transcription, Highlights, Shorts or Collect Files run,
+    Windows does not go to sleep on its own (the screen can still turn off);
   - **"Appearance"**: themes (Ultraviolet, Daylight, Graphite, Midnight, Paper, and your own), dark or light, the
     accent, high contrast, reduce motion, the interface size, and **"Custom colours"** for every colour of the
     interface and the clip labels. "Save theme" keeps your colours under a name; "Import…" and "Export…" read and
@@ -342,13 +399,21 @@ The goal is a 10-20 minute YouTube video at 1440p60 from a long OBS recording wi
 
 **1. Start from the recording.**
 1. Drop the recording anywhere on the Home screen (or **"Import…"**, Ctrl+I). MP4, MKV, MOV, FLV and TS from OBS,
-   ShadowPlay, Game Bar or any capture tool work. The New project page opens in **"Start with media"**.
+   ShadowPlay, Game Bar or any capture tool work. The New project page opens in **"Start with media"**. Home's
+   "Import…" and "Import folder…" open in the folder your last import came from.
 2. Wabcut reads it and shows:
    - **"Match my media"** chosen, and the sequence it will make ("2560 × 1440 · 60 fps · 48 kHz stereo · …");
    - the recording's size, frame rate, length and codec, with chips for what it needs (4K, high fps, long: proxies,
      VFR, HDR);
    - one line per audio stream, with a switch to leave it out, a **track name** you can change and the track it lands
-     on ("→ A1"). The first three are named "Game", "Mic" and "Discord", OBS's usual order.
+     on ("→ A1"). The names come from the stream titles your capture tool wrote, the same way later recordings dropped
+     on the timeline find their tracks: "Mic/Aux" becomes **Mic**, "Desktop Audio" **Game**, "Discord" stays
+     **Discord**, other titles are used as written, and a title that differs from its name shows in quotes beside it.
+     Streams without titles are **Game** and **Mic** when there are two (ShadowPlay, Game Bar) and **Track 1**,
+     **Track 2**, ... when there are three or more. OBS often records the full mix on Track 1: when the first of three or
+     more streams has no title, a hint suggests leaving it out if the other tracks hold the game and your mic, so
+     nothing plays twice. Each track also gets the role its name implies (Mic and Discord dialogue, Game effects, Music
+     music), so Essential Sound and "Game under my voice" ducking work at once.
 3. Check the **name** and **location**, then **"Create project"**. The project opens with the recording on its
    timeline.
 
@@ -378,7 +443,8 @@ The goal is a 10-20 minute YouTube video at 1440p60 from a long OBS recording wi
 
    It also sets **"How many moments"** and the **"Minimum score"**.
 2. Choose **"Find highlights"**. Each moment gets a card with its score and reasons.
-   - **A** accepts it and **R** rejects it.
+   - **A** accepts it and **R** rejects it. A ripple edit before a moment (Ripple Sequence Markers moves its marker)
+     keeps its accept or reject.
    - **Enter** jumps to the peak and **Space** plays the moment.
 3. Choose **"Make highlight reel (N)"**. It makes a new sequence of the accepted moments (when none is accepted, of
    every moment not rejected). **"Reel options"** sets:
@@ -386,7 +452,12 @@ The goal is a 10-20 minute YouTube video at 1440p60 from a long OBS recording wi
    - the **"Length"** and the **"Transition"**;
    - **"Music"** from the Library (the cuts land on its beats);
    - **"Slow motion at each peak"**.
-4. **"Make a Short"** turns one moment into a vertical Short (see [B](#b-a-short-or-tiktok)).
+4. **"Make a Short"** turns one moment into a vertical Short (see [B](#b-a-short-or-tiktok)); its tooltip says about
+   how long it will be. **"Make Shorts (N)"** makes a vertical Short of every accepted moment (when none is accepted,
+   of every moment not rejected) in one go, with the same **Short options**. It runs in the background ("Short 2 of
+   6"); **"Cancel"** stops after the Short being made and keeps the ones already made. The Shorts are one undo step
+   ("Make Highlight Shorts") and the timeline stays on your recording. Then **"Export all (N)"** queues each of them for
+   export at 1080x1920 (H.264, or **"HEVC"** with its switch on).
 
 **4. Rough cut with Premiere's keys.**
 - Double-click a clip to open it in the Source Monitor. Mark **I** and **O**, then **,** ("Insert") or **.**
@@ -401,8 +472,15 @@ The goal is a 10-20 minute YouTube video at 1440p60 from a long OBS recording wi
   3. In **"Preset"** pick **"Streamer voice (mic: denoise, gate, EQ, compressor, de-esser, limiter)"**.
 
   It cleans and levels a gaming mic to -16 LUFS, and every effect stays editable in **"Effect Controls"**.
-- **Game under voice.** Ask the Assistant (palette > "Ask AI…") to *"duck the game under my voice"*. The Game track
-  dips about 10 dB while you talk and comes back between sentences, as volume keyframes you can edit.
+- **Game under voice.** Open **"Audio Tools"** (the Audio workspace, or the Window menu). In the **"Auto-duck"** card
+  choose **"Game under my voice"** (it is chosen for you when a track is named for the game, as Start with media names
+  them). A line says which tracks it uses ("Mic → ducks Game, Music"): the voice is a track named Mic, Microphone,
+  Voice or Commentary (else a dialogue-role track), the game a track named Game, Desktop Audio or Gameplay (else an
+  effects-role track), and with **"Include music"** on the music tracks dip too. Each mode keeps its own amount,
+  attack, release and hold (the game: -10 dB, 0.12 / 0.8 / 0.35 s). **"Preview ducking"** shows the planned volume keys
+  on the timeline as dashed ghosts; **"Apply"** makes them one undo step ("Duck Game Under Voice"). The Game track dips
+  about 10 dB while you talk and comes back between sentences, as volume keyframes you can edit. You can also ask the
+  Assistant (palette > "Ask AI…") to *"duck the game under my voice"*.
 
 **6. Instant replay, slow motion, punch-ins, shake.** Put the playhead on the moment, select the clip, then use the
 **"Moments"** button (or the clip's right-click menu > **"Moments"**). Each move is one undo step and leaves ordinary
@@ -417,7 +495,7 @@ keyframes you can edit.
 | **"Punch in"** | Zooms in to 130 % at the playhead, holds a second and eases back. |
 | **"Punch in + hold"** | Zooms in to 130 % at the playhead and stays there. |
 | **"Shake"** | A short camera shake at the playhead. |
-| **"Instant replay"** | Replays the clip right after itself at half speed, with a REPLAY stinger. |
+| **"Instant replay"** | Replays In to Out when both marks are on the clip (every clip of the media in that range, linked audio and facecam too), else the 5 seconds before the playhead on a clip longer than 20 seconds, else the whole clip, right after itself. Under the button: the speed (**"25 %"** or **"50 %"**), **"Sound"** (the replay plays its sound too, slowed) and **"Stinger"** (the REPLAY title), remembered for next time and used by the clip menu's "Instant Replay" too. |
 
 **7. Callouts and templates.**
 1. Open **"Callouts"** from the Window menu. **"Gaming"** has 12 animated templates: "Subscribe", "Kill streak", "Lower
@@ -455,9 +533,17 @@ The goal is a vertical 1080x1920 clip at 60 fps with the gameplay, your facecam 
   - Without a facecam, the game view goes over a blurred copy of itself.
   - Captions move into the vertical safe area, above the platforms' buttons.
   - **"Make square version"** makes a 1080 × 1080 copy.
-- **From one highlight:** in **"Highlights"**, select a moment and choose **"Make a Short"**. **"Short options"** set
-  the **"Layout"** ("Auto", "Split" or "Blurred fill"), the **"Facecam"**, **"Captions"** and a **"Hook title"** (the
-  moment's title over the first seconds).
+- **From one highlight:** in **"Highlights"**, select a moment and choose **"Make a Short"** (or **"Make Shorts (N)"**
+  for every accepted moment at once). **"Short options"** set:
+  - the **"Layout"** ("Auto", "Split" or "Blurred fill") and the **"Facecam"**;
+  - the **"Length"**: **"Lead-in"** (the build-up before the moment, 3 s by default), **"Tail"** (the reaction after
+    it, 1 s) and **"At least"** (Off, 15, 30, 45 or 60 s: a shorter moment gets the missing time, two thirds before
+    and one third after, at most 30 s a side; what one side cannot take goes to the other);
+  - **"Captions"** and their **"Caption style"** ("Shorts" by default: big outlined words two thirds down, above the
+    platforms' buttons; or "Clean", "Bold Box", "Podcast", "Thai-friendly" or one of your project's presets);
+  - a **"Hook title"** (the moment's title over the first seconds).
+
+  These options are remembered.
 - **By hand with the layout picker:**
   1. Right-click the gameplay clip and choose **"Layout…"**.
   2. Pick **"Facecam corner"** (your webcam in a corner, with "Shape", "Corner", "Facecam size", "Border" and
@@ -473,6 +559,8 @@ The goal is a vertical 1080x1920 clip at 60 fps with the gameplay, your facecam 
 1. Open the **"Captions"** tab, or the **"Transcript"** panel's "Captions" tab, and choose **"Generate captions"**. This
    needs a transcript; see [C. A video essay](#c-a-video-essay).
 2. In **"Caption Style"**, pick the **"Shorts"** preset. **"Animation"** offers "Pop", "Fade" and "Word by word".
+   Shorts made by Highlights or by the **"Shorts"** panel already have their captions in the style chosen in their
+   options (**"Caption style"** there; "Shorts" by default), in short lines of a few words.
 3. Thai captions shape correctly. The **"Thai-friendly"** preset uses a Thai font.
 
 **3. Export.** In the **"Export"** tab, under **"For gaming"**:
@@ -741,7 +829,7 @@ Wabcut uses **Premiere Pro's default shortcuts** (Windows and macOS tables, per 
 | **Timeline view** | |
 | S | "Snap in Timeline" |
 | = / - | "Zoom In" / "Zoom Out" |
-| \ | "Zoom to Sequence" |
+| \ | "Zoom to Sequence" (press again to go back) |
 | Enter | "Render Effects In to Out" (0.1.1: renders previews of In to Out so they play in real time) |
 | **Project** | |
 | Ctrl+I | "Import…" |
@@ -789,6 +877,43 @@ Wabcut uses **Premiere Pro's default shortcuts** (Windows and macOS tables, per 
   Cross Dissolve from or to black on video, Constant Power from or to silence on audio, so it renders, exports and is
   edited like any transition (Effect Controls, its edges on the timeline, Delete). Command: `clip.setFade` (a length of
   0 removes the fade). An edge that already has a transition with the next clip keeps it.
+
+### Timeline: copy, rearrange and clip facts (0.4)
+
+- **Alt-drag copies a clip**, as in Premiere: drag a clip and hold **Alt** when you drop it. The original stays, the copy
+  lands where you drop it (over what is there) with its linked audio or video, and the copies become the selection. One
+  undo step, "Duplicate". Press **Alt before clicking** to copy only the video or only the audio of a linked clip; let
+  go of Alt before the drop to move just that side instead. With **Alt+Shift** you can drag a copy straight up to V2 at
+  the same time (a blur or zoom layer); its audio copy goes along only if the track below is free.
+- **Ctrl+Alt-drag rearranges** shots (macOS: ⌘⌥): the gap the clip leaves closes and the clips at the drop move over.
+  Drop a shot at the cut after its neighbour to swap the two. Only the tracks of the dragged clips and the tracks you
+  drop on change: a music bed or a facecam track below stays whole, and captions and markers stay where they are.
+  Shots you select apart (with other shots between them) land side by side at the drop, in time order, and their
+  sound stays in sync. If closing the gap would cut a clip you did not drag (a dragged clip's sound runs past its
+  picture: an L or J cut), or a clip's linked sound sits apart from its picture, the drag says so and the drop changes
+  nothing.
+- **Shift while dragging** keeps a clip at its time when you move it to another track (with or without Ctrl or Alt).
+- **Clip badges.** A clip that does not play at 100 % shows its speed after the name: **[50%]**, **[−100%]** (reversed),
+  **[Variable speed]** (time remapping), **[Hold]**. An **fx** badge says the clip was changed: **violet** when it has
+  effects, **amber** when Motion, Opacity, Volume or Pan were changed or keyframed, or the clip is time-remapped.
+- **Clip tooltip.** Rest the pointer on a clip for its start, end, duration, speed and source (In and Out), its effects
+  and whether it is disabled or offline.
+- Turn the speed, the fx badges and the tooltip off in Settings > **"Timeline & editing"** > Tracks, or in the Tracks
+  panel's display settings (the sliders button).
+- **The playhead snaps** to cuts, markers, In and Out while you drag it in the ruler with Snap on (**S**); **Shift**
+  snaps it with Snap off. Settings > "Timeline & editing" > **"Snap the playhead"** turns that off.
+- **Playback auto-scroll.** During playback the timeline turns a page when the playhead runs off it (**Page**, as in
+  Premiere), keeps the playhead in the middle while the clips scroll (**Smooth**), or does not move (**No scroll**):
+  Settings > "Timeline & editing" > **"Playback auto-scroll"**, also in the display settings. Playing backwards (**J**)
+  works the same way in the other direction.
+- **The ruler menu.** Right-click the timeline ruler for Mark In / Out / Clip, Go to In / Out, Clear In / Out / In and
+  Out, Add Marker, Go to Next / Previous Marker, Clear All Markers, Ripple Sequence Markers and Show Audio Time Units.
+  The playhead does not move. On a marker's flag the menu also has **"Edit Marker…"** and **"Clear Marker"**.
+- **Trim readouts** show the clip's new duration while you drag (Rate Stretch also its new speed; a roll both clips).
+- **\\ goes back.** Zoom to Sequence (**\\**) fits the sequence; press it again to go back to your zoom.
+- **The clip menu** has **"Clear"** (Delete: the clips go and leave a gap) and **"Audio Gain…"** (G) on clips with
+  sound. Its **"Paste"** is the same as Ctrl+V: effects you copied in Effect Controls go onto the selected clips.
+- **Track headers.** The speaker is crossed only when a track is muted; mute is amber and solo green, as in the mixer.
 
 ## Scripts and agents
 

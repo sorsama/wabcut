@@ -263,13 +263,15 @@ TEST_CASE("The built-in templates are listed - resolved for thumbnails and place
     CommandHarness h("    V1 tgt |" + longClip('A', 50) + "|\n");
     const auto list = h.ok("template.list", Json{{"library", "builtin"}});
     REQUIRE(list.data["builtin"].size() == builtinTemplates().size());
-    CHECK(list.data["builtin"].size() == 12);
+    CHECK(list.data["builtin"].size() == 17); // 0.4: 12 gaming and 5 essay and documentary templates
     CHECK(list.data["project"].empty());
     for (const Json& t : list.data["builtin"]) {
-        CHECK(t["category"] == "gaming");
+        const std::string id = t.value("id", std::string());
+        INFO(id);
+        CHECK(t["category"] == (id.starts_with("wabcut.essay.") ? "essay" : "gaming"));
         CHECK(t["posterTime"].get<std::int64_t>() >= 0);
     }
-    CHECK(h.ok("template.list").data["builtin"].size() == 12); // "all" includes them
+    CHECK(h.ok("template.list").data["builtin"].size() == builtinTemplates().size()); // "all" includes them
     const auto resolved = h.ok("template.resolve", Json{{"template", "wabcut.gaming.lowerThird"}});
     CHECK(resolved.data["library"] == "builtin");
     CHECK_FALSE(resolved.data["items"].empty());

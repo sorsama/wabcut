@@ -164,7 +164,7 @@ bool Sequence::operator==(const Sequence& o) const {
            height == o.height && audioRate == o.audioRate && dropFrame == o.dropFrame &&
            startTimecode == o.startTimecode && pixelAspect == o.pixelAspect && fields == o.fields &&
            previewFormat == o.previewFormat && videoDisplay == o.videoDisplay && audioDisplay == o.audioDisplay &&
-           colorIndex == o.colorIndex && markIn == o.markIn &&
+           colorIndex == o.colorIndex && rippleMarkers == o.rippleMarkers && markIn == o.markIn &&
            markOut == o.markOut && markers == o.markers && duration == o.duration && workArea == o.workArea &&
            effects == o.effects && audioEffects == o.audioEffects && captionTracks == o.captionTracks &&
            beatGrid == o.beatGrid && derivedFrom == o.derivedFrom && masterVolume == o.masterVolume &&

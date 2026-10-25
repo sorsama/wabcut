@@ -1,6 +1,7 @@
 #include "TimelineView.h"
 
 #include "AudioChannelsBridge.h"
+#include "BridgeIds.h"
 #include "ClipAudioBridge.h"
 #include "TimelineAnalysis.h"
 #include "TimelineGeometry.h"
@@ -11,8 +12,11 @@
 #include <wabcut/model/EditOps.h>
 #include <wabcut/model/Graphics.h>
 #include <wabcut/model/RedactionMedia.h>
+#include <wabcut/model/Snap.h>
 #include <wabcut/model/Timecode.h>
 
+#include <QCoreApplication>
+#include <QFileInfo>
 #include <QFontMetricsF>
 #include <QGuiApplication>
 #include <QHash>
@@ -95,6 +99,39 @@ int countNodes(const QSGNode* node) {
     return n;
 }
 
+/// 0.4: what a clip's speed suffix says ("" for a clip at a uniform 100 % forward, not remapped): "50%", "−100%"
+/// (reversed), "Variable speed" (a remap that changes speed), "Hold" (a frame hold). Shared by the label and the
+/// hover tooltip.
+QString clipSpeedText(const Clip& c) {
+    if (c.isRemapped())
+        return TimeRemapBridge::speedLabel(c);
+    if (c.isFreeze())
+        return QCoreApplication::translate("wabcut::app::TimelineView", "Hold");
+    if (c.speed.isUnity() && !c.reversed)
+        return {};
+    QString text = TimeRemapBridge::speedLabel(c); // "-100%" when reversed
+    if (text.startsWith(QLatin1Char('-')))
+        text[0] = QChar(0x2212); // the typographic minus, as the drag readouts
+    else if (c.reversed)
+        text.prepend(QChar(0x2212));
+    return text;
+}
+
+/// 0.4: what a clip's fx chip says: Effects with stack effects (they win), Changed when an intrinsic (Motion, Opacity,
+/// Volume, Pan) is off its default or keyframed, the blend mode is not Normal or the clip is time-remapped, else None.
+ClipFx clipFxOf(const Clip& c) {
+    if (!c.effects().empty())
+        return ClipFx::Effects;
+    if (c.blendMode() != BlendMode::Normal || c.isRemapped())
+        return ClipFx::Changed;
+    const ClipProperties& props = c.properties();
+    for (std::size_t i = 0; i < kParamCount; ++i) {
+        if (!props.isDefault(static_cast<ParamId>(i)))
+            return ClipFx::Changed;
+    }
+    return ClipFx::None;
+}
+
 } // namespace
 
 QColor TimelineStyle::clipBody(int index) const {
@@ -128,6 +165,10 @@ struct LabelEntry {
     QSGTransformNode* badge = nullptr; // sibling, follows the label's sticky position
     int badgeStyleRevision = -1;
     QString badgeText;                 // the micro-tag it shows ("AI", "ENHANCED", ...)
+    QSGTransformNode* fx = nullptr;    // 0.4: the fx chip (sibling, before the micro-tag)
+    ClipFx fxState = ClipFx::None;     // what it shows
+    int fxStyleRevision = -1;
+    bool fxInverted = false;           // drawn as a clipInk pill (its colour is the clip's own)
     bool pending = false;
     QString text;
     QColor color;
@@ -537,6 +578,8 @@ void TimelineView::setStyle(const QVariantMap& map) {
     s.nestedStripeHeight = realFrom(map, "nestedStripeHeight", s.nestedStripeHeight);
     s.trackVolumeLane = colorFrom(map.value(QStringLiteral("trackVolumeLane")), s.trackVolumeLane);
     s.trackPanLane = colorFrom(map.value(QStringLiteral("trackPanLane")), s.trackPanLane);
+    s.fxChangedColor = colorFrom(map.value(QStringLiteral("fxChangedColor")), s.fxChangedColor); // 0.4
+    s.fxEffectsColor = colorFrom(map.value(QStringLiteral("fxEffectsColor")), s.fxEffectsColor);
     m_style = std::move(s);
     ++m_styleRevision;
     m_cursorSet = false; // the edit cursors' trim colours may have changed (0.1.3)
@@ -704,6 +747,9 @@ void addClipFacts(TimelineLaneFacts& facts, const ProjectState& snap, const Trac
         if (!channels.isEmpty())
             facts.channels.emplace(c.id.value, channels);
     }
+    // 0.4: the fx chip (every track kind; untouched clips have no entry).
+    if (const ClipFx fx = clipFxOf(c); fx != ClipFx::None)
+        facts.fx.emplace(c.id.value, fx);
 }
 
 } // namespace
@@ -762,6 +808,7 @@ void TimelineView::updateFacts(const TimelineChange& change) {
             for (ClipId id : *list) {
                 m_facts.badges.erase(id.value);
                 m_facts.channels.erase(id.value);
+                m_facts.fx.erase(id.value);
             }
         }
         // One walk over the clips for the whole change: a ripple modifies thousands, and findClip per id is linear.
@@ -1172,9 +1219,181 @@ QString TimelineView::trackAt(double y) const {
     return row < 0 ? QString() : trackKey(m_rows[static_cast<std::size_t>(row)].track->id);
 }
 
-void TimelineView::seekToX(double x) {
-    if (m_controller)
-        m_controller->setPlayhead(ticksAtX(x));
+void TimelineView::seekToX(double x, bool forceSnap) {
+    if (!m_controller)
+        return;
+    const Ticks raw = ticksAtX(x);
+    // 0.4, Premiere's "Snap Playhead in Timeline When Snap Is Enabled" (Shift snaps with Snap off): the nearest clip
+    // edge, marker, In, Out or beat within the snap threshold. The playhead itself is not a target (it is what moves).
+    std::optional<Ticks> snapped;
+    if (forceSnap || (m_snapping && m_snapPlayhead)) {
+        const std::vector<Ticks> targets = localSnapTargets(raw, false);
+        snapped = edit::nearestSnapTarget(targets, raw, snapTolerance());
+    }
+    const bool lineChanged = snapped != m_playheadSnapAt;
+    m_playheadSnapAt = snapped;
+    m_controller->setPlayhead(snapped.value_or(raw));
+    if (lineChanged) {
+        emit gestureChanged(); // snapX
+        update();              // the snap line (guides)
+    }
+}
+
+void TimelineView::endScrub() {
+    if (!m_playheadSnapAt)
+        return;
+    m_playheadSnapAt.reset();
+    emit gestureChanged();
+    update();
+}
+
+void TimelineView::followPlayhead(const QString& mode, bool reverse) {
+    // 0.4, Premiere's Timeline Playback Auto-Scrolling (Main calls this on every playhead change during playback, with
+    // the direction it plays in). Reverse play (J) mirrors each rule, so it pages and scrolls as smoothly as forward.
+    if (mode == QLatin1String("none") || width() <= 0)
+        return;
+    const double x = playheadX();
+    if (mode == QLatin1String("smooth")) {
+        // The playhead travels to the middle, then stays there while the clips scroll under it (at either end of the
+        // sequence the scroll stops and it moves on); a jump the other way (a loop) re-centres it.
+        const double target = width() * 0.5;
+        if (reverse ? (x < target || x > width()) : (x > target || x < 0))
+            setScrollX(m_scrollX + x - target);
+        return;
+    }
+    // "page" (the default): off the edge it plays towards, the view turns a page and the playhead lands on the other
+    // edge (left going forward, right in reverse); off the edge behind it (a loop back to In, or to Out in reverse) it
+    // sits 10 % in from that edge.
+    if (!reverse) {
+        if (x > width())
+            setScrollX(m_scrollX + x);
+        else if (x < 0)
+            setScrollX(m_scrollX + x - width() * 0.1);
+    } else {
+        if (x < 0)
+            setScrollX(m_scrollX + x - width());
+        else if (x > width())
+            setScrollX(m_scrollX + x - width() * 0.9);
+    }
+}
+
+void TimelineView::toggleZoomToSequence() {
+    // 0.4: \ fits the sequence; pressed again while the view is still exactly at that fit, it goes back (Premiere).
+    if (m_zoomBeforeFit && m_zoomBeforeFit->sequence == m_shownSequence && qFuzzyCompare(m_pps, m_zoomBeforeFit->fitPps)
+        && std::abs(m_scrollX - m_zoomBeforeFit->fitScrollX) < 0.5) {
+        const ZoomMemory back = *m_zoomBeforeFit;
+        m_zoomBeforeFit.reset();
+        setPixelsPerSecond(back.pps);
+        setScrollX(back.scrollX);
+        return;
+    }
+    ZoomMemory memory;
+    memory.sequence = m_shownSequence;
+    memory.pps = m_pps;
+    memory.scrollX = m_scrollX;
+    zoomAt(0, 0);
+    memory.fitPps = m_pps;
+    memory.fitScrollX = m_scrollX;
+    m_zoomBeforeFit = memory;
+}
+
+QVariantMap TimelineView::clipHoverInfo(const QString& clipId) const {
+    const auto id = parseClipKey(clipId);
+    if (!id || !m_sequence || !m_controller)
+        return {};
+    const auto loc = m_sequence->findClip(*id);
+    const auto position = loc ? m_sequence->trackPosition(loc->track->id) : std::nullopt;
+    if (!loc || !position)
+        return {};
+    const Clip& c = loc->clip();
+    const bool audio = position->kind == TrackKind::Audio;
+    const bool samples = audio && m_audioTimeUnits && m_sequence->audioRate.isValid();
+    const auto format = [&](Ticks t) { return samples ? m_controller->formatAudioTime(t) : m_controller->formatTimecode(t); };
+    const ProjectSnapshot snap = m_controller->snapshot();
+
+    QVariantMap info;
+    const QString name = QString::fromStdString(c.name());
+    const QString track = QStringLiteral("%1%2").arg(audio ? QLatin1Char('A') : QLatin1Char('V')).arg(position->index + 1);
+    const QString speed = clipSpeedText(c);
+    info.insert(QStringLiteral("name"), name);
+    info.insert(QStringLiteral("track"), track);
+    info.insert(QStringLiteral("start"), format(c.start()));
+    info.insert(QStringLiteral("end"), format(c.end()));
+    info.insert(QStringLiteral("duration"), format(c.duration()));
+    info.insert(QStringLiteral("speed"), speed);
+    info.insert(QStringLiteral("reversed"), c.reversed);
+    info.insert(QStringLiteral("remapped"), c.isRemapped());
+    info.insert(QStringLiteral("freeze"), c.isFreeze());
+
+    // The source: a media file, a nested sequence, a multicam source's angle, or nothing this build knows.
+    QString source;
+    QString sourceKind = QStringLiteral("none");
+    QString sourceLine;
+    bool offline = false;
+    if (c.isNested()) {
+        if (const Sequence* nested = snap ? snap->findSequence(c.sequence) : nullptr) {
+            source = QString::fromStdString(nested->name);
+            if (nested->multicam) {
+                sourceKind = QStringLiteral("multicam");
+                const std::size_t angle = c.angles.first();
+                if (angle < nested->multicam->angles.size())
+                    source += QStringLiteral(" · ") + QString::fromStdString(nested->multicam->angles[angle].name);
+                sourceLine = tr("Multi-Camera %1").arg(source);
+            } else {
+                sourceKind = QStringLiteral("sequence");
+                sourceLine = tr("Sequence %1").arg(source);
+            }
+        }
+    } else if (const MediaItem* media = snap && c.media.isValid() ? snap->findMedia(c.media) : nullptr) {
+        sourceKind = QStringLiteral("media");
+        const QString path = QString::fromStdString(media->locator.path);
+        source = path.isEmpty() ? QString::fromStdString(media->name) : QFileInfo(path).fileName();
+        offline = media->locator.offline && !media->isGenerator();
+    }
+    QString sourceIn;
+    QString sourceOut;
+    if (sourceKind != QLatin1String("none") && !c.isRemapped()) {
+        const Ticks unit = samples ? framesToTicks(1, m_sequence->audioRate) : framesToTicks(1, frameRate());
+        sourceIn = format(c.sourceIn);
+        sourceOut = format(std::max(c.sourceIn, c.sourceOut() - unit)); // the last source frame, as the Slip readout
+    }
+    if (sourceKind == QLatin1String("media")) {
+        sourceLine = c.isRemapped() ? tr("Source %1 · time remapped").arg(source)
+                                    : tr("Source %1 · In %2 · Out %3").arg(source, sourceIn, sourceOut);
+    }
+    const int effects = static_cast<int>(c.effects().size());
+    info.insert(QStringLiteral("source"), source);
+    info.insert(QStringLiteral("sourceKind"), sourceKind);
+    info.insert(QStringLiteral("sourceIn"), sourceIn);
+    info.insert(QStringLiteral("sourceOut"), sourceOut);
+    info.insert(QStringLiteral("effects"), effects);
+    info.insert(QStringLiteral("disabled"), !c.enabled);
+    info.insert(QStringLiteral("offline"), offline);
+
+    // The tooltip: lines and parts that say nothing (100 % speed, no effects, enabled, online) are left out.
+    QStringList lines;
+    lines << (name.isEmpty() ? track : name);
+    lines << tr("Start %1 · End %2").arg(info.value(QStringLiteral("start")).toString(),
+                                         info.value(QStringLiteral("end")).toString());
+    QString durationLine = tr("Duration %1").arg(info.value(QStringLiteral("duration")).toString());
+    if (!speed.isEmpty())
+        durationLine += tr(" · Speed %1").arg(speed);
+    lines << durationLine;
+    if (!sourceLine.isEmpty())
+        lines << sourceLine;
+    QStringList state;
+    if (effects == 1)
+        state << tr("1 effect");
+    else if (effects > 1)
+        state << tr("%1 effects").arg(effects);
+    if (!c.enabled)
+        state << tr("Disabled");
+    if (offline)
+        state << tr("Offline");
+    if (!state.isEmpty())
+        lines << state.join(QStringLiteral(" · "));
+    info.insert(QStringLiteral("text"), lines.join(QLatin1Char('\n')));
+    return info;
 }
 
 std::vector<ClipId> TimelineView::clipsInRect(const QRectF& rect) const {
@@ -1285,6 +1504,8 @@ struct BuildContext {
     bool showVolume = false;
     bool showOpacity = false; // 0.2: the pen shows video clips' Opacity band (TimelineViewVolume.cpp)
     bool showSpeed = false;
+    bool showClipSpeed = true; // 0.4: "[50%]" after the name
+    bool showFxBadges = true;  // 0.4: the fx chip
     // Media whose files are offline: their clips are hatched (design language v2).
     const std::unordered_set<std::uint64_t>* offline = nullptr;
     // M5i
@@ -1637,15 +1858,82 @@ void addSpeedLine(BuildContext& ctx, const Clip& clip, const QRectF& rect, doubl
 
 void removeLabel(LabelPool& pool, TrackBucket& b, std::unordered_map<std::uint64_t, LabelEntry>::iterator it) {
     delete it->second.badge;
+    delete it->second.fx;
     if (it->second.node)
         pool.release(it->second.node);
     b.labels.erase(it);
 }
 
-// A scene-graph micro-tag, only when it fits AFTER the unabridged label. Never steals label space.
-// Kept with the label rather than the track mesh so sticky labels, scrolling and clip motion stay together.
+// 0.4: the fx chip right after the unabridged name (before the micro-tag): "fx" in clipInk on a pill in the fx colour
+// (violet: stack effects; amber: changed or keyframed intrinsics, time remapping) with a clipInk hairline, so it reads on
+// any label colour. On a clip whose own fill is close to that colour (the default violet label under the violet chip) the
+// chip is inverted: a clipInk pill with "fx" in the fx colour. Only when it fits, like the micro-tags. Returns the width
+// it takes (with the gap after it), 0 = none.
+qreal placeFxChip(BuildContext& ctx, LabelEntry& e, const BuiltClip& c, ClipFx fx, const QColor& clipFill,
+                  qreal available) {
+    const auto remove = [&] {
+        delete e.fx;
+        e.fx = nullptr;
+        e.fxState = ClipFx::None;
+    };
+    if (fx == ClipFx::None || e.pending) {
+        remove();
+        return 0;
+    }
+    const TimelineStyle& st = ctx.style;
+    QFont font = st.labelFont;
+    font.setPixelSize(static_cast<int>(st.microSize));
+    font.setLetterSpacing(QFont::AbsoluteSpacing, st.microTracking);
+    const QFontMetricsF metrics(font);
+    const QString text = QStringLiteral("fx");
+    const qreal chipHeight = std::ceil(metrics.height()) + 2;
+    const qreal chipWidth = std::ceil(metrics.horizontalAdvance(text)) + 8;
+    const qreal offset = ctx.names.width(ctx.metrics, e.text) + 6;
+    const qreal chipY = e.y + (ctx.metrics.height() - chipHeight) / 2;
+    if (offset + chipWidth > available || chipY < c.y + st.stripHeight || chipY + chipHeight > c.y + c.h) {
+        remove();
+        return 0;
+    }
+    const QColor fill = fx == ClipFx::Effects ? st.fxEffectsColor : st.fxChangedColor;
+    const double dr = fill.redF() - clipFill.redF();
+    const double dg = fill.greenF() - clipFill.greenF();
+    const double db = fill.blueF() - clipFill.blueF();
+    const bool inverted = clipFill.alphaF() > 0.5 && std::sqrt(dr * dr + dg * dg + db * db) < 0.25;
+    if (e.fx && (e.fxStyleRevision != ctx.styleRevision || e.fxState != fx || e.fxInverted != inverted))
+        remove();
+    if (!e.fx) {
+        e.fx = new QSGTransformNode;
+        ctx.labelGroup->appendChildNode(e.fx);
+        auto* plate = MeshBuilder::createNode();
+        e.fx->appendChildNode(plate);
+        MeshBuilder mesh;
+        mesh.addRoundedRect(QRectF(0, 0, chipWidth, chipHeight), chipHeight / 2, inverted ? st.markerInkColor : fill,
+                            st.markerInkColor, 0.75);
+        mesh.commit(plate);
+        auto* glyphs = ctx.window->createTextNode();
+        e.fx->appendChildNode(glyphs);
+        glyphs->setColor(inverted ? fill : st.markerInkColor);
+        QTextLayout layout(text, font);
+        layout.beginLayout();
+        QTextLine line = layout.createLine();
+        line.setLineWidth(chipWidth);
+        layout.endLayout();
+        glyphs->addTextLayout({4, 1}, &layout);
+        e.fxStyleRevision = ctx.styleRevision;
+        e.fxState = fx;
+        e.fxInverted = inverted;
+    }
+    QMatrix4x4 transform;
+    transform.translate(static_cast<float>(e.x + offset), static_cast<float>(chipY));
+    e.fx->setMatrix(transform);
+    return chipWidth + 4;
+}
+
+// A scene-graph micro-tag, only when it fits AFTER the unabridged label (and, 0.4, the fx chip: `after` px). Never
+// steals label space. Kept with the label rather than the track mesh so sticky labels, scrolling and clip motion stay
+// together.
 void placeGeneratedBadge(BuildContext& ctx, LabelEntry& e, const BuiltClip& c, const QString& tag,
-                         qreal available) {
+                         qreal available, qreal after = 0) {
     const auto remove = [&] {
         delete e.badge;
         e.badge = nullptr;
@@ -1663,7 +1951,7 @@ void placeGeneratedBadge(BuildContext& ctx, LabelEntry& e, const BuiltClip& c, c
     const qreal tagHeight = std::ceil(metrics.height()) + 2;
     const qreal lean = tagHeight * std::tan(st.sliceAngle * std::numbers::pi / 180.0);
     const qreal tagWidth = std::ceil(metrics.horizontalAdvance(text)) + 8 + lean;
-    const qreal offset = ctx.names.width(ctx.metrics, e.text) + 6;
+    const qreal offset = ctx.names.width(ctx.metrics, e.text) + 6 + after;
     const qreal tagY = e.y + (ctx.metrics.height() - tagHeight) / 2;
     if (offset + tagWidth > available || tagY < c.y + st.stripHeight || tagY + tagHeight > c.y + c.h) {
         remove();
@@ -1724,6 +2012,10 @@ bool placeLabel(BuildContext& ctx, TrackBucket& b, const BuiltClip& c) {
     if (ctx.showSpeed && !c.audio) {
         const Clip& clip = b.track->clips[c.index];
         name += QStringLiteral(" · ") + TimeRemapBridge::speedLabel(clip);
+    } else if (ctx.showClipSpeed) {
+        // 0.4: a clip not at a uniform 100 % forward shows its speed in brackets, as Premiere does ("[50%]").
+        if (const QString speed = clipSpeedText(b.track->clips[c.index]); !speed.isEmpty())
+            name += QStringLiteral(" [") + speed + QLatin1Char(']');
     }
     // Elide only when the name does not fit, at an 8 px-quantised width, so zooming re-lays text out rarely.
     const QString text = ctx.names.width(ctx.metrics, name) <= available
@@ -1788,7 +2080,11 @@ bool placeLabel(BuildContext& ctx, TrackBucket& b, const BuiltClip& c) {
         if (const auto channels = ctx.facts->channels.find(clip.id.value); channels != ctx.facts->channels.end())
             tag = tag.isEmpty() ? channels->second : tag + QStringLiteral(" · ") + channels->second;
     }
-    placeGeneratedBadge(ctx, e, c, text == name ? tag : QString(), available);
+    // 0.4: the fx chip (read from the clip itself, so a drag's preview and an Alt-drag's copies show theirs too).
+    const ClipFx fx = ctx.showFxBadges && text == name ? clipFxOf(clip) : ClipFx::None;
+    const qreal fxWidth = placeFxChip(ctx, e, c, fx, c.audio ? st.audioFill(clip.colorIndex) : st.clipBody(clip.colorIndex),
+                                      available);
+    placeGeneratedBadge(ctx, e, c, text == name ? tag : QString(), available, fxWidth);
     return c.x0 < ctx.viewLeft;
 }
 
@@ -2200,6 +2496,9 @@ std::pair<int, int> buildTrack(BuildContext& ctx, TrackBucket& b, const Timeline
                 LabelEntry& entry = b.labels.at(bc.id.value);
                 delete entry.badge; // do not retain stale provenance/style on an offscreen label
                 entry.badge = nullptr;
+                delete entry.fx; // 0.4: nor its fx chip
+                entry.fx = nullptr;
+                entry.fxState = ClipFx::None;
                 entry.pending = true; // place its tag again if it scrolls into view
             }
         }
@@ -2327,6 +2626,8 @@ QSGNode* TimelineView::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
     ctx.showVolume = volumeBandShown();
     ctx.showOpacity = m_tool == TimelineTool::Pen;
     ctx.showSpeed = m_showSpeed;
+    ctx.showClipSpeed = m_showClipSpeed;
+    ctx.showFxBadges = m_showFxBadges;
     ctx.styleRevision = m_styleRevision;
     ctx.introText = m_introText;
     ctx.outroText = m_outroText;
@@ -2782,10 +3083,23 @@ QSGNode* TimelineView::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
             const Row& r = m_rows[static_cast<std::size_t>(row)];
             return QRectF(x0, r.y - m_scrollY, x1 - x0, r.height);
         };
+        // The snap line across the lanes with its tick: a 12° slash across the line's top.
+        const auto addSnapLine = [&](Ticks at) {
+            const double x = std::round(xOfTicks(at));
+            mesh.addRect(QRectF(x - m_style.selectionWidth / 2, 0, m_style.selectionWidth, visibleHeight), m_style.snapColor);
+            const double lean = 8 * std::tan(m_style.sliceAngle * std::numbers::pi / 180.0);
+            const QPointF a(x - 3 - lean / 2, 8), b(x + 3 + lean / 2, 0);
+            const QPointF n(1, 0);
+            mesh.addTriangle(a - n, a + n, b + n, m_style.snapColor);
+            mesh.addTriangle(a - n, b + n, b - n, m_style.snapColor);
+        };
         if (m_gesture.active) {
-            // Ghosts sit under the clips: only the vacated part shows.
+            // Ghosts sit under the clips: only the vacated part shows. 0.4: a copy leaves the originals in place, so it
+            // has none.
             MeshBuilder ghosts;
             for (const auto& ghost : m_gesture.ghosts) {
+                if (m_gesture.spec.copy)
+                    break;
                 const auto row = std::ranges::find_if(m_rows, [&](const Row& r) { return r.track->id == ghost.track; });
                 if (row == m_rows.end())
                     continue;
@@ -2796,17 +3110,11 @@ QSGNode* TimelineView::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
             }
             ghosts.commit(root->ghosts);
             root->ghostsShown = true;
-            if (m_gesture.snappedAt && m_showSnapIndicator) {
-                const double x = std::round(xOfTicks(*m_gesture.snappedAt));
-                mesh.addRect(QRectF(x - m_style.selectionWidth / 2, 0, m_style.selectionWidth, visibleHeight),
-                             m_style.snapColor);
-                // The snap tick: a short 12° slash across the line's top.
-                const double lean = 8 * std::tan(m_style.sliceAngle * std::numbers::pi / 180.0);
-                const QPointF a(x - 3 - lean / 2, 8), b(x + 3 + lean / 2, 0);
-                const QPointF n(1, 0);
-                mesh.addTriangle(a - n, a + n, b + n, m_style.snapColor);
-                mesh.addTriangle(a - n, b + n, b - n, m_style.snapColor);
-            }
+            if (m_gesture.snappedAt && m_showSnapIndicator)
+                addSnapLine(*m_gesture.snappedAt);
+        } else if (m_playheadSnapAt && m_showSnapIndicator) {
+            // 0.4: a ruler scrub snapped the playhead (until the ruler is released).
+            addSnapLine(*m_playheadSnapAt);
         } else if (m_tool == TimelineTool::Razor && m_hoverInside && m_hoverRow >= 0
                    && m_hoverRow < static_cast<int>(m_rows.size())) {
             std::optional<Ticks> snapped;
@@ -2927,6 +3235,8 @@ QSGNode* TimelineView::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
                 ++stats.generatedBadges;
                 stats.badgeTexts.insert(id, label.badgeText);
             }
+            if (label.fx) // 0.4
+                stats.fxBadges.insert(id, label.fxState == ClipFx::Effects ? QStringLiteral("effects") : QStringLiteral("changed"));
             stats.labelTexts.insert(id, label.text);
         }
     }

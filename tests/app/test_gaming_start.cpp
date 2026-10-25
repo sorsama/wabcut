@@ -1,8 +1,9 @@
 // M5o (gaming): "New gaming video" from the Home screen (GamingStart; since the UX rework the New project page's
 // "Start with media"), offscreen; no window is shown.
 //   * describe(): size, the nominal frame rate (60 fps kept, 59.94 named), duration, codec, HDR, the flags that suggest
-//     proxies (above 60 fps, 4K, 20 minutes) with the reason, one row per audio stream with Game / Mic / Discord /
-//     "Audio n" suggested.
+//     proxies (above 60 fps, 4K, 20 minutes) with the reason, one row per audio stream with its suggested name (0.4:
+//     from the stream's title as later drops route by: untitled streams Game / Mic for two, Track 1, 2, ... for more),
+//     its role and where the name comes from, and the OBS mix hint.
 //   * inspect() probes off the GUI thread; a later call wins; a file that cannot be read says why.
 //   * create() on real recordings made with the build's ffmpeg (skipped without one): the project is saved, its
 //     sequence matches the recording's size and rate, each included stream is on its own named audio track in order,
@@ -26,6 +27,7 @@
 #include "ProjectController.h"
 #include "ProjectLifecycle.h"
 
+#include <wabcut/model/EditOps.h>
 #include <wabcut/model/ProjectState.h>
 #include <wabcut/model/Time.h>
 
@@ -124,7 +126,8 @@ QString findFfmpeg() {
 /// A one-second recording: H.264 `width` x `height` at `fps`, one AAC stream per entry of `channels` (OBS's multitrack
 /// recording: game, mic, voice chat ...). Filter graph sources, as tools/gen_test_media.py (the vcpkg ffmpeg has no
 /// lavfi input device).
-bool makeRecording(const QString& ffmpeg, const QString& out, int width, int height, int fps, const std::vector<int>& channels) {
+bool makeRecording(const QString& ffmpeg, const QString& out, int width, int height, int fps, const std::vector<int>& channels,
+                   const QStringList& titles = {}) {
     QString graph = QStringLiteral("testsrc2=size=%1x%2:rate=%3:duration=1[v]").arg(width).arg(height).arg(fps);
     for (std::size_t i = 0; i < channels.size(); ++i) {
         graph += QStringLiteral(";sine=frequency=%1:sample_rate=48000:duration=1[a%2]")
@@ -140,6 +143,9 @@ bool makeRecording(const QString& ffmpeg, const QString& out, int width, int hei
          << QStringLiteral("-pix_fmt") << QStringLiteral("yuv420p") << QStringLiteral("-c:a") << QStringLiteral("aac");
     for (std::size_t i = 0; i < channels.size(); ++i)
         args << QStringLiteral("-ac:a:%1").arg(i) << QString::number(channels[i]);
+    // 0.4: the stream titles a capture tool writes (OBS's track names).
+    for (qsizetype i = 0; i < titles.size(); ++i)
+        args << QStringLiteral("-metadata:s:a:%1").arg(i) << QStringLiteral("title=%1").arg(titles[i]);
     args << out;
     QProcess process;
     process.start(ffmpeg, args);
@@ -241,9 +247,11 @@ TEST_CASE("Gaming start: a recording is described with its rate flags and sugges
         CHECK_FALSE(r.value("vfr").toBool());
         CHECK(r.value("hdr").toString().isEmpty());
         REQUIRE(audioRows(r).size() == 3);
-        CHECK(audioField(r, 0, "suggested") == QStringLiteral("Game"));
-        CHECK(audioField(r, 1, "suggested") == QStringLiteral("Mic"));
-        CHECK(audioField(r, 2, "suggested") == QStringLiteral("Discord"));
+        // 0.4: three untitled streams are Track 1, 2, 3 (as later drops route them), with OBS's mix hint.
+        CHECK(audioField(r, 0, "suggested") == QStringLiteral("Track 1"));
+        CHECK(audioField(r, 1, "suggested") == QStringLiteral("Track 2"));
+        CHECK(audioField(r, 2, "suggested") == QStringLiteral("Track 3"));
+        CHECK(r.value("mixHint").toBool());
         CHECK(audioField(r, 0, "layout") == QStringLiteral("Stereo"));
         CHECK(audioField(r, 1, "layout") == QStringLiteral("Mono"));
         CHECK(audioRows(r)[1].toMap().value("index").toInt() == 1);
@@ -275,8 +283,8 @@ TEST_CASE("Gaming start: a recording is described with its rate flags and sugges
         CHECK(r.value("hdr").toString() == QStringLiteral("PQ"));
         CHECK(r.value("videoCodec").toString() == QStringLiteral("HEVC"));
         CHECK(r.value("durationText").toString() == QStringLiteral("45:00"));
-        CHECK(audioField(r, 3, "suggested") == QStringLiteral("Audio 4"));
-        CHECK(audioField(r, 4, "suggested") == QStringLiteral("Audio 5"));
+        CHECK(audioField(r, 3, "suggested") == QStringLiteral("Track 4"));
+        CHECK(audioField(r, 4, "suggested") == QStringLiteral("Track 5"));
         CHECK(audioField(r, 4, "layout") == QStringLiteral("5.1"));
     }
     SECTION("59.94 fps and HLG; a turned phone capture; over an hour") {
@@ -393,9 +401,9 @@ TEST_CASE("Gaming start: a multi-stream recording becomes a saved project with o
     CHECK(r.value("videoCodec").toString() == QStringLiteral("H.264"));
     CHECK_FALSE(r.value("proxies").toBool());
     REQUIRE(audioRows(r).size() == 3);
-    CHECK(audioField(r, 0, "suggested") == QStringLiteral("Game"));
-    CHECK(audioField(r, 1, "suggested") == QStringLiteral("Mic"));
-    CHECK(audioField(r, 2, "suggested") == QStringLiteral("Discord"));
+    CHECK(audioField(r, 0, "suggested") == QStringLiteral("Track 1"));
+    CHECK(audioField(r, 1, "suggested") == QStringLiteral("Track 2"));
+    CHECK(audioField(r, 2, "suggested") == QStringLiteral("Track 3"));
     CHECK(audioField(r, 0, "layout") == QStringLiteral("Stereo"));
     CHECK(audioField(r, 1, "layout") == QStringLiteral("Mono"));
     CHECK(audioField(r, 2, "layout") == QStringLiteral("Stereo"));
@@ -459,7 +467,7 @@ TEST_CASE("Gaming start: a multi-stream recording becomes a saved project with o
     CHECK(seq->frameRate.den == 1);
     CHECK(seq->width == 160);
     REQUIRE(seq->audioTracks.size() == 4);
-    const std::vector<std::string> names{"Game", "Mic", "Discord", "Audio 4"};
+    const std::vector<std::string> names{"Track 1", "Track 2", "Track 3", "Track 4"};
     for (std::size_t i = 0; i < names.size(); ++i) {
         INFO("A" << i + 1);
         CHECK(seq->audioTracks[i]->name == names[i]);
@@ -477,6 +485,128 @@ TEST_CASE("Gaming start: a multi-stream recording becomes a saved project with o
     CHECK(QFile::exists(rig.dir.filePath(QStringLiteral("Clutch again.wabcut"))));
     CHECK_FALSE(rig.lifecycle.dirty());
     CHECK(rig.controller.currentSequence()->audioTracks.size() == 4);
+}
+
+// ---- 0.4: stream titles name the tracks (as later drops route them) and give them roles ----------------------------
+
+TEST_CASE("Gaming start: stream titles name the tracks and give them roles", "[app][gaming]") {
+    // Titled as OBS writes them, not in Game / Mic order.
+    MediaInfo titled = recordingInfo(1920, 1080, Rate{60, 1}, 600, {{1, "mono"}, {2, "stereo"}, {2, "stereo"}});
+    titled.audio[0].title = "Mic/Aux";
+    titled.audio[1].title = "Desktop Audio";
+    titled.audio[2].title = "Discord";
+    QVariantMap r = GamingStartBridge::describe(titled, QStringLiteral("C:/Videos/Titled.mkv"));
+    REQUIRE(audioRows(r).size() == 3);
+    const QStringList names{QStringLiteral("Mic"), QStringLiteral("Game"), QStringLiteral("Discord")};
+    const QStringList roles{QStringLiteral("dialogue"), QStringLiteral("effects"), QStringLiteral("dialogue")};
+    const QStringList titles{QStringLiteral("Mic/Aux"), QStringLiteral("Desktop Audio"), QStringLiteral("Discord")};
+    for (int i = 0; i < 3; ++i) {
+        INFO("stream " << i);
+        CHECK(audioField(r, i, "suggested") == names[i]);
+        CHECK(audioField(r, i, "role") == roles[i]);
+        CHECK(audioField(r, i, "title") == titles[i]);
+        CHECK(audioField(r, i, "origin") == QStringLiteral("recognised"));
+        CHECK(GamingStartBridge::suggestedTrackName(titled, i) == names[i]);
+    }
+    CHECK_FALSE(r.value("mixHint").toBool());
+    // A title it does not know is used as written.
+    titled.audio[2].title = "Spotify Mix";
+    r = GamingStartBridge::describe(titled, QStringLiteral("C:/Videos/Titled.mkv"));
+    CHECK(audioField(r, 2, "suggested") == QStringLiteral("Spotify Mix"));
+    CHECK(audioField(r, 2, "origin") == QStringLiteral("title"));
+    CHECK(audioField(r, 2, "role") == QStringLiteral("none"));
+
+    // Untitled: three or more are Track 1, 2, 3 (with the hint about OBS's full mix on Track 1), two are Game and Mic,
+    // one keeps the old suggestion.
+    r = GamingStartBridge::describe(recordingInfo(1920, 1080, Rate{60, 1}, 600, {{2, "stereo"}, {1, "mono"}, {2, "stereo"}}),
+                                    QStringLiteral("C:/Videos/Untitled.mkv"));
+    for (int i = 0; i < 3; ++i) {
+        CHECK(audioField(r, i, "suggested") == QStringLiteral("Track %1").arg(i + 1));
+        CHECK(audioField(r, i, "origin") == QStringLiteral("inferred"));
+        CHECK(audioField(r, i, "role") == QStringLiteral("none"));
+        CHECK(audioField(r, i, "title").isEmpty());
+    }
+    CHECK(r.value("mixHint").toBool());
+    r = GamingStartBridge::describe(recordingInfo(1920, 1080, Rate{60, 1}, 600, {{2, "stereo"}, {1, "mono"}}),
+                                    QStringLiteral("C:/Videos/ShadowPlay.mp4"));
+    CHECK(audioField(r, 0, "suggested") == QStringLiteral("Game"));
+    CHECK(audioField(r, 1, "suggested") == QStringLiteral("Mic"));
+    CHECK(audioField(r, 0, "role") == QStringLiteral("effects"));
+    CHECK(audioField(r, 1, "role") == QStringLiteral("dialogue"));
+    CHECK_FALSE(r.value("mixHint").toBool());
+    r = GamingStartBridge::describe(recordingInfo(1920, 1080, Rate{60, 1}, 600, {{2, "stereo"}}), QStringLiteral("C:/Videos/One.mp4"));
+    CHECK(audioField(r, 0, "suggested") == QStringLiteral("Game"));
+    CHECK(audioField(r, 0, "origin") == QStringLiteral("none"));
+    // A first stream titled "Track1" with more after it: the hint too.
+    MediaInfo obs = recordingInfo(1920, 1080, Rate{60, 1}, 600, {{2, "stereo"}, {2, "stereo"}, {1, "mono"}});
+    obs.audio[0].title = "Track1";
+    obs.audio[1].title = "Game";
+    obs.audio[2].title = "Mic";
+    r = GamingStartBridge::describe(obs, QStringLiteral("C:/Videos/OBS.mkv"));
+    CHECK(audioField(r, 0, "suggested") == QStringLiteral("Track 1"));
+    CHECK(r.value("mixHint").toBool());
+
+    // The role a name gives.
+    CHECK(GamingStartBridge::trackRoleOf(QStringLiteral("Mic")) == QStringLiteral("dialogue"));
+    CHECK(GamingStartBridge::trackRoleOf(QStringLiteral("Game")) == QStringLiteral("effects"));
+    CHECK(GamingStartBridge::trackRoleOf(QStringLiteral("Music")) == QStringLiteral("music"));
+    CHECK(GamingStartBridge::trackRoleOf(QStringLiteral("Alerts")) == QStringLiteral("effects"));
+    CHECK(GamingStartBridge::trackRoleOf(QStringLiteral("Track 1")) == QStringLiteral("none"));
+    CHECK(GamingStartBridge::trackRoleOf(QStringLiteral("Squad")) == QStringLiteral("none"));
+
+    // A real titled recording: create() names the tracks from the titles and gives them their roles (with the build's
+    // ffmpeg only).
+    const QString ffmpeg = findFfmpeg();
+    if (ffmpeg.isEmpty())
+        return;
+    Rig rig;
+    REQUIRE(rig.dir.isValid());
+    const QString file = rig.dir.filePath(QStringLiteral("Titled.mkv"));
+    REQUIRE(makeRecording(ffmpeg, file, 320, 180, 60, {1, 2, 2},
+                          {QStringLiteral("Mic/Aux"), QStringLiteral("Desktop Audio"), QStringLiteral("Discord")}));
+    REQUIRE(rig.inspect(file));
+    INFO(rig.start.recording().value("error").toString().toStdString());
+    REQUIRE(rig.start.recording().value("ok").toBool());
+    CHECK(audioField(rig.start.recording(), 0, "suggested") == QStringLiteral("Mic"));
+    const QString error = rig.start.create(QStringLiteral("Titled"), rig.folder(), {});
+    INFO(error.toStdString());
+    REQUIRE(error.isEmpty());
+    const SequencePtr seq = rig.controller.currentSequence();
+    REQUIRE(seq->audioTracks.size() >= 3);
+    CHECK(seq->audioTracks[0]->name == "Mic");
+    CHECK(seq->audioTracks[1]->name == "Game");
+    CHECK(seq->audioTracks[2]->name == "Discord");
+    CHECK(seq->audioTracks[0]->role == TrackRole::Dialogue);
+    CHECK(seq->audioTracks[1]->role == TrackRole::Effects);
+    CHECK(seq->audioTracks[2]->role == TrackRole::Dialogue);
+    CHECK_FALSE(rig.lifecycle.dirty());
+}
+
+TEST_CASE("Gaming start: the first recording's tracks are the ones later drops route to", "[app][gaming]") {
+    const QString ffmpeg = findFfmpeg();
+    if (ffmpeg.isEmpty())
+        SKIP("no ffmpeg (the vcpkg tools/ffmpeg of this build, $WABCUT_FFMPEG or PATH)");
+    Rig rig;
+    REQUIRE(rig.dir.isValid());
+    const QString file = rig.dir.filePath(QStringLiteral("Session 1.mkv"));
+    REQUIRE(makeRecording(ffmpeg, file, 320, 180, 60, {2, 1, 2})); // three untitled streams
+    REQUIRE(rig.inspect(file));
+    const QString error = rig.start.create(QStringLiteral("Session"), rig.folder(), {});
+    INFO(error.toStdString());
+    REQUIRE(error.isEmpty());
+    const SequencePtr seq = rig.controller.currentSequence();
+    REQUIRE(seq->audioTracks.size() == 3);
+    REQUIRE(rig.controller.snapshot()->media.size() == 1);
+    const MediaInfo& info = rig.controller.snapshot()->media.front()->info;
+    // The next recording of the same kind, routed by name from A1: every stream to its track, in stream order.
+    const std::vector<edit::SourcePatch> patches = edit::audioPatchesByName(*seq, info, 0);
+    REQUIRE(patches.size() == 3);
+    for (std::size_t i = 0; i < patches.size(); ++i) {
+        INFO("stream " << i);
+        CHECK(patches[i].source.index == static_cast<std::int32_t>(i));
+        CHECK(patches[i].destination == seq->audioTracks[i]->id);
+        CHECK(patches[i].newTrack.empty());
+    }
 }
 
 // ---- Home's media start (UX rework: the New project page in "Start with media" mode) -------------------------------
@@ -711,7 +841,8 @@ TEST_CASE("Home screen: a game recording dropped on Home opens New project match
     QQuickItem* addClips = visibleItem(shell, QStringLiteral("homeAddClips"));
     REQUIRE(addClips != nullptr);
     CHECK(addClips->property("checked").toBool());
-    const QStringList suggested{QStringLiteral("Game"), QStringLiteral("Mic"), QStringLiteral("Discord")};
+    // 0.4: three untitled streams are named as later drops route them.
+    const QStringList suggested{QStringLiteral("Track 1"), QStringLiteral("Track 2"), QStringLiteral("Track 3")};
     for (int i = 0; i < 3; ++i) {
         INFO("stream " << i);
         QQuickItem* field = visibleItem(shell, QStringLiteral("gamingTrackName_%1").arg(i));
@@ -720,7 +851,12 @@ TEST_CASE("Home screen: a game recording dropped on Home opens New project match
         QQuickItem* target = visibleItem(shell, QStringLiteral("gamingTarget_%1").arg(i));
         REQUIRE(target != nullptr);
         CHECK(target->property("text").toString() == QStringLiteral("→ A%1").arg(i + 1));
+        CHECK(visibleItem(shell, QStringLiteral("gamingStreamTitle_%1").arg(i)) == nullptr); // untitled: no title shown
     }
+    // The OBS hint: three streams and the first untitled (often the full mix).
+    QQuickItem* mixHint = visibleItem(shell, QStringLiteral("gamingMixHint"));
+    REQUIRE(mixHint != nullptr);
+    CHECK(mixHint->property("text").toString().startsWith(QStringLiteral("OBS often records the full mix on Track 1.")));
 
     // One audio track per stream: three, as the summary says.
     CHECK(sequenceSummary->property("text").toString().endsWith(QStringLiteral("3 video / 3 audio tracks")));
@@ -848,6 +984,80 @@ TEST_CASE("Home screen: a game recording dropped on Home opens New project match
     CHECK(visibleItem(shell, QStringLiteral("homePreset_match")) == nullptr);
 
     spy.reset();
+    const QStringList messages = takeMessages();
+    INFO(join(messages));
+    CHECK(messages.isEmpty());
+}
+
+// 0.4: a recording whose streams carry titles (as OBS writes them): the suggested names come from the titles, each title
+// that differs from its name shows in quotes beside it, and there is no mix hint.
+TEST_CASE("Home screen: stream titles show beside the track names they suggest; screenshot", "[app][gaming][screenshots][qml]") {
+    A11yScope a11y;
+    resetSettings();
+    clearMessages();
+    Shell shell;
+    REQUIRE(shell.window != nullptr);
+    shell.resize(kShotWidth, kShotHeight);
+    shell.theme->setProperty("reduceMotion", true);
+    auto* start = shell.engine.singletonInstance<GamingStartBridge*>("Wabcut", "GamingStart");
+    REQUIRE(start != nullptr);
+    start->setProbe([](const std::string&) -> std::expected<MediaInfo, Error> {
+        MediaInfo info = recordingInfo(1920, 1080, Rate{60, 1}, 25 * 60, {{1, "mono"}, {2, "stereo"}, {2, "stereo"}});
+        info.audio[0].title = "Mic/Aux";
+        info.audio[1].title = "Desktop Audio";
+        info.audio[2].title = "Discord";
+        return info;
+    });
+    QTemporaryDir dir;
+    const QString recording = dir.filePath(QStringLiteral("Scrims 2026-10-20.mkv"));
+    REQUIRE(QMetaObject::invokeMethod(shell.window.get(), "showHome"));
+    spin(400);
+    QQuickItem* screen = shell.item("homeScreen");
+    REQUIRE(screen != nullptr);
+    QQuickItem* zone = visibleItem(shell, QStringLiteral("homeDropZone"));
+    REQUIRE(zone != nullptr);
+    const QPoint at = zone->mapToScene(QPointF(zone->width() / 2, zone->height() / 2)).toPoint();
+    QMimeData mime;
+    mime.setUrls({QUrl::fromLocalFile(recording)});
+    QDragEnterEvent enter(at, Qt::CopyAction, &mime, Qt::NoButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(shell.window.get(), &enter);
+    QDragMoveEvent move(at, Qt::CopyAction, &mime, Qt::NoButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(shell.window.get(), &move);
+    spin(150);
+    QDropEvent dropped(at, Qt::CopyAction, &mime, Qt::NoButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(shell.window.get(), &dropped);
+    REQUIRE(waitFor([&] { return start->recording().value("ok").toBool() && !start->inspecting(); }));
+    spin(200);
+    REQUIRE(screen->property("page").toString() == QStringLiteral("new"));
+
+    const QStringList names{QStringLiteral("Mic"), QStringLiteral("Game"), QStringLiteral("Discord")};
+    const QStringList titles{QStringLiteral("Mic/Aux"), QStringLiteral("Desktop Audio"), QString()};
+    for (int i = 0; i < 3; ++i) {
+        INFO("stream " << i);
+        QQuickItem* field = visibleItem(shell, QStringLiteral("gamingTrackName_%1").arg(i));
+        REQUIRE(field != nullptr);
+        CHECK(field->property("text").toString() == names[i]);
+        // The titles' column (the rows stay aligned): empty where the title is the name already ("Discord").
+        QQuickItem* title = visibleItem(shell, QStringLiteral("gamingStreamTitle_%1").arg(i));
+        REQUIRE(title != nullptr);
+        if (titles[i].isEmpty()) {
+            CHECK(title->property("text").toString().isEmpty());
+        } else {
+            CHECK(title->property("text").toString() == QStringLiteral("“%1”").arg(titles[i]));
+            CHECK(title->property("truncated").toBool() == false);
+        }
+    }
+    CHECK(visibleItem(shell, QStringLiteral("gamingMixHint")) == nullptr);
+    {
+        const QImage image = shell.grab();
+        REQUIRE_FALSE(image.isNull());
+        REQUIRE(image.save(outputDir() + QStringLiteral("/home-new-media-titles.png")));
+    }
+    QQuickItem* page = visibleItem(shell, QStringLiteral("homeNewProjectPage"));
+    REQUIRE(page != nullptr);
+    const QStringList issues = auditAccessibility(page);
+    INFO(issues.join(QLatin1Char('\n')).toStdString());
+    CHECK(issues.isEmpty());
     const QStringList messages = takeMessages();
     INFO(join(messages));
     CHECK(messages.isEmpty());

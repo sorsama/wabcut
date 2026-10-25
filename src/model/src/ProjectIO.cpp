@@ -733,6 +733,9 @@ json sequenceJson(const Sequence& s, const std::function<json(const TrackPtr&)>&
     if (s.colorIndex != 0) { // 0.2 (schema 18): the sequence's label
         out["colorIndex"] = s.colorIndex;
     }
+    if (!s.rippleMarkers) { // 0.4: Ripple Sequence Markers off (on is the default and is not written)
+        out["rippleMarkers"] = false;
+    }
     return out;
 }
 
@@ -1237,7 +1240,8 @@ void migrate16To17(json&) {}
 /// "metadata" (Status and the camera fields among them), bin "search", project "freeform", and media / sequence
 /// "importSource" { project, id } (a copy imported from another project). Nothing to convert: every schema 17 file is
 /// a valid schema 18 file, its streams read as progressive (they were composited so) and its clips without field
-/// options.
+/// options. 0.4 adds sequence "rippleMarkers": false (Ripple Sequence Markers off) the same way, without a bump: an older
+/// build ignores it (it never rippled markers).
 void migrate17To18(json&) {}
 
 void migrate7To8(json& doc) {
@@ -2249,6 +2253,7 @@ SequencePtr readSequence(const Reader& r, const ProjectState& state) {
     named("audioDisplay", [](const std::string& t) { return audioTimeDisplayFromString(t); }, s->audioDisplay);
     s->previewFormat = r.string("previewFormat");
     s->colorIndex = r.int32In("colorIndex", 0, 0, 15); // 0.2 (schema 18)
+    s->rippleMarkers = r.boolean("rippleMarkers", true); // 0.4: saved only when off
     if (r.has("importSource")) { // P.3 (schema 18)
         s->importSource = readImportSource(r.child("importSource"));
     }

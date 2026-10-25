@@ -1,0 +1,334 @@
+{
+  "format": "wabcut-graphic-template",
+  "template": {
+    "description": "Full-frame chapter card: a small chapter number over the chapter title.",
+    "duration": 1016064000000,
+    "fields": [
+      {
+        "id": "number",
+        "kind": "text",
+        "label": "Chapter number",
+        "layer": 3,
+        "property": "text",
+        "value": "CHAPTER 1"
+      },
+      {
+        "id": "title",
+        "kind": "text",
+        "label": "Title",
+        "layer": 5,
+        "property": "text",
+        "value": "Chapter title"
+      },
+      {
+        "id": "accent",
+        "kind": "color",
+        "label": "Accent colour",
+        "layer": 4,
+        "property": "fill",
+        "value": {
+          "brand": "Accent",
+          "rgba": [
+            0.93,
+            0.92,
+            0.88,
+            1.0
+          ]
+        }
+      },
+      {
+        "id": "backgroundColor",
+        "kind": "color",
+        "label": "Card colour",
+        "layer": 1,
+        "property": "fill",
+        "value": {
+          "brand": "Primary",
+          "rgba": [
+            0.07,
+            0.07,
+            0.08,
+            1.0
+          ]
+        }
+      },
+      {
+        "id": "length",
+        "kind": "duration",
+        "label": "Length",
+        "property": "clip",
+        "value": 1016064000000
+      }
+    ],
+    "graphic": {
+      "height": 1080,
+      "layers": [
+        {
+          "id": 1,
+          "kind": "shape",
+          "name": "Card",
+          "shape": {
+            "fill": {
+              "color": {
+                "brand": "Primary",
+                "rgba": [
+                  0.07,
+                  0.07,
+                  0.08,
+                  1.0
+                ]
+              },
+              "type": "solid"
+            },
+            "height": 1080.0,
+            "type": "rectangle",
+            "width": 1920.0
+          },
+          "transform": {
+            "opacity": {
+              "keys": [
+                {
+                  "t": 0,
+                  "v": 0.0
+                },
+                {
+                  "i": "easeIn",
+                  "t": 101606400000,
+                  "v": 100.0
+                },
+                {
+                  "i": "easeOut",
+                  "t": 889056000000,
+                  "v": 100.0
+                },
+                {
+                  "t": 1016064000000,
+                  "v": 0.0
+                }
+              ]
+            },
+            "x": 960.0,
+            "y": 540.0
+          }
+        },
+        {
+          "children": [
+            {
+              "id": 3,
+              "kind": "text",
+              "name": "Chapter number",
+              "text": {
+                "align": "center",
+                "runs": [
+                  {
+                    "brandFont": "heading",
+                    "fill": [
+                      0.96,
+                      0.96,
+                      0.95,
+                      0.8
+                    ],
+                    "font": "IBM Plex Sans Thai",
+                    "size": 34.0,
+                    "text": "CHAPTER 1",
+                    "tracking": 300.0,
+                    "weight": 600
+                  }
+                ]
+              },
+              "transform": {
+                "opacity": {
+                  "keys": [
+                    {
+                      "t": 50803200000,
+                      "v": 0.0
+                    },
+                    {
+                      "i": "easeIn",
+                      "t": 114307200000,
+                      "v": 100.0
+                    }
+                  ]
+                },
+                "y": {
+                  "keys": [
+                    {
+                      "t": 50803200000,
+                      "v": 20.0
+                    },
+                    {
+                      "i": "easeIn",
+                      "t": 127008000000,
+                      "v": 0.0
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "id": 4,
+              "kind": "shape",
+              "masks": [
+                {
+                  "enabled": true,
+                  "id": 1,
+                  "inverted": false,
+                  "mode": "add",
+                  "name": "Wipe",
+                  "params": {
+                    "center.x": {
+                      "keys": [
+                        {
+                          "t": 76204800000,
+                          "v": 0.025
+                        },
+                        {
+                          "i": "easeIn",
+                          "t": 152409600000,
+                          "v": 0.0
+                        }
+                      ]
+                    },
+                    "center.y": {
+                      "value": 0.0
+                    },
+                    "size.x": {
+                      "keys": [
+                        {
+                          "t": 76204800000,
+                          "v": 0.0
+                        },
+                        {
+                          "i": "easeIn",
+                          "t": 152409600000,
+                          "v": 0.05
+                        }
+                      ]
+                    },
+                    "size.y": {
+                      "value": 0.005555555555555556
+                    }
+                  },
+                  "shape": "rectangle"
+                }
+              ],
+              "name": "Accent rule",
+              "shape": {
+                "fill": {
+                  "color": {
+                    "brand": "Accent",
+                    "rgba": [
+                      0.93,
+                      0.92,
+                      0.88,
+                      1.0
+                    ]
+                  },
+                  "type": "solid"
+                },
+                "height": 6.0,
+                "type": "rectangle",
+                "width": 96.0
+              },
+              "transform": {
+                "y": 62.8
+              }
+            },
+            {
+              "id": 5,
+              "kind": "text",
+              "name": "Chapter title",
+              "text": {
+                "align": "center",
+                "boxWidth": 1500.0,
+                "runs": [
+                  {
+                    "brandFont": "heading",
+                    "fill": [
+                      0.96,
+                      0.96,
+                      0.95,
+                      1.0
+                    ],
+                    "font": "IBM Plex Sans Thai",
+                    "size": 96.0,
+                    "text": "Chapter title",
+                    "weight": 600
+                  }
+                ]
+              },
+              "transform": {
+                "opacity": {
+                  "keys": [
+                    {
+                      "t": 88905600000,
+                      "v": 0.0
+                    },
+                    {
+                      "i": "easeIn",
+                      "t": 177811200000,
+                      "v": 100.0
+                    }
+                  ]
+                },
+                "y": {
+                  "keys": [
+                    {
+                      "t": 88905600000,
+                      "v": 122.8
+                    },
+                    {
+                      "i": "easeIn",
+                      "t": 190512000000,
+                      "v": 92.8
+                    }
+                  ]
+                }
+              }
+            }
+          ],
+          "id": 2,
+          "kind": "group",
+          "name": "Chapter",
+          "transform": {
+            "opacity": {
+              "keys": [
+                {
+                  "t": 0,
+                  "v": 0.0
+                },
+                {
+                  "i": "easeIn",
+                  "t": 63504000000,
+                  "v": 100.0
+                },
+                {
+                  "i": "easeOut",
+                  "t": 914457600000,
+                  "v": 100.0
+                },
+                {
+                  "t": 1016064000000,
+                  "v": 0.0
+                }
+              ]
+            },
+            "x": 960.0,
+            "y": 440.0
+          }
+        }
+      ],
+      "name": "Chapter card",
+      "responsive": {
+        "duration": 1016064000000,
+        "intro": 203212800000,
+        "outro": 152409600000
+      },
+      "width": 1920
+    },
+    "id": "wabcut.essay.chapterCard",
+    "name": "Chapter card",
+    "version": 1
+  },
+  "version": 1
+}

@@ -261,6 +261,21 @@ TEST_CASE("Agent preview: cuts in base time, new content and new markers; shifts
     CHECK(replaced.added == std::vector<Range>{Range{before.track("V1"), f(5), f(10)}});
 }
 
+TEST_CASE("Agent preview: sequence markers a ripple moved are not new markers", "[ai][agent][verify]") {
+    // 0.4: Ripple Sequence Markers (on by default) moves the markers after a cut; only the added one is new.
+    Checked c;
+    c.h.ok("marker.add", Json{{"time", tc(25)}, {"name", "Outro"}});
+    c.h.ok("marker.add", Json{{"time", tc(18)}, {"name", "Outro"}});
+    c.before = c.h.state();
+    c.h.ok("timeline.removeSilences", ranges(13, 15)); // both Outro markers move back 2 frames
+    c.h.ok("marker.add", Json{{"time", tc(5)}, {"name", "Topic"}});
+    const auto p = stagedPreview(*c.before, *c.h.state(), c.h.tl.seq);
+    CHECK(p.markers == std::vector<Ticks>{f(5)});
+    // A second marker with the name of a moved one is still new.
+    c.h.ok("marker.add", Json{{"time", tc(2)}, {"name", "Outro"}});
+    CHECK(stagedPreview(*c.before, *c.h.state(), c.h.tl.seq).markers == std::vector<Ticks>{f(2), f(5)});
+}
+
 TEST_CASE("Agent verification: overlapping the scope is no licence to change a whole clip (review wave 3, P2-9)",
           "[ai][agent][verify][security]") {
     // One 20-frame clip; the request names frames 5-6 only.

@@ -323,6 +323,7 @@ std::expected<Created<SequenceId>, Error> makeSubsequence(const ProjectState& st
         seq->videoDisplay = parent->videoDisplay;
         seq->audioDisplay = parent->audioDisplay;
         seq->masterFormat = parent->masterFormat;
+        seq->rippleMarkers = parent->rippleMarkers; // 0.4: Ripple Sequence Markers
         for (const TrackKind kind : {TrackKind::Video, TrackKind::Audio}) {
             auto& mine = kind == TrackKind::Video ? seq->videoTracks : seq->audioTracks;
             const auto& theirs = parent->tracks(kind);

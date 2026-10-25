@@ -862,3 +862,110 @@ TEST_CASE("Callouts panel: Browse shows the Gaming templates with thumbnails off
     INFO(join(messages));
     CHECK(messages.isEmpty());
 }
+
+// ---- 0.4: essay and documentary templates --------------------------------------------------------------------------------
+
+TEST_CASE("Callouts Browse: the Essay and documentary group lists the five essay templates and search finds the quote; "
+          "screenshot",
+          "[app][graphics][qml][screenshot]") {
+    A11yScope a11y; // before the shell, so the controls register their names
+    resetSettings();
+    clearMessages();
+    Shell shell;
+    REQUIRE(shell.window);
+    shell.resize(kShotWidth, kShotHeight);
+    shell.theme->setProperty("reduceMotion", true);
+    QTemporaryDir library;
+    REQUIRE(library.isValid());
+    auto* controller = shell.engine.singletonInstance<ProjectController*>("Wabcut", "ProjectController");
+    auto* graphics = shell.engine.singletonInstance<GraphicsBridge*>("Wabcut", "Graphics");
+    REQUIRE(controller);
+    REQUIRE(graphics);
+    graphics->setUserLibrary(pathOf(library));
+    graphics->setRegistry(nullptr); // the app's catalog: the built-in gaming and essay templates
+    Timeline tl(kPicture);
+    controller->resetProject(tl.state, tl.seq);
+
+    const auto panel = makePanel(shell, QRectF(40, 40, 460, 900));
+    QQuickItem* browse = findNamed(panel.get(), QStringLiteral("graphicsBrowsePage"));
+    REQUIRE(browse);
+    REQUIRE(waitFor([&] { return browse->isVisible(); }, 3000));
+    QQuickItem* group = findNamed(panel.get(), QStringLiteral("calloutsEssay"));
+    REQUIRE(group);
+    CHECK(group->isVisible());
+    QQuickItem* essays = findNamed(panel.get(), QStringLiteral("graphicsEssayTemplates"));
+    REQUIRE(essays);
+    const std::vector<std::pair<std::string, QString>> names{{"wabcut.essay.chapterCard", QStringLiteral("Chapter card")},
+                                                             {"wabcut.essay.location", QStringLiteral("Location and date")},
+                                                             {"wabcut.essay.nameTitle", QStringLiteral("Name and title")},
+                                                             {"wabcut.essay.quote", QStringLiteral("Quote")},
+                                                             {"wabcut.essay.source", QStringLiteral("Source")}};
+    for (const auto& [id, name] : names) {
+        INFO(id);
+        QQuickItem* card = findNamed(essays, QStringLiteral("graphicTemplate_") + builtinKey(id));
+        REQUIRE(card);
+        CHECK(mapOf(card->property("modelData")).value(QStringLiteral("name")).toString() == name);
+        CHECK(mapOf(card->property("modelData")).value(QStringLiteral("category")).toString() == QStringLiteral("essay"));
+        CHECK_FALSE(findNamed(findNamed(panel.get(), QStringLiteral("graphicsGamingTemplates")),
+                              QStringLiteral("graphicTemplate_") + builtinKey(id)));
+    }
+    QQuickItem* more = findNamed(panel.get(), QStringLiteral("calloutsMoreBuiltin"));
+    REQUIRE(more);
+    CHECK_FALSE(more->isVisible()); // every built-in has its group
+    QQuickItem* search = findNamed(panel.get(), QStringLiteral("graphicsSearch"));
+    REQUIRE(search);
+    CHECK(search->property("placeholderText").toString() == QStringLiteral("Search graphics"));
+
+    // The essay group in view, its thumbnails drawn; a screenshot of the panel.
+    REQUIRE_FALSE(shell.grab().isNull()); // a frame lays the cards out
+    QQuickItem* flick = group->parentItem();
+    while (flick && !flick->inherits("QQuickFlickable"))
+        flick = flick->parentItem();
+    REQUIRE(flick);
+    QQuickItem* content = flick->property("contentItem").value<QQuickItem*>();
+    REQUIRE(content);
+    flick->setProperty("contentY", std::max(0.0, group->mapToItem(content, QPointF(0, 0)).y() - 8.0));
+    QList<QQuickItem*> images;
+    findAllNamed(essays, QStringLiteral("graphicTemplateImage"), images);
+    REQUIRE(images.size() == 5);
+    REQUIRE(waitFor(
+        [&] {
+            return std::all_of(images.begin(), images.end(), [](QQuickItem* image) { return image->property("status").toInt() == 1; });
+        },
+        20000)); // Image.Ready
+    const QStringList issues = auditAccessibility(panel.get());
+    INFO(issues.join(QLatin1Char('\n')).toStdString());
+    CHECK(issues.isEmpty());
+    spin(50);
+    const QImage shot = shell.grab();
+    REQUIRE_FALSE(shot.isNull());
+    saveCrop(shot, panel.get(), QStringLiteral("graphics-essay-templates.png"));
+
+    // Search covers names, descriptions and field labels: "quote" finds the quote card alone.
+    search->setProperty("text", QStringLiteral("quote"));
+    spin(50);
+    QQuickItem* quote = findNamed(essays, QStringLiteral("graphicTemplate_") + builtinKey("wabcut.essay.quote"));
+    REQUIRE(quote);
+    CHECK_FALSE(findNamed(essays, QStringLiteral("graphicTemplate_") + builtinKey("wabcut.essay.source")));
+    CHECK_FALSE(findNamed(essays, QStringLiteral("graphicTemplate_") + builtinKey("wabcut.essay.nameTitle")));
+    QQuickItem* gamingEmpty = findNamed(panel.get(), QStringLiteral("graphicsGamingTemplatesEmpty"));
+    REQUIRE(gamingEmpty);
+    CHECK(gamingEmpty->isVisible());
+
+    // Enter adds it at the playhead in one undo step (the existing flow).
+    controller->setPlayhead(seconds(2));
+    const auto before = controller->session().undoCount();
+    REQUIRE(pressWithKey(shell.window.get(), quote, Qt::Key_Return));
+    CHECK(controller->session().undoCount() == before + 1);
+    const ClipId clip = controller->primaryClip();
+    REQUIRE(clip.isValid());
+    const Graphic* g = controller->snapshot()->findSequence(tl.seq)->findClip(clip)->clip().graphic();
+    REQUIRE(g);
+    REQUIRE(g->instance);
+    CHECK(g->instance->templateId == "wabcut.essay.quote");
+
+    graphics->setRegistry(nullptr);
+    const QStringList messages = takeMessages();
+    INFO(join(messages));
+    CHECK(messages.isEmpty());
+}

@@ -19,6 +19,9 @@ import QtQuick.Controls.Basic
 //     menu (TrackHeaderMenu: Rename..., Add Track, Add Tracks..., Delete Track, Delete Empty Tracks, Sync Lock, the
 //     channel format). A custom name shows beside the chip where it fits (below it on a tall row); double-click the
 //     header or Rename... edits it in place (Enter keeps it, Esc cancels; empty = back to "Video n").
+//   * 0.4: the toggles show their state as the mixers do: the speaker is crossed only while the track is muted
+//     ("Mute A1" / "Unmute A1"); mute amber, solo green, record arm red; objectNames trackOutput_/trackMute_/
+//     trackSolo_/trackLock_ + the short name.
 Item {
     id: root
 
@@ -440,6 +443,7 @@ Item {
         visible: !root.renaming
 
         IconButton {
+            objectName: "trackOutput_" + root.shortName
             visible: !root.audio
             compact: true
             iconName: root.trackEnabled ? "eye" : "eye-off"
@@ -449,26 +453,30 @@ Item {
             Accessible.checked: root.trackEnabled
             onClicked: ProjectController.setTrackFlag(root.trackId, "enabled", !root.trackEnabled)
         }
+        // 0.4: the toggles look like their state and use the mixers' colours (MixerStrip, ClipMixerStrip): a plain
+        // speaker while the track plays, the crossed one only when muted; mute amber, solo green, clipInk glyphs.
         IconButton {
+            objectName: "trackMute_" + root.shortName
             visible: root.audio
             compact: true
             checkable: true
             checked: root.muted
-            iconName: "volume-x"
+            iconName: root.muted ? "volume-x" : "volume-2"
             iconSize: Theme.iconSm
-            checkedColor: Theme.danger
-            checkedIconColor: Theme.scrimText
-            tooltip: qsTr("Mute %1").arg(root.shortName)
+            checkedColor: Theme.warning
+            checkedIconColor: Theme.clipInk
+            tooltip: root.muted ? qsTr("Unmute %1").arg(root.shortName) : qsTr("Mute %1").arg(root.shortName)
             onToggled: ProjectController.setTrackFlag(root.trackId, "muted", checked)
         }
         IconButton {
+            objectName: "trackSolo_" + root.shortName
             visible: root.audio
             compact: true
             checkable: true
             checked: root.solo
             iconName: "headphones"
             iconSize: Theme.iconSm
-            checkedColor: Theme.warning
+            checkedColor: Theme.success
             checkedIconColor: Theme.clipInk
             tooltip: qsTr("Solo %1").arg(root.shortName)
             onToggled: ProjectController.setTrackFlag(root.trackId, "solo", checked)
@@ -481,6 +489,7 @@ Item {
             trackLabel: root.shortName
         }
         IconButton {
+            objectName: "trackLock_" + root.shortName
             compact: true
             checkable: true
             checked: root.locked

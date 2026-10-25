@@ -265,6 +265,10 @@ struct Sequence {
     /// 0.2 (schema 18): the sequence's label colour (Premiere's Label on a sequence: the Project panel and, with Show
     /// Sequence Label Color, its timeline tab), an index into the 16 label colours (0..15). Saved only when not 0.
     std::int32_t colorIndex = 0;
+    /// 0.4: Markers > Ripple Sequence Markers (Premiere's switch, kept per sequence here): while on, the sequence's
+    /// markers follow every ripple edit (insert, extract, ripple delete, ripple trims, speed changes with ripple) in the
+    /// same undo step, through SequenceEditor's caption hooks. Saved only when off (an optional field: no schema bump).
+    bool rippleMarkers = true;
     /// V1..Vn, bottom to top.
     std::vector<TrackPtr> videoTracks;
     /// A1..An.

@@ -12,8 +12,10 @@ import QtQuick.Controls.Basic
 // - keyboard: KeymapDispatcher (scope "timeline"); Main.qml routes its commands to runCommand() for the
 //   view (zoom, tools, snap) and to ProjectController for the playhead, selection, marks and history
 // - tools (M5b, TimelineView/TimelineEditing): V select/move (edge drag trims, Ctrl/Cmd ripple-trims; body drag
-//   moves, Ctrl/Cmd inserts, Alt ignores links), A/Shift+A track select, B ripple, N roll, Y slip, U slide, C razor;
-//   drags show a live ghost preview and a readout, snap (S) with an accent line, and commit on release (Esc cancels)
+//   moves; 0.4, what is held at the drop decides, as Premiere: Ctrl/Cmd inserts, Alt copies, Ctrl+Alt (⌘⌥)
+//   rearranges, Shift during the drag keeps the time; Alt at the press ignores links), A/Shift+A track select, B ripple,
+//   N roll, Y slip, U slide, C razor; drags show a live ghost preview and a readout (trims: the new duration), snap (S)
+//   with an accent line, and commit on release (Esc cancels)
 // - 0.1.1, Premiere's view tools: H hand (drag scrolls the timeline, nothing is edited), Z zoom (click zooms in at the
 //   click, Alt+click zooms out); both are a panel overlay over the lanes, so the view sees no press while they are on
 // - right click on a clip: the clip context menu (cut/copy/paste, ripple delete, enable, link, rename, label)
@@ -31,6 +33,12 @@ import QtQuick.Controls.Basic
 //   transition (TransitionContextMenu: Set Duration..., alignment, Replace with Default, Set as Default, Clear) and in
 //   a selected gap (GapContextMenu: Ripple Delete); Delete on a selected gap closes it, a refusal shows as a toast
 //   (messageRequested)
+// - 0.4 (stream A): resting the pointer on a clip shows its facts in a tooltip (TimelineView.clipHoverInfo: start, end,
+//   duration, speed, source; Settings > Timeline & editing > Clip tooltips), hidden while pressing, dragging, scrolling,
+//   zooming, playing, with the hand or zoom tool and while a timeline menu is open; \ fits the sequence and goes back
+//   on a second press (toggleZoomToSequence); playback follows the playhead by Preferences.timelinePlaybackScroll
+//   (followPlayhead, from Main). Stream B's keys: Page Up / Page Down page the view (Show Previous / Next Screen) and
+//   the numpad's digits, +, - and . type a timecode into the corner (TimecodeEntry.openFromKeypad).
 Panel {
     id: root
 
@@ -244,8 +252,12 @@ Panel {
         case "timeline.previousSequenceTab": SequenceTabs.cycle(-1); return true
         case "sequence.zoomIn": root.zoomBy(0.1); return true
         case "sequence.zoomOut": root.zoomBy(-0.1); return true
-        case "sequence.zoomToSequence": lanes.view.zoomAt(0, 0); return true
+        // 0.4: \ fits the sequence; pressed again while the view is still at that fit, it goes back (Premiere).
+        case "sequence.zoomToSequence": lanes.view.toggleZoomToSequence(); return true
         case "sequence.snap": Preferences.timelineSnapping = !root.snapping; return true
+        // 0.4 (stream B): Premiere's Show Next / Previous Screen (Page Down / Page Up): the view pages, the playhead stays.
+        case "timeline.showNextScreen": lanes.view.scrollBy(lanes.view.width, 0); return true
+        case "timeline.showPreviousScreen": lanes.view.scrollBy(-lanes.view.width, 0); return true
         // UX rework (stream T): Delete, Backspace and Ripple Delete close a selected gap when no clip is selected; when
         // the model refuses (another sync-locked track has clips in that time, a locked track) the panel says why.
         // A gap is selected by any plain click in empty lane space, so Delete and Shift+Delete (application keys) close
@@ -288,6 +300,32 @@ Panel {
     // Keeps the playhead in view after keyboard navigation.
     function revealPlayhead() {
         lanes.view.revealPlayhead()
+    }
+    /// 0.4: during playback (Main): "page" turns a screen when the playhead runs off it, "smooth" keeps the playhead in
+    /// the middle, "none" leaves the view alone (Premiere's Timeline Playback Auto-Scrolling); `reverse` while it plays
+    /// backwards (J), which mirrors page and smooth.
+    function followPlayhead(mode: string, reverse: bool) {
+        lanes.view.followPlayhead(mode, reverse)
+    }
+
+    /// 0.4: the clip tooltip may show: the setting is on and nothing else is going on in the lanes.
+    readonly property bool clipTipAllowed: Preferences.showClipTooltips && !lanes.view.gestureActive
+                                           && !lanes.view.marqueeActive && !lanes.view.playing && !root.viewTool
+                                           && !clipMenu.opened && !transitionMenu.opened && !gapMenu.opened
+                                           && !ruler.menuOpen && !root.listMode
+    onClipTipAllowedChanged: {
+        if (!clipTipAllowed)
+            root.hideClipTip()
+    }
+    function hideClipTip() {
+        clipTipTimer.stop()
+        clipTip.close()
+    }
+
+    // 0.4 (stream B): numpad digits, +, - and . open the playhead timecode for typing (TimecodeEntry.openFromKeypad).
+    Keys.onPressed: event => {
+        if (cornerTimecode.openFromKeypad(event))
+            event.accepted = true
     }
 
     title: qsTr("Tracks")
@@ -904,10 +942,64 @@ Panel {
                 }
             }
 
+            // 0.4: the clip tooltip. Resting the pointer on a clip for Theme.tooltipDelay shows its name, start, end,
+            // duration, speed and source (TimelineView.clipHoverInfo) below-right of the pointer; another clip starts
+            // the wait again. root.clipTipAllowed and the view's signals (below) hide it.
+            Timer {
+                id: clipTipTimer
+                interval: Theme.tooltipDelay
+                onTriggered: clipTip.showNow()
+            }
+            Tooltip {
+                id: clipTip
+                objectName: "clipHoverTooltip"
+                parent: lanesArea
+                delay: 0
+                // Several lines: a rounded card rather than the one-line pill.
+                background: Rectangle {
+                    radius: Theme.radiusField
+                    color: Theme.textPrimary
+                }
+
+                function showNow() {
+                    const key = lanes.view.hoveredClip
+                    if (!root.clipTipAllowed || key === "")
+                        return
+                    const info = lanes.view.clipHoverInfo(key)
+                    if ((info.text ?? "") === "")
+                        return
+                    clipTip.text = info.text
+                    const p = lanes.view.hoverPosition()
+                    // Below-right of the pointer; above it when there is no room below (the bottom track).
+                    const below = p.y + Theme.space(4)
+                    clipTip.x = Math.round(Math.max(0, Math.min(p.x + Theme.space(3), lanesArea.width - clipTip.implicitWidth)))
+                    clipTip.y = Math.round(below + clipTip.implicitHeight <= lanesArea.height || p.y < clipTip.implicitHeight
+                                           ? below : p.y - Theme.space(2) - clipTip.implicitHeight)
+                    clipTip.open()
+                }
+            }
+
             Connections {
                 target: lanes.view
                 function onContextMenuRequested(clipId, x, y) {
                     clipMenu.openAt(lanes, clipId, Qt.point(x, y))
+                }
+                // 0.4, the clip tooltip: a new clip under the pointer starts the wait again; a press, a drag, a scroll
+                // or zoom and an edit hide it.
+                function onHoveredClipChanged() {
+                    root.hideClipTip()
+                    if (root.clipTipAllowed && lanes.view.hoveredClip !== "")
+                        clipTipTimer.restart()
+                }
+                function onPressed() {
+                    root.hideClipTip()
+                }
+                function onViewChanged() {
+                    root.hideClipTip()
+                }
+                function onGestureChanged() {
+                    if (lanes.view.gestureActive)
+                        root.hideClipTip()
                 }
                 // M5l: a double-click on a nested or multi-camera clip opens its sequence in a tab.
                 function onClipDoubleClicked(clipId) {

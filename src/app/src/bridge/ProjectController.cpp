@@ -927,6 +927,32 @@ QString ProjectController::markOutText() const {
     return markOut() ? formatTimecode(lastMarkedFrame()) : QString();
 }
 
+// 0.4: the In to Out length. The Out mark is exclusive (the end of the last marked frame), so the length counts that
+// frame, as Premiere's In/Out duration does.
+QString ProjectController::markDurationText() const {
+    const auto in = markIn();
+    const auto out = markOut();
+    if (!in || !out || *out <= *in)
+        return {};
+    return formatTimecode(*out - *in);
+}
+
+bool ProjectController::rippleSequenceMarkers() const {
+    const SequencePtr seq = currentSequence();
+    return seq ? seq->rippleMarkers : true;
+}
+
+void ProjectController::setRippleSequenceMarkers(bool on) {
+    const SequencePtr seq = currentSequence();
+    if (!seq || seq->rippleMarkers == on)
+        return; // no empty undo step
+    const SequenceId id = m_sequence;
+    edit::SequenceSettingsChange change;
+    change.rippleMarkers = on;
+    applyEdit(QT_TRANSLATE_NOOP("wabcut::app::ProjectController", "Ripple Sequence Markers"),
+              [&](const ProjectState& state) { return edit::setSequenceSettings(state, id, change); });
+}
+
 void ProjectController::markInAtPlayhead() {
     const SequenceId seq = m_sequence;
     const Ticks at = m_playhead;
@@ -1027,6 +1053,9 @@ const QHash<QString, CommandAction>& commandActions() {
         {QStringLiteral("marker.clearInAndOut"), [](ProjectController& c) { c.clearMarks(true, true); }},
         {QStringLiteral("marker.goToIn"), [](ProjectController& c) { c.goToMarkIn(); }},
         {QStringLiteral("marker.goToOut"), [](ProjectController& c) { c.goToMarkOut(); }},
+        // 0.4: Markers > Ripple Sequence Markers
+        {QStringLiteral("marker.toggleRipple"),
+         [](ProjectController& c) { c.setRippleSequenceMarkers(!c.rippleSequenceMarkers()); }},
         // Editing (M5b)
         // Delete with a transition selected removes the transition (Premiere).
         {QStringLiteral("edit.clear"), [](ProjectController& c) { if (!c.deleteSelectedTransition()) c.deleteSelection(); }},
@@ -1052,12 +1081,20 @@ const QHash<QString, CommandAction>& commandActions() {
         {QStringLiteral("timeline.selectPreviousClip"), [](ProjectController& c) { c.selectNextClip(-1); }},
         {QStringLiteral("edit.copy"), [](ProjectController& c) { c.copySelection(); }},
         {QStringLiteral("edit.cut"), [](ProjectController& c) { c.cutSelection(); }},
-        {QStringLiteral("edit.paste"), [](ProjectController& c) { c.paste(); }},
+        // 0.4 (stream C): with effects copied in Effect Controls, Paste pastes those onto the selected clips.
+        {QStringLiteral("edit.paste"), [](ProjectController& c) {
+             if (!c.effectControls() || !c.effectControls()->pasteEffectsIfPending())
+                 c.paste();
+         }},
         {QStringLiteral("edit.pasteInsert"), [](ProjectController& c) { c.pasteInsert(); }},
         {QStringLiteral("timeline.nudgeClipLeft"), [](ProjectController& c) { c.nudgeSelection(-1); }},
         {QStringLiteral("timeline.nudgeClipRight"), [](ProjectController& c) { c.nudgeSelection(1); }},
         {QStringLiteral("timeline.nudgeClipLeftFive"), [](ProjectController& c) { c.nudgeSelection(-5); }},
         {QStringLiteral("timeline.nudgeClipRightFive"), [](ProjectController& c) { c.nudgeSelection(5); }},
+        // 0.4: Nudge Clip Selection Up / Down (Alt+Up / Alt+Down). Main.qml calls nudgeSelectionTrack itself to toast
+        // the reason; from here (the palette) the reason is in lastError.
+        {QStringLiteral("timeline.nudgeClipUp"), [](ProjectController& c) { c.nudgeSelectionTrack(1); }},
+        {QStringLiteral("timeline.nudgeClipDown"), [](ProjectController& c) { c.nudgeSelectionTrack(-1); }},
         {QStringLiteral("timeline.slideClipLeft"), [](ProjectController& c) { c.slideSelection(-1); }},
         {QStringLiteral("timeline.slideClipRight"), [](ProjectController& c) { c.slideSelection(1); }},
         {QStringLiteral("timeline.slideClipLeftFive"), [](ProjectController& c) { c.slideSelection(-5); }},

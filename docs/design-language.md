@@ -122,7 +122,8 @@ Transitions are white with a black diagonal.
 - **Monitors:** a black well (radius 12), the timecode in an accent pill, round transport buttons around a white play
   button, a pill time bar with the In/Out range in accent and a white playhead.
 - **Timeline:** track headers are pills (the id chip in accent when targeted), the tool palette is a segmented pill
-  group, the ruler's playhead is a white knob.
+  group, the ruler's playhead is a white knob. Track toggles, headers and mixers alike: mute amber (warning), solo green
+  (success), record red (danger), clipInk glyphs; the crossed speaker only when muted.
 - **Toasts:** a `section` card at the bottom right with a soft shadow, a dot (the accent; `warning` or `danger` for a
   problem) and a DemiBold 13 px message that wraps to three lines. One thing to do is one compact accent pill ("Save
   As…", "Show in Explorer", "Undo") with a round close button after it. Notes leave after 4 s, problems after 7 s, a

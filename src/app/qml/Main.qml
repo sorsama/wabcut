@@ -220,7 +220,74 @@ Window {
         }
         const tone = color === undefined ? "info" : Qt.colorEqual(color, Theme.danger) ? "danger"
                                                   : Qt.colorEqual(color, Theme.warning) ? "warning" : "info"
-        home.showMessageWithAction(message, tone, options)
+        // 0.4: Home's messages go into the Background tasks popover's Recent messages too (the toast logs its own).
+        const id = MessageLog.addKeyed(message, MessageLog.toneOf(color), options?.actionText ?? "",
+                                       options?.action ?? null, String(options?.replaceKey ?? ""))
+        // 0.4: as on the toast, an error on Home's strip is not replaced by a later message that is not an error: that
+        // one waits and shows when the error is closed (its × or its action).
+        if (window.homeShowsError() && tone !== "danger") {
+            window.waitOnHome({ message: message, tone: tone, options: options })
+            return
+        }
+        window.putOnHome(message, tone, options, tone === "danger" ? id : 0)
+    }
+    // 0.4: Home's strip shows one message. `homeErrorId` / `homeErrorText`: the error notify() put there (its MessageLog
+    // id) until it is closed, replaced or Home closes. One that a later error replaced, or that is still there when Home
+    // closes (nobody closed it), counts as unseen - the Background tasks pill says so - as an error toast that leaves on
+    // its time does. `homePending`: the messages waiting behind it (at most 5; dropped when Home closes, they are in
+    // Recent messages).
+    property int homeErrorId: 0
+    property string homeErrorText: ""
+    property var homePending: []
+    function homeShowsError(): bool {
+        return home.opened && home.message !== "" && home.messageTone === "danger"
+    }
+    function putOnHome(message: string, tone: string, options: var, errorId: int) {
+        home.showMessageWithAction(message, tone, options) // a replaced error: homeConnections.onMessageChanged
+        window.homeErrorId = errorId
+        window.homeErrorText = errorId > 0 ? message : ""
+    }
+    function waitOnHome(item: var) {
+        const old = window.homePending
+        const list = []
+        for (let i = 0; i < old.length; ++i)
+            list.push(old[i])
+        if (list.length >= 5)
+            list.splice(0, 1)
+        list.push(item)
+        window.homePending = list
+    }
+    Connections {
+        id: homeConnections
+        target: home
+        function onMessageChanged() {
+            // The error notify() put there left the strip: closed (seen), or replaced by another message (unseen).
+            if (window.homeErrorId > 0 && home.message !== window.homeErrorText) {
+                if (home.message !== "")
+                    MessageLog.missed(window.homeErrorId)
+                window.homeErrorId = 0
+                window.homeErrorText = ""
+            }
+            // The strip is free: the oldest waiting message shows.
+            if (home.message === "" && home.opened && window.homePending.length > 0) {
+                const old = window.homePending
+                const head = old[0]
+                const rest = []
+                for (let i = 1; i < old.length; ++i)
+                    rest.push(old[i])
+                window.homePending = rest
+                window.putOnHome(head.message, head.tone, head.options, 0)
+            }
+        }
+        function onOpenedChanged() {
+            if (home.opened)
+                return
+            if (window.homeErrorId > 0 && home.message === window.homeErrorText)
+                MessageLog.missed(window.homeErrorId)
+            window.homeErrorId = 0
+            window.homeErrorText = ""
+            window.homePending = []
+        }
     }
     // UX rework: Save failed (`then`: what was to follow): say why and offer Save As….
     function saveFailed(then: var) {
@@ -423,6 +490,10 @@ Window {
     function timelineHasFocus() {
         return window.activeFocusItem !== null && KeymapDispatcher.scopeAt(window.activeFocusItem) === "timeline"
     }
+    // 0.4 (C): Effect Controls' scope: its selected effects take Copy / Cut / Clear / Select All / Deselect All.
+    function effectControlsHasFocus() {
+        return window.activeFocusItem !== null && KeymapDispatcher.scopeAt(window.activeFocusItem) === "effectControls"
+    }
     // Insert / Overwrite from the Source Monitor. A four-point edit whose ranges differ asks how to fit, unless
     // "Always use this choice" was ticked (Preferences.fitClipChoice).
     function sourceEdit(insert, fit) {
@@ -437,6 +508,11 @@ Window {
         if (commandId.startsWith("ext:"))
             return // Extensions runs these (C.12: KeymapDispatcher.commandTriggered)
         if (window.sourceHasFocus() && SourceMonitor.runCommand(commandId))
+            return
+        // 0.4 (C): Effect Controls' selected effects: Remove Selected Effect (Backspace, the palette); Copy / Cut / Clear /
+        // Select All / Deselect All while Effect Controls has the focus.
+        if ((commandId.startsWith("effectControls.") || window.effectControlsHasFocus())
+                && ProjectController.effectControls.runCommand(commandId))
             return
         // P.2 (E6): the monitors' keys (Loop, Play In to Out, Nudge Selected Object, ...): the Monitors bridge.
         if (Monitors.runCommand(commandId, window.sourceHasFocus()))
@@ -535,6 +611,10 @@ Window {
         case "window.effectControls":
             window.focusPanel("effectControls")
             return
+        // 0.4 (E): the top bar's Background tasks popover (also while its pill is hidden).
+        case "window.backgroundTasks":
+            topBar.openActivity()
+            return
         // UX rework (stream S): Premiere's Window > Maximize Frame (Shift+`): the active group (else the one with
         // keyboard focus) takes the whole work area; again restores. ` alone: the group under the pointer (a Shortcut).
         case "window.maximizeFrame":
@@ -584,6 +664,35 @@ Window {
         case "transport.playStop":
             Playback.togglePlay()
             return
+        // 0.4: Premiere's Play Around (Shift+K): an edit point selected = Trim's play-around; else around the playhead
+        // of the focused monitor, by Settings > Timeline's pre-roll and post-roll, once.
+        case "transport.playAround":
+            if (Trim.active)
+                Trim.playAround()
+            else if (window.sourceHasFocus())
+                SourceMonitor.playAround(Preferences.trimPreroll, Preferences.trimPostroll)
+            else
+                Playback.playAround(Preferences.trimPreroll, Preferences.trimPostroll)
+            return
+        // 0.4: Nudge Clip Selection Up / Down (Alt+Up / Alt+Down): one track, overwriting; why not as a toast.
+        case "timeline.nudgeClipUp":
+        case "timeline.nudgeClipDown": {
+            const why = ProjectController.nudgeSelectionTrack(commandId === "timeline.nudgeClipUp" ? 1 : -1)
+            if (why !== "")
+                window.notify(why, undefined, undefined)
+            return
+        }
+        // 0.4: Increase / Decrease Clip Volume (] [, Shift: Many): the clip Volume Level by 1 dB / 6 dB, with a toast.
+        case "clip.increaseVolume":
+        case "clip.decreaseVolume":
+        case "clip.increaseVolumeMany":
+        case "clip.decreaseVolumeMany": {
+            const r = ClipAudio.runVolumeCommand(commandId)
+            // A readout (E): each press replaces the last one in the toast's queue and in Recent messages.
+            if (r.text !== "")
+                window.notify(r.text, undefined, { replaceKey: "clipVolume" })
+            return
+        }
         case "file.exportMedia":
             window.openPreset("export")
             return
@@ -632,6 +741,13 @@ Window {
             return
         case "file.import":
             importDialog.open()
+            return
+        // 0.4 (D): File > Import Folder… and Import from Media Browser (Ctrl+Alt+I).
+        case "file.importFolder":
+            window.openImportFolder()
+            return
+        case "file.importFromMediaBrowser":
+            window.importFromMediaBrowser()
             return
         case "file.exit":
             window.close()
@@ -732,7 +848,15 @@ Window {
         }
         function onTransportIntent(kind, speedNum, speedDen, frames) {
             if (window.sourceHasFocus()) {
+                window.routingSourceTransport = true
                 SourceMonitor.applyTransportIntent(kind, speedNum, speedDen, frames)
+                window.routingSourceTransport = false
+                // What the source runs at now: the keys' speed, unless it stopped (K, a step, nothing loaded).
+                const moving = SourceMonitor.playing
+                               && (kind === KeymapDispatcher.ShuttleStep || kind === KeymapDispatcher.SetSpeed)
+                window.sourceSpeedNum = moving ? speedNum : 0
+                window.sourceSpeedDen = moving ? speedDen : 1
+                window.syncTransportKeys()
                 return
             }
             // Dynamic trimming (M5i): J/K/L with edit points selected trim with playback.
@@ -748,20 +872,49 @@ Window {
     }
 
     // ---- Playback (Playback singleton, I.1) ----
-    // J/L climb the ladder from the speed playback really runs at; the timeline keeps the playhead in view.
+    // J/L (0.4: and Shift+J/L) climb the ladder from the speed the monitor they drive really runs at: the Program's, or
+    // the Source Monitor's while it has focus. The timeline keeps the playhead in view.
+    /// The Source Monitor's speed as far as the keys know (its bridge says only whether it plays): the speed the keys
+    /// gave it, 1x when it plays any other way (Space, Play, Play Around, Play In to Out), 0 when it stops.
+    property int sourceSpeedNum: 0
+    property int sourceSpeedDen: 1
+    /// True while a key's transport intent runs on the source (its speed is then the keys' own).
+    property bool routingSourceTransport: false
+    readonly property bool keysDriveSource: window.sourceHasFocus()
+    onKeysDriveSourceChanged: window.syncTransportKeys()
+    function syncTransportKeys() {
+        if (window.keysDriveSource)
+            KeymapDispatcher.syncTransportSpeed(window.sourceSpeedNum, window.sourceSpeedDen)
+        else
+            KeymapDispatcher.syncTransportSpeed(Playback.speedNum, Playback.speedDen)
+    }
     Connections {
         target: Playback
 
         function onTransportChanged() {
-            KeymapDispatcher.syncTransportSpeed(Playback.speedNum, Playback.speedDen)
+            window.syncTransportKeys()
+        }
+    }
+    Connections {
+        target: SourceMonitor
+
+        // Space, Play, the play-once keys, its end, or the Program taking over (one monitor plays at a time).
+        function onTransportChanged() {
+            if (window.routingSourceTransport)
+                return
+            window.sourceSpeedNum = SourceMonitor.playing ? 1 : 0
+            window.sourceSpeedDen = 1
+            window.syncTransportKeys()
         }
     }
     Connections {
         target: ProjectController
         enabled: Playback.playing
 
+        // 0.4: Premiere's Timeline Playback Auto-Scrolling (Settings > Timeline & editing): page, smooth or no scroll,
+        // mirrored while playing backwards (J, Shift+J).
         function onPlayheadChanged() {
-            timeline.revealPlayhead()
+            timeline.followPlayhead(Preferences.timelinePlaybackScroll, Playback.speed < 0)
         }
     }
 
@@ -932,11 +1085,52 @@ Window {
             after(result)
         return result
     }
+    // 0.4 (D): into the bin the Library shows (Premiere's targeted bin; a new project ignores it); folders come in as
+    // bins (subfolders nested), and what came in or was left out is a toast (a warning when nothing was added).
     function importFilesNow(urls) {
-        const result = ProjectFile.importFiles(urls)
+        const result = ProjectFile.importFiles(urls, { bin: Library.currentBin })
         if (result.projects && result.projects.length > 0)
             whenSaved(() => window.openProjectNow(result.projects[0]))
+        if ((result.folderSummary ?? "") !== "")
+            window.notify(result.folderSummary, (result.added ?? 0) > 0 ? undefined : Theme.warning, undefined)
         return result
+    }
+    // 0.4 (D): File > Import Folder… and the Library's ··· "Import folder…": the folder picker; the chosen folder comes
+    // in as a bin (its subfolders nested) in the bin the Library shows.
+    function openImportFolder() {
+        importFolderDialog.open()
+    }
+    // 0.4 (D): File > Import from Media Browser (Ctrl+Alt+I): imports the Media Browser's selection when it is shown and
+    // has one, else shows and focuses the Media Browser.
+    function importFromMediaBrowser() {
+        const browser = mediaBrowserLoader.item as MediaBrowserPanel
+        if (browser && workArea.panelShown("mediaBrowser") && browser.canImport)
+            browser.importSelected()
+        else
+            window.showBrowserPanel("mediaBrowser")
+    }
+    // 0.4 (D, fix round 1): the Media Browser's Import with folders chosen. The folders come in as bins, and the clips
+    // chosen with them as the Media Browser imports clips (Library.importFromBrowser: Ingest applies), in ONE undo step
+    // "Import Folder". Over the edited sample project its edits are asked about first; over the sample project a new
+    // project takes it all, as an import does.
+    function importBrowserChoice(folders, clips) {
+        if (clips.length === 0) {
+            window.importUrls(folders)
+            return
+        }
+        if (ProjectFile.demo && ProjectController.canUndo && !window.demoAnswered) {
+            window.whenSaved(() => window.importBrowserChoice(folders, clips))
+            return
+        }
+        if (ProjectFile.demo)
+            ProjectFile.newProject()
+        ProjectController.beginGesture("Import Folder") // the step's name, as the folder import names it
+        try {
+            Library.importFromBrowser(clips)
+            window.importUrls(folders)
+        } finally {
+            ProjectController.endGesture()
+        }
     }
     // Opens the project `file` (File > Open and the other ways in); Home closes, or (never silent) the reason shows.
     function openProjectNow(file: url): bool {
@@ -948,11 +1142,105 @@ Window {
         return false
     }
 
+    // 0.4: closing while exports or Render In to Out run or wait asks first (BackgroundWorkCloseDialog).
+    property bool quitWhenIdle: false            // Quit When Done: close once nothing runs
+    // The question answered for this close (Quit When Done reached its end, Cancel … and Quit). It holds for one close
+    // only: the steps of that close (the unsaved-projects questions closing the window again: continueClose) keep it,
+    // and any new close - the ×, File > Exit, Alt+F4, the taskbar - asks again (a close given up at "Save changes?"
+    // must not kill exports later). More export work (a new or watch-folder export, Start Queue, Resume) forgets it too.
+    property bool backgroundWorkAnswered: false
+    property bool closeContinuing: false
+    function continueClose() {
+        window.closeContinuing = true
+        try {
+            window.close()
+        } finally {
+            window.closeContinuing = false
+        }
+    }
+    readonly property bool backgroundWorkRunning: ExportController.jobs.runningCount > 0 || MediaReadiness.rendering
+    readonly property bool backgroundWorkPending: ExportController.jobs.activeCount > 0 || MediaReadiness.rendering
+    function backgroundWorkBlocksClose(): bool {
+        return window.backgroundWorkPending
+    }
+    onBackgroundWorkRunningChanged: {
+        if (!window.backgroundWorkRunning && window.quitWhenIdle)
+            Qt.callLater(window.closeWhenIdle) // after the job's own report: a failure there calls the quit off
+    }
+    function closeWhenIdle() {
+        if (window.backgroundWorkRunning || !window.quitWhenIdle)
+            return
+        window.quitWhenIdle = false
+        window.backgroundWorkAnswered = true
+        window.continueClose()
+    }
+    // The work ended while the quit question was open: the question no longer applies (its wording would be wrong), so
+    // it closes and the close the user asked for goes on - unsaved projects still ask - unless an export or Render In
+    // to Out failed meanwhile: then Wabcut stays open and the failure's message says so.
+    property bool backgroundWorkFailedWhileAsking: false
+    onBackgroundWorkPendingChanged: {
+        if (!window.backgroundWorkPending && backgroundWorkDialog.visible)
+            Qt.callLater(window.settleBackgroundWorkQuestion) // after the job's own report (a failure)
+    }
+    function settleBackgroundWorkQuestion() {
+        if (window.backgroundWorkPending || !backgroundWorkDialog.visible)
+            return
+        const failed = window.backgroundWorkFailedWhileAsking
+        window.backgroundWorkFailedWhileAsking = false
+        backgroundWorkDialog.settle()
+        if (failed)
+            return
+        window.backgroundWorkAnswered = true
+        window.continueClose()
+    }
+    // A failure while the quit question asks, or while Quit When Done waits: the close is called off. True when the
+    // failure's message should end with " Wabcut stayed open." (Quit When Done, or the last of the work).
+    function callOffQuit(): bool {
+        if (backgroundWorkDialog.visible)
+            window.backgroundWorkFailedWhileAsking = true
+        if (window.quitWhenIdle) {
+            window.quitWhenIdle = false
+            return true
+        }
+        return backgroundWorkDialog.visible && !window.backgroundWorkPending
+    }
+    // Quit When Done called off (Keep Wabcut Open on the dialog or the toast, or a failure meanwhile).
+    function keepWabcutOpen() {
+        window.quitWhenIdle = false
+    }
+    // 0.4: Windows stays awake while long work runs (PowerKeeper, Settings > General); the taskbar shows it, red after a
+    // failure while Wabcut was not the active window (until it is again).
+    readonly property bool keepAwakeNeeded: ExportController.jobs.runningCount > 0 || MediaReadiness.rendering
+        || MediaReadiness.working || Transcript.jobStatus === "running" || Highlights.busy || Shorts.busy || Collect.running
+    property bool exportFailedUnseen: false
+    // 0.4: the export queue (a failed export's "Show the queue", the Background tasks popover's Export Queue…): Home
+    // closes; the Export workspace shows it (or the Export panel where this workspace has one already) - the user's
+    // layout never gets an Export panel docked into it.
+    function showExportQueue() {
+        home.close()
+        if (docking.isOpen("export"))
+            window.focusPanel("export")
+        else
+            window.openPreset("export")
+    }
+    // 0.4: an export failed on offline media: Relink… (Home closes, the Relink dialog opens).
+    function relinkOfflineMedia() {
+        home.close()
+        relinkDialog.open()
+    }
+
     // Whether the window may close now. 0.2 (P.3): else every open project with unsaved changes is asked about in turn
     // (it comes into the panels first); each answer closes it and tries to close the window again.
+    // 0.4: first, exports or Render In to Out that run or wait ask (Keep Wabcut Open, Quit When Done, Cancel … and Quit).
     function readyToClose() {
         if (window.closeConfirmed)
             return true
+        if (!window.backgroundWorkAnswered && window.backgroundWorkBlocksClose()) {
+            if (!backgroundWorkDialog.visible)
+                window.backgroundWorkFailedWhileAsking = false
+            backgroundWorkDialog.open()
+            return false
+        }
         const pending = ProjectFile.firstDirtyProject()
         if (pending < 0)
             return true
@@ -963,11 +1251,14 @@ Window {
                 ProjectFile.closeProject(ProjectFile.activeProject)
             else
                 window.closeConfirmed = true
-            window.close()
+            window.continueClose()
         })
         return false
     }
     onClosing: close => {
+        // 0.4: a new close (not a step of the one going on) asks about the background work again.
+        if (!window.closeContinuing)
+            window.backgroundWorkAnswered = false
         // A voice-over pass ends first and keeps its take: it goes into the project, so the save question covers it.
         if (VoiceOver.recording)
             VoiceOver.stop()
@@ -987,7 +1278,32 @@ Window {
         function onRecoveryAvailable() {
             recoveryDialog.open()
         }
+        // 0.4: an autosave that cannot write says so once per failure streak (every tick retries; a later failure
+        // after a success says so again): a danger toast (Home's strip while Home is open) with Save As…. The Save
+        // button's dot turns red meanwhile (TopBar). What to do comes first, the reason last: the reason may hold a long
+        // path, and the toast shows three lines (Recent messages shows the rest).
+        function onAutosaveFailed(reason) {
+            if (window.autosaveWarned)
+                return
+            window.autosaveWarned = true
+            const why = String(reason).replace(/\.\s*$/, "")
+            //: %1: why the autosave failed, as the system says it (it may name the file)
+            window.notify(qsTr("Autosave could not save your project. Save it somewhere else to keep your work safe. %1.").arg(why),
+                          Theme.danger,
+                          { actionText: qsTr("Save As…"),
+                            action: () => {
+                                saveAsDialog.then = null
+                                saveAsDialog.open()
+                            },
+                            timeoutMs: 15000 })
+        }
+        function onAutosaveChanged() {
+            if (ProjectFile.autosaveOk)
+                window.autosaveWarned = false
+        }
     }
+    // 0.4: the current autosave failure streak was told (onAutosaveFailed).
+    property bool autosaveWarned: false
 
     // ---- The menu bar (UX rework, stream S): the title bar's menus (panels/menubar/, AppMenuBar) run keymap commands
     // (runCommand above); what only the window can do comes here, once the menus have closed ----
@@ -1187,14 +1503,48 @@ Window {
         id: importDialog
         fileMode: FileDialog.OpenFiles
         nameFilters: ProjectFile.importNameFilters
-        currentFolder: ProjectFile.folder
-        onAccepted: window.importUrls(selectedFiles)
+        // 0.4 (D): where the last dialog import came from (ProjectFile.importFolder), remembered for the next one.
+        currentFolder: ProjectFile.importFolder
+        onAccepted: {
+            ProjectFile.rememberImportFolder(selectedFiles)
+            window.importUrls(selectedFiles)
+        }
+    }
+    FolderDialog {
+        id: importFolderDialog
+        objectName: "importFolderDialog"
+        title: qsTr("Import Folder")
+        currentFolder: ProjectFile.importFolder
+        onAccepted: {
+            ProjectFile.rememberImportFolder([selectedFolder])
+            window.importUrls([selectedFolder])
+        }
     }
     UnsavedChangesDialog {
         id: unsavedDialog
         onSaveChosen: window.saveProject(() => window.continuePending())
         onDiscardChosen: window.continuePending()
         onClosed: Qt.callLater(window.runDeferred) // a request that waited on the prompt (whenSaved)
+    }
+    // 0.4: the quit guard (readyToClose): exports or Render In to Out run or wait.
+    BackgroundWorkCloseDialog {
+        id: backgroundWorkDialog
+        onKeepOpenChosen: window.keepWabcutOpen()
+        onQuitWhenDoneChosen: {
+            window.quitWhenIdle = true
+            window.notify(qsTr("Wabcut will close when the work in progress is done"), undefined,
+                          { actionText: qsTr("Keep Wabcut Open"), action: () => window.keepWabcutOpen(), timeoutMs: 10000 })
+            if (!window.backgroundWorkRunning) // it ended while the question was open
+                Qt.callLater(window.closeWhenIdle)
+        }
+        onCancelAndQuitChosen: {
+            window.quitWhenIdle = false
+            window.backgroundWorkAnswered = true
+            ExportController.cancelAll()
+            if (MediaReadiness.rendering)
+                MediaReadiness.cancelRender()
+            Qt.callLater(window.continueClose)
+        }
     }
     ImportLayeredFileDialog {
         id: importLayeredFileDialog
@@ -1626,6 +1976,7 @@ Window {
             onSaveRequested: window.saveProject(null)
             docking: docking
             onMenuActionRequested: (action, argument) => window.menuAction(action, argument)
+            onExportQueueRequested: window.showExportQueue() // 0.4: the Background tasks popover's Export Queue…
         }
 
         // The mark and the project's name open the File menu too (the logo is the conventional app menu).
@@ -1719,6 +2070,7 @@ Window {
                     anchors.fill: parent
                     project: project
                     onImportRequested: importDialog.open()
+                    onImportFolderRequested: window.openImportFolder()
                     onFilesDropped: urls => window.importUrls(urls)
                     onMetadataPanelRequested: window.showBrowserPanel("metadata")
                     onProductionPanelRequested: window.showBrowserPanel("production")
@@ -1789,6 +2141,15 @@ Window {
                     enabled: shown
                     Behavior on opacity { NumberAnimation { duration: Theme.durState } }
                     sourceComponent: MediaBrowserPanel {}
+                }
+                // 0.4 (D): folders chosen in the Media Browser come in as bins (importUrls -> ProjectFile.importFiles),
+                // with the clips chosen beside them in the same undo step (importBrowserChoice).
+                Connections {
+                    target: mediaBrowserLoader.item as MediaBrowserPanel
+
+                    function onImportUrlsRequested(urls, clips) {
+                        window.importBrowserChoice(urls, clips)
+                    }
                 }
                 LazyPanel {
                     id: markersLoader
@@ -2186,6 +2547,11 @@ Window {
                                     const result = ProjectFile.dropFiles(files, time, track, overwrite)
                                     if (result.projects && result.projects.length > 0)
                                         window.whenSaved(() => window.openProjectNow(result.projects[0]))
+                                    // 0.4 (D, fix round 1): folders come in as bins, not onto the timeline: the toast
+                                    // says so.
+                                    if ((result.folderSummary ?? "") !== "")
+                                        window.notify(result.folderSummary, (result.added ?? 0) > 0 ? undefined : Theme.warning,
+                                                      undefined)
                                 }
                                 for (const url of lottie)
                                     GraphicsImport.importLottie(url)
@@ -2627,10 +2993,33 @@ Window {
         // transcodes report elsewhere; a cancelled job needs no word; a finished export from the Export workspace
         // while its queue is in view is already shown there. While Home covers the editor these go to Home's message
         // strip (window.notify), action included.
+        // 0.4: a finished export offers Open (its file in its app) with "Show in <file manager>" beside it; a failed one
+        // says why, with Relink… when media is offline and Show the queue. Work that ends while Wabcut is not the active
+        // window flashes its taskbar button (a failure turns it red until Wabcut is active again) and its message waits
+        // to be seen (untilSeen). A failure while Quit When Done waits calls the quit off.
+        // More export work - a row added (a watch folder's too), or exports released to run (Start Queue, Resume) -
+        // forgets an earlier quit answer: it did not cover them.
+        Connections {
+            id: exportWork
+            target: ExportController.jobs
+            property int lastActive: 0
+            property int lastRunning: 0
+            function onActiveCountChanged() {
+                if (ExportController.jobs.activeCount > exportWork.lastActive)
+                    window.backgroundWorkAnswered = false
+                exportWork.lastActive = ExportController.jobs.activeCount
+            }
+            function onSummaryChanged() {
+                if (ExportController.jobs.runningCount > exportWork.lastRunning)
+                    window.backgroundWorkAnswered = false
+                exportWork.lastRunning = ExportController.jobs.runningCount
+            }
+        }
         Connections {
             target: ExportController
 
             function onJobQueued(jobId) {
+                window.backgroundWorkAnswered = false // a new export forgets an earlier "Cancel Exports and Quit"
                 const job = ExportController.job(jobId)
                 if (job.origin !== "quick")
                     return
@@ -2641,49 +3030,104 @@ Window {
                 const job = ExportController.job(jobId)
                 if (job.origin === "transcode" || job.origin === "watch" || job.state === "cancelled")
                     return
+                if (!window.active) {
+                    taskbar.flash()
+                    if (!succeeded)
+                        window.exportFailedUnseen = true
+                }
                 if (succeeded) {
                     if (job.origin === "export" && workArea.panelShown("export") && !home.opened)
                         return
                     const title = job.title || qsTr("the sequence")
                     const output = job.outputPath ?? "" // kept: the job's row may be gone when the action runs
+                    const gone = () => window.notify(qsTr("%1 is no longer there: it was moved or deleted.").arg(title),
+                                                     Theme.warning, undefined)
                     window.notify(qsTr("Exported %1").arg(title), Theme.success,
-                                  { actionText: qsTr("Show in %1").arg(ExportController.fileManagerName),
+                                  { actionText: qsTr("Open"),
                                     action: () => {
+                                        // Its row may be gone (Clear Finished): the file it wrote, or why not.
+                                        if (!ExportController.openOutput(jobId)
+                                                && !(output !== "" && ExportController.openOutput(output)))
+                                            gone()
+                                    },
+                                    secondaryActionText: qsTr("Show in %1").arg(ExportController.fileManagerName),
+                                    secondaryAction: () => {
                                         if (ExportController.reveal(jobId))
                                             return
-                                        // Its row went meanwhile (Clear Finished): the file it wrote, or why not.
                                         if (ExportController.job(jobId).jobId === undefined
                                                 && !ExportController.reveal(output))
-                                            window.notify(qsTr("%1 is no longer there: it was moved or deleted.").arg(title),
-                                                          Theme.warning, undefined)
-                                    } })
-                } else {
-                    // The queue is in the editor: from Home, Show the queue goes there. The Export workspace shows it
-                    // (or the Export panel where this workspace has one already): the user's layout never gets an
-                    // Export panel docked into it.
-                    window.notify(qsTr("Export failed: %1").arg(job.detail || message), Theme.danger,
-                                  { actionText: qsTr("Show the queue"),
-                                    action: () => {
-                                        home.close()
-                                        if (docking.isOpen("export"))
-                                            window.focusPanel("export")
-                                        else
-                                            window.openPreset("export")
+                                            gone()
                                     },
-                                    timeoutMs: 10000 })
+                                    untilSeen: true })
+                } else {
+                    // The queue is in the editor: from Home, Show the queue goes there (window.showExportQueue).
+                    const reason = job.detail || message
+                    let text = reason !== "" ? qsTr("Export failed: %1").arg(reason) : qsTr("Export failed")
+                    if (window.callOffQuit())
+                        text += qsTr(" Wabcut stayed open.")
+                    if (job.errorKind === "offline")
+                        window.notify(text, Theme.danger,
+                                      { actionText: qsTr("Relink…"), action: () => window.relinkOfflineMedia(),
+                                        secondaryActionText: qsTr("Show the queue"), secondaryAction: () => window.showExportQueue(),
+                                        timeoutMs: 10000, untilSeen: true })
+                    else
+                        window.notify(text, Theme.danger,
+                                      { actionText: qsTr("Show the queue"), action: () => window.showExportQueue(),
+                                        timeoutMs: 10000, untilSeen: true })
                 }
             }
         }
         Connections {
+            id: renderConnections
             target: MediaReadiness
 
+            // 0.4: starting Render In to Out forgets an earlier "Stop Rendering and Quit".
+            property bool wasRendering: false
+            function onRenderChanged() {
+                if (MediaReadiness.rendering && !renderConnections.wasRendering)
+                    window.backgroundWorkAnswered = false
+                renderConnections.wasRendering = MediaReadiness.rendering
+            }
             function onRenderFinished(outcome, message) {
-                if (outcome === "done")
-                    window.notify(qsTr("Previews rendered: In to Out plays in real time"), Theme.success, undefined)
-                else if (outcome === "failed")
-                    window.notify(qsTr("Render In to Out failed: %1").arg(message), Theme.warning,
+                if ((outcome === "done" || outcome === "failed") && !window.active) {
+                    taskbar.flash()
+                    if (outcome === "failed")
+                        window.exportFailedUnseen = true
+                }
+                if (outcome === "done") {
+                    window.notify(qsTr("Previews rendered: In to Out plays in real time"), Theme.success, { untilSeen: true })
+                } else if (outcome === "failed") {
+                    let text = qsTr("Render In to Out failed: %1").arg(message)
+                    if (window.callOffQuit())
+                        text += qsTr(" Wabcut stayed open.")
+                    window.notify(text, Theme.warning,
                                   { actionText: qsTr("Try Again"), action: () => MediaReadiness.renderInToOut(),
-                                    timeoutMs: 10000 })
+                                    timeoutMs: 10000, untilSeen: true })
+                }
+            }
+        }
+        // 0.4: Windows stays awake while long work runs (Settings > General > Background work), and the taskbar button
+        // shows the current export's progress (paused: yellow; a failure while away: red), else Render In to Out's.
+        PowerKeeper {
+            objectName: "powerKeeper"
+            active: Preferences.keepAwake && window.keepAwakeNeeded
+        }
+        TaskbarProgress {
+            id: taskbar
+            objectName: "taskbarProgress"
+            window: workArea.Window.window // the main window (a bare `window` here would name this property)
+            mode: window.exportFailedUnseen ? "error"
+                : ExportController.jobs.currentState === "paused" && ExportController.jobs.runningCount === 0 ? "paused"
+                : ExportController.jobs.currentState !== "" ? "normal"
+                : MediaReadiness.rendering ? (MediaReadiness.renderProgress >= 0 ? "normal" : "indeterminate") : "none"
+            progress: window.exportFailedUnseen ? 1 : ExportController.jobs.currentState !== ""
+                      ? Math.max(0, ExportController.jobs.currentProgress) : Math.max(0, MediaReadiness.renderProgress)
+        }
+        Connections {
+            target: window
+            function onActiveChanged() {
+                if (window.active)
+                    window.exportFailedUnseen = false
             }
         }
         // C.12 (M5n): forms extensions open (ui.prompt, non-modal), their notifications and crashes.

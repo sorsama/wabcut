@@ -2143,19 +2143,72 @@ QString LibraryBridge::importLayeredFile(const QUrl& file, const QVariantMap& op
 
 QVariantList LibraryBridge::browserPlaces() const {
     QVariantList out;
-    const auto add = [&](const QString& name, const QString& path) {
-        if (!path.isEmpty() && QFileInfo(path).isDir())
-            out.push_back(QVariantMap{{QStringLiteral("name"), name}, {QStringLiteral("path"), QDir::fromNativeSeparators(path)}});
+    QStringList listed; // the folders listed so far (recent ones already there are not listed again)
+    const auto sameFolder = [](const QString& a, const QString& b) {
+#ifdef Q_OS_WIN
+        return QDir::cleanPath(a).compare(QDir::cleanPath(b), Qt::CaseInsensitive) == 0;
+#else
+        return QDir::cleanPath(a) == QDir::cleanPath(b);
+#endif
     };
-    add(tr("Videos"), QStandardPaths::writableLocation(QStandardPaths::MoviesLocation));
-    add(tr("Home"), QDir::homePath());
+    // `kind` (0.4): "folder" (Videos, Home), "capture" (a game capture tool's folder), "recent" (a dialog import's
+    // folder), "drive". `checked`: the caller already knows the folder may be offered (recent ones: a folder on a
+    // network share is not asked about, ProjectLifecycle::recentImportFolders).
+    const auto add = [&](const QString& name, const QString& path, const QString& kind, bool checked = false) {
+        if (path.isEmpty() || (!checked && !QFileInfo(path).isDir()))
+            return;
+        const QString clean = QDir::fromNativeSeparators(path);
+        out.push_back(QVariantMap{{QStringLiteral("name"), name}, {QStringLiteral("path"), clean}, {QStringLiteral("kind"), kind}});
+        listed << clean;
+    };
+    const QString videos = QStandardPaths::writableLocation(QStandardPaths::MoviesLocation);
+    add(tr("Videos"), videos, QStringLiteral("folder"));
+    add(tr("Home"), QDir::homePath(), QStringLiteral("folder"));
+    // 0.4: the game capture tools' folders that exist (Game Bar, ShadowPlay, every OBS profile's recordings).
+    const std::vector<editor::CaptureFolder> captures =
+        editor::captureFolders(videos.isEmpty() ? std::filesystem::path() : std::filesystem::path(videos.toStdU16String()),
+                               editor::obsConfigFolder());
+    const auto obsCount = std::ranges::count_if(captures, [](const editor::CaptureFolder& c) { return c.tool == editor::CaptureTool::Obs; });
+    for (const editor::CaptureFolder& capture : captures) {
+        const QString path = QString::fromStdU16String(capture.path.u16string());
+        switch (capture.tool) {
+        case editor::CaptureTool::GameBar:
+            add(tr("Game Bar captures"), path, QStringLiteral("capture"));
+            break;
+        case editor::CaptureTool::ShadowPlay:
+            add(tr("NVIDIA ShadowPlay"), path, QStringLiteral("capture"));
+            break;
+        case editor::CaptureTool::Obs:
+            add(obsCount > 1 ? tr("OBS recordings (%1)").arg(QString::fromStdString(capture.profile)) : tr("OBS recordings"), path,
+                QStringLiteral("capture"));
+            break;
+        }
+    }
+    // The drives, listed last; read first so a recent folder that is a drive's root is not listed twice.
+    std::vector<std::pair<QString, QString>> drives; // name, root
     for (const QStorageInfo& volume : QStorageInfo::mountedVolumes()) {
         if (!volume.isValid() || !volume.isReady())
             continue;
         const QString label = volume.displayName().isEmpty() ? volume.rootPath() : volume.displayName();
-        add(label == volume.rootPath() ? label : QStringLiteral("%1 (%2)").arg(label, QDir::toNativeSeparators(volume.rootPath())),
-            volume.rootPath());
+        drives.emplace_back(label == volume.rootPath() ? label : QStringLiteral("%1 (%2)").arg(label, QDir::toNativeSeparators(volume.rootPath())),
+                            volume.rootPath());
     }
+    // 0.4: the folders the last dialog imports came from (newest first), unless listed above or a drive's root (fix
+    // round 1: "E:\" gave "Recent: " with no name). A root that is not a listed drive is named by its path.
+    int recent = 0;
+    for (const QString& folder : ProjectLifecycle::recentImportFolders()) {
+        if (recent >= 5)
+            break;
+        const QString clean = QDir::fromNativeSeparators(folder);
+        if (std::ranges::any_of(listed, [&](const QString& l) { return sameFolder(l, clean); }) ||
+            std::ranges::any_of(drives, [&](const auto& d) { return sameFolder(d.second, clean); }))
+            continue;
+        const QString name = QDir(folder).dirName();
+        add(tr("Recent: %1").arg(name.isEmpty() ? QDir::toNativeSeparators(folder) : name), folder, QStringLiteral("recent"), true);
+        ++recent;
+    }
+    for (const auto& [name, root] : drives)
+        add(name, root, QStringLiteral("drive"));
     return out;
 }
 
@@ -2169,9 +2222,11 @@ QVariantList LibraryBridge::browseFolder(const QString& folder) {
     }
     setMessage({});
     for (const editor::BrowserEntry& e : editor::browseFolder(dir)) {
+        // 0.4: `url` too, so QML never builds file URLs by hand (folder rows import through ProjectFile.importFiles).
         QVariantMap entry{{QStringLiteral("folder"), e.folder},
                           {QStringLiteral("name"), QString::fromStdString(e.name)},
-                          {QStringLiteral("path"), QString::fromStdString(pathToUtf8(e.path))}};
+                          {QStringLiteral("path"), QString::fromStdString(pathToUtf8(e.path))},
+                          {QStringLiteral("url"), QUrl::fromLocalFile(QString::fromStdString(pathToUtf8(e.path)))}};
         if (e.clip) {
             entry.insert(QStringLiteral("card"), QString::fromUtf8(editor::displayName(e.clip->card)));
             entry.insert(QStringLiteral("files"), static_cast<int>(e.clip->files.size()));

@@ -2,7 +2,8 @@ pragma ComponentBehavior: Bound
 import QtQuick
 
 // File (the menu bar, Premiere's order; the logo opens it too): Home, New, Open (Open Recent: Home's recent projects),
-// Close Project, Save / Save As / Save a Copy / Revert, Import, Export, the project's media (relink, recover, collect)
+// Close Project, Save / Save As / Save a Copy / Revert, Import (0.4: from the Media Browser, files, a folder as bins),
+// Export, the project's media (relink, recover, collect)
 // and Exit. Rows with a keymap command run it (Main.runCommand); the others ask the window (AppMenuBar.actionRequested:
 // Main.menuAction), once the menu has closed.
 MenuBarMenu {
@@ -122,9 +123,22 @@ MenuBarMenu {
         onTriggered: root.request("revert", null)
     }
     ContextMenuSeparator {}
+    // 0.4: Premiere's order - Import from Media Browser (Ctrl+Alt+I: imports the Media Browser's selection, else shows
+    // it), Import… (into the bin the Library shows), Import Folder… (a folder as a bin, its subfolders nested).
     BarMenuItem {
+        objectName: "fileMenuImportFromMediaBrowser"
+        text: qsTr("Import from Media Browser")
+        command: "file.importFromMediaBrowser"
+    }
+    BarMenuItem {
+        objectName: "fileMenuImport"
         text: qsTr("Import…")
         command: "file.import"
+    }
+    BarMenuItem {
+        objectName: "fileMenuImportFolder"
+        text: qsTr("Import Folder…")
+        command: "file.importFolder"
     }
     BarMenuItem {
         objectName: "importLottieMenuItem"

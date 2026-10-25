@@ -189,6 +189,13 @@ class ProjectController : public QObject {
     /// Sequence In/Out marks as timecode ("" when unset). Out is shown as its last marked frame.
     Q_PROPERTY(QString markInText READ markInText NOTIFY marksChanged FINAL)
     Q_PROPERTY(QString markOutText READ markOutText NOTIFY marksChanged FINAL)
+    /// 0.4: the sequence In-Out length ("" unless both marks are set), the Out frame included (Premiere's In/Out
+    /// duration: In at 1:00, Out on 3:12 -> 00:00:02:13), in the sequence's display format. The Program Monitor's pill
+    /// and the Fit Clip dialog read it.
+    Q_PROPERTY(QString markDurationText READ markDurationText NOTIFY marksChanged FINAL)
+    /// 0.4: Markers > Ripple Sequence Markers for the current sequence (Sequence::rippleMarkers, on by default): its
+    /// markers follow insert, extract, ripple delete and ripple trims. setRippleSequenceMarkers() changes it.
+    Q_PROPERTY(bool rippleSequenceMarkers READ rippleSequenceMarkers NOTIFY sequenceChanged FINAL)
 
     // ---- Media ----
     /// Project media for the library: [{ id: "m…", name, kind: "video"|"audio"|"text", durationText, meta,
@@ -406,6 +413,8 @@ public:
     QVariantList audioTracks() const;
     QString markInText() const;
     QString markOutText() const;
+    QString markDurationText() const;
+    bool rippleSequenceMarkers() const;
     QVariantList mediaItems() const { return m_mediaItems; }
     bool hasMediaFiles() const { return m_hasMediaFiles; }
     QString playheadText() const;
@@ -468,6 +477,9 @@ public:
     Q_INVOKABLE void clearMarks(bool clearIn = true, bool clearOut = true);
     Q_INVOKABLE void goToMarkIn();
     Q_INVOKABLE void goToMarkOut();
+    /// 0.4, Markers > Ripple Sequence Markers (marker.toggleRipple): turns marker rippling on or off for the current
+    /// sequence, one undo step "Ripple Sequence Markers" (edit::setSequenceSettings); nothing when unchanged.
+    Q_INVOKABLE void setRippleSequenceMarkers(bool on);
 
     // ---- Editing (undoable; act on the selection, the playhead and the targeted tracks) ----
     /// Delete (clear): removes the selected clips, leaving gaps.
@@ -503,6 +515,13 @@ public:
     void setSelectionFollowsPlayhead(bool on);
     /// Alt+Left/Right (±1, ±5): moves the selection; Alt+,/. slides and Ctrl+Alt+Left/Right slips the clip.
     Q_INVOKABLE void nudgeSelection(int frames);
+    /// 0.4, Premiere's Nudge Clip Selection Up / Down (Alt+Up / Alt+Down): moves the selected clips (with their links)
+    /// one track up (direction +1: V1 -> V2, A2 -> A1) or down (-1), overwriting what is there, one undo step "Nudge".
+    /// As in Premiere, a linked half with no track in that direction stays on its track (Up at A1, Down at V1) while
+    /// the other half moves, and the returned note says which half stayed; at the top video track (Up) or the bottom
+    /// audio track (Down) the whole nudge is refused (Wabcut adds no track). Returns "" when the clips moved with no
+    /// note or nothing is selected, else the note or why not ("V2 is locked"; a refusal also sets lastError).
+    Q_INVOKABLE QString nudgeSelectionTrack(int direction);
     Q_INVOKABLE void slideSelection(int frames);
     Q_INVOKABLE void slipSelection(int frames);
     /// Copy / Cut / Paste (overwrite) / Paste Insert at the playhead on the targeted tracks (Premiere): the

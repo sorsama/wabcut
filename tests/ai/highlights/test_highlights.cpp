@@ -3,6 +3,7 @@
 // the engine.
 
 #include "../AgentTestUtil.h"
+#include "../EditTestUtil.h"
 #include "CommandHarness.h"
 #include "NestedTestUtil.h"
 #include "SyntheticGameplay.h"
@@ -636,6 +637,71 @@ TEST_CASE("highlights.toShort makes the best moment a vertical sequence", "[ai][
     CHECK(fx.h.errorOf("highlights.toShort", Json{{"moment", 9}}) == "InvalidParams");
     CommandHarness unmarked(gameplayTimeline(), Fixture::policy(fx.highlights, fx.analysisProvider), ai::edit::editingCommands());
     CHECK(unmarked.errorOf("highlights.toShort", Json::object()) == "EditRejected");
+}
+
+// 0.4: the Short's captions get the "Shorts" caption style (above the platforms' buttons) unless captionPreset names
+// another; an unknown one is a warning and the Short keeps the default look.
+TEST_CASE("highlights.toShort applies a caption preset after the captions", "[ai][highlights][commands]") {
+    const Timeline tl = gameplayTimeline();
+    // The streamer talks all the way through (a word every 10 frames), so the Short has words to caption.
+    std::vector<ai::edit::test::W> words;
+    for (std::int64_t k = 0; k + 1 < kFrames / 10; ++k)
+        words.push_back({k % 2 == 0 ? "what" : "nice", static_cast<double>(k * 10), static_cast<double>(k * 10 + 8)});
+    auto transcripts = ai::edit::test::provider(tl, {{'A', ai::edit::test::transcript("en", std::move(words))}});
+    auto highlights = std::make_shared<MapHighlightProvider>();
+    auto analysis = std::make_shared<ai::analysis::MapAnalysisProvider>();
+    auto bundle = std::make_shared<command::ServiceBundle>(std::vector<std::shared_ptr<command::CommandServices>>{
+        std::make_shared<HighlightServices>(highlights), std::make_shared<ai::analysis::AnalysisServices>(analysis),
+        std::make_shared<ai::edit::TranscriptServices>(transcripts)});
+    CommandHarness h(tl, command::EnginePolicy{command::CapabilitySet::all(), 1024, bundle}, ai::edit::editingCommands());
+    highlights->add(h.tl.media('A'), gameplayMeasurement());
+    h.ok("highlights.find", Json{{"count", 3}});
+    const auto trackOf = [&](const command::CommandResult& r) {
+        const Sequence& made = *h.state()->findSequence(SequenceId{r.createdIds.front()});
+        REQUIRE(made.captionTracks.size() == 1);
+        return made.captionTracks.front();
+    };
+
+    // The default: the Shorts preset, short cues. Every call names the source: the Shorts made before are sequences too.
+    const auto shorts = h.ok("highlights.toShort", Json{{"sequence", h.tl.seq.value}, {"moment", 1}, {"normalize", false}, {"hookTitle", false}});
+    INFO(shorts.data.dump());
+    CHECK(shorts.data.value("captionPreset", std::string()) == "Shorts");
+    const CaptionTrack styled = trackOf(shorts);
+    CHECK(styled.style.placement == CaptionPlacement::Custom);
+    CHECK(styled.style.positionY.valueAt(Ticks{}) == Catch::Approx(0.68));
+    CHECK(styled.style.animation == CaptionAnimation::Pop);
+    CHECK_FALSE(styled.style.box);
+    for (const CaptionCue& cue : styled.cues) {
+        INFO(cue.text);
+        for (std::size_t from = 0;;) {
+            const std::size_t at = cue.text.find('\n', from);
+            const std::size_t end = at == std::string::npos ? cue.text.size() : at;
+            // At most 10 characters (fix round 1: what stays one line on a rendered 1080x1920 frame), unless the line
+            // is one longer word (a word is never split).
+            CHECK((end - from <= 10 || cue.text.substr(from, end - from).find(' ') == std::string::npos));
+            if (at == std::string::npos)
+                break;
+            from = at + 1;
+        }
+    }
+
+    // Another preset by name (case does not matter).
+    const auto clean = h.ok("highlights.toShort", Json{{"sequence", h.tl.seq.value}, {"moment", 1}, {"normalize", false}, {"hookTitle", false}, {"captionPreset", "clean"}});
+    CHECK(clean.data.value("captionPreset", std::string()) == "clean");
+    CHECK_FALSE(trackOf(clean).style.box);
+    CHECK(trackOf(clean).style.placement == CaptionPlacement::Bottom);
+
+    // An unknown preset: still made, in the default look, with a warning.
+    const auto nope = h.ok("highlights.toShort", Json{{"sequence", h.tl.seq.value}, {"moment", 1}, {"normalize", false}, {"hookTitle", false}, {"captionPreset", "Nope"}});
+    CHECK_FALSE(nope.data.contains("captionPreset"));
+    CHECK(trackOf(nope).style.box == CaptionStyle{}.box);
+    CHECK(std::any_of(nope.warnings.begin(), nope.warnings.end(), [](const std::string& w) { return w.find("Nope") != std::string::npos; }));
+
+    // No captions: no style step.
+    const auto silent = h.ok("highlights.toShort", Json{{"sequence", h.tl.seq.value}, {"moment", 1}, {"normalize", false}, {"captions", false}, {"captionPreset", "Shorts"}});
+    CHECK_FALSE(silent.data.contains("captionPreset"));
+    CHECK(h.state()->findSequence(SequenceId{silent.createdIds.front()})->captionTracks.empty());
+    CHECK(h.errorOf("highlights.toShort", Json{{"sequence", h.tl.seq.value}, {"moment", 1}, {"captionPreset", std::string(65, 'x')}}) == "InvalidParams");
 }
 
 TEST_CASE("The assistant makes a highlight reel of the best moments as one undo step", "[ai][highlights][agent]") {

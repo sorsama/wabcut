@@ -1,8 +1,9 @@
 pragma ComponentBehavior: Bound
 import QtQuick
 
-// The Library's tools menu (M5k, the header's ··· button): Import Image Sequence (0.2), hover scrub, unused media (show, remove), duplicate media
-// and Make Subclip; Sort by (M5n: the keyboard's way to sort, as a click on a list header does; the current column
+// The Library's tools menu (M5k, the header's ··· button): Import Image Sequence (0.2), Import Folder (0.4: a folder as a
+// bin, its subfolders nested, in the open bin; the folder picker opens once the menu has closed), hover scrub, unused
+// media (show, remove), duplicate media and Make Subclip; Sort by (M5n: the keyboard's way to sort, as a click on a list header does; the current column
 // again reverses the order). Its own file: QtQuick.Controls' ContextMenu attached type would hide Wabcut's ContextMenu
 // in a file that imports the controls.
 ContextMenu {
@@ -16,12 +17,32 @@ ContextMenu {
     signal newSearchBinRequested()
     signal importFromProjectRequested()
     signal productionRequested()
+    // 0.4: Import folder… (the window's folder picker: Main.openImportFolder)
+    signal importFolderRequested()
+
+    // The item to run once the menu has closed ("importFolder"): a native dialog opened while the menu closes loses
+    // its focus.
+    property string pending: ""
+
+    onAboutToShow: menu.pending = ""
+    onClosed: {
+        const action = menu.pending
+        menu.pending = ""
+        if (action === "importFolder")
+            menu.importFolderRequested()
+    }
 
     ContextMenuItem {
         objectName: "libraryImportImageSequence"
         text: qsTr("Import image sequence…")
         iconName: "import"
         onTriggered: menu.importImageSequenceRequested()
+    }
+    ContextMenuItem {
+        objectName: "libraryImportFolder"
+        text: qsTr("Import folder…")
+        iconName: "folder-plus"
+        onTriggered: menu.pending = "importFolder"
     }
     ContextMenuItem {
         objectName: "libraryImportFromProject"

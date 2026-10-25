@@ -96,7 +96,8 @@ Json settingsJson(const Sequence& s) {
                 {"startTimecode", ticksToTimecode(s.startTimecode, s.frameRate, s.dropFrame)},
                 {"startTimecodeTicks", s.startTimecode.value},
                 {"duration", ticksToTimecode(s.duration, s.frameRate, s.dropFrame)},
-                {"label", s.colorIndex}};
+                {"label", s.colorIndex},
+                {"rippleMarkers", s.rippleMarkers}};
 }
 
 CommandOutput created(ProjectState state, std::uint64_t id, Json data) {
@@ -807,11 +808,13 @@ void registerEditingCommands(CommandRegistry& registry) {
          "without media to reach it gets the frame inside instead), clips keep the picture under them, adjacent clips "
          "stay adjacent and locked tracks are left alone. Frame size changes keep each clip's Motion. Drop-frame display "
          "applies at 29.97 and 59.94 only. \"label\" is the sequence's label colour (Premiere's Label: the Project "
-         "panel and its timeline tab). One undo step.",
+         "panel and its timeline tab). \"rippleMarkers\" is Markers > Ripple Sequence Markers. One undo step.",
          Capability::EditProject,
          withSequence(
              {{"preset", schema::string("A preset id from sequence.presets (\"1080p23.976\", \"2160p29.97df\", ...).")},
               {"label", schema::integer("The label colour, 0 to 15 (the Project panel's 16 label colours).", 0, 15)},
+              {"rippleMarkers", schema::boolean("Markers > Ripple Sequence Markers: sequence markers move with insert, "
+                                                "extract, ripple delete and ripple trims.")},
               {"name", schema::string("The sequence's name (not empty).")},
               {"frameRate", rateParam("Timebase.")},
               {"width", schema::integer("Frame width, pixels.", 16, 16384)},
@@ -852,6 +855,9 @@ void registerEditingCommands(CommandRegistry& registry) {
              }
              if (c.has("label")) {
                  change.colorIndex = static_cast<std::int32_t>(c.integer("label"));
+             }
+             if (c.has("rippleMarkers")) { // 0.4
+                 change.rippleMarkers = c.boolean("rippleMarkers", true);
              }
              if (c.has("frameRate")) {
                  change.frameRate = frameRateValue(c.params()["frameRate"], "/frameRate");

@@ -43,6 +43,24 @@ preset's style with `preset`. The Captions page's track menu has **Import captio
 This imports captions, not a transcript: Wabcut's transcripts come from transcription and live in the analysis cache
 per source file. Premiere's `.prtranscript` files are not read.
 
+## Shift captions (0.4)
+
+An imported SRT that is half a second late is fixed in one step. The Captions page's track menu has **Shift
+Captions…**; it opens a row under the track with:
+
+- an **offset**: frames (`-12`) or a timecode in the sequence's rate (`-00:00:00:12`, `+00:00:01:00`, `-1:12`). A minus
+  moves the captions earlier; without a sign they move later. An empty, zero or unreadable offset asks for one;
+- the captions that move: **All captions**, or **From the playhead** (the caption under the playhead, else the first one
+  starting after it, and every later one);
+- **Shift** and **Cancel**.
+
+Shift moves the cues of the track the page shows: one undo step, "Shift Captions". It is refused, with nothing changed,
+when a caption would start before 0 or land on a caption that stays; the row says why. The row stays open after a shift
+for another try, with the focus back in the offset field; Esc (wherever the focus is in the row) or Cancel closes it.
+The palette's "Shift Captions" (`captions.shiftCues`) moves the track the Captions page shows too (the sequence's first
+one when the page was never opened); it no longer asks for a track id.
+Premiere selects every caption and nudges or drags them; a typed offset is exact.
+
 ## Find and Replace
 
 Premiere's Find and Replace, as commands, each change one undo step:

@@ -27,7 +27,9 @@
 
 #include <QDir>
 #include <QQuickItem>
+#include <QSettings>
 
+#include <cstdlib>
 #include <string>
 
 using namespace wabcut;
@@ -48,7 +50,9 @@ struct MomentsRig {
     ProjectController controller;
     MomentsBridge moments;
 
-    explicit MomentsRig(const std::string& text = picture()) : tl(text) {
+    /// `mediaFrames`: media longer than the fixture's 1000 frames (a long clip).
+    explicit MomentsRig(const std::string& text = picture(), const std::map<char, std::int64_t>& mediaFrames = {})
+        : tl(text, mediaFrames) {
         tl.linkMatching();
         controller.resetProject(tl.state, tl.seq);
         moments.setController(&controller);
@@ -506,6 +510,154 @@ TEST_CASE("Moments: C.16's instant replay and Shorts version run when the catalo
     r.moments.setRegistry(nullptr);
 }
 
+// ---- 0.4: instant replay of In to Out (or the 5 s before the playhead), with remembered options ----
+
+namespace {
+
+/// One clip of A on V1 and A1 (linked), `seconds` long at 25 fps.
+std::string longPicture(int seconds) {
+    const std::string body = "A" + std::string(static_cast<std::size_t>(seconds * 25 - 1), 'a');
+    return "V1 tgt |" + body + "|\nA1 tgt |" + body + "|";
+}
+
+std::size_t clipsOn(const Sequence& seq, TrackKind kind, std::size_t track) { return seq.tracks(kind)[track]->clips.size(); }
+
+} // namespace
+
+TEST_CASE("Moments: instant replay replays In to Out when both marks are on the clip", "[app][moments]") {
+    QSettings().remove(QStringLiteral("moments"));
+    {
+        // The parameters: In to Out as the command's range (no clip), the remembered options.
+        MomentsRig r(longPicture(20));
+        r.moments.setRegistry(&c16Catalog());
+        r.controller.setPlayhead(f(50)); // 2 s
+        r.controller.markInAtPlayhead();
+        r.controller.setPlayhead(f(100)); // 4 s
+        r.controller.markOutAtPlayhead();
+        const std::size_t before = r.undo();
+        REQUIRE(r.moments.apply(QStringLiteral("instantReplay")).isEmpty());
+        CHECK(r.undo() == before + 1);
+        INFO(g_c16Params.dump());
+        CHECK_FALSE(g_c16Params.contains("clip"));
+        CHECK(g_c16Params.value("in", std::int64_t{0}) == r.controller.markIn()->value);
+        CHECK(g_c16Params.value("out", std::int64_t{0}) == r.controller.markOut()->value);
+        CHECK(g_c16Params.value("speed", 0.0) == Catch::Approx(0.5));
+        CHECK(g_c16Params.value("includeAudio", true) == false);
+        CHECK(g_c16Params.value("label", false) == true);
+        // Marks that miss the clip: the whole clip (a 20 s clip is not "long").
+        r.controller.setPlayhead(f(600));
+        r.controller.markInAtPlayhead();
+        r.controller.setPlayhead(f(700));
+        r.controller.markOutAtPlayhead();
+        r.controller.setPlayhead(f(100));
+        REQUIRE(r.moments.instantReplay().isEmpty());
+        CHECK(g_c16Params.value("clip", std::uint64_t{0}) == r.tl.clip("V1@0").value);
+        CHECK_FALSE(g_c16Params.contains("in"));
+    }
+    {
+        // A short clip without marks: the whole clip (0.3).
+        MomentsRig r(longPicture(10));
+        r.moments.setRegistry(&c16Catalog());
+        r.controller.setPlayhead(f(100));
+        REQUIRE(r.moments.instantReplay().isEmpty());
+        CHECK(g_c16Params.value("clip", std::uint64_t{0}) == r.tl.clip("V1@0").value);
+    }
+    // The real command: the replay of In to Out is a copy of that range, far shorter than a whole-clip replay; with
+    // Sound the audio is copied too.
+    std::size_t silentAudioClips = 0;
+    for (const bool sound : {false, true}) {
+        INFO("sound " << sound);
+        MomentsRig r(longPicture(24));
+        if (!r.moments.gamingEdits().value(QStringLiteral("replay")).toBool())
+            break; // C.16 not in this build
+        r.controller.setPlayhead(f(50));
+        r.controller.markInAtPlayhead();
+        r.controller.setPlayhead(f(100));
+        r.controller.markOutAtPlayhead();
+        const Ticks in = *r.controller.markIn();
+        const Ticks out = *r.controller.markOut();
+        const Ticks lengthBefore = r.controller.currentSequence()->contentEnd();
+        const QString error = r.moments.instantReplay({}, QVariantMap{{QStringLiteral("label"), false},
+                                                                      {QStringLiteral("includeAudio"), sound}});
+        INFO(error.toStdString());
+        REQUIRE(error.isEmpty());
+        const SequencePtr seq = r.controller.currentSequence();
+        const Ticks grew = seq->contentEnd() - lengthBefore;
+        CHECK(grew > Ticks{});
+        CHECK(grew < Ticks::fromSeconds(12)); // a whole-clip replay at half speed would add 48 s
+        // The copy: a clip of A that starts after the moment and plays from the In mark.
+        bool copied = false;
+        for (const Clip& c : seq->videoTracks[0]->clips) {
+            if (c.start() >= out && c.media == r.tl.media('A') && std::llabs((c.sourceIn - in).value) <= f(1).value)
+                copied = true;
+        }
+        CHECK(copied);
+        if (!sound)
+            silentAudioClips = clipsOn(*seq, TrackKind::Audio, 0);
+        else
+            CHECK(clipsOn(*seq, TrackKind::Audio, 0) > silentAudioClips);
+    }
+}
+
+TEST_CASE("Moments: instant replay of a long clip without marks takes the 5 seconds before the playhead", "[app][moments]") {
+    QSettings().remove(QStringLiteral("moments"));
+    MomentsRig r(longPicture(60), {{'A', 60 * 25}});
+    r.moments.setRegistry(&c16Catalog());
+    r.controller.setPlayhead(Ticks::fromSeconds(30));
+    REQUIRE(r.moments.instantReplay().isEmpty());
+    INFO(g_c16Params.dump());
+    CHECK_FALSE(g_c16Params.contains("clip"));
+    CHECK(g_c16Params.value("in", std::int64_t{0}) == Ticks::fromSeconds(25).value);
+    CHECK(g_c16Params.value("out", std::int64_t{0}) == Ticks::fromSeconds(30).value);
+    // Near the clip's start (less than a second before the playhead): the 5 s after it.
+    r.controller.setPlayhead(f(10));
+    REQUIRE(r.moments.instantReplay().isEmpty());
+    CHECK(g_c16Params.value("in", std::int64_t{0}) == f(10).value);
+    CHECK(g_c16Params.value("out", std::int64_t{0}) == (f(10) + Ticks::fromSeconds(5)).value);
+}
+
+TEST_CASE("Moments: instant replay options are remembered", "[app][moments]") {
+    QSettings().remove(QStringLiteral("moments"));
+    {
+        MomentsBridge a;
+        CHECK(a.replaySpeed() == 0.5);
+        CHECK_FALSE(a.replaySound());
+        CHECK(a.replayLabel());
+        int changes = 0;
+        QObject::connect(&a, &MomentsBridge::replayOptionsChanged, &a, [&] { ++changes; });
+        a.setReplaySpeed(0.25);
+        a.setReplaySound(true);
+        a.setReplayLabel(false);
+        CHECK(changes == 3);
+        a.setReplaySpeed(0.3); // the nearer of 25 % and 50 %
+        CHECK(a.replaySpeed() == 0.25);
+        CHECK(changes == 3);
+    }
+    MomentsBridge b;
+    CHECK(b.replaySpeed() == 0.25);
+    CHECK(b.replaySound());
+    CHECK_FALSE(b.replayLabel());
+    b.setReplaySpeed(0.45);
+    CHECK(b.replaySpeed() == 0.5);
+    b.setReplaySpeed(0.25);
+
+    // The command gets them; options given win (scripts, tests).
+    MomentsRig r;
+    r.moments.setRegistry(&c16Catalog());
+    r.controller.setPlayhead(f(100));
+    REQUIRE(r.moments.instantReplay().isEmpty());
+    CHECK(g_c16Params.value("speed", 0.0) == Catch::Approx(0.25));
+    CHECK(g_c16Params.value("includeAudio", false) == true);
+    CHECK(g_c16Params.value("label", true) == false);
+    REQUIRE(r.moments.apply(QStringLiteral("instantReplay"),
+                            {{QStringLiteral("speed"), 0.5}, {QStringLiteral("includeAudio"), false}, {QStringLiteral("label"), true}})
+                .isEmpty());
+    CHECK(g_c16Params.value("speed", 0.0) == Catch::Approx(0.5));
+    CHECK(g_c16Params.value("includeAudio", true) == false);
+    CHECK(g_c16Params.value("label", false) == true);
+    QSettings().remove(QStringLiteral("moments"));
+}
+
 TEST_CASE("Moments: the target follows the playhead and the selection and the keymap commands run", "[app][moments]") {
     MomentsRig r;
     r.controller.setPlayhead(f(100));
@@ -565,12 +717,25 @@ QObject* findObject(QObject* root, const QString& name) {
     return nullptr;
 }
 
+/// The texts under `root` that are cut short (an elided label).
+QStringList truncatedTexts(QQuickItem* root) {
+    QStringList out;
+    if (!root)
+        return out;
+    if (root->inherits("QQuickText") && root->isVisible() && root->property("truncated").toBool())
+        out << root->property("text").toString();
+    for (QQuickItem* child : root->childItems())
+        out << truncatedTexts(child);
+    return out;
+}
+
 } // namespace
 
 TEST_CASE("Moments: the clip menu submenu and the Tracks popover apply presets; screenshot",
           "[app][moments][qml][screenshot]") {
     resetSettings();
     clearMessages();
+    QSettings().remove(QStringLiteral("moments"));
     A11yScope a11y;
     Shell shell;
     REQUIRE(shell.window);
@@ -658,6 +823,43 @@ TEST_CASE("Moments: the clip menu submenu and the Tracks popover apply presets; 
         REQUIRE(item);
         CHECK(item->property("enabled").toBool());
     }
+    // 0.4: the fast-forward speeds have a row of their own: no label is cut short.
+    {
+        const QStringList cut = truncatedTexts(findNamed(content, QStringLiteral("momentsFastSpeed")));
+        INFO(cut.join(QStringLiteral(", ")).toStdString());
+        CHECK(cut.isEmpty());
+    }
+    // 0.4: instant replay's options under its button (when the catalog has C.16's instant replay), bound to the
+    // remembered ones.
+    if (moments->gamingEdits().value(QStringLiteral("replay")).toBool()) {
+        for (const char* name : {"momentsReplayOptions", "momentsReplaySpeed", "momentsReplaySound", "momentsReplayLabel"}) {
+            INFO(name);
+            QQuickItem* item = findNamed(content, QString::fromLatin1(name));
+            REQUIRE(item);
+            CHECK(item->isVisible());
+        }
+        QQuickItem* replaySpeed = findNamed(content, QStringLiteral("momentsReplaySpeed"));
+        QQuickItem* replaySound = findNamed(content, QStringLiteral("momentsReplaySound"));
+        QQuickItem* replayLabel = findNamed(content, QStringLiteral("momentsReplayLabel"));
+        CHECK(replaySpeed->property("currentIndex").toInt() == 1); // 50 %
+        CHECK_FALSE(replaySound->property("checked").toBool());
+        CHECK(replayLabel->property("checked").toBool());
+        REQUIRE(QMetaObject::invokeMethod(replaySpeed, "activated", Q_ARG(int, 0)));
+        CHECK(moments->replaySpeed() == 0.25);
+        CHECK(replaySpeed->property("currentIndex").toInt() == 0);
+        CHECK(findNamed(content, QStringLiteral("momentsInstantReplayButton"))->property("tooltip").toString().endsWith(QStringLiteral("at 25 %")));
+        REQUIRE(QMetaObject::invokeMethod(replaySound, "toggle"));
+        REQUIRE(QMetaObject::invokeMethod(replaySound, "toggled"));
+        CHECK(moments->replaySound());
+        REQUIRE(QMetaObject::invokeMethod(replaySound, "toggle"));
+        REQUIRE(QMetaObject::invokeMethod(replaySound, "toggled"));
+        CHECK_FALSE(moments->replaySound());
+        REQUIRE(QMetaObject::invokeMethod(replaySpeed, "activated", Q_ARG(int, 1)));
+        CHECK(moments->replaySpeed() == 0.5);
+        const QStringList cut = truncatedTexts(findNamed(content, QStringLiteral("momentsReplayOptions")));
+        INFO(cut.join(QStringLiteral(", ")).toStdString());
+        CHECK(cut.isEmpty());
+    }
 
     // 50 %, half a second: Slow-mo this moment.
     QQuickItem* speeds = findNamed(content, QStringLiteral("momentsSlowSpeed"));
@@ -688,8 +890,11 @@ TEST_CASE("Moments: the clip menu submenu and the Tracks popover apply presets; 
     const QImage image = shell.grab();
     REQUIRE_FALSE(image.isNull());
     const double dpr = image.devicePixelRatio();
-    const QRectF area = panel->mapRectToScene(QRectF(0, 0, panel->width(), panel->height()))
-                            .intersected(QRectF(0, 0, image.width() / dpr, image.height() / dpr));
+    // The timeline and the whole popover (0.4: taller, it rises above the timeline panel).
+    QRectF shown = panel->mapRectToScene(QRectF(0, 0, panel->width(), panel->height()));
+    if (QQuickItem* popup = content->parentItem())
+        shown = shown.united(popup->mapRectToScene(QRectF(0, 0, popup->width(), popup->height())));
+    const QRectF area = shown.intersected(QRectF(0, 0, image.width() / dpr, image.height() / dpr));
     REQUIRE(image.copy(QRectF(area.topLeft() * dpr, area.size() * dpr).toRect())
                 .save(QDir(outputDir()).filePath(QStringLiteral("moments-presets.png"))));
 
@@ -699,6 +904,7 @@ TEST_CASE("Moments: the clip menu submenu and the Tracks popover apply presets; 
     CHECK(undo() == before + 1);
     REQUIRE(QMetaObject::invokeMethod(button, "clicked"));
     REQUIRE(waitFor([&] { return !popover->property("visible").toBool(); }, 5000));
+    QSettings().remove(QStringLiteral("moments"));
     const QStringList messages = takeMessages();
     INFO(join(messages));
     CHECK(messages.isEmpty());

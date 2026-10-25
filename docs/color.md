@@ -181,6 +181,29 @@ CPU reference, so what it computes is what the compositor shows.
   cut from the same media without gaps (what Split at Shots makes); also "track", "media" or an explicit list. One undo
   step; dry run available.
 
+## Apply Grade to other clips (0.4)
+
+The Color panel menu (the `…` button) has two rows above **Export .cube…**:
+
+- **Apply Grade to Selected Clips**: the targeted clip's grade onto the other selected video clips (enabled when the
+  targeted clip has a grade and another video clip is selected).
+- **Apply Grade to All Clips of "<media>"**: onto every other video clip of the sequence that shows the same source
+  (the name is cut to 32 characters). For a nested clip "the same source" is the same nested sequence; for a
+  multi-camera clip the same sequence and angle.
+
+The whole grade is copied: every parameter with its keyframes (timed from each clip's start, as Paste Attributes does),
+the curves, LUT references, the section switches and the grade's on / off state. It **replaces** each target's first
+grade, keeping that grade's place in the stack and its local masks (a mask is drawn for one shot); a clip without a grade
+gets one added. Clips on locked tracks, audio clips and the source clip are skipped; the selection does not change. One
+undo step, "Apply Grade", and the panel's status says "Grade applied to 7 clips". Premiere does this with Paste
+Attributes or master clip effects, and Paste Attributes stacks a second Lumetri; Wabcut replaces the grade, so there is
+never a duplicate (Paste Attributes itself is unchanged).
+
+From the CLI, MCP and the assistant it is `color.grade.copy`: `from` (the clip whose grade is copied), `clips` (the
+targets) or `scope: "media"` (every video clip of `from`'s source), `replace` (default true; false appends a second
+grade like Paste Attributes) and `sequence`. The result lists each clip as replaced, added or skipped with the reason;
+it is refused when `from` has no grade or no target would change. Dry run works.
+
 ## CDL interchange
 
 The wheels are exactly an ASC CDL v1.2. `cdl.export` writes `.cc` (one clip), `.ccc` or `.cdl` (several; ids are clip
@@ -353,7 +376,7 @@ the side that changed the colour management (a conflict when both did).
 
 ## Commands (CLI and MCP)
 
-`color.grade.set`, `color.grade.get`, `color.auto`, `color.match`, `color.matchScene`, `lut.import`, `lut.list`, `lut.export`,
+`color.grade.set`, `color.grade.get`, `color.grade.copy` (0.4), `color.auto`, `color.match`, `color.matchScene`, `lut.import`, `lut.list`, `lut.export`,
 `cdl.export`, `cdl.import`, `scopes.read`, and colour management (I.9): `color.management.get`, `color.management.set`,
 `color.inputSpace.get`, `color.inputSpace.set` — see [commands.md](commands.md) and [mcp.md](mcp.md) (generated). Pixels for
 Auto, Match and `scopes.read` come from the editor's `ColorFrameService` (the sequence frame, or one clip alone without

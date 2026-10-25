@@ -20,6 +20,8 @@ import QtQuick.Dialogs
 //     SearchBinPopover), the clip metadata columns, the Metadata panel and XMP from the item menu, and items dragged
 //     in from another project (the Production panel) imported here.
 //
+// 0.4: a folder dropped here, or chosen with the ··· menu's Import folder…, comes in as a bin (subfolders nested) in the
+// open bin, in one undo step; File > Import puts files in the open bin too (Main.importFilesNow).
 // I.1 behaviour kept: files dropped here are imported, "+" imports, media cards drag onto the timeline
 // (application/x-wabcut-media), a double-click shows the clip in the Source Monitor, a sequence opens in its tab.
 // I.3: the proxy chip on each card and the proxy queue pill under the grid.
@@ -37,6 +39,8 @@ Panel {
     property string renaming: ""
 
     signal importRequested()
+    /// 0.4: the ··· menu's Import folder… (the window opens its folder picker: Main.openImportFolder).
+    signal importFolderRequested()
     signal filesDropped(var urls)
     /// 0.2 (P.3): show the Metadata panel / the Production panel.
     signal metadataPanelRequested()
@@ -638,6 +642,7 @@ Panel {
         onNewSearchBinRequested: searchBinPopover.openNew(searchRow)
         onImportFromProjectRequested: importProjectDialog.open()
         onProductionRequested: root.productionPanelRequested()
+        onImportFolderRequested: root.importFolderRequested()
     }
 
     SearchBinPopover {
@@ -791,7 +796,7 @@ Panel {
         visible: content.visible && Library.items.count === 0 && !Library.filtering && Library.currentBin === ""
                  && tabs.currentIndex === 0
         illustration: "library"
-        text: qsTr("Drop media files here, or import them with %1.").arg(KeymapDispatcher.revision >= 0 ? KeymapDispatcher.shortcutText("file.import") : "")
+        text: qsTr("Drop media files or folders here, or import them with %1.").arg(KeymapDispatcher.revision >= 0 ? KeymapDispatcher.shortcutText("file.import") : "")
         actionText: qsTr("Import media")
         actionIcon: "import"
         onActionTriggered: root.importRequested()

@@ -1000,19 +1000,27 @@ FocusScope {
         currentFolder: Home.defaultFolder
         onAccepted: root.openRequested(selectedFile)
     }
+    // 0.4: both import dialogs open where the last dialog import came from (ProjectFile.importFolder) and remember
+    // their choice for the next one (the editor's Import… and Import Folder… share it).
     FileDialog {
         id: importDialog
         title: qsTr("Import")
         fileMode: FileDialog.OpenFiles
         nameFilters: Home.importNameFilters
-        currentFolder: ProjectFile.folder
-        onAccepted: root.handleUrls(selectedFiles)
+        currentFolder: ProjectFile.importFolder
+        onAccepted: {
+            ProjectFile.rememberImportFolder(selectedFiles)
+            root.handleUrls(selectedFiles)
+        }
     }
     FolderDialog {
         id: importFolderDialog
         title: qsTr("Import a folder")
-        currentFolder: ProjectFile.folder
-        onAccepted: root.handleUrls([selectedFolder])
+        currentFolder: ProjectFile.importFolder
+        onAccepted: {
+            ProjectFile.rememberImportFolder([selectedFolder])
+            root.handleUrls([selectedFolder])
+        }
     }
     FileDialog {
         id: locateDialog

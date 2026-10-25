@@ -196,6 +196,7 @@ wabcut-cli mcp --project <file.wabcut> [--allow-edit] [--allow-analysis] [--save
 | [`clipboard.get`](#clipboard.get-v1) | Read | Clipboard |  |
 | [`clipboard.paste`](#clipboard.paste-v1) | EditSequence | Paste |  |
 | [`color.auto`](#color.auto-v1) | EditSequence | Auto Color |  |
+| [`color.grade.copy`](#color.grade.copy-v1) | EditSequence | Apply Grade |  |
 | [`color.grade.get`](#color.grade.get-v1) | Read | Get Color Grade |  |
 | [`color.grade.set`](#color.grade.set-v1) | EditSequence | Set Color Grade |  |
 | [`color.inputSpace.get`](#color.inputSpace.get-v1) | Read | Get Input Colour Space |  |
@@ -2345,7 +2346,7 @@ Capability `EditSequence`. Tool name `clip_link`.
 
 ### `clip.move` v1: Move
 
-Moves clips in time and across tracks. "overwrite" (plain drag) replaces what is at the destination; "insert" (Ctrl-drag) makes room there. Clips cannot start before 0.
+Moves clips in time and across tracks. "overwrite" (plain drag) replaces what is at the destination; "insert" (Ctrl-drag) makes room there; "rearrange" (Ctrl+Alt-drag) closes the clips' old place and makes room at the drop, on the dragged clips' and the destination tracks only (a clip dropped at the cut after its neighbour swaps with it). With copy (Alt-drag) the clips are copied there instead and the originals stay (overwrite or insert; not rearrange). Clips cannot start before 0.
 
 Capability `EditSequence`. Tool name `clip_move`.
 
@@ -2353,9 +2354,10 @@ Capability `EditSequence`. Tool name `clip_move`.
 |---|---|---|---|
 | `audioTracks` | integer |  | Audio track shift; +1 = one track down (A1 -> A2). Default 0. |
 | `clips` | (integer \| object (1..))[], min 1 | yes | Clips to move. |
+| `copy` | boolean |  | Alt-drag: copy the clips instead of moving them; createdIds lists the copies. Default false. |
 | `delta` | integer \| string |  | Time shift; positive = later. Default 0. Signed timecode ("-00:00:00:05") or ticks. |
 | `linked` | boolean |  | Include linked partners (Premiere's linked selection). Default true. |
-| `mode` | `overwrite` \| `insert` |  | Default overwrite. |
+| `mode` | `overwrite` \| `insert` \| `rearrange` |  | Default overwrite. |
 | `sequence` | integer (1..) |  | Sequence id; only needed when the project has several. |
 | `videoTracks` | integer |  | Video track shift; +1 = one track up (V1 -> V2). Default 0. |
 
@@ -3163,6 +3165,26 @@ Capability `EditSequence`. Tool name `color_auto`.
 
 ```json
 {"command":"color.auto","params":{"clips":[42,43]}}
+```
+
+<a id="color.grade.copy-v1"></a>
+
+### `color.grade.copy` v1: Apply Grade
+
+Copies a clip's whole colour grade (every parameter with its keyframes, curves, LUTs, stage switches and the on / off state) over other clips' grades: "clips", or with "scope": "media" every other video clip that shows the same source (the same media item; for nested clips the same sequence, and for multicam the same angle). Each target's first grade is replaced in place (its id, stack position and its own masks stay); a target without a grade gets one at the end of its stack. "replace": false appends a second grade instead, as Paste Attributes does. Audio clips, clips on locked tracks and the source itself are skipped (listed with the reason). One undo step; refused when the source has no grade or no target changes.
+
+Capability `EditSequence`. Tool name `color_grade_copy`.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `clips` | (integer \| object (1..))[], min 1 |  | The clips to apply the grade to (scope "clips"). |
+| `from` | integer \| object (1..) | yes | The clip whose grade is copied. A clip id, or {"track", "time"} for the clip there. |
+| `replace` | boolean |  | Replace each target's grade (default true); false appends another grade. |
+| `scope` | `clips` \| `media` |  | Which clips: "clips" (default) or every video clip of the source's media ("media"). |
+| `sequence` | integer (1..) |  | Sequence id; only needed when the project has several. |
+
+```json
+{"command":"color.grade.copy","params":{"from":42,"scope":"media"}}
 ```
 
 <a id="color.grade.get-v1"></a>
@@ -4593,13 +4615,14 @@ Capability `EditProject`. Tool name `highlights_toReel`.
 
 ### `highlights.toShort` v1: Make Highlight Short
 
-Makes one highlight moment (a highlight marker by rank, or start/end) a vertical 1080x1920 Short: the moment cut out with every track, laid out with layout.apply ("verticalSplit" with the facecam under the gameplay when there is one: a facecam clip above the gameplay or "facecamRegion"; else "verticalBlurFill": the whole game view over a blurred copy), captioned, with the moment's title as the hook and loudness for Shorts. One undo step.
+Makes one highlight moment (a highlight marker by rank, or start/end) a vertical 1080x1920 Short: the moment cut out with every track, laid out with layout.apply ("verticalSplit" with the facecam under the gameplay when there is one: a facecam clip above the gameplay or "facecamRegion"; else "verticalBlurFill": the whole game view over a blurred copy), captioned (the "Shorts" caption style unless "captionPreset" says otherwise), with the moment's title as the hook and loudness for Shorts. One undo step.
 
 Capability `EditProject`. Tool name `highlights_toShort`.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `blur` | number (0.0..500.0) |  | verticalBlurFill: the background's blur radius. Default 40. |
+| `captionPreset` | string |  | The caption style: a built-in preset (Shorts, Clean, Bold Box, Podcast, Thai-friendly) or one of the project's. Default "Shorts" for vertical output, none (the default look) otherwise; "" = the default look. |
 | `captions` | boolean |  | Captions from the transcript. Default true. |
 | `end` | number (0.0..86400.0) |  | Seconds. |
 | `facecam` | integer \| object |  | The facecam clip in the sequence (default: a clip of other media above the gameplay). |
@@ -7205,7 +7228,7 @@ Capability `Read`. Tool name `sequence_setPatches`.
 
 ### `sequence.setSettings` v1: Sequence Settings
 
-Premiere's Sequence > Sequence Settings on an existing sequence. "preset" (sequence.presets) sets the frame size, timebase and drop-frame display at once; the other fields override it. Changing the timebase of a sequence with clips keeps the edit in real time and puts every edit point on the new frame grid: clip starts and ends, transitions, markers, In/Out, the work area and caption cues move to the nearest frame (a clip without media to reach it gets the frame inside instead), clips keep the picture under them, adjacent clips stay adjacent and locked tracks are left alone. Frame size changes keep each clip's Motion. Drop-frame display applies at 29.97 and 59.94 only. "label" is the sequence's label colour (Premiere's Label: the Project panel and its timeline tab). One undo step.
+Premiere's Sequence > Sequence Settings on an existing sequence. "preset" (sequence.presets) sets the frame size, timebase and drop-frame display at once; the other fields override it. Changing the timebase of a sequence with clips keeps the edit in real time and puts every edit point on the new frame grid: clip starts and ends, transitions, markers, In/Out, the work area and caption cues move to the nearest frame (a clip without media to reach it gets the frame inside instead), clips keep the picture under them, adjacent clips stay adjacent and locked tracks are left alone. Frame size changes keep each clip's Motion. Drop-frame display applies at 29.97 and 59.94 only. "label" is the sequence's label colour (Premiere's Label: the Project panel and its timeline tab). "rippleMarkers" is Markers > Ripple Sequence Markers. One undo step.
 
 Capability `EditProject`. Tool name `sequence_setSettings`.
 
@@ -7222,6 +7245,7 @@ Capability `EditProject`. Tool name `sequence_setSettings`.
 | `pixelAspect` | number \| object |  | Pixel aspect ratio (1 square, 0.9091 D1/DV NTSC, 1.4587 PAL widescreen, 2 anamorphic ...). Frames per second (23.976, 25, 29.97, 59.94, 60 ...) or {"num", "den"}. |
 | `preset` | string |  | A preset id from sequence.presets ("1080p23.976", "2160p29.97df", ...). |
 | `previewFormat` | string |  | Preview file format id ("" = default; "prores", "dnxhr", "h264"). |
+| `rippleMarkers` | boolean |  | Markers > Ripple Sequence Markers: sequence markers move with insert, extract, ripple delete and ripple trims. |
 | `sequence` | integer (1..) |  | Sequence id; only needed when the project has several. |
 | `startTimecode` | integer \| string |  | Start time: the timecode of the first frame ("01:00:00:00") or ticks. |
 | `videoDisplay` | `timecode` \| `frames` \| `feet16mm` \| `feet35mm` |  | Video display format. |
@@ -7305,13 +7329,14 @@ Capability `EditSequence`. Tool name `sequence_unnest`.
 
 ### `shorts.create` v1: Create Shorts
 
-Makes one new sequence per short (from shorts.find): the range cut out of the source sequence, reframed to 9:16 (or "aspect") with editable keyframes following the speaker, captioned, with the title as a hook for its first seconds; optionally cleaned of fillers and silences and normalised to -14 LUFS. The source is not changed; all the shorts of one call are one undo step. Export them afterwards (vertical 1080x1920).
+Makes one new sequence per short (from shorts.find): the range cut out of the source sequence, reframed to 9:16 (or "aspect") with editable keyframes following the speaker, captioned (vertical shorts in the "Shorts" caption style unless "captionPreset" says otherwise), with the title as a hook for its first seconds; optionally cleaned of fillers and silences and normalised to -14 LUFS. The source is not changed; all the shorts of one call are one undo step. Export them afterwards (vertical 1080x1920).
 
 Capability `EditProject`. Tool name `shorts_create`. Runs an AI model (extensions need MediaAnalysis for it too).
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `aspect` | string |  | Aspect of the shorts (default "9:16"). |
+| `captionPreset` | string |  | The caption style: a built-in preset (Shorts, Clean, Bold Box, Podcast, Thai-friendly) or one of the project's. Default "Shorts" for vertical output, none (the default look) otherwise; "" = the default look. |
 | `captions` | boolean |  | Add captions from the transcript (default true). |
 | `cleanup` | boolean |  | Remove fillers and silences first (default false). |
 | `cleanupSilences` | number (0.2..10.0) |  | With cleanup: the shortest pause removed, in seconds (default 0.8). |
@@ -7636,7 +7661,7 @@ Capability `EditSequence`. Tool name `template_instantiate`.
 
 ### `template.list` v1: Templates
 
-The graphic templates of the project's library, the user's and the built-in ones that ship with Wabcut (C.16: gaming lower thirds, banners, callouts, stingers, end cards...): id, name, version, default length, canvas, and the fields (id, label, kind, default value) template.instantiate and template.setField take. Built-ins also give their category and "posterTime" (the design time a thumbnail shows: template.resolve draws it). With "id", that template only, with its graphic.
+The graphic templates of the project's library, the user's and the built-in ones that ship with Wabcut (C.16: gaming lower thirds, banners, callouts, stingers, end cards...; 0.4: essay and documentary name and title, location, quote, source and chapter cards that follow the brand kit): id, name, version, default length, canvas, and the fields (id, label, kind, default value) template.instantiate and template.setField take. Built-ins also give their category and "posterTime" (the design time a thumbnail shows: template.resolve draws it). With "id", that template only, with its graphic.
 
 Capability `Read`. Tool name `template_list`.
 

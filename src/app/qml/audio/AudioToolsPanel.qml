@@ -7,9 +7,13 @@ import QtQuick.Layouts
 //   Analyze loudness   the mix, every track and the mix, or the selected clips (audio.loudness): a report table.
 //   Normalize          to the loudness target (audio.normalize), dry-run first: before → gain → after per target,
 //                      then Apply.
-//   Auto-duck          the music tracks under the dialogue tracks (roles, set in the mixer) by an amount with attack,
-//                      release and hold (audio.autoDuck); the planned volume keys show on the timeline as dashed
-//                      ghosts until Apply or Cancel.
+//   Auto-duck          two modes (0.4): "Music under dialogue" ducks the music tracks under the dialogue tracks
+//                      (roles, set in the mixer); "Game under my voice" ducks the game (and, with Include music, the
+//                      music) under the mic, found by track name (Mic, Game, Desktop Audio... - else by role; a line
+//                      says which tracks it uses). Each mode keeps its own amount, attack, release and hold
+//                      (audio.autoDuck); the mode is suggested per sequence (Game under my voice when a track is named
+//                      for the game). The planned volume keys show on the timeline as dashed ghosts until Apply or
+//                      Cancel; Apply is one undo step ("Duck Game Under Voice" / "Auto-Duck Music").
 //   Reduce noise       adds Reduce Noise (RNNoise) to the selected audio clips, or sets its amount where it is.
 // Measuring runs in the background over a copy of the project; Cancel stops it.
 Panel {
@@ -398,10 +402,52 @@ Panel {
 
             // ---- Auto-duck ----
             ToolCard {
+                id: duckCard
                 objectName: "duckTool"
-                heading: qsTr("Auto-duck music under dialogue")
-                detail: qsTr("Music tracks dip while dialogue tracks speak (roles are set in the mixer)")
+                /// 0.4: "Game under my voice" (audio.autoDuck's gaming preset) rather than music under dialogue.
+                readonly property bool gameMode: AudioMixer.duckMode === "gameUnderVoice"
+                readonly property var voiceNames: AudioMixer.gameTracks.voice ?? []
+                readonly property var duckedNames: AudioMixer.gameTracks.game ?? []
+                readonly property bool gameReady: duckCard.voiceNames.length > 0 && duckCard.duckedNames.length > 0
+                heading: qsTr("Auto-duck")
+                detail: duckCard.gameMode ? qsTr("The game and music dip while you talk (tracks named Mic and Game, else by role)")
+                                          : qsTr("Music tracks dip while dialogue tracks speak (roles are set in the mixer)")
                 iconName: "volume-2"
+                PillTabs {
+                    objectName: "duckModeTabs"
+                    Layout.fillWidth: true
+                    compact: true
+                    model: [{ label: qsTr("Music under dialogue") }, { label: qsTr("Game under my voice") }]
+                    currentIndex: duckCard.gameMode ? 1 : 0
+                    Accessible.name: qsTr("Auto-duck mode")
+                    onActivated: index => AudioMixer.duckMode = index === 1 ? "gameUnderVoice" : "default"
+                }
+                // What Game under my voice will use on this sequence, or what it misses.
+                Text {
+                    objectName: "duckTracksLine"
+                    Layout.fillWidth: true
+                    visible: duckCard.gameMode
+                    text: duckCard.voiceNames.length === 0
+                          ? qsTr("No voice track: name your mic track “Mic” or give it the Dialogue role")
+                          : duckCard.duckedNames.length === 0
+                            ? qsTr("No game track: name your game track “Game” or give it the Effects role")
+                            : qsTr("%1 → ducks %2").arg(duckCard.voiceNames.join(", ")).arg(duckCard.duckedNames.join(", "))
+                    wrapMode: Text.Wrap
+                    color: duckCard.gameReady ? Theme.textSecondary : Theme.warning
+                    font.family: Theme.fontSans
+                    font.pixelSize: Theme.textSm
+                }
+                Toggle {
+                    objectName: "duckIncludeMusic"
+                    visible: duckCard.gameMode
+                    text: qsTr("Include music")
+                    tooltip: qsTr("The music tracks dip with the game")
+                    checked: AudioMixer.duckIncludeMusic
+                    onToggled: {
+                        AudioMixer.duckIncludeMusic = checked
+                        checked = Qt.binding(() => AudioMixer.duckIncludeMusic)
+                    }
+                }
                 GridLayout {
                     Layout.fillWidth: true
                     columns: 2
@@ -460,7 +506,7 @@ Panel {
                 PillButton {
                     objectName: "previewDuckButton"
                     Layout.fillWidth: true
-                    enabled: root.idle
+                    enabled: root.idle && (!duckCard.gameMode || duckCard.gameReady)
                     text: qsTr("Preview ducking")
                     onClicked: AudioMixer.previewAutoDuck()
                 }

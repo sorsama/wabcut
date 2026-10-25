@@ -1,8 +1,10 @@
 #include "CommandPalette.h"
 
 #include "AppSettingsBridge.h"
+#include "ClipAudioBridge.h"
 #include "CommandBridge.h"
 #include "EditingBridge.h"
+#include "EffectControls.h"
 #include "ExtensionsBridge.h"
 #include "KeymapDispatcher.h"
 #include "LibraryBridge.h"
@@ -164,11 +166,22 @@ bool KeymapCommandProvider::viewHandles(const QString& id) {
         QStringLiteral("graphics.sendToBack"),       QStringLiteral("graphics.selectNextLayer"),
         QStringLiteral("graphics.selectPreviousLayer"),
         QStringLiteral("moments.slowMo"),            QStringLiteral("moments.punchIn"),
+        // 0.4 (stream B): slow shuttle (Shift+J / Shift+L: KeymapDispatcher's gesture), Play Around (Shift+K: Main.qml),
+        // Show Next / Previous Screen (PageDown / PageUp: TimelinePanel.runCommand) ...
+        QStringLiteral("transport.shuttleSlowBackward"), QStringLiteral("transport.shuttleSlowForward"),
+        QStringLiteral("transport.playAround"),
+        QStringLiteral("timeline.showNextScreen"),   QStringLiteral("timeline.showPreviousScreen"),
+        // ... File > Import Folder... and Import from Media Browser (stream D) and Background Tasks (stream E: the top
+        // bar's activity popover), all routed by Main.qml.
+        QStringLiteral("file.importFolder"),         QStringLiteral("file.importFromMediaBrowser"),
+        QStringLiteral("window.backgroundTasks"),
     };
     // P.2: Premiere's editing and sequence commands (E5) and the monitors' commands (E6), which Main.qml routes to the
     // Editing and Monitors bridges; the Library's (Project panel) and Multi-Camera's keys, which it routes to them.
+    // 0.4: Effect Controls' own commands (stream C: Remove Selected Effect) and the clip volume keys (ClipAudio).
     return kView.contains(id) || EditingBridge::handlesCommand(id) || MonitorBridge::handlesCommand(id) ||
-           LibraryBridge::handlesCommand(id) || MulticamEditBridge::handlesCommand(id);
+           LibraryBridge::handlesCommand(id) || MulticamEditBridge::handlesCommand(id) ||
+           EffectControlsModel::handlesCommand(id) || ClipAudioBridge::handlesCommand(id);
 }
 
 std::shared_ptr<KeymapCommandProvider> KeymapCommandProvider::forApp(KeymapDispatcher* dispatcher,
@@ -384,6 +397,10 @@ CommandPalette* CommandPalette::create(QQmlEngine* qmlEngine, QJSEngine*) {
             if (MulticamEditBridge::handlesCommand(id)) {
                 auto* multicam = engine->singletonInstance<MulticamEditBridge*>("Wabcut", "Multicam");
                 return multicam ? multicam->commandAvailability(id) : QVariantMap{};
+            }
+            if (ClipAudioBridge::handlesCommand(id)) { // 0.4: ] [ and Shift+] [ ("Select clips with sound")
+                auto* clipAudio = engine->singletonInstance<ClipAudioBridge*>("Wabcut", "ClipAudio");
+                return clipAudio ? clipAudio->commandAvailability(id) : QVariantMap{};
             }
             return {};
         };

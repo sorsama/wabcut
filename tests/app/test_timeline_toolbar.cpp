@@ -415,7 +415,7 @@ TEST_CASE("Edit cursors say what a press does, on hover and while it holds", "[a
 
 TEST_CASE("Edit cursors are Boxicons glyphs with a white outline at the screen's pixel ratio", "[app][cursors]") {
     const QStringList keys = editcursors::keys();
-    REQUIRE(keys.size() == 25);
+    REQUIRE(keys.size() == 26); // 0.4: "rearrange" (Ctrl+Alt-drag)
     // A contact sheet for review: every cursor on a dark and a light background, at 1x and 2x.
     QImage sheet(keys.size() * 72, 4 * 72, QImage::Format_ARGB32_Premultiplied);
     sheet.fill(QColor(0x18, 0x16, 0x20));

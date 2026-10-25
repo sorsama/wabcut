@@ -398,3 +398,80 @@ TEST_CASE("Verified (UX rework): Settings is Cmd+Comma in the shipped macOS key 
     CHECK(settings->group == "Edit");
     CHECK(registry.findKys("context.global", "cmd.edit.preferences.general") == settings);
 }
+
+TEST_CASE("Verified (0.4): new keys follow the shipped key sets", "[keymap][tables][verified]") {
+    // Premiere_default_keys.kys (Windows) and Default Adobe.kys (macOS): Nudge Clip Selection Up / Down is Alt+Up /
+    // Alt+Down in context.timeline (Opt on macOS, although Left / Right are Cmd+arrows there), the clip volume keys are
+    // ] [ and Shift+] Shift+[ in context.global, Play from Playhead to Out is Control+Space (the physical Control key on
+    // macOS too), and Ripple Sequence Markers has an identity but no key.
+    struct Row {
+        const char* id;
+        const char* kysContext;
+        const char* kysName;
+        const char* windows; // "" = no default key
+        const char* macos;
+        Scope scope;
+    };
+    const Row rows[] = {
+        {"timeline.nudgeClipUp", "context.timeline", "cmd.timeline.nudge.up", "Alt+Up", "Opt+Up", Scope::Timeline},
+        {"timeline.nudgeClipDown", "context.timeline", "cmd.timeline.nudge.down", "Alt+Down", "Opt+Down", Scope::Timeline},
+        {"clip.increaseVolume", "context.global", "cmd.sequence.increaseclipvolume", "]", "]", Scope::Application},
+        {"clip.decreaseVolume", "context.global", "cmd.sequence.decreaseclipvolume", "[", "[", Scope::Application},
+        {"clip.increaseVolumeMany", "context.global", "cmd.sequence.increaseclipvolumemany", "Shift+]", "Shift+]",
+         Scope::Application},
+        {"clip.decreaseVolumeMany", "context.global", "cmd.sequence.decreaseclipvolumemany", "Shift+[", "Shift+[",
+         Scope::Application},
+        {"transport.playFromPlayheadToOut", "context.global", "cmd.transport.play.ctitoout", "Ctrl+Space", "Ctrl+Space",
+         Scope::Application},
+        {"marker.toggleRipple", "context.global", "cmd.marker.style.ripplesequencemarkers", "", "", Scope::Application},
+    };
+    const CommandRegistry& registry = CommandRegistry::builtin();
+    for (const Row& row : rows) {
+        INFO(row.id);
+        const CommandInfo* c = registry.find(row.id);
+        REQUIRE(c != nullptr);
+        CHECK(c->scope == row.scope);
+        CHECK(registry.findKys(row.kysContext, row.kysName) == c);
+        for (const Platform p : {Platform::Windows, Platform::MacOS}) {
+            INFO(platformId(p));
+            const std::string key = p == Platform::MacOS ? row.macos : row.windows;
+            CHECK(keysOf(p, row.id) == (key.empty() ? Keys{} : Keys{key}));
+            if (!key.empty()) {
+                CHECK(resolved(p, row.scope, key) == row.id);
+            }
+        }
+    }
+    // macOS: Control, not Command (MetaModifier; Cmd+Space is Spotlight).
+    CHECK(keymap(Platform::MacOS).chordsFor("transport.playFromPlayheadToOut") ==
+          std::vector<KeyChord>{{Key_Space, Modifier::Meta}});
+    // Wabcut's own commands for other streams have no identity and no key.
+    for (const char* id : {"file.importFolder", "window.backgroundTasks"}) {
+        INFO(id);
+        REQUIRE(registry.find(id) != nullptr);
+        CHECK(registry.find(id)->kysName.empty());
+        CHECK(keysOf(Platform::Windows, id).empty());
+        CHECK(keysOf(Platform::MacOS, id).empty());
+    }
+    // The slow shuttle, Play Around and screen paging keep the keys they had (handled from 0.4).
+    CHECK(keysOf(Platform::Windows, "transport.shuttleSlowForward") == Keys{"Shift+L"});
+    CHECK(keysOf(Platform::Windows, "transport.playAround") == Keys{"Shift+K"});
+    CHECK(keysOf(Platform::Windows, "timeline.showNextScreen") == Keys{"PageDown"});
+}
+
+TEST_CASE("Bracket keys change clip volume while the Project panel keeps Shift+] and Shift+[", "[keymap][tables]") {
+    for (const Platform p : {Platform::Windows, Platform::MacOS}) {
+        INFO(platformId(p));
+        CHECK(resolved(p, Scope::Timeline, "]") == "clip.increaseVolume");
+        CHECK(resolved(p, Scope::Timeline, "[") == "clip.decreaseVolume");
+        CHECK(resolved(p, Scope::Timeline, "Shift+]") == "clip.increaseVolumeMany");
+        CHECK(resolved(p, Scope::ProgramMonitor, "Shift+[") == "clip.decreaseVolumeMany");
+        // The Library (Project panel) shadows the Application keys with Premiere's thumbnail size keys.
+        CHECK(resolved(p, Scope::Project, "Shift+]") == "project.thumbnailSizeNext");
+        CHECK(resolved(p, Scope::Project, "Shift+[") == "project.thumbnailSizePrevious");
+        CHECK(resolved(p, Scope::Project, "]") == "clip.increaseVolume");
+        // Alt/Opt+Up next to them in the Timeline is Nudge Clip Selection Up.
+        CHECK(resolved(p, Scope::Timeline, p == Platform::MacOS ? "Opt+Up" : "Alt+Up") == "timeline.nudgeClipUp");
+    }
+    CHECK(keymap(Platform::Windows).conflicts().empty());
+    CHECK(keymap(Platform::MacOS).conflicts().empty());
+}

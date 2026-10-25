@@ -965,6 +965,52 @@ void CaptionsBridge::seekToCue(int index) {
     m_controller->setPlayhead(seq ? seekPointIn(TimeRange{cue.start, cue.duration}, seq->frameRate) : cue.start);
 }
 
+QString CaptionsBridge::shiftCues(const QString& delta, const QString& scope) {
+    const CaptionTrack* t = shownTrack();
+    if (!m_controller || !t) {
+        setMessage(tr("Make a caption track first"));
+        return m_message;
+    }
+    // A signed offset: frames ("-12") or a timecode in the sequence's rate ("+00:00:00:12", "-1:12"); unsigned is later.
+    QString text = delta.trimmed();
+    if (text.startsWith(u'+'))
+        text = text.mid(1).trimmed();
+    const std::optional<Ticks> amount = m_controller->parseTimecodeText(text);
+    if (!amount || *amount == Ticks{}) {
+        setMessage(tr("Type an offset such as -00:00:00:12 (earlier) or 12 (frames later)"));
+        return m_message;
+    }
+    QVariantMap params{{QStringLiteral("delta"), static_cast<qlonglong>(amount->value)}};
+    if (scope == QLatin1String("fromPlayhead")) {
+        // The caption under the playhead, else the first one that starts after it, and every later one.
+        const Ticks p = m_controller->playhead();
+        std::optional<Ticks> from;
+        for (const CaptionCue& cue : t->cues) {
+            if (p >= cue.start && p < cue.end()) {
+                from = cue.start;
+                break;
+            }
+        }
+        if (!from) {
+            for (const CaptionCue& cue : t->cues) {
+                if (cue.start >= p && (!from || cue.start < *from))
+                    from = cue.start;
+            }
+        }
+        if (!from) {
+            setMessage(tr("There is no caption at or after the playhead"));
+            return m_message;
+        }
+        params.insert(QStringLiteral("from"), static_cast<qlonglong>(from->value));
+    } else if (scope != QLatin1String("all")) {
+        setMessage(tr("Shift all captions or those from the playhead"));
+        return m_message;
+    }
+    // captions.shiftCues on the shown track (runCommand adds it): one undo step "Shift Captions"; a refusal (a cue
+    // before 0, an overlap) changes nothing and its reason is the message.
+    return runCommand("captions.shiftCues", params);
+}
+
 QString CaptionsBridge::exportText(const QString& format) const {
     const CaptionTrack* t = shownTrack();
     if (!t)

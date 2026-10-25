@@ -1,0 +1,280 @@
+{
+  "format": "wabcut-graphic-template",
+  "template": {
+    "description": "Place and date in the upper left with a short accent rule.",
+    "duration": 1270080000000,
+    "fields": [
+      {
+        "id": "place",
+        "kind": "text",
+        "label": "Place",
+        "layer": 3,
+        "property": "text",
+        "value": "Place name"
+      },
+      {
+        "id": "date",
+        "kind": "text",
+        "label": "Date",
+        "layer": 4,
+        "property": "text",
+        "value": "Date or year"
+      },
+      {
+        "id": "accent",
+        "kind": "color",
+        "label": "Accent colour",
+        "layer": 2,
+        "property": "fill",
+        "value": {
+          "brand": "Accent",
+          "rgba": [
+            0.93,
+            0.92,
+            0.88,
+            1.0
+          ]
+        }
+      },
+      {
+        "id": "length",
+        "kind": "duration",
+        "label": "Length",
+        "property": "clip",
+        "value": 1270080000000
+      }
+    ],
+    "graphic": {
+      "height": 1080,
+      "layers": [
+        {
+          "children": [
+            {
+              "id": 2,
+              "kind": "shape",
+              "masks": [
+                {
+                  "enabled": true,
+                  "id": 1,
+                  "inverted": false,
+                  "mode": "add",
+                  "name": "Wipe",
+                  "params": {
+                    "center.x": {
+                      "keys": [
+                        {
+                          "t": 0,
+                          "v": 0.01875
+                        },
+                        {
+                          "i": "easeIn",
+                          "t": 88905600000,
+                          "v": 0.0
+                        }
+                      ]
+                    },
+                    "center.y": {
+                      "value": 0.0
+                    },
+                    "size.x": {
+                      "keys": [
+                        {
+                          "t": 0,
+                          "v": 0.0
+                        },
+                        {
+                          "i": "easeIn",
+                          "t": 88905600000,
+                          "v": 0.0375
+                        }
+                      ]
+                    },
+                    "size.y": {
+                      "value": 0.005555555555555556
+                    }
+                  },
+                  "shape": "rectangle"
+                }
+              ],
+              "name": "Accent rule",
+              "shape": {
+                "fill": {
+                  "color": {
+                    "brand": "Accent",
+                    "rgba": [
+                      0.93,
+                      0.92,
+                      0.88,
+                      1.0
+                    ]
+                  },
+                  "type": "solid"
+                },
+                "height": 6.0,
+                "type": "rectangle",
+                "width": 72.0
+              },
+              "transform": {
+                "x": 36.0,
+                "y": 3.0
+              }
+            },
+            {
+              "id": 3,
+              "kind": "text",
+              "name": "Place",
+              "shadow": {
+                "angle": 90.0,
+                "color": [
+                  0.03,
+                  0.03,
+                  0.04,
+                  1.0
+                ],
+                "distance": 3.0,
+                "enabled": true,
+                "opacity": 0.6,
+                "softness": 10.0
+              },
+              "text": {
+                "runs": [
+                  {
+                    "brandFont": "heading",
+                    "fill": [
+                      0.96,
+                      0.96,
+                      0.95,
+                      1.0
+                    ],
+                    "font": "IBM Plex Sans Thai",
+                    "size": 56.0,
+                    "text": "Place name",
+                    "weight": 600
+                  }
+                ]
+              },
+              "transform": {
+                "y": 22.0
+              }
+            },
+            {
+              "id": 4,
+              "kind": "text",
+              "name": "Date",
+              "shadow": {
+                "angle": 90.0,
+                "color": [
+                  0.03,
+                  0.03,
+                  0.04,
+                  1.0
+                ],
+                "distance": 3.0,
+                "enabled": true,
+                "opacity": 0.6,
+                "softness": 10.0
+              },
+              "text": {
+                "runs": [
+                  {
+                    "brandFont": "body",
+                    "fill": [
+                      0.96,
+                      0.96,
+                      0.95,
+                      0.88
+                    ],
+                    "font": "IBM Plex Sans Thai",
+                    "size": 34.0,
+                    "text": "Date or year",
+                    "tracking": 20.0
+                  }
+                ]
+              },
+              "transform": {
+                "opacity": {
+                  "keys": [
+                    {
+                      "t": 63504000000,
+                      "v": 0.0
+                    },
+                    {
+                      "i": "easeIn",
+                      "t": 127008000000,
+                      "v": 100.0
+                    }
+                  ]
+                },
+                "y": {
+                  "keys": [
+                    {
+                      "t": 63504000000,
+                      "v": 111.2
+                    },
+                    {
+                      "i": "easeIn",
+                      "t": 139708800000,
+                      "v": 95.2
+                    }
+                  ]
+                }
+              }
+            }
+          ],
+          "id": 1,
+          "kind": "group",
+          "name": "Location and date",
+          "transform": {
+            "opacity": {
+              "keys": [
+                {
+                  "t": 0,
+                  "v": 0.0
+                },
+                {
+                  "i": "easeIn",
+                  "t": 76204800000,
+                  "v": 100.0
+                },
+                {
+                  "i": "easeOut",
+                  "t": 1168473600000,
+                  "v": 100.0
+                },
+                {
+                  "t": 1270080000000,
+                  "v": 0.0
+                }
+              ]
+            },
+            "x": {
+              "keys": [
+                {
+                  "t": 0,
+                  "v": 100.0
+                },
+                {
+                  "i": "easeIn",
+                  "t": 114307200000,
+                  "v": 140.0
+                }
+              ]
+            },
+            "y": 110.0
+          }
+        }
+      ],
+      "name": "Location and date",
+      "responsive": {
+        "duration": 1270080000000,
+        "intro": 177811200000,
+        "outro": 101606400000
+      },
+      "width": 1920
+    },
+    "id": "wabcut.essay.location",
+    "name": "Location and date",
+    "version": 1
+  },
+  "version": 1
+}

@@ -295,7 +295,8 @@ Panel {
                     objectName: "metadataXmp_" + index
                     width: content.width
                     group: modelData.group
-                    showGroup: index === 0 || (root.file.xmp[index - 1].group !== modelData.group)
+                    // `?.`: the file shown may go (an undone import) before this row does.
+                    showGroup: index === 0 || (root.file.xmp?.[index - 1]?.group !== modelData.group)
                     label: modelData.label
                     value: modelData.value
                     hint: modelData.name
@@ -312,7 +313,7 @@ Panel {
                     objectName: "metadataTag_" + index
                     width: content.width
                     group: modelData.scope
-                    showGroup: index === 0 || (root.file.tags[index - 1].scope !== modelData.scope)
+                    showGroup: index === 0 || (root.file.tags?.[index - 1]?.scope !== modelData.scope)
                     label: modelData.key
                     value: modelData.value
                     visible: root.matches(modelData.key, modelData.value)

@@ -82,6 +82,9 @@ std::atomic<bool> g_chatImported{false};
 std::atomic<QThread*> g_findThread{nullptr};
 std::atomic<int> g_findSteps{4};
 std::atomic<int> g_stepMs{0};
+/// 0.4 (Make Shorts' Cancel): the stub toShort's calls, and whether its second call waits at checkpoints until cancelled.
+std::atomic<int> g_shortCalls{0};
+std::atomic<bool> g_shortHold{false};
 
 Json last(const Json& which) {
     std::lock_guard lock(g_mutex);
@@ -278,6 +281,13 @@ command::CommandRegistry stubCatalog() {
         }
         if (p.contains("mode") || p.contains("fit"))
             command::fail(command::ErrorCode::InvalidParams, "mode and fit are gone (draft 3: layout.apply)");
+        // 0.4: Make Shorts' Cancel test holds the second Short at its checkpoints until Cancel stops it (10 s at most).
+        if (++g_shortCalls == 2 && g_shortHold.load()) {
+            for (int i = 0; i < 5000; ++i) {
+                c.checkpoint("framing the short 50%");
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            }
+        }
         const bool facecam = p.contains("facecam") || p.contains("facecamRegion");
         std::string layout = p.value("layout", std::string("auto"));
         if (layout == "auto")
@@ -319,10 +329,14 @@ struct Rig {
     HighlightsBridge hl;
     std::vector<bool> transport; ///< preview's play (true) / pause (false)
 
-    explicit Rig(bool synchronous = true) {
+    explicit Rig(bool synchronous = true, const std::string& picture = gameplayPicture(),
+                 const std::map<char, std::int64_t>& mediaFrames = {})
+        : tl(picture, mediaFrames) {
         g_findSteps = 4;
         g_stepMs = 0;
         g_chatImported = false;
+        g_shortCalls = 0;
+        g_shortHold = false;
         controller.resetProject(tl.state, tl.seq);
         hl.setRegistry(&catalog());
         hl.setSynchronous(synchronous);
@@ -894,10 +908,285 @@ TEST_CASE("Highlights: the panel's find, reel and Short parameters pass G.2's ow
     check("highlights.toShort", hl.shortParams(1, QVariantMap{{QStringLiteral("layout"), QStringLiteral("verticalSplit")},
                                                               {QStringLiteral("split"), 0.6},
                                                               {QStringLiteral("facecamOnTop"), true}}));
+    // 0.4: the lead-in, tail and caption style the Short options send (a moment's range given, as shortParams makes it).
+    check("highlights.toShort", QVariantMap{{QStringLiteral("sequence"), static_cast<qulonglong>(tl.seq.value)},
+                                            {QStringLiteral("start"), 18.0},
+                                            {QStringLiteral("end"), 22.0},
+                                            {QStringLiteral("title"), QStringLiteral("Triple kill")},
+                                            {QStringLiteral("handleBefore"), 5.0},
+                                            {QStringLiteral("handleAfter"), 2.0},
+                                            {QStringLiteral("captions"), true},
+                                            {QStringLiteral("captionPreset"), QStringLiteral("Shorts")}});
+}
+
+// ---- 0.4: Make Shorts (every accepted moment), Export all, and the Short options' lead-in, tail and minimum length ----
+
+TEST_CASE("Highlights: Make Shorts makes one Short per accepted moment in one undo step and stays on the source",
+          "[app][highlights]") {
+    Rig r;
+    REQUIRE(r.hl.find({}).isEmpty());
+    r.hl.accept(3);
+    r.hl.accept(1);
+    CHECK(r.hl.shortsCount() == 2);
+    CHECK(r.hl.madeShortsCount() == 0);
+    const qsizetype sequences = r.controller.sequenceNames().size();
+    const int current = r.controller.currentSequenceIndex();
+    const std::size_t before = r.undo();
+    QStringList activities;
+    QStringList jobs;
+    QObject::connect(&r.hl, &HighlightsBridge::jobChanged, &r.hl, [&] {
+        activities << r.hl.activity();
+        jobs << r.hl.job();
+    });
+    int madeSignals = 0;
+    QObject::connect(&r.hl, &HighlightsBridge::madeShortsChanged, &r.hl, [&] { ++madeSignals; });
+
+    REQUIRE(r.hl.makeShorts(opts({{QStringLiteral("layout"), QStringLiteral("auto")}})).isEmpty());
+    INFO(r.hl.message().toStdString());
+    CHECK(activities.contains(QStringLiteral("Short 1 of 2")));
+    CHECK(activities.contains(QStringLiteral("Short 2 of 2")));
+    CHECK(jobs.contains(QStringLiteral("shorts")));
+    CHECK(r.hl.job().isEmpty());
+    // Two vertical sequences, one undo step; the timeline stays on the source and the moments stay listed.
+    CHECK(r.controller.sequenceNames().size() == sequences + 2);
+    CHECK(r.controller.currentSequenceIndex() == current);
+    CHECK(r.controller.currentSequenceId() == r.tl.seq);
+    CHECK(r.undo() == before + 1);
+    CHECK(r.controller.session().undoLabel().value_or("") == "Make Highlight Shorts");
+    CHECK(r.ranks() == std::vector<int>{1, 2, 3, 4, 5});
+    CHECK(r.hl.madeShortsCount() == 2);
+    CHECK(madeSignals > 0);
+    // In time order (rank 1 at 18 s, rank 3 at 25 s); the message names them.
+    CHECK(r.controller.sequenceNames().contains(QStringLiteral("Triple kill + You shouted (Short)")));
+    CHECK(r.controller.sequenceNames().contains(QStringLiteral("Boss down (Short)")));
+    CHECK(r.hl.message().contains(QStringLiteral("Triple kill + You shouted (Short), Boss down (Short)")));
+    for (const SequencePtr& s : r.controller.snapshot()->sequences) {
+        if (s->id != r.tl.seq) {
+            CHECK(s->width == 1080);
+            CHECK(s->height == 1920);
+        }
+    }
+    // One undo takes both away.
+    REQUIRE(r.controller.undo());
+    CHECK(r.controller.sequenceNames().size() == sequences);
+    CHECK(r.hl.madeShortsCount() == 0);
+
+    // Nothing to make: why.
+    r.hl.accept(1);
+    r.hl.accept(3);
+    for (int rank : {1, 2, 3, 4, 5})
+        r.hl.reject(rank);
+    CHECK(r.hl.shortsCount() == 0);
+    CHECK_FALSE(r.hl.makeShorts({}).isEmpty());
+}
+
+TEST_CASE("Highlights: Cancel keeps the Shorts made so far", "[app][highlights]") {
+    Rig r;
+    REQUIRE(r.hl.find({}).isEmpty());
+    r.hl.accept(1);
+    r.hl.accept(2);
+    r.hl.accept(3);
+    r.hl.setSynchronous(false);
+    g_shortHold = true;
+    const qsizetype sequences = r.controller.sequenceNames().size();
+    const std::size_t before = r.undo();
+    REQUIRE(r.hl.makeShorts({}).isEmpty());
+    CHECK(r.hl.busy());
+    CHECK(r.hl.job() == QStringLiteral("shorts"));
+    // The second Short waits at its checkpoints: Cancel drops it and keeps the first.
+    REQUIRE(waitFor([&] { return g_shortCalls.load() >= 2; }, 10000));
+    r.hl.cancel();
+    REQUIRE(waitFor([&] { return !r.hl.busy(); }, 10000));
+    g_shortHold = false;
+    INFO(r.hl.message().toStdString());
+    CHECK(r.controller.sequenceNames().size() == sequences + 1);
+    CHECK(r.controller.sequenceNames().contains(QStringLiteral("Clutch round (Short)"))); // rank 2, the earliest
+    CHECK(r.undo() == before + 1);
+    CHECK(r.hl.madeShortsCount() == 1);
+    CHECK(r.hl.message().contains(QStringLiteral("Cancelled after 1 of 3.")));
+    CHECK(r.controller.currentSequenceId() == r.tl.seq);
+}
+
+TEST_CASE("Highlights: Export all queues each Short with the vertical preset", "[app][highlights]") {
+    Rig r;
+    REQUIRE(r.hl.find({}).isEmpty());
+    r.hl.accept(1);
+    r.hl.accept(3);
+    REQUIRE(r.hl.makeShorts({}).isEmpty());
+    REQUIRE(r.hl.madeShortsCount() == 2);
+    struct Queued {
+        QString sequence;
+        QString preset;
+        QVariantMap overrides;
+    };
+    std::vector<Queued> queued;
+    r.hl.setQueueExport([&](const QString& sequence, const QString& preset, const QVariantMap& overrides) {
+        queued.push_back({sequence, preset, overrides});
+        return QStringLiteral("j%1").arg(queued.size());
+    });
+    CHECK(r.hl.exportShorts(false) == 2);
+    REQUIRE(queued.size() == 2);
+    for (const Queued& q : queued) {
+        CHECK(q.preset == QStringLiteral("vertical-1080x1920"));
+        CHECK(q.overrides.isEmpty());
+        const auto id = parseSequenceKey(q.sequence);
+        REQUIRE(id);
+        const Sequence* made = r.controller.snapshot()->findSequence(*id);
+        REQUIRE(made);
+        CHECK(made->height == 1920);
+    }
+    CHECK(queued[0].sequence != queued[1].sequence);
+    CHECK(r.hl.exportShorts(true) == 2);
+    REQUIRE(queued.size() == 4);
+    CHECK(queued[2].overrides == QVariantMap{{QStringLiteral("videoCodec"), QStringLiteral("hevc")}});
+    // A refused export is not counted; undone Shorts are not queued.
+    r.hl.setQueueExport([&](const QString&, const QString&, const QVariantMap&) { return QString(); });
+    CHECK(r.hl.exportShorts(false) == 0);
+    REQUIRE(r.controller.undo());
+    r.hl.setQueueExport([&](const QString& sequence, const QString& preset, const QVariantMap& overrides) {
+        queued.push_back({sequence, preset, overrides});
+        return QStringLiteral("j");
+    });
+    CHECK(r.hl.exportShorts(false) == 0);
+    CHECK(queued.size() == 4);
+}
+
+TEST_CASE("Highlights: lead-in and tail and a minimum length widen the Short", "[app][highlights]") {
+    Rig r;
+    REQUIRE(r.hl.find(opts({{QStringLiteral("minScore"), 0.1}})).isEmpty());
+    REQUIRE(r.ranks().size() == 6);
+    const auto handles = [&](int rank, const QVariantMap& options) {
+        const QVariantMap p = r.hl.shortParams(rank, options);
+        return std::pair{p.value(QStringLiteral("handleBefore"), 0.0).toDouble(), p.value(QStringLiteral("handleAfter"), 0.0).toDouble()};
+    };
+    // No options: no handles sent (the command's 0).
+    const QVariantMap plain = r.hl.shortParams(1, {});
+    CHECK_FALSE(plain.contains(QStringLiteral("handleBefore")));
+    CHECK_FALSE(plain.contains(QStringLiteral("handleAfter")));
+    // Rank 1 is 18-22 s of a 30 s sequence. Lead-in and tail pass through.
+    auto [before, after] = handles(1, opts({{QStringLiteral("handleBefore"), 5.0}, {QStringLiteral("handleAfter"), 2.0}}));
+    CHECK(before == Approx(5.0));
+    CHECK(after == Approx(2.0));
+    // 99 is clamped to 30, then to the 18 s before the moment; the rest goes after it, up to the sequence's end.
+    std::tie(before, after) = handles(1, opts({{QStringLiteral("handleBefore"), 99.0}}));
+    CHECK(before == Approx(18.0));
+    CHECK(after == Approx(8.0));
+    // "At least" 15 s on a 4 s moment: 11 s more, two thirds before and one third after.
+    std::tie(before, after) = handles(1, opts({{QStringLiteral("minLength"), 15}}));
+    CHECK(before + after == Approx(11.0));
+    CHECK(before == Approx(22.0 / 3.0).margin(0.001));
+    CHECK(after == Approx(11.0 / 3.0).margin(0.001));
+    // "At least" 30 s: 26 s more; the end of the sequence caps the tail, the lead-in takes the rest (to the start).
+    std::tie(before, after) = handles(1, opts({{QStringLiteral("minLength"), 30}}));
+    CHECK(before + after == Approx(26.0));
+    CHECK(after == Approx(8.0));
+    // A moment at 1 s with a 5 s lead-in: 1 s before, the other 4 s after.
+    std::tie(before, after) = handles(6, opts({{QStringLiteral("handleBefore"), 5.0}}));
+    CHECK(before == Approx(1.0));
+    CHECK(after == Approx(4.0));
+    // The caption style goes with captions only.
+    CHECK(r.hl.shortParams(1, opts({{QStringLiteral("captionPreset"), QStringLiteral("Clean")}}))
+              .value(QStringLiteral("captionPreset")).toString() == QStringLiteral("Clean"));
+    CHECK_FALSE(r.hl.shortParams(1, opts({{QStringLiteral("captions"), false}, {QStringLiteral("captionPreset"), QStringLiteral("Clean")}}))
+                    .contains(QStringLiteral("captionPreset")));
+    // A batch uses the same options: each Short's request has its handles.
+    r.hl.accept(1);
+    REQUIRE(r.hl.makeShorts(opts({{QStringLiteral("handleBefore"), 3.0}, {QStringLiteral("handleAfter"), 1.0}})).isEmpty());
+    const Json sent = last(g_lastShort);
+    INFO(sent.dump());
+    CHECK(sent["handleBefore"].get<double>() == Approx(3.0));
+    CHECK(sent["handleAfter"].get<double>() == Approx(1.0));
+}
+
+TEST_CASE("Highlights: At least 60 s reaches 60 s when one side hits its 30 s cap", "[app][highlights]") {
+    // Fix round 1 (D): the time the 30 s cap cuts from one side goes to the other (up to its own 30 s), as the
+    // sequence's start and end already do. A 4 s moment at 60 s of a 120 s recording.
+    const std::string body = "G" + std::string(2999, 'g');
+    Rig r(true, "V1 tgt |" + body + "|\nA1 tgt |" + body + "|\n", {{'G', 3000}});
+    Marker marker;
+    marker.start = seconds(60.0);
+    marker.duration = seconds(4.0);
+    marker.name = "Highlight 1: Late clutch";
+    marker.highlight = MarkerHighlight{.score = 0.9, .reasons = {"you shouted"}, .peak = seconds(62.0)};
+    REQUIRE(r.controller.session().apply("Add Marker", [&](const ProjectState& s) { return edit::addMarker(s, r.tl.seq, marker); }));
+    REQUIRE(r.ranks() == std::vector<int>{1});
+    const auto handles = [&](const QVariantMap& options) {
+        const QVariantMap p = r.hl.shortParams(1, options);
+        return std::pair{p.value(QStringLiteral("handleBefore"), 0.0).toDouble(), p.value(QStringLiteral("handleAfter"), 0.0).toDouble()};
+    };
+    // The defaults (3 s / 1 s) and At least 60 s: 56 s more; two thirds before is over 30, so the tail takes the rest.
+    auto [before, after] = handles(opts({{QStringLiteral("handleBefore"), 3.0}, {QStringLiteral("handleAfter"), 1.0},
+                                         {QStringLiteral("minLength"), 60}}));
+    CHECK(before == Approx(30.0));
+    CHECK(after == Approx(26.0).margin(0.001));
+    CHECK(4.0 + before + after == Approx(60.0).margin(0.001));
+    // The other way round: a 30 s tail already, so the lead-in takes what the tail cannot.
+    std::tie(before, after) = handles(opts({{QStringLiteral("handleAfter"), 30.0}, {QStringLiteral("minLength"), 60}}));
+    CHECK(after == Approx(30.0));
+    CHECK(before == Approx(26.0).margin(0.001));
+    // Both sides full: 64 s is the most a 4 s moment gets (the command caps a Short at 3 minutes anyway).
+    std::tie(before, after) = handles(opts({{QStringLiteral("handleBefore"), 30.0}, {QStringLiteral("handleAfter"), 30.0},
+                                            {QStringLiteral("minLength"), 90}}));
+    CHECK(before == Approx(30.0));
+    CHECK(after == Approx(30.0));
+}
+
+TEST_CASE("Highlights: a ripple edit before reviewed moments keeps their accept and reject", "[app][highlights]") {
+    // Fix round 1 (D): reviews follow their markers when a ripple edit moves them (Ripple Sequence Markers is on by
+    // default in 0.4), so Make Shorts still makes the accepted moments.
+    Rig r;
+    REQUIRE(r.hl.find({}).isEmpty());
+    REQUIRE(r.ranks() == std::vector<int>{1, 2, 3, 4, 5});
+    r.hl.accept(1);  // 18-22 s
+    r.hl.accept(3);  // 25-28 s
+    r.hl.reject(4);  // 10-13 s
+    r.hl.setSelectedRank(3);
+    REQUIRE(r.hl.shortsCount() == 2);
+    const auto state = [&](int rank) { return r.moment(rank).value(QStringLiteral("state")).toString(); };
+
+    // Extract 8-10 s: every moment after it moves 2 s earlier.
+    const auto extracted = r.controller.session().apply("Extract", [&](const ProjectState& s) -> edit::EditOutcome {
+        auto marked = edit::markIn(s, r.tl.seq, seconds(8.0));
+        if (!marked)
+            return marked;
+        marked = edit::markOut(marked->state, r.tl.seq, seconds(10.0) - f(1));
+        if (!marked)
+            return marked;
+        return edit::extract(marked->state, r.tl.seq);
+    });
+    REQUIRE(extracted);
+    REQUIRE(r.moment(1).value(QStringLiteral("start")).toDouble() == Approx(16.0));
+    CHECK(r.moment(3).value(QStringLiteral("start")).toDouble() == Approx(23.0));
+    CHECK(state(1) == QStringLiteral("accepted"));
+    CHECK(state(3) == QStringLiteral("accepted"));
+    CHECK(state(4) == QStringLiteral("rejected"));
+    CHECK(state(2).isEmpty());
+    CHECK(state(5).isEmpty());
+    CHECK(r.hl.shortsCount() == 2);
+    CHECK(r.hl.selectedRank() == 3);
+
+    // Undo puts the markers back and the reviews go with them; redo moves them again.
+    REQUIRE(r.controller.undo());
+    REQUIRE(r.moment(1).value(QStringLiteral("start")).toDouble() == Approx(18.0));
+    CHECK(state(1) == QStringLiteral("accepted"));
+    CHECK(state(3) == QStringLiteral("accepted"));
+    CHECK(state(4) == QStringLiteral("rejected"));
+    REQUIRE(r.controller.redo());
+    CHECK(state(1) == QStringLiteral("accepted"));
+    CHECK(state(4) == QStringLiteral("rejected"));
+
+    // Make Shorts makes the two accepted moments, not every moment that is not rejected.
+    const qsizetype sequences = r.controller.sequenceNames().size();
+    REQUIRE(r.hl.makeShorts({}).isEmpty());
+    CHECK(r.controller.sequenceNames().size() == sequences + 2);
+    CHECK(r.controller.sequenceNames().contains(QStringLiteral("Triple kill + You shouted (Short)")));
+    CHECK(r.controller.sequenceNames().contains(QStringLiteral("Boss down (Short)")));
 }
 
 TEST_CASE("Highlights panel in the window: cards, the keyboard path, options, reel; a11y; screenshot",
           "[app][highlights][qml][screenshot]") {
+    // 0.4 too: Make Shorts (N) and Export all, the Short options' Length group and caption style, the Short's length in
+    // its tooltip (screenshots highlight-short-options.png and highlights-shorts-batch.png).
     resetSettings();
     clearMessages();
     A11yScope a11y;
@@ -1032,6 +1321,14 @@ TEST_CASE("Highlights panel in the window: cards, the keyboard path, options, re
     REQUIRE(accept4);
     REQUIRE(QMetaObject::invokeMethod(accept4, "clicked"));
     CHECK(hl->acceptedCount() == 2);
+    // 0.4: Make Shorts counts the accepted moments; Export all waits for a batch.
+    QQuickItem* shortsButton = findNamed(panel.get(), QStringLiteral("highlightsShortsButton"));
+    REQUIRE(shortsButton);
+    CHECK(shortsButton->property("text").toString() == QStringLiteral("Make Shorts (2)"));
+    CHECK(shortsButton->isEnabled());
+    QQuickItem* exportRow = findNamed(panel.get(), QStringLiteral("highlightsExportRow"));
+    REQUIRE(exportRow);
+    CHECK_FALSE(exportRow->isVisible());
     hl->setSelectedRank(1);
     polishAll(panel.get());
     polishAll(panel.get());
@@ -1108,6 +1405,66 @@ TEST_CASE("Highlights panel in the window: cards, the keyboard path, options, re
         INFO(join(issues));
         CHECK(issues.isEmpty());
     }
+    // 0.4: Length - lead-in, tail and "At least" - and the caption style, from Preferences.
+    QQuickItem* leadIn = findNamed(shortContent, QStringLiteral("highlightsShortLeadIn"));
+    QQuickItem* tail = findNamed(shortContent, QStringLiteral("highlightsShortTail"));
+    QQuickItem* minLength = findNamed(shortContent, QStringLiteral("highlightsShortMinLength"));
+    QQuickItem* lengthHint = findNamed(shortContent, QStringLiteral("highlightsShortLengthHint"));
+    QQuickItem* styleRow = findNamed(shortContent, QStringLiteral("highlightsShortCaptionStyleRow"));
+    QQuickItem* styleButton = findNamed(shortContent, QStringLiteral("highlightsShortCaptionStyle"));
+    QQuickItem* captionsToggle = findNamed(shortContent, QStringLiteral("highlightsShortCaptions"));
+    REQUIRE(leadIn);
+    REQUIRE(tail);
+    REQUIRE(minLength);
+    REQUIRE(lengthHint);
+    REQUIRE(styleRow);
+    REQUIRE(styleButton);
+    REQUIRE(captionsToggle);
+    CHECK(leadIn->property("value").toDouble() == Approx(3.0));
+    CHECK(tail->property("value").toDouble() == Approx(1.0));
+    CHECK(minLength->property("currentIndex").toInt() == 0);
+    CHECK(lengthHint->isVisible());
+    CHECK(styleRow->isVisible());
+    CHECK(styleButton->property("text").toString() == QStringLiteral("Shorts"));
+    // "At least" 30 s is remembered; a typed lead-in too.
+    REQUIRE(QMetaObject::invokeMethod(minLength, "activated", Q_ARG(int, 2)));
+    CHECK(shell.preferences->property("highlightsShortMinLength").toInt() == 30);
+    CHECK(minLength->property("currentIndex").toInt() == 2);
+    REQUIRE(QMetaObject::invokeMethod(leadIn, "valueModified", Q_ARG(double, 4.5)));
+    CHECK(shell.preferences->property("highlightsShortLeadIn").toDouble() == Approx(4.5));
+    CHECK(leadIn->property("value").toDouble() == Approx(4.5));
+    // The style menu: the caption presets, Shorts first; the choice is remembered.
+    QObject* styleMenu = shortOptions->findChild<QObject*>(QStringLiteral("highlightsShortCaptionStyleMenu"));
+    REQUIRE(styleMenu);
+    REQUIRE(QMetaObject::invokeMethod(styleButton, "clicked"));
+    REQUIRE(waitFor([&] { return styleMenu->property("opened").toBool(); }, 3000));
+    QStringList presets;
+    for (const QVariant& v : styleMenu->property("options").toList())
+        presets << v.toMap().value(QStringLiteral("name")).toString();
+    INFO(presets.join(QStringLiteral(", ")).toStdString());
+    REQUIRE_FALSE(presets.isEmpty());
+    CHECK(presets.front() == QStringLiteral("Shorts"));
+    CHECK(presets.contains(QStringLiteral("Clean")));
+    REQUIRE(QMetaObject::invokeMethod(styleMenu, "chosen", Q_ARG(QString, QStringLiteral("Clean"))));
+    REQUIRE(QMetaObject::invokeMethod(styleMenu, "close"));
+    REQUIRE(waitFor([&] { return !styleMenu->property("visible").toBool(); }, 3000));
+    CHECK(shell.preferences->property("highlightsShortCaptionPreset").toString() == QStringLiteral("Clean"));
+    CHECK(styleButton->property("text").toString() == QStringLiteral("Clean"));
+    // Captions off: no style to pick.
+    REQUIRE(QMetaObject::invokeMethod(captionsToggle, "toggle"));
+    CHECK_FALSE(styleRow->isVisible());
+    REQUIRE(QMetaObject::invokeMethod(captionsToggle, "toggle"));
+    CHECK(styleRow->isVisible());
+    // The popover open: Layout, Length, Facecam, Captions and their style.
+    shell.preferences->setProperty("highlightsShortMinLength", 0);
+    shell.preferences->setProperty("highlightsShortLeadIn", 3.0);
+    polishAll(panel.get());
+    spin(50);
+    {
+        const QImage image = shell.grab();
+        REQUIRE_FALSE(image.isNull());
+        REQUIRE(image.save(QDir(outputDir()).filePath(QStringLiteral("highlight-short-options.png"))));
+    }
     QMetaObject::invokeMethod(shortOptions, "close");
     REQUIRE(waitFor([&] { return !shortOptions->property("visible").toBool(); }, 3000));
 
@@ -1115,6 +1472,13 @@ TEST_CASE("Highlights panel in the window: cards, the keyboard path, options, re
     hl->setSelectedRank(2);
     QQuickItem* shortButton = findNamed(panel.get(), QStringLiteral("highlightsShortButton"));
     REQUIRE(shortButton);
+    // 0.4: its tooltip says how long the Short is; a longer lead-in makes it longer.
+    const QString tooltip = shortButton->property("tooltip").toString();
+    CHECK(tooltip.startsWith(QStringLiteral("A vertical 1080x1920 Short of #2, about ")));
+    shell.preferences->setProperty("highlightsShortLeadIn", 13.0);
+    CHECK(shortButton->property("tooltip").toString() != tooltip);
+    shell.preferences->setProperty("highlightsShortLeadIn", 3.0);
+    CHECK(shortButton->property("tooltip").toString() == tooltip);
     REQUIRE(QMetaObject::invokeMethod(shortButton, "clicked"));
     const Json made = last(g_lastShort);
     INFO(made.dump());
@@ -1125,6 +1489,11 @@ TEST_CASE("Highlights panel in the window: cards, the keyboard path, options, re
     CHECK(made["facecamRegion"]["x"].get<double>() == Approx(0.72));
     CHECK_FALSE(made.contains("zoom"));
     CHECK_FALSE(made.contains("mode"));
+    // 0.4: the lead-in and tail of the Short options, the caption style chosen.
+    CHECK(made["handleBefore"].get<double>() == Approx(3.0));
+    CHECK(made["handleAfter"].get<double>() == Approx(1.0));
+    CHECK(made["captionPreset"] == "Clean");
+    shell.preferences->setProperty("highlightsShortCaptionPreset", QStringLiteral("Shorts"));
     CHECK(controller->currentSequence()->height == 1920);
     QQuickItem* message = findNamed(panel.get(), QStringLiteral("highlightsMessage"));
     REQUIRE(message);
@@ -1154,6 +1523,54 @@ TEST_CASE("Highlights panel in the window: cards, the keyboard path, options, re
     REQUIRE_FALSE(image.isNull());
     REQUIRE(image.save(QDir(outputDir()).filePath(QStringLiteral("highlights-panel.png"))));
     layouts->clearRegion();
+
+    // 0.4: Make Shorts - a Short of each accepted moment, one undo step, the timeline stays on what it shows; then
+    // Export all queues them (HEVC when its toggle is on).
+    CHECK(shortsButton->property("text").toString() == QStringLiteral("Make Shorts (2)"));
+    CHECK(shortsButton->isEnabled());
+    const SequenceId shownBefore = controller->currentSequenceId();
+    const std::size_t beforeBatch = controller->session().undoCount();
+    REQUIRE(QMetaObject::invokeMethod(shortsButton, "clicked"));
+    INFO(hl->message().toStdString());
+    CHECK(controller->session().undoCount() == beforeBatch + 1);
+    CHECK(controller->session().undoLabel().value_or("") == "Make Highlight Shorts");
+    CHECK(controller->currentSequenceId() == shownBefore);
+    CHECK(hl->madeShortsCount() == 2);
+    polishAll(panel.get());
+    polishAll(panel.get());
+    CHECK(exportRow->isVisible());
+    QQuickItem* exportButton = findNamed(panel.get(), QStringLiteral("highlightsExportShortsButton"));
+    QQuickItem* hevc = findNamed(panel.get(), QStringLiteral("highlightsExportHevc"));
+    REQUIRE(exportButton);
+    REQUIRE(hevc);
+    CHECK(exportButton->property("text").toString() == QStringLiteral("Export all (2)"));
+    QStringList queued;
+    hl->setQueueExport([&queued](const QString& sequence, const QString& preset, const QVariantMap& overrides) {
+        queued << preset + QLatin1Char(' ') + overrides.value(QStringLiteral("videoCodec")).toString() + QLatin1Char(' ') + sequence;
+        return QStringLiteral("job%1").arg(queued.size());
+    });
+    REQUIRE(QMetaObject::invokeMethod(hevc, "toggle"));
+    REQUIRE(QMetaObject::invokeMethod(exportButton, "clicked"));
+    INFO(queued.join(QStringLiteral(" | ")).toStdString());
+    REQUIRE(queued.size() == 2);
+    CHECK(queued[0].startsWith(QStringLiteral("vertical-1080x1920 hevc ")));
+    CHECK(queued[1].startsWith(QStringLiteral("vertical-1080x1920 hevc ")));
+    {
+        const QStringList issues = auditAccessibility(panel.get());
+        INFO(join(issues));
+        CHECK(issues.isEmpty());
+    }
+    spin(50);
+    {
+        const QImage batch = shell.grab();
+        REQUIRE_FALSE(batch.isNull());
+        REQUIRE(batch.save(QDir(outputDir()).filePath(QStringLiteral("highlights-shorts-batch.png"))));
+    }
+    // Undo takes the batch away; Export all hides.
+    REQUIRE(controller->undo());
+    CHECK(hl->madeShortsCount() == 0);
+    CHECK_FALSE(exportRow->isVisible());
+    hl->setQueueExport([](const QString&, const QString&, const QVariantMap&) { return QString(); });
 
     hl->setTransport(nullptr);
     hl->setRegistry(nullptr);

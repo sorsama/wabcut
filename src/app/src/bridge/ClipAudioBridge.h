@@ -13,6 +13,9 @@
 //   * Audio Gain… (G, 0.1.2, Premiere's dialog): set the gain to / adjust it by a level, or normalize the loudest
 //     sample peak / every clip's peak to a level. The gain is the clip's normalisation gain (the first
 //     wabcut.audio.gain of its stack, audio::edit::normalizationGain), as loudness normalising uses it.
+//   * 0.4, Premiere's Increase / Decrease Clip Volume (] / [, Shift: Many): the clip Volume Level (Effect Controls >
+//     Volume > Level, ParamId::VolumeDb) by 1 dB / 6 dB, every keyframe with it, on the selected clips or else the clips
+//     under the playhead on the targeted tracks; presses on the same clips within 1 s merge into one undo step.
 //
 // Jobs run off the GUI thread (CommandJob) and are one undo step. A model's first use downloads it after its licence
 // card (the dialogs show it while `models` says it is missing). Principle 9: keys ("c12", "e5") and text.
@@ -26,6 +29,7 @@
 #include <QPointer>
 #include <QString>
 #include <QStringList>
+#include <QTimer>
 #include <QVariantList>
 #include <QVariantMap>
 #include <QtQml/qqmlregistration.h>
@@ -64,6 +68,9 @@ class ClipAudioBridge : public QObject {
 
 public:
     static constexpr const char* kEnhanceEffect = "wabcut.audio.enhanceSpeech";
+    /// 0.4: the clip volume keys' steps (Premiere's defaults; the large step is its Large Volume Adjustment).
+    static constexpr double kVolumeStepDb = 1.0;
+    static constexpr double kLargeVolumeStepDb = 6.0;
 
     explicit ClipAudioBridge(QObject* parent = nullptr);
     static ClipAudioBridge* create(QQmlEngine* qmlEngine, QJSEngine* jsEngine);
@@ -114,6 +121,23 @@ public:
     Q_INVOKABLE double clipGainDb(const QStringList& clipKeys) const;
     /// The audio clips Audio Gain works on for these keys (video clips give their linked audio).
     std::vector<ClipId> gainClips(const QStringList& clipKeys) const;
+
+    // ---- 0.4: clip volume keys (clip.increaseVolume, clip.decreaseVolume, clip.increaseVolumeMany,
+    // ---- clip.decreaseVolumeMany; Main.qml routes them to runVolumeCommand) ----
+    /// The four volume key commands.
+    static bool handlesCommand(const QString& id);
+    /// For the command palette: { handled, enabled, reason } ("Select clips with sound" when there is no target).
+    QVariantMap commandAvailability(const QString& id) const;
+    /// The clips ] and [ act on ("c12"): the selected clips, else the clips under the playhead on the targeted tracks
+    /// (every track when none is targeted); clips on locked tracks are left out.
+    Q_INVOKABLE QStringList volumeTargets() const;
+    /// Moves the Volume Level (every keyframe) of the clips' audio (video clips stand for their linked audio) by `db`,
+    /// clamped to the parameter's range; one undo step "Clip Volume", merged with the next press on the same clips
+    /// within 1 s. "" or why not ("Select clips with sound", "The audio tracks are locked").
+    Q_INVOKABLE QString adjustClipVolume(const QStringList& clipKeys, double db);
+    /// One of the four volume keys on volumeTargets(): { ok, text } - text for an info toast ("Volume +1 dB (now -2.0
+    /// dB)", "Volume -6 dB on 3 clips") or why nothing changed.
+    Q_INVOKABLE QVariantMap runVolumeCommand(const QString& id);
     Q_INVOKABLE void cancel();
     Q_INVOKABLE void refreshModels();
     /// The clip menu: open the Enhance Speech dialog for these clips / the Separate Stems dialog for a clip.
@@ -152,6 +176,8 @@ private:
     QVariantMap m_syncReport;
     QVariantMap m_enhanceReport;
     std::optional<bool> m_modelsReady;
+    /// 0.4: single-shot 1000 ms after a volume key: ends the merged "Clip Volume" step (endPropertyGesture).
+    QTimer m_volumeMerge;
 };
 
 struct ClipAudioBridgeForeign {

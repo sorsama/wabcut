@@ -64,7 +64,7 @@ const std::set<std::string> kNoModel{
     // Colour: parameters, files and statistics.
     "color.grade.set", "color.grade.get", "lut.import", "lut.list", "cdl.export", "cdl.import", "scopes.read",
     "color.auto", "color.match", "color.matchScene", "color.management.get", "color.management.set",
-    "color.inputSpace.set", "color.inputSpace.get", "lut.export",
+    "color.inputSpace.set", "color.inputSpace.get", "lut.export", "color.grade.copy",
     // 0.2: transcript files and Find and Replace.
     "transcript.export", "transcript.findReplace", "transcript.find",
     // Edits from cached results; frame differencing.

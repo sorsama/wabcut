@@ -4,7 +4,21 @@ namespace wabcut::keymap {
 namespace {
 
 constexpr int directionOf(TransportGesture::Role role) {
-    return role == TransportGesture::Role::Backward ? -1 : (role == TransportGesture::Role::Forward ? 1 : 0);
+    switch (role) {
+    case TransportGesture::Role::Backward:
+    case TransportGesture::Role::SlowBackward:
+        return -1;
+    case TransportGesture::Role::Forward:
+    case TransportGesture::Role::SlowForward:
+        return 1;
+    case TransportGesture::Role::Stop:
+        break;
+    }
+    return 0;
+}
+
+constexpr bool isSlow(TransportGesture::Role role) {
+    return role == TransportGesture::Role::SlowBackward || role == TransportGesture::Role::SlowForward;
 }
 
 constexpr std::int32_t kLadder[] = {1, 2, 4, TransportGesture::kMaxShuttleSpeed};
@@ -23,6 +37,12 @@ std::optional<TransportGesture::Role> TransportGesture::roleOf(std::string_view 
     }
     if (command == commands::kShuttleForward) {
         return Role::Forward;
+    }
+    if (command == commands::kShuttleSlowBackward) {
+        return Role::SlowBackward;
+    }
+    if (command == commands::kShuttleSlowForward) {
+        return Role::SlowForward;
     }
     return std::nullopt;
 }
@@ -48,6 +68,22 @@ std::vector<TransportIntent> TransportGesture::startSlow(int dir) {
     return {TransportIntent::setSpeed(m_speed)};
 }
 
+std::vector<TransportIntent> TransportGesture::slowStep(int dir) {
+    // Same direction below 1x: the next rung up; at 1x or faster that way: no change. Stopped or the other way: 1/4x.
+    if (m_speed.sign() == dir) {
+        const Rational magnitude{m_speed.num * dir, m_speed.den};
+        for (const Rational rung : kSlowLadder) {
+            if (magnitude.lessThan(rung)) {
+                m_speed = {rung.num * dir, rung.den};
+                return {TransportIntent::setSpeed(m_speed)};
+            }
+        }
+        return {};
+    }
+    m_speed = {kSlowLadder[0].num * dir, kSlowLadder[0].den};
+    return {TransportIntent::setSpeed(m_speed)};
+}
+
 std::vector<TransportIntent> TransportGesture::stopAll() {
     m_slow = 0;
     m_speed = {};
@@ -69,6 +105,11 @@ std::vector<TransportIntent> TransportGesture::press(Role role, bool autoRepeat,
     }
 
     const int dir = directionOf(role);
+    if (isSlow(role)) {
+        // Shift+J / Shift+L (0.4): latched, so it never touches the K+J/L state (m_slow, m_pending) and no release
+        // ends it; OS auto-repeat does not climb the slow ladder either.
+        return autoRepeat ? std::vector<TransportIntent>{} : slowStep(dir);
+    }
     Direction& d = direction(dir);
     if (autoRepeat) {
         // A held J/L: with K down this is the hold that starts slow play; without K it is ignored, so holding
@@ -100,6 +141,9 @@ std::vector<TransportIntent> TransportGesture::release(Role role) {
         }
         m_pending = 0;
         return m_slow != 0 ? stopAll() : std::vector<TransportIntent>{};
+    }
+    if (isSlow(role)) {
+        return {}; // latched slow play keeps playing after Shift+J / Shift+L come up
     }
 
     const int dir = directionOf(role);

@@ -6,6 +6,8 @@ import QtQuick
 // it back first): Mark In in the Source Monitor marks the source, Add Marker in the Timeline marks the clip under the
 // playhead. Their state follows that panel as well (AppMenuBar.commandState): with the Source Monitor focused, Go to /
 // Clear In and Out go by the source's marks, not the sequence's.
+// 0.4: Ripple Sequence Markers (checked while on, the default): the sequence's markers move with insert, extract, ripple
+// delete and ripple trims, in the edit's undo step. Toggling it is one undo step; the choice is saved per sequence.
 MenuBarMenu {
     id: root
     objectName: "markersMenu"
@@ -72,5 +74,14 @@ MenuBarMenu {
     BarMenuItem {
         text: qsTr("Clear All Markers")
         command: "marker.clearAll"
+    }
+    ContextMenuSeparator {}
+    BarMenuItem {
+        id: rippleMarkers
+        text: qsTr("Ripple Sequence Markers")
+        command: "marker.toggleRipple"
+        checkable: true
+        checked: ProjectController.rippleSequenceMarkers
+        onTriggered: rippleMarkers.checked = Qt.binding(() => ProjectController.rippleSequenceMarkers)
     }
 }

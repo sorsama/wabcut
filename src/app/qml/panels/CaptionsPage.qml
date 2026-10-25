@@ -10,6 +10,8 @@ import QtQuick.Dialogs
 // cues: text, timing (typed or a frame at a time), split, join, speaker, reading speed. Export as SRT or WebVTT. The
 // look lives in the track (the Caption Style panel beside the monitor in the Captions workspace). Every edit is one
 // undo step.
+// 0.4: Shift Captions… (the track menu) opens a row under the track: an offset (-12 frames, +00:00:00:12, -1:12) moves
+// all the shown track's captions, or those from the playhead on, in one undo step (captions.shiftCues).
 Item {
     id: root
     objectName: "captionsPage"
@@ -17,6 +19,31 @@ Item {
     readonly property bool hasTrack: Captions.track !== ""
     property int charsPerLine: 42
     property int lines: 2
+    /// Shift Captions… was chosen: the row opens once the track menu has closed (the field takes the focus).
+    property bool shiftPending: false
+    /// Why the last shift was refused ("" after a shift that went through).
+    property string shiftError: ""
+
+    function openShiftRow() {
+        shiftError = ""
+        shiftRow.visible = true
+        shiftField.forceActiveFocus()
+        shiftField.selectAll()
+    }
+    function closeShiftRow() {
+        shiftRow.visible = false
+        shiftError = ""
+    }
+    function applyShift() {
+        shiftError = Captions.shiftCues(shiftField.text, shiftScope.currentIndex === 1 ? "fromPlayhead" : "all")
+        // The next try starts from the keyboard (a click on Shift took the focus).
+        shiftField.forceActiveFocus()
+        shiftField.selectAll()
+    }
+    onHasTrackChanged: {
+        if (!hasTrack)
+            closeShiftRow()
+    }
 
     component GroupLabel: Text {
         color: Theme.textTertiary
@@ -54,6 +81,12 @@ Item {
                     }))
                     current: Captions.track
                     onChosen: id => Captions.track = id
+                    onClosed: {
+                        if (root.shiftPending) {
+                            root.shiftPending = false
+                            root.openShiftRow()
+                        }
+                    }
                     ContextMenuSeparator {}
                     ContextMenuItem {
                         objectName: "captionsNewTrack"
@@ -68,6 +101,14 @@ Item {
                         iconName: "download"
                         onTriggered: importDialog.open()
                     }
+                    // 0.4: resync the shown track by an offset (the row opens after the menu has closed).
+                    ContextMenuItem {
+                        objectName: "captionsShiftItem"
+                        text: qsTr("Shift Captions…")
+                        iconName: "move-horizontal"
+                        enabled: root.hasTrack
+                        onTriggered: root.shiftPending = true
+                    }
                 }
             }
             IconButton {
@@ -77,6 +118,102 @@ Item {
                 iconName: "trash-2"
                 tooltip: qsTr("Delete the caption track")
                 onClicked: Captions.removeTrack()
+            }
+        }
+
+        // 0.4: Shift Captions: an offset and a scope; the row stays open after a shift for another try (Esc closes it).
+        Rectangle {
+            id: shiftRow
+            objectName: "captionsShiftRow"
+            Layout.fillWidth: true
+            visible: false
+            implicitHeight: shiftColumn.implicitHeight + Theme.space(4)
+            radius: Theme.radiusField
+            color: Theme.sunken
+            border.width: Theme.hairline
+            border.color: root.shiftError !== "" ? Theme.warning : Theme.border
+            onVisibleChanged: {
+                if (!visible)
+                    root.shiftError = ""
+            }
+            // Esc closes the row wherever its focus is: the field, the scope tabs or a button (a click focuses them).
+            // Claimed first, so no keymap binding of Esc takes it.
+            Keys.onShortcutOverride: event => {
+                if (event.key === Qt.Key_Escape)
+                    event.accepted = true
+            }
+            Keys.onEscapePressed: event => {
+                root.closeShiftRow()
+                event.accepted = true
+            }
+
+            ColumnLayout {
+                id: shiftColumn
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                anchors.margins: Theme.space(2)
+                spacing: Theme.space(1.5)
+
+                // The panel is narrow: the offset, then the scope, then the buttons, each on a line of its own.
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: Theme.space(2)
+                    GroupLabel {
+                        text: qsTr("Shift captions by")
+                    }
+                    FieldInput {
+                        id: shiftField
+                        objectName: "captionsShiftField"
+                        Layout.fillWidth: true
+                        Layout.minimumWidth: Theme.space(30)
+                        placeholderText: qsTr("-00:00:00:12")
+                        font.family: Theme.fontMono
+                        Accessible.name: qsTr("Offset: frames (-12) or a timecode (-00:00:00:12); a minus moves the captions earlier")
+                        onAccepted: root.applyShift()
+                    }
+                }
+                PillTabs {
+                    id: shiftScope
+                    objectName: "captionsShiftScope"
+                    Layout.fillWidth: true
+                    compact: true
+                    Accessible.name: qsTr("Which captions move")
+                    model: [qsTr("All captions"), qsTr("From the playhead")]
+                }
+                Text {
+                    objectName: "captionsShiftError"
+                    Layout.fillWidth: true
+                    text: root.shiftError !== "" ? root.shiftError
+                                                : qsTr("A minus moves the captions earlier: -12 frames, -00:00:00:12 or -1:12.")
+                    wrapMode: Text.Wrap
+                    color: root.shiftError !== "" ? Theme.warning : Theme.textTertiary
+                    font.family: Theme.fontSans
+                    font.pixelSize: Theme.textSm
+                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: Theme.space(1)
+                    Item {
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 1
+                    }
+                    PillButton {
+                        objectName: "captionsShiftCancel"
+                        compact: true
+                        text: qsTr("Cancel")
+                        onClicked: root.closeShiftRow()
+                    }
+                    PillButton {
+                        objectName: "captionsShiftApply"
+                        compact: true
+                        variant: "primary"
+                        iconName: "move-horizontal"
+                        text: qsTr("Shift")
+                        enabled: root.hasTrack && shiftField.text.trim() !== ""
+                        onClicked: root.applyShift()
+                    }
+                }
             }
         }
 

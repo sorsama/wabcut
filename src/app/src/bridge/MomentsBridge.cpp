@@ -17,6 +17,7 @@
 #include <wabcut/model/TimeRemap.h>
 
 #include <QQmlEngine>
+#include <QSettings>
 
 #include <algorithm>
 #include <array>
@@ -223,7 +224,38 @@ bool commitSteps(ProjectController* controller, const char* label, ClipId clip, 
 
 } // namespace
 
-MomentsBridge::MomentsBridge(QObject* parent) : QObject(parent), m_deadTimeJob(std::make_unique<BridgeJob>()) {}
+MomentsBridge::MomentsBridge(QObject* parent) : QObject(parent), m_deadTimeJob(std::make_unique<BridgeJob>()) {
+    // 0.4: instant replay's remembered options.
+    const QSettings settings;
+    m_replaySpeed = settings.value(QStringLiteral("moments/replaySpeed"), 0.5).toDouble() < 0.375 ? 0.25 : 0.5;
+    m_replaySound = settings.value(QStringLiteral("moments/replaySound"), false).toBool();
+    m_replayLabel = settings.value(QStringLiteral("moments/replayLabel"), true).toBool();
+}
+
+void MomentsBridge::setReplaySpeed(double speed) {
+    const double clamped = speed < 0.375 ? 0.25 : 0.5; // 25 % or 50 %, the nearer
+    if (clamped == m_replaySpeed)
+        return;
+    m_replaySpeed = clamped;
+    QSettings().setValue(QStringLiteral("moments/replaySpeed"), clamped);
+    emit replayOptionsChanged();
+}
+
+void MomentsBridge::setReplaySound(bool on) {
+    if (on == m_replaySound)
+        return;
+    m_replaySound = on;
+    QSettings().setValue(QStringLiteral("moments/replaySound"), on);
+    emit replayOptionsChanged();
+}
+
+void MomentsBridge::setReplayLabel(bool on) {
+    if (on == m_replayLabel)
+        return;
+    m_replayLabel = on;
+    QSettings().setValue(QStringLiteral("moments/replayLabel"), on);
+    emit replayOptionsChanged();
+}
 
 MomentsBridge::~MomentsBridge() = default;
 
@@ -705,7 +737,7 @@ QString MomentsBridge::apply(const QString& preset, const QVariantMap& options) 
     if (preset == QLatin1String("shake"))
         return shake(14.0, clip);
     if (preset == QLatin1String("instantReplay"))
-        return instantReplay(clip);
+        return instantReplay(clip, options); // 0.4: speed, includeAudio, label override the remembered options
     if (preset == QLatin1String("shortsVersion"))
         return makeVersion(QStringLiteral("shorts"));
     if (preset == QLatin1String("squareVersion"))
@@ -760,22 +792,48 @@ command::CommandResult runLive(ProjectController* controller, const command::Com
 
 } // namespace
 
-QString MomentsBridge::instantReplay(const QString& clipKeyText) {
+QString MomentsBridge::instantReplay(const QString& clipKeyText, const QVariantMap& options) {
     if (!registry().knows("clip.instantReplay"))
         return finish(false, tr("Instant replay arrives with the next engine update"));
     QString why;
     const auto target = resolve(clipKeyText, true, &why);
     if (!target)
         return finish(false, why);
+    const SequencePtr seq = m_controller->currentSequence();
+    const Clip clip = seq->findClip(target->clip)->clip();
+    // 0.4: the remembered options, unless given.
+    const double speed = options.contains(QStringLiteral("speed"))
+                             ? std::clamp(options.value(QStringLiteral("speed")).toDouble(), 0.05, 1.0)
+                             : m_replaySpeed;
+    command::Json params{{"sequence", m_controller->currentSequenceId().value},
+                         {"speed", std::isfinite(speed) ? speed : 0.5},
+                         {"ramp", true},
+                         {"flash", true},
+                         {"label", options.value(QStringLiteral("label"), m_replayLabel).toBool()},
+                         {"includeAudio", options.value(QStringLiteral("includeAudio"), m_replaySound).toBool()}};
+    // 0.4, what is replayed: 1. In to Out when both marks are set and the range overlaps the clip (the command's range
+    // mode: every clip of media in it, linked audio and facecam too); 2. on a clip longer than 20 s, the 5 s before the
+    // moment (not before the clip's start; under 1 s of that: the 5 s after it); 3. the whole clip (0.3).
+    const auto in = m_controller->markIn();
+    const auto out = m_controller->markOut();
+    const Ticks fiveSeconds = Ticks::fromSeconds(5);
+    if (in && out && *in < *out && *in < clip.end() && *out > clip.start()) {
+        params["in"] = in->value;
+        params["out"] = out->value;
+    } else if (clip.duration() > Ticks::fromSeconds(20)) {
+        Ticks from = std::max(clip.start(), target->at - fiveSeconds);
+        Ticks to = target->at;
+        if (to - from < Ticks::fromSeconds(1)) {
+            from = target->at;
+            to = std::min(clip.end(), target->at + fiveSeconds);
+        }
+        params["in"] = from.value;
+        params["out"] = to.value;
+    } else {
+        params["clip"] = target->clip.value;
+    }
     const command::CommandResult result =
-        runLive(m_controller, registry(), "clip.instantReplay",
-                command::Json{{"sequence", m_controller->currentSequenceId().value},
-                              {"clip", target->clip.value},
-                              {"speed", 0.5},
-                              {"ramp", true},
-                              {"flash", true},
-                              {"label", true}},
-                services());
+        runLive(m_controller, registry(), "clip.instantReplay", std::move(params), services());
     if (!result.ok())
         return finish(false, QString::fromStdString(result.error->message));
     return finish(true, {});

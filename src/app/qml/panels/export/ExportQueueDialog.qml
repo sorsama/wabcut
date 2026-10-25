@@ -76,6 +76,9 @@ WabcutDialog {
                 objectName: "exportQueueJob_" + job.jobId
                 onCancelRequested: ExportController.cancel(job.jobId)
                 onRevealRequested: ExportController.reveal(job.jobId)
+                // The notice follows the last Open: gone after it works again (a drive plugged back in).
+                onOpenRequested: job.notice = ExportController.openOutput(job.jobId)
+                                 ? "" : qsTr("The file was moved or deleted.")
                 onPauseRequested: ExportController.pause(job.jobId)
                 onResumeRequested: ExportController.resume(job.jobId)
                 onStartRequested: ExportController.start(job.jobId)

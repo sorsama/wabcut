@@ -13,6 +13,7 @@
 #include "BridgeIds.h"
 #include "CaptionStyleMapping.h"
 #include "CaptionsBridge.h"
+#include "CommandBridge.h"
 #include "CommandJob.h"
 #include "ProjectController.h"
 #include "TranscriptBridge.h"
@@ -22,8 +23,13 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <QCoreApplication>
 #include <QDir>
+#include <QKeyEvent>
 #include <QQuickItem>
+
+#include <string>
+#include <vector>
 
 using namespace wabcut;
 using namespace wabcut::app;
@@ -420,4 +426,284 @@ TEST_CASE("Captions page 0.2: Find and Replace in captions and the transcript, I
     CHECK(fx.captions.cues()[0].toMap().value(QStringLiteral("text")).toString() == QStringLiteral("Hello world"));
     CHECK_FALSE(fx.captions.importFile(QUrl::fromLocalFile(QDir(dir).filePath(QStringLiteral("missing.srt")))).isEmpty());
     QDir(dir).removeRecursively();
+}
+
+// ---- 0.4: Shift Captions… --------------------------------------------------------------------------------------------
+
+namespace {
+
+/// A 10 s clip with two caption tracks: the first has one cue at 1 s; the second (shown) has cues at 1 s, 3 s and 5 s,
+/// each a second long.
+struct ShiftFixture {
+    Timeline tl{"V1 tgt |A" + std::string(249, 'a') + "|\n"};
+    ProjectController controller;
+    CaptionsBridge captions;
+    CaptionTrackId first, second;
+
+    ShiftFixture() {
+        controller.resetProject(tl.state, tl.seq);
+        captions.setController(&controller);
+        REQUIRE(captions.addTrack(QStringLiteral("First"), {}).isEmpty());
+        first = controller.currentSequence()->captionTracks.back().id;
+        addCue(first, 25, "Other track");
+        REQUIRE(captions.addTrack(QStringLiteral("Second"), {}).isEmpty());
+        second = controller.currentSequence()->captionTracks.back().id;
+        REQUIRE(captions.shownTrackId() == second);
+        addCue(second, 25, "One");
+        addCue(second, 75, "Two");
+        addCue(second, 125, "Three");
+        REQUIRE(captions.cues().size() == 3);
+    }
+    void addCue(CaptionTrackId track, std::int64_t at, const char* text) {
+        const auto r = CommandJob::runNow(&controller, nullptr, "captions.addCue",
+                                          Json{{"captionTrack", track.value}, {"start", f(at).value}, {"end", f(at + 25).value},
+                                               {"text", text}});
+        INFO(commandErrorText(r).toStdString());
+        REQUIRE(r.ok());
+    }
+    std::vector<Ticks> starts(CaptionTrackId id) const {
+        std::vector<Ticks> out;
+        for (const CaptionTrack& t : controller.currentSequence()->captionTracks) {
+            if (t.id == id) {
+                for (const CaptionCue& c : t.cues)
+                    out.push_back(c.start);
+            }
+        }
+        return out;
+    }
+    std::size_t undos() { return controller.session().undoCount(); }
+};
+
+} // namespace
+
+TEST_CASE("Shift Captions: all or from the playhead on the shown track in one undo step", "[app][captions][shift]") {
+    ShiftFixture fx;
+    // All captions 12 frames earlier: only the shown track moves; one undo step.
+    const auto before = fx.undos();
+    REQUIRE(fx.captions.shiftCues(QStringLiteral("-00:00:00:12"), QStringLiteral("all")).isEmpty());
+    CHECK(fx.undos() == before + 1);
+    CHECK(fx.controller.undoText() == QStringLiteral("Undo Shift Captions"));
+    CHECK(fx.starts(fx.second) == std::vector<Ticks>{f(13), f(63), f(113)});
+    CHECK(fx.starts(fx.first) == std::vector<Ticks>{f(25)});
+    REQUIRE(fx.controller.undo());
+    CHECK(fx.starts(fx.second) == std::vector<Ticks>{f(25), f(75), f(125)});
+
+    // From the playhead (3.2 s, inside the second cue): that cue and the later ones; frames and a "+" work too.
+    fx.controller.setPlayhead(f(80));
+    REQUIRE(fx.captions.shiftCues(QStringLiteral("-12"), QStringLiteral("fromPlayhead")).isEmpty());
+    CHECK(fx.starts(fx.second) == std::vector<Ticks>{f(25), f(63), f(113)});
+    REQUIRE(fx.controller.undo());
+    // Between cues (2.4 s): the first cue that starts after it.
+    fx.controller.setPlayhead(f(60));
+    REQUIRE(fx.captions.shiftCues(QStringLiteral("+00:00:00:05"), QStringLiteral("fromPlayhead")).isEmpty());
+    CHECK(fx.starts(fx.second) == std::vector<Ticks>{f(25), f(80), f(130)});
+    CHECK(fx.captions.message().isEmpty());
+}
+
+TEST_CASE("Shift Captions: a refused offset changes nothing and says why", "[app][captions][shift]") {
+    ShiftFixture fx;
+    const auto before = fx.undos();
+    const std::vector<Ticks> starts = fx.starts(fx.second);
+    // Before 0.
+    CHECK_FALSE(fx.captions.shiftCues(QStringLiteral("-00:00:02:00"), QStringLiteral("all")).isEmpty());
+    CHECK_FALSE(fx.captions.message().isEmpty());
+    // Onto a cue that stays: from the second cue, 1 s 12 frames earlier.
+    fx.controller.setPlayhead(f(80));
+    CHECK_FALSE(fx.captions.shiftCues(QStringLiteral("-1:12"), QStringLiteral("fromPlayhead")).isEmpty());
+    // No offset, a zero offset, an unknown scope; no caption at or after the playhead.
+    CHECK_FALSE(fx.captions.shiftCues(QString(), QStringLiteral("all")).isEmpty());
+    CHECK_FALSE(fx.captions.shiftCues(QStringLiteral("0"), QStringLiteral("all")).isEmpty());
+    CHECK_FALSE(fx.captions.shiftCues(QStringLiteral("abc"), QStringLiteral("all")).isEmpty());
+    CHECK_FALSE(fx.captions.shiftCues(QStringLiteral("12"), QStringLiteral("everything")).isEmpty());
+    fx.controller.setPlayhead(f(200));
+    CHECK(fx.captions.shiftCues(QStringLiteral("12"), QStringLiteral("fromPlayhead")) ==
+          QStringLiteral("There is no caption at or after the playhead"));
+    CHECK(fx.undos() == before);
+    CHECK(fx.starts(fx.second) == starts);
+}
+
+TEST_CASE("Command palette fills captionTrack from the shown caption track", "[app][captions][shift][palette]") {
+    Shell shell;
+    REQUIRE(shell.window);
+    auto* controller = shell.engine.singletonInstance<ProjectController*>("Wabcut", "ProjectController");
+    auto* captions = shell.engine.singletonInstance<CaptionsBridge*>("Wabcut", "Captions");
+    auto* commands = shell.engine.singletonInstance<CommandBridge*>("Wabcut", "CommandBridge");
+    REQUIRE(controller);
+    REQUIRE(captions);
+    REQUIRE(commands);
+    Timeline tl{"V1 tgt |A" + std::string(249, 'a') + "|\n"};
+    controller->resetProject(tl.state, tl.seq);
+    REQUIRE(captions->addTrack(QStringLiteral("First"), {}).isEmpty());
+    REQUIRE(captions->addTrack(QStringLiteral("Second"), {}).isEmpty());
+    const CaptionTrackId first = controller->currentSequence()->captionTracks.front().id;
+    const CaptionTrackId second = controller->currentSequence()->captionTracks.back().id;
+    REQUIRE(captions->shownTrackId() == second);
+    for (const CaptionTrackId track : {first, second}) {
+        const auto r = CommandJob::runNow(controller, nullptr, "captions.addCue",
+                                          Json{{"captionTrack", track.value}, {"start", f(25).value}, {"end", f(50).value},
+                                               {"text", "Cue"}});
+        REQUIRE(r.ok());
+    }
+
+    // The palette row does not ask for a raw track id.
+    bool listed = false;
+    for (const QVariant& v : commands->commands()) {
+        const QVariantMap c = v.toMap();
+        if (c.value(QStringLiteral("name")).toString() != QStringLiteral("captions.shiftCues"))
+            continue;
+        listed = true;
+        for (const QVariant& p : c.value(QStringLiteral("params")).toList())
+            CHECK(p.toMap().value(QStringLiteral("key")).toString() != QStringLiteral("captionTrack"));
+    }
+    CHECK(listed);
+
+    // Running it moves the shown track only.
+    const QVariantMap result = commands->apply(QStringLiteral("captions.shiftCues"),
+                                               {{QStringLiteral("delta"), static_cast<qlonglong>(f(5).value)}});
+    INFO(result.value(QStringLiteral("detail")).toString().toStdString());
+    REQUIRE(result.value(QStringLiteral("ok")).toBool());
+    const auto startOf = [&](CaptionTrackId id) {
+        for (const CaptionTrack& t : controller->currentSequence()->captionTracks) {
+            if (t.id == id)
+                return t.cues.front().start;
+        }
+        return Ticks{-1};
+    };
+    CHECK(startOf(second) == f(30));
+    CHECK(startOf(first) == f(25));
+}
+
+TEST_CASE("Shift Captions row in the shell; screenshot", "[app][captions][shift][qml][screenshots]") {
+    resetSettings();
+    clearMessages();
+    Shell shell;
+    REQUIRE(shell.window);
+    shell.resize(kShotWidth, kShotHeight);
+    shell.theme->setProperty("reduceMotion", true);
+    auto* controller = shell.engine.singletonInstance<ProjectController*>("Wabcut", "ProjectController");
+    auto* captions = shell.engine.singletonInstance<CaptionsBridge*>("Wabcut", "Captions");
+    REQUIRE(controller);
+    REQUIRE(captions);
+    Timeline tl{"V1 tgt |A" + std::string(249, 'a') + "|\nA1 tgt |A" + std::string(249, 'a') + "|\n"};
+    tl.linkMatching();
+    controller->resetProject(tl.state, tl.seq);
+    REQUIRE(captions->addTrack(QStringLiteral("English"), {}).isEmpty());
+    for (const auto& [at, text] : {std::pair{25, "Welcome back to the show."}, std::pair{75, "The subtitles were half a second late."},
+                                   std::pair{125, "Now they land on the words."}}) {
+        REQUIRE(CommandJob::runNow(controller, nullptr, "captions.addCue",
+                                   Json{{"start", f(at).value}, {"end", f(at + 25).value}, {"text", text}})
+                    .ok());
+    }
+    const auto starts = [&] {
+        std::vector<Ticks> out;
+        for (const CaptionCue& c : controller->currentSequence()->captionTracks.front().cues)
+            out.push_back(c.start);
+        return out;
+    };
+    REQUIRE(starts() == std::vector<Ticks>{f(25), f(75), f(125)});
+    controller->setPlayhead(f(80));
+    REQUIRE(QMetaObject::invokeMethod(shell.window.get(), "showBrowserPanel", Q_ARG(QVariant, QVariant(QStringLiteral("captions")))));
+    spin(300);
+    QQuickItem* tabs = findNamed(shell.window->contentItem(), QStringLiteral("transcriptTabs"));
+    REQUIRE(tabs);
+    tabs->setProperty("currentIndex", 2); // Captions
+    spin(200);
+    REQUIRE_FALSE(shell.grab().isNull()); // lays the hidden window out
+
+    // The track menu's Shift Captions… opens the row once the menu has closed, the offset field focused.
+    QQuickItem* row = findNamed(shell.window->contentItem(), QStringLiteral("captionsShiftRow"));
+    REQUIRE(row);
+    CHECK_FALSE(row->isVisible());
+    QQuickItem* trackButton = findNamed(shell.window->contentItem(), QStringLiteral("captionsTrackMenu"));
+    REQUIRE(trackButton);
+    REQUIRE(QMetaObject::invokeMethod(trackButton, "clicked"));
+    QQuickItem* shiftItem = nullptr;
+    REQUIRE(waitFor([&] {
+        shiftItem = findNamed(shell.window->contentItem(), QStringLiteral("captionsShiftItem"));
+        return shiftItem != nullptr && shiftItem->isVisible();
+    }, 3000));
+    CHECK(shiftItem->isEnabled());
+    QObject* menu = shiftItem->property("menu").value<QObject*>();
+    REQUIRE(menu);
+    REQUIRE(QMetaObject::invokeMethod(shiftItem, "triggered"));
+    REQUIRE(QMetaObject::invokeMethod(menu, "close"));
+    REQUIRE(waitFor([&] { return !menu->property("visible").toBool() && row->isVisible(); }, 3000));
+    QQuickItem* field = findNamed(row, QStringLiteral("captionsShiftField"));
+    QQuickItem* scope = findNamed(row, QStringLiteral("captionsShiftScope"));
+    QQuickItem* apply = findNamed(row, QStringLiteral("captionsShiftApply"));
+    QQuickItem* error = findNamed(row, QStringLiteral("captionsShiftError"));
+    REQUIRE(field);
+    REQUIRE(scope);
+    REQUIRE(apply);
+    REQUIRE(error);
+    CHECK(field->hasActiveFocus());
+    CHECK(field->property("placeholderText").toString() == QStringLiteral("-00:00:00:12"));
+    CHECK_FALSE(apply->isEnabled()); // no offset yet
+
+    // From the playhead (3.2 s, in the second caption), 12 frames earlier.
+    field->setProperty("text", QStringLiteral("-00:00:00:12"));
+    scope->setProperty("currentIndex", 1);
+    CHECK(apply->isEnabled());
+    spin(100);
+    {
+        const QImage image = shell.grab();
+        REQUIRE_FALSE(image.isNull());
+        REQUIRE(image.save(QDir(outputDir()).filePath(QStringLiteral("captions-shift.png"))));
+        QQuickItem* page = findNamed(shell.window->contentItem(), QStringLiteral("captionsPage"));
+        REQUIRE(page);
+        const double dpr = image.devicePixelRatio();
+        const QRectF r = page->mapRectToScene(QRectF(0, 0, page->width(), page->height()))
+                             .adjusted(-12, -60, 12, 12)
+                             .intersected(QRectF(0, 0, image.width() / dpr, image.height() / dpr));
+        REQUIRE(image.copy(QRectF(r.topLeft() * dpr, r.size() * dpr).toRect())
+                    .save(QDir(outputDir()).filePath(QStringLiteral("captions-shift-crop.png"))));
+    }
+    const auto undos = controller->session().undoCount();
+    apply->forceActiveFocus(Qt::MouseFocusReason); // as a click on Shift does
+    REQUIRE(QMetaObject::invokeMethod(apply, "clicked"));
+    CHECK(starts() == std::vector<Ticks>{f(25), f(63), f(113)});
+    CHECK(controller->session().undoCount() == undos + 1);
+    CHECK(controller->undoText() == QStringLiteral("Undo Shift Captions"));
+    CHECK(row->isVisible()); // open for another try
+    CHECK(field->hasActiveFocus()); // from the keyboard
+
+    // A refused offset (before 0): nothing changes, the row says why.
+    field->setProperty("text", QStringLiteral("-00:00:05:00"));
+    scope->setProperty("currentIndex", 0);
+    REQUIRE(QMetaObject::invokeMethod(apply, "clicked"));
+    CHECK(starts() == std::vector<Ticks>{f(25), f(63), f(113)});
+    CHECK(controller->session().undoCount() == undos + 1);
+    CHECK(error->property("text").toString() == captions->message());
+    CHECK_FALSE(captions->message().isEmpty());
+
+    const auto escape = [&] {
+        QKeyEvent press(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+        QCoreApplication::sendEvent(shell.window.get(), &press);
+        QKeyEvent release(QEvent::KeyRelease, Qt::Key_Escape, Qt::NoModifier);
+        QCoreApplication::sendEvent(shell.window.get(), &release);
+        spin(50);
+    };
+    // Esc closes the row with the focus on a button or the scope tabs too (a click focuses them)...
+    apply->forceActiveFocus(Qt::MouseFocusReason);
+    REQUIRE(apply->hasActiveFocus());
+    escape();
+    CHECK_FALSE(row->isVisible());
+    QQuickItem* page = findNamed(shell.window->contentItem(), QStringLiteral("captionsPage"));
+    REQUIRE(page);
+    REQUIRE(QMetaObject::invokeMethod(page, "openShiftRow"));
+    REQUIRE(row->isVisible());
+    scope->forceActiveFocus(Qt::TabFocusReason);
+    REQUIRE(scope->hasActiveFocus());
+    escape();
+    CHECK_FALSE(row->isVisible());
+    // ...and in the field.
+    REQUIRE(QMetaObject::invokeMethod(page, "openShiftRow"));
+    REQUIRE(row->isVisible());
+    field->forceActiveFocus(Qt::OtherFocusReason);
+    escape();
+    CHECK_FALSE(row->isVisible());
+
+    const QStringList messages = takeMessages();
+    INFO(join(messages));
+    CHECK(messages.isEmpty());
 }

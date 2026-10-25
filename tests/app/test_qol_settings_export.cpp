@@ -9,6 +9,8 @@
 // Phase 2 (QML, the real Main.qml hidden; screenshots in test-output/ui): the Settings search reveals a row and every
 // index row exists on its page, Settings > General's new rows, the Library's thumbnail slider and selection keys, the
 // Export panel and Quick Export starting from the last choices.
+// 0.4 (stream E): a finished export's toast offers Open with Show in Explorer beside it, the job pill's Open (and a
+// double-click) opens the file and says when it is gone, Settings > General > Background work (keep awake).
 
 #include "A11yAudit.h"
 #include "ShellFixture.h"
@@ -28,6 +30,7 @@
 
 #include <QCoreApplication>
 #include <QDir>
+#include <QEventPoint>
 #include <QFile>
 #include <QFileInfo>
 #include <QJSValue>
@@ -252,6 +255,14 @@ TEST_CASE("AppSettings: the settings search finds rows by title and keyword and 
         INFO(id);
         CHECK(ids.contains(QString::fromLatin1(id)));
     }
+    // 0.4: Settings > General's Background work row (stream E) and the Timeline page's new rows (stream A).
+    for (const char* id : {"keepAwake", "playbackScroll", "snapPlayhead", "clipSpeed", "fxBadges", "clipTooltips"}) {
+        INFO(id);
+        CHECK(ids.contains(QString::fromLatin1(id)));
+        CHECK(settings.entry(QString::fromLatin1(id)).value(QStringLiteral("row")).toString() == QString::fromLatin1(id));
+    }
+    CHECK(settings.entry(QStringLiteral("keepAwake")).value(QStringLiteral("section")).toString()
+          == QStringLiteral("Background work"));
 
     // Search: by the title's words first, then keywords; every word has to match.
     const auto first = [&](const char* query) {
@@ -268,6 +279,9 @@ TEST_CASE("AppSettings: the settings search finds rows by title and keyword and 
     CHECK(first("lock") == QStringLiteral("lockProjects"));
     CHECK(first("intro") == QStringLiteral("launchIntro"));
     CHECK(first("vst") == QStringLiteral("audioPlugins"));
+    CHECK(first("sleep") == QStringLiteral("keepAwake"));         // 0.4
+    CHECK(first("shift+k") == QStringLiteral("playAroundEdit"));  // 0.4 (stream B's keyword)
+    CHECK(first("auto-scroll") == QStringLiteral("playbackScroll")); // 0.4
     CHECK(settings.search(QStringLiteral("dark proxies")).isEmpty());
     CHECK(settings.search(QStringLiteral("qqxxzz")).isEmpty());
     CHECK(settings.search(QStringLiteral("e"), 3).size() == 3);
@@ -514,6 +528,33 @@ TEST_CASE("Export jobs: a finished job is described for its toast and opens in i
     CHECK_FALSE(controller.openOutput(QStringLiteral("j999")));
     controller.clearFinished();
     CHECK(controller.job(quick).isEmpty());
+    // 0.4: a toast's Open after Clear Finished opens the file it remembered, by its path, while it is there.
+    CHECK(controller.openOutput(q(dir / "quick.wav")));
+    REQUIRE(opened.size() == 2);
+    CHECK(samePath(opened.back(), q(dir / "quick.wav")));
+    CHECK_FALSE(controller.openOutput(q(dir / "mix.wav")));     // deleted
+    CHECK_FALSE(controller.openOutput(q(dir / "missing.wav"))); // never written
+    CHECK_FALSE(controller.openOutput(QStringLiteral("quick.wav"))); // not an absolute path, not a job
+    CHECK(opened.size() == 2);
+    // 0.4: the model's errorKind role and job()'s errorKind key (no error: "").
+    CHECK(controller.jobs()->roleNames().value(ExportJobModel::ErrorKindRole) == QByteArray("errorKind"));
+}
+
+TEST_CASE("Export errors: the kind of problem picks the failed toast's action", "[app][export][ux]") {
+    // 0.4: errorKindOf follows plainError()'s branches.
+    CHECK(ExportController::errorKindOf(Error{ErrorCode::NotFound, "Original media offline or missing: a.wav (C:/m/a.wav). Relink it."})
+          == QStringLiteral("offline"));
+    CHECK(ExportController::errorKindOf(Error{ErrorCode::NotFound, "The LUT file is missing"}).isEmpty());
+    CHECK(ExportController::errorKindOf(Error{ErrorCode::IoError, "write failed: No space left on device"})
+          == QStringLiteral("space"));
+    CHECK(ExportController::errorKindOf(Error{ErrorCode::IoError, "open: Permission denied"}) == QStringLiteral("access"));
+    CHECK(ExportController::errorKindOf(Error{ErrorCode::IoError, "The output folder does not exist: D:/gone"})
+          == QStringLiteral("folder"));
+    CHECK(ExportController::errorKindOf(Error{ErrorCode::IoError, "short write"}).isEmpty());
+    CHECK(ExportController::errorKindOf(Error{ErrorCode::Unsupported, "No working H.264 encoder"}) == QStringLiteral("encoder"));
+    CHECK(ExportController::errorKindOf(Error{ErrorCode::Unsupported, "10-bit in MP3"}).isEmpty());
+    CHECK(ExportController::errorKindOf(Error{ErrorCode::EncoderError, "avcodec_send_frame failed"}) == QStringLiteral("encoder"));
+    CHECK(ExportController::errorKindOf(Error{ErrorCode::Cancelled, "Export cancelled"}).isEmpty());
 }
 
 // ---- Phase 2: the QML ------------------------------------------------------------------------------------------------
@@ -744,6 +785,29 @@ TEST_CASE("Settings General: the start-up choice and the Projects rows", "[app][
         CHECK(home->defaultFolderSetting().isEmpty());
         CHECK_FALSE(automatic->isVisible());
         home->setRecentLimit(50);
+
+        // 0.4, Background work: keep the computer awake while exporting (Preferences.keepAwake, on by default).
+        QQuickItem* keepAwake = inSettings(window, QStringLiteral("keepAwakeToggle"));
+        REQUIRE(keepAwake != nullptr);
+        CHECK(shell.preferences->property("keepAwake").toBool());
+        CHECK(keepAwake->property("checked").toBool());
+        REQUIRE(QMetaObject::invokeMethod(keepAwake, "toggle"));
+        REQUIRE(QMetaObject::invokeMethod(keepAwake, "toggled"));
+        CHECK_FALSE(shell.preferences->property("keepAwake").toBool());
+        shell.preferences->setProperty("keepAwake", true); // the row follows a change made elsewhere
+        CHECK(keepAwake->property("checked").toBool());
+        // 0.4: a failed autosave shows in the save-state row: "Autosave failed" (the reason is in its description).
+        QQuickItem* saveStatus = inSettings(window, QStringLiteral("projectSaveStatus"));
+        REQUIRE(saveStatus != nullptr);
+        CHECK(project->autosaveOk());
+        CHECK(saveStatus->property("label").toString() != QStringLiteral("Autosave failed"));
+        // Screenshot: the Background work section (light).
+        REQUIRE(QMetaObject::invokeMethod(window, "revealRow", Q_RETURN_ARG(bool, revealed),
+                                          Q_ARG(QString, QStringLiteral("general")),
+                                          Q_ARG(QString, QStringLiteral("keepAwake"))));
+        CHECK(revealed);
+        spin(400);
+        CHECK(shell.grab().save(QDir(outputDir()).filePath(QStringLiteral("settings-general-background-work.png"))));
 
         const QStringList messages = takeMessages();
         INFO(join(messages));
@@ -1198,17 +1262,26 @@ TEST_CASE("Background work: an export or Render In to Out that ends says so in a
         revealed << path;
         return true;
     });
+    QStringList opened;
+    exporter->setOpenHandler([&](const QString& path) {
+        opened << path;
+        return true;
+    });
     auto* toast = qobject_cast<QQuickItem*>(shell.object("toast"));
     REQUIRE(toast != nullptr);
 
-    // Quick Export says it started (Cancel), then that it is done ("Show in Explorer" shows the file).
+    // Quick Export says it started (Cancel), then that it is done: 0.4 "Open" (the file in its app) with "Show in
+    // Explorer" beside it.
     const QString job = exporter->quickExport(QStringLiteral("audio-wav"), q(dir / "done.wav"));
     REQUIRE_FALSE(job.isEmpty());
     CHECK(toast->property("text").toString() == QStringLiteral("Exporting done.wav in the background"));
     CHECK(toast->property("actionText").toString() == QStringLiteral("Cancel"));
     REQUIRE(finished(*exporter, job));
     REQUIRE(waitFor([&] { return toast->property("text").toString() == QStringLiteral("Exported done.wav"); }));
-    CHECK(toast->property("actionText").toString() == QStringLiteral("Show in %1").arg(exporter->fileManagerName()));
+    CHECK(toast->property("actionText").toString() == QStringLiteral("Open"));
+    CHECK(toast->property("secondaryActionText").toString() == QStringLiteral("Show in %1").arg(exporter->fileManagerName()));
+    // Its time waits until the window is active (a hidden test window never is).
+    CHECK(toast->property("untilSeen").toBool());
     spin(300);
     const QImage image = shell.grab();
     REQUIRE_FALSE(image.isNull());
@@ -1216,12 +1289,13 @@ TEST_CASE("Background work: an export or Render In to Out that ends says so in a
     saveCrop(image, toastRect.adjusted(-24, -24, 24, 24).intersected(QRectF(0, 0, kShotWidth, kShotHeight)),
              QStringLiteral("toast-export-done.png"));
     REQUIRE(QMetaObject::invokeMethod(toast, "runAction"));
-    REQUIRE(revealed.size() == 1);
-    CHECK(samePath(revealed.front(), q(dir / "done.wav")));
+    REQUIRE(opened.size() == 1);
+    CHECK(samePath(opened.front(), q(dir / "done.wav")));
+    CHECK(revealed.isEmpty());
     CHECK_FALSE(toast->property("shown").toBool());
 
-    // Its job row cleared meanwhile (Clear Finished): the action still shows the file it wrote; a file that is gone
-    // too is said so.
+    // Its job row cleared meanwhile (Clear Finished): Open still opens the file it wrote, Show in Explorer still shows
+    // it; a file that is gone too is said so.
     const auto exportAndClear = [&](const char* name) {
         const QString id = exporter->quickExport(QStringLiteral("audio-wav"), q(dir / name));
         REQUIRE_FALSE(id.isEmpty());
@@ -1232,13 +1306,18 @@ TEST_CASE("Background work: an export or Render In to Out that ends says so in a
     };
     exportAndClear("kept.wav");
     REQUIRE(QMetaObject::invokeMethod(toast, "runAction"));
-    REQUIRE(revealed.size() == 2);
-    CHECK(samePath(revealed.back(), q(dir / "kept.wav")));
+    REQUIRE(opened.size() == 2);
+    CHECK(samePath(opened.back(), q(dir / "kept.wav")));
+    exportAndClear("shown.wav");
+    REQUIRE(QMetaObject::invokeMethod(toast, "runSecondaryAction"));
+    REQUIRE(revealed.size() == 1);
+    CHECK(samePath(revealed.back(), q(dir / "shown.wav")));
+    CHECK_FALSE(toast->property("shown").toBool());
     exportAndClear("gone.wav");
     std::error_code removed;
     REQUIRE(fs::remove(dir / "gone.wav", removed));
     REQUIRE(QMetaObject::invokeMethod(toast, "runAction"));
-    CHECK(revealed.size() == 2);
+    CHECK(opened.size() == 2);
     CHECK(toast->property("text").toString() == QStringLiteral("gone.wav is no longer there: it was moved or deleted."));
     REQUIRE(QMetaObject::invokeMethod(toast, "dismiss"));
 
@@ -1282,5 +1361,98 @@ TEST_CASE("Background work: an export or Render In to Out that ends says so in a
     const QStringList messages = takeMessages();
     INFO(join(messages));
     CHECK(messages.isEmpty());
+    resetSettings();
+}
+
+TEST_CASE("Export jobs: the job pill opens a finished export and says when its file is gone", "[app][export][qml][ux]") {
+    resetSettings();
+    clearMessages();
+    const fs::path dir = freshDir("job-open");
+    {
+        Shell shell;
+        REQUIRE(shell.window != nullptr);
+        INFO(join(shell.errors));
+        shell.resize(kShotWidth, kShotHeight);
+        shell.theme->setProperty("reduceMotion", true);
+        auto* controller = shell.engine.singletonInstance<ProjectController*>("Wabcut", "ProjectController");
+        auto* exporter = shell.engine.singletonInstance<ExportController*>("Wabcut", "ExportController");
+        REQUIRE(controller != nullptr);
+        REQUIRE(exporter != nullptr);
+        controller->resetProject(makeProject(2));
+        exporter->setVideoSourceFactory(ex::syntheticVideoSourceFactory());
+        QStringList opened;
+        exporter->setOpenHandler([&](const QString& path) {
+            opened << path;
+            return true;
+        });
+        QQuickItem* content = shell.window->contentItem();
+
+        // The Export workspace, and an export that finished in its queue.
+        evaluate(shell, QStringLiteral("window.openPreset('export')"));
+        const QStringList ids = exporter->sendToQueue({}, {QStringLiteral("audio-wav")},
+                                                      {{QStringLiteral("output"), q(dir / "Final cut.wav")}}, false);
+        REQUIRE(ids.size() == 1);
+        const QString id = ids.front();
+        REQUIRE(finished(*exporter, id));
+        REQUIRE(exporter->job(id).value(QStringLiteral("state")).toString() == QStringLiteral("done"));
+        QQuickItem* pill = nullptr;
+        REQUIRE(waitFor([&] {
+            // The queue is a ListView: its rows come once it has been laid out (a frame).
+            if (pill == nullptr)
+                shell.grab();
+            pill = named(content, QStringLiteral("exportJob_") + id);
+            return pill != nullptr && pill->isVisible();
+        }));
+        QQuickItem* open = named(pill, QStringLiteral("exportJobOpen"));
+        QQuickItem* show = named(pill, QStringLiteral("exportJobShow"));
+        QQuickItem* cancel = named(pill, QStringLiteral("exportJobCancel"));
+        QQuickItem* detail = named(pill, QStringLiteral("exportJobDetail"));
+        REQUIRE(open != nullptr);
+        REQUIRE(show != nullptr);
+        REQUIRE(cancel != nullptr);
+        REQUIRE(detail != nullptr);
+        CHECK(open->isVisible());
+        CHECK(show->isVisible());
+        CHECK_FALSE(cancel->isVisible());
+        // Open (before Show) opens the file in its app.
+        const QList<QQuickItem*> buttons = open->parentItem()->childItems();
+        CHECK(buttons.indexOf(open) < buttons.indexOf(show));
+        REQUIRE(QMetaObject::invokeMethod(open, "clicked"));
+        REQUIRE(opened.size() == 1);
+        CHECK(samePath(opened.front(), q(dir / "Final cut.wav")));
+        // A double-click on the pill opens it too.
+        QObject* tap = pill->findChild<QObject*>(QStringLiteral("exportJobOpenTap"));
+        REQUIRE(tap != nullptr);
+        CHECK(tap->property("enabled").toBool());
+        REQUIRE(QMetaObject::invokeMethod(tap, "doubleTapped", Q_ARG(QEventPoint, QEventPoint()),
+                                          Q_ARG(Qt::MouseButton, Qt::LeftButton)));
+        CHECK(opened.size() == 2);
+        // The file was moved or deleted: Open says so under the pill.
+        std::error_code removed;
+        REQUIRE(fs::remove(dir / "Final cut.wav", removed));
+        REQUIRE(QMetaObject::invokeMethod(open, "clicked"));
+        CHECK(opened.size() == 2);
+        CHECK(pill->property("notice").toString() == QStringLiteral("The file was moved or deleted."));
+        CHECK(detail->property("text").toString() == QStringLiteral("The file was moved or deleted."));
+        spin(300);
+        const QImage image = shell.grab();
+        REQUIRE_FALSE(image.isNull());
+        const QRectF rect = pill->mapRectToScene(QRectF(0, 0, pill->width(), pill->height()));
+        saveCrop(image, rect.adjusted(-24, -24, 24, 24).intersected(QRectF(0, 0, kShotWidth, kShotHeight)),
+                 QStringLiteral("export-job-open.png"));
+        // The file is back (a drive plugged in again): Open works and the notice goes.
+        {
+            std::ofstream back(dir / "Final cut.wav", std::ios::binary);
+            back << "RIFF";
+        }
+        REQUIRE(QMetaObject::invokeMethod(open, "clicked"));
+        CHECK(opened.size() == 3);
+        CHECK(pill->property("notice").toString().isEmpty());
+        CHECK(detail->property("text").toString() != QStringLiteral("The file was moved or deleted."));
+
+        const QStringList messages = takeMessages();
+        INFO(join(messages));
+        CHECK(messages.isEmpty());
+    }
     resetSettings();
 }

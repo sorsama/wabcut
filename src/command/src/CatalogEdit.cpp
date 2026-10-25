@@ -640,21 +640,34 @@ void registerEditCommands(CommandRegistry& registry) {
         registry,
         {"clip.move", 1, "Move",
          "Moves clips in time and across tracks. \"overwrite\" (plain drag) replaces what is at the destination; "
-         "\"insert\" (Ctrl-drag) makes room there. Clips cannot start before 0.",
+         "\"insert\" (Ctrl-drag) makes room there; \"rearrange\" (Ctrl+Alt-drag) closes the clips' old place and makes "
+         "room at the drop, on the dragged clips' and the destination tracks only (a clip dropped at the cut after its "
+         "neighbour swaps with it). With copy (Alt-drag) the clips are copied there instead and the originals stay "
+         "(overwrite or insert; not rearrange). Clips cannot start before 0.",
          Capability::EditSequence,
          withSequence({{"clips", clipsParam("Clips to move.")},
                        {"delta", deltaParam("Time shift; positive = later. Default 0.")},
                        {"videoTracks", schema::integer("Video track shift; +1 = one track up (V1 -> V2). Default 0.")},
                        {"audioTracks", schema::integer("Audio track shift; +1 = one track down (A1 -> A2). Default 0.")},
-                       {"mode", schema::enumeration({"overwrite", "insert"}, "Default overwrite.")},
+                       {"mode", schema::enumeration({"overwrite", "insert", "rearrange"}, "Default overwrite.")},
+                       {"copy", schema::boolean("Alt-drag: copy the clips instead of moving them; createdIds lists the "
+                                                "copies. Default false.",
+                                                false)},
                        {"linked", linkedParam(true)}},
                       {"clips"}),
          Json{{"clips", Json::array({42})}, {"delta", "00:00:02:00"}, {"videoTracks", 1}}, {},
          [deltaData](ExecutionContext& c) {
              const Ticks delta = c.optionalTime("delta").value_or(Ticks{});
              const edit::TrackShift shift{static_cast<int>(c.integer("videoTracks")), static_cast<int>(c.integer("audioTracks"))};
-             const edit::MoveMode mode = c.string("mode", "overwrite") == "insert" ? edit::MoveMode::Insert
-                                                                                   : edit::MoveMode::Overwrite;
+             const std::string modeName = c.string("mode", "overwrite");
+             const edit::MoveMode mode = modeName == "insert"      ? edit::MoveMode::Insert
+                                         : modeName == "rearrange" ? edit::MoveMode::Rearrange
+                                                                   : edit::MoveMode::Overwrite;
+             if (c.boolean("copy", false)) {
+                 // duplicateClips refuses a rearrange copy (InvalidArgument).
+                 return deltaData(c, c.take(edit::duplicateClips(c.state(), c.sequenceId(), c.clips("clips"), delta,
+                                                                 shift, mode, c.linkMode())));
+             }
              return deltaData(c, c.take(edit::moveClips(c.state(), c.sequenceId(), c.clips("clips"), delta, shift, mode,
                                                         c.linkMode())));
          }});

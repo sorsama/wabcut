@@ -19,18 +19,28 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <QClipboard>
 #include <QDir>
 #include <QDataStream>
+#include <QDateTime>
 #include <QElapsedTimer>
 #include <QFile>
+#include <QGuiApplication>
 #include <QKeyEvent>
 #include <QMouseEvent>
 #include <QQuickItem>
+#include <QSettings>
+#include <QStyleHints>
 #include <QTemporaryDir>
 #include <QTextLayout>
 
+#include <algorithm>
+#include <filesystem>
 #include <fstream>
 #include <functional>
+#include <mutex>
+#include <string>
+#include <vector>
 
 using namespace wabcut;
 using namespace wabcut::app;
@@ -460,6 +470,33 @@ TEST_CASE("Thai: word units side by side without spaces, search across units, ca
     CHECK(t.wordCount() == 4);
 }
 
+TEST_CASE("Transcript Find All text: the first selected run as its language writes it", "[app][transcript]") {
+    {
+        Fixture fx(transcript("th", {{"สวัสดี", 0, 6, 0}, {"ครับ", 6, 9, 0}, {"วันนี้", 12, 16, 0}, {"อากาศ", 16, 20, 0}, {"ดี", 20, 23, 0}}));
+        TranscriptBridge& t = fx.bridge;
+        CHECK(t.selectionSearchText().isEmpty()); // nothing selected
+        // Two Thai units: no space between them, so the search finds them (the Fix field keeps the units apart).
+        t.selectWords(0, 1);
+        CHECK(t.selectionSearchText() == QStringLiteral("สวัสดีครับ"));
+        CHECK(t.selectedText() == QStringLiteral("สวัสดี ครับ"));
+        t.setSearchQuery(t.selectionSearchText());
+        CHECK(t.matchCount() == 1);
+        // Two runs (Ctrl-click): the first one, not an empty search.
+        t.clickWord(3, Qt::ControlModifier);
+        REQUIRE(t.isSelected(3));
+        CHECK(t.selectedText().isEmpty());
+        CHECK(t.selectionSearchText() == QStringLiteral("สวัสดีครับ"));
+    }
+    {
+        Fixture fx;
+        TranscriptBridge& t = fx.bridge;
+        t.selectWords(0, 1);
+        CHECK(t.selectionSearchText() == QStringLiteral("Hello world"));
+        t.setSearchQuery(t.selectionSearchText());
+        CHECK(t.matchCount() == 1);
+    }
+}
+
 // ---- Transcription ----------------------------------------------------------------------------------------------------
 
 TEST_CASE("Transcription: providers, the set-up state, a job with progress that fills the transcript", "[app][transcript]") {
@@ -754,4 +791,762 @@ TEST_CASE("Transcription: a redaction on another media item of the same file sti
     REQUIRE(waitFor([&] { return t.jobStatus() != QStringLiteral("running"); }));
     CHECK(t.jobStatus() == QStringLiteral("done"));
     CHECK(wordTexts(t) == QStringList{QStringLiteral("Hi"), QStringLiteral("[bleep]"), QStringLiteral("there")});
+}
+
+// ---- 0.4: follow the playhead, the word menu, voice tracks --------------------------------------------------------------
+
+TEST_CASE("Transcript paragraphOfWord finds the paragraph at its first and last word", "[app][transcript]") {
+    Fixture fx;
+    TranscriptBridge& t = fx.bridge;
+    REQUIRE(t.paragraphs()->rowCount() == 2); // words 0..2, then 3..5
+    CHECK(t.paragraphOfWord(0) == 0);
+    CHECK(t.paragraphOfWord(2) == 0);
+    CHECK(t.paragraphOfWord(3) == 1);
+    CHECK(t.paragraphOfWord(5) == 1);
+    CHECK(t.paragraphOfWord(6) == -1);
+    CHECK(t.paragraphOfWord(-1) == -1);
+    CHECK(t.selectionFirst() == -1);
+    t.selectWords(4, 5);
+    CHECK(t.selectionFirst() == 4);
+    // An empty transcript.
+    Timeline tl(R"(
+        V1 tgt |Bbbbbbbbbb|
+    )");
+    ProjectController controller;
+    controller.resetProject(tl.state, tl.seq);
+    TranscriptBridge empty;
+    empty.setUseAnalysisCache(false);
+    empty.setController(&controller);
+    CHECK(empty.paragraphOfWord(0) == -1);
+    CHECK(empty.selectionFirst() == -1);
+}
+
+TEST_CASE("Transcript selection: copy and copy with timecodes fill the system clipboard", "[app][transcript][clipboard]") {
+    Fixture fx;
+    TranscriptBridge& t = fx.bridge;
+    QClipboard* clipboard = QGuiApplication::clipboard();
+    REQUIRE(clipboard);
+    const bool canPaste = fx.controller.canPaste();
+
+    // Nothing selected: says so.
+    CHECK_FALSE(t.copySelection(false).isEmpty());
+    CHECK_FALSE(t.message().isEmpty());
+
+    // The words as their language writes them.
+    t.selectWords(0, 1);
+    REQUIRE(t.copySelection(false).isEmpty());
+    CHECK(clipboard->text() == QStringLiteral("Hello world"));
+    // Separate runs (Ctrl-click) on separate lines.
+    t.clickWord(0, 0);
+    t.clickWord(4, Qt::ControlModifier);
+    t.clickWord(5, Qt::ControlModifier);
+    REQUIRE(t.copySelection(false).isEmpty());
+    CHECK(clipboard->text() == QStringLiteral("Hello\nis great"));
+
+    // With timecodes: one line per run and paragraph, the speaker when it is known.
+    t.selectWords(1, 4);
+    REQUIRE(t.copySelection(true).isEmpty());
+    CHECK(clipboard->text() == QStringLiteral("[") + fx.controller.formatTimecode(f(5)) + QStringLiteral("] Speaker 1: world um\n[")
+                                   + fx.controller.formatTimecode(f(22)) + QStringLiteral("] Speaker 2: this is"));
+    CHECK(fx.controller.canPaste() == canPaste); // the clip clipboard is untouched
+}
+
+TEST_CASE("Transcript selection: Mark In and Out and markers from the words in one undo step each", "[app][transcript]") {
+    // Words that start and end inside frames: "this" from 22.4, "great" up to 33.6 (25 fps).
+    Fixture fx(transcript("en", {{"Hello", 0, 4, 0},
+                                 {"world", 5, 9, 0},
+                                 {"um", 12, 14, 0},
+                                 {"this", 22.4, 25, 1},
+                                 {"is", 26, 28, 1},
+                                 {"great", 29, 33.6, 1}}));
+    TranscriptBridge& t = fx.bridge;
+    fx.controller.setPlayhead(f(2));
+    t.selectWords(3, 5);
+    const Ticks playhead = fx.controller.playhead();
+
+    // In at the start of the first word's frame, Out at the end of the last word's frame: one undo step.
+    const auto undos = fx.controller.session().undoCount();
+    REQUIRE(t.markSelection().isEmpty());
+    CHECK(fx.controller.session().undoCount() == undos + 1);
+    CHECK(fx.controller.undoText() == QStringLiteral("Undo Mark In and Out"));
+    CHECK(fx.controller.markIn() == f(22));
+    CHECK(fx.controller.markOut() == f(34));
+    CHECK(fx.controller.playhead() == playhead); // the playhead and the selection stay
+    CHECK(t.hasSelection());
+    REQUIRE(fx.controller.undo());
+    CHECK_FALSE(fx.controller.markIn());
+
+    // A range marker named from the words, its comment the whole text.
+    REQUIRE(t.addMarkerFromSelection(false).isEmpty());
+    CHECK(fx.controller.undoText() == QStringLiteral("Undo Add Marker"));
+    REQUIRE(fx.controller.currentSequence()->markers.size() == 1);
+    const Marker marker = fx.controller.currentSequence()->markers.front();
+    CHECK(marker.start == f(22));
+    CHECK(marker.duration == f(12));
+    CHECK(marker.name == "this is great");
+    CHECK(marker.comment == "this is great");
+    CHECK(marker.type == MarkerType::Comment);
+    REQUIRE(fx.controller.undo());
+    CHECK(fx.controller.currentSequence()->markers.empty());
+    // A chapter marker: a point marker of type chapter.
+    REQUIRE(t.addMarkerFromSelection(true).isEmpty());
+    REQUIRE(fx.controller.currentSequence()->markers.size() == 1);
+    const Marker chapter = fx.controller.currentSequence()->markers.front();
+    CHECK(chapter.type == MarkerType::Chapter);
+    CHECK(chapter.start == f(22));
+    CHECK(chapter.duration == Ticks{});
+    CHECK(chapter.name == "this is great");
+
+    // A long selection: the name is cut at a word with an ellipsis; the comment keeps everything.
+    std::vector<W> many;
+    for (int i = 0; i < 30; ++i)
+        many.push_back(W{"word" + std::to_string(i), static_cast<double>(i), i + 0.8, 0});
+    Fixture longer(transcript("en", many));
+    longer.bridge.selectWords(0, 29);
+    REQUIRE(longer.bridge.addMarkerFromSelection(false).isEmpty());
+    const Marker named = longer.controller.currentSequence()->markers.front();
+    CHECK(named.name.size() <= 64);
+    CHECK(QString::fromStdString(named.name).endsWith(QChar(0x2026)));
+    CHECK(named.comment.size() > named.name.size());
+}
+
+TEST_CASE("Transcript selection: Lift leaves a gap on the words tracks and one undo restores", "[app][transcript]") {
+    Fixture fx;
+    TranscriptBridge& t = fx.bridge;
+    const Ticks duration = fx.controller.currentSequence()->duration;
+    t.selectWords(3, 5);
+    const auto undos = fx.controller.session().undoCount();
+    REQUIRE(t.liftSelection().isEmpty());
+    CHECK(fx.controller.session().undoCount() == undos + 1);
+    CHECK(fx.controller.undoText() == QStringLiteral("Undo Lift"));
+    // A gap on the audio track and its linked video; the sequence keeps its length.
+    const SequencePtr seq = fx.controller.currentSequence();
+    CHECK(seq->duration == duration);
+    CHECK(seq->videoTracks[0]->clips.size() == 2);
+    CHECK(seq->audioTracks[0]->clips.size() == 2);
+    CHECK(seq->audioTracks[0]->clips[1].start() == f(34));
+    // The lifted words left the transcript; In/Out are cleared; the playhead parks at the gap.
+    CHECK(t.wordCount() == 3);
+    CHECK_FALSE(t.hasSelection());
+    CHECK_FALSE(fx.controller.markIn());
+    CHECK_FALSE(fx.controller.markOut());
+    CHECK(fx.controller.playhead() == f(22));
+    REQUIRE(fx.controller.undo());
+    CHECK(t.wordCount() == 6);
+    CHECK(fx.controller.currentSequence()->audioTracks[0]->clips.size() == 1);
+
+    // A locked track refuses and says so.
+    const SequenceId seqId = fx.controller.currentSequenceId();
+    const TrackId v1 = fx.controller.currentSequence()->videoTracks[0]->id;
+    REQUIRE(fx.controller.applyEditFn("Lock", [&](const ProjectState& s) {
+        edit::TrackStateChange change;
+        change.locked = true;
+        return edit::setTrackState(s, seqId, v1, change);
+    }));
+    t.selectWords(0, 1);
+    const auto locked = fx.controller.session().undoCount();
+    CHECK(t.liftSelection() == QStringLiteral("A locked track would change"));
+    CHECK(t.message() == QStringLiteral("A locked track would change"));
+    CHECK(fx.controller.session().undoCount() == locked);
+}
+
+namespace {
+
+/// An OBS-style recording: A1 "Game" (no role), A2 "Mic" (dialogue) and A3 "Discord" (dialogue, voice chat), linked with
+/// the video; each audio file exists, so a job can run. A counting fake transcriber records the files it hears.
+struct VoiceTracks {
+    QTemporaryDir dir;
+    Timeline tl{R"(
+        V1 tgt |Gggggggggggggggggggg|
+        A1 tgt |Gggggggggggggggggggg|
+        A2 tgt |Mmmmmmmmmmmmmmmmmmmm|
+        A3 tgt |Dddddddddddddddddddd|
+    )"};
+    ProjectController controller;
+    TranscriptBridge t;
+    std::mutex mutex;
+    std::vector<std::string> heard;
+    bool clearChoicesOnExit = true; ///< false: the next VoiceTracks reads the stored choice
+
+    /// linkDiscord false: the Discord clip is not linked to the recording (a separate voice-chat file).
+    explicit VoiceTracks(bool clearChoices = true, bool micMuted = false, bool linkDiscord = true) {
+        if (clearChoices)
+            QSettings().remove(QStringLiteral("transcript"));
+        REQUIRE(dir.isValid());
+        tl.link(linkDiscord ? "V1@0 A1@0 A2@0 A3@0" : "V1@0 A1@0 A2@0");
+        ProjectState state = tl.state;
+        for (MediaPtr& m : state.media) {
+            for (const char letter : {'G', 'M', 'D'}) {
+                if (m->id == tl.media(letter)) {
+                    const QString file = dir.filePath(QString(QLatin1Char(letter)) + QStringLiteral(".wav"));
+                    std::ofstream(file.toStdString()) << "RIFF";
+                    auto copy = std::make_shared<MediaItem>(*m);
+                    copy->locator.path = file.toStdString();
+                    m = copy;
+                }
+            }
+        }
+        const auto name = [&](std::size_t track, std::string text, std::optional<TrackRole> role, bool muted) {
+            edit::TrackStateChange change;
+            change.name = std::move(text);
+            change.role = role;
+            if (muted)
+                change.muted = true;
+            state = ok(edit::setTrackState(state, tl.seq, state.findSequence(tl.seq)->audioTracks[track]->id, change)).state;
+        };
+        name(0, "Game", std::nullopt, false);
+        name(1, "Mic", TrackRole::Dialogue, micMuted);
+        name(2, "Discord", TrackRole::Dialogue, false);
+        controller.resetProject(state, tl.seq);
+        t.setUseAnalysisCache(false);
+        t.setController(&controller);
+        t.setTranscriber(QStringLiteral("fake"), QStringLiteral("Fake"),
+                         [this](const std::string& path, int, const std::function<void(float)>&, std::stop_token) {
+                             const std::lock_guard lock(mutex);
+                             heard.push_back(std::filesystem::path(path).filename().string());
+                             return std::expected<ai::Transcript, Error>(*transcript("en", {{"Hi", 0, 4}}));
+                         });
+        t.setProvider(QStringLiteral("fake"));
+    }
+    ~VoiceTracks() {
+        if (clearChoicesOnExit)
+            QSettings().remove(QStringLiteral("transcript"));
+    }
+
+    /// The files a transcription of `scope` sent, sorted.
+    std::vector<std::string> transcribe(const QString& scope) {
+        {
+            const std::lock_guard lock(mutex);
+            heard.clear();
+        }
+        const QString error = t.transcribe(scope);
+        INFO(error.toStdString());
+        REQUIRE(error.isEmpty());
+        REQUIRE(waitFor([&] { return t.jobStatus() != QStringLiteral("running"); }));
+        const std::lock_guard lock(mutex);
+        std::vector<std::string> out = heard;
+        std::sort(out.begin(), out.end());
+        return out;
+    }
+    bool chosen(int index) const { return t.audioTracks().value(index).toMap().value(QStringLiteral("chosen")).toBool(); }
+};
+
+} // namespace
+
+TEST_CASE("Transcription: only the voice tracks are chosen by default and the choice is remembered by name",
+          "[app][transcript][tracks]") {
+    {
+        VoiceTracks v;
+        const QVariantList tracks = v.t.audioTracks();
+        REQUIRE(tracks.size() == 3);
+        const QVariantMap mic = tracks[1].toMap();
+        CHECK(mic.value(QStringLiteral("index")).toInt() == 1);
+        CHECK(mic.value(QStringLiteral("name")).toString() == QStringLiteral("Mic"));
+        CHECK(mic.value(QStringLiteral("role")).toString() == QStringLiteral("dialogue"));
+        CHECK(mic.value(QStringLiteral("label")).toString().startsWith(QStringLiteral("A2")));
+        CHECK(mic.value(QStringLiteral("label")).toString().contains(QStringLiteral("Mic")));
+        CHECK_FALSE(mic.value(QStringLiteral("muted")).toBool());
+        // The mic only: game audio and voice chat are left out.
+        CHECK_FALSE(v.chosen(0));
+        CHECK(v.chosen(1));
+        CHECK_FALSE(v.chosen(2));
+        CHECK(v.transcribe(QStringLiteral("sequence")) == std::vector<std::string>{"M.wav"});
+        // Choosing Discord is remembered by its name.
+        int changes = 0;
+        QObject::connect(&v.t, &TranscriptBridge::audioTracksChanged, [&] { ++changes; });
+        v.t.setTrackChosen(2, true);
+        CHECK(v.chosen(2));
+        CHECK(changes == 1);
+        CHECK(QSettings().value(QStringLiteral("transcript/trackChoices")).toString().contains(QStringLiteral("discord")));
+        v.clearChoicesOnExit = false; // the next bridge reads it
+    }
+    {
+        // Another project (a new bridge) with a track of that name: chosen, so two files go.
+        VoiceTracks again(false);
+        CHECK(again.chosen(2));
+        CHECK(again.transcribe(QStringLiteral("sequence")) == std::vector<std::string>({"D.wav", "M.wav"}));
+    }
+    {
+        // A muted dialogue track is not chosen (with no voice track left, every unmuted track is).
+        VoiceTracks muted(true, true);
+        CHECK_FALSE(muted.chosen(1));
+        CHECK(muted.t.audioTracks().value(1).toMap().value(QStringLiteral("muted")).toBool());
+        // No track chosen: nothing to send.
+        muted.t.setTrackChosen(0, false);
+        muted.t.setTrackChosen(2, false);
+        CHECK(muted.t.transcribe(QStringLiteral("sequence")) == QStringLiteral("Choose at least one audio track"));
+    }
+}
+
+TEST_CASE("Transcription: the selection scope keeps linked partners only on chosen tracks", "[app][transcript][tracks]") {
+    VoiceTracks v;
+    // The game audio clip is selected (with its linked partners): only the mic is transcribed.
+    v.controller.selectClipById(clipAt(*v.controller.snapshot(), v.tl.seq, "A1@0"), ProjectController::Replace);
+    CHECK(v.transcribe(QStringLiteral("selection")) == std::vector<std::string>{"M.wav"});
+}
+
+TEST_CASE("Transcription: selected clips only on switched-off tracks say which tracks", "[app][transcript][tracks]") {
+    VoiceTracks v(true, false, false);
+    // The Discord clip alone (not linked): its track is off, so nothing goes, and the message says why.
+    v.controller.selectClipById(clipAt(*v.controller.snapshot(), v.tl.seq, "A3@0"), ProjectController::Replace);
+    const QString off = v.t.transcribe(QStringLiteral("selection"));
+    CHECK(off == QStringLiteral("Nothing to transcribe: the selected clips are on tracks switched off under Tracks (A3 · Discord)"));
+    CHECK(v.t.message() == off);
+    CHECK(v.t.jobStatus() != QStringLiteral("running"));
+    // Its track switched on: it is transcribed. Then it has a transcript: the usual message.
+    v.t.setTrackChosen(2, true);
+    CHECK(v.transcribe(QStringLiteral("selection")) == std::vector<std::string>{"D.wav"});
+    CHECK(v.t.transcribe(QStringLiteral("selection")).startsWith(QStringLiteral("Nothing to transcribe: every clip here has a transcript")));
+}
+
+// ---- 0.4: the Transcript tab in the shell (follow, the word menu, the Tracks checklist) ----------------------------------
+
+namespace {
+
+void sendKey(Shell& shell, int key, Qt::KeyboardModifiers mods = {}, const QString& text = {}) {
+    QKeyEvent press(QEvent::KeyPress, key, mods, text);
+    QCoreApplication::sendEvent(shell.window.get(), &press);
+    QKeyEvent release(QEvent::KeyRelease, key, mods, text);
+    QCoreApplication::sendEvent(shell.window.get(), &release);
+    spin(30);
+}
+
+void clickItem(Shell& shell, QQuickItem* item, Qt::MouseButton button = Qt::LeftButton) {
+    REQUIRE(item != nullptr);
+    spin(QGuiApplication::styleHints()->mouseDoubleClickInterval() + 30);
+    const QPointF p = item->mapToScene(QPointF(item->width() / 2, item->height() / 2));
+    QMouseEvent press(QEvent::MouseButtonPress, p, p, button, button, {});
+    QCoreApplication::sendEvent(shell.window.get(), &press);
+    QMouseEvent release(QEvent::MouseButtonRelease, p, p, button, Qt::NoButton, {});
+    QCoreApplication::sendEvent(shell.window.get(), &release);
+    spin(60);
+}
+
+QQuickItem* visibleNamed(Shell& shell, const QString& name) {
+    return findItem(shell.window->contentItem(), [&](QQuickItem* i) { return i->objectName() == name && i->isVisible(); });
+}
+
+/// The panel and the open menu that holds `menuRow` (null: the panel alone) in one crop.
+void saveUnionCrop(const QImage& image, const QQuickItem* panel, const QQuickItem* menuRow, const QString& file) {
+    const double dpr = image.devicePixelRatio();
+    QRectF r = panel->mapRectToScene(QRectF(0, 0, panel->width(), panel->height()));
+    if (menuRow) {
+        const auto* menu = menuRow->property("menu").value<QObject*>();
+        const auto* content = menu ? menu->property("contentItem").value<QQuickItem*>() : nullptr;
+        const QQuickItem* popup = content && content->parentItem() ? content->parentItem() : menuRow;
+        r = r.united(popup->mapRectToScene(QRectF(0, 0, popup->width(), popup->height())).adjusted(-16, -16, 16, 16));
+    }
+    r = r.intersected(QRectF(0, 0, image.width() / dpr, image.height() / dpr));
+    REQUIRE(image.copy(QRectF(r.topLeft() * dpr, r.size() * dpr).toRect()).save(outputDir() + file));
+}
+
+} // namespace
+
+TEST_CASE("Transcript view follows the playhead unless turned off or the user just scrolled", "[app][transcript][follow][qml]") {
+    resetSettings();
+    clearMessages();
+    Shell shell;
+    REQUIRE(shell.window != nullptr);
+    shell.resize(kShotWidth, kShotHeight);
+    shell.theme->setProperty("reduceMotion", true);
+    auto* controller = shell.engine.singletonInstance<ProjectController*>("Wabcut", "ProjectController");
+    auto* t = shell.engine.singletonInstance<TranscriptBridge*>("Wabcut", "Transcript");
+    REQUIRE(controller != nullptr);
+    REQUIRE(t != nullptr);
+    t->setUseAnalysisCache(false);
+    // 400 words, two a paragraph (the speaker alternates): 200 paragraphs. "zebra" is word 380 (paragraph 190).
+    const std::string body = "A" + std::string(419, 'a');
+    Timeline tl("V1 tgt |" + body + "|\nA1 tgt |" + body + "|");
+    tl.linkMatching();
+    controller->resetProject(tl.state, tl.seq);
+    std::vector<W> words;
+    for (int i = 0; i < 400; ++i)
+        words.push_back(W{i == 380 ? std::string("zebra") : "word" + std::to_string(i), static_cast<double>(i), i + 0.8, (i / 2) % 2});
+    t->addTranscript(tl.media('A'), 0, transcript("en", words));
+    REQUIRE(t->wordCount() == 400);
+    REQUIRE(t->paragraphs()->rowCount() == 200);
+    REQUIRE(QMetaObject::invokeMethod(shell.window.get(), "showBrowserPanel", Q_ARG(QVariant, QStringLiteral("captions"))));
+    spin(300);
+    REQUIRE_FALSE(shell.grab().isNull()); // lays the hidden window out
+    QQuickItem* list = visibleNamed(shell, QStringLiteral("transcriptList"));
+    REQUIRE(list != nullptr);
+    CHECK(shell.preferences->property("transcriptFollowPlayhead").toBool()); // on by default
+    const auto inView = [&](int paragraph) {
+        QQuickItem* row = nullptr;
+        QMetaObject::invokeMethod(list, "itemAtIndex", Q_RETURN_ARG(QQuickItem*, row), Q_ARG(int, paragraph));
+        if (!row || !row->isVisible())
+            return false;
+        const double y = row->mapToItem(list, QPointF(0, 0)).y();
+        return y >= -1 && y + row->height() <= list->height() + 1;
+    };
+    const auto contentY = [&] { return list->property("contentY").toDouble(); };
+    REQUIRE(inView(0));
+
+    // The playhead in paragraph 150: it comes into view.
+    controller->setPlayhead(f(300));
+    spin(50);
+    CHECK(t->currentWord() == 300);
+    CHECK(inView(150));
+    // The playhead a word further on, in the same view: no jump (Contain).
+    const double shown = contentY();
+    controller->setPlayhead(f(301));
+    spin(50);
+    CHECK(contentY() == shown);
+
+    // Follow off (the crosshair button, remembered): the view stays.
+    QQuickItem* toggle = visibleNamed(shell, QStringLiteral("transcriptFollowToggle"));
+    REQUIRE(toggle != nullptr);
+    clickItem(shell, toggle);
+    CHECK_FALSE(shell.preferences->property("transcriptFollowPlayhead").toBool());
+    CHECK_FALSE(toggle->property("checked").toBool());
+    controller->setPlayhead(f(20));
+    spin(50);
+    CHECK(t->currentWord() == 20);
+    CHECK(contentY() == shown);
+    CHECK_FALSE(inView(10));
+
+    // Follow on, but the user just scrolled: it waits; after the pause the next word brings it back.
+    clickItem(shell, toggle);
+    CHECK(shell.preferences->property("transcriptFollowPlayhead").toBool());
+    CHECK(toggle->property("checked").toBool());
+    REQUIRE(QMetaObject::invokeMethod(list, "positionViewAtBeginning"));
+    spin(30);
+    const double top = contentY();
+    list->setProperty("userScrolledAt", static_cast<double>(QDateTime::currentMSecsSinceEpoch()));
+    controller->setPlayhead(f(300));
+    spin(50);
+    CHECK(contentY() == top);
+    CHECK_FALSE(inView(150));
+    list->setProperty("userScrolledAt", 0.0);
+    controller->setPlayhead(f(302));
+    spin(50);
+    CHECK(inView(151));
+
+    // Find's next match always shows it, even with follow off.
+    clickItem(shell, toggle);
+    REQUIRE_FALSE(shell.preferences->property("transcriptFollowPlayhead").toBool());
+    REQUIRE(QMetaObject::invokeMethod(list, "positionViewAtBeginning"));
+    spin(30);
+    t->setSearchQuery(QStringLiteral("zebra"));
+    REQUIRE(t->matchCount() == 1);
+    t->nextMatch(1);
+    spin(50);
+    CHECK(t->isSelected(380));
+    CHECK(inView(190));
+
+    const QStringList messages = takeMessages();
+    INFO(join(messages));
+    CHECK(messages.isEmpty());
+}
+
+TEST_CASE("Transcript view follows the word in a paragraph taller than the view", "[app][transcript][follow][qml]") {
+    resetSettings();
+    clearMessages();
+    Shell shell;
+    REQUIRE(shell.window != nullptr);
+    shell.resize(kShotWidth, kShotHeight);
+    shell.theme->setProperty("reduceMotion", true);
+    auto* controller = shell.engine.singletonInstance<ProjectController*>("Wabcut", "ProjectController");
+    auto* t = shell.engine.singletonInstance<TranscriptBridge*>("Wabcut", "Transcript");
+    REQUIRE(controller != nullptr);
+    REQUIRE(t != nullptr);
+    t->setUseAnalysisCache(false);
+    // A monologue with no pause: 80 long words make one paragraph (the most one takes), then paragraphs of two words.
+    // "zebra" is word 70, low in the long paragraph.
+    const std::string body = "A" + std::string(149, 'a');
+    Timeline tl("V1 tgt |" + body + "|\nA1 tgt |" + body + "|");
+    tl.linkMatching();
+    controller->resetProject(tl.state, tl.seq);
+    std::vector<W> words;
+    for (int i = 0; i < 120; ++i) {
+        const std::string text = i == 70 ? std::string("zebra") : "monologue" + std::to_string(i) + std::string(36, 'o');
+        words.push_back(W{text, static_cast<double>(i), i + 0.8, i < 80 ? 0 : (i / 2) % 2 + 1});
+    }
+    t->addTranscript(tl.media('A'), 0, transcript("en", words));
+    REQUIRE(t->wordCount() == 120);
+    REQUIRE(t->paragraphOfWord(79) == 0);
+    REQUIRE(t->paragraphOfWord(80) == 1);
+    REQUIRE(QMetaObject::invokeMethod(shell.window.get(), "showBrowserPanel", Q_ARG(QVariant, QStringLiteral("captions"))));
+    spin(300);
+    REQUIRE_FALSE(shell.grab().isNull()); // lays the hidden window out
+    QQuickItem* list = visibleNamed(shell, QStringLiteral("transcriptList"));
+    REQUIRE(list != nullptr);
+    QQuickItem* longParagraph = nullptr;
+    QMetaObject::invokeMethod(list, "itemAtIndex", Q_RETURN_ARG(QQuickItem*, longParagraph), Q_ARG(int, 0));
+    REQUIRE(longParagraph != nullptr);
+    INFO("paragraph " << longParagraph->height() << " px, view " << list->height() << " px");
+    REQUIRE(longParagraph->height() > list->height() * 1.5); // the case: Contain would top-align it
+    const auto wordInView = [&](int word) {
+        QQuickItem* w = wordItem(shell, word);
+        if (!w)
+            return false;
+        const double y = w->mapToItem(list, QPointF(0, 0)).y();
+        return y >= -1 && y + w->height() <= list->height() + 1;
+    };
+    const auto contentY = [&] { return list->property("contentY").toDouble(); };
+
+    controller->setPlayhead(f(2));
+    spin(50);
+    REQUIRE(t->currentWord() == 2);
+    CHECK(wordInView(2));
+    // Late in the long paragraph: the word's line comes into view (not the paragraph's top), and the next word, shown
+    // already, does not move the view.
+    controller->setPlayhead(f(76));
+    spin(50);
+    REQUIRE(t->currentWord() == 76);
+    CHECK(wordInView(76));
+    const double shown = contentY();
+    controller->setPlayhead(f(77));
+    spin(50);
+    REQUIRE(t->currentWord() == 77);
+    CHECK(wordInView(77));
+    CHECK(contentY() == shown);
+    // Back near the start: the top lines again.
+    controller->setPlayhead(f(1));
+    spin(50);
+    CHECK(wordInView(1));
+
+    // Find (follow off) shows a match low in the long paragraph.
+    QQuickItem* toggle = visibleNamed(shell, QStringLiteral("transcriptFollowToggle"));
+    REQUIRE(toggle != nullptr);
+    clickItem(shell, toggle);
+    REQUIRE_FALSE(shell.preferences->property("transcriptFollowPlayhead").toBool());
+    t->setSearchQuery(QStringLiteral("zebra"));
+    REQUIRE(t->matchCount() == 1);
+    t->nextMatch(1);
+    spin(50);
+    CHECK(t->isSelected(70));
+    CHECK(wordInView(70));
+
+    // The Menu key opens the word menu at a selected word low in the paragraph, scrolled into view.
+    REQUIRE(QMetaObject::invokeMethod(list, "positionViewAtBeginning"));
+    spin(30);
+    t->selectWords(78, 78);
+    QQuickItem* text = visibleNamed(shell, QStringLiteral("transcriptText"));
+    REQUIRE(text != nullptr);
+    text->forceActiveFocus(Qt::OtherFocusReason);
+    sendKey(shell, Qt::Key_Menu);
+    QQuickItem* copyRow = nullptr;
+    REQUIRE(waitFor([&] { return (copyRow = visibleNamed(shell, QStringLiteral("transcriptCopyItem"))) != nullptr; }, 3000));
+    CHECK(wordInView(78));
+    QObject* menu = copyRow->property("menu").value<QObject*>();
+    REQUIRE(menu != nullptr);
+    REQUIRE(QMetaObject::invokeMethod(menu, "close"));
+    spin(100);
+
+    const QStringList messages = takeMessages();
+    INFO(join(messages));
+    CHECK(messages.isEmpty());
+}
+
+TEST_CASE("Transcript context menu in the shell: right-click opens it and Ctrl+C copies the words; screenshot",
+          "[app][transcript][clipboard][qml][screenshots]") {
+    resetSettings();
+    clearMessages();
+    Shell shell;
+    REQUIRE(shell.window != nullptr);
+    shell.resize(kShotWidth, kShotHeight);
+    shell.theme->setProperty("reduceMotion", true);
+    auto* controller = shell.engine.singletonInstance<ProjectController*>("Wabcut", "ProjectController");
+    auto* t = shell.engine.singletonInstance<TranscriptBridge*>("Wabcut", "Transcript");
+    REQUIRE(t != nullptr);
+    t->setUseAnalysisCache(false);
+    const Rate rate = controller->currentSequence()->frameRate;
+    const double fps = rate.toDouble();
+    const auto s = [&](double seconds) { return seconds * fps; };
+    t->addTranscript(mediaNamed(*controller, "Interview A.mov"), 0,
+                     transcript("en",
+                                {{"So", s(0.4), s(0.6), 0},       {"um,", s(0.7), s(1.0), 0},   {"we", s(1.6), s(1.8), 0},
+                                 {"started", s(1.8), s(2.3), 0},  {"the", s(2.3), s(2.4), 0},   {"project", s(2.4), s(2.9), 0},
+                                 {"last", s(2.9), s(3.2), 0},     {"spring.", s(3.2), s(3.7), 0}, {"It", s(5.2), s(5.3), 1},
+                                 {"was", s(5.3), s(5.5), 1},      {"uh", s(5.6), s(5.9), 1},    {"a", s(6.4), s(6.5), 1},
+                                 {"small", s(6.5), s(6.9), 1},    {"team", s(6.9), s(7.3), 1},  {"and", s(7.3), s(7.5), 1},
+                                 {"a", s(7.5), s(7.6), 1},        {"big", s(7.6), s(7.9), 1},   {"idea.", s(7.9), s(8.5), 1}},
+                                rate));
+    REQUIRE(t->wordCount() == 18);
+    REQUIRE(QMetaObject::invokeMethod(shell.window.get(), "showBrowserPanel", Q_ARG(QVariant, QStringLiteral("captions"))));
+    spin(300);
+    REQUIRE_FALSE(shell.grab().isNull());
+    QClipboard* clipboard = QGuiApplication::clipboard();
+    REQUIRE(clipboard != nullptr);
+    clipboard->clear();
+    const bool canPaste = controller->canPaste();
+
+    // Right-click a selected word: the selection stays and the word menu opens with its rows.
+    t->selectWords(5, 7);
+    clickItem(shell, wordItem(shell, 6), Qt::RightButton);
+    CHECK(t->isSelected(5));
+    CHECK(t->isSelected(7));
+    QQuickItem* copyRow = visibleNamed(shell, QStringLiteral("transcriptCopyItem"));
+    REQUIRE(copyRow != nullptr);
+    for (const char* name : {"transcriptCopyTimecodesItem", "transcriptMarkItem", "transcriptMarkerItem", "transcriptChapterItem",
+                             "transcriptLiftItem", "transcriptDeleteItem", "transcriptKeepItem", "transcriptFixItem",
+                             "transcriptFindAllItem"}) {
+        INFO(name);
+        QQuickItem* row = visibleNamed(shell, QString::fromLatin1(name));
+        REQUIRE(row != nullptr);
+        CHECK(row->isEnabled());
+    }
+    spin(100);
+    {
+        const QImage image = shell.grab();
+        REQUIRE_FALSE(image.isNull());
+        REQUIRE(image.save(outputDir() + QStringLiteral("/transcript-context-menu.png")));
+        QQuickItem* panel = shell.item("transcriptPanel");
+        REQUIRE(panel != nullptr);
+        saveUnionCrop(image, panel, copyRow, QStringLiteral("/transcript-context-menu-crop.png"));
+    }
+    // Mark In and Out from the menu: one undo step; the selection stays.
+    const TimeRange first = t->sequenceTranscript()[5].timeline;
+    REQUIRE(QMetaObject::invokeMethod(visibleNamed(shell, QStringLiteral("transcriptMarkItem")), "triggered"));
+    CHECK(controller->undoText() == QStringLiteral("Undo Mark In and Out"));
+    REQUIRE(controller->markIn().has_value());
+    CHECK(*controller->markIn() <= first.start);
+    CHECK(t->hasSelection());
+    REQUIRE(controller->undo());
+    QObject* menu = copyRow->property("menu").value<QObject*>();
+    REQUIRE(menu != nullptr);
+    REQUIRE(QMetaObject::invokeMethod(menu, "close"));
+    spin(100);
+
+    // Right-click a word outside the selection: it alone is selected.
+    clickItem(shell, wordItem(shell, 12), Qt::RightButton);
+    CHECK(t->isSelected(12));
+    CHECK_FALSE(t->isSelected(5));
+    CHECK(menu->property("visible").toBool());
+    REQUIRE(QMetaObject::invokeMethod(menu, "close"));
+    spin(100);
+
+    // Ctrl+C on the focused words copies them (not the clips); the Menu key opens the menu from the keyboard.
+    t->selectWords(5, 7);
+    QQuickItem* text = visibleNamed(shell, QStringLiteral("transcriptText"));
+    REQUIRE(text != nullptr);
+    text->forceActiveFocus(Qt::OtherFocusReason);
+    sendKey(shell, Qt::Key_C, Qt::ControlModifier, QStringLiteral("c"));
+    CHECK(clipboard->text() == QStringLiteral("project last spring."));
+    CHECK(controller->canPaste() == canPaste);
+    sendKey(shell, Qt::Key_Menu);
+    REQUIRE(waitFor([&] { return menu->property("visible").toBool(); }, 3000));
+    // Fix… runs once the menu has closed: the fix row with the words.
+    REQUIRE(QMetaObject::invokeMethod(visibleNamed(shell, QStringLiteral("transcriptFixItem")), "triggered"));
+    REQUIRE(QMetaObject::invokeMethod(menu, "close"));
+    QQuickItem* fixRow = nullptr;
+    REQUIRE(waitFor([&] { return (fixRow = visibleNamed(shell, QStringLiteral("transcriptFixRow"))) != nullptr; }, 3000));
+    QQuickItem* fixField = visibleNamed(shell, QStringLiteral("transcriptFixField"));
+    REQUIRE(fixField != nullptr);
+    CHECK(fixField->property("text").toString() == QStringLiteral("project last spring."));
+
+    // Find All runs once the menu has closed: the words in the search field as shown, so they are found.
+    text->forceActiveFocus(Qt::OtherFocusReason);
+    sendKey(shell, Qt::Key_Menu);
+    REQUIRE(waitFor([&] { return menu->property("visible").toBool(); }, 3000));
+    REQUIRE(QMetaObject::invokeMethod(visibleNamed(shell, QStringLiteral("transcriptFindAllItem")), "triggered"));
+    REQUIRE(QMetaObject::invokeMethod(menu, "close"));
+    REQUIRE(waitFor([&] { return t->searchQuery() == QStringLiteral("project last spring."); }, 3000));
+    CHECK(t->matchCount() == 1);
+
+    const QStringList messages = takeMessages();
+    INFO(join(messages));
+    CHECK(messages.isEmpty());
+}
+
+TEST_CASE("Transcription setup in the shell: the Tracks checklist and its summary; screenshot",
+          "[app][transcript][tracks][qml][screenshots]") {
+    resetSettings();
+    QSettings().remove(QStringLiteral("transcript"));
+    clearMessages();
+    Shell shell;
+    REQUIRE(shell.window != nullptr);
+    shell.resize(kShotWidth, kShotHeight);
+    shell.theme->setProperty("reduceMotion", true);
+    auto* controller = shell.engine.singletonInstance<ProjectController*>("Wabcut", "ProjectController");
+    auto* t = shell.engine.singletonInstance<TranscriptBridge*>("Wabcut", "Transcript");
+    REQUIRE(t != nullptr);
+    t->setUseAnalysisCache(false);
+    // An OBS-style recording: A1 "Game", A2 "Mic" (dialogue), A3 "Discord" (dialogue, voice chat).
+    Timeline tl(R"(
+        V1 tgt |Gggggggggggggggggggg|
+        A1 tgt |Gggggggggggggggggggg|
+        A2 tgt |Mmmmmmmmmmmmmmmmmmmm|
+        A3 tgt |Dddddddddddddddddddd|
+    )");
+    tl.link("V1@0 A1@0 A2@0 A3@0");
+    ProjectState state = tl.state;
+    const auto name = [&](std::size_t track, std::string text, std::optional<TrackRole> role) {
+        edit::TrackStateChange change;
+        change.name = std::move(text);
+        change.role = role;
+        state = ok(edit::setTrackState(state, tl.seq, state.findSequence(tl.seq)->audioTracks[track]->id, change)).state;
+    };
+    name(0, "Game", std::nullopt);
+    name(1, "Mic", TrackRole::Dialogue);
+    name(2, "Discord", TrackRole::Dialogue);
+    controller->resetProject(state, tl.seq);
+    t->setTranscriber(QStringLiteral("fake"), QStringLiteral("This computer (test)"),
+                      [](const std::string&, int, const std::function<void(float)>&, std::stop_token) {
+                          return std::expected<ai::Transcript, Error>(*transcript("en", {{"Hi", 0, 4}}));
+                      });
+    t->setProvider(QStringLiteral("fake"));
+    REQUIRE(QMetaObject::invokeMethod(shell.window.get(), "showBrowserPanel", Q_ARG(QVariant, QStringLiteral("captions"))));
+    spin(300);
+    REQUIRE_FALSE(shell.grab().isNull());
+
+    // One switch a track; the mic alone is on; the summary and the hint say so.
+    QQuickItem* game = visibleNamed(shell, QStringLiteral("transcribeTrack_0"));
+    QQuickItem* mic = visibleNamed(shell, QStringLiteral("transcribeTrack_1"));
+    QQuickItem* discord = visibleNamed(shell, QStringLiteral("transcribeTrack_2"));
+    REQUIRE(game != nullptr);
+    REQUIRE(mic != nullptr);
+    REQUIRE(discord != nullptr);
+    CHECK(game->property("text").toString().startsWith(QStringLiteral("A1")));
+    CHECK(mic->property("text").toString().contains(QStringLiteral("Mic")));
+    CHECK_FALSE(game->property("checked").toBool());
+    CHECK(mic->property("checked").toBool());
+    CHECK_FALSE(discord->property("checked").toBool());
+    QQuickItem* summary = visibleNamed(shell, QStringLiteral("transcribeTracksSummary"));
+    REQUIRE(summary != nullptr);
+    CHECK(summary->property("text").toString() == QStringLiteral("1 of 3 audio tracks"));
+    CHECK(visibleNamed(shell, QStringLiteral("transcribeTracksHint")) != nullptr);
+    QQuickItem* transcribe = visibleNamed(shell, QStringLiteral("transcribeSequenceButton"));
+    REQUIRE(transcribe != nullptr);
+    CHECK(transcribe->isEnabled());
+    // The Tracks come after the transcribers: the setup scrolls to them (the panel is short in this layout).
+    QQuickItem* setup = visibleNamed(shell, QStringLiteral("transcribeSetup"));
+    QQuickItem* label = visibleNamed(shell, QStringLiteral("transcribeTracksLabel"));
+    REQUIRE(setup != nullptr);
+    REQUIRE(label != nullptr);
+    QQuickItem* setupContent = setup->property("contentItem").value<QQuickItem*>();
+    REQUIRE(setupContent != nullptr);
+    const double most = std::max(0.0, setup->property("contentHeight").toDouble() - setup->height());
+    setup->setProperty("contentY", std::clamp(label->mapToItem(setupContent, QPointF(0, 0)).y() - 8.0, 0.0, most));
+    spin(100);
+    {
+        const QImage image = shell.grab();
+        REQUIRE_FALSE(image.isNull());
+        REQUIRE(image.save(outputDir() + QStringLiteral("/transcript-tracks-setup.png")));
+        QQuickItem* panel = shell.item("transcriptPanel");
+        REQUIRE(panel != nullptr);
+        saveUnionCrop(image, panel, nullptr, QStringLiteral("/transcript-tracks-setup-crop.png"));
+    }
+
+    // A click switches the game audio on: remembered, two of three.
+    clickItem(shell, game);
+    CHECK(t->audioTracks().value(0).toMap().value(QStringLiteral("chosen")).toBool());
+    CHECK(game->property("checked").toBool());
+    CHECK(summary->property("text").toString() == QStringLiteral("2 of 3 audio tracks"));
+    CHECK(QSettings().value(QStringLiteral("transcript/trackChoices")).toString().contains(QStringLiteral("game")));
+    // None chosen: Transcribe waits for a track.
+    t->setTrackChosen(0, false);
+    t->setTrackChosen(1, false);
+    spin(30);
+    CHECK(summary->property("text").toString() == QStringLiteral("0 of 3 audio tracks"));
+    QQuickItem* hint = visibleNamed(shell, QStringLiteral("transcribeTracksHint"));
+    REQUIRE(hint != nullptr);
+    CHECK(hint->property("text").toString() == QStringLiteral("Choose at least one audio track"));
+    CHECK_FALSE(transcribe->isEnabled());
+
+    QSettings().remove(QStringLiteral("transcript"));
+    const QStringList messages = takeMessages();
+    INFO(join(messages));
+    CHECK(messages.isEmpty());
 }

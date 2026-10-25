@@ -259,6 +259,7 @@ bool MonitorBridge::handlesCommand(const QString& id) {
         QStringLiteral("monitor.toggleCropDirectManipulation"),
         QStringLiteral("monitor.enableTransmit"),
         QStringLiteral("transport.playInToOut"),
+        QStringLiteral("transport.playFromPlayheadToOut"), // 0.4: Ctrl+Space
         QStringLiteral("programMonitor.nudgeUp"),
         QStringLiteral("programMonitor.nudgeDown"),
         QStringLiteral("programMonitor.nudgeLeft"),
@@ -352,6 +353,11 @@ bool MonitorBridge::runCommand(const QString& id, bool sourceFocused) {
     if (id == QLatin1String("transport.playInToOut")) {
         if (m_playback)
             m_playback->playInToOut();
+        return true;
+    }
+    if (id == QLatin1String("transport.playFromPlayheadToOut")) { // 0.4, Premiere's Play from Playhead to Out
+        if (m_playback)
+            m_playback->playToOut();
         return true;
     }
     if (id.startsWith(QLatin1String("programMonitor.nudge"))) {

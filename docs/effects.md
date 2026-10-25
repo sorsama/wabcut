@@ -338,7 +338,7 @@ are fixed pixel values from SD days) and assume a frame-size clip.
 | PiPs/25%, PiPs/40% | PiP 25% UL, UR, LL, LR (and 40%); PiP 25% UL Scale In / Scale Out ...; PiP 25% UL Spin In / Spin Out ...; PiP 25% Motion UL to LR, LR to UL, UR to LL, LL to UR (and 40%) | Motion: the clip at 25 % or 40 %, 5 % of the frame from the corner's edges; Scale In / Out grow from or shrink to nothing over the first / last second; Spin In / Out do the same turning a full turn (0.2); Motion presets travel between opposite corners over the clip (Scale) |
 | Solarizes | Solarize In, Solarize Out | Solarize Threshold 0 to 1 over the first second, and back over the last |
 | Twirls | Twirl In, Twirl Out | Twirl (radius 50) unwinding a full turn over the first second, winding over the last |
-| Image Pans | Horizontal Image Pan Left to Right / Right to Left, Vertical Image Pan Top to Bottom / Bottom to Top | Motion at 120 %, Position moving 10 % of the frame across the clip (Scale) |
+| Image Pans | Horizontal Image Pan Left to Right / Right to Left, Vertical Image Pan Top to Bottom / Bottom to Top; 0.4: Slow Push In, Slow Pull Out, Push In to Top / to Bottom, Push In Left to Right / Right to Left | Motion at 120 %, Position moving 10 % of the frame across the clip (Scale). The 0.4 Ken Burns moves for stills and archive run over the whole clip (Scale) with eased keys (Ease In and Out) you can edit in Effect Controls: Slow Push In Scale 100 % to 112 %, Slow Pull Out 112 % to 100 %; Push In to Top / Bottom Scale 100 % to 112 % with Position Y moving 5 % of the frame height; Push In Left to Right / Right to Left Scale 108 % to 112 % with Position X moving 3 % of the frame width each way. Position keys share the scale keys' times, so a frame edge never shows, and only the Motion parameters a move uses are set (Rotation and Anchor stay the clip's) |
 | Animations (0.2) | Fade In / Out; Pop In / Out; Spin In / Out; Pull In / Out; Travel In from Left / Right / Top / Bottom, Travel Out to Left / Right / Top / Bottom; Spring In / Out | Premiere 25.5's motion animations for any video clip, as editable keys over half a second at the In point (In) or the Out point (Out): Fade - Opacity 0 to 100 %; Pop - Scale from 0 past 110 % to 100 % with a quick fade; Spin - half a turn while Scale grows from 0; Pull - Scale from 160 % to 100 % while fading in; Travel - Position from a frame's width (height) off that side; Spring - up from below the frame with a damped bounce (0.66 s). Out animations run the In ones backwards. Only the parameters an animation moves are set (Pop leaves Position alone), with absolute values as every preset (a PiP at 25 % pops to 100 %) |
 | Convolution Kernel (0.2) | Blur, Blur More, Darken, Emboss, Find Edges, Gaussian Blur, Gaussian Sharpen, Lighten, Sharpen, Sharpen Edges, Sharpen More | Convolution Kernel with the classic 3 x 3 kernels under the names of Premiere's Convolution Kernel bin (the kernels are textbook ones, not read from Premiere): the blurs average (2 at the centre, all 1, Gaussian 1-2-1 / 16), the sharpens subtract the neighbours (Sharpen Edges at half strength, Gaussian Sharpen against a Gaussian), Emboss is a grey relief (Offset 128), Find Edges a Laplacian, Lighten / Darken scale the centre (120 % / 80 %) |
 | Lumetri Presets: Cinematic, Filmstock, Monochrome, Technical | Teal & Orange, Cool Night; Warm Film, Bleach Bypass; Mono Silver; Sony S-Log3 (S-Gamut3.Cine) to Rec.709, Panasonic V-Log (V-Gamut) to Rec.709 | Color Grade with the built-in look (Creative > Look) or input LUT (Basic > Input LUT) of [color.md](color.md) |
@@ -350,5 +350,36 @@ edge with a duration handle, plus Block, Flip, Fold and Surprise Me.
 Not there: Lens Distortion Removal (Premiere's presets are
 correction profiles of particular GoPro and DJI cameras; Wabcut has the Lens Distortion effect but no measured camera
 profiles to ship) and Premiere's own `.prfpset` preset files (a binary-encoded format; Wabcut imports its own preset
-files only). Effect Controls has no multi-selection of effects, so Save Preset
-saves one effect or all of them (Premiere saves the selected ones); Time Remapping is not saved in presets.
+files only). Save Preset… saves the effect right-clicked or all of them (Premiere saves the effects selected in Effect
+Controls; 0.4 Wabcut selects effects there too, for Cut / Copy / Paste, below); Time Remapping is not saved in presets.
+
+### Effect Controls: select, copy and paste effects (0.4)
+
+As in Premiere's Effect Controls, the section headers (Transform, Opacity, Audio and every effect of the stack) can be
+selected and moved between clips:
+
+- **Select.** Click a header to select it (an accent outline). Ctrl+click adds or removes one, Shift+click selects from
+  the last one clicked, and Ctrl+A (Edit > Select All with Effect Controls focused) selects every section. Esc clears the
+  selection. Clicking a header gives Effect Controls the keyboard. Selecting a section clears the selected keyframes and
+  selecting a keyframe clears the sections. A transition shown in the panel is not selectable (Backspace removes it, as
+  Delete does on the timeline).
+- **Remove.** Backspace (Remove Selected Effect) or Delete removes the selected stack effects and resets the selected
+  Transform, Opacity and Audio sections to their defaults (their keyframes go too), as Premiere does: one undo step,
+  "Remove Effect", "Remove Effects" or "Reset Effect". Selected keyframes win: with keys selected, Delete and Backspace
+  delete those. With nothing selected Backspace says "Select an effect first".
+- **Copy and paste.** Ctrl+C (Ctrl+X cuts) with sections selected puts them on an effects clipboard; then select clips
+  on the timeline and press Ctrl+V (Edit > Paste works too). The video sections go onto video clips and the audio ones
+  onto audio clips (a selected clip of the other kind stands in for its linked partner). Fixed sections replace the
+  target's values; stack effects are added after the target's own, keeping their keyframe times from the clip start. One
+  undo step, "Paste Effects", and a toast "Pasted 2 effects to 5 clips"; clips on locked tracks are skipped and the toast
+  says how many. With no section selected Ctrl+C copies timeline clips as before; the newest copy wins, so a timeline
+  copy after an effects copy makes Ctrl+V paste clips again.
+- **The header menu.** Right-click a header (an unselected one is selected alone first): **Cut**, **Copy**, **Paste**,
+  **Clear** act on the selection; **Effect Enabled** (stack effects), **Reset**, **Move Up** and **Move Down** act on the
+  header right-clicked; then **Save Preset…** and **Save All Effects as Preset…**. Every row is one undo step except Copy.
+  Reset (and the header's reset button) also works on a collapsed section: it reads the effect's parameters, not the
+  rows shown.
+
+Wabcut differs from Premiere in three ways: the effects clipboard is kept for the session apart from the clip clipboard
+(the newest copy wins, as in Premiere); Time Remapping is not a section here (it stays in the speed controls above the
+list); and Transform, Opacity and Audio have no Effect Enabled switch.

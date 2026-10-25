@@ -65,7 +65,13 @@ QString enhanceBadge(const ProjectState& state, const Clip& clip) {
     return takeState(state, clip) == QStringLiteral("ready") ? QStringLiteral("enhanced") : QStringLiteral("missingRender");
 }
 
-ClipAudioBridge::ClipAudioBridge(QObject* parent) : QObject(parent) {}
+ClipAudioBridge::ClipAudioBridge(QObject* parent) : QObject(parent) {
+    // 0.4: volume key presses on the same clips within a second are one undo step. The timer only marks that second:
+    // the step is closed by the next press after it (adjustClipVolume), never from the timer, which would also close a
+    // slider or fader drag that merges under its own key meanwhile.
+    m_volumeMerge.setSingleShot(true);
+    m_volumeMerge.setInterval(1000);
+}
 
 ClipAudioBridge* ClipAudioBridge::create(QQmlEngine* qmlEngine, QJSEngine*) {
     auto* bridge = new ClipAudioBridge;
@@ -543,5 +549,187 @@ QString ClipAudioBridge::synchronize(const QStringList& clipKeys) {
 }
 
 void ClipAudioBridge::cancel() { m_job.cancel(); }
+
+// ---- Clip volume keys (0.4: ] [, Shift+] Shift+[) ----------------------------------------------------------------
+
+namespace {
+
+/// The Volume Level moved by `db`: a constant, or every key of a curve (the shape stays), clamped to the range.
+ParamValue shiftedVolume(const ParamValue& value, double db) {
+    const ParameterInfo& info = parameterInfo(ParamId::VolumeDb);
+    const auto shift = [&](double v) { return std::clamp(v + db, info.minValue, info.maxValue); };
+    if (const Curve* curve = value.curve()) {
+        Curve next = *curve;
+        for (Keyframe& key : next.keys)
+            key.value = shift(key.value);
+        return ParamValue(std::move(next));
+    }
+    return ParamValue(shift(value.constant()));
+}
+
+QString signedDb(double db) {
+    const QString number = QString::number(db, 'f', std::abs(db - std::round(db)) < 1e-9 ? 0 : 1);
+    return db > 0 ? QStringLiteral("+") + number : number;
+}
+
+/// The clips the volume keys act on, locked tracks included (adjustClipVolume says when they are all locked): the
+/// selection (`selected`, in timeline order), else the clips under the playhead on the targeted tracks (every track
+/// when none is targeted).
+QStringList volumeKeyClips(const ProjectController& controller, const QStringList& selected) {
+    const SequencePtr seq = controller.currentSequence();
+    if (!seq || !selected.isEmpty())
+        return selected;
+    QStringList out;
+    std::vector<TrackId> tracks = edit::targetedTracks(*seq);
+    if (tracks.empty())
+        tracks = edit::allTracks(*seq);
+    const Ticks at = controller.playhead();
+    for (const TrackId trackId : tracks) {
+        const Track* track = seq->findTrack(trackId);
+        if (!track)
+            continue;
+        if (const auto index = track->clipIndexAt(at))
+            out << clipKey(track->clips[*index].id);
+    }
+    return out;
+}
+
+} // namespace
+
+bool ClipAudioBridge::handlesCommand(const QString& id) {
+    return id == QLatin1String("clip.increaseVolume") || id == QLatin1String("clip.decreaseVolume") ||
+           id == QLatin1String("clip.increaseVolumeMany") || id == QLatin1String("clip.decreaseVolumeMany");
+}
+
+QStringList ClipAudioBridge::volumeTargets() const {
+    if (!m_controller)
+        return {};
+    QStringList out;
+    const SequencePtr seq = m_controller->currentSequence();
+    for (const QString& key : volumeKeyClips(*m_controller, selectedClips())) {
+        const auto id = parseClipKey(key);
+        const auto loc = id && seq ? seq->findClip(*id) : std::nullopt;
+        if (loc && !loc->track->locked)
+            out << key;
+    }
+    return out;
+}
+
+QVariantMap ClipAudioBridge::commandAvailability(const QString& id) const {
+    if (!handlesCommand(id))
+        return {{QStringLiteral("handled"), false}, {QStringLiteral("enabled"), false}, {QStringLiteral("reason"), QString()}};
+    const bool any = m_controller && !gainClips(volumeKeyClips(*m_controller, selectedClips())).empty();
+    return {{QStringLiteral("handled"), true},
+            {QStringLiteral("enabled"), any},
+            {QStringLiteral("reason"), any ? QString() : tr("Select clips with sound")}};
+}
+
+QString ClipAudioBridge::adjustClipVolume(const QStringList& clipKeys, double db) {
+    if (!m_controller)
+        return tr("No project");
+    if (!std::isfinite(db))
+        return tr("Enter a level in dB");
+    const SequencePtr seq = m_controller->currentSequence();
+    std::vector<ClipId> clips = gainClips(clipKeys);
+    if (!seq || clips.empty())
+        return tr("Select clips with sound");
+    std::erase_if(clips, [&](ClipId id) {
+        const auto loc = seq->findClip(id);
+        return !loc || loc->track->locked;
+    });
+    if (clips.empty())
+        return tr("The audio tracks are locked");
+    if (db == 0.0)
+        return {};
+    std::vector<ClipId> sorted = clips;
+    std::ranges::sort(sorted, [](ClipId a, ClipId b) { return a.value < b.value; });
+    std::string mergeKey = "clipVolumeKeys:";
+    for (const ClipId id : sorted)
+        mergeKey += std::to_string(id.value) + ",";
+    const SequenceId sequence = seq->id;
+    const edit::ParamRef volume = edit::ParamRef::of(ParamId::VolumeDb);
+    // Every level already at the end of the range: nothing to do (no step, and no one's merge is touched).
+    const bool moves = std::ranges::any_of(clips, [&](ClipId clip) {
+        const auto loc = seq->findClip(clip);
+        if (!loc)
+            return false;
+        const ParamValue current = ProjectController::parameterValue(loc->clip(), volume);
+        return shiftedVolume(current, db) != current;
+    });
+    if (!moves)
+        return {};
+    // More than a second after the last press: a step of its own. Ending the open merge here touches nothing else's:
+    // this edit closes any other key's merge anyway (a session merges only into its newest step).
+    if (!m_volumeMerge.isActive())
+        m_controller->endPropertyGesture();
+    const bool ok = m_controller->applyEditFn(
+        QT_TRANSLATE_NOOP("wabcut::app::ProjectController", "Clip Volume"),
+        [&](const ProjectState& state) -> edit::EditOutcome {
+            ProjectState next = state;
+            for (const ClipId clip : clips) {
+                const SequencePtr s = next.sequencePtr(sequence);
+                const auto loc = s ? s->findClip(clip) : std::nullopt;
+                if (!loc)
+                    return std::unexpected(Error{ErrorCode::NotFound, "the clip is gone"});
+                const ParamValue current = ProjectController::parameterValue(loc->clip(), volume);
+                ParamValue shifted = shiftedVolume(current, db);
+                if (shifted == current)
+                    continue; // already at the end of the range
+                auto step = edit::setParameter(next, sequence, clip, volume, std::move(shifted));
+                if (!step)
+                    return step;
+                next = std::move(step->state);
+            }
+            edit::EditResult result;
+            result.changes = wabcut::diff(state, next);
+            result.state = std::move(next);
+            return result;
+        },
+        mergeKey);
+    if (!ok)
+        return m_controller->lastError();
+    m_volumeMerge.start(); // the next press on the same clips within a second joins this undo step
+    return {};
+}
+
+QVariantMap ClipAudioBridge::runVolumeCommand(const QString& id) {
+    QVariantMap out{{QStringLiteral("ok"), false}, {QStringLiteral("text"), QString()}};
+    if (!handlesCommand(id))
+        return out;
+    const bool up = id.startsWith(QLatin1String("clip.increase"));
+    const double step = id.endsWith(QLatin1String("Many")) ? kLargeVolumeStepDb : kVolumeStepDb;
+    const double db = up ? step : -step;
+    if (!m_controller) {
+        out.insert(QStringLiteral("text"), tr("No project"));
+        return out;
+    }
+    const QStringList targets = volumeKeyClips(*m_controller, selectedClips());
+    const QString why = adjustClipVolume(targets, db);
+    if (!why.isEmpty()) {
+        out.insert(QStringLiteral("text"), why);
+        return out;
+    }
+    out.insert(QStringLiteral("ok"), true);
+    // What moved, for the toast: one clip with a constant level says where it is now.
+    const SequencePtr seq = m_controller ? m_controller->currentSequence() : nullptr;
+    std::vector<ClipId> moved = gainClips(targets);
+    std::erase_if(moved, [&](ClipId c) {
+        const auto loc = seq ? seq->findClip(c) : std::nullopt;
+        return !loc || loc->track->locked;
+    });
+    if (moved.size() == 1 && seq) {
+        const auto loc = seq->findClip(moved.front());
+        const ParamValue level = ProjectController::parameterValue(loc->clip(), edit::ParamRef::of(ParamId::VolumeDb));
+        if (level.isConstant()) {
+            out.insert(QStringLiteral("text"),
+                       tr("Volume %1 dB (now %2 dB)").arg(signedDb(db), QString::number(level.constant(), 'f', 1)));
+            return out;
+        }
+    }
+    const int count = static_cast<int>(moved.size());
+    out.insert(QStringLiteral("text"), count == 1 ? tr("Volume %1 dB on 1 clip").arg(signedDb(db))
+                                                  : tr("Volume %1 dB on %2 clips").arg(signedDb(db)).arg(count));
+    return out;
+}
 
 } // namespace wabcut::app

@@ -337,6 +337,8 @@ QVariant ExportJobModel::data(const QModelIndex& index, int role) const {
         return r.finished;
     case OriginRole:
         return r.origin;
+    case ErrorKindRole:
+        return r.errorKind;
     default:
         return {};
     }
@@ -347,7 +349,7 @@ QHash<int, QByteArray> ExportJobModel::roleNames() const {
             {PresetNameRole, "presetName"}, {StateRole, "jobState"},  {PhaseTextRole, "phaseText"},
             {ProgressRole, "progress"},     {FpsTextRole, "fpsText"}, {EtaTextRole, "etaText"},
             {EncoderRole, "encoder"},       {DetailRole, "detail"},   {FinishedRole, "finished"},
-            {OriginRole, "origin"}};
+            {OriginRole, "origin"},         {ErrorKindRole, "errorKind"}};
 }
 
 int ExportJobModel::activeCount() const {
@@ -362,6 +364,7 @@ void ExportJobModel::append(Row row) {
     endInsertRows();
     emit countChanged();
     emit activeCountChanged();
+    refreshSummary();
 }
 
 const ExportJobModel::Row* ExportJobModel::update(exporter::ExportJobId queueId,
@@ -439,11 +442,13 @@ const ExportJobModel::Row* ExportJobModel::update(exporter::ExportJobId queueId,
     } else if (status.error) {
         r.detail = ExportController::plainError(*status.error);
     }
+    r.errorKind = status.error ? ExportController::errorKindOf(*status.error) : QString();
     const int row = static_cast<int>(it - m_rows.begin());
     emit dataChanged(index(row), index(row));
     if (wasFinished != r.finished) {
         emit activeCountChanged();
     }
+    refreshSummary();
     return &r;
 }
 
@@ -462,6 +467,7 @@ void ExportJobModel::removeFinished() {
         }
     }
     emit countChanged();
+    refreshSummary();
 }
 
 void ExportJobModel::removeFinished(exporter::ExportJobId queueId) {
@@ -472,9 +478,62 @@ void ExportJobModel::removeFinished(exporter::ExportJobId queueId) {
             m_rows.erase(m_rows.begin() + i);
             endRemoveRows();
             emit countChanged();
+            refreshSummary();
             return;
         }
     }
+}
+
+// 0.4: the title bar's Background tasks pill, the quit guard, keep-awake and the taskbar read this summary. Held rows
+// wait for Start Queue; queued rows run on their own, so they count as running - but only while no row is paused: the
+// queue has one worker, and a paused export holds it (PauseGate::wait), so the rows queued behind it wait on the user
+// too (they are then in activeCount alone). The current job is the running one, else the first paused one, else the
+// first queued one (held rows never are).
+void ExportJobModel::refreshSummary() {
+    Summary next;
+    const Row* running = nullptr;
+    const Row* paused = nullptr;
+    const Row* queued = nullptr;
+    int queuedRows = 0;
+    for (const Row& r : m_rows) {
+        if (r.finished) {
+            continue;
+        }
+        if (r.state == QLatin1String("running")) {
+            ++next.running;
+            if (!running) {
+                running = &r;
+            }
+        } else if (r.state == QLatin1String("paused")) {
+            ++next.paused;
+            if (!paused) {
+                paused = &r;
+            }
+        } else if (r.state == QLatin1String("held")) {
+            ++next.held;
+        } else { // "queued": starts on its own once the worker is free
+            ++queuedRows;
+            if (!queued) {
+                queued = &r;
+            }
+        }
+    }
+    if (next.paused == 0) {
+        next.running += queuedRows;
+    }
+    const Row* current = running ? running : paused ? paused : queued;
+    if (current) {
+        next.jobId = current->jobId;
+        next.title = current->title;
+        next.state = current->state;
+        next.progress = current->progress;
+        next.eta = current->etaText;
+    }
+    if (next == m_summary) {
+        return;
+    }
+    m_summary = std::move(next);
+    emit summaryChanged();
 }
 
 // ---- ExportController ------------------------------------------------------------------------------------
@@ -1257,6 +1316,14 @@ std::string ExportController::provenanceSidecarText(const ai::Json& provenance) 
 }
 
 void ExportController::onStatus(const ex::ExportJobStatus& status) {
+    // 0.4: a finished job is reported with its result or error (ExportQueue::run); a terminal phase without either
+    // would finish the row without its reason or warnings - the report that has them follows.
+    const bool terminal = status.progress.phase == ex::ExportPhase::Done ||
+                          status.progress.phase == ex::ExportPhase::Failed ||
+                          status.progress.phase == ex::ExportPhase::Cancelled;
+    if (terminal && !status.result && !status.error) {
+        return;
+    }
     // 0.2: a job queued by a watch folder appears in the list when it reports first.
     if (std::none_of(m_jobs->rows().begin(), m_jobs->rows().end(), [&](const ExportJobModel::Row& r) { return r.queueId == status.id; })) {
         ExportJobModel::Row row;
@@ -1444,18 +1511,31 @@ QVariantMap ExportController::job(const QString& jobId) const {
             {QStringLiteral("detail"), row->detail},
             {QStringLiteral("finished"), row->finished},
             {QStringLiteral("origin"), row->origin},
+            {QStringLiteral("errorKind"), row->errorKind},
             {QStringLiteral("exists"), file.exists()}};
 }
 
+// 0.4: `jobId` may also be the absolute path of an export's file (as reveal()): a toast's "Open" whose job row went
+// meanwhile (Clear Finished) opens the file it remembered, while that file is there.
 bool ExportController::openOutput(const QString& jobId) {
-    const ExportJobModel::Row* row = m_jobs->find(jobId);
-    if (!row || row->state != QLatin1String("done") || !QFileInfo::exists(row->outputPath)) {
+    QString path;
+    if (const ExportJobModel::Row* row = m_jobs->find(jobId)) {
+        if (row->state != QLatin1String("done")) {
+            return false;
+        }
+        path = row->outputPath;
+    } else if (const QString given = QDir::fromNativeSeparators(jobId); QDir::isAbsolutePath(given)) {
+        path = QDir::toNativeSeparators(QDir::cleanPath(given));
+    } else {
+        return false;
+    }
+    if (!QFileInfo(path).isFile()) {
         return false;
     }
     if (m_open) {
-        return m_open(row->outputPath);
+        return m_open(path);
     }
-    return QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(row->outputPath).absoluteFilePath()));
+    return QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(path).absoluteFilePath()));
 }
 
 QString ExportController::suggestedRange(const QString& sequenceId) const {
@@ -1990,6 +2070,34 @@ QString ExportController::plainError(const Error& error) {
         return translate("The GPU renderer is not available: %1").arg(message);
     default:
         return message;
+    }
+}
+
+// 0.4: follows plainError()'s branches; the failed-export toast offers Relink… for "offline".
+QString ExportController::errorKindOf(const Error& error) {
+    const QString message = QString::fromStdString(error.message);
+    switch (error.code) {
+    case ErrorCode::NotFound:
+        // The prefix plainError() reads as "original media offline".
+        return message.startsWith(QLatin1String("Original media offline or missing: ")) ? QStringLiteral("offline")
+                                                                                           : QString();
+    case ErrorCode::IoError:
+        if (message.contains(QLatin1String("output folder does not exist"))) {
+            return QStringLiteral("folder");
+        }
+        if (message.contains(QLatin1String("No space"))) {
+            return QStringLiteral("space");
+        }
+        if (message.contains(QLatin1String("Permission denied"))) {
+            return QStringLiteral("access");
+        }
+        return {};
+    case ErrorCode::Unsupported:
+        return message.startsWith(QLatin1String("No working")) ? QStringLiteral("encoder") : QString();
+    case ErrorCode::EncoderError:
+        return QStringLiteral("encoder");
+    default:
+        return {};
     }
 }
 

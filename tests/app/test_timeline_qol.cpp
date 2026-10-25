@@ -26,8 +26,10 @@
 #include <wabcut/model/ProjectOps.h>
 #include <wabcut/model/SequenceSettings.h>
 
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <QCoreApplication>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -895,4 +897,325 @@ TEST_CASE("Markers carry their name comment time and length for the ruler and ti
     CHECK(inChorus.value(QStringLiteral("index")).toInt() == 1);
     CHECK(inChorus.value(QStringLiteral("durationText")).toString() == QStringLiteral("00:00:01:00"));
     CHECK(bar.markerAt(perSecond * f(12).toSeconds()).isEmpty());
+}
+
+// ---- 0.4 (stream A): clip speed and fx badges, the hover facts, the playhead snap, auto-scroll, \ -----------------
+
+namespace {
+
+/// `frames` frames of media `letter` as a picture run: "Aaaa".
+std::string run(char letter, int frames) {
+    return std::string(1, letter) + std::string(static_cast<std::size_t>(frames - 1), static_cast<char>(letter + 32));
+}
+std::string gap(int frames) { return std::string(static_cast<std::size_t>(frames), '.'); }
+
+void settle(Rig& rig) {
+    for (int i = 0; i < 4; ++i) {
+        QCoreApplication::processEvents();
+        rig.harness.frame();
+    }
+}
+
+} // namespace
+
+TEST_CASE("Retimed clips show their speed after the name", "[app][timeline][badges]") {
+    const std::string picture = "V1 |" + run('A', 30) + gap(10) + run('B', 30) + gap(10) + run('C', 30) + gap(10) + "|\n"
+                              + "A1 |" + run('D', 30) + gap(90) + "|";
+    Rig rig(picture, 4.0, false);
+    const ClipId a = rig.clip("V1@0");
+    const ClipId b = rig.clip("V1@40");
+    const ClipId c = rig.clip("V1@80");
+    const ClipId d = rig.clip("A1@0");
+    edit::SpeedChange half;
+    half.speed = Speed{1, 2};
+    half.keepDuration = true;
+    const std::vector<ClipId> halved{a, d};
+    REQUIRE(rig.controller.applyEditFn("Speed/Duration", [&](const ProjectState& s) {
+        return edit::setSpeed(s, rig.tl.seq, halved, half, edit::LinkMode::IgnoreLinks);
+    }));
+    edit::SpeedChange reverse;
+    reverse.speed = Speed{1, 1};
+    reverse.reversed = true;
+    reverse.keepDuration = true;
+    const std::vector<ClipId> reversed{b};
+    REQUIRE(rig.controller.applyEditFn("Speed/Duration", [&](const ProjectState& s) {
+        return edit::setSpeed(s, rig.tl.seq, reversed, reverse, edit::LinkMode::IgnoreLinks);
+    }));
+    settle(rig);
+    const auto labels = [&] { return rig.view->stats().labelTexts; };
+    CHECK(labels().value(a.value) == QStringLiteral("A [50%]"));
+    CHECK(labels().value(b.value) == QStringLiteral("B [") + QChar(0x2212) + QStringLiteral("100%]"));
+    CHECK(labels().value(c.value) == QStringLiteral("C")); // 100 % forward: nothing
+    CHECK(labels().value(d.value) == QStringLiteral("D [50%]")); // audio clips too
+
+    // The time remapping view keeps its own suffix on video (no double text); audio keeps the brackets.
+    rig.view->setShowSpeed(true);
+    settle(rig);
+    CHECK(labels().value(a.value).contains(QStringLiteral("50%")));
+    CHECK_FALSE(labels().value(a.value).contains(QLatin1Char('[')));
+    CHECK(labels().value(d.value) == QStringLiteral("D [50%]"));
+    rig.view->setShowSpeed(false);
+
+    // Switched off: no suffix.
+    rig.view->setShowClipSpeed(false);
+    settle(rig);
+    CHECK(labels().value(a.value) == QStringLiteral("A"));
+    CHECK(labels().value(d.value) == QStringLiteral("D"));
+}
+
+TEST_CASE("The fx badge says whether a clip has effects or changed properties", "[app][timeline][badges]") {
+    const std::string picture = "V1 |" + run('A', 30) + gap(10) + run('B', 30) + gap(10) + run('C', 30) + gap(10) + "|";
+    Rig rig(picture, 4.0, false);
+    const ClipId a = rig.clip("V1@0");
+    const ClipId b = rig.clip("V1@40");
+    const ClipId c = rig.clip("V1@80");
+    REQUIRE(rig.controller.applyEditFn("Add Keyframe", [&](const ProjectState& s) {
+        return edit::addKeyframe(s, rig.tl.seq, b, edit::ParamRef::of(ParamId::Scale), Keyframe{f(2), 0.5});
+    }));
+    REQUIRE(rig.controller.applyEditFn("Add Effect", [&](const ProjectState& s) {
+        return edit::addEffect(s, rig.tl.seq, std::span(&a, 1), "wabcut.blur.gaussian");
+    }));
+    settle(rig);
+    const auto badges = [&] { return rig.view->stats().fxBadges; };
+    CHECK(badges().value(a.value) == QStringLiteral("effects"));
+    CHECK(badges().value(b.value) == QStringLiteral("changed"));
+    CHECK_FALSE(badges().contains(c.value)); // untouched: no chip
+    CHECK(rig.view->stats().labelTexts.value(a.value) == QStringLiteral("A")); // the chip is not part of the name
+
+    rig.view->setShowFxBadges(false);
+    settle(rig);
+    CHECK(badges().isEmpty());
+    rig.view->setShowFxBadges(true);
+    settle(rig);
+    CHECK(badges().value(a.value) == QStringLiteral("effects"));
+
+    // Undo the effect: the chip goes; the keyed Scale stays amber.
+    REQUIRE(rig.controller.undo());
+    settle(rig);
+    CHECK_FALSE(badges().contains(a.value));
+    CHECK(badges().value(b.value) == QStringLiteral("changed"));
+}
+
+TEST_CASE("Clip hover info gives the name times duration speed and source", "[app][timeline][tooltip]") {
+    Rig rig(R"(
+        V1 |....Aaaaaaaaaaaaaa....Bbbbbbbbbb....|
+    )", 10.0, false);
+    const ClipId a = rig.clip("V1@4");
+    const ClipId b = rig.clip("V1@22");
+    QVariantMap info = rig.view->clipHoverInfo(clipKey(a));
+    CHECK(info.value(QStringLiteral("name")).toString() == QStringLiteral("A"));
+    CHECK(info.value(QStringLiteral("track")).toString() == QStringLiteral("V1"));
+    CHECK(info.value(QStringLiteral("start")).toString() == QStringLiteral("00:00:00:04"));
+    CHECK(info.value(QStringLiteral("end")).toString() == QStringLiteral("00:00:00:18"));
+    CHECK(info.value(QStringLiteral("duration")).toString() == QStringLiteral("00:00:00:14"));
+    CHECK(info.value(QStringLiteral("speed")).toString().isEmpty());
+    CHECK(info.value(QStringLiteral("sourceKind")).toString() == QStringLiteral("media"));
+    CHECK(info.value(QStringLiteral("source")).toString() == QStringLiteral("A.mov"));
+    CHECK(info.value(QStringLiteral("sourceIn")).toString() == QStringLiteral("00:00:00:00"));
+    CHECK(info.value(QStringLiteral("sourceOut")).toString() == QStringLiteral("00:00:00:13")); // the last source frame
+    CHECK(info.value(QStringLiteral("effects")).toInt() == 0);
+    CHECK_FALSE(info.value(QStringLiteral("disabled")).toBool());
+    CHECK_FALSE(info.value(QStringLiteral("offline")).toBool());
+    QString text = info.value(QStringLiteral("text")).toString();
+    CHECK(text.startsWith(QStringLiteral("A\n")));
+    CHECK(text.contains(QStringLiteral("Duration 00:00:00:14")));
+    CHECK_FALSE(text.contains(QStringLiteral("Speed")));
+    CHECK_FALSE(text.contains(QStringLiteral("Disabled")));
+
+    // A 50 % clip says so; a disabled clip with an effect says that too.
+    edit::SpeedChange half;
+    half.speed = Speed{1, 2};
+    half.keepDuration = true;
+    const std::vector<ClipId> bs{b};
+    REQUIRE(rig.controller.applyEditFn("Speed/Duration", [&](const ProjectState& s) {
+        return edit::setSpeed(s, rig.tl.seq, bs, half, edit::LinkMode::IgnoreLinks);
+    }));
+    info = rig.view->clipHoverInfo(clipKey(b));
+    CHECK(info.value(QStringLiteral("speed")).toString() == QStringLiteral("50%"));
+    CHECK(info.value(QStringLiteral("text")).toString().contains(QStringLiteral("Speed 50%")));
+
+    edit::ClipAttributeChange off;
+    off.enabled = false;
+    const std::vector<ClipId> as{a};
+    REQUIRE(rig.controller.applyEditFn("Disable", [&](const ProjectState& s) {
+        return edit::setClipAttributes(s, rig.tl.seq, as, off);
+    }));
+    REQUIRE(rig.controller.applyEditFn("Add Effect", [&](const ProjectState& s) {
+        return edit::addEffect(s, rig.tl.seq, std::span(&a, 1), "wabcut.blur.gaussian");
+    }));
+    info = rig.view->clipHoverInfo(clipKey(a));
+    CHECK(info.value(QStringLiteral("disabled")).toBool());
+    CHECK(info.value(QStringLiteral("effects")).toInt() == 1);
+    text = info.value(QStringLiteral("text")).toString();
+    CHECK(text.contains(QStringLiteral("Disabled")));
+    CHECK(text.contains(QStringLiteral("1 effect")));
+
+    // A key that names no clip: nothing.
+    CHECK(rig.view->clipHoverInfo(QStringLiteral("c999999")).isEmpty());
+    CHECK(rig.view->clipHoverInfo(QStringLiteral("nonsense")).isEmpty());
+}
+
+TEST_CASE("Scrubbing the ruler snaps the playhead to edits and markers", "[app][timeline][snap]") {
+    const std::string picture = "V1 |" + run('A', 40) + gap(40) + "|";
+    Rig rig(picture, 2.0, false);
+    REQUIRE(rig.controller.applyEditFn("Add Marker", [&](const ProjectState& s) {
+        return edit::addMarker(s, rig.tl.seq, Marker{f(60), Ticks{}, "Hook"});
+    }));
+    TimelineView* v = rig.view;
+    REQUIRE(v->snapping());
+    REQUIRE(v->snapPlayhead());
+
+    v->seekToX(rig.x(40) + 6); // 3 frames past the clip's end, inside the 8 px threshold
+    CHECK(rig.controller.playhead() == f(40));
+    CHECK(v->snapX() == Catch::Approx(rig.x(40)));
+    v->endScrub();
+    CHECK(std::isnan(v->snapX()));
+
+    v->setSnapping(false);
+    v->seekToX(rig.x(40) + 6);
+    CHECK(rig.controller.playhead() == f(43));
+    CHECK(std::isnan(v->snapX()));
+    v->seekToX(rig.x(40) + 6, true); // Shift snaps with Snap off
+    CHECK(rig.controller.playhead() == f(40));
+    v->endScrub();
+
+    v->setSnapping(true);
+    v->seekToX(rig.x(40) + 12); // out of reach
+    CHECK(rig.controller.playhead() == f(46));
+    v->setSnapPlayhead(false); // Premiere's "Snap Playhead in Timeline When Snap Is Enabled" off
+    v->seekToX(rig.x(40) + 6);
+    CHECK(rig.controller.playhead() == f(43));
+    v->setSnapPlayhead(true);
+    v->seekToX(rig.x(60) - 4); // the marker
+    CHECK(rig.controller.playhead() == f(60));
+    v->endScrub();
+}
+
+TEST_CASE("Playback auto-scroll pages or keeps the playhead still or never scrolls", "[app][timeline][autoscroll]") {
+    const std::string picture = "V1 |" + run('A', 40) + "|";
+    Rig rig(picture, 20.0, false); // 45 frames in the 900 px view
+    TimelineView* v = rig.view;
+    const auto at = [&](int frame) {
+        rig.controller.setPlayhead(f(frame));
+        QCoreApplication::processEvents();
+    };
+    SECTION("page: off the right edge the playhead lands on the left edge") {
+        at(50);
+        REQUIRE(v->playheadX() > v->width());
+        v->followPlayhead(QStringLiteral("page"));
+        CHECK(v->playheadX() == Catch::Approx(0).margin(0.5));
+        // Off the left edge (a loop back to In): at 10 %.
+        v->setScrollX(2000);
+        at(10);
+        v->followPlayhead(QStringLiteral("page"));
+        CHECK(v->playheadX() == Catch::Approx(v->width() * 0.1).margin(0.5));
+    }
+    SECTION("smooth: the playhead stays in the middle while the clips scroll") {
+        at(50);
+        v->followPlayhead(QStringLiteral("smooth"));
+        CHECK(v->playheadX() == Catch::Approx(450).margin(0.5));
+        const double scroll = v->scrollX();
+        at(51);
+        v->followPlayhead(QStringLiteral("smooth"));
+        CHECK(v->playheadX() == Catch::Approx(450).margin(0.5));
+        CHECK(v->scrollX() == Catch::Approx(scroll + 20).margin(0.5));
+        // Before the middle: no scroll.
+        v->setScrollX(0);
+        at(5);
+        v->followPlayhead(QStringLiteral("smooth"));
+        CHECK(v->scrollX() == 0);
+    }
+    SECTION("none: the view never moves") {
+        at(50);
+        v->followPlayhead(QStringLiteral("none"));
+        CHECK(v->scrollX() == 0);
+    }
+}
+
+TEST_CASE("Playback auto-scroll in reverse pages back and keeps the playhead in the middle", "[app][timeline][autoscroll]") {
+    const std::string picture = "V1 |" + run('A', 200) + "|";
+    Rig rig(picture, 20.0, false); // 45 frames in the 900 px view
+    TimelineView* v = rig.view;
+    const auto at = [&](int frame) {
+        rig.controller.setPlayhead(f(frame));
+        QCoreApplication::processEvents();
+    };
+    SECTION("page: off the left edge the view turns back a screen and the playhead lands on the right edge") {
+        v->setScrollX(2000); // frames 100 to 145
+        at(99);
+        REQUIRE(v->playheadX() < 0);
+        v->followPlayhead(QStringLiteral("page"), true);
+        CHECK(v->playheadX() == Catch::Approx(v->width()).margin(0.5));
+        // It plays on to the left without the view moving (no re-scroll every tenth of a screen).
+        const double scroll = v->scrollX();
+        for (int frame = 98; frame >= 60; --frame) {
+            at(frame);
+            v->followPlayhead(QStringLiteral("page"), true);
+        }
+        CHECK(v->scrollX() == Catch::Approx(scroll).margin(0.5));
+        // Off the right edge (a loop back to Out): 10 % in from it.
+        at(190);
+        v->followPlayhead(QStringLiteral("page"), true);
+        CHECK(v->playheadX() == Catch::Approx(v->width() * 0.9).margin(0.5));
+    }
+    SECTION("smooth: the playhead travels to the middle and stays there while the clips scroll") {
+        v->setScrollX(2000);
+        at(130); // right of the middle: it travels on, nothing scrolls
+        v->followPlayhead(QStringLiteral("smooth"), true);
+        CHECK(v->scrollX() == Catch::Approx(2000).margin(0.5));
+        at(122); // past the middle
+        v->followPlayhead(QStringLiteral("smooth"), true);
+        CHECK(v->playheadX() == Catch::Approx(450).margin(0.5));
+        const double scroll = v->scrollX();
+        at(121);
+        v->followPlayhead(QStringLiteral("smooth"), true);
+        CHECK(v->playheadX() == Catch::Approx(450).margin(0.5));
+        CHECK(v->scrollX() == Catch::Approx(scroll - 20).margin(0.5));
+        // A jump off the right edge (a loop) re-centres it.
+        at(190);
+        v->followPlayhead(QStringLiteral("smooth"), true);
+        CHECK(v->playheadX() == Catch::Approx(450).margin(0.5));
+        // At the sequence start the scroll stops and the playhead moves on.
+        v->setScrollX(0);
+        at(10);
+        v->followPlayhead(QStringLiteral("smooth"), true);
+        CHECK(v->scrollX() == 0);
+    }
+}
+
+TEST_CASE("Zoom to Sequence goes back to the previous zoom on the second press", "[app][timeline][zoom]") {
+    Rig rig(R"(
+        V1 |AaaaaaaaaaBbbbbbbbbb|
+    )");
+    TimelineView* v = rig.view;
+    v->setZoomLevel(0.6);
+    v->setScrollX(400);
+    const double zoom = v->zoomLevel();
+    const double scroll = v->scrollX();
+    REQUIRE(zoom > 0.1);
+    REQUIRE(scroll > 0);
+
+    v->toggleZoomToSequence();
+    CHECK(v->zoomLevel() == Catch::Approx(0).margin(1e-6));
+    v->toggleZoomToSequence(); // still at that fit: back
+    CHECK(v->zoomLevel() == Catch::Approx(zoom));
+    CHECK(v->scrollX() == Catch::Approx(scroll));
+
+    // A zoom in between forgets the way back: the next press fits again.
+    v->toggleZoomToSequence();
+    v->zoomAt(0.3, 0);
+    v->toggleZoomToSequence();
+    CHECK(v->zoomLevel() == Catch::Approx(0).margin(1e-6));
+
+    // So does a switch to another sequence and back.
+    auto created = edit::addSequence(*rig.controller.snapshot(), edit::SequenceSettings{});
+    REQUIRE(created);
+    rig.controller.resetProject(created->state, rig.tl.seq);
+    v->setZoomLevel(0.6);
+    v->toggleZoomToSequence();
+    REQUIRE(v->zoomLevel() == Catch::Approx(0).margin(1e-6));
+    rig.controller.setCurrentSequenceIndex(1);
+    rig.controller.setCurrentSequenceIndex(0);
+    v->toggleZoomToSequence();
+    CHECK(v->zoomLevel() == Catch::Approx(0).margin(1e-6));
 }

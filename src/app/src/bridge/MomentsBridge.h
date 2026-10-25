@@ -23,6 +23,10 @@
 //   * Zoom (clip.addKeyframe on motion.scale / motion.position.*, relative to the value at the moment):
 //       - punchIn(percent, hold): -> `percent` in about 0.12 s, held 1 s, back in 0.2 s; with `hold` it stays in;
 //       - shake(pixels): a decaying position wiggle of 8 steps (about 45 ms, a frame at least) ending where it started.
+//   * 0.4 instant replay (C.16 clip.instantReplay): In to Out when both sequence marks are set and the range overlaps
+//     the target clip (the command's range mode: every clip of media in it, linked audio and facecam too); else, on a
+//     clip longer than 20 s, the 5 s before the playhead; else the whole clip. Speed (25 / 50 %), sound and the REPLAY
+//     stinger are remembered (QSettings moments/replaySpeed, moments/replaySound, moments/replayLabel).
 //   * Keymap: moments.slowMo and moments.punchIn (runCommand), no default keys.
 
 #include <wabcut/model/Ids.h>
@@ -65,6 +69,11 @@ class MomentsBridge : public QObject {
     Q_PROPERTY(QVariantMap gamingEdits READ gamingEdits NOTIFY catalogChanged FINAL)
     /// Remove dead time's preview: { busy, found (ranges are waiting for Remove), count, seconds, text, error }.
     Q_PROPERTY(QVariantMap deadTime READ deadTime NOTIFY deadTimeChanged FINAL)
+    /// 0.4: instant replay's options (QSettings moments/replaySpeed 0.25 | 0.5, default 0.5; moments/replaySound,
+    /// default false: the replay's audio, slowed; moments/replayLabel, default true: the REPLAY stinger).
+    Q_PROPERTY(double replaySpeed READ replaySpeed WRITE setReplaySpeed NOTIFY replayOptionsChanged FINAL)
+    Q_PROPERTY(bool replaySound READ replaySound WRITE setReplaySound NOTIFY replayOptionsChanged FINAL)
+    Q_PROPERTY(bool replayLabel READ replayLabel WRITE setReplayLabel NOTIFY replayOptionsChanged FINAL)
 
 public:
     explicit MomentsBridge(QObject* parent = nullptr);
@@ -86,9 +95,17 @@ public:
     Q_INVOKABLE QString fastForward(double percent = 300.0, const QString& clip = {});
     Q_INVOKABLE QString punchIn(double percent = 130.0, bool hold = false, const QString& clip = {});
     Q_INVOKABLE QString shake(double pixels = 14.0, const QString& clip = {});
-    /// C.16 clip.instantReplay on the clip's span: copied right after it at half speed with a ramp, the REPLAY stinger
-    /// and a white flash at each cut (later material moves). One undo step.
-    Q_INVOKABLE QString instantReplay(const QString& clip = {});
+    /// C.16 clip.instantReplay: copied right after the range at replaySpeed with a ramp, the REPLAY stinger
+    /// (replayLabel) and a white flash at each cut (later material moves). One undo step. 0.4: the range rules in the
+    /// header comment; `options` { speed, includeAudio, label } override the remembered ones (scripts, tests).
+    Q_INVOKABLE QString instantReplay(const QString& clip = {}, const QVariantMap& options = {});
+    double replaySpeed() const { return m_replaySpeed; }
+    /// Clamped to 0.25 or 0.5 (the nearer); written to QSettings at once.
+    void setReplaySpeed(double speed);
+    bool replaySound() const { return m_replaySound; }
+    void setReplaySound(bool on);
+    bool replayLabel() const { return m_replayLabel; }
+    void setReplayLabel(bool on);
     /// C.16 sequence.makeVersion of the current sequence: "shorts" (1080x1920) or "square"; the new sequence opens.
     Q_INVOKABLE QString makeVersion(const QString& format = QStringLiteral("shorts"));
     QVariantMap gamingEdits() const;
@@ -115,6 +132,8 @@ signals:
     void messageChanged();
     void catalogChanged();
     void deadTimeChanged();
+    /// 0.4: replaySpeed, replaySound or replayLabel changed.
+    void replayOptionsChanged();
 
 private:
     struct Target {
@@ -139,6 +158,10 @@ private:
     std::string m_deadTimeRanges;
     std::uint64_t m_deadTimeSequence = 0;
     bool m_synchronous = false;
+    /// 0.4: instant replay's remembered options (read from QSettings in the constructor).
+    double m_replaySpeed = 0.5;
+    bool m_replaySound = false;
+    bool m_replayLabel = true;
 };
 
 struct MomentsSingleton {

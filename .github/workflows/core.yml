@@ -52,7 +52,8 @@ jobs:
             ctest_exclude: "Managed local helper lifecycle|HNSW graph agrees|llama-server starts with the tier context"
     name: core (${{ matrix.os }}, ${{ matrix.name }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    # No compiler cache: MSVC builds the core cold in about 43 minutes, then the tests take 4.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
 

@@ -347,7 +347,8 @@ SequenceChange diffSequence(const Sequence& before, const Sequence& after) {
                           !(before.pixelAspect == after.pixelAspect) || before.fields != after.fields ||
                           before.previewFormat != after.previewFormat || before.videoDisplay != after.videoDisplay ||
                           before.audioDisplay != after.audioDisplay ||
-                          before.colorIndex != after.colorIndex; // 0.2: the sequence's label
+                          before.colorIndex != after.colorIndex || // 0.2: the sequence's label
+                          before.rippleMarkers != after.rippleMarkers; // 0.4: Ripple Sequence Markers
     out.marksChanged = before.markIn != after.markIn || before.markOut != after.markOut;
     out.markersChanged = before.markers != after.markers;
     out.captionsChanged = before.captionTracks != after.captionTracks;

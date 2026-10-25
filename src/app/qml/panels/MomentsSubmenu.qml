@@ -4,8 +4,10 @@ import QtQuick
 // Moments (M5o, gaming): the clip menu's one-click presets for the clip, around the playhead (the clip's middle when
 // the playhead is elsewhere): Slow-mo 25 % / 50 %, Speed Ramp In, Freeze and Replay, Fast Forward 200 / 300 / 400 %,
 // Punch In, Punch In and Hold, Shake. Each is one undo step of ordinary time remap keys or Motion keyframes
-// (MomentsBridge), editable afterwards. Its own file, importing only QtQuick, so QtQuick.Controls' ContextMenu does
-// not shadow ours.
+// (MomentsBridge), editable afterwards. Instant Replay (C.16, when the catalog has it; 0.4) replays In to Out when both
+// marks are on the clip, else the 5 seconds before the playhead on a long clip, else the whole clip, with the speed,
+// Sound and Stinger options remembered from the Moments popover (MomentsBridge applies them). Its own file, importing
+// only QtQuick, so QtQuick.Controls' ContextMenu does not shadow ours.
 ContextMenu {
     id: menu
     objectName: "momentsSubmenu"

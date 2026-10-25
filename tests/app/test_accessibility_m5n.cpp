@@ -6,7 +6,8 @@
 //     Library's list view (Sort by in its tools menu), masks (a mask is chosen with the keyboard), the multi-camera
 //     view and the M5l dialogs, Explain this frame;
 //   * the Keyboard Trainer's new rounds (clipboard, markers, trim, multicam) on Premiere's keys;
-//   * What's new for this build; the welcome's AI page (where each feature runs, consent, the no-cloud lock).
+//   * What's new for this build; the welcome's AI page (where each feature runs, consent, the no-cloud lock);
+//   * 0.4: the track header's mute, solo and lock report their checked state.
 // Screenshots: whats-new.png, keyboard-trainer-categories.png, tour-ai-privacy.png.
 
 #include "A11yAudit.h"
@@ -889,5 +890,53 @@ TEST_CASE("A11y M5n: extensions, Audio Channels, the 5.1 panner, the track forma
         spin(50);
         CHECK_ACCESSIBLE(controls.get());
     }
+    checkNoMessages();
+}
+
+// 0.4 (stream A): the track header's mute, solo and lock are check boxes that say whether they are on, and the mute's
+// name says what a press does ("Mute A1" / "Unmute A1").
+TEST_CASE("A11y 0.4: track mute solo and lock report their checked state", "[app][a11y][timeline][qml]") {
+    resetSettings();
+    clearMessages();
+    A11yScope a11y;
+    Shell shell;
+    REQUIRE(shell.window);
+    shell.resize(kShotWidth, kShotHeight);
+    shell.theme->setProperty("reduceMotion", true);
+    auto* controller = shell.engine.singletonInstance<ProjectController*>("Wabcut", "ProjectController");
+    REQUIRE(controller);
+    Timeline tl(kPicture);
+    tl.linkMatching();
+    controller->resetProject(tl.state, tl.seq);
+    REQUIRE_FALSE(shell.grab().isNull());
+    const auto iface = [&](const char* name) {
+        QQuickItem* item = inWindow(shell, QLatin1String(name));
+        INFO(name);
+        REQUIRE(item);
+        QAccessibleInterface* found = QAccessible::queryAccessibleInterface(item);
+        REQUIRE(found);
+        return found;
+    };
+    const char* toggles[] = {"trackMute_A1", "trackSolo_A1", "trackLock_A1"};
+    for (const char* name : toggles) {
+        INFO(name);
+        CHECK(iface(name)->role() == QAccessible::CheckBox);
+        CHECK_FALSE(iface(name)->state().checked);
+    }
+    CHECK(iface("trackMute_A1")->text(QAccessible::Name) == QStringLiteral("Mute A1"));
+    CHECK(iface("trackSolo_A1")->text(QAccessible::Name) == QStringLiteral("Solo A1"));
+    CHECK(iface("trackLock_A1")->text(QAccessible::Name) == QStringLiteral("Lock A1"));
+    CHECK(iface("trackOutput_V1")->role() == QAccessible::CheckBox);
+
+    const QString a1 = trackKey(tl.track("A1"));
+    controller->setTrackFlag(a1, QStringLiteral("muted"), true);
+    controller->setTrackFlag(a1, QStringLiteral("solo"), true);
+    controller->setTrackFlag(a1, QStringLiteral("locked"), true);
+    spin(50);
+    for (const char* name : toggles) {
+        INFO(name);
+        CHECK(iface(name)->state().checked);
+    }
+    CHECK(iface("trackMute_A1")->text(QAccessible::Name) == QStringLiteral("Unmute A1"));
     checkNoMessages();
 }

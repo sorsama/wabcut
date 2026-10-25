@@ -52,6 +52,11 @@ Item {
         showVideoFadeHandles: Preferences.showVideoFadeHandles
         showAudioFadeHandles: Preferences.showAudioFadeHandles
         audioTimeUnits: ProjectController.audioTimeUnits
+        // 0.4: the speed after a retimed clip's name and the fx badge (Settings > Timeline & editing > Tracks, the
+        // display settings), and Premiere's "Snap Playhead in Timeline When Snap Is Enabled" for the ruler.
+        showClipSpeed: Preferences.timelineShowClipSpeed
+        showFxBadges: Preferences.timelineShowFxBadges
+        snapPlayhead: Preferences.snapPlayhead
         trimPoints: Trim.points
         trimType: Trim.type
         onEditPointClicked: (clipId, edge, type, modifiers) => Trim.selectEditPoint(clipId, edge, type, modifiers)
@@ -154,7 +159,11 @@ Item {
             trackPanLane: Theme.trackPanLane,
             // M5o: a responsive graphic's protected intro and outro.
             responsiveBand: Qt.alpha(Theme.clipInk, 0.14),
-            responsiveEdge: Theme.clipInk
+            responsiveEdge: Theme.clipInk,
+            // 0.4: the fx badge after a clip's name: violet with stack effects, amber with changed or keyframed
+            // Motion, Opacity, Volume, Pan or time remapping (its ink and hairline are markerInkColor).
+            fxChangedColor: Theme.warning,
+            fxEffectsColor: Theme.accentFill
         })
     }
 }

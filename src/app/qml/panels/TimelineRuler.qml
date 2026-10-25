@@ -13,12 +13,19 @@ import QtQuick
 // hidden where there is no room) and, on hover over the flag or the name, a tooltip with its name, comment, time and
 // length (TimelineView.markerItems). Only the flag (and a range marker's bar) takes presses: the name is drawn under the
 // scrub area and under the playhead knob, so pressing or dragging beside a flag scrubs like anywhere else on the ruler.
+// 0.4 (stream A): with Snap on and Settings' "Snap the playhead" (Preferences.snapPlayhead) the scrubbed playhead snaps
+// to clip edges, markers, In and Out (the snap line shows in the lanes while the button is held); Shift snaps it with
+// Snap off (TimelineView.seekToX(x, forceSnap), endScrub on release). A right click opens the ruler menu at the pointer
+// without moving the playhead (RulerContextMenu: marks, markers, Ripple Sequence Markers, Show Audio Time Units); on a
+// marker's flag the menu starts with Edit Marker… and Clear Marker.
 Item {
     id: root
 
     objectName: "timelineRuler"
 
     required property TimelineView view
+    /// 0.4: the ruler menu is open (the clip tooltip stays hidden meanwhile).
+    readonly property bool menuOpen: rulerMenu.opened
 
     clip: true
     Accessible.role: Accessible.Slider
@@ -150,13 +157,25 @@ Item {
 
     MouseArea {
         id: scrubArea
+        objectName: "rulerScrubArea"
         anchors.fill: parent
         preventStealing: true
-        onPressed: mouse => root.view.seekToX(mouse.x)
-        onPositionChanged: mouse => {
-            if (pressed)
-                root.view.seekToX(mouse.x)
+        acceptedButtons: Qt.LeftButton | Qt.RightButton
+        // 0.4: the left button scrubs (snapping as the view says; Shift snaps with Snap off), the right one opens the
+        // ruler menu where it was pressed and leaves the playhead where it is.
+        onPressed: mouse => {
+            if (mouse.button === Qt.RightButton) {
+                rulerMenu.openAt(root, Qt.point(mouse.x, mouse.y), -1)
+                return
+            }
+            root.view.seekToX(mouse.x, (mouse.modifiers & Qt.ShiftModifier) !== 0)
         }
+        onPositionChanged: mouse => {
+            if (pressed && (pressedButtons & Qt.LeftButton))
+                root.view.seekToX(mouse.x, (mouse.modifiers & Qt.ShiftModifier) !== 0)
+        }
+        onReleased: root.view.endScrub()
+        onCanceled: root.view.endScrub()
     }
 
     // Sequence markers (M5i), over the scrub area: a flag in the marker's colour, a bar to its end for a range marker.
@@ -253,7 +272,7 @@ Item {
                 }
             }
             // The flag (and a range marker's bar) takes presses: drag moves the marker, Alt-drag sets its end, a click
-            // puts the playhead on it, a double-click edits it.
+            // puts the playhead on it, a double-click edits it; 0.4: a right click opens the ruler menu for it.
             MouseArea {
                 id: flagArea
                 objectName: "rulerMarkerArea"
@@ -262,14 +281,21 @@ Item {
                 height: parent.height
                 preventStealing: true
                 hoverEnabled: true
+                acceptedButtons: Qt.LeftButton | Qt.RightButton
                 cursorShape: Qt.PointingHandCursor
                 property real pressX: 0
+                property bool rightPress: false
                 onPressed: mouse => {
+                    flagArea.rightPress = mouse.button === Qt.RightButton
+                    if (flagArea.rightPress) {
+                        rulerMenu.openAt(flagArea, Qt.point(mouse.x, mouse.y), marker.modelData.index)
+                        return
+                    }
                     pressX = mapToItem(root, mouse.x, 0).x
                     marker.settingEnd = (mouse.modifiers & Qt.AltModifier) !== 0
                 }
                 onPositionChanged: mouse => {
-                    if (!pressed)
+                    if (!pressed || flagArea.rightPress)
                         return // a hover move (hoverEnabled: the tooltip)
                     const x = mapToItem(root, mouse.x, 0).x
                     if (isNaN(marker.dragX) && Math.abs(x - pressX) < Theme.space(1))
@@ -277,17 +303,25 @@ Item {
                     marker.dragX = x
                 }
                 onReleased: {
+                    if (flagArea.rightPress) {
+                        flagArea.rightPress = false
+                        return
+                    }
                     if (!isNaN(marker.dragX)) {
                         if (marker.settingEnd)
                             Markers.setEnd(marker.modelData.index, root.view.timeKeyAt(marker.dragX))
                         else
                             Markers.moveTo(marker.modelData.index, root.view.timeKeyAt(marker.dragX))
                     } else {
+                        // A click is not a scrub: onto the marker, and no snap line left behind in the lanes.
                         root.view.seekToX(marker.modelData.x)
+                        root.view.endScrub()
                     }
                     marker.dragX = NaN
                 }
                 onDoubleClicked: mouse => {
+                    if (mouse.button !== Qt.LeftButton)
+                        return
                     Markers.scope = "sequence"
                     markerEditor.openFor(marker.modelData.index, flagArea, Qt.point(mouse.x, flagArea.height))
                 }
@@ -295,7 +329,7 @@ Item {
             // Hover: the marker's name, comment, time and length.
             Loader {
                 active: (flagArea.containsMouse || nameHover.containsMouse) && !flagArea.pressed && !scrubArea.pressed
-                        && !markerEditor.opened
+                        && !markerEditor.opened && !rulerMenu.opened
                 sourceComponent: Tooltip {
                     objectName: "rulerMarkerTooltip"
                     parent: marker
@@ -317,5 +351,16 @@ Item {
     MarkerEditor {
         id: markerEditor
         parent: root
+    }
+
+    // 0.4: the ruler's right-click menu; its Edit Marker… opens the marker editor under that marker's flag.
+    RulerContextMenu {
+        id: rulerMenu
+        view: root.view
+        onEditMarkerRequested: index => {
+            const item = root.view.markerItems.find(m => m.index === index)
+            Markers.scope = "sequence"
+            markerEditor.openFor(index, root, Qt.point(item ? item.x : 0, root.height))
+        }
     }
 }

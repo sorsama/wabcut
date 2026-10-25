@@ -73,7 +73,8 @@ TEST_CASE("The editing catalog is the built-in one plus the transcript and analy
     // A.6's plugins.list / plugins.scan, A.7's audio.essentialSound / audio.remix and A.8's audio.remixRender /
     // track.setRecordArm / record.takes / record.useTake, A.9's ten channel commands, p02's six submix commands and audio.autoTag),
     // search.footage / search.indexMedia (AI-8)
-    // the 15 colour commands (I.5: color.*, lut.*, cdl.*, scopes.read; I.9: color.management.*, color.inputSpace.*; 0.2 lut.export),
+    // the 16 colour commands (I.5: color.*, lut.*, cdl.*, scopes.read; I.9: color.management.*, color.inputSpace.*; 0.2 lut.export;
+    // 0.4 color.grade.copy),
     // analysis.subjects / reframe.createSequence /
     // reframe.rerun / shorts.find / shorts.create (AI-9), 11 mask/tracking/redaction commands (I.6),
     // 8 local-runtime/generation/provenance commands (AI-10), roughcut.fromScript / roughcut.swapTake / takes.find /
@@ -81,7 +82,7 @@ TEST_CASE("The editing catalog is the built-in one plus the transcript and analy
     // analysis.speakers / multicam.autoSwitch / workflow.podcast (AI-13), mask.objectSelect / mask.refine /
     // mask.propagate (AI-14), highlights.find / importChat / toReel / toShort (G.2), and effect.analyzeStabilization /
     // effect.analyzeRollingShutter (P.2), and gen.sfx / redaction.detectFaces (0.2).
-    CHECK(registry.all().size() == command::builtinCommands().all().size() + 20 + 3 + 44 + 2 + 15 + 5 + 11 + 8 + 5 + 3 + 3 + 3 + 4 + 2 + 2);
+    CHECK(registry.all().size() == command::builtinCommands().all().size() + 20 + 3 + 44 + 2 + 16 + 5 + 11 + 8 + 5 + 3 + 3 + 3 + 4 + 2 + 2);
     for (const char* name : {"effect.analyzeStabilization", "effect.analyzeRollingShutter"}) {
         INFO(name);
         CHECK(registry.knows(name));
@@ -187,6 +188,29 @@ TEST_CASE("transcript.deleteRanges previews, cuts in one undo step, and undoes e
     REQUIRE(fx.h.session.undo().has_value());
     CHECK(*fx.h.state() == *original);
     CHECK(render(*fx.h.state(), fx.h.tl.seq) == render(*original, fx.h.tl.seq));
+}
+
+TEST_CASE("transcript.deleteRanges moves later sequence markers", "[ai][edit][commands][markers]") {
+    // 0.4, Ripple Sequence Markers (on by default): text cuts are extracts, so chapters stay on their words.
+    Fixture fx;
+    for (const auto& [frame, name] : {std::pair{1, "Intro"}, std::pair{10, "Mid"}, std::pair{40, "Pause"},
+                                      std::pair{62, "Thanks"}}) {
+        fx.h.ok("marker.add", Json{{"time", tc(frame)}, {"name", name}});
+    }
+    const ProjectSnapshot marked = fx.h.state();
+    const std::size_t undo = fx.h.session.undoCount();
+    // Cuts [3, 8), [13, 17) and [26, 58) (the test above): 41 frames in all.
+    const Json params{{"words", Json::array({Json::array({1, 1}), Json::array({3, 4})})}, {"gaps", Json::array({5})}};
+    fx.h.ok("transcript.deleteRanges", params);
+    CHECK(fx.h.session.undoCount() == undo + 1); // the markers move in the same undo step
+    const auto& markers = fx.h.state()->findSequence(fx.h.tl.seq)->markers;
+    REQUIRE(markers.size() == 4);
+    CHECK(markers[0].start == f(1));  // before every cut
+    CHECK(markers[1].start == f(5));  // after the first cut
+    CHECK(markers[2].start == f(17)); // inside the pause that went: at the cut
+    CHECK(markers[3].start == f(21)); // on "Thanks", which moved 41 frames earlier
+    REQUIRE(fx.h.session.undo().has_value());
+    CHECK(*fx.h.state() == *marked);
 }
 
 TEST_CASE("transcript.keepRanges and transcript.moveRange", "[ai][edit][commands]") {

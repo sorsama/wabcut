@@ -17,6 +17,7 @@
 #include "LibraryModel.h"
 #include "PosterFrames.h"
 #include "ProjectController.h"
+#include "ProjectLifecycle.h"
 #include "SourceMonitorBridge.h"
 
 #include <wabcut/model/EditOps.h>
@@ -38,10 +39,15 @@
 #include <QQmlComponent>
 #include <QQmlContext>
 #include <QQmlEngine>
+#include <QQmlExpression>
 #include <QQmlProperty>
 #include <QPointer>
+#include <QSettings>
+#include <QUrl>
+#include <qpa/qwindowsysteminterface.h>
 
 #include <algorithm>
+#include <filesystem>
 #include <limits>
 #include <numeric>
 
@@ -1004,4 +1010,512 @@ TEST_CASE("Library keys: zoom keys step the card size and selection keys ask the
     CHECK(moves == (QStringList{QStringLiteral("home"), QStringLiteral("end"), QStringLiteral("pageUp"),
                                 QStringLiteral("pageDown"), QStringLiteral("down"), QStringLiteral("right"),
                                 QStringLiteral("left+"), QStringLiteral("up+")}));
+}
+
+// ---- 0.4: Import Folder, File > Import into the open bin, and where import dialogs open ----
+
+namespace {
+
+std::filesystem::path libraryTestMedia(const char* name) { return std::filesystem::path(WABCUT_TEST_MEDIA_DIR) / name; }
+
+bool haveLibraryTestMedia() {
+    return std::filesystem::is_regular_file(libraryTestMedia("h264_1080p60_aac.mp4")) &&
+           std::filesystem::is_regular_file(libraryTestMedia("sine_48k.wav"));
+}
+
+/// Copies test media `name` to `to` (folders made).
+void copyMedia(const char* name, const QString& to) {
+    REQUIRE(QDir().mkpath(QFileInfo(to).absolutePath()));
+    QFile::remove(to);
+    REQUIRE(QFile::copy(QString::fromStdU16String(libraryTestMedia(name).u16string()), to));
+}
+
+/// A Library and ProjectFile over one controller, with a new (not demo) project.
+struct ImportRig {
+    ProjectController controller;
+    ProjectLifecycle lifecycle{&controller};
+    LibraryBridge library;
+
+    ImportRig() {
+        library.setPersistent(false);
+        library.setSynchronous(true);
+        library.setController(&controller);
+        lifecycle.newProject(); // the demo ignores `bin`: its import starts a new project
+    }
+    const Bin* binNamed(const std::string& name) const {
+        const ProjectSnapshot snap = controller.snapshot();
+        for (const Bin& b : snap->bins) {
+            if (b.name == name)
+                return &b;
+        }
+        return nullptr;
+    }
+    BinId binIdNamed(const std::string& name) const {
+        const Bin* b = binNamed(name);
+        return b ? b->id : BinId{};
+    }
+    BinId parentOf(const std::string& name) const {
+        const Bin* b = binNamed(name);
+        return b ? b->parent : BinId{};
+    }
+};
+
+} // namespace
+
+TEST_CASE("Library: Import Folder puts the folder in the open bin as nested bins in one undo step", "[app][library][import]") {
+    if (!haveLibraryTestMedia())
+        SKIP("test media missing");
+    QTemporaryDir dir;
+    REQUIRE(dir.isValid());
+    const QString session = dir.filePath(QStringLiteral("Session1"));
+    copyMedia("h264_1080p60_aac.mp4", session + QStringLiteral("/a.mp4"));
+    copyMedia("sine_48k.wav", session + QStringLiteral("/Cam B/b.wav"));
+    {
+        QFile notes(session + QStringLiteral("/notes.txt"));
+        REQUIRE(notes.open(QIODevice::WriteOnly));
+        notes.write("not media");
+    }
+    ImportRig r;
+    const QString target = r.library.newBin(QStringLiteral("Target"));
+    REQUIRE_FALSE(target.isEmpty());
+    r.library.openBin(target);
+    REQUIRE(r.library.currentBin() == target);
+    const BinId targetId = r.library.bin();
+    const auto before = r.controller.session().undoCount();
+
+    const QVariantMap result =
+        r.lifecycle.importFiles({QUrl::fromLocalFile(session)}, {{QStringLiteral("bin"), r.library.currentBin()}});
+    CHECK(result.value("added").toInt() == 2);
+    CHECK(result.value("folders").toInt() == 1);
+    CHECK(result.value("bins").toInt() == 2);
+    CHECK_FALSE(result.value("truncated").toBool());
+    const QVariantList skipped = result.value("skipped").toList();
+    REQUIRE(skipped.size() == 1);
+    CHECK(skipped.front().toMap().value("name").toString() == QStringLiteral("notes.txt"));
+    CHECK(skipped.front().toMap().value("reason").toString() == QStringLiteral("notMedia"));
+    CHECK(result.value("folderSummary").toString() ==
+          QStringLiteral("Imported 2 files from Session1 into 2 bins. 1 file was left out (not media)."));
+    CHECK(r.controller.session().undoCount() == before + 1);
+    CHECK(r.controller.session().undoLabel() == "Import Folder");
+
+    const BinId folderBin = r.binIdNamed("Session1");
+    const BinId camBin = r.binIdNamed("Cam B");
+    REQUIRE(folderBin.isValid());
+    REQUIRE(camBin.isValid());
+    CHECK(r.parentOf("Session1") == targetId);
+    CHECK(r.parentOf("Cam B") == folderBin);
+    for (const MediaPtr& m : r.controller.snapshot()->media) {
+        INFO(m->name);
+        CHECK(m->bin == (m->name == "a.mp4" ? folderBin : camBin));
+    }
+    CHECK(r.lifecycle.detectImport(QUrl::fromLocalFile(session)).value("kind").toString() == QStringLiteral("folder"));
+
+    // One undo takes the items and both bins away.
+    REQUIRE(r.controller.undo());
+    CHECK(r.controller.snapshot()->media.empty());
+    CHECK_FALSE(r.binIdNamed("Session1").isValid());
+    CHECK_FALSE(r.binIdNamed("Cam B").isValid());
+    CHECK(r.binIdNamed("Target").isValid());
+
+    // A folder without media: nothing is added, the toast says why.
+    const QString notes = dir.filePath(QStringLiteral("Notes"));
+    REQUIRE(QDir().mkpath(notes));
+    {
+        QFile text(notes + QStringLiteral("/readme.txt"));
+        REQUIRE(text.open(QIODevice::WriteOnly));
+    }
+    const QVariantMap none = r.lifecycle.importFiles({QUrl::fromLocalFile(notes)}, {{QStringLiteral("bin"), target}});
+    CHECK(none.value("added").toInt() == 0);
+    CHECK(none.value("bins").toInt() == 0);
+    CHECK(none.value("folderSummary").toString() == QStringLiteral("No media in Notes: 1 file was left out (not media)."));
+}
+
+TEST_CASE("Library: File Import puts plain files in the open bin", "[app][library][import]") {
+    if (!haveLibraryTestMedia())
+        SKIP("test media missing");
+    QTemporaryDir dir;
+    REQUIRE(dir.isValid());
+    copyMedia("sine_48k.wav", dir.filePath(QStringLiteral("tone.wav")));
+    copyMedia("sine_48k.wav", dir.filePath(QStringLiteral("tone2.wav")));
+    copyMedia("sine_48k.wav", dir.filePath(QStringLiteral("tone3.wav")));
+    ImportRig r;
+    const QString clips = r.library.newBin(QStringLiteral("Clips"));
+    REQUIRE_FALSE(clips.isEmpty());
+    r.library.openBin(clips);
+    const BinId clipsId = r.library.bin();
+
+    const QVariantMap result = r.lifecycle.importFiles({QUrl::fromLocalFile(dir.filePath(QStringLiteral("tone.wav")))},
+                                                       {{QStringLiteral("bin"), r.library.currentBin()}});
+    CHECK(result.value("added").toInt() == 1);
+    CHECK(result.value("folders").toInt() == 0);
+    CHECK(result.value("folderSummary").toString().isEmpty());
+    CHECK(r.controller.session().undoLabel() == "Import");
+    const auto binOf = [&](const char* name) {
+        for (const MediaPtr& m : r.controller.snapshot()->media) {
+            if (m->name == name)
+                return m->bin;
+        }
+        return BinId{};
+    };
+    CHECK(binOf("tone.wav") == clipsId);
+
+    // A search bin holds nothing: its parent gets the file. An unknown bin: the root.
+    const QString search =
+        r.library.newSearchBin(QStringLiteral("Find tone"), {{QStringLiteral("text"), QStringLiteral("tone")}});
+    REQUIRE_FALSE(search.isEmpty());
+    r.lifecycle.importFiles({QUrl::fromLocalFile(dir.filePath(QStringLiteral("tone2.wav")))}, {{QStringLiteral("bin"), search}});
+    CHECK(binOf("tone2.wav") == clipsId);
+    r.lifecycle.importFiles({QUrl::fromLocalFile(dir.filePath(QStringLiteral("tone3.wav")))},
+                            {{QStringLiteral("bin"), QStringLiteral("b999999")}});
+    CHECK(binOf("tone3.wav") == BinId{});
+}
+
+TEST_CASE("Library: import dialogs open where the last import came from", "[app][library][import]") {
+    QSettings().remove(QStringLiteral("import"));
+    QTemporaryDir dir;
+    REQUIRE(dir.isValid());
+    for (const char* sub : {"a", "b/Session", "c1", "c2", "c3", "c4", "c5", "c6"})
+        REQUIRE(QDir().mkpath(dir.filePath(QString::fromLatin1(sub))));
+    const auto same = [](const QString& a, const QString& b) {
+        return QDir::cleanPath(QDir::fromNativeSeparators(a)) == QDir::cleanPath(b);
+    };
+
+    ProjectController controller;
+    ProjectLifecycle lifecycle(&controller);
+    CHECK(lifecycle.importFolder() == lifecycle.folder()); // nothing remembered yet
+    int changes = 0;
+    QObject::connect(&lifecycle, &ProjectLifecycle::importFolderChanged, [&] { ++changes; });
+
+    // A file chosen: its folder.
+    lifecycle.rememberImportFolder({QUrl::fromLocalFile(dir.filePath(QStringLiteral("a/x.mp4")))});
+    CHECK(changes == 1);
+    CHECK(same(lifecycle.importFolder().toLocalFile(), dir.filePath(QStringLiteral("a"))));
+    {
+        ProjectController other;
+        ProjectLifecycle fresh(&other);
+        CHECK(same(fresh.importFolder().toLocalFile(), dir.filePath(QStringLiteral("a"))));
+    }
+    // A folder chosen: its parent (the next sibling is one click away).
+    lifecycle.rememberImportFolder({QUrl::fromLocalFile(dir.filePath(QStringLiteral("b/Session")))});
+    CHECK(same(lifecycle.importFolder().toLocalFile(), dir.filePath(QStringLiteral("b"))));
+    // That folder gone: the project's folder again.
+    REQUIRE(QDir(dir.filePath(QStringLiteral("b"))).removeRecursively());
+    CHECK(lifecycle.importFolder() == lifecycle.folder());
+
+    // The recent folders: newest first, five at most, only folders that are there.
+    for (const char* sub : {"c1", "c2", "c3", "c4", "c5", "c6"})
+        lifecycle.rememberImportFolder({QUrl::fromLocalFile(dir.filePath(QString::fromLatin1(sub) + QStringLiteral("/x.mp4")))});
+    const QStringList recent = ProjectLifecycle::recentImportFolders();
+    REQUIRE(recent.size() == 5);
+    CHECK(same(recent[0], dir.filePath(QStringLiteral("c6"))));
+    CHECK(same(recent[4], dir.filePath(QStringLiteral("c2"))));
+    REQUIRE(QDir(dir.filePath(QStringLiteral("c4"))).removeRecursively());
+    CHECK(ProjectLifecycle::recentImportFolders().size() == 4);
+
+    // Fix round 1 (D): a folder on a network share is taken as remembered, without asking the share (one that does
+    // not answer would hold the window at start-up for the redirector's timeout; the dialog falls back by itself).
+    const QString share = QStringLiteral("//wabcut-no-such-host.invalid/footage/Session");
+    QSettings().setValue(QStringLiteral("import/lastFolder"), QDir::toNativeSeparators(share));
+    QSettings().setValue(QStringLiteral("import/recentFolders"), QStringList{QDir::toNativeSeparators(share)});
+    CHECK(same(lifecycle.importFolder().toLocalFile(), share));
+    const QStringList remote = ProjectLifecycle::recentImportFolders();
+    REQUIRE(remote.size() == 1);
+    CHECK(same(remote.front(), share));
+    QSettings().remove(QStringLiteral("import"));
+}
+
+TEST_CASE("Library: a folder dropped on the timeline comes in as bins and only the loose files are edited in",
+          "[app][library][import]") {
+    if (!haveLibraryTestMedia())
+        SKIP("test media missing");
+    QTemporaryDir dir;
+    REQUIRE(dir.isValid());
+    const QString captures = dir.filePath(QStringLiteral("Captures"));
+    copyMedia("sine_48k.wav", captures + QStringLiteral("/a.wav"));
+    copyMedia("sine_48k.wav", captures + QStringLiteral("/Day2/b.wav"));
+    copyMedia("sine_48k.wav", dir.filePath(QStringLiteral("loose.wav")));
+    ImportRig r;
+    REQUIRE(r.controller.currentSequence());
+    const auto clipsOnTimeline = [&] {
+        std::size_t n = 0;
+        if (const SequencePtr seq = r.controller.currentSequence())
+            seq->forEachTrack([&](const Track& t) { n += t.clips.size(); });
+        return n;
+    };
+    const std::size_t before = r.controller.session().undoCount();
+
+    // Fix round 1 (D): the folder becomes bins at the Library's root in the import's one step and stays off the
+    // timeline (a capture folder would have put hundreds of clips there, an undo step each); the loose file is edited
+    // in as before; the toast says where the folder went.
+    const QVariantMap result =
+        r.lifecycle.dropFiles({QUrl::fromLocalFile(captures), QUrl::fromLocalFile(dir.filePath(QStringLiteral("loose.wav")))},
+                              QStringLiteral("00:00:00:00"), QString(), true);
+    CHECK(result.value("added").toInt() == 3);
+    CHECK(result.value("folders").toInt() == 1);
+    CHECK(result.value("bins").toInt() == 2);
+    CHECK(result.value("placed").toInt() == 1);
+    CHECK(clipsOnTimeline() == 1);
+    CHECK(r.controller.selection().size() == 1);
+    REQUIRE(r.binIdNamed("Captures").isValid());
+    CHECK(r.parentOf("Captures") == BinId{});
+    CHECK(r.parentOf("Day2") == r.binIdNamed("Captures"));
+    CHECK(result.value("folderSummary").toString() ==
+          QStringLiteral("Imported 3 files from Captures into 2 bins. Folders go into the Library as bins: drag their "
+                         "clips onto the timeline from there."));
+    // The import (with the folder) is one step and the loose file's edit another, as a drop of files always made.
+    CHECK(r.controller.session().undoCount() == before + 2);
+    REQUIRE(r.controller.undo());
+    CHECK(clipsOnTimeline() == 0);
+    CHECK(r.controller.session().undoLabel() == "Import Folder");
+    REQUIRE(r.controller.undo());
+    CHECK(r.controller.snapshot()->media.empty());
+    CHECK_FALSE(r.binIdNamed("Captures").isValid());
+
+    // A folder alone: bins, nothing on the timeline, one undo step.
+    const QVariantMap alone = r.lifecycle.dropFiles({QUrl::fromLocalFile(captures)}, QStringLiteral("00:00:00:00"), QString(), true);
+    CHECK(alone.value("added").toInt() == 2);
+    CHECK(alone.value("placed").toInt() == 0);
+    CHECK(clipsOnTimeline() == 0);
+    CHECK(r.controller.session().undoCount() == before + 1);
+    CHECK(r.controller.session().undoLabel() == "Import Folder");
+}
+
+namespace {
+
+/// A left click on `item`'s centre through the window system (as the platform delivers it: handlers see a real tap).
+void clickCentre(QQuickWindow* window, QQuickItem* item, Qt::KeyboardModifiers modifiers = Qt::NoModifier) {
+    const QPointF at = item->mapToScene(QPointF(item->width() / 2, item->height() / 2));
+    const auto send = [&](QEvent::Type type, Qt::MouseButtons buttons) {
+        const Qt::MouseButton button = type == QEvent::MouseMove ? Qt::NoButton : Qt::LeftButton;
+        QWindowSystemInterface::handleMouseEvent<QWindowSystemInterface::SynchronousDelivery>(
+            window, at, window->mapToGlobal(at), buttons, button, type, modifiers);
+    };
+    send(QEvent::MouseMove, Qt::NoButton);
+    send(QEvent::MouseButtonPress, Qt::LeftButton);
+    send(QEvent::MouseButtonRelease, Qt::NoButton);
+}
+
+/// Runs `code` in Main.qml's context (its ids: docking, window, ...) and returns its value.
+QVariant evaluateInWindow(const Shell& shell, const QString& code) {
+    QQmlExpression expression(qmlContext(shell.window.get()), shell.window.get(), code);
+    const QVariant result = expression.evaluate();
+    INFO(code.toStdString() << ": " << expression.error().toString().toStdString());
+    REQUIRE_FALSE(expression.hasError());
+    return result;
+}
+
+/// Maximize Frame on the Media Browser's panel group (or back): its header has room for its tools beside the tabs.
+void toggleMaximizeMediaBrowser(const Shell& shell) {
+    evaluateInWindow(shell, QStringLiteral("docking.toggleMaximize(docking.groupOfPanel('mediaBrowser').group)"));
+    spin(100);
+}
+
+/// Saves `item`'s part of `image` as test-output/ui/`name`.
+void saveItemShot(const QImage& image, const QQuickItem* item, const char* name) {
+    const QRectF rect = item->mapRectToScene(QRectF(0, 0, item->width(), item->height()));
+    const double dpr = image.devicePixelRatio();
+    REQUIRE(image.copy(QRect(static_cast<int>(rect.x() * dpr), static_cast<int>(rect.y() * dpr),
+                             static_cast<int>(rect.width() * dpr), static_cast<int>(rect.height() * dpr)))
+                .save(QDir(outputDir()).filePath(QString::fromLatin1(name))));
+}
+
+} // namespace
+
+TEST_CASE("Library: File menu Import Folder and the Media Browser import folders through the window",
+          "[app][library][qml][screenshots]") {
+    if (!haveLibraryTestMedia())
+        SKIP("test media missing");
+    resetSettings();
+    clearMessages();
+    QSettings().remove(QStringLiteral("import"));
+    QTemporaryDir dir;
+    REQUIRE(dir.isValid());
+    // Footage/Shoot: a.mp4 in Day1, b.wav in Day1/Audio, notes left out; Footage/B-roll: c.wav (the Media Browser's).
+    const QString footage = dir.filePath(QStringLiteral("Footage"));
+    copyMedia("h264_1080p60_aac.mp4", footage + QStringLiteral("/Shoot/Day1/a.mp4"));
+    copyMedia("sine_48k.wav", footage + QStringLiteral("/Shoot/Day1/Audio/b.wav"));
+    copyMedia("sine_48k.wav", footage + QStringLiteral("/B-roll/c.wav"));
+    // Fix round 1 (D): a loose clip and another folder, chosen together in the Media Browser.
+    copyMedia("h264_1080p60_aac.mp4", footage + QStringLiteral("/d.mp4"));
+    copyMedia("sine_48k.wav", footage + QStringLiteral("/Interviews/e.wav"));
+    {
+        QFile notes(footage + QStringLiteral("/Shoot/notes.txt"));
+        REQUIRE(notes.open(QIODevice::WriteOnly));
+        notes.write("not media");
+    }
+
+    Shell shell;
+    REQUIRE(shell.window);
+    INFO(join(shell.errors));
+    REQUIRE(shell.errors.isEmpty());
+    shell.resize(kShotWidth, kShotHeight);
+    shell.theme->setProperty("reduceMotion", true);
+    QQuickWindow* w = shell.window.get();
+    auto* controller = shell.engine.singletonInstance<ProjectController*>("Wabcut", "ProjectController");
+    auto* lifecycle = shell.engine.singletonInstance<ProjectLifecycle*>("Wabcut", "ProjectFile");
+    auto* library = shell.engine.singletonInstance<LibraryBridge*>("Wabcut", "Library");
+    REQUIRE(controller);
+    REQUIRE(lifecycle);
+    REQUIRE(library);
+    library->setPersistent(false);
+    lifecycle->newProject(); // over the sample project an import starts a new project (its bins at the root)
+    REQUIRE_FALSE(lifecycle->demo());
+    const QString target = library->newBin(QStringLiteral("Selects"));
+    REQUIRE_FALSE(target.isEmpty());
+    library->openBin(target);
+    REQUIRE(library->currentBin() == target);
+    const auto binNamed = [&](const char* name) -> const Bin* {
+        for (const Bin& b : controller->snapshot()->bins) {
+            if (b.name == name)
+                return &b;
+        }
+        return nullptr;
+    };
+    const BinId targetId = binNamed("Selects")->id;
+
+    // File > Import from Media Browser, Import…, Import Folder… (Premiere's order); the folder picker opens at the
+    // folder imports come from.
+    QObject* fileMenu = shell.object("fileMenu");
+    REQUIRE(fileMenu);
+    QObject* fromBrowser = fileMenu->findChild<QObject*>(QStringLiteral("fileMenuImportFromMediaBrowser"));
+    QObject* importRow = fileMenu->findChild<QObject*>(QStringLiteral("fileMenuImport"));
+    QObject* folderRow = fileMenu->findChild<QObject*>(QStringLiteral("fileMenuImportFolder"));
+    REQUIRE(fromBrowser);
+    REQUIRE(importRow);
+    REQUIRE(folderRow);
+    CHECK(fromBrowser->property("command").toString() == QStringLiteral("file.importFromMediaBrowser"));
+    CHECK(importRow->property("command").toString() == QStringLiteral("file.import"));
+    CHECK(folderRow->property("command").toString() == QStringLiteral("file.importFolder"));
+    // The Library's ··· menu has Import folder… too (it asks the window once the menu has closed).
+    QObject* toolsFolderRow = shell.window->findChild<QObject*>(QStringLiteral("libraryImportFolder"));
+    REQUIRE(toolsFolderRow);
+    CHECK(toolsFolderRow->property("text").toString() == QStringLiteral("Import folder…"));
+    QObject* folderDialog = shell.object("importFolderDialog");
+    REQUIRE(folderDialog);
+    CHECK(folderDialog->property("currentFolder").toUrl() == lifecycle->importFolder());
+
+    // The chosen folder (as the picker hands it over): a bin in the open bin, subfolders nested, one undo step, a toast.
+    const std::size_t before = controller->session().undoCount();
+    QVariant result;
+    REQUIRE(QMetaObject::invokeMethod(w, "importUrls", Q_RETURN_ARG(QVariant, result),
+                                      Q_ARG(QVariant, QVariant(QVariantList{QUrl::fromLocalFile(footage + QStringLiteral("/Shoot"))}))));
+    const QVariantMap summary = result.toMap();
+    INFO(summary.value(QStringLiteral("folderSummary")).toString().toStdString());
+    CHECK(summary.value(QStringLiteral("added")).toInt() == 2);
+    CHECK(summary.value(QStringLiteral("bins")).toInt() == 3);
+    CHECK(controller->session().undoCount() == before + 1);
+    CHECK(controller->session().undoLabel() == "Import Folder");
+    const Bin* shoot = binNamed("Shoot");
+    const Bin* day1 = binNamed("Day1");
+    const Bin* audio = binNamed("Audio");
+    REQUIRE(shoot);
+    REQUIRE(day1);
+    REQUIRE(audio);
+    CHECK(shoot->parent == targetId);
+    CHECK(day1->parent == shoot->id);
+    CHECK(audio->parent == day1->id);
+    CHECK(library->currentBin() == target); // the open bin stays open and shows the new bin
+    QObject* toast = shell.object("toast");
+    REQUIRE(toast);
+    CHECK(toast->property("text").toString() ==
+          QStringLiteral("Imported 2 files from Shoot into 3 bins. 1 file was left out (not media)."));
+    spin(50);
+    {
+        const QImage image = shell.grab();
+        REQUIRE_FALSE(image.isNull());
+        REQUIRE(image.save(QDir(outputDir()).filePath(QStringLiteral("library-import-folder.png"))));
+    }
+
+    // The Media Browser: a folder row is chosen by a click, Import reads "Import 1"; Ctrl+Alt+I (its command) imports
+    // it as a bin in the open bin.
+    REQUIRE(QMetaObject::invokeMethod(w, "runCommand", Q_ARG(QVariant, QStringLiteral("window.mediaBrowser"))));
+    QObject* browserObject = nullptr;
+    REQUIRE(waitFor([&] {
+        browserObject = shell.window->findChild<QObject*>(QStringLiteral("mediaBrowserPanel"));
+        return browserObject != nullptr;
+    }, 5000));
+    auto* browser = qobject_cast<QQuickItem*>(browserObject);
+    REQUIRE(browser);
+    bool openedOk = false;
+    REQUIRE(QMetaObject::invokeMethod(browser, "openFolder", Q_RETURN_ARG(bool, openedOk), Q_ARG(QVariant, footage)));
+    CHECK(openedOk);
+    const QVariantList entries = browser->property("entries").toList();
+    int brollRow = -1;
+    for (int i = 0; i < entries.size(); ++i) {
+        if (entries[i].toMap().value(QStringLiteral("name")).toString() == QStringLiteral("B-roll"))
+            brollRow = i;
+    }
+    REQUIRE(brollRow >= 0);
+    CHECK(entries[brollRow].toMap().value(QStringLiteral("folder")).toBool());
+    CHECK_FALSE(browser->property("canImport").toBool()); // the current row is a folder, nothing chosen
+    spin(50);
+    QQuickItem* row = nullptr;
+    REQUIRE(waitFor([&] {
+        row = findNamed(browser, QStringLiteral("mediaBrowserRow_%1").arg(brollRow));
+        return row != nullptr && row->width() > 0;
+    }, 5000));
+    clickCentre(w, row);
+    CHECK(browser->property("selectedCount").toInt() == 1);
+    CHECK(browser->property("canImport").toBool());
+    QQuickItem* importButton = findNamed(browser, QStringLiteral("mediaBrowserImport"));
+    REQUIRE(importButton);
+    CHECK(importButton->property("text").toString() == QStringLiteral("Import 1"));
+    CHECK(importButton->isEnabled());
+    // The screenshot with the panel's group maximized (Maximize Frame): its header shows "Import 1" beside the tabs.
+    toggleMaximizeMediaBrowser(shell);
+    {
+        const QImage image = shell.grab();
+        REQUIRE_FALSE(image.isNull());
+        saveItemShot(image, browser, "media-browser-import-folder.png");
+    }
+    toggleMaximizeMediaBrowser(shell);
+    const std::size_t beforeBrowser = controller->session().undoCount();
+    REQUIRE(QMetaObject::invokeMethod(w, "runCommand", Q_ARG(QVariant, QStringLiteral("file.importFromMediaBrowser"))));
+    REQUIRE(waitFor([&] { return binNamed("B-roll") != nullptr; }, 5000));
+    CHECK(binNamed("B-roll")->parent == targetId);
+    CHECK(controller->session().undoCount() == beforeBrowser + 1);
+    CHECK(controller->session().undoLabel() == "Import Folder");
+    // Nothing chosen any more (the folder listed again): the command shows the Media Browser, nothing is imported.
+    REQUIRE(QMetaObject::invokeMethod(browser, "openFolder", Q_RETURN_ARG(bool, openedOk), Q_ARG(QVariant, footage)));
+    CHECK_FALSE(browser->property("canImport").toBool());
+    const std::size_t media = controller->snapshot()->media.size();
+    REQUIRE(QMetaObject::invokeMethod(w, "runCommand", Q_ARG(QVariant, QStringLiteral("file.importFromMediaBrowser"))));
+    spin(50);
+    CHECK(controller->snapshot()->media.size() == media);
+    CHECK(browser->isVisible());
+
+    // Fix round 1 (D): a clip and a folder chosen together (Ctrl+click) are ONE undo step "Import Folder": the clip as
+    // the Media Browser imports clips, the folder as a bin.
+    QString loosePath;
+    QString interviewsPath;
+    for (const QVariant& v : browser->property("entries").toList()) {
+        const QVariantMap e = v.toMap();
+        if (e.value(QStringLiteral("path")).toString().endsWith(QStringLiteral("d.mp4")))
+            loosePath = e.value(QStringLiteral("path")).toString();
+        if (e.value(QStringLiteral("name")).toString() == QStringLiteral("Interviews"))
+            interviewsPath = e.value(QStringLiteral("path")).toString();
+    }
+    REQUIRE_FALSE(loosePath.isEmpty());
+    REQUIRE_FALSE(interviewsPath.isEmpty());
+    REQUIRE(QMetaObject::invokeMethod(browser, "toggle", Q_ARG(QVariant, loosePath), Q_ARG(QVariant, true)));
+    REQUIRE(QMetaObject::invokeMethod(browser, "toggle", Q_ARG(QVariant, interviewsPath), Q_ARG(QVariant, true)));
+    CHECK(browser->property("selectedCount").toInt() == 2);
+    const std::size_t mediaBefore = controller->snapshot()->media.size();
+    const std::size_t beforeMixed = controller->session().undoCount();
+    REQUIRE(QMetaObject::invokeMethod(browser, "importSelected"));
+    REQUIRE(waitFor([&] { return binNamed("Interviews") != nullptr && controller->snapshot()->media.size() == mediaBefore + 2; },
+                    5000)); // d.mp4 and Interviews/e.wav
+    CHECK(binNamed("Interviews")->parent == targetId);
+    CHECK(controller->session().undoCount() == beforeMixed + 1);
+    CHECK(controller->session().undoLabel() == "Import Folder");
+    REQUIRE(controller->undo());
+    CHECK(binNamed("Interviews") == nullptr);
+    CHECK(controller->snapshot()->media.size() == mediaBefore);
+    CHECK(binNamed("B-roll") != nullptr); // the earlier import stays
+
+    QSettings().remove(QStringLiteral("import"));
+    const QStringList messages = takeMessages();
+    INFO(join(messages));
+    CHECK(messages.isEmpty());
+    resetSettings();
 }

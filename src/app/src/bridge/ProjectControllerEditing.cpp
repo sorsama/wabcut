@@ -2,6 +2,7 @@
 // (C.11) runs the model's clipboard.* commands.
 
 #include "ProjectController.h"
+#include "EffectControls.h"
 
 #include <wabcut/command/Engine.h>
 #include <wabcut/command/ExecutionContext.h>
@@ -261,6 +262,101 @@ void ProjectController::nudgeSelection(int frames) {
     const Ticks delta = framesToTicks(frames, current->frameRate);
     applyResult(QT_TRANSLATE_NOOP("wabcut::app::ProjectController", "Nudge"),
                 [=](const ProjectState& s) { return edit::moveClips(s, seq, clips, delta); });
+}
+
+QString ProjectController::nudgeSelectionTrack(int direction) {
+    const SequencePtr current = currentSequence();
+    const std::vector<ClipId> selected = selectedClipIds();
+    if (!current || selected.empty() || direction == 0)
+        return {};
+    const int dir = direction > 0 ? 1 : -1;
+    const Sequence& seq = *current;
+    // What moves: the selection and its linked partners, except partners on locked tracks (edit::moveClips skips
+    // those). Up is video +1 (V1 -> V2) and audio -1 (A2 -> A1), counted outward from the divider.
+    struct Moving {
+        TrackKind kind = TrackKind::Video;
+        std::size_t index = 0;
+    };
+    std::vector<Moving> moving;
+    for (const ClipId id : edit::withLinkedClips(seq, selected)) {
+        const auto loc = seq.findClip(id);
+        if (!loc)
+            continue;
+        const bool named = std::find(selected.begin(), selected.end(), id) != selected.end();
+        if (loc->track->locked && !named)
+            continue;
+        if (const auto pos = seq.trackPosition(loc->track->id))
+            moving.push_back({pos->kind, pos->index});
+    }
+    const auto present = [&](TrackKind kind) {
+        return std::ranges::any_of(moving, [&](const Moving& m) { return m.kind == kind; });
+    };
+    const auto fits = [&](TrackKind kind) {
+        bool any = false;
+        const int step = kind == TrackKind::Video ? dir : -dir;
+        for (const Moving& m : moving) {
+            if (m.kind != kind)
+                continue;
+            any = true;
+            const auto target = static_cast<std::ptrdiff_t>(m.index) + step;
+            if (target < 0 || target >= static_cast<std::ptrdiff_t>(seq.tracks(kind).size()))
+                return false;
+        }
+        return any;
+    };
+    edit::TrackShift shift;
+    shift.video = fits(TrackKind::Video) ? dir : 0;
+    shift.audio = fits(TrackKind::Audio) ? -dir : 0;
+    if (shift.video == 0 && shift.audio == 0) {
+        const QString why = dir > 0 ? tr("There is no track above the selection") : tr("There is no track below the selection");
+        setError(why);
+        return why;
+    }
+    // Video and audio together with one kind blocked, as Premiere does it: towards the divider (audio on A1 with Up,
+    // video on V1 with Down) Premiere has no track there either, so that kind stays and the other moves, still linked
+    // and in sync (Up twice then Down takes a V1 / A1 clip to V2 / A2). Away from the divider (the top video track
+    // with Up, the bottom audio track with Down) Premiere adds a track and moves both; Wabcut never adds one, so it
+    // refuses the whole nudge rather than leave one half behind.
+    const bool bothKinds = present(TrackKind::Video) && present(TrackKind::Audio);
+    if (bothKinds && dir > 0 && shift.video == 0) {
+        const QString why = tr("%1 is the top video track: the video and audio cannot move up together")
+                                .arg(QStringLiteral("V") + QString::number(seq.tracks(TrackKind::Video).size()));
+        setError(why);
+        return why;
+    }
+    if (bothKinds && dir < 0 && shift.audio == 0) {
+        const QString why = tr("%1 is the bottom audio track: the video and audio cannot move down together")
+                                .arg(QStringLiteral("A") + QString::number(seq.tracks(TrackKind::Audio).size()));
+        setError(why);
+        return why;
+    }
+    // The half that stays is told, not left silent (the other half still moves).
+    QString stays;
+    if (bothKinds && dir > 0 && shift.audio == 0)
+        stays = tr("A1 is the top audio track: the audio stays where it is");
+    else if (bothKinds && dir < 0 && shift.video == 0)
+        stays = tr("V1 is the bottom video track: the video stays where it is");
+    // A locked destination refuses the whole nudge (Premiere moves nothing then either).
+    for (const Moving& m : moving) {
+        const int step = m.kind == TrackKind::Video ? shift.video : shift.audio;
+        if (step == 0)
+            continue;
+        const std::ptrdiff_t target = static_cast<std::ptrdiff_t>(m.index) + step;
+        const Track& dest = *seq.tracks(m.kind)[static_cast<std::size_t>(target)];
+        if (dest.locked) {
+            const QString why = tr("%1 is locked")
+                                    .arg((m.kind == TrackKind::Video ? QStringLiteral("V") : QStringLiteral("A")) +
+                                         QString::number(target + 1));
+            setError(why);
+            return why;
+        }
+    }
+    const SequenceId seqId = m_sequence;
+    if (!applyResult(QT_TRANSLATE_NOOP("wabcut::app::ProjectController", "Nudge"), [=](const ProjectState& s) {
+            return edit::moveClips(s, seqId, selected, Ticks{0}, shift, edit::MoveMode::Overwrite);
+        }))
+        return m_lastError;
+    return stays;
 }
 
 void ProjectController::slideSelection(int frames) {
@@ -706,6 +802,9 @@ QVariantMap ProjectController::commandAvailability(const QString& id) const {
         return state(true, false, tr("Nothing to undo"));
     if (id == QLatin1String("edit.redo") && !canRedo())
         return state(true, false, tr("Nothing to redo"));
+    // 0.4 (stream C): effects copied in Effect Controls keep Paste available (it pastes them).
+    if (id == QLatin1String("edit.paste") && m_effectControls && m_effectControls->effectsPastePending())
+        return state(true, true);
     if ((id == QLatin1String("edit.paste") || id == QLatin1String("edit.pasteInsert")) && !canPaste())
         return state(true, false, tr("Nothing has been copied"));
     if ((id == QLatin1String("marker.clearIn") || id == QLatin1String("marker.goToIn")) && !markIn())

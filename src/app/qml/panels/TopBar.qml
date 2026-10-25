@@ -5,8 +5,9 @@ import QtQuick.Layouts
 // Title bar of the main window (design language v3): the echo mark (it opens the File menu) with the project's name and
 // its sequence's frame size and rate, the menu bar (UX rework: File, Edit, Clip, Sequence, Markers, Graphics, View,
 // Window, Help - AppMenuBar; one "Menu" button when the bar is short of room, so the workspace tabs keep theirs), the
-// sequence switcher, the workspace switcher (a segmented pill group, centred), the transient status pills (rendering,
-// an extension's job, the microphone), command palette, round undo/redo, Save/Export pills and the window controls.
+// sequence switcher, the workspace switcher (a segmented pill group, centred), the transient status pills (0.4: one
+// Background tasks pill for exports, Render In to Out, proxies, AI jobs and missed errors - its popover lists them with
+// the recent messages; the microphone), command palette, round undo/redo, Save/Export pills and the window controls.
 // 0.1.3: the GPU and autosave pills and the Appearance button moved into the Settings window (Settings > Interface can
 // show the two pills here again); the Save button carries a dot while there are unsaved changes. With the custom
 // (frameless) frame, empty areas drag the window (startSystemMove, so OS snapping/tiling works) and a double-click
@@ -37,14 +38,16 @@ Item {
     /// The room the menu bar's titles have once everything else has its own (implicit sizes: what the menu bar shows
     /// does not change it). Short of it, the titles fold into one Menu button.
     readonly property real menuRoom: {
-        const others = [brandBlock, sequencePill, renderPill, workspaceTabs, trailing]
+        const others = [brandBlock, sequencePill, activityPill, workspaceTabs, trailing]
         // The row's margins, the sequence pill's own margin, and the gaps of the menu bar and the two spacers (each
         // other item adds its own below).
         let used = Theme.space(2) + Theme.gap + Theme.space(1) + 2 * barRow.spacing
         for (const item of others) {
             if (!item.visible)
                 continue
-            used += (item === sequencePill ? Math.min(item.implicitWidth, Theme.space(56)) : item.implicitWidth)
+            // The activity pill counts at its short width (it shows its full text only in the room left over).
+            used += (item === sequencePill ? Math.min(item.implicitWidth, Theme.space(56))
+                     : item === activityPill ? activityPill.compactWidth : item.implicitWidth)
                     + barRow.spacing
         }
         return root.width - used
@@ -65,6 +68,63 @@ Item {
     /// The workspace `id`'s tab is renamed in place (Window > Workspaces > Rename Workspace…).
     function renameWorkspace(id: int) {
         workspaceTabs.startRename(id)
+    }
+    /// 0.4: Export Queue… in the Background tasks popover (Main.showExportQueue).
+    signal exportQueueRequested()
+    /// 0.4: opens the Background tasks popover (window.backgroundTasks; also while the pill is hidden: it opens where
+    /// the pill would be, after the sequence pill). A second click on the pill closes it.
+    function openActivity() {
+        if (activityPopover.opened)
+            activityPopover.close()
+        else
+            activityPopover.open()
+    }
+
+    /// 0.4: what runs in the background, in the order the activity pill names it: { icon, text, percent (0..1, -1
+    /// none), warn (paused or held: the warning hue), count (how many things it stands for) }.
+    readonly property var activityItems: {
+        const items = []
+        const j = ExportController.jobs
+        const pct = v => Math.round(Math.max(0, Math.min(1, v)) * 100)
+        if (j.currentState !== "") {
+            const p = j.currentProgress
+            const text = j.currentState === "running"
+                         ? (j.currentEta !== "" ? qsTr("Exporting %1 % · %2").arg(pct(p)).arg(j.currentEta)
+                                                : qsTr("Exporting %1 %").arg(pct(p)))
+                         : j.currentState === "paused" ? qsTr("Export paused") : qsTr("Export queued")
+            items.push({ icon: "download", text: text, percent: j.currentState === "queued" ? -1 : p,
+                         warn: j.currentState === "paused", count: Math.max(1, j.activeCount) })
+        }
+        if (MediaReadiness.rendering)
+            items.push({ icon: "film", percent: MediaReadiness.renderProgress, warn: false, count: 1,
+                         text: MediaReadiness.renderProgress >= 0 ? qsTr("Rendering %1 %").arg(pct(MediaReadiness.renderProgress))
+                                                                  : qsTr("Rendering…") })
+        if (MediaReadiness.working)
+            items.push({ icon: "layers", percent: -1, warn: false, count: 1,
+                         text: MediaReadiness.statusText !== "" ? MediaReadiness.statusText : qsTr("Proxies") })
+        if (Transcript.jobStatus === "running")
+            items.push({ icon: "captions", percent: Transcript.jobProgress, warn: false, count: 1,
+                         text: Transcript.jobProgress >= 0 ? qsTr("Transcribing %1 %").arg(pct(Transcript.jobProgress))
+                                                           : qsTr("Transcribing…") })
+        if (Highlights.busy)
+            items.push({ icon: "sparkles", percent: Highlights.progress, warn: false, count: 1,
+                         text: Highlights.progress >= 0 ? qsTr("Highlights %1 %").arg(pct(Highlights.progress))
+                                                        : qsTr("Highlights…") })
+        if (Shorts.busy)
+            items.push({ icon: "clapperboard", percent: Shorts.progress, warn: false, count: 1,
+                         text: Shorts.progress >= 0 ? qsTr("Shorts %1 %").arg(pct(Shorts.progress)) : qsTr("Shorts…") })
+        if (Collect.running)
+            items.push({ icon: "folders", percent: Collect.progress, warn: false, count: 1,
+                         text: Collect.progress >= 0 ? qsTr("Collecting files %1 %").arg(pct(Collect.progress))
+                                                     : qsTr("Collecting files…") })
+        const ext = Extensions.longCommand
+        if (ext.running === true)
+            items.push({ icon: "puzzle", percent: ext.progress ?? -1, warn: false, count: 1,
+                         text: qsTr("%1: %2").arg(String(ext.extension ?? "")).arg(String(ext.text ?? "")) })
+        if (j.currentState === "" && j.heldCount > 0)
+            items.push({ icon: "clock", percent: -1, warn: true, count: 1,
+                         text: j.heldCount === 1 ? qsTr("1 export waiting") : qsTr("%1 exports waiting").arg(j.heldCount) })
+        return items
     }
 
     function toggleMaximized() {
@@ -285,26 +345,78 @@ Item {
             }
         }
 
-        // 0.1.1: Render In to Out's progress; click to stop it (or to dismiss why it failed).
+        // 0.4: Background tasks (where Render In to Out's pill was): the first thing that runs - "Exporting 38 % · 0:42
+        // left", "Rendering 60 %", "Proxies 3/12", "Transcribing 20 %", ... - and " +N" for the others; held exports
+        // alone "2 exports waiting"; with nothing running, errors nobody saw ("1 problem"). Only the percentage (or the
+        // icon) while the menus are folded. A 2 px bar along its foot when it has a percentage (the warning hue while
+        // paused or held). Click, Enter or Space: the popover (exports, the other jobs, the recent messages).
         PillButton {
-            id: renderPill
-            objectName: "renderProgressPill"
-            property string dismissed: ""
+            id: activityPill
+            objectName: "activityPill"
+            readonly property var first: root.activityItems.length > 0 ? root.activityItems[0] : null
+            readonly property int others: {
+                let n = 0
+                for (const item of root.activityItems)
+                    n += item.count
+                return Math.max(0, n - 1)
+            }
+            readonly property bool problems: activityPill.first === null && MessageLog.unseen > 0
+            readonly property real percent: activityPill.first !== null ? activityPill.first.percent : -1
+            /// The full text, and the short one ("38 %", or nothing: the icon alone).
+            readonly property string fullText: activityPill.first !== null
+                                               ? activityPill.first.text + (activityPill.others > 0 ? qsTr(" +%1").arg(activityPill.others) : "")
+                                               : MessageLog.unseen === 1 ? qsTr("1 problem")
+                                               : qsTr("%1 problems").arg(MessageLog.unseen)
+            readonly property string compactText: activityPill.percent >= 0
+                                                  ? qsTr("%1 %").arg(Math.round(Math.min(1, activityPill.percent) * 100)) : ""
+            // Its widths with either text, from a compact pill's padding and gap (PillButton) as constants: its own
+            // padding follows the text shown, which follows the room left (a binding loop through menuRoom).
+            readonly property real expandedWidth: Theme.iconSm + Theme.space(2) + Math.ceil(activityMetrics.advanceWidth)
+                                                  + 2 * Theme.space(3)
+            readonly property real compactWidth: activityPill.compactText === "" ? Theme.controlHeightSmall
+                                                 : Theme.iconSm + Theme.space(2) + Math.ceil(compactMetrics.advanceWidth)
+                                                   + 2 * Theme.space(3)
+            /// The menu bar counts the pill at its short width; the full text shows only in the room the expanded
+            /// menus leave (the pill shortens itself before the menus fold).
+            readonly property bool showsFull: !root.menusCollapsed
+                                              && root.menuRoom - appMenuBar.expandedWidth
+                                                 >= activityPill.expandedWidth - activityPill.compactWidth
             Layout.alignment: Qt.AlignVCenter
             compact: true
             variant: "secondary"
-            visible: MediaReadiness.rendering
-                     || (MediaReadiness.renderMessage !== "" && MediaReadiness.renderMessage !== renderPill.dismissed)
-            text: !MediaReadiness.rendering ? MediaReadiness.renderMessage
-                  : MediaReadiness.renderProgress >= 0 ? qsTr("Rendering %1 %").arg(Math.round(MediaReadiness.renderProgress * 100))
-                  : qsTr("Rendering…")
-            iconName: "x"
-            tooltip: MediaReadiness.rendering ? qsTr("Stop rendering (the segments rendered so far stay)") : qsTr("Dismiss")
-            onClicked: {
-                if (MediaReadiness.rendering)
-                    MediaReadiness.cancelRender()
-                else
-                    renderPill.dismissed = MediaReadiness.renderMessage
+            visible: activityPill.first !== null || activityPill.problems
+            iconName: activityPill.problems ? "triangle-alert" : activityPill.first !== null ? activityPill.first.icon : "zap"
+            text: activityPill.showsFull ? activityPill.fullText : activityPill.compactText
+            tooltip: activityPill.showsFull ? qsTr("Background tasks") : qsTr("Background tasks: %1").arg(activityPill.fullText)
+            command: "window.backgroundTasks"
+            Accessible.name: qsTr("Background tasks: %1").arg(activityPill.fullText)
+            onClicked: root.openActivity()
+            Keys.onReturnPressed: root.openActivity()
+            Keys.onEnterPressed: root.openActivity()
+
+            TextMetrics {
+                id: compactMetrics
+                font: activityPill.font
+                text: activityPill.compactText
+            }
+            TextMetrics {
+                id: activityMetrics
+                font: activityPill.font
+                text: activityPill.fullText
+            }
+            BeamProgress {
+                objectName: "activityPillProgress"
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                anchors.leftMargin: Theme.space(3)
+                anchors.rightMargin: Theme.space(3)
+                anchors.bottomMargin: 1
+                height: 2
+                visible: activityPill.percent >= 0
+                value: Math.max(0, activityPill.percent)
+                hue: activityPill.first !== null && activityPill.first.warn ? Theme.warning : Theme.accentFill
+                label: activityPill.fullText
             }
         }
 
@@ -327,30 +439,7 @@ Item {
             Layout.alignment: Qt.AlignVCenter
             spacing: Theme.space(2)
 
-            // An extension's AI-model command running as a command job (C.14), with its progress and Cancel.
-            StatusPill {
-                id: extensionJobPill
-                objectName: "extensionJobPill"
-                readonly property var job: Extensions.longCommand
-                Layout.alignment: Qt.AlignVCenter
-                visible: job.running === true
-                label: job.extension ?? ""
-                detail: (job.progress ?? -1) >= 0 ? qsTr("%1 %2 %").arg(job.text ?? "").arg(Math.round(job.progress * 100))
-                                                  : (job.text ?? "")
-                dotColor: Theme.accentStroke
-                tooltip: (job.queued ?? 0) > 0 ? qsTr("%1 is running an AI command; %n more waiting", "", job.queued).arg(label)
-                                               : qsTr("%1 is running an AI command").arg(label)
-            }
-            IconButton {
-                objectName: "extensionJobCancel"
-                Layout.alignment: Qt.AlignVCenter
-                visible: extensionJobPill.visible
-                compact: true
-                iconName: "x"
-                tooltip: qsTr("Stop %1's command (nothing is changed)").arg(extensionJobPill.label)
-                onClicked: Extensions.cancelLongCommand()
-            }
-
+            // (0.4: an extension's AI command shows in the Background tasks pill and popover, with its Stop.)
             // Voice-over (M5m, A.8): shown while the microphone is open (Test input, a pass, monitoring).
             StatusPill {
                 objectName: "microphonePill"
@@ -379,9 +468,12 @@ Item {
                 objectName: "autosavePill"
                 Layout.alignment: Qt.AlignVCenter
                 visible: Preferences.showSaveStatus
-                label: ProjectFile.demo ? qsTr("Demo") : ProjectFile.dirty ? qsTr("Unsaved") : qsTr("Saved")
+                // 0.4: an autosave that could not write says so (red) until a save works again.
+                label: ProjectFile.demo ? qsTr("Demo") : !ProjectFile.autosaveOk ? qsTr("Autosave failed")
+                     : ProjectFile.dirty ? qsTr("Unsaved") : qsTr("Saved")
                 detail: ProjectFile.demo ? "" : ProjectFile.autosaveText
-                dotColor: ProjectFile.dirty ? Theme.warning : Theme.success
+                dotColor: !ProjectFile.demo && !ProjectFile.autosaveOk ? Theme.danger
+                        : ProjectFile.dirty ? Theme.warning : Theme.success
                 tooltip: ProjectFile.filePath
             }
 
@@ -434,17 +526,20 @@ Item {
                 text: qsTr("Save")
                 iconName: "save"
                 // The save state the autosave pill used to show (0.1.3).
+                // 0.4: "Unsaved changes · Autosave failed 14:05: <reason> · <path>" after a failed autosave.
                 tooltip: ProjectFile.demo ? qsTr("Save project (the demo is not saved on its own)")
                        : [ProjectFile.dirty ? qsTr("Unsaved changes") : qsTr("All changes saved"), ProjectFile.autosaveText,
                           ProjectFile.filePath].filter(s => s !== "").join(" · ")
-                Accessible.description: ProjectFile.dirty ? qsTr("Unsaved changes") : qsTr("All changes saved")
+                Accessible.description: !ProjectFile.demo && !ProjectFile.autosaveOk
+                                        ? qsTr("Unsaved changes. Autosave failed: save the project somewhere else.")
+                                        : ProjectFile.dirty ? qsTr("Unsaved changes") : qsTr("All changes saved")
                 command: "file.save"
                 onClicked: root.saveRequested()
 
-                // Unsaved changes: a dot on the button's corner.
+                // Unsaved changes: a dot on the button's corner (0.4: red after a failed autosave).
                 Rectangle {
                     objectName: "unsavedDot"
-                    visible: ProjectFile.dirty && !ProjectFile.demo
+                    visible: (ProjectFile.dirty || !ProjectFile.autosaveOk) && !ProjectFile.demo
                     anchors.right: parent.right
                     anchors.top: parent.top
                     anchors.rightMargin: -Theme.space(0.5)
@@ -452,7 +547,7 @@ Item {
                     width: Theme.dotSize + Theme.space(0.5)
                     height: width
                     radius: width / 2
-                    color: Theme.warning
+                    color: ProjectFile.autosaveOk ? Theme.warning : Theme.danger
                     border.width: Theme.hairline + 1
                     border.color: Theme.canvas
                 }
@@ -495,6 +590,30 @@ Item {
                 onCloseRequested: root.Window.window?.close()
             }
         }
+    }
+
+    // 0.4: where the Background tasks popover hangs: the pill, or where it would be (just after the sequence pill) while
+    // it is hidden. It is the popover's parent, so a press anywhere else in the title bar (a menu, a workspace tab,
+    // Save, Export) closes the popover (Popover: CloseOnPressOutsideParent), and a press on the pill leaves it to the
+    // pill's click (openActivity() toggles it).
+    Item {
+        id: activityAnchor
+        objectName: "activityAnchor"
+        x: barRow.x + (activityPill.visible ? activityPill.x : sequencePill.x + sequencePill.width + barRow.spacing)
+        y: barRow.y + (activityPill.visible ? activityPill.y : sequencePill.y)
+        width: activityPill.visible ? activityPill.width : 0
+        height: activityPill.visible ? activityPill.height : sequencePill.height
+    }
+    // 0.4: Background tasks (the activity pill, window.backgroundTasks): placed by openActivity() under the pill, or
+    // where it would be.
+    ActivityPopover {
+        id: activityPopover
+        parent: activityAnchor
+        // Under the pill (the bar's row is laid out in the bar), else just after the sequence pill; inside the bar.
+        x: Math.max(Theme.space(2), Math.min(activityAnchor.x, root.width - width - Theme.space(2))) - activityAnchor.x
+        y: root.height - Theme.space(1) - activityAnchor.y
+        transformOrigin: Item.TopLeft
+        onExportQueueRequested: root.exportQueueRequested()
     }
 
     // Sequence > Reframe… (AI-9): loaded on first use.

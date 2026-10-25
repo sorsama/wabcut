@@ -53,17 +53,28 @@ void forClipsIn(const Track& track, TimeRange range, Fn&& fn) {
 /// now the picture stays on V3, and goes to V1 when the drag crosses two tracks and V1 is free there. A clip the
 /// grabbed kind lands on is replaced, so its own link partners count as free: an A/V clip's sound dragged onto another
 /// one's replaces both halves, as a drop does.
-edit::TrackShift movedTracks(const ProjectState& state, SequenceId sequence, const GestureSpec& spec) {
-    edit::TrackShift tracks = spec.tracks;
+/// 0.4, a copy (GestureSpec::copy): the originals stay, so moving clips where a partner's copy would land count as
+/// occupied; `partnersLeftOut` says the grabbed kind changes track and its partners' copies cannot go with it (the copy
+/// is then the grabbed kind only, unlinked).
+struct MovedTracks {
+    edit::TrackShift tracks;
+    bool partnersLeftOut = false;
+};
+
+MovedTracks movedTracks(const ProjectState& state, SequenceId sequence, const GestureSpec& spec) {
+    MovedTracks result{spec.tracks, false};
+    edit::TrackShift& tracks = result.tracks;
     const Sequence* seq = state.findSequence(sequence);
     const auto grabbed = seq ? seq->findClip(spec.clips.front()) : std::nullopt;
     if (!grabbed)
-        return tracks;
+        return result;
     const TrackKind grabbedKind = grabbed->track->kind;
     int& follow = grabbedKind == TrackKind::Video ? tracks.audio : tracks.video;
     const int lead = grabbedKind == TrackKind::Video ? tracks.video : tracks.audio;
-    if (follow == 0)
-        return tracks;
+    if (follow == 0) {
+        result.partnersLeftOut = spec.copy && lead != 0;
+        return result;
+    }
 
     const std::vector<ClipId> ids = spec.links == edit::LinkMode::FollowLinks ? edit::withLinkedClips(*seq, spec.clips)
                                                                                : spec.clips;
@@ -113,17 +124,36 @@ edit::TrackShift movedTracks(const ProjectState& state, SequenceId sequence, con
         bool free = to && !to->locked;
         if (free) {
             forClipsIn(*to, at(m), [&](const Clip& clip) {
-                if (!moving.contains(clip.id.value)
+                if ((spec.copy || !moving.contains(clip.id.value)) // a copy leaves the originals where they are
                     && (!clip.linkGroup || std::ranges::find(replaced, clip.linkGroup) == replaced.end()))
                     free = false;
             });
         }
         if (!free) {
             follow = 0;
+            result.partnersLeftOut = spec.copy && lead != 0;
             break;
         }
     }
-    return tracks;
+    return result;
+}
+
+/// 0.4: a copy whose partners cannot go along (MovedTracks::partnersLeftOut) copies the grabbed kind only: the clips
+/// (with their linked partners unless the spec ignores links) on tracks of the grabbed clip's kind.
+std::vector<ClipId> grabbedKindOnly(const ProjectState& state, SequenceId sequence, const GestureSpec& spec) {
+    const Sequence* seq = state.findSequence(sequence);
+    const auto grabbed = seq ? seq->findClip(spec.clips.front()) : std::nullopt;
+    if (!grabbed)
+        return spec.clips;
+    const TrackKind kind = grabbed->track->kind;
+    const std::vector<ClipId> all = spec.links == edit::LinkMode::FollowLinks ? edit::withLinkedClips(*seq, spec.clips)
+                                                                              : spec.clips;
+    std::vector<ClipId> out;
+    for (const ClipId id : all) {
+        if (const auto loc = seq->findClip(id); loc && loc->track->kind == kind)
+            out.push_back(id);
+    }
+    return out;
 }
 
 /// Rate Stretch (R, Premiere): the clip keeps its source In and plays the same material over the new length - the
@@ -146,12 +176,17 @@ edit::EditOutcome rateStretch(const ProjectState& state, SequenceId sequence, Cl
     change.speed = *speed;
     const std::array<ClipId, 1> clips{clip};
     auto stretched = edit::setSpeed(state, sequence, clips, change, links);
-    if (!stretched || edge == edit::Edge::Tail)
+    if (!stretched)
         return stretched;
     const SequencePtr after = stretched->state.sequencePtr(sequence);
     const auto moved = after ? after->findClip(clip) : std::nullopt;
     if (!moved)
         return stretched;
+    if (edge == edit::Edge::Tail) {
+        // 0.4: the tail moved by the change of length (the readout's delta; setSpeed itself reports none).
+        stretched->appliedDelta = moved->clip().duration() - c.duration();
+        return stretched;
+    }
     const Ticks shift = c.end() - moved->clip().end();
     if (shift == Ticks{0})
         return stretched;
@@ -211,9 +246,20 @@ edit::EditOutcome applyGesture(const ProjectState& state, SequenceId sequence, c
     const ClipId clip = spec.clips.front();
     switch (spec.kind) {
     case GestureKind::Move: {
-        const edit::TrackShift tracks = movedTracks(state, sequence, spec);
+        const MovedTracks moved = movedTracks(state, sequence, spec);
+        // 0.4: Alt at the drop copies (edit::duplicateClips with the same delta, tracks and mode; the originals stay).
+        std::vector<ClipId> clips = spec.clips;
+        edit::LinkMode links = spec.links;
+        if (spec.copy && moved.partnersLeftOut) {
+            clips = grabbedKindOnly(state, sequence, spec);
+            links = edit::LinkMode::IgnoreLinks;
+        }
+        const auto run = [&](const ProjectState& s) {
+            return spec.copy ? edit::duplicateClips(s, sequence, clips, spec.delta, moved.tracks, spec.moveMode, links)
+                             : edit::moveClips(s, sequence, clips, spec.delta, moved.tracks, spec.moveMode, links);
+        };
         if (spec.newAudioTracks <= 0)
-            return edit::moveClips(state, sequence, spec.clips, spec.delta, tracks, spec.moveMode, spec.links);
+            return run(state);
         // Dropping below the last track: add the tracks, then move onto them (one edit, one undo step).
         ProjectState next = state;
         for (int i = 0; i < spec.newAudioTracks; ++i) {
@@ -222,7 +268,7 @@ edit::EditOutcome applyGesture(const ProjectState& state, SequenceId sequence, c
                 return std::unexpected(added.error());
             next = std::move(added->state);
         }
-        return edit::moveClips(next, sequence, spec.clips, spec.delta, tracks, spec.moveMode, spec.links);
+        return run(next);
     }
     case GestureKind::Trim:
         if (!spec.groupTrim.empty())
@@ -253,6 +299,10 @@ edit::EditOutcome applyGesture(const ProjectState& state, SequenceId sequence, c
 const char* gestureLabel(const GestureSpec& spec) {
     switch (spec.kind) {
     case GestureKind::Move:
+        if (spec.copy)
+            return QT_TRANSLATE_NOOP("wabcut::app::ProjectController", "Duplicate");
+        if (spec.moveMode == edit::MoveMode::Rearrange)
+            return QT_TRANSLATE_NOOP("wabcut::app::ProjectController", "Rearrange");
         return spec.moveMode == edit::MoveMode::Insert
                    ? QT_TRANSLATE_NOOP("wabcut::app::ProjectController", "Insert Move")
                    : QT_TRANSLATE_NOOP("wabcut::app::ProjectController", "Move");

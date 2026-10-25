@@ -170,6 +170,15 @@ public:
     /// I.9: the targeted clip's input colour space by id, or "auto". One undo step (color.inputSpace.set).
     Q_INVOKABLE bool setInputColorSpace(const QString& space);
 
+    /// 0.4 (the Color panel menu's Apply Grade rows): { selection: the other selected video clips, media: the other
+    /// video clips of the sequence that show the targeted clip's source (color::sameSource), mediaName: that source's
+    /// name elided to 32 characters }. Zeros without a targeted clip.
+    Q_INVOKABLE QVariantMap gradeCopyTargets() const;
+    /// 0.4: copies the targeted clip's grade over the grade of the other selected video clips ("selection") or of every
+    /// other video clip of its source ("media"), one undo step (color.grade.copy). `status` says "Grade applied to 3
+    /// clips" or why not.
+    Q_INVOKABLE bool applyGradeTo(const QString& scope);
+
     // ---- C++ ----
     ClipId targetClip() const { return m_clip; }
     EffectInstanceId gradeInstance() const { return m_grade; }

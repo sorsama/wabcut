@@ -45,6 +45,9 @@ namespace commands {
 inline constexpr std::string_view kShuttleBackward = "transport.shuttleBackward"; ///< J
 inline constexpr std::string_view kShuttleStop = "transport.shuttleStop";         ///< K
 inline constexpr std::string_view kShuttleForward = "transport.shuttleForward";   ///< L
+/// 0.4: Premiere's Shuttle Slow Left / Right (Shift+J / Shift+L): latched slow play, 1/4x -> 1/2x -> 1x.
+inline constexpr std::string_view kShuttleSlowBackward = "transport.shuttleSlowBackward"; ///< Shift+J
+inline constexpr std::string_view kShuttleSlowForward = "transport.shuttleSlowForward";   ///< Shift+L
 } // namespace commands
 
 /// An immutable, indexed set of commands. The builtin() registry holds every Wabcut command; tests may build

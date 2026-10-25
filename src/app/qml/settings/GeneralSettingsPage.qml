@@ -10,6 +10,7 @@ import QtQuick.Dialogs
 // (Home.recentLimit; starred ones always show; a lower number hides the older ones, it never forgets them) and
 // project locking (ProjectFile.lockProjects, the same switch as Preferences > Media and Timeline). Every row has a
 // rowKey for the Settings search (AppSettings.index).
+// 0.4: the save state says when autosave failed (red); Background work keeps Windows awake while long work runs.
 SettingsPage {
     id: page
     objectName: "generalSettingsPage"
@@ -112,16 +113,20 @@ SettingsPage {
         SettingsRow {
             objectName: "projectSaveStatus"
             rowKey: "saveStatus"
+            // 0.4: a failed autosave: "Autosave failed", a red dot, the reason ("Autosave failed 14:05: <reason>").
             label: ProjectFile.demo ? qsTr("Demo project")
+                 : !ProjectFile.autosaveOk ? qsTr("Autosave failed")
                  : ProjectFile.dirty ? qsTr("Unsaved changes") : qsTr("All changes saved")
             description: ProjectFile.demo ? qsTr("The demo is never saved. Start a project from Home to keep your work.")
                        : [ProjectFile.autosaveText, ProjectFile.filePath].filter(s => s !== "").join(" · ")
             Rectangle {
+                objectName: "projectSaveStatusDot"
                 anchors.verticalCenter: parent ? parent.verticalCenter : undefined
                 width: Theme.dotSize + Theme.space(1)
                 height: width
                 radius: width / 2
-                color: ProjectFile.dirty ? Theme.warning : Theme.success
+                color: !ProjectFile.demo && !ProjectFile.autosaveOk ? Theme.danger
+                     : ProjectFile.dirty ? Theme.warning : Theme.success
                 Accessible.ignored: true
             }
         }
@@ -193,6 +198,26 @@ SettingsPage {
                 onToggled: {
                     ProjectFile.lockProjects = checked
                     checked = Qt.binding(() => ProjectFile.lockProjects)
+                }
+            }
+        }
+    }
+
+    // 0.4: keep Windows awake while long work runs (Main's PowerKeeper; Preferences.keepAwake, power/keepAwake).
+    SettingsSection {
+        title: qsTr("Background work")
+
+        SettingsRow {
+            rowKey: "keepAwake"
+            label: qsTr("Keep the computer awake while exporting")
+            description: qsTr("While exports, Render In to Out, proxies, transcription, Highlights, Shorts or Collect Files run, Windows does not go to sleep on its own. The screen can still turn off. On Windows.")
+            Toggle {
+                objectName: "keepAwakeToggle"
+                tooltip: qsTr("Keep the computer awake while exporting")
+                checked: Preferences.keepAwake
+                onToggled: {
+                    Preferences.keepAwake = checked
+                    checked = Qt.binding(() => Preferences.keepAwake)
                 }
             }
         }

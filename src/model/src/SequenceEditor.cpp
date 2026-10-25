@@ -164,7 +164,7 @@ std::vector<TrackId> unlockedTargets(const Sequence& sequence) {
 // --- SequenceEditor -----------------------------------------------------------------------------------
 
 SequenceEditor::SequenceEditor(const ProjectState& state, const Sequence& sequence)
-    : m_state(state), m_original(sequence), m_seq(sequence), m_ids(state.ids) {}
+    : m_state(state), m_original(sequence), m_seq(sequence), m_ids(state.ids), m_markersFollow(sequence.rippleMarkers) {}
 
 std::vector<TrackId> SequenceEditor::trackIds() const {
     std::vector<TrackId> out;
@@ -352,9 +352,57 @@ void SequenceEditor::mapCaptions(Map&& map) {
     }
 }
 
+template <class Map, class EndMap>
+void SequenceEditor::mapMarkers(Map&& map, EndMap&& mapEnd) {
+    if (m_seq.markers.empty()) {
+        return;
+    }
+    std::vector<Marker> markers = m_seq.markers;
+    for (Marker& m : markers) {
+        const Ticks start = map(m.start);
+        const Ticks end = std::max(start, mapEnd(m.end()));
+        if (m.highlight) {
+            m.highlight->peak = std::clamp(map(m.highlight->peak), start, end);
+        }
+        m.start = start;
+        m.duration = end - start;
+    }
+    std::stable_sort(markers.begin(), markers.end(), [](const Marker& a, const Marker& b) { return a.start < b.start; });
+    if (markers != m_seq.markers) {
+        header().markers = std::move(markers);
+    }
+}
+
+void SequenceEditor::markersInsert(Ticks at, Ticks duration) {
+    if (duration.value <= 0) {
+        return;
+    }
+    // A marker starting at or after `at` moves; a range marker across `at` grows (its end moves, its start stays); one
+    // that ends at `at` stays, like a caption cue.
+    mapMarkers([&](Ticks t) { return t >= at ? t + duration : t; }, [&](Ticks t) { return t > at ? t + duration : t; });
+}
+
+void SequenceEditor::markersRemove(TimeRange range) {
+    if (range.duration.value <= 0) {
+        return;
+    }
+    // Earlier markers stay, later ones move back; a marker starting inside moves to the cut and a range marker loses
+    // the removed part (Ripple Sequence Markers never deletes a marker: Clear Selected Marker does).
+    const auto map = [&](Ticks t) {
+        if (t <= range.start) {
+            return t;
+        }
+        return t < range.end() ? range.start : t - range.duration;
+    };
+    mapMarkers(map, map);
+}
+
 void SequenceEditor::captionsInsert(Ticks at, Ticks duration, std::optional<Ticks> until) {
     if (duration.value <= 0) {
         return;
+    }
+    if (m_markersFollow && !until) {
+        markersInsert(at, duration);
     }
     mapCaptions([&](Ticks start, Ticks end) {
         std::vector<std::pair<Ticks, Ticks>> out;
@@ -382,6 +430,9 @@ void SequenceEditor::captionsRemove(TimeRange range, std::optional<Ticks> until)
     if (range.duration.value <= 0) {
         return;
     }
+    if (m_markersFollow && !until) {
+        markersRemove(range);
+    }
     const auto map = [&](Ticks t) {
         if (until && t >= *until) {
             return t;
@@ -397,6 +448,15 @@ void SequenceEditor::captionsRemove(TimeRange range, std::optional<Ticks> until)
 void SequenceEditor::captionsStretch(TimeRange range, Ticks duration, bool ripple) {
     if (range.duration.value <= 0 || duration == range.duration) {
         return;
+    }
+    if (m_markersFollow && ripple) {
+        // Markers after the clip move by the length change; markers over the clip stay (they do not scale).
+        const Ticks delta = duration - range.duration;
+        if (delta.value > 0) {
+            markersInsert(range.end(), delta);
+        } else {
+            markersRemove({range.end() + delta, -delta});
+        }
     }
     const auto map = [&](Ticks t) {
         if (t <= range.start) {

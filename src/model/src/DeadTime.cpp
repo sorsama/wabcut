@@ -45,14 +45,6 @@ void normalise(std::vector<double>& values) {
     }
 }
 
-/// Maps a time through the removal of `range` (a ripple delete).
-Ticks afterRemoval(Ticks t, TimeRange range) {
-    if (t < range.start) {
-        return t;
-    }
-    return t < range.end() ? range.start : t - range.duration;
-}
-
 } // namespace
 
 std::optional<std::string> mediaActivityProblem(const MediaActivity& a) {
@@ -282,22 +274,14 @@ EditOutcome removeTimeRanges(const ProjectState& state, SequenceId sequenceId, s
     if (unlocked.empty()) {
         return std::unexpected(invalidArgument("every track is locked"));
     }
+    // The markers follow with the captions (SequenceEditor, 0.4) when asked to, whatever the sequence's own Ripple
+    // Sequence Markers says: dead-time removal keeps its "move markers" option.
+    ed.setMarkersFollow(rippleMarkers);
     for (auto it = merged.rbegin(); it != merged.rend(); ++it) {
         for (const TrackId id : unlocked) {
             ed.rippleRemove(id, *it);
         }
         ed.captionsRemove(*it);
-        if (rippleMarkers) {
-            for (Marker& m : ed.header().markers) {
-                const Ticks start = afterRemoval(m.start, *it);
-                const Ticks end = afterRemoval(m.end(), *it);
-                if (m.highlight) {
-                    m.highlight->peak = std::clamp(afterRemoval(m.highlight->peak, *it), start, end);
-                }
-                m.start = start;
-                m.duration = end - start;
-            }
-        }
     }
     return ed.finish(merged.front().start);
 }

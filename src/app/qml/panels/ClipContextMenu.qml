@@ -12,12 +12,22 @@ import QtQuick
 // P.2 (E5): Video Options, Replace With Clip, Join Through Edits and Make Subsequence (the Editing bridge).
 // UX rework (stream T): Reveal in Project (the clip's item selected in the Library, which comes forward; keymap
 // clip.revealInProject, no default key) and Reveal in File Explorer / Finder (its media file), after Rename...
+// 0.4 (stream A): Clear (Delete: the selected clips go and leave gaps) before Ripple Delete, and Audio Gain… (G) at the
+// top of the audio tools on clips with sound; its dialog opens once the menu has closed (pendingCommand).
 ContextMenu {
     id: clipMenu
     objectName: "clipContextMenu"
 
     property string clipId: ""
     property point menuPoint
+    /// A keymap command to run once the menu has closed (a dialog it opens keeps the focus).
+    property string pendingCommand: ""
+    onClosed: {
+        const command = clipMenu.pendingCommand
+        clipMenu.pendingCommand = ""
+        if (command !== "")
+            KeymapDispatcher.trigger(command)
+    }
 
     signal renameRequested(string clipId, point at)
     /// Nest…: the panel asks for the new sequence's name.
@@ -111,13 +121,15 @@ ContextMenu {
         command: "edit.copy"
         onTriggered: ProjectController.copySelection()
     }
+    // 0.4: the same Paste as Ctrl+V (edit.paste): effects copied in Effect Controls, when they are the newest copy, go
+    // onto the selected clips; otherwise the copied clips at the playhead.
     ContextMenuItem {
         objectName: "pasteMenuItem"
         text: qsTr("Paste")
         iconName: "clipboard-paste"
         command: "edit.paste"
-        enabled: ProjectController.canPaste
-        onTriggered: ProjectController.paste()
+        enabled: ProjectController.canPaste || ProjectController.effectControls.canPasteEffects
+        onTriggered: ProjectController.runCommand("edit.paste")
     }
     // C.11 (M5m): Paste Insert, and Premiere's Paste Attributes… / Remove Attributes… (the attributes dialog).
     ContextMenuItem {
@@ -163,6 +175,15 @@ ContextMenu {
         onTriggered: AutoSwitch.open(clipMenu.clipId)
     }
     ContextMenuSeparator {}
+    // 0.4: Premiere's Clear: the selected clips go and leave gaps (one undo step "Delete").
+    ContextMenuItem {
+        objectName: "clearMenuItem"
+        text: qsTr("Clear")
+        iconName: "x"
+        command: "edit.clear"
+        enabled: ProjectController.selectedClips.length > 0
+        onTriggered: ProjectController.deleteSelection()
+    }
     ContextMenuItem {
         text: qsTr("Ripple Delete")
         iconName: "trash-2"
@@ -295,6 +316,16 @@ ContextMenu {
     ContextMenuSeparator {
         visible: clipMenu.audioInfo.audio === true
         height: visible ? implicitHeight : 0
+    }
+    // 0.4: Premiere's Audio Gain… (G) on the selected clips: Main opens the dialog after the menu has closed.
+    ContextMenuItem {
+        objectName: "audioGainMenuItem"
+        visible: clipMenu.audioInfo.audio === true
+        height: visible ? implicitHeight : 0
+        text: qsTr("Audio Gain…")
+        iconName: "volume-2"
+        command: "clip.audioGain"
+        onTriggered: clipMenu.pendingCommand = "clip.audioGain"
     }
     ContextMenuItem {
         objectName: "enhanceSpeechMenuItem"

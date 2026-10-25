@@ -326,3 +326,31 @@ TEST_CASE("RAW Source Settings run as commands", "[command][editing][raw]") {
     CHECK(h.errorOf("media.setRawSourceSettings", Json{{"media", Json::array({"B"})}, {"exposure", 1}}) == "EditRejected");
     CHECK(h.ok("media.rawSourceSettings", Json{{"media", "B"}}).data["raw"] == false);
 }
+
+TEST_CASE("sequence.setSettings rippleMarkers turns marker rippling off and reports it", "[command][editing][markers]") {
+    CommandHarness h(R"(
+        V1 tgt |AaaaaaaaaaBbbbbbbbbb|
+        A1 tgt |AaaaaaaaaaBbbbbbbbbb|
+    )");
+    h.ok("marker.add", Json{{"time", tc(12)}, {"name", "Chapter"}});
+    CHECK(h.ok("sequence.settings", Json{{"sequence", h.tl.seq.value}}).data["rippleMarkers"] == true);
+    // On (the default): an extract before the marker pulls it back.
+    h.ok("sequence.extract", Json{{"in", tc(2)}, {"out", tc(4)}});
+    REQUIRE(h.sequence(h.state()).markers.size() == 1);
+    CHECK(h.sequence(h.state()).markers[0].start == f(10));
+    // Off: one undo step, reported in data; the next extract leaves the marker where it is.
+    const std::size_t undo = h.session.undoCount();
+    const auto off = h.ok("sequence.setSettings", Json{{"sequence", h.tl.seq.value}, {"rippleMarkers", false}});
+    CHECK(off.data["rippleMarkers"] == false);
+    CHECK(h.session.undoCount() == undo + 1);
+    CHECK_FALSE(h.sequence(h.state()).rippleMarkers);
+    CHECK(h.ok("sequence.settings", Json{{"sequence", h.tl.seq.value}}).data["rippleMarkers"] == false);
+    h.ok("sequence.extract", Json{{"in", tc(2)}, {"out", tc(4)}});
+    CHECK(h.sequence(h.state()).markers[0].start == f(10));
+    CHECK(h.errorOf("sequence.setSettings", Json{{"sequence", h.tl.seq.value}, {"rippleMarkers", "no"}}) == "InvalidParams");
+    // Undoing the extract and the setting turns it back on.
+    REQUIRE(h.session.undo());
+    REQUIRE(h.session.undo());
+    CHECK(h.sequence(h.state()).rippleMarkers);
+    CHECK(h.sequence(h.state()).markers[0].start == f(10));
+}

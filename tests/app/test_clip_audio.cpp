@@ -548,3 +548,168 @@ TEST_CASE("Clip menu audio tools in the shell: Enhance Speech, Separate Stems, S
     INFO(join(messages));
     CHECK(messages.isEmpty());
 }
+
+// ---- 0.4: Increase / Decrease Clip Volume (] [, Shift: Many) ------------------------------------------------------
+
+namespace {
+
+constexpr std::string_view kVolumePicture = R"(
+    V2     |....Cccc............|
+    V1 tgt |Aaaaaaaaaa..........|
+    A1 tgt |Aaaaaaaaaa..........|
+    A2     |..Mmmmmm............|
+)";
+
+struct VolumeRig {
+    Timeline tl{kVolumePicture};
+    ProjectController controller;
+    ClipAudioBridge audio;
+
+    VolumeRig() {
+        tl.linkMatching();
+        controller.resetProject(tl.state, tl.seq);
+        audio.setController(&controller);
+    }
+    /// The clip's Volume Level (Effect Controls > Volume > Level).
+    ParamValue level(std::string_view ref) const {
+        const ClipId id = clipAt(*controller.snapshot(), tl.seq, ref);
+        const auto loc = controller.currentSequence()->findClip(id);
+        REQUIRE(loc);
+        return ProjectController::parameterValue(loc->clip(), edit::ParamRef::of(ParamId::VolumeDb));
+    }
+    double constant(std::string_view ref) const { return level(ref).constant(); }
+    void select(std::string_view ref) { controller.setSelection({clipAt(*controller.snapshot(), tl.seq, ref)}); }
+    std::size_t undo() { return controller.session().undoCount(); }
+    QString run(const char* id) {
+        const QVariantMap r = audio.runVolumeCommand(QString::fromLatin1(id));
+        return r.value(QStringLiteral("text")).toString();
+    }
+};
+
+} // namespace
+
+TEST_CASE("Clip volume keys move the Volume Level and merge into one undo step", "[app][audio][volumekeys]") {
+    VolumeRig rig;
+    CHECK(ClipAudioBridge::handlesCommand(QStringLiteral("clip.increaseVolume")));
+    CHECK(ClipAudioBridge::handlesCommand(QStringLiteral("clip.decreaseVolumeMany")));
+    CHECK_FALSE(ClipAudioBridge::handlesCommand(QStringLiteral("clip.audioGain")));
+    rig.select("V1@0"); // the video stands for its linked audio
+    const std::size_t undo = rig.undo();
+    CHECK(rig.run("clip.increaseVolume") == QStringLiteral("Volume +1 dB (now 1.0 dB)"));
+    rig.run("clip.increaseVolume");
+    rig.run("clip.increaseVolume");
+    CHECK(rig.constant("A1@0") == 3.0);
+    CHECK(rig.run("clip.decreaseVolumeMany") == QStringLiteral("Volume -6 dB (now -3.0 dB)"));
+    CHECK(rig.constant("A1@0") == -3.0);
+    CHECK(rig.constant("A2@2") == 0.0); // not selected
+    CHECK(rig.undo() == undo + 1);      // presses within a second are one step
+    CHECK(rig.controller.undoText().contains(QStringLiteral("Clip Volume")));
+    REQUIRE(rig.controller.undo());
+    CHECK(rig.constant("A1@0") == 0.0);
+    REQUIRE(rig.controller.redo());
+    CHECK(rig.constant("A1@0") == -3.0);
+    // After a second the next press is a step of its own.
+    spin(1200);
+    rig.run("clip.increaseVolume");
+    CHECK(rig.undo() == undo + 2);
+    CHECK(rig.constant("A1@0") == -2.0);
+    // Clamped to the parameter's range (+24 dB).
+    for (int i = 0; i < 6; ++i)
+        rig.run("clip.increaseVolumeMany");
+    CHECK(rig.constant("A1@0") == 24.0);
+}
+
+TEST_CASE("Clip volume keys leave a slider drag that starts within the second one undo step", "[app][audio][volumekeys]") {
+    // A drag merges by its own key until it ends; the volume keys' one-second window must not close it halfway.
+    VolumeRig rig;
+    rig.select("A1@0");
+    const std::size_t undo = rig.undo();
+    rig.run("clip.increaseVolume");
+    CHECK(rig.undo() == undo + 1);
+    // A fader drag on another clip (the Audio Clip Mixer's merge key), its first move within the second.
+    const ClipId a2 = rig.tl.clip("A2@2");
+    rig.controller.setPlayhead(f(3));
+    const edit::ParamRef volume = edit::ParamRef::of(ParamId::VolumeDb);
+    REQUIRE(rig.controller.setParameterAtPlayhead(a2, volume, -2.0, "Clip Volume", "clipMixer:test:volume"));
+    CHECK(rig.undo() == undo + 2);
+    spin(1200); // the volume keys' window ends while the drag goes on
+    REQUIRE(rig.controller.setParameterAtPlayhead(a2, volume, -4.0, "Clip Volume", "clipMixer:test:volume"));
+    CHECK(rig.undo() == undo + 2); // still the drag's one step
+    CHECK(rig.constant("A2@2") == -4.0);
+    rig.controller.endPropertyGesture();
+    // The next volume key press is a step of its own; undo takes back only it, then the whole drag.
+    rig.run("clip.increaseVolume");
+    CHECK(rig.undo() == undo + 3);
+    CHECK(rig.constant("A1@0") == 2.0);
+    REQUIRE(rig.controller.undo());
+    CHECK(rig.constant("A1@0") == 1.0);
+    REQUIRE(rig.controller.undo());
+    CHECK(rig.constant("A2@2") == 0.0);
+    CHECK(rig.constant("A1@0") == 1.0);
+}
+
+TEST_CASE("Clip volume keys move every volume keyframe", "[app][audio][volumekeys]") {
+    VolumeRig rig;
+    const ClipId a1 = rig.tl.clip("A1@0");
+    const SequenceId seq = rig.tl.seq;
+    REQUIRE(rig.controller.applyEditFn("Volume", [&](const ProjectState& s) {
+        return edit::setParameter(s, seq, a1, edit::ParamRef::of(ParamId::VolumeDb),
+                                  ParamValue(Curve{{Keyframe{f(0), -12.0}, Keyframe{f(5), 0.0}}}));
+    }));
+    rig.select("A1@0");
+    CHECK(rig.run("clip.increaseVolumeMany") == QStringLiteral("Volume +6 dB on 1 clip"));
+    const ParamValue level = rig.level("A1@0");
+    REQUIRE(level.isCurve());
+    REQUIRE(level.curve()->keys.size() == 2);
+    CHECK(level.curve()->keys[0].value == -6.0); // the shape stays
+    CHECK(level.curve()->keys[1].value == 6.0);
+    CHECK(level.curve()->keys[1].time == f(5));
+}
+
+TEST_CASE("Clip volume keys without a selection act on the clip under the playhead on targeted tracks",
+          "[app][audio][volumekeys]") {
+    VolumeRig rig;
+    rig.controller.clearSelection();
+    rig.controller.setPlayhead(f(3));
+    // V1 and A1 are targeted: the A clip's audio (once, though both its video and audio are under the playhead).
+    CHECK(rig.audio.volumeTargets().size() == 2);
+    CHECK(rig.run("clip.decreaseVolume") == QStringLiteral("Volume -1 dB (now -1.0 dB)"));
+    CHECK(rig.constant("A1@0") == -1.0);
+    CHECK(rig.constant("A2@2") == 0.0); // A2 is not targeted
+    // No track targeted: every track.
+    for (const char* track : {"V1", "A1"})
+        rig.controller.setTrackFlag(trackKey(rig.tl.track(track)), QStringLiteral("targeted"), false);
+    CHECK(rig.run("clip.increaseVolume") == QStringLiteral("Volume +1 dB on 2 clips"));
+    CHECK(rig.constant("A1@0") == 0.0);
+    CHECK(rig.constant("A2@2") == 1.0);
+}
+
+TEST_CASE("Clip volume keys skip locked tracks and explain an empty target", "[app][audio][volumekeys]") {
+    VolumeRig rig;
+    // A video clip with no sound.
+    rig.select("V2@4");
+    QVariantMap r = rig.audio.runVolumeCommand(QStringLiteral("clip.increaseVolume"));
+    CHECK_FALSE(r.value(QStringLiteral("ok")).toBool());
+    CHECK(r.value(QStringLiteral("text")).toString() == QStringLiteral("Select clips with sound"));
+    QVariantMap state = rig.audio.commandAvailability(QStringLiteral("clip.increaseVolume"));
+    CHECK(state.value(QStringLiteral("handled")).toBool());
+    CHECK_FALSE(state.value(QStringLiteral("enabled")).toBool());
+    CHECK(state.value(QStringLiteral("reason")).toString() == QStringLiteral("Select clips with sound"));
+    // Its audio on a locked track.
+    rig.controller.setTrackFlag(trackKey(rig.tl.track("A1")), QStringLiteral("locked"), true);
+    const std::size_t undo = rig.undo();
+    rig.select("V1@0");
+    r = rig.audio.runVolumeCommand(QStringLiteral("clip.decreaseVolume"));
+    CHECK_FALSE(r.value(QStringLiteral("ok")).toBool());
+    CHECK(r.value(QStringLiteral("text")).toString() == QStringLiteral("The audio tracks are locked"));
+    CHECK(rig.constant("A1@0") == 0.0);
+    CHECK(rig.undo() == undo);
+    // With an unlocked clip beside it, only that one changes.
+    rig.controller.setSelection({rig.tl.clip("V1@0"), rig.tl.clip("A2@2")});
+    CHECK(rig.run("clip.decreaseVolume") == QStringLiteral("Volume -1 dB (now -1.0 dB)"));
+    CHECK(rig.constant("A2@2") == -1.0);
+    CHECK(rig.constant("A1@0") == 0.0);
+    state = rig.audio.commandAvailability(QStringLiteral("clip.decreaseVolume"));
+    CHECK(state.value(QStringLiteral("enabled")).toBool());
+    CHECK_FALSE(rig.audio.commandAvailability(QStringLiteral("clip.audioGain")).value(QStringLiteral("handled")).toBool());
+}

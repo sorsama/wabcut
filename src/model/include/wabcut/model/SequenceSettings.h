@@ -47,6 +47,8 @@ struct SequenceSettingsChange {
     std::optional<Ticks> startTimecode;
     /// 0.2: the label colour, 0..15 (Premiere's Label on a sequence).
     std::optional<std::int32_t> colorIndex;
+    /// 0.4: Markers > Ripple Sequence Markers (Sequence::rippleMarkers): the sequence's markers follow ripple edits.
+    std::optional<bool> rippleMarkers;
 };
 
 /// Sequence > Sequence Settings. Errors: NotFound, InvalidArgument (a value out of range). One ChangeSet.

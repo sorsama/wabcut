@@ -2,6 +2,7 @@
 
 #include "AgentController.h"
 #include "BridgeIds.h"
+#include "ExportController.h"
 #include "PlaybackBridge.h"
 #include "ProjectController.h"
 #include "ShortsBridge.h" // BridgeJob, setPreviewFrameContext, image://wabcut-frames
@@ -27,6 +28,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdlib>
 #include <span>
 
 namespace wabcut::app {
@@ -239,6 +241,11 @@ HighlightsBridge* HighlightsBridge::create(QQmlEngine* qmlEngine, QJSEngine*) {
             auto* agent = engine ? engine->singletonInstance<AgentController*>("Wabcut", "AgentController") : nullptr;
             return agent ? agent->commandServices() : nullptr;
         });
+        // 0.4: Export all queues through the engine's ExportController (as ShortsBridge::exportAll does).
+        bridge->setQueueExport([engine](const QString& sequence, const QString& preset, const QVariantMap& overrides) {
+            auto* exporter = engine ? engine->singletonInstance<ExportController*>("Wabcut", "ExportController") : nullptr;
+            return exporter ? exporter->queueExport(sequence, preset, overrides) : QString();
+        });
     }
     return bridge;
 }
@@ -258,7 +265,10 @@ void HighlightsBridge::setController(ProjectController* controller) {
         // The highlight markers are the list: a sequence switch, an undo or redo, another project list them again
         // (markersChanged also comes for a switch and a reset; nothing is rebuilt when the markers are the same).
         connect(controller, &ProjectController::markersChanged, this, [this] { refreshFromMarkers(); });
-        connect(controller, &ProjectController::sequencesChanged, this, [this] { refreshFromMarkers(); });
+        connect(controller, &ProjectController::sequencesChanged, this, [this] {
+            refreshFromMarkers();
+            emit madeShortsChanged(); // 0.4: an undo or a delete takes made Shorts away
+        });
     }
     refreshFromMarkers(true);
 }
@@ -500,6 +510,58 @@ QVariantMap HighlightsBridge::shortParams(int rank, const QVariantMap& options) 
         if (options.contains(key))
             p.insert(key, options.value(key).toBool());
     }
+    // 0.4: the caption style (a preset's name; "" = the default look), with captions (on unless switched off).
+    const bool captions = !options.contains(QStringLiteral("captions")) || options.value(QStringLiteral("captions")).toBool();
+    if (captions && options.contains(QStringLiteral("captionPreset")))
+        p.insert(QStringLiteral("captionPreset"), options.value(QStringLiteral("captionPreset")).toString().trimmed().left(64));
+    // 0.4: lead-in and tail (the build-up before the moment, the reaction after; 0..30 s each), and "At least": a Short
+    // shorter than minLength gets the missing time two thirds before, one third after (each side at most 30 s: what one
+    // side cannot take goes to the other). A side that runs past the sequence's start or end gives what it cannot use
+    // to the other side.
+    double before = options.contains(QStringLiteral("handleBefore"))
+                        ? clampTo(options.value(QStringLiteral("handleBefore")).toDouble(), 0, 30)
+                        : 0.0;
+    double after = options.contains(QStringLiteral("handleAfter"))
+                       ? clampTo(options.value(QStringLiteral("handleAfter")).toDouble(), 0, 30)
+                       : 0.0;
+    const double minLength = options.contains(QStringLiteral("minLength"))
+                                 ? clampTo(options.value(QStringLiteral("minLength")).toDouble(), 0, 180)
+                                 : 0.0;
+    const double length = m->end - m->start;
+    if (const double missing = minLength - (length + before + after); missing > 0) {
+        before += missing * 2.0 / 3.0;
+        after += missing / 3.0;
+        // Fix round 1: the 30 s cap's overflow is not dropped (At least 60 s on a 4 s moment with 3 s / 1 s gave 52 s).
+        if (before > 30.0) {
+            after = std::min(30.0, after + (before - 30.0));
+            before = 30.0;
+        }
+        if (after > 30.0) {
+            before = std::min(30.0, before + (after - 30.0));
+            after = 30.0;
+        }
+    }
+    double roomAfter = 30.0;
+    if (const ProjectSnapshot snap = m_controller ? m_controller->snapshot() : ProjectSnapshot{}) {
+        if (const Sequence* seq = snap->findSequence(m_sequence)) {
+            const Ticks end = std::max(seq->duration, seq->contentEnd());
+            roomAfter = std::max(0.0, end.toSeconds() - m->end);
+        }
+    }
+    const double roomBefore = std::max(0.0, m->start);
+    if (before > roomBefore) {
+        after = std::min({30.0, roomAfter, after + (before - roomBefore)});
+        before = roomBefore;
+    }
+    if (after > roomAfter) {
+        before = std::min({30.0, roomBefore, before + (after - roomAfter)});
+        after = roomAfter;
+    }
+    const auto millis = [](double s) { return std::round(s * 1000.0) / 1000.0; };
+    if (millis(before) > 0)
+        p.insert(QStringLiteral("handleBefore"), millis(before));
+    if (millis(after) > 0)
+        p.insert(QStringLiteral("handleAfter"), millis(after));
     return p;
 }
 
@@ -521,16 +583,32 @@ QVariantList HighlightsBridge::musicChoices() const {
 
 QString HighlightsBridge::runJob(const QString& kind, const QString& startText, const std::string& name,
                                  const QVariantMap& params, bool staleIsError, Done done) {
+    // One request of runJobs (0.4): the same steps, its one result.
+    command::CommandRequest request;
+    request.command = name;
+    request.params = toJson(params);
+    return runJobs(kind, startText, {std::move(request)}, QString(), staleIsError,
+                   [done = std::move(done)](const std::vector<command::CommandResult>& results, bool stale, bool) {
+                       if (!done)
+                           return;
+                       done(results.empty() ? refused(command::ErrorCode::Cancelled, "cancelled") : results.front(), stale);
+                   });
+}
+
+QString HighlightsBridge::runJobs(const QString& kind, const QString& startText, std::vector<command::CommandRequest> requests,
+                                  const QString& label, bool staleIsError, DoneMany done) {
     if (!m_controller)
         return tr("No project is open");
     if (m_job->running())
         return tr("Busy");
+    if (requests.empty())
+        return tr("Nothing to do");
     const ProjectSnapshot base = m_controller->snapshot();
     const command::CommandRegistry* catalog = &registry();
     std::shared_ptr<command::CommandServices> services = m_servicesFactory ? m_servicesFactory() : nullptr;
-    command::CommandRequest request;
-    request.command = name;
-    request.params = toJson(params);
+    const std::string commitLabel = label.toStdString();
+    //: The batch's activity: "Short 2 of 6", then ": <what it does now>"
+    const QString stepFormat = tr("Short %1 of %2");
     const unsigned generation = ++m_generation;
     const bool synchronous = m_synchronous;
     QPointer<HighlightsBridge> self(this);
@@ -550,31 +628,74 @@ QString HighlightsBridge::runJob(const QString& kind, const QString& startText, 
     setJob(kind, startText, -1.0);
     const bool started = m_job->start(
         this, synchronous,
-        [base, catalog, services, request, report, self, live, staleIsError, done](const std::atomic<bool>& cancelled)
-            -> BridgeJob::Finish {
-            // On the worker: a copy of the project.
+        [base, catalog, services, requests = std::move(requests), report, self, live, staleIsError, done, commitLabel,
+         stepFormat](const std::atomic<bool>& cancelled) -> BridgeJob::Finish {
+            // On the worker: a copy of the project, every request on it in turn.
             EditSession scratch(*base);
             command::EnginePolicy policy;
             policy.services = services;
             command::CommandEngine engine(scratch, *catalog, policy);
-            FindControl control(cancelled, report);
-            command::CommandResult result = engine.execute(request, &control);
-            const ProjectSnapshot after = scratch.snapshot();
-            const std::string label = scratch.undoLabel().value_or(std::string());
-            return [self, live, base, after, label, staleIsError, done, result = std::move(result)]() mutable {
+            const std::size_t count = requests.size();
+            std::vector<command::CommandResult> results;
+            ProjectSnapshot kept = scratch.snapshot(); // the copy after the last step that is kept
+            bool stopped = false;
+            for (std::size_t i = 0; i < count; ++i) {
+                // Cancel between steps (the first runs as a single job always did: its checkpoints say Cancelled).
+                if (i > 0 && cancelled.load()) {
+                    stopped = true;
+                    break;
+                }
+                std::function<void(QString, double)> stepReport = report;
+                if (count > 1) {
+                    // "Short 2 of 6: <checkpoint>", progress over the whole batch.
+                    const QString prefix = stepFormat.arg(i + 1).arg(count);
+                    const double stepStart = static_cast<double>(i) / static_cast<double>(count);
+                    report(prefix, stepStart);
+                    stepReport = [report, prefix, stepStart, count](QString text, double progress) {
+                        report(text.isEmpty() ? prefix : prefix + QStringLiteral(": ") + text,
+                               progress < 0 ? stepStart : stepStart + progress / static_cast<double>(count));
+                    };
+                }
+                FindControl control(cancelled, stepReport);
+                command::CommandResult result = engine.execute(requests[i], &control);
+                if (count > 1 && cancelled.load()) {
+                    // Cancelled while this step ran: the Short being made is dropped, the ones before are kept.
+                    results.push_back(refused(command::ErrorCode::Cancelled, "cancelled"));
+                    stopped = true;
+                    break;
+                }
+                const bool cancelledHere = !result.ok() && result.error->code == command::ErrorCode::Cancelled;
+                if (result.ok())
+                    kept = scratch.snapshot();
+                results.push_back(std::move(result));
+                if (cancelledHere) {
+                    stopped = true;
+                    break;
+                }
+            }
+            const ProjectSnapshot after = kept;
+            const std::string label = !commitLabel.empty() ? commitLabel : scratch.undoLabel().value_or(std::string());
+            return [self, live, base, after, label, staleIsError, done, stopped, results = std::move(results)]() mutable {
                 // Back on the GUI thread: the copy's result is one undo step when nothing changed meanwhile; a project
                 // that changed is never edited behind the user's edits.
                 bool stale = false;
-                if (result.ok() && after.get() != base.get()) {
+                const bool anyOk = std::ranges::any_of(results, [](const command::CommandResult& r) { return r.ok(); });
+                const auto refuseAll = [&](command::ErrorCode code, const std::string& message) {
+                    for (command::CommandResult& r : results) {
+                        if (r.ok())
+                            r = refused(code, message);
+                    }
+                };
+                if (anyOk && after.get() != base.get()) {
                     if (!live) {
-                        result = refused(command::ErrorCode::InvalidRequest, "the project was closed");
+                        refuseAll(command::ErrorCode::InvalidRequest, "the project was closed");
                     } else if (live->snapshot().get() != base.get()) {
                         stale = true;
                         if (staleIsError)
-                            result = refused(command::ErrorCode::StaleRevision,
-                                             QCoreApplication::translate("wabcut::app::HighlightsBridge",
-                                                                         "The project changed while this ran. Run it again.")
-                                                 .toStdString());
+                            refuseAll(command::ErrorCode::StaleRevision,
+                                      QCoreApplication::translate("wabcut::app::HighlightsBridge",
+                                                                  "The project changed while this ran. Run it again.")
+                                          .toStdString());
                     } else {
                         // done() reads the new markers itself (with the result's signals), once.
                         if (self)
@@ -583,14 +704,14 @@ QString HighlightsBridge::runJob(const QString& kind, const QString& startText, 
                         if (self)
                             self->m_committing = false;
                         if (!committed)
-                            result = refused(command::ErrorCode::EditRejected, committed.error().message);
+                            refuseAll(command::ErrorCode::EditRejected, committed.error().message);
                     }
                 }
                 if (!self)
                     return;
                 self->setJob(QString(), QString(), -1.0);
                 if (done)
-                    done(result, stale);
+                    done(results, stale, stopped);
                 self->refreshFromMarkers();
             };
         },
@@ -797,9 +918,74 @@ void HighlightsBridge::refreshFromMarkers(bool force) {
 
     // The chosen and the previewed moment, by their ranges (ranks follow the scores).
     const Moment* chosen = findMoment(m_selectedRank);
-    const std::optional<ReviewKey> chosenKey = chosen ? std::optional(keyOf(*chosen)) : std::nullopt;
+    std::optional<ReviewKey> chosenKey = chosen ? std::optional(keyOf(*chosen)) : std::nullopt;
     const Moment* previewed = findMoment(m_previewRank);
-    const std::optional<ReviewKey> previewKey = previewed ? std::optional(keyOf(*previewed)) : std::nullopt;
+    std::optional<ReviewKey> previewKey = previewed ? std::optional(keyOf(*previewed)) : std::nullopt;
+
+    // Fix round 1: a ripple edit (Ripple Sequence Markers, on by default in 0.4; dead-time removal; instant replay)
+    // moves highlight markers. Their accept / reject, and the chosen and previewed moment, go with them: a marker that
+    // is no longer where it was is the new one that equals it in all but its start, length and peak (nearest first).
+    if (target == m_sequence && !m_listedMarkers.empty()) {
+        const auto keyAt = [&](const Marker& m) { return ReviewKey{target.value, m.start.value, m.end().value}; };
+        const auto sameMarker = [](const Marker& a, const Marker& b) {
+            if (a.name != b.name || a.comment != b.comment || a.colorIndex != b.colorIndex || a.type != b.type ||
+                a.url != b.url || a.target != b.target || !a.highlight || !b.highlight)
+                return false;
+            const MarkerHighlight& x = *a.highlight;
+            const MarkerHighlight& y = *b.highlight;
+            return x.score == y.score && x.confidence == y.confidence && x.reasons == y.reasons && x.source == y.source;
+        };
+        // Still there: the same marker over the same range.
+        const auto stays = [&](const std::vector<Marker>& in, const Marker& m) {
+            return std::ranges::any_of(in, [&](const Marker& o) {
+                return o.start == m.start && o.duration == m.duration && sameMarker(o, m);
+            });
+        };
+        std::vector<const Marker*> arrived;
+        for (const Marker& m : markers) {
+            if (!stays(m_listedMarkers, m))
+                arrived.push_back(&m);
+        }
+        std::vector<std::pair<ReviewKey, ReviewKey>> moves; // from, to
+        for (const Marker& old : m_listedMarkers) {
+            if (arrived.empty())
+                break;
+            if (stays(markers, old))
+                continue;
+            auto best = arrived.end();
+            for (auto it = arrived.begin(); it != arrived.end(); ++it) {
+                if (sameMarker(old, **it) &&
+                    (best == arrived.end() ||
+                     std::llabs((*it)->start.value - old.start.value) < std::llabs((*best)->start.value - old.start.value)))
+                    best = it;
+            }
+            if (best == arrived.end())
+                continue;
+            moves.emplace_back(keyAt(old), keyAt(**best));
+            arrived.erase(best);
+        }
+        // All taken out first, then put back: a marker may land where another one was.
+        std::vector<std::pair<ReviewKey, Review>> carried;
+        for (const auto& [from, to] : moves) {
+            if (const auto r = m_reviews.find(from); r != m_reviews.end()) {
+                carried.emplace_back(to, r->second);
+                m_reviews.erase(r);
+            }
+        }
+        for (const auto& [to, review] : carried)
+            m_reviews[to] = review;
+        const auto follow = [&](const std::optional<ReviewKey>& key) {
+            if (key) {
+                for (const auto& [from, to] : moves) {
+                    if (from == *key)
+                        return std::optional(to);
+                }
+            }
+            return key;
+        };
+        chosenKey = follow(chosenKey);
+        previewKey = follow(previewKey);
+    }
 
     m_sequence = target;
     m_listedMarkers = markers;
@@ -1124,6 +1310,115 @@ QString HighlightsBridge::makeShort(int rank, const QVariantMap& options) {
     if (!error.isEmpty())
         setMessage(error);
     return error;
+}
+
+// --- 0.4: Shorts of every chosen moment, and their exports ---------------------------------------------------------------
+
+QString HighlightsBridge::makeShorts(const QVariantMap& options) {
+    if (!shortAvailable())
+        return tr("Shorts from highlights arrive with the next engine update");
+    // The reel's rule: the accepted moments, else every moment not rejected; in time order.
+    const bool anyAccepted = acceptedCount() > 0;
+    std::vector<const Moment*> chosen;
+    for (const Moment& m : m_moments) {
+        if (anyAccepted ? m.review == Review::Accepted : m.review != Review::Rejected)
+            chosen.push_back(&m);
+    }
+    std::stable_sort(chosen.begin(), chosen.end(), [](const Moment* a, const Moment* b) { return a->start < b->start; });
+    if (chosen.empty()) {
+        const QString why = tr("Accept the moments to make Shorts of first");
+        setMessage(why);
+        return why;
+    }
+    std::vector<command::CommandRequest> requests;
+    QStringList titles; // "#4 Triple kill", per request
+    for (const Moment* m : chosen) {
+        command::CommandRequest request;
+        request.command = "highlights.toShort";
+        request.params = toJson(shortParams(m->rank, options));
+        requests.push_back(std::move(request));
+        titles << (m->title.isEmpty() ? QStringLiteral("#%1").arg(m->rank) : QStringLiteral("#%1 %2").arg(m->rank).arg(m->title));
+    }
+    stopPreview();
+    const int total = static_cast<int>(requests.size());
+    QPointer<HighlightsBridge> self(this);
+    //: The undo step of Highlights' Make Shorts
+    const QString label = tr("Make Highlight Shorts");
+    const QString error = runJobs(
+        QStringLiteral("shorts"), tr("Making %n Short(s)", "", total), std::move(requests), label, true,
+        [self, total, titles](const std::vector<command::CommandResult>& results, bool, bool cancelled) {
+            if (!self)
+                return;
+            std::vector<SequenceId> made;
+            QStringList names;
+            QStringList problems;
+            const ProjectSnapshot snap = self->m_controller ? self->m_controller->snapshot() : ProjectSnapshot{};
+            for (std::size_t i = 0; i < results.size(); ++i) {
+                const command::CommandResult& r = results[i];
+                if (!r.ok()) {
+                    if (r.error->code == command::ErrorCode::StaleRevision) {
+                        // Nothing was committed: the project changed meanwhile.
+                        self->setMessage(errorText(r));
+                        return;
+                    }
+                    if (r.error->code != command::ErrorCode::Cancelled && static_cast<qsizetype>(i) < titles.size())
+                        problems << QStringLiteral("%1: %2").arg(titles[static_cast<qsizetype>(i)], errorText(r));
+                    continue;
+                }
+                std::uint64_t created = r.createdIds.empty() ? 0 : r.createdIds.front();
+                if (created == 0 && r.data.contains("sequence") && r.data["sequence"].is_number_unsigned())
+                    created = r.data["sequence"].get<std::uint64_t>();
+                if (created == 0)
+                    continue;
+                made.push_back(SequenceId{created});
+                QString name = str(r.data, "name");
+                if (const Sequence* seq = snap ? snap->findSequence(SequenceId{created}) : nullptr; name.isEmpty() && seq)
+                    name = QString::fromStdString(seq->name);
+                names << name;
+            }
+            self->m_madeShorts = made;
+            emit self->madeShortsChanged();
+            QStringList lines;
+            lines << (made.empty() ? tr("No Short was made.")
+                                   : tr("Made %n Short(s): %1", "", static_cast<int>(made.size())).arg(names.join(QStringLiteral(", "))));
+            if (cancelled)
+                lines << tr("Cancelled after %1 of %2.").arg(made.size()).arg(total);
+            lines << problems;
+            self->setMessage(lines.join(QLatin1Char('\n')));
+        });
+    if (!error.isEmpty())
+        setMessage(error);
+    return error;
+}
+
+int HighlightsBridge::madeShortsCount() const {
+    const ProjectSnapshot snap = m_controller ? m_controller->snapshot() : ProjectSnapshot{};
+    if (!snap)
+        return 0;
+    return static_cast<int>(std::ranges::count_if(m_madeShorts, [&](SequenceId id) { return snap->findSequence(id) != nullptr; }));
+}
+
+void HighlightsBridge::setQueueExport(
+    std::function<QString(const QString& sequenceKey, const QString& presetId, const QVariantMap& overrides)> queue) {
+    m_queueExport = std::move(queue);
+}
+
+int HighlightsBridge::exportShorts(bool hevc) {
+    if (!m_queueExport || !m_controller)
+        return 0;
+    QVariantMap overrides;
+    if (hevc)
+        overrides.insert(QStringLiteral("videoCodec"), QStringLiteral("hevc"));
+    const ProjectSnapshot snap = m_controller->snapshot();
+    int queued = 0;
+    for (const SequenceId id : m_madeShorts) {
+        if (!snap || !snap->findSequence(id))
+            continue; // undone or deleted since
+        if (!m_queueExport(sequenceKey(id), QStringLiteral("vertical-1080x1920"), overrides).isEmpty())
+            ++queued;
+    }
+    setMessage(tr("Queued %n export(s)", "", queued));
+    return queued;
 }
 
 } // namespace wabcut::app

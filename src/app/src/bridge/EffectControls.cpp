@@ -6,6 +6,7 @@
 #include "ProjectController.h"
 
 #include <wabcut/model/Animations.h>
+#include <wabcut/model/Clipboard.h>
 #include <wabcut/model/EditOps.h>
 #include <wabcut/model/TitleOps.h>
 
@@ -136,8 +137,17 @@ bool EffectControlsModel::Row::sameData(const Row& o) const {
         && keyAtPlayhead == o.keyAtPlayhead && hasPrev == o.hasPrev && hasNext == o.hasNext
         && effectEnabled == o.effectEnabled && collapsed == o.collapsed && removable == o.removable
         && movable == o.movable && resettable == o.resettable && known == o.known && stackIndex == o.stackIndex
-        && keys == o.keys && options == o.options && graphOpen == o.graphOpen && graph == o.graph;
+        && keys == o.keys && options == o.options && graphOpen == o.graphOpen && graph == o.graph
+        && sectionSelected == o.sectionSelected;
 }
+
+/// 0.4: what Copy / Cut put on the effects clipboard - a snapshot of the shown video and audio clips (their sections
+/// as they were) and which of their attributes were selected, for pasteAttributes onto other clips.
+struct EffectControlsModel::EffectsClipboard {
+    std::optional<Clip> video, audio;
+    AttributeSet videoAttributes, audioAttributes;
+    int count = 0; ///< sections copied
+};
 
 EffectControlsModel::EffectControlsModel(ProjectController* controller)
     : QAbstractListModel(controller), m_controller(controller) {
@@ -145,6 +155,8 @@ EffectControlsModel::EffectControlsModel(ProjectController* controller)
     connect(controller, &ProjectController::selectionChanged, this, &EffectControlsModel::refresh);
     connect(controller, &ProjectController::selectedTransitionChanged, this, &EffectControlsModel::refresh);
     connect(controller, &ProjectController::playheadChanged, this, &EffectControlsModel::refresh);
+    // 0.4: a clip copy after an effects copy is the newest copy: Paste pastes clips again.
+    connect(controller, &ProjectController::clipboardChanged, this, [this] { setEffectsPending(false); });
 }
 
 int EffectControlsModel::rowCount(const QModelIndex& parent) const {
@@ -169,7 +181,7 @@ QHash<int, QByteArray> EffectControlsModel::roleNames() const {
         {StackKindRole, "stackKind"}, {TextRole, "text"},
         {OptionsRole, "options"},     {DescriptionRole, "description"},
         {KnownRole, "known"},         {GraphOpenRole, "graphOpen"},
-        {GraphRole, "graph"},
+        {GraphRole, "graph"},         {SectionSelectedRole, "sectionSelected"},
     };
 }
 
@@ -211,6 +223,7 @@ QVariant EffectControlsModel::data(const QModelIndex& index, int role) const {
     case KnownRole: return r.known;
     case GraphOpenRole: return r.graphOpen;
     case GraphRole: return r.graph;
+    case SectionSelectedRole: return r.sectionSelected;
     default: return {};
     }
 }
@@ -492,6 +505,7 @@ void EffectControlsModel::addClipSections(std::vector<Row>& rows, const Clip& cl
         h.collapsed = m_collapsed.contains(section);
         h.resettable = true;
         h.clip = clip.id;
+        h.sectionSelected = m_selectedSections.contains(section);
         rows.push_back(std::move(h));
         return rows.back();
     };
@@ -694,7 +708,9 @@ std::vector<EffectControlsModel::Row> EffectControlsModel::buildRows() {
                 mode = QStringLiteral("clip");
                 const Clip& p = primaryLoc->clip();
                 title = QString::fromStdString(p.name());
-                subtitle = m_controller->formatTimecode(p.start()) + QStringLiteral(" → ") + m_controller->formatTimecode(p.end());
+                // 0.4: "start → end · duration" (the timeline's clip tooltip shows the same facts).
+                subtitle = m_controller->formatTimecode(p.start()) + QStringLiteral(" → ") + m_controller->formatTimecode(p.end())
+                         + QStringLiteral(" · ") + m_controller->formatTimecode(p.end() - p.start());
                 colorIndex = p.colorIndex;
                 if (const auto pos = seq->trackPosition(primaryLoc->track->id))
                     trackName = (pos->kind == TrackKind::Video ? QStringLiteral("V") : QStringLiteral("A"))
@@ -836,10 +852,31 @@ void EffectControlsModel::refresh() {
     const bool selectionChanged = kept.size() != m_selectedKeys.size();
     if (selectionChanged)
         m_selectedKeys = std::move(kept);
+    // 0.4: selected sections that are no longer shown (removed, another primary clip, a transition) are dropped.
+    QStringList sections;
+    if (m_mode == QLatin1String("clip") && m_controller->primaryClip() == m_sectionsOf) {
+        for (const Row& r : rows) {
+            if (r.kind == QLatin1String("header") && r.sectionKind != QLatin1String("transition")
+                && m_selectedSections.contains(r.section))
+                sections << r.section;
+        }
+    }
+    const bool sectionsChanged = sections != m_selectedSections;
+    if (sectionsChanged) {
+        m_selectedSections = sections;
+        if (sections.isEmpty())
+            m_sectionAnchor.clear();
+        for (Row& r : rows) {
+            if (r.kind == QLatin1String("header"))
+                r.sectionSelected = sections.contains(r.section);
+        }
+    }
     applyRows(std::move(rows));
     m_refreshing = false;
     if (selectionChanged)
         emit keySelectionChanged();
+    if (sectionsChanged)
+        emit sectionSelectionChanged();
 }
 
 void EffectControlsModel::setNotice(const QString& notice) {
@@ -1030,6 +1067,36 @@ void EffectControlsModel::removeSection(const QString& section) {
     });
 }
 
+namespace {
+
+/// The intrinsic parameters a fixed section shows (and Reset / Remove reset): Transform, Opacity or Audio.
+std::optional<PropertyRole> fixedSectionRole(const QString& section) {
+    if (section == QLatin1String("motion"))
+        return PropertyRole::Motion;
+    if (section == QLatin1String("opacity"))
+        return PropertyRole::Opacity;
+    if (section == QLatin1String("audio"))
+        return PropertyRole::Audio;
+    return std::nullopt;
+}
+
+using EditStep = std::function<edit::EditOutcome(const ProjectState&)>;
+
+/// Steps that set every intrinsic parameter of a fixed section to its default constant (keys deleted). From the
+/// registry, not the rows, so a collapsed section (which shows no rows) resets too.
+void addFixedResetSteps(std::vector<EditStep>& steps, SequenceId seq, ClipId clip, PropertyRole role) {
+    for (const UiParameter& p : uiParameters()) {
+        const ParameterInfo& info = parameterInfo(p.id);
+        if (info.role != role)
+            continue;
+        const edit::ParamRef ref = edit::ParamRef::of(p.id);
+        const double value = info.defaultValue;
+        steps.push_back([=](const ProjectState& state) { return edit::setParameter(state, seq, clip, ref, ParamValue(value)); });
+    }
+}
+
+} // namespace
+
 void EffectControlsModel::resetSection(const QString& section) {
     if (!m_controller)
         return;
@@ -1043,15 +1110,31 @@ void EffectControlsModel::resetSection(const QString& section) {
         });
         return;
     }
-    // Every parameter row of the section back to its default constant (keys deleted), as one step.
-    std::vector<std::function<edit::EditOutcome(const ProjectState&)>> steps;
-    for (const Row& r : m_rows) {
-        if (r.section != section || !r.clip || !isValueRow(r))
-            continue;
-        const ClipId clip = r.clip;
-        const edit::ParamRef ref = r.ref;
-        const double model = r.range.toModel(r.defaultValue, r.frame);
-        steps.push_back([=](const ProjectState& state) { return edit::setParameter(state, seq, clip, ref, ParamValue(model)); });
+    // Every parameter of the section back to its default constant (keys deleted), as one step. From the registry and
+    // the effect's descriptor (fix round 1: not the rows, so the header menu's Reset works on a collapsed section).
+    const Row* h = findRow(QStringLiteral("h:") + section);
+    const SequencePtr sequence = m_controller->currentSequence();
+    if (!h || !h->clip || !sequence)
+        return;
+    const ClipId clip = h->clip;
+    std::vector<EditStep> steps;
+    if (const auto role = fixedSectionRole(section)) {
+        addFixedResetSteps(steps, seq, clip, *role);
+    } else if (const auto effect = parseEffectKey(section)) {
+        const auto loc = sequence->findClip(clip);
+        if (!loc)
+            return;
+        const EffectStack& stack = loc->clip().effects();
+        const auto it = std::find_if(stack.begin(), stack.end(), [&](const EffectInstance& e) { return e.id == *effect; });
+        const EffectDescriptor* d = it != stack.end() ? descriptor(it->effect) : nullptr;
+        if (!d)
+            return;
+        const EffectInstanceId id = *effect;
+        for (const EffectParamInfo& p : d->params) {
+            const edit::ParamRef ref = edit::ParamRef::ofEffect(id, std::string(p.key));
+            const double value = p.defaultValue;
+            steps.push_back([=](const ProjectState& state) { return edit::setParameter(state, seq, clip, ref, ParamValue(value)); });
+        }
     }
     if (steps.empty())
         return;
@@ -1069,6 +1152,372 @@ void EffectControlsModel::moveEffect(const QString& section, int stackIndex) {
     m_controller->applyEditFn(LABEL("Move Effect"), [&](const ProjectState& state) {
         return edit::moveEffect(state, seq, clip, *effect, index);
     });
+}
+
+// ---- Section selection and the effects clipboard (0.4) -----------------------------------------------
+
+QStringList EffectControlsModel::selectableSections() const {
+    QStringList out;
+    if (m_mode != QLatin1String("clip"))
+        return out;
+    for (const Row& r : m_rows) {
+        if (r.kind == QLatin1String("header") && r.sectionKind != QLatin1String("transition") && r.clip.isValid())
+            out << r.section;
+    }
+    return out;
+}
+
+void EffectControlsModel::setSectionSelection(QStringList sections, const QString& anchor) {
+    // Panel order, each once, only sections the panel shows.
+    const QStringList shown = selectableSections();
+    QStringList ordered;
+    for (const QString& s : shown) {
+        if (sections.contains(s))
+            ordered << s;
+    }
+    m_sectionAnchor = ordered.isEmpty() ? QString() : anchor;
+    if (ordered == m_selectedSections)
+        return;
+    m_selectedSections = ordered;
+    m_sectionsOf = ordered.isEmpty() || !m_controller ? ClipId{} : m_controller->primaryClip();
+    for (std::size_t i = 0; i < m_rows.size(); ++i) {
+        Row& r = m_rows[i];
+        if (r.kind != QLatin1String("header"))
+            continue;
+        const bool selected = ordered.contains(r.section);
+        if (r.sectionSelected != selected) {
+            r.sectionSelected = selected;
+            const QModelIndex at = index(static_cast<int>(i));
+            emit dataChanged(at, at, {SectionSelectedRole});
+        }
+    }
+    if (!ordered.isEmpty() && !m_selectedKeys.empty()) {
+        // Selecting a section clears the selected keyframes (and the other way round: pressKey).
+        m_selectedKeys.clear();
+        refresh();
+        emit keySelectionChanged();
+    }
+    emit sectionSelectionChanged();
+}
+
+void EffectControlsModel::selectSection(const QString& section, int modifiers) {
+    const QStringList shown = selectableSections();
+    if (!shown.contains(section))
+        return;
+    const bool toggle = mods(modifiers).testAnyFlags(Qt::ControlModifier | Qt::MetaModifier);
+    const bool range = mods(modifiers).testFlag(Qt::ShiftModifier);
+    if (range && !m_sectionAnchor.isEmpty() && shown.contains(m_sectionAnchor)) {
+        // Shift: from the anchor to this header in panel order (Ctrl+Shift adds the range to the selection).
+        const qsizetype a = shown.indexOf(m_sectionAnchor);
+        const qsizetype b = shown.indexOf(section);
+        QStringList next = toggle ? m_selectedSections : QStringList();
+        for (qsizetype i = std::min(a, b); i <= std::max(a, b); ++i) {
+            if (!next.contains(shown[i]))
+                next << shown[i];
+        }
+        setSectionSelection(next, m_sectionAnchor);
+        return;
+    }
+    if (toggle) {
+        QStringList next = m_selectedSections;
+        if (!next.removeOne(section))
+            next << section;
+        setSectionSelection(next, section);
+        return;
+    }
+    setSectionSelection({section}, section);
+}
+
+void EffectControlsModel::selectAllSections() {
+    const QStringList shown = selectableSections();
+    setSectionSelection(shown, shown.isEmpty() ? QString() : shown.front());
+}
+
+void EffectControlsModel::clearSectionSelection() {
+    setSectionSelection({}, {});
+}
+
+std::vector<std::function<edit::EditOutcome(const ProjectState&)>>
+EffectControlsModel::removeSteps(const QStringList& sections, int* removed, int* reset) const {
+    std::vector<std::function<edit::EditOutcome(const ProjectState&)>> steps;
+    int removedCount = 0, resetCount = 0;
+    if (m_controller) {
+        const SequenceId seq = m_controller->currentSequenceId();
+        for (const QString& section : sections) {
+            const Row* h = findRow(QStringLiteral("h:") + section);
+            if (!h || !h->clip || h->sectionKind == QLatin1String("transition"))
+                continue;
+            const ClipId clip = h->clip;
+            if (const auto role = fixedSectionRole(section)) {
+                // Reset from the registry (not the rows), so a collapsed section resets too; keys are deleted.
+                addFixedResetSteps(steps, seq, clip, *role);
+                ++resetCount;
+            } else if (const auto effect = parseEffectKey(section)) {
+                const EffectInstanceId id = *effect;
+                steps.push_back([=](const ProjectState& state) { return edit::removeEffect(state, seq, clip, id); });
+                ++removedCount;
+            }
+        }
+    }
+    if (removed)
+        *removed = removedCount;
+    if (reset)
+        *reset = resetCount;
+    return steps;
+}
+
+int EffectControlsModel::removeSelectedSections() {
+    if (!m_controller || m_selectedSections.isEmpty())
+        return 0;
+    int removed = 0, reset = 0;
+    const auto steps = removeSteps(m_selectedSections, &removed, &reset);
+    if (steps.empty())
+        return 0;
+    // Premiere: "Remove Effect" for one, "Remove Effects" for several; a fixed section alone is reset.
+    const char* label = removed == 0 ? LABEL("Reset Effect")
+                      : removed + reset == 1 ? LABEL("Remove Effect")
+                                             : LABEL("Remove Effects");
+    setNotice({});
+    if (!m_controller->applyEditFn(label, [&](const ProjectState& state) { return chain(state, steps); })) {
+        setNotice(m_controller->lastError());
+        return 0;
+    }
+    clearSectionSelection();
+    return removed + reset;
+}
+
+std::shared_ptr<const EffectControlsModel::EffectsClipboard> EffectControlsModel::snapshotSections() const {
+    const SequencePtr seq = m_controller ? m_controller->currentSequence() : nullptr;
+    if (!seq || m_selectedSections.isEmpty())
+        return nullptr;
+    auto board = std::make_shared<EffectsClipboard>();
+    for (const QString& section : m_selectedSections) {
+        const Row* h = findRow(QStringLiteral("h:") + section);
+        const auto loc = h && h->clip ? seq->findClip(h->clip) : std::nullopt;
+        if (!loc)
+            continue;
+        const Clip& clip = loc->clip();
+        const bool video = clip.stream.kind == StreamKind::Video;
+        std::optional<Clip>& snapshot = video ? board->video : board->audio;
+        AttributeSet& attributes = video ? board->videoAttributes : board->audioAttributes;
+        if (!snapshot)
+            snapshot = clip;
+        if (section == QLatin1String("motion")) {
+            attributes.motion = true;
+        } else if (section == QLatin1String("opacity")) {
+            attributes.opacity = true;
+        } else if (section == QLatin1String("audio")) {
+            attributes.volume = true;
+            attributes.panner = true;
+        } else if (h->stackIndex >= 0) {
+            attributes.effects.push_back(static_cast<std::size_t>(h->stackIndex));
+        } else {
+            continue;
+        }
+        ++board->count;
+    }
+    if (board->count == 0)
+        return nullptr;
+    return board;
+}
+
+void EffectControlsModel::setEffectsPending(bool pending) {
+    const bool before = effectsPastePending();
+    m_effectsPending = pending && m_effects != nullptr;
+    if (effectsPastePending() != before)
+        emit effectsClipboardChanged();
+}
+
+int EffectControlsModel::copySelectedSections(bool cut) {
+    if (!m_controller || m_selectedSections.isEmpty())
+        return 0;
+    auto board = snapshotSections();
+    if (!board)
+        return 0;
+    const int count = board->count;
+    if (cut) {
+        int removed = 0, reset = 0;
+        const auto steps = removeSteps(m_selectedSections, &removed, &reset);
+        if (!steps.empty()
+            && !m_controller->applyEditFn(LABEL("Cut Effects"), [&](const ProjectState& state) { return chain(state, steps); })) {
+            setNotice(m_controller->lastError());
+            return 0;
+        }
+    }
+    m_effects = std::move(board);
+    m_effectsPending = true;
+    emit effectsClipboardChanged(); // a new copy (even when one was already pending)
+    if (cut)
+        clearSectionSelection();
+    return count;
+}
+
+QString EffectControlsModel::pasteEffects() {
+    if (!m_controller)
+        return tx("No project");
+    const auto notify = [&](const QString& text) {
+        emit m_controller->clipboardNotice(text);
+        return text;
+    };
+    if (!m_effects)
+        return notify(tx("Copy effects in Effect Controls first"));
+    const SequencePtr seq = m_controller->currentSequence();
+    if (!seq)
+        return notify(tx("No sequence"));
+    std::vector<ClipId> selection;
+    for (const ClipId id : m_controller->selection()) {
+        if (seq->findClip(id))
+            selection.push_back(id);
+    }
+    if (selection.empty())
+        return notify(tx("Select the clips to paste the effects onto"));
+
+    // Each part goes on the selected clips of its kind (a clip of the other kind stands for its linked partner);
+    // clips on locked tracks are left out.
+    int lockedSkipped = 0;
+    const auto targetsOf = [&](StreamKind kind) {
+        std::vector<ClipId> out;
+        for (const ClipId id : clipsOfKind(*seq, selection, kind)) {
+            const auto loc = seq->findClip(id);
+            if (loc && loc->track->locked)
+                ++lockedSkipped;
+            else if (loc)
+                out.push_back(id);
+        }
+        return out;
+    };
+    const EffectsClipboard& board = *m_effects;
+    const std::vector<ClipId> videoTargets =
+        board.video && !board.videoAttributes.empty() ? targetsOf(StreamKind::Video) : std::vector<ClipId>{};
+    const std::vector<ClipId> audioTargets =
+        board.audio && !board.audioAttributes.empty() ? targetsOf(StreamKind::Audio) : std::vector<ClipId>{};
+    const QString lockedNote = lockedSkipped == 0 ? QString()
+                             : lockedSkipped == 1 ? tx("1 clip on a locked track was skipped")
+                                                  : tx("%1 clips on locked tracks were skipped").arg(lockedSkipped);
+    if (videoTargets.empty() && audioTargets.empty()) {
+        if (!lockedNote.isEmpty())
+            return notify(lockedNote);
+        return notify(board.video ? tx("Select video clips to paste the effects onto")
+                                  : tx("Select audio clips to paste the effects onto"));
+    }
+
+    const SequenceId seqId = seq->id;
+    std::set<ClipId> changed;
+    const bool ok = m_controller->applyEditFn(LABEL("Paste Effects"), [&](const ProjectState& state) -> edit::EditOutcome {
+        changed.clear();
+        std::optional<edit::EditResult> last;
+        const auto paste = [&](const Clip& source, const std::vector<ClipId>& targets, const AttributeSet& attributes)
+            -> std::optional<Error> {
+            if (targets.empty())
+                return std::nullopt;
+            auto r = pasteAttributes(last ? last->state : state, seqId, source, targets, attributes, false);
+            if (!r)
+                return r.error();
+            for (const AttributeChange& c : r->changes) {
+                if (!c.applied.empty())
+                    changed.insert(c.clip);
+            }
+            last = std::move(r->edit);
+            return std::nullopt;
+        };
+        if (board.video) {
+            if (auto error = paste(*board.video, videoTargets, board.videoAttributes))
+                return std::unexpected(*error);
+        }
+        if (board.audio) {
+            if (auto error = paste(*board.audio, audioTargets, board.audioAttributes))
+                return std::unexpected(*error);
+        }
+        if (!last)
+            return std::unexpected(Error{ErrorCode::InvalidArgument, "nothing to paste"});
+        return std::move(*last);
+    });
+    if (!ok)
+        return notify(m_controller->lastError());
+    const int clips = static_cast<int>(changed.size());
+    const QString effects = board.count == 1 ? tx("1 effect") : tx("%1 effects").arg(board.count);
+    QString text = clips == 1 ? tx("Pasted %1 to 1 clip").arg(effects) : tx("Pasted %1 to %2 clips").arg(effects).arg(clips);
+    if (!lockedNote.isEmpty())
+        text += QStringLiteral(" · ") + lockedNote;
+    emit m_controller->clipboardNotice(text);
+    return {};
+}
+
+bool EffectControlsModel::canMoveSection(const QString& section, int delta) const {
+    const Row* h = findRow(QStringLiteral("h:") + section);
+    if (!h || !h->movable || h->stackIndex < 0 || delta == 0)
+        return false;
+    int count = 0;
+    for (const Row& r : m_rows) {
+        if (r.kind == QLatin1String("header") && r.stackKind == h->stackKind && r.clip == h->clip && r.stackIndex >= 0)
+            ++count;
+    }
+    const int to = h->stackIndex + delta;
+    return to >= 0 && to < count;
+}
+
+void EffectControlsModel::moveSectionBy(const QString& section, int delta) {
+    if (!canMoveSection(section, delta))
+        return;
+    moveEffect(section, findRow(QStringLiteral("h:") + section)->stackIndex + delta);
+}
+
+bool EffectControlsModel::handlesCommand(const QString& id) {
+    return id == QLatin1String("effectControls.removeSelectedEffect");
+}
+
+bool EffectControlsModel::runCommand(const QString& commandId) {
+    if (!m_controller)
+        return false;
+    const bool sections = !m_selectedSections.isEmpty();
+    if (commandId == QLatin1String("effectControls.removeSelectedEffect")) {
+        // Selected keys win (as the panel's Delete claim), then sections, then a shown transition.
+        if (!m_selectedKeys.empty())
+            deleteSelectedKeys();
+        else if (sections)
+            removeSelectedSections();
+        else if (m_mode == QLatin1String("transition"))
+            removeSection(QStringLiteral("transition"));
+        else
+            setNotice(tx("Select an effect first"));
+        return true;
+    }
+    if (commandId == QLatin1String("edit.clear")) {
+        if (!sections)
+            return false;
+        removeSelectedSections();
+        return true;
+    }
+    if (commandId == QLatin1String("edit.copy") || commandId == QLatin1String("edit.cut")) {
+        if (!sections)
+            return false;
+        copySelectedSections(commandId == QLatin1String("edit.cut"));
+        return true;
+    }
+    if (commandId == QLatin1String("edit.selectAll")) {
+        if (m_mode != QLatin1String("clip"))
+            return false;
+        selectAllSections();
+        return true;
+    }
+    if (commandId == QLatin1String("edit.deselectAll")) {
+        if (!sections)
+            return false;
+        clearSectionSelection();
+        return true;
+    }
+    return false;
+}
+
+bool EffectControlsModel::effectsPastePending() const {
+    return m_effects != nullptr && m_effectsPending;
+}
+
+bool EffectControlsModel::pasteEffectsIfPending() {
+    if (!effectsPastePending())
+        return false;
+    pasteEffects();
+    return true;
 }
 
 // ---- Adding effects ---------------------------------------------------------------------------------
@@ -1395,6 +1844,8 @@ bool EffectControlsModel::pressKey(const QString& rowKey, double x, double toler
     } else if (!add && !toggle) {
         m_selectedKeys.clear();
     }
+    if (hit && !m_selectedKeys.empty())
+        setSectionSelection({}, {}); // 0.4: selecting a keyframe clears the selected sections
     if (hit || before != m_selectedKeys.size()) {
         refresh();
         emit keySelectionChanged();
@@ -1422,6 +1873,8 @@ void EffectControlsModel::selectKeysInRange(const QStringList& rows, double x0, 
             }
         }
     }
+    if (!m_selectedKeys.empty())
+        setSectionSelection({}, {}); // 0.4: selecting keyframes clears the selected sections
     refresh();
     emit keySelectionChanged();
 }

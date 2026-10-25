@@ -17,6 +17,17 @@ Code: `src/app/qml/monitor/` (QML), the `Monitors` (`MonitorBridge`) and `Progra
   00:00:01:10), `2.` for two seconds, or an offset from where you are: `+15` goes 15 frames on, `-1:00` a second back.
   A hint above the field says where Enter goes; Esc (or a click elsewhere) cancels; a time Wabcut cannot read keeps
   the field open and says what it takes. The Source Monitor's timecode moves the source, in its own frames.
+- **Type on the numpad** (0.4, as in Premiere): with the Timeline, the Program Monitor or the Source Monitor focused, a
+  numpad digit, `+`, `-` or `.` opens that panel's timecode field with the key already typed: `+15` Enter moves 15
+  frames on, `1215` Enter goes to 00:00:12:15, Esc cancels and the focus goes back. The digits above the letters keep
+  their keymap commands, and a numpad key you bind in Keyboard Shortcuts runs its command instead. The Source Monitor's
+  field opens only with a source loaded.
+- **In to Out length** (0.4): with both sequence marks set, a raised pill right after the Program Monitor's timecode
+  shows the In to Out length, the Out frame included (In at 1:00 and Out on 3:12 read `00:00:02:13`), in the sequence's
+  time format. It stays when the monitor is narrow (the "/ duration" text goes first, then the readouts on the right:
+  the safe margins toggle, the zoom unless zoomed in, and last the playback resolution button; the wrench menu has Safe
+  Margins and Playback Resolution too) and follows I, O, X, the clears, undo and sequence switches. The Fit Clip dialog
+  reads the same length.
 - **Drop a clip on the Source Monitor**: drag a clip from the Library onto its picture to open it there (it joins the
   recent sources). Files dragged from File Explorer are imported first, as File > Import does, then the first one
   opens. Sequences cannot open in the Source Monitor.
@@ -67,6 +78,17 @@ clip needs a Crop effect (Effects > Transform > Crop).
   Playing from outside the range starts at its In. It is remembered per monitor.
 - **Play In to Out** (Ctrl+Shift+Space, now in the Program Monitor too) plays once from In and stops on the last marked
   frame, or loops with Loop on.
+- **Play Around** (Shift+K, 0.4) plays from the playhead minus the pre-roll to the playhead plus the post-roll once,
+  then puts the playhead back where it was (Settings > Timeline & editing > "Play around the edit", 2 s each by
+  default). With an edit point selected it is Trim's play-around, as in Premiere's trim mode; with the Source Monitor
+  focused it plays around the source position. Space, K, J, L or a seek stop it where it is. Loop is ignored.
+- **Play from Playhead to Out** (Ctrl+Space, 0.4) plays from the playhead to the Out mark (no Out: the end) and stops on
+  the last marked frame; at or past the Out it does nothing. With the Source Monitor focused it plays to the source's
+  Out. Loop is ignored. On macOS, Control+Space is the system's input-source switch when more than one input source is
+  on: change one of the two keys then.
+- **Slow shuttle** (Shift+J / Shift+L, 0.4): a press plays at 1/4x that way and keeps playing after you let go; the next
+  press the same way steps to 1/2x, then 1x. K, Space, J or L end or change it as usual. The speed pill shows the speed
+  (`▶ ¼×`). Premiere's first slow step is about 1/10x; Wabcut starts at its K+L slow speed.
 - Sound and picture wrap together: the audio engine's transport wraps (`TimelineAudioPlayer::setLoop`), the video
   scheduler decodes no further than the loop's end and drops what it queued past it.
 
@@ -123,8 +145,49 @@ In the Program Monitor:
   material by samples (docs/audio.md).
 
 All are off by default and remembered. Playback resolution (Auto, Full, 1/2, 1/4) and proxies are in the quality menu
-next to the zoom; Premiere's separate Paused Resolution and High Quality Playback have no counterpart yet (one
+next to the zoom and (0.4) in the wrench menu's **Playback Resolution**, as in Premiere; the quality button gives way
+on a narrow monitor. Premiere's separate Paused Resolution and High Quality Playback have no counterpart yet (one
 resolution serves both, and Full is the high quality setting).
+
+## Platform safe zones (Shorts, TikTok, Reels)
+
+On a vertical sequence (taller than wide), the Program Monitor's wrench > **Platform Safe Zones** shades where YouTube
+Shorts, TikTok or Instagram Reels put their own buttons and text over the video: the top bar, the right-hand action
+column and the bottom caption and description band, hatched on a light scrim with a label ("Shorts UI"). Every line is
+two-tone, dark under light, so the bands show on bright footage as well as on dark. Keep titles,
+faces and captions out of the shaded parts. Choose **Off** (the default), **YouTube Shorts**, **TikTok** or **Instagram
+Reels**; the choice is remembered. On landscape and square sequences nothing shows, and the menu says "Shown on vertical
+sequences". The bands are approximate public guides (fractions of the frame):
+
+| App | Top bar | Bottom band | Right column |
+|---|---|---|---|
+| YouTube Shorts | top 8 % | bottom 21 %, left 86 % of the width | right 14 %, from 45 % to 79 % down |
+| TikTok | top 7 % | bottom 20 %, left 86 % | right 14 %, from 40 % to 80 % down |
+| Instagram Reels | top 10 % | bottom 20 %, left 86 % | right 14 %, from 50 % to 80 % down |
+
+The Shorts builder's caption line (68 % down) sits above every bottom band. The overlay is in the monitor only (never in
+exports or Export Frame), takes no clicks, and hides while the Trim view or the multi-camera view shows. Premiere has no
+such overlay.
+
+Code: `src/app/qml/panels/PlatformSafeZoneOverlay.qml` (the bands table), `src/app/qml/monitor/MonitorSettingsMenu.qml`,
+`Preferences.platformSafeZone` (`monitor/platformSafeZone`).
+
+## Transport buttons
+
+Both monitors' button rows always fit their panel (0.4). When a monitor is too narrow, the least-used buttons hide first
+and a **···** button (More controls) at the row's end lists exactly the hidden ones, with the same icon, name, shortcut
+and action; Loop, Redact and Multi-Camera View show their check there. The order on screen never changes.
+
+- Program Monitor, always shown: Add Marker, Play, Lift, Extract, Record Voice-over. Then, as room allows: Mark In and
+  Mark Out, Go to In and Go to Out, the frame steps, Play In to Out, Loop, Export Frame, Multi-Camera View.
+- Source Monitor, always shown: Mark In, Mark Out, Play, Insert, Overwrite. Then: Go to In and Go to Out, Play In to
+  Out, the frame steps, Loop, Export Frame, Redact, Redactions (its list then opens from the ··· button), Settings (a
+  submenu in the ··· menu).
+
+Premiere's Button Editor (dragging buttons on and off the bar) is not in Wabcut yet.
+
+Code: `src/app/qml/monitor/TransportOverflowButton.qml`, the `transport` rows of `MonitorPanel.qml` and
+`SourceMonitorPanel.qml`.
 
 ## Export Frame
 
@@ -147,6 +210,10 @@ The camera button in both monitors, or Ctrl+Shift+E (Shift+E on macOS), opens **
 |---|---|---|---|
 | Loop | | | `monitor.loop` |
 | Play In to Out | Ctrl+Shift+Space | Ctrl+Shift+Space | `transport.playInToOut` |
+| Play Around (0.4) | Shift+K | Shift+K | `transport.playAround` |
+| Play from Playhead to Out (0.4) | Ctrl+Space | Ctrl+Space (Control) | `transport.playFromPlayheadToOut` |
+| Shuttle Slow Left / Right (0.4) | Shift+J / Shift+L | Shift+J / Shift+L | `transport.shuttleSlowBackward` / `transport.shuttleSlowForward` |
+| Type a timecode (0.4) | numpad digits, + , - , . | numpad digits, + , - , . | (no command: the focused panel's timecode) |
 | Toggle Full Screen | Ctrl+` | Ctrl+` | `monitor.toggleFullScreen` |
 | Enable Transmit | | | `monitor.enableTransmit` |
 | Show Rulers | Ctrl+R | Cmd+R | `programMonitor.showRulers` |

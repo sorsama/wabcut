@@ -1,9 +1,11 @@
-// Built-in graphic templates (C.16, BuiltinTemplates.h): the 12 gaming templates the app ships. The files under
-// src/model/templates/builtin are canonical and are what the authoring code (gaming_templates_author.cpp) makes; field
-// defaults are what the graphics show; responsive time keeps intros and outros; every template resolves render-ready,
-// takes Thai text in every text field, and follows the artwork rules. WABCUT_UPDATE_TEMPLATES=1 rewrites the files.
+// Built-in graphic templates (C.16, BuiltinTemplates.h): the 12 gaming templates and (0.4) the 5 essay and documentary
+// templates the app ships. The files under src/model/templates/builtin are canonical and are what the authoring code
+// (gaming_templates_author.cpp, essay_templates_author.cpp) makes; field defaults are what the graphics show; responsive
+// time keeps intros and outros; every template resolves render-ready, takes Thai text in every text field, and follows
+// the artwork rules (the essay pack takes the brand kit's colours and fonts). WABCUT_UPDATE_TEMPLATES=1 rewrites the files.
 
 #include "TimelineFixture.h"
+#include "essay_templates_author.h"
 #include "gaming_templates_author.h"
 
 #include <wabcut/model/BuiltinTemplates.h>
@@ -34,11 +36,27 @@ namespace fs = std::filesystem;
 
 namespace {
 
-const std::vector<std::string> kIds{
+const std::vector<std::string> kGamingIds{
     "wabcut.gaming.arrowCallout", "wabcut.gaming.chatBubble", "wabcut.gaming.circleCallout", "wabcut.gaming.countdown",
     "wabcut.gaming.emotePop",     "wabcut.gaming.endCard",    "wabcut.gaming.intro",         "wabcut.gaming.killStreak",
     "wabcut.gaming.lowerThird",   "wabcut.gaming.replay",     "wabcut.gaming.subscribe",     "wabcut.gaming.webcamFrame",
 };
+
+/// 0.4: the essay and documentary pack.
+const std::vector<std::string> kEssayIds{
+    "wabcut.essay.chapterCard", "wabcut.essay.location", "wabcut.essay.nameTitle", "wabcut.essay.quote", "wabcut.essay.source",
+};
+
+/// Every built-in in id order (essay before gaming: "e" < "g").
+const std::vector<std::string> kAllIds = [] {
+    std::vector<std::string> ids = kEssayIds;
+    ids.insert(ids.end(), kGamingIds.begin(), kGamingIds.end());
+    std::sort(ids.begin(), ids.end());
+    return ids;
+}();
+
+constexpr std::string_view kGamingPrefix = "wabcut.gaming.";
+constexpr std::string_view kEssayPrefix = "wabcut.essay.";
 
 /// "สวัสดีครับ เพื่อนๆ": 13 grapheme clusters; the fourth is "ดี" (do dek with sara ii).
 const std::string kThai = "\xE0\xB8\xAA\xE0\xB8\xA7\xE0\xB8\xB1\xE0\xB8\xAA\xE0\xB8\x94\xE0\xB8\xB5\xE0\xB8\x84\xE0\xB8\xA3"
@@ -322,16 +340,21 @@ std::string lowered(std::string s) {
     return s;
 }
 
-} // namespace
+/// The shipped built-ins whose id starts with `prefix`, in id order.
+std::vector<const GraphicTemplate*> builtinsWithPrefix(std::string_view prefix) {
+    std::vector<const GraphicTemplate*> out;
+    for (const GraphicTemplate& t : builtinTemplates()) {
+        if (std::string_view(t.id).starts_with(prefix)) {
+            out.push_back(&t);
+        }
+    }
+    return out;
+}
 
-// ---- The library ------------------------------------------------------------------------------------------------------
-
-TEST_CASE("The authored gaming templates are the shipped built-in files", "[model][templates][gaming]") {
-    std::vector<GraphicTemplate> authored;
-    REQUIRE_NOTHROW(authored = authorGamingTemplates());
-    REQUIRE(authored.size() == kIds.size());
+/// One pack's authored templates against the shipped files of its prefix; with WABCUT_UPDATE_TEMPLATES=1 it writes
+/// them instead and removes that pack's files that are no longer authored (other packs' files are left alone).
+void checkAuthored(const std::vector<GraphicTemplate>& authored, std::string_view prefix, const char* author) {
     if (updating()) {
-        // Regenerate the files: write every template, remove files of templates no longer authored.
         fs::create_directories(builtinFolder());
         std::set<std::string> names;
         for (const GraphicTemplate& t : authored) {
@@ -342,7 +365,8 @@ TEST_CASE("The authored gaming templates are the shipped built-in files", "[mode
             REQUIRE(out.good());
         }
         for (const fs::path& file : templateFiles()) {
-            if (!names.contains(file.filename().string())) {
+            const std::string name = file.filename().string();
+            if (name.starts_with(prefix) && !names.contains(name)) {
                 fs::remove(file);
             }
         }
@@ -355,25 +379,46 @@ TEST_CASE("The authored gaming templates are the shipped built-in files", "[mode
                                                     << "; rebuild to embed them");
         return;
     }
-    const std::vector<GraphicTemplate>& shipped = builtinTemplates();
-    INFO("The built-in files differ from tests/model/gaming_templates_author.cpp: run the model tests with "
+    const std::vector<const GraphicTemplate*> shipped = builtinsWithPrefix(prefix);
+    INFO("The built-in files differ from tests/model/" << author << ": run the model tests with "
          "WABCUT_UPDATE_TEMPLATES=1, then rebuild");
     REQUIRE(shipped.size() == authored.size());
     for (std::size_t i = 0; i < authored.size(); ++i) {
         INFO(authored[i].id);
-        CHECK(shipped[i] == authored[i]);
+        CHECK(*shipped[i] == authored[i]);
     }
 }
 
-TEST_CASE("The built-ins are the 12 gaming templates sorted by id", "[model][templates][gaming]") {
+} // namespace
+
+// ---- The library ------------------------------------------------------------------------------------------------------
+
+TEST_CASE("The authored gaming templates are the shipped built-in files", "[model][templates][gaming]") {
+    std::vector<GraphicTemplate> authored;
+    REQUIRE_NOTHROW(authored = authorGamingTemplates());
+    REQUIRE(authored.size() == kGamingIds.size());
+    checkAuthored(authored, kGamingPrefix, "gaming_templates_author.cpp");
+}
+
+TEST_CASE("The authored essay templates are the shipped built-in files", "[model][templates][essay]") {
+    std::vector<GraphicTemplate> authored;
+    REQUIRE_NOTHROW(authored = authorEssayTemplates());
+    REQUIRE(authored.size() == kEssayIds.size());
+    for (std::size_t i = 0; i < authored.size(); ++i) {
+        CHECK(authored[i].id == kEssayIds[i]);
+    }
+    checkAuthored(authored, kEssayPrefix, "essay_templates_author.cpp");
+}
+
+TEST_CASE("The built-ins are the gaming and essay templates sorted by id", "[model][templates][gaming][essay]") {
     const std::vector<GraphicTemplate>& all = builtinTemplates();
-    REQUIRE(all.size() == kIds.size());
+    REQUIRE(all.size() == kAllIds.size());
     for (std::size_t i = 0; i < all.size(); ++i) {
         const GraphicTemplate& t = all[i];
         INFO(t.id);
-        CHECK(t.id == kIds[i]);
+        CHECK(t.id == kAllIds[i]);
         CHECK_FALSE(templateProblem(t));
-        CHECK(templateCategory(t) == "gaming");
+        CHECK(templateCategory(t) == (std::string_view(t.id).starts_with(kEssayPrefix) ? "essay" : "gaming"));
         CHECK(findBuiltinTemplate(t.id) == &t);
         CHECK(t.graphic.width == 1920);
         CHECK(t.graphic.height == 1080);
@@ -390,17 +435,17 @@ TEST_CASE("The built-ins are the 12 gaming templates sorted by id", "[model][tem
     CHECK(&builtinTemplates() == &all);
 }
 
-TEST_CASE("Built-in template files are canonical template files", "[model][templates][gaming]") {
+TEST_CASE("Built-in template files are canonical template files", "[model][templates][gaming][essay]") {
     const std::vector<fs::path> files = templateFiles();
-    REQUIRE(files.size() == kIds.size());
+    REQUIRE(files.size() == kAllIds.size());
     for (std::size_t i = 0; i < files.size(); ++i) {
         INFO(files[i].string());
-        CHECK(files[i].filename().string() == kIds[i] + std::string(io::kTemplateFileSuffix));
+        CHECK(files[i].filename().string() == kAllIds[i] + std::string(io::kTemplateFileSuffix));
         std::string text = readFile(files[i]);
         std::erase(text, '\r'); // a checkout may have CRLF line ends
         const auto parsed = io::templateFileFromJson(text);
         REQUIRE(parsed);
-        CHECK(parsed->id == kIds[i]);
+        CHECK(parsed->id == kAllIds[i]);
         // Exactly what the writer writes (so diffs of regenerated files show real changes only).
         CHECK(io::templateFileToJson(*parsed) == text);
         if (!updating()) {
@@ -410,10 +455,15 @@ TEST_CASE("Built-in template files are canonical template files", "[model][templ
     }
 }
 
-TEST_CASE("Built-in field ids are a stable contract", "[model][templates][gaming]") {
+TEST_CASE("Built-in field ids are a stable contract", "[model][templates][gaming][essay]") {
     // Instances, commands (clip.instantReplay sets the replay's "label") and the UI refer to fields by id, and an instance
     // keeps working after a template is tuned only while its ids stay. Renaming one must be a deliberate change here.
     const std::vector<std::pair<std::string, std::vector<std::string>>> expected{
+        {"wabcut.essay.chapterCard", {"number", "title", "accent", "backgroundColor", "length"}},
+        {"wabcut.essay.location", {"place", "date", "accent", "length"}},
+        {"wabcut.essay.nameTitle", {"name", "role", "accent", "length"}},
+        {"wabcut.essay.quote", {"quote", "attribution", "accent", "length"}},
+        {"wabcut.essay.source", {"citation", "detail", "accent", "length"}},
         {"wabcut.gaming.arrowCallout", {"label", "accent", "length"}},
         {"wabcut.gaming.chatBubble", {"username", "message", "accent", "avatarColor", "showAvatar", "length"}},
         {"wabcut.gaming.circleCallout", {"label", "accent", "length"}},
@@ -776,17 +826,25 @@ TEST_CASE("The replay stinger keeps its blinking corner tag over a long replay",
     CHECK(seen.size() >= 2);
 }
 
-TEST_CASE("Built-in artwork is original shapes and text", "[model][templates][gaming]") {
+TEST_CASE("Built-in artwork is original shapes and text", "[model][templates][gaming][essay]") {
     for (const GraphicTemplate& t : builtinTemplates()) {
         INFO(t.id);
+        const bool essay = templateCategory(t) == "essay";
         for (const GraphicLayer* l : allLayers(t.graphic)) {
             INFO(l->name);
             CHECK(l->image.brandLogo.empty());
             CHECK_FALSE(l->image.media.isValid());
             for (const TextRun& run : l->text.runs) {
-                CHECK(run.style.brandFont.empty());
-                CHECK((run.style.fontFamily == "Bai Jamjuree" || run.style.fontFamily == "IBM Plex Sans Thai"));
-                CHECK(run.style.fontWeight >= (run.style.fontFamily == "Bai Jamjuree" ? 500 : 400));
+                if (essay) {
+                    // 0.4: the essay pack takes the brand kit's font roles, IBM Plex Sans Thai (it has Thai) without a kit.
+                    CHECK((run.style.brandFont == "heading" || run.style.brandFont == "body"));
+                    CHECK(run.style.fontFamily == "IBM Plex Sans Thai");
+                    CHECK(run.style.fontWeight >= 400);
+                } else {
+                    CHECK(run.style.brandFont.empty());
+                    CHECK((run.style.fontFamily == "Bai Jamjuree" || run.style.fontFamily == "IBM Plex Sans Thai"));
+                    CHECK(run.style.fontWeight >= (run.style.fontFamily == "Bai Jamjuree" ? 500 : 400));
+                }
                 CHECK(run.style.fontWeight <= 600);
             }
             CHECK(l->text.language.empty()); // the default texts are English
@@ -811,6 +869,82 @@ TEST_CASE("Built-in artwork is original shapes and text", "[model][templates][ga
     }
 }
 
+TEST_CASE("Essay templates refer to the brand kit colours and fonts", "[model][templates][essay]") {
+    // The authoring code (what the shipped files are made from): green before the files are generated too.
+    std::vector<GraphicTemplate> essays;
+    REQUIRE_NOTHROW(essays = authorEssayTemplates());
+    REQUIRE(essays.size() == kEssayIds.size());
+    BrandKit kit;
+    kit.name = "Test kit";
+    kit.colors = {BrandColor{"Primary", {0.9, 0.1, 0.4, 1.0}}, BrandColor{"Accent", {0.1, 0.8, 0.3, 1.0}}};
+    kit.fonts = {BrandFont{"heading", "Kanit", {}, 600}, BrandFont{"body", "Sarabun", {}, 400}};
+    ResolveOptions themed;
+    themed.brandKit = &kit;
+    for (const GraphicTemplate& t : essays) {
+        INFO(t.id);
+        CHECK(templateCategory(t) == "essay");
+        CHECK_FALSE(templateProblem(t));
+        CHECK(t.graphic.width == 1920);
+        CHECK(t.graphic.height == 1080);
+        CHECK_FALSE(t.description.empty());
+        CHECK(t.description.size() <= 100);
+        // Box, bar and card fills are the kit's Primary or Accent colour.
+        std::size_t branded = 0;
+        for (const GraphicLayer* l : allLayers(t.graphic)) {
+            INFO(l->name);
+            if (l->kind == LayerKind::Shape && l->shape.fill.kind == PaintKind::Solid) {
+                CHECK((l->shape.fill.color.brand == "Primary" || l->shape.fill.color.brand == "Accent"));
+                ++branded;
+            }
+            for (const TextRun& run : l->text.runs) {
+                CHECK((run.style.brandFont == "heading" || run.style.brandFont == "body"));
+                CHECK(run.style.fontFamily == "IBM Plex Sans Thai");
+            }
+        }
+        CHECK(branded >= 1);
+        // The main line (the first text field) is a heading.
+        const auto main = std::find_if(t.fields.begin(), t.fields.end(), [](const TemplateField& f) { return f.kind == FieldKind::Text; });
+        REQUIRE(main != t.fields.end());
+        const GraphicLayer* mainLayer = t.graphic.findLayer(main->layer);
+        REQUIRE(mainLayer);
+        REQUIRE_FALSE(mainLayer->text.runs.empty());
+        for (const TextRun& run : mainLayer->text.runs) {
+            CHECK(run.style.brandFont == "heading");
+        }
+        // With a kit the graphic re-themes: shapes take the kit's colours, headings and body text its fonts.
+        const DrawList list = resolveGraphic(t.graphic, templatePosterTime(t), themed);
+        bool sawHeading = false;
+        for (const DrawItem& i : list.items) {
+            const GraphicLayer* l = t.graphic.findLayer(i.layer);
+            REQUIRE(l);
+            INFO(l->name);
+            if (i.kind == DrawKind::Shape && l->shape.fill.kind == PaintKind::Solid) {
+                const BrandColor* c = kit.color(l->shape.fill.color.brand);
+                REQUIRE(c);
+                CHECK(i.fill.color == c->rgba);
+            }
+            if (i.kind == DrawKind::Text) {
+                for (const DrawTextRun& run : i.text.runs) {
+                    CHECK((run.fontFamily == "Kanit" || run.fontFamily == "Sarabun"));
+                }
+                if (i.layer == main->layer) {
+                    sawHeading = true;
+                    REQUIRE_FALSE(i.text.runs.empty());
+                    CHECK(i.text.runs.front().fontFamily == "Kanit");
+                }
+            }
+        }
+        CHECK(sawHeading);
+        // Without a kit: the neutral fallbacks and IBM Plex Sans Thai.
+        const DrawList plain = resolveGraphic(t.graphic, templatePosterTime(t));
+        for (const DrawItem& i : plain.items) {
+            for (const DrawTextRun& run : i.text.runs) {
+                CHECK(run.fontFamily == "IBM Plex Sans Thai");
+            }
+        }
+    }
+}
+
 TEST_CASE("Poster times and categories of templates", "[model][templates]") {
     GraphicTemplate t;
     t.id = "user.title";
@@ -828,5 +962,9 @@ TEST_CASE("Poster times and categories of templates", "[model][templates]") {
     t.id = "wabcut.gaming.custom";
     CHECK(templateCategory(t) == "gaming");
     t.id = "wabcut.gaming.";
+    CHECK(templateCategory(t).empty());
+    t.id = "wabcut.essay.custom"; // 0.4
+    CHECK(templateCategory(t) == "essay");
+    t.id = "wabcut.essay.";
     CHECK(templateCategory(t).empty());
 }

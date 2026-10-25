@@ -1375,13 +1375,20 @@ void ExportQueue::run(std::stop_token stop) {
         request.pause = entry->gate;
         auto callerCallback = std::move(request.onProgress);
         request.onProgress = [this, entry, callerCallback](const ExportProgress& p) {
-            ExportJobStatus copy;
-            {
-                std::lock_guard lock(m_mutex);
-                entry->status.progress = p;
-                copy = entry->status;
+            // 0.4: a terminal phase (Done, Failed, Cancelled) is not reported here: the final status below reports
+            // the outcome together with its result or error (a listener that saw "Done" without the result lost the
+            // export's warnings, and "Failed" without the error its reason). The caller's own callback still sees it.
+            const bool terminal = p.phase == ExportPhase::Done || p.phase == ExportPhase::Failed ||
+                                  p.phase == ExportPhase::Cancelled;
+            if (!terminal) {
+                ExportJobStatus copy;
+                {
+                    std::lock_guard lock(m_mutex);
+                    entry->status.progress = p;
+                    copy = entry->status;
+                }
+                notify(copy);
             }
-            notify(copy);
             if (callerCallback) {
                 callerCallback(p);
             }

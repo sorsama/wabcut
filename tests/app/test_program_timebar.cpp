@@ -3,16 +3,22 @@
 // along with the playhead; in the shell, a press on it seeks and Ctrl+wheel zooms. And the gutters' resize cost
 // (WorkbenchSplitter): deferred by default (a guide follows the pointer, one layout on release), live on request
 // (at most one layout per frame); a track header's height drag coalesces to frames too. Offscreen.
+// 0.4: the Program Monitor's In to Out pill (ProjectController.markDurationText; screenshot program-inout-duration.png),
+// clear of the playback resolution pill, which gives way on a narrow monitor (wrench > Playback Resolution; screenshots
+// program-inout-duration-project.png, program-playback-resolution-menu.png).
 
 #include "ShellFixture.h"
 
 #include "ProjectController.h"
 #include "SequenceTimeBar.h"
+#include "TimelineFixture.h"
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 #include <QCoreApplication>
+#include <QDir>
+#include <QImage>
 #include <QMouseEvent>
 #include <QQmlComponent>
 #include <QQuickItem>
@@ -258,6 +264,191 @@ TEST_CASE("Gutters: deferred by default, one layout on release; live on request,
     mouse(shell.window.get(), QEvent::MouseButtonRelease, start + QPointF(80, 0), Qt::NoButton);
     CHECK(host->property("total").toDouble() == Approx(80));
     shell.preferences->setProperty("liveResize", false);
+
+    const QStringList messages = takeMessages();
+    INFO(join(messages));
+    CHECK(messages.isEmpty());
+}
+
+TEST_CASE("Program Monitor shows the sequence In to Out duration", "[app][monitor][marks]") {
+    // 0.4: ProjectController.markDurationText, the Out frame included (Premiere's In/Out duration). 25 fps.
+    const std::string picture = "V1 tgt |A" + std::string(99, 'a') + "|";
+    Timeline tl(picture);
+    ProjectController controller;
+    controller.resetProject(tl.state, tl.seq);
+    int notified = 0;
+    QObject::connect(&controller, &ProjectController::marksChanged, [&] { ++notified; });
+    CHECK(controller.markDurationText().isEmpty()); // no marks
+    controller.setPlayhead(f(25));
+    controller.markInAtPlayhead();
+    CHECK(notified == 1);
+    CHECK(controller.markDurationText().isEmpty()); // one mark
+    controller.setPlayhead(f(87)); // 3 s 12 f
+    controller.markOutAtPlayhead();
+    CHECK(notified == 2);
+    CHECK(controller.markDurationText() == QStringLiteral("00:00:02:13"));
+    CHECK(controller.markOutText() == QStringLiteral("00:00:03:12"));
+    // Undo follows; clearing both empties it.
+    REQUIRE(controller.undo());
+    CHECK(controller.markDurationText().isEmpty());
+    REQUIRE(controller.redo());
+    CHECK(controller.markDurationText() == QStringLiteral("00:00:02:13"));
+    const int before = notified;
+    controller.clearMarks();
+    CHECK(notified == before + 1);
+    CHECK(controller.markDurationText().isEmpty());
+}
+
+TEST_CASE("Program Monitor In to Out pill shows and stays at narrow widths", "[app][monitor][marks][qml][screenshot]") {
+    // 0.4: the raised pill after the playhead timecode (ProjectController.markDurationText), with both marks set only.
+    resetSettings();
+    clearMessages();
+    Shell shell;
+    REQUIRE(shell.window != nullptr);
+    INFO(join(shell.errors));
+    REQUIRE(shell.errors.isEmpty());
+    shell.resize(kShotWidth, kShotHeight);
+    shell.theme->setProperty("reduceMotion", true);
+    auto* controller = shell.engine.singletonInstance<ProjectController*>("Wabcut", "ProjectController");
+    REQUIRE(controller);
+    QQuickItem* root = shell.window->contentItem();
+    QQuickItem* pill = named(root, QStringLiteral("programInOutDuration"));
+    QQuickItem* text = named(root, QStringLiteral("programInOutDurationText"));
+    QQuickItem* timecode = named(root, QStringLiteral("programTimecode"));
+    QQuickItem* wrench = named(root, QStringLiteral("programMonitorSettingsButton"));
+    REQUIRE(pill);
+    REQUIRE(text);
+    REQUIRE(timecode);
+    REQUIRE(wrench);
+
+    controller->clearMarks();
+    CHECK_FALSE(pill->isVisible());
+    REQUIRE(controller->seekToText(QStringLiteral("00:00:01:00")));
+    controller->markInAtPlayhead();
+    CHECK_FALSE(pill->isVisible()); // one mark: nothing to measure
+    REQUIRE(controller->seekToText(QStringLiteral("00:00:03:12")));
+    controller->markOutAtPlayhead();
+    REQUIRE(pill->isVisible());
+    CHECK(text->property("text").toString() == QStringLiteral("00:00:02:13")); // the Out frame counts
+    const QImage image = shell.grab(); // a frame lays the hidden window out
+    REQUIRE_FALSE(image.isNull());
+    CHECK(image.save(QDir(outputDir()).filePath(QStringLiteral("program-inout-duration.png"))));
+    // Right after the timecode, clear of the right-hand readouts (they give way first).
+    const auto right = [](const QQuickItem* item) { return item->mapToScene(QPointF(item->width(), 0)).x(); };
+    const auto left = [](const QQuickItem* item) { return item->mapToScene(QPointF(0, 0)).x(); };
+    INFO("timecode " << left(timecode) << "-" << right(timecode) << ", pill " << left(pill) << "-" << right(pill)
+                     << ", wrench " << left(wrench));
+    CHECK(left(pill) >= right(timecode));
+    CHECK(left(pill) - right(timecode) <= 12);
+    CHECK(right(pill) <= left(wrench));
+
+    // That is a narrow monitor already: the Editing workspace at 1600x960 gives the Program Monitor under 360 px.
+    QQuickItem* panel = shell.item("monitorPanel");
+    REQUIRE(panel);
+    INFO("panel " << panel->width());
+    CHECK(panel->width() <= 360);
+    // Undo and the clears follow.
+    REQUIRE(controller->undo());
+    CHECK_FALSE(pill->isVisible());
+    REQUIRE(controller->redo());
+    CHECK(pill->isVisible());
+    controller->clearMarks();
+    CHECK_FALSE(pill->isVisible());
+
+    const QStringList messages = takeMessages();
+    INFO(join(messages));
+    CHECK(messages.isEmpty());
+}
+
+TEST_CASE("Program Monitor In to Out pill stays clear of the playback resolution in a project",
+          "[app][monitor][marks][qml]") {
+    // Outside the demo the playback resolution pill shows too; on a narrow monitor it gives way to the In to Out pill
+    // (wrench > Playback Resolution has the same choices).
+    resetSettings();
+    clearMessages();
+    Shell shell;
+    REQUIRE(shell.window != nullptr);
+    INFO(join(shell.errors));
+    REQUIRE(shell.errors.isEmpty());
+    shell.resize(kShotWidth, kShotHeight);
+    shell.theme->setProperty("reduceMotion", true);
+    auto* controller = shell.engine.singletonInstance<ProjectController*>("Wabcut", "ProjectController");
+    QObject* file = shell.engine.singletonInstance<QObject*>("Wabcut", "ProjectFile");
+    QObject* readiness = shell.engine.singletonInstance<QObject*>("Wabcut", "MediaReadiness");
+    REQUIRE(controller);
+    REQUIRE(file);
+    REQUIRE(readiness);
+    REQUIRE(QMetaObject::invokeMethod(file, "newProject"));
+    REQUIRE_FALSE(file->property("demo").toBool());
+    const std::string picture = "V1 tgt |A" + std::string(99, 'a') + "|";
+    Timeline tl(picture);
+    controller->resetProject(tl.state, tl.seq);
+    controller->setPlayhead(f(25));
+    controller->markInAtPlayhead();
+    controller->setPlayhead(f(87));
+    controller->markOutAtPlayhead();
+
+    QQuickItem* root = shell.window->contentItem();
+    QQuickItem* pill = named(root, QStringLiteral("programInOutDuration"));
+    QQuickItem* wrench = named(root, QStringLiteral("programMonitorSettingsButton"));
+    QQuickItem* quality = named(root, QStringLiteral("previewQualityButton"));
+    REQUIRE(pill);
+    REQUIRE(wrench);
+    REQUIRE(quality);
+    const auto right = [](const QQuickItem* item) { return item->mapToScene(QPointF(item->width(), 0)).x(); };
+    const auto left = [](const QQuickItem* item) { return item->mapToScene(QPointF(0, 0)).x(); };
+    const auto clear = [&] {
+        REQUIRE_FALSE(shell.grab().isNull()); // a frame lays the hidden window out
+        REQUIRE(pill->isVisible());
+        INFO("pill " << left(pill) << "-" << right(pill) << ", wrench " << left(wrench) << ", quality "
+                     << (quality->isVisible() ? left(quality) : -1.0));
+        CHECK(right(pill) <= left(wrench));
+        if (quality->isVisible())
+            CHECK(right(pill) <= left(quality));
+    };
+    // The Editing workspace at 1600x960: the Program Monitor is narrow.
+    clear();
+    // Wide: everything shows.
+    shell.resize(2560, 1440);
+    clear();
+    CHECK(quality->isVisible());
+    shell.resize(kShotWidth, kShotHeight);
+    clear();
+    QQuickItem* panel = shell.item("monitorPanel");
+    REQUIRE(panel);
+    const double dpr = shell.window->effectiveDevicePixelRatio();
+    const QRectF r = panel->mapRectToScene(QRectF(0, 0, panel->width(), panel->height()));
+    CHECK(shell.grab()
+              .copy(QRectF(r.topLeft() * dpr, r.size() * dpr).toRect())
+              .save(QDir(outputDir()).filePath(QStringLiteral("program-inout-duration-project.png"))));
+
+    // The wrench menu's Playback Resolution sets the same preference.
+    QObject* settings = shell.object("programMonitorSettingsMenu");
+    QObject* menu = shell.object("playbackResolutionMenu");
+    REQUIRE(settings != nullptr);
+    REQUIRE(menu != nullptr);
+    CHECK(menu->property("title").toString() == QStringLiteral("Playback Resolution"));
+    REQUIRE(QMetaObject::invokeMethod(wrench, "clicked"));
+    REQUIRE(waitFor([&] { return settings->property("opened").toBool(); }));
+    REQUIRE(QMetaObject::invokeMethod(menu, "open"));
+    REQUIRE(waitFor([&] { return menu->property("opened").toBool(); }));
+    const QImage open = shell.grab();
+    REQUIRE_FALSE(open.isNull());
+    CHECK(open.save(QDir(outputDir()).filePath(QStringLiteral("program-playback-resolution-menu.png"))));
+    REQUIRE(QMetaObject::invokeMethod(menu, "close"));
+    REQUIRE(QMetaObject::invokeMethod(settings, "close"));
+    REQUIRE(waitFor([&] { return !menu->property("visible").toBool() && !settings->property("visible").toBool(); }));
+    const QString before = readiness->property("previewQuality").toString();
+    for (const char* value : {"half", "quarter", "full", "auto"}) {
+        INFO(value);
+        QObject* item = menu->findChild<QObject*>(QStringLiteral("playbackResolution_%1").arg(QLatin1String(value)));
+        REQUIRE(item != nullptr);
+        CHECK(item->property("checkable").toBool());
+        REQUIRE(QMetaObject::invokeMethod(item, "clicked"));
+        CHECK(readiness->property("previewQuality").toString() == QLatin1String(value));
+        CHECK(item->property("checked").toBool());
+    }
+    readiness->setProperty("previewQuality", before);
 
     const QStringList messages = takeMessages();
     INFO(join(messages));

@@ -11,6 +11,7 @@
 
 #include <wabcut/ai/edit/TranscriptCommands.h>
 #include <wabcut/ai/reframe/ReframeCommands.h>
+#include <wabcut/model/CaptionOps.h>
 #include <wabcut/model/ProjectIO.h>
 
 #include <catch2/catch_test_macros.hpp>
@@ -116,6 +117,18 @@ void loadInto(ProjectController* controller, const Studio& studio, const QString
     REQUIRE(controller->loadProject(QUrl::fromLocalFile(path)));
 }
 
+QQuickItem* findNamed(QQuickItem* root, const QString& name) {
+    if (!root)
+        return nullptr;
+    if (root->objectName() == name)
+        return root;
+    for (QQuickItem* child : root->childItems()) {
+        if (QQuickItem* found = findNamed(child, name))
+            return found;
+    }
+    return nullptr;
+}
+
 void openRail(Shell& shell, const char* key) {
     QVariant ignored;
     REQUIRE(QMetaObject::invokeMethod(shell.window.get(), "showBrowserPanel", Q_RETURN_ARG(QVariant, ignored),
@@ -162,8 +175,41 @@ TEST_CASE("The Shorts panel finds shorts and makes them in one undo step; screen
     REQUIRE(waitFor([&] { return list->property("count").toInt() == 3; }));
     spin(1200); // the frames decode asynchronously
 
-    // Make two: staged first, then one undo step.
-    CHECK(shorts->create({0, 1}, {}).isEmpty());
+    // 0.4: the caption style beside Captions ("Shorts" by default), hidden while Captions is off; the menu lists the
+    // caption presets, Shorts first, and the choice is remembered.
+    REQUIRE(shell.preferences != nullptr);
+    QQuickItem* style = findNamed(panel, QStringLiteral("shortsCaptionStyle"));
+    QQuickItem* captions = findNamed(panel, QStringLiteral("shortsCaptionsToggle"));
+    QObject* styleMenu = panel->findChild<QObject*>(QStringLiteral("shortsCaptionStyleMenu"));
+    REQUIRE(style != nullptr);
+    REQUIRE(captions != nullptr);
+    REQUIRE(styleMenu != nullptr);
+    CHECK(style->isVisible());
+    CHECK(style->property("text").toString() == QStringLiteral("Style: Shorts"));
+    REQUIRE(QMetaObject::invokeMethod(captions, "toggle"));
+    CHECK_FALSE(style->isVisible());
+    REQUIRE(QMetaObject::invokeMethod(captions, "toggle"));
+    CHECK(style->isVisible());
+    REQUIRE(QMetaObject::invokeMethod(style, "clicked"));
+    REQUIRE(waitFor([&] { return styleMenu->property("opened").toBool(); }, 5000));
+    QStringList presets;
+    for (const QVariant& v : styleMenu->property("options").toList())
+        presets << v.toMap().value(QStringLiteral("name")).toString();
+    INFO(presets.join(QStringLiteral(", ")).toStdString());
+    REQUIRE_FALSE(presets.isEmpty());
+    CHECK(presets.front() == QStringLiteral("Shorts"));
+    CHECK(presets.contains(QStringLiteral("Clean")));
+    REQUIRE(QMetaObject::invokeMethod(styleMenu, "chosen", Q_ARG(QString, QStringLiteral("Clean"))));
+    REQUIRE(QMetaObject::invokeMethod(styleMenu, "close"));
+    REQUIRE(waitFor([&] { return !styleMenu->property("visible").toBool(); }, 5000));
+    CHECK(shell.preferences->property("shortsCaptionPreset").toString() == QStringLiteral("Clean"));
+    CHECK(style->property("text").toString() == QStringLiteral("Style: Clean"));
+    QVariant options;
+    REQUIRE(QMetaObject::invokeMethod(panel, "createOptions", Q_RETURN_ARG(QVariant, options)));
+    CHECK(options.toMap().value(QStringLiteral("captionPreset")).toString() == QStringLiteral("Clean"));
+
+    // Make two (with the panel's options): staged first, then one undo step.
+    CHECK(shorts->create({0, 1}, options.toMap()).isEmpty());
     REQUIRE(shorts->waitForIdle(20'000));
     REQUIRE(shorts->pendingCount() == 2);
     CHECK(shorts->pendingNames().front().contains(QStringLiteral("Why we doubled our price")));
@@ -184,8 +230,34 @@ TEST_CASE("The Shorts panel finds shorts and makes them in one undo step; screen
     REQUIRE(made != nullptr);
     CHECK(made->width == 1080);
     CHECK(made->height == 1920);
+    // 0.4: in the caption style chosen.
+    REQUIRE(made->captionTracks.size() == 1);
+    const auto clean = wabcut::edit::captionPresetStyle(*controller->snapshot(), "Clean");
+    REQUIRE(clean);
+    CHECK(made->captionTracks.front().style.placement == clean->placement);
+    CHECK(made->captionTracks.front().style.box == clean->box);
     REQUIRE(controller->session().undo());
     CHECK(controller->snapshot()->sequences.size() == before);
+
+    // The chooser open (shorts-caption-style.png).
+    REQUIRE(QMetaObject::invokeMethod(style, "clicked"));
+    REQUIRE(waitFor([&] { return styleMenu->property("opened").toBool(); }, 5000));
+    spin(200);
+    {
+        const QImage menuShot = shell.grab();
+        REQUIRE_FALSE(menuShot.isNull());
+        auto* menuContent = styleMenu->property("contentItem").value<QQuickItem*>();
+        QRectF area = panel->mapRectToScene(QRectF(0, 0, panel->width(), panel->height()));
+        if (menuContent && menuContent->parentItem()) {
+            QQuickItem* popup = menuContent->parentItem();
+            area = area.united(popup->mapRectToScene(QRectF(0, 0, popup->width(), popup->height())));
+        }
+        const double shotDpr = shell.window->effectiveDevicePixelRatio();
+        REQUIRE(menuShot.copy(QRectF(area.topLeft() * shotDpr, area.size() * shotDpr).toRect())
+                    .save(outputDir() + QStringLiteral("/shorts-caption-style.png")));
+    }
+    REQUIRE(QMetaObject::invokeMethod(styleMenu, "close"));
+    shell.preferences->setProperty("shortsCaptionPreset", QStringLiteral("Shorts"));
     setPreviewFramesForTests({});
 }
 

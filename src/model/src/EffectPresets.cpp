@@ -574,6 +574,36 @@ std::vector<EffectPreset> builtinEffectPresets(std::int32_t width, std::int32_t 
     out.push_back(preset("Vertical Image Pan Bottom to Top", "Image Pans", T::Scale,
                          "At 120 %, pans from the bottom of the picture to its top over the clip.",
                          {motion(0.0, keyed({{Ticks{}, -panY}, {end, panY}}), 1.2)}));
+    // 0.4 Ken Burns moves for stills and archive: slow eased push-ins and pull-outs across the whole clip (type Scale,
+    // so they stretch to any length). Only the Motion parameters a move changes are set (Rotation and Anchor stay the
+    // clip's), and position keys share the scale keys' times and easing, so the frame's edge never shows: at every
+    // moment |position| <= (scale - 1) / 2 of the frame side.
+    {
+        using I = Interpolation;
+        const auto ease = [&](double from, double to) { return eased({{Ticks{}, from, I::EaseInOut}, {end, to, I::Linear}}); };
+        out.push_back(preset("Slow Push In", "Image Pans", T::Scale,
+                             "Slowly pushes in from 100 % to 112 % over the clip, eased (Ken Burns).",
+                             {fixedOnly(kMotionEffect, {{"motion.scale", ease(1.0, 1.12)}})}));
+        out.push_back(preset("Slow Pull Out", "Image Pans", T::Scale,
+                             "Slowly pulls out from 112 % to 100 % over the clip, eased (Ken Burns).",
+                             {fixedOnly(kMotionEffect, {{"motion.scale", ease(1.12, 1.0)}})}));
+        out.push_back(preset("Push In to Top", "Image Pans", T::Scale,
+                             "Pushes in from 100 % to 112 % while drifting to the top of the picture, eased.",
+                             {fixedOnly(kMotionEffect, {{"motion.scale", ease(1.0, 1.12)},
+                                                        {"motion.position.y", ease(0.0, 0.05 * h)}})}));
+        out.push_back(preset("Push In to Bottom", "Image Pans", T::Scale,
+                             "Pushes in from 100 % to 112 % while drifting to the bottom of the picture, eased.",
+                             {fixedOnly(kMotionEffect, {{"motion.scale", ease(1.0, 1.12)},
+                                                        {"motion.position.y", ease(0.0, -0.05 * h)}})}));
+        out.push_back(preset("Push In Left to Right", "Image Pans", T::Scale,
+                             "Pushes in from 108 % to 112 % while travelling from the left of the picture to its right, eased.",
+                             {fixedOnly(kMotionEffect, {{"motion.scale", ease(1.08, 1.12)},
+                                                        {"motion.position.x", ease(0.03 * w, -0.03 * w)}})}));
+        out.push_back(preset("Push In Right to Left", "Image Pans", T::Scale,
+                             "Pushes in from 108 % to 112 % while travelling from the right of the picture to its left, eased.",
+                             {fixedOnly(kMotionEffect, {{"motion.scale", ease(1.08, 1.12)},
+                                                        {"motion.position.x", ease(-0.03 * w, 0.03 * w)}})}));
+    }
 
     // Animations (Premiere 25.5's motion animations, e.g. Pop, Spin, Travel, Pull, Spring): a clip animates in at its
     // In point or out at its Out point with editable Motion and Opacity keys, half a second long (Spring a little

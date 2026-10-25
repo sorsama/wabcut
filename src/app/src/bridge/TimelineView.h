@@ -61,6 +61,7 @@
 #include <QVariantMap>
 #include <QtQml/qqmlregistration.h>
 
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <span>
@@ -105,6 +106,7 @@ struct TimelineStats {
     qint64 previewNs = 0;  // last drag preview: the edit run on the snapshot (mouse move), not in updatePaintNode
     /// 0.1.3: the dragged (or settling) clips as drawn, in view coordinates: a drag shows them where they will land.
     QHash<quint64, QRectF> liftedRects;
+    QHash<quint64, QString> fxBadges; // 0.4: clip id -> "changed" | "effects" (the fx chips drawn)
 };
 
 /// Visual tokens, parsed from the QML `style` map (keys match the member names).
@@ -188,6 +190,10 @@ struct TimelineStyle {
     qreal nestedStripeHeight = 2;
     QColor trackVolumeLane{0x9B, 0x6B, 0xFF};
     QColor trackPanLane{0xB4, 0xAC, 0xC8};
+    // 0.4: the fx chip after a clip's name: changed or keyframed intrinsics (Theme.warning) or stack effects
+    // (Theme.accentFill); its ink is clipInk (markerInkColor).
+    QColor fxChangedColor{0xFB, 0xBF, 0x24};
+    QColor fxEffectsColor{0x8B, 0x5C, 0xFF};
 
     QColor clipBody(int index) const;
     QColor clipColor(int index) const;
@@ -205,10 +211,15 @@ struct TimelineNestInfo {
     std::vector<QString> angles;
     bool operator==(const TimelineNestInfo&) const = default;
 };
+/// 0.4: what a clip's fx chip says (TimelineLaneFacts::fx).
+enum class ClipFx : std::uint8_t { None, Changed, Effects };
 struct TimelineLaneFacts {
     std::unordered_map<std::uint64_t, TimelineNestInfo> nested; ///< by sequence id
     std::unordered_map<std::uint64_t, QString> badges;          ///< clip id -> "enhanced" | "missingRender"
     std::unordered_map<std::uint64_t, QString> channels;        ///< M5n (A.9): clip id -> channel badge ("SWAP", ...)
+    /// 0.4: clip id -> Changed (Motion / Opacity / blend mode / Volume / Pan off their defaults or keyframed, or time
+    /// remapping) or Effects (stack effects; wins). Untouched clips have no entry.
+    std::unordered_map<std::uint64_t, ClipFx> fx;
     std::vector<std::pair<ParamValue, ParamValue>> faders;      ///< audio tracks' volume / pan (lanes shown)
     bool operator==(const TimelineLaneFacts&) const = default;
 };
@@ -331,6 +342,17 @@ class TimelineView : public QQuickItem {
     /// the playhead, ProjectController.audioTimeUnits) move by samples instead of frames.
     Q_PROPERTY(bool audioTimeUnits READ audioTimeUnits WRITE setAudioTimeUnits NOTIFY displayChanged FINAL)
 
+    // ---- 0.4 (stream A) ----
+    /// A clip that does not play at a uniform 100 % forward shows its speed after the name: "Interview [50%]",
+    /// "[−100%]" (reversed), "[Variable speed]" (time remapping), "[Hold]" (frame hold). Audio clips too.
+    Q_PROPERTY(bool showClipSpeed READ showClipSpeed WRITE setShowClipSpeed NOTIFY displayChanged FINAL)
+    /// The fx chip after a clip's name: violet with stack effects, amber with changed or keyframed intrinsics (Motion,
+    /// Opacity, blend mode, Volume, Pan) or time remapping; untouched clips have none.
+    Q_PROPERTY(bool showFxBadges READ showFxBadges WRITE setShowFxBadges NOTIFY displayChanged FINAL)
+    /// Premiere's "Snap Playhead in Timeline When Snap Is Enabled": ruler scrubs (seekToX) snap to clip edges, markers,
+    /// In/Out and beats while `snapping` is on.
+    Q_PROPERTY(bool snapPlayhead READ snapPlayhead WRITE setSnapPlayhead NOTIFY snappingChanged FINAL)
+
 public:
     explicit TimelineView(QQuickItem* parent = nullptr);
     ~TimelineView() override;
@@ -452,6 +474,13 @@ public:
     void setShowAudioFadeHandles(bool on);
     bool audioTimeUnits() const { return m_audioTimeUnits; }
     void setAudioTimeUnits(bool on);
+    // ---- 0.4 (stream A; TimelineViewDisplay.cpp) ----
+    bool showClipSpeed() const { return m_showClipSpeed; }
+    void setShowClipSpeed(bool on);
+    bool showFxBadges() const { return m_showFxBadges; }
+    void setShowFxBadges(bool on);
+    bool snapPlayhead() const { return m_snapPlayhead; }
+    void setSnapPlayhead(bool on);
     /// The time quantum of drags of the material: an audio sample with audio time units on and only audio clips in
     /// `clips` (Premiere: sample edits never move video), else a frame.
     Rate editRate(std::span<const ClipId> clips) const;
@@ -481,13 +510,32 @@ public:
     Q_INVOKABLE QString trackAt(double y) const;
     /// Label of ruler tick `tickIndex` (`tickIndex * stepFrames` frames from the start).
     Q_INVOKABLE QString rulerLabel(int tickIndex, int stepFrames) const;
-    /// Ruler scrub: moves the playhead to the frame under x.
-    Q_INVOKABLE void seekToX(double x);
+    /// Ruler scrub: moves the playhead to the frame under x. 0.4: with snapping and snapPlayhead on, or `forceSnap`
+    /// (Shift), it snaps to the nearest clip edge, marker, In, Out or beat within the snap threshold; snapX reports it
+    /// until endScrub().
+    Q_INVOKABLE void seekToX(double x, bool forceSnap = false);
+    /// 0.4: the ruler was released: the playhead snap line goes.
+    Q_INVOKABLE void endScrub();
     /// Zooms to `level` keeping the time under `anchorX` in place.
     Q_INVOKABLE void zoomAt(double level, double anchorX);
     Q_INVOKABLE void scrollBy(double dx, double dy);
     /// Scrolls so the playhead is visible (keyboard stepping).
     Q_INVOKABLE void revealPlayhead();
+    /// 0.4, Premiere's Timeline Playback Auto-Scrolling, during playback: "page" (the playhead running off the right
+    /// edge lands on the left edge), "smooth" (the playhead travels to the middle and stays there while the clips
+    /// scroll) or "none" (the view never moves). `reverse` (J, Shift+J): mirrored, so "page" turns back a screen with the
+    /// playhead on the right edge and "smooth" keeps it in the middle as it travels left.
+    Q_INVOKABLE void followPlayhead(const QString& mode, bool reverse = false);
+    /// 0.4, \ (Zoom to Sequence): fits the sequence; pressed again while the view is still exactly at that fit (same
+    /// zoom, scroll and sequence), it returns to the zoom and scroll from before.
+    Q_INVOKABLE void toggleZoomToSequence();
+    /// 0.4, the clip hover tooltip: { name, track ("V1"), start, end, duration, speed (the clip speed text or ""),
+    /// reversed, remapped, freeze, source, sourceKind ("media" | "sequence" | "multicam" | "none"), sourceIn, sourceOut
+    /// ("" when remapped or none), effects (int), disabled, offline, text (the tooltip lines, "\n"-separated) }; an empty
+    /// map for an unknown clip.
+    Q_INVOKABLE QVariantMap clipHoverInfo(const QString& clipId) const;
+    /// 0.4: where the pointer last hovered the lanes (view coordinates).
+    Q_INVOKABLE QPointF hoverPosition() const { return m_hoverPos; }
     /// Scrolls the tracks so the audio tracks are in view (the Audio workspace).
     Q_INVOKABLE void revealAudioTracks();
     /// Click selection: modifiers = Qt.KeyboardModifiers of the click.
@@ -745,8 +793,9 @@ private:
     /// Frame-quantised time under x, snapped to a target when snapping is on (razor).
     Ticks snappedTimeAt(double x, std::optional<Ticks>* snappedAt = nullptr, std::optional<Rate> rate = {}) const;
     Ticks snapTolerance() const;
-    /// Snap positions near `t`: the playhead, marks, markers and the clip edges around `t` on every track.
-    std::vector<Ticks> localSnapTargets(Ticks t) const;
+    /// Snap positions near `t`: the playhead, marks, markers and the clip edges around `t` on every track. 0.4: without
+    /// the playhead itself when `withPlayhead` is false (a ruler scrub moves it).
+    std::vector<Ticks> localSnapTargets(Ticks t, bool withPlayhead = true) const;
     /// The row under y, or the nearest one (above the first row: 0; below the last: the last).
     int nearestRow(double y) const;
     /// Rebuilds the tracks that hold any of `clips` while an animation runs.
@@ -853,6 +902,10 @@ private:
         };
         std::vector<Ghost> ghosts;
         bool active = false;
+        // 0.4 (Alt-drag copy)
+        std::unordered_set<std::uint64_t> moving; // the dragged material at the press (the lifted set of a move)
+        std::vector<Ticks> copyTargets;           // snap targets of a copy: `targets` plus the originals' edges
+        std::vector<ClipId> created;              // the copies of the last valid copy preview
     } m_gesture;
     QString m_gestureReadout;
     QPointF m_gesturePoint;
@@ -990,6 +1043,18 @@ private:
     bool m_showVideoFades = true;
     bool m_showAudioFades = true;
     bool m_audioTimeUnits = false;
+    // ---- 0.4 (stream A) ----
+    bool m_showClipSpeed = true;
+    bool m_showFxBadges = true;
+    bool m_snapPlayhead = true;
+    /// A ruler scrub snapped the playhead here (snapX, the snap line) until endScrub().
+    std::optional<Ticks> m_playheadSnapAt;
+    /// The zoom and scroll before Zoom to Sequence fitted `sequence`, and the fit it made (toggleZoomToSequence).
+    struct ZoomMemory {
+        SequenceId sequence;
+        double pps = 0, scrollX = 0, fitPps = 0, fitScrollX = 0;
+    };
+    std::optional<ZoomMemory> m_zoomBeforeFit;
     /// The fade handles of this clip show although it is not selected: the pointer is over it (Premiere 26).
     bool fadeHandlesShown(const Clip& clip, bool audio) const;
 

@@ -3,7 +3,9 @@
 // A press decides what the drag will be (tool, edge zone, modifiers); past the drag threshold the gesture starts:
 // the dragged material is captured (ghost outlines, snap edges, snap targets), and every move previews the edit on
 // the current snapshot (ProjectController::previewEdit) and displays the result. Release commits the same edit as
-// one undo step (ProjectController::commitGesture); Esc cancels and the clips slide back.
+// one undo step (ProjectController::commitGesture); Esc cancels and the clips slide back. 0.4: what is held at the drop
+// decides a body drag (Ctrl insert, Alt copy, Ctrl+Alt rearrange, Shift keeps the time); trim readouts add the new
+// duration.
 
 #include "TimelineView.h"
 
@@ -11,6 +13,7 @@
 #include "EditCursors.h"
 #include "EffectControls.h"
 #include "EffectPresetsBridge.h"
+#include "TimeRemapBridge.h"
 
 #include <wabcut/model/Animations.h>
 #include <wabcut/model/ClipGroups.h>
@@ -79,7 +82,9 @@ void TimelineView::setSnapping(bool snapping) {
 }
 
 double TimelineView::snapX() const {
-    return m_gesture.active && m_gesture.snappedAt ? xOfTicks(*m_gesture.snappedAt) : qQNaN();
+    if (m_gesture.active)
+        return m_gesture.snappedAt ? xOfTicks(*m_gesture.snappedAt) : qQNaN();
+    return m_playheadSnapAt ? xOfTicks(*m_playheadSnapAt) : qQNaN(); // 0.4: a ruler scrub snapped the playhead
 }
 
 Ticks TimelineView::snapTolerance() const {
@@ -87,11 +92,12 @@ Ticks TimelineView::snapTolerance() const {
                                            * static_cast<double>(kTicksPerSecond))};
 }
 
-std::vector<Ticks> TimelineView::localSnapTargets(Ticks t) const {
+std::vector<Ticks> TimelineView::localSnapTargets(Ticks t, bool withPlayhead) const {
     std::vector<Ticks> targets;
     if (!m_sequence)
         return targets;
-    targets.push_back(m_playhead);
+    if (withPlayhead)
+        targets.push_back(m_playhead);
     if (m_sequence->markIn)
         targets.push_back(*m_sequence->markIn);
     if (m_sequence->markOut)
@@ -526,19 +532,22 @@ void TimelineView::pressClip(const Hit& hit, Qt::KeyboardModifiers mods) {
     m_pressClip = hit.clip;
     m_pendingKind = gestureFor(hit, mods);
     m_pressWasSelected = m_controller->isSelected(hit.clip);
-    const bool links = followLinks(mods);
+    // 0.4: Ctrl+Alt at the press is a rearrange, not the Alt link override: it selects as a plain press does.
+    const bool ctrl = mods & Qt::ControlModifier;
+    const bool ctrlAlt = ctrl && (mods & Qt::AltModifier);
+    const bool links = followLinks(ctrlAlt ? mods & ~Qt::AltModifier : mods);
     if (mods & Qt::ShiftModifier)
         m_controller->selectClipById(hit.clip, ProjectController::Toggle, links);
     else if (!m_pressWasSelected)
         m_controller->selectClipById(hit.clip,
-                                     m_pendingKind == GestureKind::Move && (mods & Qt::ControlModifier)
-                                         ? ProjectController::Add
-                                         : ProjectController::Replace,
+                                     m_pendingKind == GestureKind::Move && ctrl && !ctrlAlt ? ProjectController::Add
+                                                                                            : ProjectController::Replace,
                                      links);
     m_drag = m_pendingKind == GestureKind::None ? Drag::Click : Drag::Pending;
-    // Holding a clip's body says it will move (Ctrl: insert); an edge keeps its trim cursor.
+    // Holding a clip's body says it will move (Ctrl: insert; Ctrl+Alt: rearrange; an Alt press may be a click, so no
+    // copy cursor yet); an edge keeps its trim cursor.
     if (m_pendingKind == GestureKind::Move)
-        applyCursor((mods & Qt::ControlModifier) ? QStringLiteral("insert") : QStringLiteral("move"));
+        applyCursor(ctrlAlt ? QStringLiteral("rearrange") : ctrl ? QStringLiteral("insert") : QStringLiteral("move"));
 }
 
 void TimelineView::mouseMoveEvent(QMouseEvent* event) {
@@ -884,8 +893,15 @@ QString TimelineView::hoverCursorKey(const Hit& hit, Qt::KeyboardModifiers mods)
 QString TimelineView::gestureCursorKey(Qt::KeyboardModifiers mods) const {
     const bool head = m_gesture.spec.edge == edit::Edge::Head;
     switch (m_gesture.spec.kind) {
-    case GestureKind::Move:
-        return (mods & Qt::ControlModifier) ? QStringLiteral("insert") : QStringLiteral("move");
+    case GestureKind::Move: {
+        // 0.4: Ctrl+Alt rearranges, Alt copies (the system copy cursor), Ctrl inserts.
+        const bool ctrl = mods & Qt::ControlModifier;
+        const bool alt = mods & Qt::AltModifier;
+        return ctrl && alt ? QStringLiteral("rearrange")
+               : alt       ? QStringLiteral("copy")
+               : ctrl      ? QStringLiteral("insert")
+                           : QStringLiteral("move");
+    }
     case GestureKind::Trim:
         return head ? QStringLiteral("trimHead") : QStringLiteral("trimTail");
     case GestureKind::RippleTrim:
@@ -1059,7 +1075,10 @@ bool TimelineView::startGesture() {
     const Sequence& seq = *m_sequence;
     Gesture g;
     g.spec.kind = m_pendingKind;
-    g.spec.links = followLinks(m_pressMods) ? edit::LinkMode::FollowLinks : edit::LinkMode::IgnoreLinks;
+    // 0.4: Ctrl+Alt at the press (a rearrange) follows links as a plain press does; Alt alone ignores them.
+    const bool pressCtrlAlt = (m_pressMods & Qt::ControlModifier) && (m_pressMods & Qt::AltModifier);
+    g.spec.links = followLinks(pressCtrlAlt ? m_pressMods & ~Qt::AltModifier : m_pressMods) ? edit::LinkMode::FollowLinks
+                                                                                            : edit::LinkMode::IgnoreLinks;
     // 0.2, Premiere's groups: a trim on a grouped clip trims the group's outer edge (every member whose edge it is); an
     // inner edge moves the group instead. Alt trims the clip alone.
     std::vector<ClipId> groupEdges;
@@ -1147,6 +1166,22 @@ bool TimelineView::startGesture() {
         for (Ticks e : g.edges)
             std::erase(g.targets, e);
     }
+    // 0.4, Alt-drag copies: the originals stay, so their edges are targets too (a copy butts exactly after its
+    // original).
+    g.moving = moving;
+    if (g.spec.kind == GestureKind::Move) {
+        g.copyTargets = g.targets;
+        for (const Row& row : m_rows) {
+            for (const Clip& c : row.track->clips) {
+                if (moving.contains(c.id.value)) {
+                    g.copyTargets.push_back(c.start());
+                    g.copyTargets.push_back(c.end());
+                }
+            }
+        }
+        std::sort(g.copyTargets.begin(), g.copyTargets.end());
+        g.copyTargets.erase(std::unique(g.copyTargets.begin(), g.copyTargets.end()), g.copyTargets.end());
+    }
     g.active = true;
     m_gesture = std::move(g);
     setHoverEdge({});
@@ -1177,11 +1212,19 @@ void TimelineView::updateGesture(QPointF pos, Qt::KeyboardModifiers mods) {
     const Rate rate = frameRate();
     const double seconds = (pos.x() - m_pressPos.x()) / std::max(1e-6, m_pps);
     const bool samples = g.rate != rate; // 0.2: audio time units on audio-only material
-    Ticks delta = snapToFrame(Ticks{static_cast<std::int64_t>(std::llround(seconds * static_cast<double>(kTicksPerSecond)))},
-                              g.rate);
+    // 0.4, what the modifiers held now (at the drop) make of a move (Premiere): Ctrl insert, Alt copy, Ctrl+Alt rearrange;
+    // Shift keeps the time (only the track changes, no snapping).
+    const bool move = g.spec.kind == GestureKind::Move;
+    const bool ctrl = mods & Qt::ControlModifier;
+    const bool alt = mods & Qt::AltModifier;
+    const bool copy = move && alt && !ctrl;
+    const bool keepTime = move && (mods & Qt::ShiftModifier);
+    Ticks delta = keepTime ? Ticks{0}
+                           : snapToFrame(Ticks{static_cast<std::int64_t>(std::llround(seconds * static_cast<double>(kTicksPerSecond)))},
+                                         g.rate);
     std::optional<Ticks> snapped;
-    if (m_snapping && !g.edges.empty()) {
-        const SnapResult snap = snapDelta(g.edges, delta, g.targets, snapTolerance());
+    if (m_snapping && !g.edges.empty() && !keepTime) {
+        const SnapResult snap = snapDelta(g.edges, delta, copy ? g.copyTargets : g.targets, snapTolerance());
         delta = snap.delta;
         snapped = snap.target;
     }
@@ -1190,7 +1233,8 @@ void TimelineView::updateGesture(QPointF pos, Qt::KeyboardModifiers mods) {
     spec.delta = spec.kind == GestureKind::Slip ? -delta : delta; // dragging left shows later source frames
     int shift = 0;
     if (spec.kind == GestureKind::Move) {
-        spec.moveMode = (mods & Qt::ControlModifier) ? edit::MoveMode::Insert : edit::MoveMode::Overwrite;
+        spec.copy = copy;
+        spec.moveMode = ctrl && alt ? edit::MoveMode::Rearrange : ctrl ? edit::MoveMode::Insert : edit::MoveMode::Overwrite;
         spec.newAudioTracks = 0;
         const int row = nearestRow(pos.y());
         if (!g.grabbedVideo && pos.y() + m_scrollY > m_modelRowsBottom + m_style.trackGap) {
@@ -1214,6 +1258,7 @@ void TimelineView::updateGesture(QPointF pos, Qt::KeyboardModifiers mods) {
     auto run = [&](const GestureSpec& s) {
         return m_controller->previewEdit([&](const ProjectState& state) { return applyGesture(state, seqId, s); });
     };
+    QString refusal; // 0.4: why the move the modifiers ask for is refused (the readout shows it)
     auto outcome = run(spec);
     if (!outcome && spec.kind == GestureKind::Move && shift != 0) {
         // The partner has no track to go to: move only the grabbed kind across tracks.
@@ -1230,13 +1275,54 @@ void TimelineView::updateGesture(QPointF pos, Qt::KeyboardModifiers mods) {
         g.appliedDelta = outcome->appliedDelta;
         const Ticks requested = spec.kind == GestureKind::Slip ? -delta : delta;
         g.snappedAt = outcome->appliedDelta == requested ? snapped : std::nullopt; // clamped: not on the target
+        if (spec.kind == GestureKind::Move) {
+            // 0.4: a copy lifts the copies (the originals stay drawn in place); a move lifts the dragged material.
+            std::unordered_set<std::uint64_t> lifted;
+            if (spec.copy) {
+                g.created = outcome->placed; // duplicateClips: the copies, in resolveClips order
+                for (const ClipId id : g.created)
+                    lifted.insert(id.value);
+            } else {
+                g.created.clear();
+                lifted = g.moving;
+            }
+            if (lifted != m_lifted) {
+                markTracksWith(m_lifted);
+                m_lifted = std::move(lifted);
+                markTracksWith(m_lifted);
+            }
+        }
         g.preview = std::make_shared<const ProjectState>(std::move(outcome->state));
         showSequence(g.preview->sequencePtr(seqId));
+    } else if (move && (!g.preview || spec.copy != g.spec.copy || spec.moveMode != g.spec.moveMode)) {
+        // 0.4: refused. Within the mode of the preview shown (a locked destination while rearranging) the last valid
+        // preview stays and is what the drop commits. A mode the modifiers now ask for that is refused (a Ctrl+Alt
+        // rearrange that would take an unselected clip off a track, where the Overwrite before it was fine) drops that
+        // preview instead: what is held at the drop decides, so the drop commits nothing, and the readout says why.
+        refusal = QString::fromStdString(outcome.error().message);
+        g.spec.copy = spec.copy;
+        g.spec.moveMode = spec.moveMode;
+        g.appliedDelta = Ticks{0};
+        g.snappedAt.reset();
+        g.created.clear();
+        if (m_lifted != g.moving) {
+            markTracksWith(m_lifted);
+            m_lifted = g.moving;
+            markTracksWith(m_lifted);
+        }
+        if (g.preview) {
+            g.preview.reset();
+            showSequence(m_controller->currentSequence());
+        }
     }
     m_stats.previewNs = timer.nsecsElapsed();
 
     // Readout next to the pointer.
     const bool dropFrame = m_sequence && m_sequence->dropFrame;
+    // 0.4: a length in the readout's unit (samples on audio-only drags with audio time units on).
+    const auto length = [&](Ticks t) {
+        return samples ? m_controller->formatAudioTime(t) : QString::fromStdString(ticksToTimecode(t, rate, dropFrame));
+    };
     if (g.spec.kind == GestureKind::Slip) {
         const auto loc = m_sequence ? m_sequence->findClip(g.grabbed) : std::nullopt;
         if (loc) {
@@ -1249,12 +1335,64 @@ void TimelineView::updateGesture(QPointF pos, Qt::KeyboardModifiers mods) {
     } else {
         const Ticks applied = g.appliedDelta;
         const Ticks magnitude = applied.value < 0 ? -applied : applied;
-        const QString amount = samples ? m_controller->formatAudioTime(magnitude)
-                                       : QString::fromStdString(ticksToTimecode(magnitude, rate, dropFrame));
-        m_gestureReadout = (applied.value < 0 ? QStringLiteral("−") : QStringLiteral("+")) + amount;
-        if (g.spec.kind == GestureKind::Move && g.spec.moveMode == edit::MoveMode::Insert)
-            m_gestureReadout = tr("Insert %1").arg(m_gestureReadout);
+        m_gestureReadout = (applied.value < 0 ? QStringLiteral("−") : QStringLiteral("+")) + length(magnitude);
+        if (g.spec.kind == GestureKind::Move) {
+            if (g.spec.copy)
+                m_gestureReadout = tr("Copy %1").arg(m_gestureReadout);
+            else if (g.spec.moveMode == edit::MoveMode::Rearrange)
+                m_gestureReadout = tr("Rearrange %1").arg(m_gestureReadout);
+            else if (g.spec.moveMode == edit::MoveMode::Insert)
+                m_gestureReadout = tr("Insert %1").arg(m_gestureReadout);
+        }
+        // 0.4: trims show the clip's new duration (rate stretch also its new speed); rolls and slides the two clips
+        // around the edit point, "left | right" (the preview shown is the edit).
+        const auto loc = m_sequence ? m_sequence->findClip(g.grabbed) : std::nullopt;
+        const auto neighbour = [&](const Track& track, const Clip& c, bool before) -> const Clip* {
+            const Ticks t = before ? c.start() - Ticks{1} : c.end();
+            if (before && c.start() <= Ticks{0})
+                return nullptr;
+            const auto index = track.clipIndexAt(t);
+            if (!index)
+                return nullptr;
+            const Clip& n = track.clips[*index];
+            return (before ? n.end() == c.start() : n.start() == c.end()) ? &n : nullptr;
+        };
+        if (loc) {
+            const Clip& c = loc->clip();
+            switch (g.spec.kind) {
+            case GestureKind::Trim:
+            case GestureKind::RippleTrim:
+                m_gestureReadout = tr("%1 · Duration %2").arg(m_gestureReadout, length(c.duration()));
+                break;
+            case GestureKind::RateStretch:
+                m_gestureReadout = tr("%1 · Duration %2 · %3")
+                                       .arg(m_gestureReadout, length(c.duration()), TimeRemapBridge::speedLabel(c));
+                break;
+            case GestureKind::Roll: {
+                const bool head = g.spec.edge == edit::Edge::Head;
+                const Clip* other = neighbour(*loc->track, c, head);
+                if (!other)
+                    m_gestureReadout = tr("%1 · Duration %2").arg(m_gestureReadout, length(c.duration()));
+                else
+                    m_gestureReadout = tr("%1 · %2 | %3")
+                                           .arg(m_gestureReadout, length((head ? *other : c).duration()),
+                                                length((head ? c : *other).duration()));
+                break;
+            }
+            case GestureKind::Slide: {
+                const Clip* left = neighbour(*loc->track, c, true);
+                const Clip* right = neighbour(*loc->track, c, false);
+                if (left && right)
+                    m_gestureReadout = tr("%1 · %2 | %3").arg(m_gestureReadout, length(left->duration()), length(right->duration()));
+                break;
+            }
+            default:
+                break;
+            }
+        }
     }
+    if (!refusal.isEmpty()) // "Rearrange would also remove unselected clip 'A' on V1": a drop here does nothing
+        m_gestureReadout = refusal.left(1).toUpper() + refusal.mid(1);
     m_gesturePoint = pos;
     applyCursor(gestureCursorKey(mods));
     emit gestureChanged();
@@ -1272,9 +1410,18 @@ void TimelineView::finishGesture() {
     if (g.preview) { // a preview of no change commits nothing (no undo step)
         const SequenceId seqId = m_controller->currentSequenceId();
         const GestureSpec spec = g.spec;
-        committed = m_controller->commitGesture(gestureLabel(spec), [seqId, spec](const ProjectState& state) {
-            return applyGesture(state, seqId, spec);
+        std::vector<ClipId> copies;
+        committed = m_controller->commitGesture(gestureLabel(spec), [seqId, spec, &copies](const ProjectState& state) {
+            auto outcome = applyGesture(state, seqId, spec);
+            if (outcome && spec.kind == GestureKind::Move && spec.copy)
+                copies = outcome->placed; // duplicateClips: the copies, in resolveClips order
+            return outcome;
         });
+        // 0.4: the copies become the selection (Premiere). Taken from the committed edit, not the preview: the session
+        // raises the id generator to its high-water mark (ids are never reused after an undo or a reset), so the
+        // committed copies may have other ids than the preview's.
+        if (committed && !copies.empty())
+            m_controller->setSelection(copies, copies.front());
     }
     if (!committed) {
         // Nothing changed (no movement, or the model refused): back to the model, sliding.

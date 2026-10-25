@@ -145,21 +145,6 @@ struct Piece {
     Clip clip;
 };
 
-/// Maps a time through a ripple insert of `length` at `at`.
-Ticks afterInsert(Ticks t, Ticks at, Ticks length) { return t >= at ? t + length : t; }
-
-void rippleMarkersForInsert(std::vector<Marker>& markers, Ticks at, Ticks length) {
-    for (Marker& m : markers) {
-        const Ticks start = afterInsert(m.start, at, length);
-        const Ticks end = afterInsert(m.end(), at, length);
-        if (m.highlight) {
-            m.highlight->peak = std::clamp(afterInsert(m.highlight->peak, at, length), start, end);
-        }
-        m.start = start;
-        m.duration = end - start;
-    }
-}
-
 /// A free unlocked video track above video index `above` over `range`.
 std::optional<TrackId> freeVideoTrackAbove(const Sequence& seq, std::size_t above, TimeRange range) {
     for (std::size_t i = above + 1; i < seq.videoTracks.size(); ++i) {
@@ -383,10 +368,9 @@ std::expected<ReplayResult, Error> instantReplay(const ProjectState& state, Sequ
             ed.rippleInsert(id, b, replayLength);
         }
     }
+    // The markers follow with the captions (SequenceEditor, 0.4) when asked to: instant replay keeps its own option.
+    ed.setMarkersFollow(options.rippleMarkers);
     ed.captionsInsert(b, replayLength);
-    if (options.rippleMarkers) {
-        rippleMarkersForInsert(ed.header().markers, b, replayLength);
-    }
     std::map<std::uint64_t, LinkGroupId> groups;
     std::map<std::uint64_t, std::size_t> groupSizes;
     for (const Piece& p : pieces) {

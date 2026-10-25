@@ -5,9 +5,11 @@ import QtQuick.Controls.Basic
 
 // One smart-search hit (AI-8): the matched frame, the source-range badge, the clip name and the transcript snippet
 // with the matched words in bold. Drag it onto the timeline to edit in just that range ("application/x-wabcut-search-hit":
-// overwrite, Ctrl/Cmd = insert, like library cards); double-click shows the clip in the monitor.
+// overwrite, Ctrl/Cmd = insert, like library cards). 0.4: double-click, or Enter while it has focus, opens the clip in
+// the Source Monitor with the hit's range marked (`opened`; SearchResultsPanel calls SourceMonitor.loadRange).
 AbstractButton {
     id: card
+    objectName: "searchHitCard"
 
     /// A SmartSearch.results entry: { mediaId, mediaName, rangeText, thumbnail, visual, transcript, snippet,
     /// snippetRich, hit, ... }
@@ -22,14 +24,26 @@ AbstractButton {
 
     //: Accessible name of a smart search result: clip, range and what was said
     Accessible.name: qsTr("%1, %2. %3").arg(hit.mediaName).arg(hit.rangeText).arg(hit.snippet)
-    Accessible.description: qsTr("Drag to the timeline to insert this range")
+    Accessible.description: qsTr("Enter opens it in the Source Monitor; drag to the timeline to insert this range")
+    Accessible.onPressAction: card.opened()
 
     onDoubleClicked: card.opened()
+    // Enter is the card's (not Render In to Out, not the Library's Next Row Field).
+    Keys.onShortcutOverride: event => event.accepted = event.key === Qt.Key_Return || event.key === Qt.Key_Enter
+    Keys.onReturnPressed: event => {
+        event.accepted = true
+        card.opened()
+    }
+    Keys.onEnterPressed: event => {
+        event.accepted = true
+        card.opened()
+    }
 
     background: Rectangle {
         radius: Theme.radiusField
-        color: card.hovered || card.visualFocus ? Theme.hover : "transparent"
-        border.width: card.visualFocus ? Theme.focusRingWidth : 0
+        // The list gives the current card focus as Up / Down move (not a Tab focus reason): show it either way.
+        color: card.hovered || card.activeFocus ? Theme.hover : "transparent"
+        border.width: card.activeFocus ? Theme.focusRingWidth : 0
         border.color: Theme.accentStroke
         Behavior on color { ColorAnimation { duration: Theme.durFast } }
     }

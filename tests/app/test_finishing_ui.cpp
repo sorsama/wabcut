@@ -18,8 +18,12 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <QCoreApplication>
+#include <QGuiApplication>
+#include <QKeyEvent>
 #include <QMouseEvent>
+#include <QPointer>
 #include <QQuickItem>
+#include <QStyleHints>
 
 #include <cmath>
 #include <functional>
@@ -496,6 +500,7 @@ TEST_CASE("Effect Controls in the shell: stopwatch click, lane drag with the mou
         return i->objectName() == QLatin1String("savePresetItem") && i->isVisible();
     });
     CHECK(savePreset != nullptr);
+    CHECK(fx.selectedSections() == QStringList{blur}); // 0.4: the right-click selects the header it opened on
 
     const QStringList messages = takeMessages();
     INFO(join(messages));
@@ -1014,6 +1019,539 @@ TEST_CASE("Finishing screenshots: Effect Controls with keyframes, the Effects li
         spin(450);
         REQUIRE(shell.grab().save(outputDir() + QStringLiteral("/speed-duration.png")));
     }
+    const QStringList messages = takeMessages();
+    INFO(join(messages));
+    CHECK(messages.isEmpty());
+}
+
+// ---- 0.4: Effect Controls section selection and the effects clipboard -------------------------------------------------
+
+namespace {
+
+/// Clips on every track of the current sequence.
+std::size_t clipCount(const ProjectController& c) {
+    std::size_t n = 0;
+    c.currentSequence()->forEachTrack([&](const Track& t) { n += t.clips.size(); });
+    return n;
+}
+
+/// A Gaussian Blur and a Crop (left 0.25) on `clip`, which must be the primary clip.
+std::pair<QString, QString> blurAndCrop(ProjectController& controller, EffectControlsModel& fx, ClipId clip) {
+    REQUIRE(fx.addEffect(QStringLiteral("wabcut.blur.gaussian")).isEmpty());
+    REQUIRE(fx.addEffect(QStringLiteral("wabcut.crop")).isEmpty());
+    REQUIRE(stackOf(controller, clip).size() == 2);
+    const EffectInstanceId crop = stackOf(controller, clip)[1].id;
+    const SequenceId seq = controller.currentSequenceId();
+    REQUIRE(controller.applyEditFn("Crop", [&](const ProjectState& s) {
+        edit::EffectChange change;
+        change.params = {EffectParam{"left", ParamValue(0.25)}};
+        return edit::setEffect(s, seq, clip, crop, change);
+    }));
+    return {effectKey(stackOf(controller, clip)[0].id), effectKey(crop)};
+}
+
+bool selected(const EffectControlsModel& fx, const QString& section) {
+    return fx.row(QStringLiteral("h:") + section).value(QStringLiteral("sectionSelected")).toBool();
+}
+
+} // namespace
+
+TEST_CASE("Effect Controls sections: click selects and Ctrl or Shift extends and the selection is pruned", "[app][effects][sections]") {
+    Timeline tl(R"(
+        V1 tgt |AaaaaaaaaaBbbbbbbbbb|
+    )");
+    ProjectController controller;
+    controller.resetProject(tl.state, tl.seq);
+    EffectControlsModel& fx = *controller.effectControls();
+    const ClipId a = tl.clip("V1@0");
+    const ClipId b = tl.clip("V1@10");
+    controller.selectClipById(a, ProjectController::Replace);
+    controller.setPlayhead(f(2));
+    REQUIRE(fx.mode() == QStringLiteral("clip"));
+    const auto [blur, crop] = blurAndCrop(controller, fx, a);
+    int changes = 0;
+    QObject::connect(&fx, &EffectControlsModel::sectionSelectionChanged, [&] { ++changes; });
+
+    // A click selects one header; the row says so.
+    fx.selectSection(blur, 0);
+    CHECK(fx.selectedSections() == QStringList{blur});
+    CHECK(selected(fx, blur));
+    CHECK_FALSE(selected(fx, QStringLiteral("motion")));
+    CHECK(changes == 1);
+    // Ctrl toggles (the selection stays in panel order).
+    fx.selectSection(QStringLiteral("motion"), Qt::ControlModifier);
+    CHECK(fx.selectedSections() == QStringList({QStringLiteral("motion"), blur}));
+    fx.selectSection(blur, Qt::ControlModifier);
+    CHECK(fx.selectedSections() == QStringList{QStringLiteral("motion")});
+    // Shift selects from the anchor to the header.
+    fx.selectSection(QStringLiteral("opacity"), 0);
+    fx.selectSection(crop, Qt::ShiftModifier);
+    CHECK(fx.selectedSections() == QStringList({QStringLiteral("opacity"), blur, crop}));
+    CHECK(selected(fx, crop));
+    // Unknown sections and the transition key are not selectable.
+    fx.selectSection(QStringLiteral("transition"), 0);
+    fx.selectSection(QStringLiteral("e999999"), 0);
+    CHECK(fx.selectedSections().size() == 3);
+
+    // Selecting a keyframe clears the sections; selecting a section clears the keys.
+    fx.setAnimated(QStringLiteral("p:scale"), true);
+    REQUIRE(keysOf(fx, QStringLiteral("p:scale")).size() == 1);
+    REQUIRE(fx.pressKey(QStringLiteral("p:scale"), keyX(fx, QStringLiteral("p:scale"), 0), 0.02, 0));
+    CHECK(fx.selectedKeyCount() == 1);
+    CHECK(fx.selectedSections().isEmpty());
+    fx.selectSection(crop, 0);
+    CHECK(fx.selectedKeyCount() == 0);
+    CHECK(fx.selectedSections() == QStringList{crop});
+
+    // Move Up / Move Down: only inside the stack.
+    CHECK(fx.canMoveSection(crop, -1));
+    CHECK_FALSE(fx.canMoveSection(crop, 1));
+    CHECK_FALSE(fx.canMoveSection(QStringLiteral("motion"), 1));
+    fx.moveSectionBy(crop, -1);
+    CHECK(effectKey(stackOf(controller, a)[0].id) == crop);
+    CHECK(controller.undoText() == QStringLiteral("Undo Move Effect"));
+    REQUIRE(controller.undo());
+
+    // Pruned: a removed effect leaves the selection.
+    fx.selectSection(blur, 0);
+    fx.selectSection(crop, Qt::ControlModifier);
+    fx.removeSection(crop);
+    CHECK(fx.selectedSections() == QStringList{blur});
+
+    // Select All / Deselect All with Effect Controls focused (runCommand); what it does not take falls through.
+    CHECK(fx.runCommand(QStringLiteral("edit.selectAll")));
+    CHECK(fx.selectedSections() == QStringList({QStringLiteral("motion"), QStringLiteral("opacity"), blur}));
+    CHECK(fx.runCommand(QStringLiteral("edit.deselectAll")));
+    CHECK(fx.selectedSections().isEmpty());
+    CHECK_FALSE(fx.runCommand(QStringLiteral("edit.deselectAll")));
+    CHECK_FALSE(fx.runCommand(QStringLiteral("edit.copy")));
+    CHECK_FALSE(fx.runCommand(QStringLiteral("edit.cut")));
+    CHECK_FALSE(fx.runCommand(QStringLiteral("edit.clear")));
+    CHECK_FALSE(fx.runCommand(QStringLiteral("timeline.razor")));
+    CHECK(EffectControlsModel::handlesCommand(QStringLiteral("effectControls.removeSelectedEffect")));
+    CHECK_FALSE(EffectControlsModel::handlesCommand(QStringLiteral("edit.copy")));
+
+    // Another clip in the panel clears the selection.
+    fx.selectSection(QStringLiteral("motion"), 0);
+    controller.selectClipById(b, ProjectController::Replace);
+    CHECK(fx.selectedSections().isEmpty());
+    // Nothing selected: Backspace says so.
+    CHECK(fx.runCommand(QStringLiteral("effectControls.removeSelectedEffect")));
+    CHECK(fx.notice() == QStringLiteral("Select an effect first"));
+}
+
+TEST_CASE("Effect Controls sections: Remove Selected Effect removes stack effects and resets fixed ones in one undo step",
+          "[app][effects][sections]") {
+    Timeline tl(R"(
+        V1 tgt |Aaaaaaaaaa|
+    )");
+    ProjectController controller;
+    controller.resetProject(tl.state, tl.seq);
+    EffectControlsModel& fx = *controller.effectControls();
+    const ClipId a = tl.clip("V1@0");
+    controller.selectClipById(a, ProjectController::Replace);
+    const auto [blur, crop] = blurAndCrop(controller, fx, a);
+    fx.setValue(QStringLiteral("p:scale"), 150.0);
+    fx.endEdit();
+    REQUIRE(paramOf(controller, a, ParamId::Scale).constant() == 1.5);
+
+    // Blur and Transform: the blur goes, Scale goes back to 100 %, the clip stays; one undo step.
+    fx.selectSection(blur, 0);
+    fx.selectSection(QStringLiteral("motion"), Qt::ControlModifier);
+    const auto undos = controller.session().undoCount();
+    CHECK(fx.runCommand(QStringLiteral("effectControls.removeSelectedEffect")));
+    REQUIRE(controller.currentSequence()->findClip(a));
+    REQUIRE(stackOf(controller, a).size() == 1);
+    CHECK(effectKey(stackOf(controller, a)[0].id) == crop);
+    CHECK(paramOf(controller, a, ParamId::Scale).constant() == 1.0);
+    CHECK(controller.session().undoCount() == undos + 1);
+    CHECK(controller.undoText() == QStringLiteral("Undo Remove Effects"));
+    CHECK(fx.selectedSections().isEmpty());
+    REQUIRE(controller.undo());
+    CHECK(stackOf(controller, a).size() == 2);
+    CHECK(paramOf(controller, a, ParamId::Scale).constant() == 1.5);
+
+    // A collapsed fixed section resets too (from the registry, not the rows): "Reset Effect".
+    fx.setCollapsed(QStringLiteral("motion"), true);
+    fx.selectSection(QStringLiteral("motion"), 0);
+    CHECK(fx.removeSelectedSections() == 1);
+    CHECK(paramOf(controller, a, ParamId::Scale).constant() == 1.0);
+    CHECK(controller.undoText() == QStringLiteral("Undo Reset Effect"));
+    REQUIRE(controller.undo());
+    fx.setCollapsed(QStringLiteral("motion"), false);
+
+    // One stack effect with Delete (edit.clear while Effect Controls has the focus): "Remove Effect".
+    fx.selectSection(crop, 0);
+    CHECK(fx.runCommand(QStringLiteral("edit.clear")));
+    CHECK(stackOf(controller, a).size() == 1);
+    CHECK(controller.undoText() == QStringLiteral("Undo Remove Effect"));
+    REQUIRE(controller.undo());
+
+    // Selected keyframes win over sections.
+    fx.setAnimated(QStringLiteral("p:opacity"), true);
+    REQUIRE(fx.pressKey(QStringLiteral("p:opacity"), keyX(fx, QStringLiteral("p:opacity"), 0), 0.05, 0));
+    CHECK(fx.runCommand(QStringLiteral("effectControls.removeSelectedEffect")));
+    CHECK(controller.undoText() == QStringLiteral("Undo Delete Keyframes"));
+    CHECK(stackOf(controller, a).size() == 2);
+}
+
+TEST_CASE("Effect Controls sections: Reset works on a collapsed fixed section and a collapsed effect in one undo step",
+          "[app][effects][sections]") {
+    Timeline tl(R"(
+        V1 tgt |Aaaaaaaaaa|
+    )");
+    ProjectController controller;
+    controller.resetProject(tl.state, tl.seq);
+    EffectControlsModel& fx = *controller.effectControls();
+    const ClipId a = tl.clip("V1@0");
+    controller.selectClipById(a, ProjectController::Replace);
+    const auto [blur, crop] = blurAndCrop(controller, fx, a);
+    fx.setValue(QStringLiteral("p:scale"), 150.0);
+    fx.endEdit();
+    REQUIRE(paramOf(controller, a, ParamId::Scale).constant() == 1.5);
+    const auto cropLeft = [&] { return effectParameterAt(stackOf(controller, a)[1], "left", Ticks{}); };
+    REQUIRE(cropLeft() == 0.25);
+
+    // Transform collapsed (it shows no rows): the header's Reset still puts Scale back to 100 %; one undo step.
+    fx.setCollapsed(QStringLiteral("motion"), true);
+    REQUIRE_FALSE(rowKeys(fx).contains(QStringLiteral("p:scale")));
+    auto undos = controller.session().undoCount();
+    fx.resetSection(QStringLiteral("motion"));
+    CHECK(paramOf(controller, a, ParamId::Scale).constant() == 1.0);
+    CHECK(controller.session().undoCount() == undos + 1);
+    CHECK(controller.undoText() == QStringLiteral("Undo Reset Effect"));
+    REQUIRE(controller.undo());
+    CHECK(paramOf(controller, a, ParamId::Scale).constant() == 1.5);
+
+    // A collapsed stack effect: Crop's Left goes back to 0 and the effect stays.
+    fx.setCollapsed(crop, true);
+    REQUIRE_FALSE(rowKeys(fx).contains(crop + QStringLiteral(":left")));
+    undos = controller.session().undoCount();
+    fx.resetSection(crop);
+    REQUIRE(stackOf(controller, a).size() == 2);
+    CHECK(cropLeft() == 0.0);
+    CHECK(controller.session().undoCount() == undos + 1);
+    CHECK(controller.undoText() == QStringLiteral("Undo Reset Effect"));
+    REQUIRE(controller.undo());
+    CHECK(cropLeft() == 0.25);
+
+    // Expanded, Reset does the same.
+    fx.setCollapsed(crop, false);
+    fx.resetSection(crop);
+    CHECK(cropLeft() == 0.0);
+    CHECK(controller.undoText() == QStringLiteral("Undo Reset Effect"));
+}
+
+TEST_CASE("Effect Controls sections: Copy then Paste puts the effects on the selected clips in one undo step",
+          "[app][effects][sections]") {
+    Timeline tl(R"(
+        V2 lock |..........Eeeee.........|
+        V1 tgt  |AaaaaBbbbbCccccDdddd....|
+    )");
+    ProjectController controller;
+    controller.resetProject(tl.state, tl.seq);
+    EffectControlsModel& fx = *controller.effectControls();
+    const ClipId a = tl.clip("V1@0");
+    const ClipId targets[] = {tl.clip("V1@5"), tl.clip("V1@10"), tl.clip("V1@15")};
+    const ClipId locked = tl.clip("V2@10");
+    controller.selectClipById(a, ProjectController::Replace);
+    const auto [blur, crop] = blurAndCrop(controller, fx, a);
+    const EffectInstance source = stackOf(controller, a)[1];
+    QString notice;
+    QObject::connect(&controller, &ProjectController::clipboardNotice, [&](const QString& text) { notice = text; });
+
+    // Copy the Crop: the effects clipboard, not the clip clipboard.
+    const bool canPaste = controller.canPaste();
+    fx.selectSection(crop, 0);
+    CHECK(fx.runCommand(QStringLiteral("edit.copy")));
+    CHECK(fx.canPasteEffects());
+    CHECK(fx.effectsPastePending());
+    CHECK(controller.canPaste() == canPaste);
+
+    // Paste onto three clips (and one on a locked track): one undo step, each gets one Crop with the same values.
+    controller.setSelection({targets[0], targets[1], targets[2], locked}, targets[0]);
+    const std::size_t clips = clipCount(controller);
+    const auto undos = controller.session().undoCount();
+    CHECK(fx.pasteEffects().isEmpty());
+    CHECK(controller.session().undoCount() == undos + 1);
+    CHECK(controller.undoText() == QStringLiteral("Undo Paste Effects"));
+    CHECK(clipCount(controller) == clips);
+    for (const ClipId id : targets) {
+        INFO(id.value);
+        REQUIRE(stackOf(controller, id).size() == 1);
+        CHECK(stackOf(controller, id)[0].effect == "wabcut.crop");
+        CHECK(stackOf(controller, id)[0].params == source.params);
+    }
+    CHECK(stackOf(controller, locked).empty());
+    CHECK(notice.startsWith(QStringLiteral("Pasted 1 effect to 3 clips")));
+    CHECK(notice.contains(QStringLiteral("locked")));
+    CHECK(controller.canPaste() == canPaste);
+    REQUIRE(controller.undo());
+    for (const ClipId id : targets)
+        CHECK(stackOf(controller, id).empty());
+
+    // No clip selected: says so, pastes nothing (not the older clip copy either).
+    controller.setSelection({});
+    const auto none = controller.session().undoCount();
+    CHECK(fx.pasteEffects() == QStringLiteral("Select the clips to paste the effects onto"));
+    CHECK(notice == QStringLiteral("Select the clips to paste the effects onto"));
+    CHECK(controller.session().undoCount() == none);
+
+    // Cut: the sections go to the clipboard and leave the clip in one undo step.
+    controller.selectClipById(a, ProjectController::Replace);
+    fx.selectSection(blur, 0);
+    CHECK(fx.runCommand(QStringLiteral("edit.cut")));
+    CHECK(stackOf(controller, a).size() == 1);
+    CHECK(controller.undoText() == QStringLiteral("Undo Cut Effects"));
+    controller.setSelection({targets[0]}, targets[0]);
+    CHECK(fx.pasteEffects().isEmpty());
+    REQUIRE(stackOf(controller, targets[0]).size() == 1);
+    CHECK(stackOf(controller, targets[0])[0].effect == "wabcut.blur.gaussian");
+}
+
+TEST_CASE("Effect Controls sections: Ctrl+V on the timeline pastes copied effects until a clip is copied",
+          "[app][effects][sections]") {
+    // Needs ProjectController's edit.paste hook (pasteEffectsIfPending, stream B).
+    Timeline tl(R"(
+        V1 tgt |AaaaaBbbbbCcccc.........|
+    )");
+    ProjectController controller;
+    controller.resetProject(tl.state, tl.seq);
+    EffectControlsModel& fx = *controller.effectControls();
+    const ClipId a = tl.clip("V1@0");
+    const ClipId b = tl.clip("V1@5");
+    const ClipId c = tl.clip("V1@10");
+    controller.selectClipById(a, ProjectController::Replace);
+    const auto [blur, crop] = blurAndCrop(controller, fx, a);
+    fx.selectSection(crop, 0);
+    REQUIRE(fx.copySelectedSections() == 1);
+
+    // Ctrl+V with a clip selected: the effects.
+    controller.selectClipById(b, ProjectController::Replace);
+    const std::size_t clips = clipCount(controller);
+    REQUIRE(controller.runCommand(QStringLiteral("edit.paste")));
+    CHECK(controller.undoText() == QStringLiteral("Undo Paste Effects"));
+    REQUIRE(stackOf(controller, b).size() == 1);
+    CHECK(stackOf(controller, b)[0].effect == "wabcut.crop");
+    CHECK(clipCount(controller) == clips);
+
+    // A timeline copy is the newest copy: Ctrl+V pastes clips again.
+    controller.selectClipById(c, ProjectController::Replace);
+    controller.copySelection();
+    CHECK_FALSE(fx.effectsPastePending());
+    CHECK_FALSE(fx.canPasteEffects());
+    controller.setPlayhead(f(18));
+    REQUIRE(controller.runCommand(QStringLiteral("edit.paste")));
+    CHECK(controller.undoText() != QStringLiteral("Undo Paste Effects"));
+    CHECK(clipCount(controller) == clips + 1);
+}
+
+TEST_CASE("Effect Controls subtitle ends with the clip duration", "[app][effects]") {
+    Timeline tl(R"(
+        V1 tgt |.....Aaaaaaaaaa|
+    )");
+    ProjectController controller;
+    controller.resetProject(tl.state, tl.seq);
+    EffectControlsModel& fx = *controller.effectControls();
+    controller.selectClipById(tl.clip("V1@5"), ProjectController::Replace);
+    REQUIRE(fx.mode() == QStringLiteral("clip"));
+    // "start -> end · duration" (the arrow and the dot as the panel shows them).
+    const QString subtitle = fx.subtitle();
+    CHECK(subtitle.startsWith(controller.formatTimecode(f(5))));
+    CHECK(subtitle.contains(controller.formatTimecode(f(15))));
+    CHECK(subtitle.endsWith(QString(QChar(0x00B7)) + QLatin1Char(' ') + controller.formatTimecode(f(10))));
+}
+
+// ---- 0.4: Effect Controls' sections in the shell ----------------------------------------------------------------------
+
+namespace {
+
+void sendKey(Shell& shell, int key, Qt::KeyboardModifiers mods = {}, const QString& text = {}) {
+    QKeyEvent press(QEvent::KeyPress, key, mods, text);
+    QCoreApplication::sendEvent(shell.window.get(), &press);
+    QKeyEvent release(QEvent::KeyRelease, key, mods, text);
+    QCoreApplication::sendEvent(shell.window.get(), &release);
+    spin(30);
+}
+
+/// The title Text of a section header row (a point on it is on the header, not on one of its buttons).
+QQuickItem* headerTitle(QQuickItem* headerRow) {
+    REQUIRE(headerRow != nullptr);
+    const QString title = headerRow->property("title").toString();
+    return findItem(headerRow, [&](QQuickItem* i) {
+        return i->inherits("QQuickText") && i->property("text").toString() == title && i->isVisible();
+    });
+}
+
+/// Presses and releases `button` on the left of a header's title (with `mods`), after a pause (no double-click).
+void clickTitle(Shell& shell, QQuickItem* headerRow, Qt::MouseButton button = Qt::LeftButton, Qt::KeyboardModifiers mods = {}) {
+    QQuickItem* title = headerTitle(headerRow);
+    REQUIRE(title != nullptr);
+    spin(QGuiApplication::styleHints()->mouseDoubleClickInterval() + 30);
+    const QPointF p = title->mapToScene(QPointF(8.0, title->height() / 2));
+    sendMouse(shell, QEvent::MouseButtonPress, p, button, button, mods);
+    sendMouse(shell, QEvent::MouseButtonRelease, p, button, Qt::NoButton, mods);
+    spin(60);
+}
+
+} // namespace
+
+TEST_CASE("Effect Controls section menu in the shell: select by click and Backspace and the menu rows; screenshot",
+          "[app][effects][sections][qml][screenshots]") {
+    resetSettings();
+    clearMessages();
+    Shell shell;
+    REQUIRE(shell.window != nullptr);
+    shell.resize(kShotWidth, kShotHeight);
+    // Rows take their places at once (no displaced transition in a hidden window).
+    shell.theme->setProperty("reduceMotion", true);
+    auto* controller = shell.engine.singletonInstance<ProjectController*>("Wabcut", "ProjectController");
+    EffectControlsModel& fx = *controller->effectControls();
+    const ClipId city = controller->primaryClip();
+    REQUIRE(city.isValid());
+    REQUIRE(fx.addEffect(QStringLiteral("wabcut.blur.gaussian")).isEmpty());
+    REQUIRE(fx.addEffect(QStringLiteral("wabcut.vignette")).isEmpty());
+    REQUIRE(stackOf(*controller, city).size() == 2);
+    const QString blur = effectKey(stackOf(*controller, city)[0].id);
+    const QString vignette = effectKey(stackOf(*controller, city)[1].id);
+    REQUIRE_FALSE(shell.grab().isNull()); // lays the hidden window out
+    QObject* list = shell.object("effectControlsList");
+    REQUIRE(list != nullptr);
+    REQUIRE(QMetaObject::invokeMethod(list, "positionViewAtIndex", Q_ARG(int, fx.rowOf(QStringLiteral("h:") + blur)), Q_ARG(int, 0)));
+    spin(50);
+
+    // A click on Gaussian Blur's header selects it (the outline) and gives Effect Controls the keys.
+    QQuickItem* blurRow = rowItem(shell, QStringLiteral("h:") + blur);
+    REQUIRE(blurRow != nullptr);
+    QQuickItem* blurHeader = childNamed(blurRow, qPrintable(QStringLiteral("effectHeader_") + blur));
+    REQUIRE(blurHeader != nullptr);
+    clickTitle(shell, blurRow);
+    CHECK(fx.selectedSections() == QStringList{blur});
+    CHECK(blurRow->property("sectionSelected").toBool());
+    QQuickItem* focused = shell.window->activeFocusItem();
+    REQUIRE(focused != nullptr);
+    CHECK(shell.item("effectControls")->isAncestorOf(focused));
+    // Ctrl+click adds Vignette, a plain click takes Blur alone again, Esc clears.
+    QQuickItem* vignetteRow = rowItem(shell, QStringLiteral("h:") + vignette);
+    REQUIRE(vignetteRow != nullptr);
+    clickTitle(shell, vignetteRow, Qt::LeftButton, Qt::ControlModifier);
+    CHECK(fx.selectedSections() == QStringList({blur, vignette}));
+    sendKey(shell, Qt::Key_Escape);
+    CHECK(fx.selectedSections().isEmpty());
+    clickTitle(shell, blurRow);
+    CHECK(fx.selectedSections() == QStringList{blur});
+
+    // Backspace (Remove Selected Effect, through the keymap and Main.qml's Effect Controls hook): one undo step.
+    const auto undos = controller->session().undoCount();
+    sendKey(shell, Qt::Key_Backspace);
+    REQUIRE(stackOf(*controller, city).size() == 1);
+    CHECK(effectKey(stackOf(*controller, city)[0].id) == vignette);
+    CHECK(controller->session().undoCount() == undos + 1);
+    CHECK(controller->undoText() == QStringLiteral("Undo Remove Effect"));
+    REQUIRE(controller->undo());
+    REQUIRE(stackOf(*controller, city).size() == 2);
+    spin(50);
+
+    // Right-click on the unselected Vignette: it is selected alone and the header menu opens with Premiere's rows.
+    REQUIRE(QMetaObject::invokeMethod(list, "positionViewAtIndex", Q_ARG(int, fx.rowOf(QStringLiteral("h:") + blur)), Q_ARG(int, 0)));
+    spin(50);
+    vignetteRow = rowItem(shell, QStringLiteral("h:") + vignette);
+    REQUIRE(vignetteRow != nullptr);
+    clickTitle(shell, vignetteRow, Qt::RightButton);
+    CHECK(fx.selectedSections() == QStringList{vignette});
+    const auto menuItem = [&](const char* name) {
+        return findItem(shell.window->contentItem(), [&](QQuickItem* i) { return i->objectName() == QLatin1String(name) && i->isVisible(); });
+    };
+    QQuickItem* cut = menuItem("cutEffectsItem");
+    REQUIRE(cut != nullptr);
+    for (const char* name : {"copyEffectsItem", "pasteEffectsItem", "clearEffectsItem", "effectEnabledItem", "resetEffectItem",
+                             "moveEffectUpItem", "moveEffectDownItem", "savePresetItem", "saveAllPresetItem"}) {
+        INFO(name);
+        CHECK(menuItem(name) != nullptr);
+    }
+    CHECK(cut->isEnabled());
+    CHECK_FALSE(menuItem("pasteEffectsItem")->isEnabled()); // nothing copied yet
+    CHECK(menuItem("effectEnabledItem")->property("checked").toBool());
+    CHECK(menuItem("moveEffectUpItem")->isEnabled());       // Vignette is second in the stack
+    CHECK_FALSE(menuItem("moveEffectDownItem")->isEnabled());
+    CHECK_FALSE(menuItem("copyEffectsItem")->property("shortcut").toString().isEmpty());
+    CHECK_FALSE(menuItem("clearEffectsItem")->property("shortcut").toString().isEmpty());
+    spin(100);
+    {
+        const QImage image = shell.grab();
+        REQUIRE_FALSE(image.isNull());
+        REQUIRE(image.save(outputDir() + QStringLiteral("/effect-controls-section-menu.png")));
+        // The panel and the open menu.
+        const double dpr = image.devicePixelRatio();
+        QQuickItem* panel = shell.item("effectControls");
+        REQUIRE(panel != nullptr);
+        QRectF r = panel->mapRectToScene(QRectF(0, 0, panel->width(), panel->height()));
+        const auto* menuObject = cut->property("menu").value<QObject*>();
+        REQUIRE(menuObject != nullptr);
+        const auto* menuContent = menuObject->property("contentItem").value<QQuickItem*>();
+        REQUIRE(menuContent != nullptr);
+        const QQuickItem* popup = menuContent->parentItem() ? menuContent->parentItem() : menuContent;
+        r = r.united(popup->mapRectToScene(QRectF(0, 0, popup->width(), popup->height())).adjusted(-16, -16, 16, 16));
+        r = r.intersected(QRectF(0, 0, image.width() / dpr, image.height() / dpr));
+        REQUIRE(image.copy(QRectF(r.topLeft() * dpr, r.size() * dpr).toRect())
+                    .save(outputDir() + QStringLiteral("/effect-controls-section-menu-crop.png")));
+    }
+
+    // Copy puts Vignette on the effects clipboard; Move Up is one undo step ("Move Effect"). The menu lives in the
+    // header's row, which the move may rebuild: close it while it is there.
+    // (A triggered row closes the menu: both rows are looked up first.)
+    const QPointer<QObject> menu = cut->property("menu").value<QObject*>();
+    REQUIRE(menu);
+    QQuickItem* copyRow = menuItem("copyEffectsItem");
+    QQuickItem* upRow = menuItem("moveEffectUpItem");
+    REQUIRE(copyRow != nullptr);
+    REQUIRE(upRow != nullptr);
+    REQUIRE(QMetaObject::invokeMethod(copyRow, "triggered"));
+    CHECK(fx.canPasteEffects());
+    REQUIRE(QMetaObject::invokeMethod(upRow, "triggered"));
+    CHECK(effectKey(stackOf(*controller, city)[0].id) == vignette);
+    CHECK(controller->undoText() == QStringLiteral("Undo Move Effect"));
+    if (menu)
+        QMetaObject::invokeMethod(menu, "close");
+    REQUIRE(waitFor([&] { return !menu || !menu->property("visible").toBool(); }, 3000));
+    spin(50);
+
+    // Right-clicked again after the move: Vignette is first now, so Move Up is off and Move Down on (the rows read the
+    // stack at each popup, not the first popup's answer).
+    vignetteRow = rowItem(shell, QStringLiteral("h:") + vignette);
+    REQUIRE(vignetteRow != nullptr);
+    clickTitle(shell, vignetteRow, Qt::RightButton);
+    REQUIRE(menuItem("moveEffectUpItem") != nullptr);
+    CHECK_FALSE(menuItem("moveEffectUpItem")->isEnabled());
+    CHECK(menuItem("moveEffectDownItem")->isEnabled());
+    CHECK(menuItem("saveAllPresetItem")->isEnabled());
+    {
+        const QPointer<QObject> again = menuItem("cutEffectsItem")->property("menu").value<QObject*>();
+        REQUIRE(again);
+        CHECK(again == menu); // the row (and its menu) survived the move: the case a binding got wrong
+        QMetaObject::invokeMethod(again, "close");
+        REQUIRE(waitFor([&] { return !again || !again->property("visible").toBool(); }, 3000));
+    }
+    REQUIRE(controller->undo());
+    spin(100);
+
+    // Ctrl+V with another clip selected pastes the copied effect onto it (the keymap's edit.paste).
+    ClipId other;
+    for (const Clip& c : controller->currentSequence()->videoTracks[0]->clips) {
+        if (c.id != city) {
+            other = c.id;
+            break;
+        }
+    }
+    REQUIRE(other.isValid());
+    const std::size_t had = stackOf(*controller, other).size();
+    controller->selectClipById(other, ProjectController::Replace);
+    spin(50);
+    sendKey(shell, Qt::Key_V, Qt::ControlModifier, QStringLiteral("v"));
+    REQUIRE(stackOf(*controller, other).size() == had + 1);
+    CHECK(stackOf(*controller, other).back().effect == "wabcut.vignette");
+    CHECK(controller->undoText() == QStringLiteral("Undo Paste Effects"));
+
     const QStringList messages = takeMessages();
     INFO(join(messages));
     CHECK(messages.isEmpty());
