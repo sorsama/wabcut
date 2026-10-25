@@ -376,7 +376,8 @@ TEST_CASE("Rearranging leaves other tracks and captions alone", "[model][edit][m
         A2 |Mmmmmmmmm|
     )");
     CHECK(clipAt(r.state, tl.seq, "A2@0") == music); // the sync-locked music bed is not cut
-    const SequenceChange* change = diff(s, r.state).sequence(tl.seq);
+    const ChangeSet changes = diff(s, r.state); // keep it: change points into it
+    const SequenceChange* change = changes.sequence(tl.seq);
     REQUIRE(change != nullptr);
     CHECK_FALSE(change->captionsChanged);
     CHECK(change->track(tl.track("A2")) == nullptr);

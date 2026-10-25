@@ -526,7 +526,7 @@ TEST_CASE("shorts.create takes another caption preset and warns about an unknown
     CHECK(styleOf(unknown).style.placement == CaptionStyle{}.placement);
     CHECK(styleOf(unknown).style.box == CaptionStyle{}.box);
     CHECK(std::any_of(unknown.warnings.begin(), unknown.warnings.end(),
-                      [](const std::string& w) { return w.find("Nope") != std::string::npos; }));
+                      [](const std::string& warning) { return warning.find("Nope") != std::string::npos; }));
 
     // "" is the default look; landscape output keeps it unless a preset is given.
     const auto plain = h.ok("shorts.create", Json{{"sequence", h.tl.seq.value}, {"shorts", Json::array({pick})}, {"captionPreset", ""}, {"hookTitle", false}});
