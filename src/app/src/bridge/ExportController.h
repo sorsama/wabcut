@@ -70,6 +70,20 @@ class ExportJobModel : public QAbstractListModel {
     QML_UNCREATABLE("Provided by ExportController.jobs")
     Q_PROPERTY(int count READ rowCount NOTIFY countChanged FINAL)
     Q_PROPERTY(int activeCount READ activeCount NOTIFY activeCountChanged FINAL)
+    /// 0.4: a summary of the queue (summaryChanged). runningCount: jobs that run without the user - running or queued
+    /// (not held, not paused). pausedCount: paused while running. heldCount: sent to the queue, waiting for Start Queue.
+    Q_PROPERTY(int runningCount READ runningCount NOTIFY summaryChanged FINAL)
+    Q_PROPERTY(int pausedCount READ pausedCount NOTIFY summaryChanged FINAL)
+    Q_PROPERTY(int heldCount READ heldCount NOTIFY summaryChanged FINAL)
+    /// The current job: the running one, else the first paused one, else the first queued one ("" / -1 when none).
+    Q_PROPERTY(QString currentJobId READ currentJobId NOTIFY summaryChanged FINAL)
+    Q_PROPERTY(QString currentTitle READ currentTitle NOTIFY summaryChanged FINAL)
+    /// "running" | "paused" | "queued" | ""
+    Q_PROPERTY(QString currentState READ currentState NOTIFY summaryChanged FINAL)
+    /// 0..1, -1 when there is no current job
+    Q_PROPERTY(double currentProgress READ currentProgress NOTIFY summaryChanged FINAL)
+    /// The current row's etaText ("0:42 left"; "" until known)
+    Q_PROPERTY(QString currentEta READ currentEta NOTIFY summaryChanged FINAL)
 
 public:
     enum Role {
@@ -89,6 +103,9 @@ public:
         /// Export), "queue" (Send to Media Encoder), "transcode" (Media Browser Ingest), "watch" (a watch folder) or
         /// "command" (the export.* commands, queueRequest).
         OriginRole,
+        /// 0.4, "errorKind": what stopped a failed job (ExportController::errorKindOf): "offline", "space", "access",
+        /// "folder", "encoder" or "" (none, or another problem).
+        ErrorKindRole,
     };
     Q_ENUM(Role)
 
@@ -108,6 +125,7 @@ public:
         bool finished = false;
         bool held = false; ///< 0.2: sent to the queue, waiting for Start Queue (Media Encoder's "Ready")
         QString origin = QStringLiteral("command"); ///< UX rework (L): OriginRole
+        QString errorKind;                          ///< 0.4: ErrorKindRole
     };
 
     explicit ExportJobModel(QObject* parent = nullptr);
@@ -116,6 +134,14 @@ public:
     QVariant data(const QModelIndex& index, int role) const override;
     QHash<int, QByteArray> roleNames() const override;
     int activeCount() const;
+    int runningCount() const { return m_summary.running; }
+    int pausedCount() const { return m_summary.paused; }
+    int heldCount() const { return m_summary.held; }
+    QString currentJobId() const { return m_summary.jobId; }
+    QString currentTitle() const { return m_summary.title; }
+    QString currentState() const { return m_summary.state; }
+    double currentProgress() const { return m_summary.progress; }
+    QString currentEta() const { return m_summary.eta; }
 
     void append(Row row);
     /// Applies a queue status to the row of `queueId`; returns the row (nullptr if unknown).
@@ -129,9 +155,21 @@ public:
 signals:
     void countChanged();
     void activeCountChanged();
+    /// 0.4: runningCount, pausedCount, heldCount or the current job changed.
+    void summaryChanged();
 
 private:
+    struct Summary {
+        int running = 0, paused = 0, held = 0;
+        QString jobId, title, state, eta;
+        double progress = -1.0;
+        bool operator==(const Summary&) const = default;
+    };
+    /// 0.4: recomputes m_summary from m_rows; emits summaryChanged() only when it differs.
+    void refreshSummary();
+
     std::vector<Row> m_rows;
+    Summary m_summary;
 };
 
 class ExportController : public QObject {
@@ -273,11 +311,16 @@ public:
     // ---- UX rework (L) ----
     /// One job as a map, for a toast on jobFinished: { jobId, title, outputPath, outputUrl, folderUrl, presetName, state
     /// ("held" | "queued" | "running" | "paused" | "done" | "failed" | "cancelled"), detail, finished, origin (OriginRole),
-    /// exists (the output file is on disk) }; {} for an unknown id (e.g. after clearFinished()).
+    /// errorKind (0.4, ErrorKindRole), exists (the output file is on disk) }; {} for an unknown id (e.g. after
+    /// clearFinished()).
     Q_INVOKABLE QVariantMap job(const QString& jobId) const;
     /// Opens the job's finished output in the system's default app for it ("Open"). False when the job is unknown,
-    /// not done, or the file is gone.
+    /// not done, or the file is gone. 0.4: `jobId` may also be the absolute path of an export's file (as reveal()):
+    /// that file opens while it exists (after Clear Finished, say).
     Q_INVOKABLE bool openOutput(const QString& jobId);
+    /// 0.4: what kind of problem stopped an export (the toast picks its action from it): "offline" (original media
+    /// offline: Relink…), "space" (disk full), "access" (no permission), "folder" (the folder is gone), "encoder", or "".
+    static QString errorKindOf(const Error& error);
     /// The range to preselect for `sequenceId` ("" = the current sequence) before the user picks one: lastRange when
     /// that range is available for the sequence, else "inOut" when it has In/Out marks, else "whole".
     Q_INVOKABLE QString suggestedRange(const QString& sequenceId) const;

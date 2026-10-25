@@ -22,7 +22,12 @@
 //   * makeReel(options): highlights.toReel with the accepted moments (else every moment not rejected) in time order;
 //     makeShort(rank, options): highlights.toShort (on layout.apply: auto, vertical split or blurred fill, the facecam
 //     clip or a facecam region) for that moment's range. Both run as jobs and open the new sequence; the Short's
-//     layout is said in the message.
+//     layout is said in the message. 0.4: the Short options also carry a lead-in and a tail (handleBefore /
+//     handleAfter), a minimum length and the caption style (captionPreset).
+//   * 0.4 makeShorts(options): a Short of every moment makeReel() would use (highlights.toShort each, on ONE scratch
+//     session) as one job ("Short 2 of 6: ...") and ONE undo step "Make Highlight Shorts"; the timeline stays on the
+//     source sequence and Cancel keeps the Shorts made so far. exportShorts(hevc) then queues the ones still in the
+//     project with the vertical-1080x1920 preset (ExportController.queueExport).
 //   * available: the catalog has highlights.find (G.2). Until then the panel says highlights arrive with the next
 //     engine update.
 
@@ -54,6 +59,7 @@ class QQmlEngine;
 namespace wabcut::command {
 class CommandRegistry;
 class CommandServices;
+struct CommandRequest;
 struct CommandResult;
 }
 
@@ -70,7 +76,7 @@ class HighlightsBridge : public QObject {
     Q_PROPERTY(bool reelAvailable READ reelAvailable NOTIFY catalogChanged FINAL)
     Q_PROPERTY(bool shortAvailable READ shortAvailable NOTIFY catalogChanged FINAL)
     Q_PROPERTY(bool busy READ busy NOTIFY jobChanged FINAL)
-    /// What runs: "find", "reel", "short", or "".
+    /// What runs: "find", "reel", "short", "shorts" (0.4: makeShorts), "chat", or "".
     Q_PROPERTY(QString job READ job NOTIFY jobChanged FINAL)
     /// 0..1, or -1 when unknown.
     Q_PROPERTY(double progress READ progress NOTIFY jobChanged FINAL)
@@ -88,6 +94,10 @@ class HighlightsBridge : public QObject {
     Q_PROPERTY(int acceptedCount READ acceptedCount NOTIFY momentsChanged FINAL)
     /// How many moments makeReel() would use.
     Q_PROPERTY(int reelCount READ reelCount NOTIFY momentsChanged FINAL)
+    /// 0.4: how many Shorts makeShorts() would make (reelCount's rule).
+    Q_PROPERTY(int shortsCount READ shortsCount NOTIFY momentsChanged FINAL)
+    /// 0.4: the Shorts the last makeShorts() made that are still in the project.
+    Q_PROPERTY(int madeShortsCount READ madeShortsCount NOTIFY madeShortsChanged FINAL)
     /// The last find's recordings: [{ media, name, audioRoles, video, markers, chat, fromCache }].
     Q_PROPERTY(QVariantList recordings READ recordings NOTIFY momentsChanged FINAL)
     Q_PROPERTY(QStringList warnings READ warnings NOTIFY momentsChanged FINAL)
@@ -130,6 +140,9 @@ public:
     void setSynchronous(bool synchronous) { m_synchronous = synchronous; }
     /// Tests: what preview() calls to play (true) and pause (false) instead of the Program Monitor's playback.
     void setTransport(std::function<void(bool play)> transport) { m_transport = std::move(transport); }
+    /// 0.4, tests: replaces ExportController.queueExport for exportShorts() (returns the job id, "" = refused).
+    void setQueueExport(std::function<QString(const QString& sequenceKey, const QString& presetId,
+                                              const QVariantMap& overrides)> queue);
 
     bool available() const;
     bool reelAvailable() const;
@@ -144,6 +157,8 @@ public:
     bool otherSequence() const;
     int acceptedCount() const;
     int reelCount() const;
+    int shortsCount() const { return reelCount(); }
+    int madeShortsCount() const;
     QVariantList recordings() const { return m_recordings; }
     QStringList warnings() const { return m_warnings; }
     int recordingCount() const { return m_recordingCount; }
@@ -187,9 +202,17 @@ public:
     Q_INVOKABLE QString makeReel(const QVariantMap& options = {});
     /// highlights.toShort's parameters for moment `rank` and `options` { layout: "auto" | "verticalSplit" |
     /// "verticalBlurFill", facecam ("c12"), facecamRegion { x, y, width, height }, split, facecamOnTop, blur, zoom,
-    /// titleSeconds, captions, hookTitle, normalize }, clamped to layout.apply's ranges.
+    /// titleSeconds, captions, hookTitle, normalize; 0.4: handleBefore, handleAfter (lead-in and tail, 0..30 s),
+    /// minLength (0..180 s: the missing time is added two thirds before, one third after), captionPreset (with
+    /// captions) }, clamped to layout.apply's ranges and the sequence.
     Q_INVOKABLE QVariantMap shortParams(int rank, const QVariantMap& options) const;
     Q_INVOKABLE QString makeShort(int rank, const QVariantMap& options = {});
+    /// 0.4: highlights.toShort for every moment reelMoments() lists (time order), shortParams(rank, options) each, as
+    /// ONE job and ONE undo step "Make Highlight Shorts"; stays on the source sequence. "" or why not. job() == "shorts".
+    Q_INVOKABLE QString makeShorts(const QVariantMap& options = {});
+    /// 0.4: queues the Shorts the last makeShorts() made that are still in the project (preset vertical-1080x1920;
+    /// videoCodec hevc when `hevc`). Returns how many were queued.
+    Q_INVOKABLE int exportShorts(bool hevc);
     /// Music for the reel: the project's audio-only media, [{ id: "m3", name }].
     Q_INVOKABLE QVariantList musicChoices() const;
 
@@ -207,6 +230,8 @@ signals:
     void revealRequested();
     /// A reel or a short was made and is now the current sequence.
     void sequenceOpened(const QString& name);
+    /// 0.4: madeShortsCount may have changed (a batch, an undo, a sequence removed).
+    void madeShortsChanged();
 
 private:
     enum class Review { Undecided, Accepted, Rejected };
@@ -232,11 +257,18 @@ private:
     };
     using ReviewKey = std::tuple<std::uint64_t, std::int64_t, std::int64_t>; ///< sequence, marker start, marker end
     using Done = std::function<void(const command::CommandResult& result, bool stale)>;
+    /// 0.4: per request, in order (a step not run: not in the list); `cancelled`: Cancel stopped the batch.
+    using DoneMany = std::function<void(const std::vector<command::CommandResult>& results, bool stale, bool cancelled)>;
 
     const command::CommandRegistry& registry() const;
     /// Runs `name` on a copy of the project off the GUI thread; `done` on the GUI thread after the commit.
     QString runJob(const QString& kind, const QString& startText, const std::string& name, const QVariantMap& params,
                    bool staleIsError, Done done);
+    /// 0.4: runJob over several requests on ONE scratch session: cancel is checked between steps (and at checkpoints:
+    /// that step fails Cancelled and is dropped); the steps that succeeded are committed as one step `label` ("" = the
+    /// scratch session's own label). With more than one request the activity reads "Short 2 of 6: <checkpoint>".
+    QString runJobs(const QString& kind, const QString& startText, std::vector<command::CommandRequest> requests,
+                    const QString& label, bool staleIsError, DoneMany done);
     void setJob(const QString& kind, const QString& activity, double progress);
     void setMessage(const QString& message);
     /// The moments again from the highlight markers (of the current sequence, else the one listed); cheap when nothing
@@ -292,6 +324,9 @@ private:
     QString m_chatFile;
     QVariantMap m_chat;
     double m_chatOffset = 0.0;
+    /// 0.4: the Shorts the last makeShorts() made, and what exportShorts() queues them with.
+    std::vector<SequenceId> m_madeShorts;
+    std::function<QString(const QString&, const QString&, const QVariantMap&)> m_queueExport;
 };
 
 /// QML registration through the factory (a default-constructible class registered as its own singleton would be built

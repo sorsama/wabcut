@@ -13,8 +13,11 @@
 //     render / audio backends.
 //   * Program monitors attach with attachMonitor(); zero-copy decode is on for them (WABCUT_ZERO_COPY=0 turns
 //     it off).
-//   * Source view (library double-click): showSource() plays one media item on its own (video only, free-run
-//     clock) in the attached monitors until showProgram().
+//   * Source view (legacy): sourceMode / sourceName / sourceTimeText and showProgram() remain for the panels that still
+//     read them; 0.4 removed showSource() (its only caller, the smart-search card, opens hits in the Source Monitor:
+//     SourceMonitor.loadRange).
+//   * 0.4: Premiere's Play Around (Shift+K: playAround) and Play from Playhead to Out (Ctrl+Space: playToOut) play
+//     once (Loop ignored); Play Around parks back on the playhead it started from.
 //   * P.2: a second program output (the full-screen window, Premiere's Toggle Full Screen and Transmit): attachMirror()
 //     shows the program in another monitor through a mirror controller (playback::PlaybackController::addMirror): the
 //     same transport and edits, its own decoding in CPU frames (that window's GPU device is not the decoders').
@@ -169,8 +172,14 @@ public:
     Q_INVOKABLE void stepFrames(int frames);
     /// P.2: plays from the In (or the start) to the Out (or the end) and stops there; with Loop on it repeats.
     Q_INVOKABLE void playInToOut();
-    /// Source view of a library item ("m…"); showProgram() returns to the sequence.
-    Q_INVOKABLE bool showSource(const QString& mediaId);
+    /// 0.4, Premiere's Play Around (Shift+K): plays from the playhead minus `prerollSeconds` to the playhead plus
+    /// `postrollSeconds` once (Loop ignored; clamped at 0 and the sequence end), then parks back on the playhead it
+    /// started from. Space / K / J / L or a seek during it stop it where it is (no park-back).
+    Q_INVOKABLE void playAround(double prerollSeconds, double postrollSeconds);
+    /// 0.4, Premiere's Play from Playhead to Out (Ctrl+Space): plays from the playhead to the sequence Out (no Out: the
+    /// sequence end) once and stops on the last marked frame. At or past the Out: nothing. Loop is ignored.
+    Q_INVOKABLE void playToOut();
+    /// Returns the attached monitors from a legacy source view to the sequence.
     Q_INVOKABLE void showProgram();
 
 signals:
@@ -228,6 +237,7 @@ private:
     std::int32_t m_lastSpeedDen = 1;
     bool m_loop = false;
     std::optional<Ticks> m_stopAt; ///< Play In to Out without Loop: where playback stops
+    std::optional<Ticks> m_returnTo; ///< 0.4 Play Around: where the playhead parks when playback reaches m_stopAt
 
     // Stats
     QElapsedTimer m_statsClock;

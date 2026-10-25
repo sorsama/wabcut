@@ -200,7 +200,11 @@ TEST_CASE("Palette: the window and workspace commands Main.qml routes are ready"
           "timeline.showVideoFadeHandles", "timeline.expandAllTracks", "timeline.nextSequenceTab", "marker.goToNext",
           "marker.clearSelected", "graphics.newTextLayer", "graphics.selectPreviousLayer", "moments.slowMo",
           "history.stepBackward", "history.stepForward", "project.newBin", "multicam.toggleView",
-          "multicam.cutToCamera3"}) {
+          "multicam.cutToCamera3",
+          // 0.4: Effect Controls' Remove Selected Effect (stream C), Import Folder and Import from Media Browser
+          // (stream D) and Background Tasks (stream E), all routed by Main.qml.
+          "effectControls.removeSelectedEffect", "file.importFolder", "file.importFromMediaBrowser",
+          "window.backgroundTasks"}) {
         INFO(id);
         CHECK(KeymapCommandProvider::viewHandles(QString::fromLatin1(id)));
     }
@@ -239,6 +243,52 @@ TEST_CASE("Palette: the window and workspace commands Main.qml routes are ready"
     // The controller answers first: the bridges are not asked for its ids.
     CHECK_FALSE(asked.contains(QStringLiteral("edit.undo")));
     CHECK(asked.contains(QStringLiteral("multicam.toggleView")));
+}
+
+// 0.4 (stream B): the keys that said "Not available yet" - slow shuttle (Shift+J / Shift+L), Play Around (Shift+K),
+// Show Next / Previous Screen (PageDown / PageUp) - and the new ones (Ctrl+Space, Alt+Up / Alt+Down, ] [, Ripple
+// Sequence Markers) are ready; the clip volume keys ask ClipAudio whether there is a clip with sound.
+TEST_CASE("Palette: the 0.4 transport and timeline keys are ready", "[app][palette]") {
+    for (const char* id : {"transport.shuttleSlowBackward", "transport.shuttleSlowForward", "transport.playAround",
+                           "timeline.showNextScreen", "timeline.showPreviousScreen", "transport.playFromPlayheadToOut",
+                           "clip.increaseVolume", "clip.decreaseVolumeMany"}) {
+        INFO(id);
+        CHECK(KeymapCommandProvider::viewHandles(QString::fromLatin1(id)));
+    }
+    ProjectController controller;
+    controller.clearSelection(); // the demo project opens with a clip selected
+    for (const char* id : {"timeline.nudgeClipUp", "timeline.nudgeClipDown", "marker.toggleRipple"}) {
+        INFO(id);
+        CHECK(ProjectController::handlesCommand(QString::fromLatin1(id)));
+    }
+    QStringList asked;
+    const auto provider = KeymapCommandProvider::forApp(nullptr, &controller, [&](const QString& id) -> QVariantMap {
+        asked << id;
+        if (!id.startsWith(QLatin1String("clip.")) || !id.contains(QLatin1String("Volume")))
+            return {};
+        return {{QStringLiteral("handled"), true},
+                {QStringLiteral("enabled"), false},
+                {QStringLiteral("reason"), QStringLiteral("Select clips with sound")}};
+    });
+    const auto items = provider->items({});
+    const auto find = [&](const char* id) {
+        return std::ranges::find_if(items, [&](const PaletteItem& i) { return i.key == QStringLiteral("command:") + QLatin1String(id); });
+    };
+    for (const char* id : {"transport.shuttleSlowForward", "transport.playAround", "timeline.showNextScreen",
+                           "transport.playFromPlayheadToOut", "marker.toggleRipple"}) {
+        INFO(id);
+        REQUIRE(find(id) != items.end());
+        CHECK(find(id)->enabled);
+        CHECK(find(id)->reason.isEmpty());
+    }
+    // Nothing selected: the nudges say so; the volume keys carry ClipAudio's reason.
+    REQUIRE(find("timeline.nudgeClipUp") != items.end());
+    CHECK_FALSE(find("timeline.nudgeClipUp")->enabled);
+    CHECK(find("timeline.nudgeClipUp")->reason == QStringLiteral("Select a clip first"));
+    REQUIRE(find("clip.increaseVolume") != items.end());
+    CHECK_FALSE(find("clip.increaseVolume")->enabled);
+    CHECK(find("clip.increaseVolume")->reason == QStringLiteral("Select clips with sound"));
+    CHECK(asked.contains(QStringLiteral("clip.increaseVolume")));
 }
 
 TEST_CASE("Palette: rows the shell hands over run through shellActionRequested", "[app][palette]") {

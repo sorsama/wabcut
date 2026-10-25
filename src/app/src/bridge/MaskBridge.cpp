@@ -374,6 +374,7 @@ void MaskBridge::refresh() {
     m_clipName.clear();
     m_targets.clear();
     m_masks.clear();
+    m_maskCount = 0;
     m_current.clear();
     const Clip* clip = nullptr;
     if (m_clip.isValid()) {
@@ -386,6 +387,9 @@ void MaskBridge::refresh() {
         m_clipName = toQString(clip->name());
         m_targets.append(QVariantMap{{QStringLiteral("effect"), QString()}, {QStringLiteral("name"), tr("Opacity mask")}});
         for (const EffectInstance& e : clip->effects()) {
+            // 0.4: every target's masks (the opacity mask holder included) count for Effect Controls' section.
+            if (maskable(e))
+                m_maskCount += static_cast<int>(e.masks.size());
             if (maskable(e) && e.effect != kOpacityMask) {
                 const EffectDescriptor* d = EffectRegistry::builtin().find(e.effect);
                 m_targets.append(QVariantMap{{QStringLiteral("effect"), effectKey(e.id)},

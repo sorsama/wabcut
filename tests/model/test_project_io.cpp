@@ -708,6 +708,9 @@ TEST_CASE("Every key a project file uses is in the key list of its schema (E5-P2
     {
         edit::SequenceSettingsChange label; // 0.2, schema 18: a sequence's label colour
         label.colorIndex = 4;
+        // 0.4: Ripple Sequence Markers off, the only way "rippleMarkers" is written. An optional field the lead kept in
+        // schema 18 (an older build ignores it and never rippled markers), so the schema line below stays 18.
+        label.rippleMarkers = false;
         s = ok(edit::setSequenceSettings(s, seq, label)).state;
     }
     // A.8 and A.9's fields that are written only when set: a record-armed track with a moved 5.1 panner, a take.
@@ -921,4 +924,37 @@ TEST_CASE("Every key a project file uses is in the key list of its schema (E5-P2
     INFO("project file keys changed: bump kSchemaVersion and update " << pathToUtf8(golden) << " (the new list is in "
                                                                        << WABCUT_TEST_OUTPUT_DIR << ")");
     CHECK(current == expected);
+}
+
+TEST_CASE("Ripple Sequence Markers is saved only when off and loads back", "[model][io][markers]") {
+    Timeline tl(R"(
+        V1 tgt |AaaaBbbb|
+    )");
+    // On (the default): nothing is written, and the file reads back on.
+    const auto onJson = io::toJson(tl.state);
+    REQUIRE(onJson);
+    CHECK(onJson->find("rippleMarkers") == std::string::npos);
+    const auto onLoaded = io::fromJson(*onJson);
+    REQUIRE(onLoaded);
+    CHECK(onLoaded->findSequence(tl.seq)->rippleMarkers);
+    // Off: "rippleMarkers": false on the sequence, read back off; the same schema (an optional field).
+    edit::SequenceSettingsChange off;
+    off.rippleMarkers = false;
+    const ProjectState state = ok(edit::setSequenceSettings(tl.state, tl.seq, off)).state;
+    const auto offJson = io::toJson(state);
+    REQUIRE(offJson);
+    CHECK(offJson->find("\"rippleMarkers\": false") != std::string::npos);
+    const auto offLoaded = io::fromJson(*offJson);
+    REQUIRE(offLoaded);
+    CHECK_FALSE(offLoaded->findSequence(tl.seq)->rippleMarkers);
+    CHECK(*offLoaded->findSequence(tl.seq) == *state.findSequence(tl.seq));
+    // An older file (no field) and a newer reader agree: on.
+    std::string older = *offJson;
+    const std::string field = "\"rippleMarkers\": false";
+    const auto at = older.find(field);
+    REQUIRE(at != std::string::npos);
+    older.replace(at, field.size(), "\"rippleMarkers\": true");
+    const auto olderLoaded = io::fromJson(older);
+    REQUIRE(olderLoaded);
+    CHECK(olderLoaded->findSequence(tl.seq)->rippleMarkers);
 }

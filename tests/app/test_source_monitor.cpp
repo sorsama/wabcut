@@ -236,7 +236,7 @@ TEST_CASE("Insert and Overwrite from the Source Monitor follow Premiere's three-
         fx.markSource(4, 10);
         fx.markSequence(3, 6);
         CHECK(fx.source.needsFit());
-        CHECK(fx.source.sequenceInOutText() == tc(4));
+        CHECK(fx.controller.markDurationText() == tc(4)); // 0.4: was SourceMonitor.sequenceInOutText
         const std::string before = fx.picture();
         CHECK(fx.source.edit(true) == QStringLiteral("fit"));
         CHECK(fx.picture() == before); // nothing happened yet

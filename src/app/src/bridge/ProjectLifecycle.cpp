@@ -6,6 +6,7 @@
 #include "MediaBridge.h"
 #include "ProjectController.h"
 
+#include <wabcut/editor/CameraCards.h>
 #include <wabcut/editor/MediaImport.h>
 #include <wabcut/editor/Production.h>
 #include <wabcut/editor/Recovery.h>
@@ -47,6 +48,13 @@
 #include <chrono>
 #include <cmath>
 #include <filesystem>
+
+#ifdef Q_OS_WIN
+// 0.4 (fix round 1, import folders on network drives): kernel32, declared as the SDK declares it (no <windows.h> in
+// this file: its macros).
+extern "C" __declspec(dllimport) unsigned long __stdcall QueryDosDeviceW(const wchar_t* lpDeviceName, wchar_t* lpTargetPath,
+                                                                        unsigned long ucchMax);
+#endif
 
 namespace wabcut::app {
 
@@ -389,8 +397,11 @@ ProjectLifecycle::ProjectLifecycle(ProjectController* controller, QObject* paren
     m_document = std::make_unique<editor::ProjectDocument>(controller->session(), options);
     scanRecovery();
     m_autosaveText = tr("Not autosaved yet");
+    m_autosaveOk = true;
 
     connect(controller, &ProjectController::revisionChanged, this, &ProjectLifecycle::onRevisionChanged);
+    // 0.4: importFolder falls back to `folder`, which follows the document.
+    connect(this, &ProjectLifecycle::documentChanged, this, &ProjectLifecycle::importFolderChanged);
     connect(controller, &ProjectController::sessionClosing, this, [this] {
         m_autosaveTimer.stop();
         cleanExit();
@@ -520,6 +531,7 @@ void ProjectLifecycle::stashActive() {
     slot.readOnly = m_readOnly;
     slot.lockOwner = m_lockOwner;
     slot.autosaveText = m_autosaveText;
+    slot.autosaveOk = m_autosaveOk;
     slot.locked = std::exchange(m_locked, {});
     slot.sequenceIndex = m_controller ? m_controller->currentSequenceIndex() : 0;
     slot.playhead = m_controller ? m_controller->playhead() : Ticks{};
@@ -531,6 +543,7 @@ void ProjectLifecycle::takeActive(std::size_t index) {
     m_readOnly = slot.readOnly;
     m_lockOwner = slot.lockOwner;
     m_autosaveText = slot.autosaveText;
+    m_autosaveOk = slot.autosaveOk;
     m_locked = std::exchange(slot.locked, {});
     m_active = index;
 }
@@ -910,6 +923,7 @@ bool ProjectLifecycle::openRecoveryCopy(const QUrl& file) {
     m_controller->setPlayhead({});
     m_demo = false;
     m_autosaveText = tr("Copy of %1").arg(file.fileName());
+    m_autosaveOk = true;
     emit autosaveChanged();
     adoptDocument();
     if (const int offline = offlineCount(); offline > 0) {
@@ -1021,6 +1035,7 @@ bool ProjectLifecycle::recover(const QUrl& file) {
     autosaveNow();
     dismissRecovery(file);
     m_autosaveText = tr("Recovered");
+    m_autosaveOk = true;
     emit autosaveChanged();
     adoptDocument();
     if (const int offline = offlineCount(); offline > 0) {
@@ -1113,6 +1128,106 @@ QUrl ProjectLifecycle::folder() const {
         return toUrl(m_document->file().parent_path());
     }
     return QUrl::fromLocalFile(QStandardPaths::writableLocation(QStandardPaths::MoviesLocation));
+}
+
+// ---- 0.4: where import dialogs open ----
+
+namespace {
+
+constexpr int kRecentImportFolders = 5;
+
+/// Two folder paths name the same folder (case-insensitive on Windows).
+bool sameFolderText(const QString& a, const QString& b) {
+#ifdef Q_OS_WIN
+    return QDir::cleanPath(a).compare(QDir::cleanPath(b), Qt::CaseInsensitive) == 0;
+#else
+    return QDir::cleanPath(a) == QDir::cleanPath(b);
+#endif
+}
+
+/// Fix round 1: a folder on a network share (\\server\share, or a drive letter mapped to one). Whether it is there is
+/// not asked on the GUI thread: a share that does not answer holds the caller for the redirector's timeout (15-60 s),
+/// and importFolder is read by four dialogs while the window loads. Told from the path and the drive letter's DOS
+/// device alone (no file system access); what is not a local disk, CD or floppy counts as a share.
+bool onNetworkShare(const QString& path, int depth = 0) {
+    const QString p = QDir::fromNativeSeparators(path);
+    if (p.startsWith(QLatin1String("//")))
+        return true;
+#ifdef Q_OS_WIN
+    if (p.size() >= 2 && p.at(1) == QLatin1Char(':') && p.at(0).isLetter()) {
+        const wchar_t drive[3] = {static_cast<wchar_t>(p.at(0).toUpper().unicode()), L':', L'\0'};
+        wchar_t target[4096] = {};
+        if (QueryDosDeviceW(drive, target, 4096) == 0)
+            return false; // no such drive: asking about it fails at once
+        const QString device = QString::fromWCharArray(target);
+        if (device.startsWith(QLatin1String("\\??\\UNC\\"), Qt::CaseInsensitive))
+            return true; // SUBST of a share
+        if (device.startsWith(QLatin1String("\\??\\")))
+            return depth > 4 || onNetworkShare(device.mid(4), depth + 1); // SUBST of a folder: where it points
+        return !device.startsWith(QLatin1String("\\Device\\Harddisk"), Qt::CaseInsensitive) &&
+               !device.startsWith(QLatin1String("\\Device\\CdRom"), Qt::CaseInsensitive) &&
+               !device.startsWith(QLatin1String("\\Device\\Floppy"), Qt::CaseInsensitive);
+    }
+#else
+    (void)depth;
+#endif
+    return false;
+}
+
+/// A remembered folder still to offer: a local one while it is there, one on a share as it is (onNetworkShare; a
+/// dialog opened at a share that is gone falls back by itself).
+bool usableFolder(const QString& path) {
+    return !path.isEmpty() && (onNetworkShare(path) || QFileInfo(path).isDir());
+}
+
+} // namespace
+
+QUrl ProjectLifecycle::importFolder() const {
+    const QString last = QSettings().value(QStringLiteral("import/lastFolder")).toString();
+    if (usableFolder(last))
+        return QUrl::fromLocalFile(QDir::fromNativeSeparators(last));
+    return folder();
+}
+
+void ProjectLifecycle::rememberImportFolder(const QList<QUrl>& chosen) {
+    QStringList folders; // each file's folder, each folder itself; in the order chosen
+    QString last;        // the first one's folder (a folder: its parent, so a sibling is one click away)
+    for (const QUrl& url : chosen) {
+        const QString path = url.isLocalFile() ? url.toLocalFile() : QString();
+        if (path.isEmpty())
+            continue;
+        const QFileInfo info(path);
+        const QString folderPath = QDir::cleanPath(info.isDir() ? info.absoluteFilePath() : info.absolutePath());
+        if (last.isEmpty())
+            last = info.isDir() ? QDir::cleanPath(QFileInfo(folderPath).absolutePath()) : folderPath;
+        if (std::ranges::none_of(folders, [&](const QString& f) { return sameFolderText(f, folderPath); }))
+            folders << folderPath;
+    }
+    if (last.isEmpty())
+        return;
+    QSettings settings;
+    settings.setValue(QStringLiteral("import/lastFolder"), QDir::toNativeSeparators(last));
+    // Newest first: this choice's folders, then the ones remembered before (deduplicated), at most five.
+    QStringList recent;
+    for (const QString& f : folders)
+        recent << QDir::toNativeSeparators(f);
+    for (const QString& f : settings.value(QStringLiteral("import/recentFolders")).toStringList()) {
+        if (std::ranges::none_of(recent, [&](const QString& r) { return sameFolderText(r, f); }))
+            recent << f;
+    }
+    while (recent.size() > kRecentImportFolders)
+        recent.removeLast();
+    settings.setValue(QStringLiteral("import/recentFolders"), recent);
+    emit importFolderChanged();
+}
+
+QStringList ProjectLifecycle::recentImportFolders() {
+    QStringList out;
+    for (const QString& f : QSettings().value(QStringLiteral("import/recentFolders")).toStringList()) {
+        if (usableFolder(f))
+            out << QDir::toNativeSeparators(f);
+    }
+    return out;
 }
 
 void ProjectLifecycle::setAutosaveIntervalSeconds(int seconds) {
@@ -1225,6 +1340,7 @@ void ProjectLifecycle::startNewProjectFrom(ProjectState initial) {
     m_controller->setPlayhead({});
     m_demo = false;
     m_autosaveText = tr("Not autosaved yet");
+    m_autosaveOk = true;
     emit autosaveChanged();
     adoptDocument();
 }
@@ -1272,6 +1388,7 @@ bool ProjectLifecycle::openDemo() {
     m_controller->setPlayhead(demo.initialPlayhead);
     m_demo = true;
     m_autosaveText = tr("Not autosaved yet");
+    m_autosaveOk = true;
     setError({});
     emit autosaveChanged();
     adoptDocument();
@@ -1329,6 +1446,7 @@ bool ProjectLifecycle::open(const QUrl& file) {
     m_demo = false;
     m_autosaveText = m_readOnly ? tr("Read-only: %1 has it open").arg(m_lockOwner)
                                 : tr("Opened %1").arg(QDateTime::currentDateTime().toString(QStringLiteral("HH:mm")));
+    m_autosaveOk = true;
     emit autosaveChanged();
     adoptDocument();
     if (const int offline = offlineCount(); offline > 0) {
@@ -1368,6 +1486,7 @@ bool ProjectLifecycle::save() {
     }
     setError({});
     m_autosaveText = tr("Saved %1").arg(QDateTime::currentDateTime().toString(QStringLiteral("HH:mm")));
+    m_autosaveOk = true;
     emit autosaveChanged();
     adoptDocument();
     return true;
@@ -1397,6 +1516,7 @@ bool ProjectLifecycle::saveAs(const QUrl& file) {
     m_demo = false;
     rememberProject();
     m_autosaveText = tr("Saved %1").arg(QDateTime::currentDateTime().toString(QStringLiteral("HH:mm")));
+    m_autosaveOk = true;
     emit autosaveChanged();
     adoptDocument();
     return true;
@@ -1463,6 +1583,7 @@ bool ProjectLifecycle::revert() {
     }
     m_controller->setPlayhead(playhead);
     m_autosaveText = tr("Reverted %1").arg(QDateTime::currentDateTime().toString(QStringLiteral("HH:mm")));
+    m_autosaveOk = true;
     emit autosaveChanged();
     adoptDocument();
     if (const int offline = offlineCount(); offline > 0) {
@@ -1515,13 +1636,14 @@ void ProjectLifecycle::collectAutosave() {
     const std::expected<void, Error> written = m_autosaveWrite.get();
     std::optional<editor::ProjectDocument::AutosaveJob> job = std::exchange(m_autosaveJob, std::nullopt);
     if (!written) {
-        setError(tr("Autosave failed: %1").arg(QString::fromStdString(written.error().message)));
+        autosaveFailedWith(QString::fromStdString(written.error().message));
         return;
     }
     if (m_document && job) {
         m_document->finishAutosave(*job);
     }
     m_autosaveText = tr("Autosaved %1").arg(QDateTime::currentDateTime().toString(QStringLiteral("HH:mm")));
+    m_autosaveOk = true;
     emit autosaveChanged();
 }
 
@@ -1539,14 +1661,26 @@ bool ProjectLifecycle::autosaveNow() {
     waitForAutosave();
     auto written = m_document->autosave();
     if (!written) {
-        setError(tr("Autosave failed: %1").arg(QString::fromStdString(written.error().message)));
+        autosaveFailedWith(QString::fromStdString(written.error().message));
         return false;
     }
     if (*written) {
         m_autosaveText = tr("Autosaved %1").arg(QDateTime::currentDateTime().toString(QStringLiteral("HH:mm")));
+        m_autosaveOk = true;
         emit autosaveChanged();
     }
     return *written;
+}
+
+// 0.4: an autosave could not be written (drive gone, disk full, no permission, a folder in the way). The revision stays
+// pending, so every tick tries again; every failure is signalled (QML toasts once per failure streak: until autosaveOk
+// turns true again with an autosave, save, open, revert or recovery).
+void ProjectLifecycle::autosaveFailedWith(const QString& reason) {
+    setError(tr("Autosave failed: %1").arg(reason));
+    m_autosaveOk = false;
+    m_autosaveText = tr("Autosave failed %1: %2").arg(QDateTime::currentDateTime().toString(QStringLiteral("HH:mm")), reason);
+    emit autosaveChanged();
+    emit autosaveFailed(reason);
 }
 
 // ---- Import -----------------------------------------------------------------------------------------
@@ -1561,14 +1695,24 @@ QVariantMap ProjectLifecycle::importFiles(const QList<QUrl>& files, const QVaria
     const bool openImported = options.value(QStringLiteral("openImported")).toBool();
     const bool experimentalPremiere = options.value(QStringLiteral("experimentalPremiereProject")).toBool();
     QList<QUrl> media;
+    std::vector<std::vector<std::string>> mediaBins; // 0.4: per entry of `media`, its bins under the target bin
     QList<QUrl> timelines;
     QList<QUrl> captions;
     QVariantList projects;
+    // 0.4 (Import Folder): what the folders given held and left out.
+    QStringList folderNames;
+    QVariantList skipped;
+    QStringList unreadableFolders;
+    QStringList cardsLeftOut; // "AVCHD card in DCIM was left out: ..."
+    int notMedia = 0;
+    bool tooDeep = false;
+    bool truncated = false;
     m_importedMedia.clear();
     for (const QUrl& url : files) {
         switch (editor::classifyImportFile(toPath(url))) {
         case editor::ImportFileKind::Media:
             media.append(url);
+            mediaBins.emplace_back();
             break;
         case editor::ImportFileKind::Captions:
             captions.append(url);
@@ -1579,12 +1723,69 @@ QVariantMap ProjectLifecycle::importFiles(const QList<QUrl>& files, const QVaria
         case editor::ImportFileKind::Project:
             projects.append(url);
             break;
+        case editor::ImportFileKind::Folder: {
+            const std::filesystem::path folderPath = toPath(url);
+            const editor::FolderImportPlan plan = editor::collectImportFolder(folderPath);
+            const QFileInfo folderInfo(toQString(folderPath));
+            folderNames << (folderInfo.fileName().isEmpty() ? QDir::toNativeSeparators(folderInfo.absoluteFilePath())
+                                                            : folderInfo.fileName());
+            if (plan.files.empty() && plan.skipped.empty() && !QDir(folderInfo.absoluteFilePath()).isReadable())
+                unreadableFolders << folderNames.back();
+            for (const editor::FolderImportFile& file : plan.files) {
+                media.append(toUrl(file.file));
+                mediaBins.push_back(file.bins);
+            }
+            for (const editor::FolderImportSkipped& left : plan.skipped) {
+                QString reason;
+                switch (left.reason) {
+                case editor::FolderSkip::NotMedia:
+                    reason = QStringLiteral("notMedia");
+                    ++notMedia;
+                    break;
+                case editor::FolderSkip::Hidden:
+                    reason = QStringLiteral("hidden");
+                    break;
+                case editor::FolderSkip::Link:
+                    reason = QStringLiteral("link");
+                    break;
+                case editor::FolderSkip::TimelineBundle:
+                    reason = QStringLiteral("bundle");
+                    break;
+                case editor::FolderSkip::CameraCard: {
+                    reason = QStringLiteral("cameraCard");
+                    const auto card = editor::cameraCardAt(left.path);
+                    const std::string_view kind = card ? editor::displayName(card->first) : std::string_view("Camera");
+                    cardsLeftOut << tr("%1 card in %2 was left out: import it from the Media Browser.")
+                                        .arg(QString::fromUtf8(kind.data(), static_cast<qsizetype>(kind.size())),
+                                             toQString(left.path.filename()));
+                    break;
+                }
+                case editor::FolderSkip::TooDeep:
+                    reason = QStringLiteral("tooDeep");
+                    tooDeep = true;
+                    break;
+                }
+                skipped.append(QVariantMap{{QStringLiteral("name"), toQString(left.path.filename())},
+                                           {QStringLiteral("reason"), reason}});
+            }
+            truncated = truncated || plan.truncated;
+            break;
+        }
         }
     }
     // The empty first sequence of a project started for timelines only: the first import replaces it.
     std::optional<SequenceId> placeholder;
+    // 0.4: the bin the media goes in (the Library's open bin; a search bin: its parent; unknown: the root). A project
+    // started for this import gets it all at its root.
+    BinId targetBin;
+    if (const auto bin = detail::parseId<BinId>(QLatin1Char('b'), options.value(QStringLiteral("bin")).toString())) {
+        if (const Bin* found = m_document->session().snapshot()->findBin(*bin)) {
+            targetBin = found->isSearch() ? found->parent : found->id;
+        }
+    }
     if ((m_demo || freshProject) && (!media.isEmpty() || !timelines.isEmpty() || !captions.isEmpty())) {
         startNewProject(media); // the demo is not a project: importing starts a real one
+        targetBin = BinId{};
         if (freshProject && media.isEmpty() && !m_controller->snapshot()->sequences.empty()) {
             placeholder = m_controller->snapshot()->sequences.front()->id;
         }
@@ -1594,6 +1795,8 @@ QVariantMap ProjectLifecycle::importFiles(const QList<QUrl>& files, const QVaria
     QVariantList failed;
     int added = 0;
     int existing = 0;
+    int unreadable = 0;
+    int binsMade = 0;
     if (!media.isEmpty()) {
         std::vector<std::filesystem::path> paths;
         for (const QUrl& url : media) {
@@ -1602,16 +1805,24 @@ QVariantMap ProjectLifecycle::importFiles(const QList<QUrl>& files, const QVaria
         const editor::MediaImportResult result =
             editor::importMediaFiles(m_document->session(), paths,
                                      {.projectFile = m_document->file(),
+                                      .bin = targetBin,
                                       .scaling = EditingBridge::defaultMediaScalingSetting(),
-                                      .stillDuration = EditingBridge::stillDurationSetting()}); // P.2
+                                      .stillDuration = EditingBridge::stillDurationSetting(), // P.2
+                                      .binPaths = mediaBins,
+                                      .undoLabel = folderNames.isEmpty() ? std::string() : std::string("Import Folder")});
         m_importedMedia.clear();
-        for (const MediaId id : result.byFile) {
-            if (id) {
-                m_importedMedia.push_back(id);
+        for (std::size_t i = 0; i < result.byFile.size(); ++i) {
+            // Fix round 1: the files given themselves; a folder's files go into its bins (a folder dropped on the
+            // timeline is not edited in file by file).
+            const bool fromFolder = i < mediaBins.size() && !mediaBins[i].empty();
+            if (result.byFile[i] && !fromFolder) {
+                m_importedMedia.push_back(result.byFile[i]);
             }
         }
         added = static_cast<int>(result.added.size());
         existing = static_cast<int>(result.alreadyInProject.size());
+        unreadable = static_cast<int>(result.failed.size());
+        binsMade = static_cast<int>(result.createdBins.size());
         for (const editor::FailedImport& f : result.failed) {
             failed.append(QVariantMap{{QStringLiteral("name"), toQString(f.file.filename())},
                                       {QStringLiteral("error"), QString::fromStdString(f.error.message)}});
@@ -1718,6 +1929,50 @@ QVariantMap ProjectLifecycle::importFiles(const QList<QUrl>& files, const QVaria
     summary.insert(QStringLiteral("timelines"), imported);
     summary.insert(QStringLiteral("captionTracks"), captionTracks);
     summary.insert(QStringLiteral("projects"), projects);
+    // 0.4 (Import Folder): what the folders gave, and the toast that says so.
+    summary.insert(QStringLiteral("folders"), static_cast<int>(folderNames.size()));
+    summary.insert(QStringLiteral("bins"), binsMade);
+    summary.insert(QStringLiteral("skipped"), skipped);
+    summary.insert(QStringLiteral("truncated"), truncated);
+    QString folderSummary;
+    if (!folderNames.isEmpty()) {
+        // Whole English words (no "file(s)"): the toast is read at a glance.
+        const auto filesText = [](int n) { return n == 1 ? tr("1 file") : tr("%1 files").arg(n); };
+        const auto binsText = [](int n) { return n == 1 ? tr("1 bin") : tr("%1 bins").arg(n); };
+        const QString source = folderNames.size() == 1 ? folderNames.front() : tr("%1 folders").arg(folderNames.size());
+        const QString leftOut = notMedia == 1 ? tr("1 file was left out (not media).")
+                                              : tr("%1 files were left out (not media).").arg(notMedia);
+        QStringList sentences;
+        if (added > 0) {
+            //: "Imported 12 files from Session1 into 3 bins."
+            sentences << (binsMade > 0 ? tr("Imported %1 from %2 into %3.").arg(filesText(added), source, binsText(binsMade))
+                                       : tr("Imported %1 from %2.").arg(filesText(added), source));
+            if (notMedia > 0)
+                sentences << leftOut;
+        } else if (unreadableFolders.size() == folderNames.size() && media.isEmpty()) {
+            sentences << (unreadableFolders.size() == 1 ? tr("This folder cannot be read: %1.").arg(unreadableFolders.front())
+                                                        : tr("These folders cannot be read: %1.").arg(unreadableFolders.join(QStringLiteral(", "))));
+        } else if (notMedia > 0) {
+            //: "No media in Session1: 4 files were left out (not media)."
+            sentences << tr("No media in %1: %2").arg(source, leftOut);
+        } else if (existing > 0 && unreadable == 0) {
+            sentences << tr("Nothing new in %1.").arg(source);
+        } else {
+            sentences << tr("No media in %1.").arg(source);
+        }
+        if (unreadable > 0)
+            sentences << (unreadable == 1 ? tr("1 file could not be read.") : tr("%1 files could not be read.").arg(unreadable));
+        if (existing > 0)
+            sentences << (existing == 1 ? tr("1 file was already in the project.")
+                                        : tr("%1 files were already in the project.").arg(existing));
+        sentences << cardsLeftOut;
+        if (tooDeep)
+            sentences << tr("Folders more than %1 levels deep were left out.").arg(editor::FolderImportLimits{}.maxDepth);
+        if (truncated)
+            sentences << tr("Only the first %1 files were looked at.").arg(editor::FolderImportLimits{}.maxFiles);
+        folderSummary = sentences.join(QLatin1Char(' '));
+    }
+    summary.insert(QStringLiteral("folderSummary"), folderSummary);
     return summary;
 }
 
@@ -2058,6 +2313,9 @@ QVariantMap ProjectLifecycle::detectImport(const QUrl& file) const {
     case editor::ImportFileKind::Project:
         out.insert(QStringLiteral("kind"), QStringLiteral("project"));
         return out;
+    case editor::ImportFileKind::Folder: // 0.4: importFiles expands it into bins
+        out.insert(QStringLiteral("kind"), QStringLiteral("folder"));
+        return out;
     case editor::ImportFileKind::Captions: {
         out.insert(QStringLiteral("kind"), QStringLiteral("captions"));
         std::string extension = pathToUtf8(path.extension());
@@ -2230,6 +2488,15 @@ QVariantMap ProjectLifecycle::dropFiles(const QList<QUrl>& files, const QString&
         }
     }
     summary.insert(QStringLiteral("placed"), placed);
+    // Fix round 1: a folder dropped here came in as bins (importFiles, its one step) and stays off the timeline; the
+    // toast says where it went when it brought media.
+    const int fromFolders = summary.value(QStringLiteral("added")).toInt() + summary.value(QStringLiteral("existing")).toInt() -
+                            static_cast<int>(media.size());
+    if (summary.value(QStringLiteral("folders")).toInt() > 0 && fromFolders > 0) {
+        const QString said = summary.value(QStringLiteral("folderSummary")).toString();
+        const QString where = tr("Folders go into the Library as bins: drag their clips onto the timeline from there.");
+        summary.insert(QStringLiteral("folderSummary"), said.isEmpty() ? where : said + QLatin1Char(' ') + where);
+    }
     return summary;
 }
 

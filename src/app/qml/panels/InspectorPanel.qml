@@ -12,6 +12,8 @@ import QtQuick.Controls.Basic
 // drag on empty lane for a rubber band, right-click for the interpolation menu, Delete removes them; the ruler
 // scrubs the playhead. Effects dropped here from the Effects panel are added to the clip (where dropped in the
 // stack). Rows come from ProjectController.effectControls; every edit is one undo step.
+// Sections (0.4): click a header to select it (Ctrl / Shift add), Backspace removes it, Ctrl+C / Ctrl+V copy it to the
+// selected clips, Esc clears the selection.
 Panel {
     id: root
     objectName: "effectControls"
@@ -37,6 +39,8 @@ Panel {
             compact: true
             iconName: "crosshair"
             tooltip: qsTr("Explain this frame: why the monitor shows what it shows")
+            // 0.4: its row in the header's More tools menu (Panel.menuLabel) when the header is short.
+            property string menuText: qsTr("Explain this frame")
             onClicked: root.explainRequested()
         },
         IconButton {
@@ -46,6 +50,8 @@ Panel {
             checked: Preferences.keyframeLane
             iconName: "diamond"
             tooltip: Preferences.keyframeLane ? qsTr("Hide the keyframe lane") : qsTr("Show the keyframe lane")
+            // 0.4: a checked More tools row reads as "on", so its label names the lane, not the action.
+            property string menuText: qsTr("Keyframe lane")
             onClicked: Preferences.keyframeLane = !Preferences.keyframeLane
         }
     ]
@@ -415,14 +421,20 @@ Panel {
     }
 
     // Delete / Backspace removes the selected keys while the panel has focus (the lane takes it on a press): the
-    // panel claims the keys before the keymap's Delete (clips) sees them.
+    // panel claims the keys before the keymap's Delete (clips) sees them. 0.4: Esc clears the selected sections (the
+    // sections themselves go through the keymap: Backspace, Delete, Ctrl+C / X / A in Main.qml's Effect Controls hook).
     Keys.onShortcutOverride: event => {
         if ((event.key === Qt.Key_Delete || event.key === Qt.Key_Backspace) && root.controls.selectedKeyCount > 0)
+            event.accepted = true
+        else if (event.key === Qt.Key_Escape && event.modifiers === Qt.NoModifier && root.controls.selectedSections.length > 0)
             event.accepted = true
     }
     Keys.onPressed: event => {
         if ((event.key === Qt.Key_Delete || event.key === Qt.Key_Backspace) && root.controls.selectedKeyCount > 0) {
             root.controls.deleteSelectedKeys()
+            event.accepted = true
+        } else if (event.key === Qt.Key_Escape && event.modifiers === Qt.NoModifier && root.controls.selectedSections.length > 0) {
+            root.controls.clearSectionSelection()
             event.accepted = true
         }
     }

@@ -1,5 +1,6 @@
 // TimelineView (M5i): track heights, display settings, trim edit points, marker items for the ruler and the zoom and
-// scroll each sequence keeps (sequence tabs). Drawing is in TimelineView.cpp.
+// scroll each sequence keeps (sequence tabs). 0.4: the clip speed, fx badge and playhead snap switches. Drawing is in
+// TimelineView.cpp.
 
 #include "TimelineView.h"
 
@@ -119,6 +120,11 @@ void TimelineView::switchSequenceView(SequenceId next) {
     if (m_shownSequence)
         m_sequenceViews[m_shownSequence.value] = {m_pps, m_scrollX, m_scrollY};
     m_shownSequence = next;
+    m_zoomBeforeFit.reset(); // 0.4: a tab switch forgets Zoom to Sequence's way back (the next \ fits again)
+    if (m_playheadSnapAt) {  // 0.4: and a ruler scrub's snap line, which belongs to the sequence it was on
+        m_playheadSnapAt.reset();
+        emit gestureChanged();
+    }
     if (const auto it = m_sequenceViews.find(next.value); next && it != m_sequenceViews.end()) {
         m_pps = it->second.pps;
         m_scrollX = it->second.scrollX;
@@ -206,6 +212,29 @@ void TimelineView::setLinkedSelection(bool on) {
         return;
     m_linkedSelection = on;
     emit displayChanged();
+}
+
+// 0.4: the speed after a clip's name and its fx chip (TimelineView.cpp placeLabel), and the playhead snap of ruler
+// scrubs (TimelineView.cpp seekToX).
+void TimelineView::setShowClipSpeed(bool on) {
+    if (on == m_showClipSpeed)
+        return;
+    m_showClipSpeed = on;
+    bumpDisplay();
+}
+
+void TimelineView::setShowFxBadges(bool on) {
+    if (on == m_showFxBadges)
+        return;
+    m_showFxBadges = on;
+    bumpDisplay();
+}
+
+void TimelineView::setSnapPlayhead(bool on) {
+    if (on == m_snapPlayhead)
+        return;
+    m_snapPlayhead = on;
+    emit snappingChanged();
 }
 
 void TimelineView::setFilmstripSource(std::shared_ptr<const FilmstripSource> source) {

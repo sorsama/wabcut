@@ -1,5 +1,6 @@
 #include "CommandBridge.h"
 
+#include "CaptionsBridge.h"
 #include "CommandPalette.h"
 #include "ProjectController.h"
 
@@ -104,7 +105,8 @@ struct Prompt {
 
 Prompt promptFor(const std::string& key, const Json& schema, bool required, const QStringList& trackLabels) {
     Prompt p;
-    if (key == "sequence" || key == "clip" || key == "clips") {
+    // 0.4: captionTrack is the track the Captions page shows (request()), never a raw id the user types.
+    if (key == "sequence" || key == "clip" || key == "clips" || key == "captionTrack") {
         p.automatic = true;
         return p;
     }
@@ -247,6 +249,21 @@ QString messageFor(const command::CommandError& error) {
     default:
         return CommandBridge::tr("The command failed");
     }
+}
+
+/// 0.4: the caption track the Captions page shows (Captions.shownTrackId()) when it is a track of `seq`, else invalid
+/// (the command then takes its default: the sequence's first caption track).
+CaptionTrackId shownCaptionTrack(const QObject* bridge, const Sequence* seq) {
+    QQmlEngine* engine = qmlEngine(bridge);
+    auto* captions = engine ? engine->singletonInstance<CaptionsBridge*>("Wabcut", "Captions") : nullptr;
+    const CaptionTrackId id = captions ? captions->shownTrackId() : CaptionTrackId{};
+    if (!id.isValid() || !seq)
+        return {};
+    for (const CaptionTrack& t : seq->captionTracks) {
+        if (t.id == id)
+            return id;
+    }
+    return {};
 }
 
 } // namespace
@@ -409,6 +426,11 @@ std::expected<command::CommandRequest, QString> CommandBridge::request(const QSt
                 ids.push_back(id.value);
             if (!ids.empty())
                 json[key] = ids;
+        } else if (key == "captionTrack" && !params.contains(qkey)) {
+            // 0.4: the shown caption track (else the command's default, the sequence's first one).
+            const SequencePtr seq = m_controller->currentSequence();
+            if (const CaptionTrackId shown = shownCaptionTrack(this, seq.get()); shown.isValid())
+                json[key] = shown.value;
         } else if (params.contains(qkey)) {
             const QVariant v = params.value(qkey);
             if (key == "track" && v.typeId() == QMetaType::QString) {

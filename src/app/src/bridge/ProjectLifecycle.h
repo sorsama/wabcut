@@ -10,7 +10,9 @@
 //   * Import (File > Import, drops on the Library): media files are probed and added; timelines from other
 //     editors (.xml / .fcpxml / .otio / .edl / .prproj) go through the interchange importer and `importReport` is
 //     emitted for the report dialog. Importing while the demo project is shown starts a new untitled project
-//     whose sequence matches the first video imported.
+//     whose sequence matches the first video imported. 0.4: folders (File > Import Folder…) become bins, subfolders
+//     nested, in the bin given (the Library's open bin); import dialogs open where the last dialog import came from
+//     (`importFolder`, QSettings import/lastFolder and import/recentFolders).
 //   * Offline media and relinking: `offlineMedia`, `offlineMediaFound` after opening, relink by file or by
 //     searching folders (file name + fingerprint).
 //   * Library -> timeline drops (dropMedia): overwrite at the drop point, insert with Ctrl/Cmd (Premiere); files
@@ -79,8 +81,13 @@ class ProjectLifecycle : public QObject {
     Q_PROPERTY(QString filePath READ filePath NOTIFY documentChanged FINAL)
     /// Folder for file dialogs: the project's, else the user's videos folder.
     Q_PROPERTY(QUrl folder READ folder NOTIFY documentChanged FINAL)
+    /// 0.4: where import dialogs open: the folder the last dialog import came from (QSettings import/lastFolder) while
+    /// it exists, else `folder`.
+    Q_PROPERTY(QUrl importFolder READ importFolder NOTIFY importFolderChanged FINAL)
     /// "Autosaved 14:05", "Not autosaved yet", ...
     Q_PROPERTY(QString autosaveText READ autosaveText NOTIFY autosaveChanged FINAL)
+    /// 0.4: false after an autosave could not be written, until an autosave, save, open, revert or recovery succeeds.
+    Q_PROPERTY(bool autosaveOk READ autosaveOk NOTIFY autosaveChanged FINAL)
     Q_PROPERTY(int autosaveIntervalSeconds READ autosaveIntervalSeconds WRITE setAutosaveIntervalSeconds NOTIFY
                    autosaveChanged FINAL)
     /// [{ id: "m…", name, path }] of the media items whose file is missing or not the original.
@@ -128,7 +135,9 @@ public:
     bool demo() const { return m_demo; }
     QString filePath() const;
     QUrl folder() const;
+    QUrl importFolder() const;
     QString autosaveText() const { return m_autosaveText; }
+    bool autosaveOk() const { return m_autosaveOk; }
     int autosaveIntervalSeconds() const { return m_autosaveSeconds; }
     void setAutosaveIntervalSeconds(int seconds);
     QVariantList offlineMedia() const;
@@ -240,7 +249,19 @@ public:
     ///                               (its index in ProjectController.sequenceNames, -1 when none)
     ///   experimentalPremiereProject read .prproj files with the experimental reader (only after the user chose
     ///                               it: the UI labels it experimental)
+    ///   bin                         0.4: the bin for the media (a Library bin key "b12"; "" or unknown: the root; a
+    ///                               search bin: its parent); ignored when this call starts a new project
+    /// 0.4: folders given (Import Folder, folder drops) are expanded (editor::collectImportFolder): each becomes a bin
+    /// of its name in `bin`, subfolders nested, in the same one undo step, named "Import Folder". The summary then also
+    /// has folders (how many were given), bins (how many were made), skipped: [{ name, reason: "notMedia" | "hidden" |
+    /// "link" | "bundle" | "cameraCard" | "tooDeep" }], truncated (only the first 1000 files were looked at) and
+    /// folderSummary (the toast: "Imported 12 files from Session1 into 3 bins. ..."; "" when no folder was given).
     Q_INVOKABLE QVariantMap importFiles(const QList<QUrl>& files, const QVariantMap& options = {});
+    /// 0.4: an import dialog's choice (files or folders): import/lastFolder = the first one's folder (a folder's parent);
+    /// import/recentFolders gets each file's folder / each folder (deduplicated, case-insensitive on Windows, 5 kept).
+    Q_INVOKABLE void rememberImportFolder(const QList<QUrl>& chosen);
+    /// 0.4: import/recentFolders, newest first, only folders that exist (native separators).
+    static QStringList recentImportFolders();
 
     // ---- Export Timeline (0.1.1, File > Export Timeline...) ----
     /// Writes sequence `sequenceIndex` (an index in ProjectController.sequenceNames) as a timeline file other editors
@@ -283,7 +304,8 @@ public:
     Q_INVOKABLE bool newProjectWith(const QVariantMap& sequence);
     /// What newProjectWith would refuse in `sequence` (the message it would give), or "" when it can be created.
     static QString checkNewProjectSettings(const QVariantMap& sequence);
-    /// What importing `file` would do, before importing it: { kind: "media" | "timeline" | "project" | "captions",
+    /// What importing `file` would do, before importing it: { kind: "media" | "timeline" | "project" | "captions" |
+    /// "folder" (0.4),
     /// format (id, "fcp7-xml"…), formatName ("Final Cut Pro 7 XML"…), supported (can be read now),
     /// experimental (only with the experimental reader: Premiere .prproj), guidance (what to export instead,
     /// for files that cannot be read) }. Timeline fields are empty for media and projects.
@@ -305,7 +327,8 @@ public:
                                bool overwrite);
     /// Files dragged from the desktop (Explorer, Finder) onto the timeline: imported as importFiles does, then the
     /// media placed one after another from `timecode` on the track `trackId` (dropMedia; a new project started for
-    /// the demo has none of its tracks: the targeted ones). Returns importFiles' summary plus `placed` (how many
+    /// the demo has none of its tracks: the targeted ones). A dropped folder is imported into bins at the Library
+    /// root (as Import Folder) and its files are not placed. Returns importFiles' summary plus `placed` (how many
     /// files went on the timeline); the new clips are selected.
     Q_INVOKABLE QVariantMap dropFiles(const QList<QUrl>& files, const QString& timecode, const QString& trackId,
                                       bool overwrite);
@@ -332,8 +355,14 @@ signals:
     void recoveryAvailable();
     /// 0.2 (P.3): the active project's scratch disks may have changed (another project, or its Production Settings).
     void scratchDisksChanged();
+    /// 0.4: importFolder may have changed (a dialog import was remembered, or the project's folder changed).
+    void importFolderChanged();
+    /// 0.4: every failed autosave (timer or autosaveNow), with the reason; not deduplicated.
+    void autosaveFailed(const QString& reason);
 
 private:
+    bool m_autosaveOk = true;
+    void autosaveFailedWith(const QString& reason);
     void setError(const QString& message);
     void adoptDocument(); // after the document changed file or content wholesale
     void onRevisionChanged();
@@ -403,6 +432,7 @@ private:
         bool readOnly = false;
         QString lockOwner;
         QString autosaveText;
+        bool autosaveOk = true;
         std::filesystem::path locked;
         int sequenceIndex = 0;
         Ticks playhead;

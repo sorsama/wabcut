@@ -10,8 +10,11 @@ import QtQuick.Layouts
 // redo. Each moment is a card: its frame, score and confidence, waveform, signals and reasons; Accept / Reject review
 // them, Jump goes to the peak, Preview plays the range. Make highlight reel strings the accepted moments together
 // (order, length, transition, music, slow motion); Make a Short makes a 1080x1920 Short of the chosen moment (split
-// with the facecam or blurred fill). Keyboard: Tab to the list, Up / Down between cards, A accept, R reject, Enter
-// jump, Space preview.
+// with the facecam or blurred fill; its tooltip says about how long, with the Short options' lead-in, tail and minimum
+// length). 0.4: Make Shorts (N) makes a Short of every accepted moment (else of every moment not rejected) as one job
+// and one undo step and stays on this sequence (Cancel keeps the Shorts made so far); Export all (N) then queues them
+// at 1080x1920 (H.264, or HEVC with its toggle). Keyboard: Tab to the list, Up / Down between cards, A accept, R reject,
+// Enter jump, Space preview.
 Panel {
     id: root
     objectName: "highlightsPanel"
@@ -40,6 +43,18 @@ Panel {
     }
     function find() {
         Highlights.find(findOptions.options())
+    }
+    /// "m:ss" of `seconds`.
+    function clock(seconds: real): string {
+        const s = Math.max(0, Math.round(seconds))
+        return Math.floor(s / 60) + ":" + (s % 60 < 10 ? "0" : "") + (s % 60)
+    }
+    /// 0.4: how long the Short of moment `rank` would be with the Short options (its range plus lead-in and tail).
+    function shortLength(rank: int): real {
+        const p = Highlights.shortParams(rank, shortOptions.options())
+        if (p.start === undefined || p.end === undefined)
+            return 0
+        return Number(p.end) - Number(p.start) + Number(p.handleBefore ?? 0) + Number(p.handleAfter ?? 0)
     }
     // Card actions keep the keyboard on the list: the cards are made again when a review changes.
     function act(rank: int, action: string) {
@@ -130,7 +145,8 @@ Panel {
                     objectName: "highlightsCancelButton"
                     compact: true
                     text: qsTr("Cancel")
-                    tooltip: qsTr("Stop now: nothing is changed")
+                    tooltip: Highlights.job === "shorts" ? qsTr("Stop after this Short: the Shorts made so far are kept")
+                                                         : qsTr("Stop now: nothing is changed")
                     onClicked: Highlights.cancel()
                 }
             }
@@ -342,8 +358,11 @@ Panel {
                     iconName: "clapperboard"
                     text: Highlights.selectedRank > 0 ? qsTr("Make a Short of #%1").arg(Highlights.selectedRank) : qsTr("Make a Short")
                     enabled: Highlights.shortAvailable && !Highlights.busy && Highlights.selectedRank > 0
-                    tooltip: Highlights.shortAvailable ? qsTr("A vertical 1080x1920 Short of the chosen moment, laid out for gameplay")
-                                                       : qsTr("Shorts from highlights arrive with the next engine update")
+                    tooltip: !Highlights.shortAvailable ? qsTr("Shorts from highlights arrive with the next engine update")
+                             : Highlights.selectedRank > 0
+                               ? qsTr("A vertical 1080x1920 Short of #%1, about %2").arg(Highlights.selectedRank)
+                                     .arg(root.clock(root.shortLength(Highlights.selectedRank)))
+                               : qsTr("A vertical 1080x1920 Short of the chosen moment, laid out for gameplay")
                     onClicked: Highlights.makeShort(Highlights.selectedRank, shortOptions.options())
                 }
                 IconButton {
@@ -353,7 +372,7 @@ Panel {
                     iconName: "sliders-horizontal"
                     checkable: true
                     checked: shortOptions.opened
-                    tooltip: qsTr("Short options: layout, facecam, captions")
+                    tooltip: qsTr("Short options: layout, facecam, length, captions")
                     onClicked: {
                         checked = Qt.binding(() => shortOptions.opened)
                         if (shortOptions.opened)
@@ -366,6 +385,45 @@ Panel {
                         x: shortOptionsButton.width - width
                         y: -height - Theme.space(2)
                     }
+                }
+            }
+            // 0.4: a Short of every moment the reel would use, in one go (the Short options above apply).
+            RowLayout {
+                objectName: "highlightsShortsRow"
+                Layout.fillWidth: true
+                spacing: Theme.space(1)
+                PillButton {
+                    objectName: "highlightsShortsButton"
+                    Layout.fillWidth: true
+                    iconName: "layers"
+                    text: qsTr("Make Shorts (%1)").arg(Highlights.shortsCount)
+                    enabled: Highlights.shortAvailable && !Highlights.busy && Highlights.shortsCount > 1
+                    tooltip: !Highlights.shortAvailable ? qsTr("Shorts from highlights arrive with the next engine update")
+                             : Highlights.shortsCount <= 1 ? qsTr("One moment: Make a Short makes it")
+                             : qsTr("A vertical Short of each accepted moment (else of every moment not rejected), in one undo step; the timeline stays on this sequence")
+                    onClicked: Highlights.makeShorts(shortOptions.options())
+                }
+            }
+            // 0.4: after a batch, its Shorts (those still in the project) into the export queue at 1080x1920.
+            RowLayout {
+                objectName: "highlightsExportRow"
+                Layout.fillWidth: true
+                visible: Highlights.madeShortsCount > 0
+                spacing: Theme.space(1)
+                Toggle {
+                    id: hevcToggle
+                    objectName: "highlightsExportHevc"
+                    text: qsTr("HEVC")
+                    tooltip: qsTr("HEVC (H.265) instead of H.264: smaller files, slower to encode")
+                }
+                PillButton {
+                    objectName: "highlightsExportShortsButton"
+                    Layout.fillWidth: true
+                    iconName: "upload"
+                    text: qsTr("Export all (%1)").arg(Highlights.madeShortsCount)
+                    enabled: !Highlights.busy
+                    tooltip: qsTr("Queue each Short made by Make Shorts for export at 1080x1920")
+                    onClicked: Highlights.exportShorts(hevcToggle.checked)
                 }
             }
         }

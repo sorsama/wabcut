@@ -20,6 +20,7 @@
 #include <fstream>
 #include <map>
 #include <set>
+#include <string_view>
 
 namespace wabcut::ai::highlights {
 
@@ -1050,7 +1051,25 @@ CommandOutput toShortCommand(ExecutionContext& c) {
         report["facecam"] = facecam.value;
     }
     if (c.boolean("captions", true)) {
-        report["captions"] = runStep(engine, "captions.generate", Json{{"sequence", id.value}, {"maxCharsPerLine", 24}, {"maxLines", 2}}, warnings);
+        // 0.4: the "Shorts" caption style by default (big outlined words two thirds down, above the platforms' buttons)
+        // with short cues; another preset gets mid-size cues; "" the default look. An unknown preset is a warning.
+        const std::string preset = c.has("captionPreset") ? c.string("captionPreset") : std::string("Shorts");
+        const bool shortsPreset = std::ranges::equal(preset, std::string_view("shorts"), [](char a, char b) {
+            return std::tolower(static_cast<unsigned char>(a)) == b;
+        });
+        Json generate{{"sequence", id.value}, {"maxLines", 2}};
+        // shorts.create's lines (ShortsCommands.cpp kShortsCaptionChars, kVerticalCaptionChars; fix round 1: 12 and 20
+        // wrapped on a rendered 1080x1920 frame).
+        generate["maxCharsPerLine"] = shortsPreset ? 10 : 14;
+        generate["maxDuration"] = shortsPreset ? 2.5 : 4.0;
+        command::CommandResult generated;
+        report["captions"] = runStep(engine, "captions.generate", std::move(generate), warnings, &generated);
+        if (report["captions"].get<bool>() && !preset.empty() &&
+            runStep(engine, "captions.applyPreset",
+                    Json{{"sequence", id.value}, {"captionTrack", generated.data.value("captionTrack", Json())}, {"preset", preset}},
+                    warnings)) {
+            report["captionPreset"] = preset;
+        }
     }
     if (hookTitle) {
         command::CommandResult track;
@@ -1229,7 +1248,8 @@ void registerHighlightCommands(command::CommandRegistry& registry) {
          "Makes one highlight moment (a highlight marker by rank, or start/end) a vertical 1080x1920 Short: the moment cut "
          "out with every track, laid out with layout.apply (\"verticalSplit\" with the facecam under the gameplay when "
          "there is one: a facecam clip above the gameplay or \"facecamRegion\"; else \"verticalBlurFill\": the whole game "
-         "view over a blurred copy), captioned, with the moment's title as the hook and loudness for Shorts. One undo step.",
+         "view over a blurred copy), captioned (the \"Shorts\" caption style unless \"captionPreset\" says otherwise), with "
+         "the moment's title as the hook and loudness for Shorts. One undo step.",
          Capability::EditProject,
          withSequence({{"moment", schema::integer("Rank of the highlight marker. Default 1 (the best).", 1, 200)},
                        {"start", seconds},
@@ -1252,6 +1272,12 @@ void registerHighlightCommands(command::CommandRegistry& registry) {
                        {"title", schema::string("Hook title (default: the moment's title).")},
                        {"hookTitle", schema::boolean("Show the title at the start. Default true.", true)},
                        {"captions", schema::boolean("Captions from the transcript. Default true.", true)},
+                       {"captionPreset",
+                        Json{{"type", "string"},
+                             {"description", "The caption style: a built-in preset (Shorts, Clean, Bold Box, Podcast, Thai-friendly) or "
+                                             "one of the project's. Default \"Shorts\" for vertical output, none (the default look) "
+                                             "otherwise; \"\" = the default look."},
+                             {"maxLength", 64}}},
                        {"normalize", schema::boolean("Loudness for Shorts. Default true.", true)}}),
          Json{{"moment", 1}}, {}, toShortCommand});
 }

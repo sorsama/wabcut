@@ -26,6 +26,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <numeric>
 #include <string>
 #include <string_view>
@@ -119,16 +120,24 @@ TEST_CASE("Move variants: overwrite, Ctrl insert, Alt ignores links, across trac
               == rig.expected(edit::moveClips(rig.tl.state, rig.tl.seq, sel, f(-4), {}, edit::MoveMode::Insert)));
         CHECK(rig.controller.undoText() == QStringLiteral("Undo Insert Move"));
     }
-    SECTION("Alt-drag moves only the clip, not its linked partner") {
+    SECTION("Alt at the press moves only the clip when Alt is let go before the drop") {
+        // 0.4: Alt held AT THE DROP copies (Premiere); Alt at the press still means "only the clicked side".
         Rig rig(R"(
             V1 |AaaaBbbb....|
             A1 |AaaaBbbb....|
         )");
-        rig.drag({rig.x(5.5), rig.y("V1")}, {rig.x(8.5), rig.y("V1")}, Qt::AltModifier);
+        const QPointF from{rig.x(5.5), rig.y("V1")};
+        const QPointF to{rig.x(8.5), rig.y("V1")};
+        rig.press(from, Qt::AltModifier);
+        for (int i = 1; i <= 5; ++i)
+            rig.move(from + (to - from) * (i / 6.0), Qt::AltModifier);
+        rig.move(to);
+        rig.release(to);
         CHECK(rig.picture() == normalize(R"(
             V1 |Aaaa...Bbbb.|
             A1 |AaaaBbbb....|
         )"));
+        CHECK(rig.controller.undoText() == QStringLiteral("Undo Move"));
     }
     SECTION("dragging up a track moves video up and its linked audio down") {
         Rig rig(R"(
@@ -238,6 +247,288 @@ TEST_CASE("Linked clips cross tracks with the dragged one only onto tracks free 
     }
 }
 
+// ---- 0.4: Alt-drag copies, Ctrl+Alt-drag rearranges, Shift keeps the time ------------------------------------------
+
+namespace {
+
+/// Press at `from` with `pressMods`, move to `to` in six steps (the first `plainSteps` with `pressMods`, the rest with
+/// `dropMods`), optionally release there with `dropMods`.
+void dragChanging(Rig& rig, QPointF from, QPointF to, Qt::KeyboardModifiers pressMods, Qt::KeyboardModifiers dropMods,
+                  int plainSteps = 3, bool releaseAtEnd = true) {
+    rig.press(from, pressMods);
+    for (int i = 1; i <= 6; ++i)
+        rig.move(from + (to - from) * (i / 6.0), i <= plainSteps ? pressMods : dropMods);
+    if (releaseAtEnd)
+        rig.release(to, dropMods);
+}
+
+std::vector<ClipId> sortedIds(std::vector<ClipId> ids) {
+    std::ranges::sort(ids, [](ClipId a, ClipId b) { return a.value < b.value; });
+    return ids;
+}
+
+} // namespace
+
+TEST_CASE("Alt-drag copies a clip with its linked partner", "[app][timeline][edit][duplicate]") {
+    Rig rig(R"(
+        V1 |AaaaBbbb....|
+        A1 |AaaaBbbb....|
+    )");
+    const ClipId b = rig.clip("V1@4");
+    const ClipId bAudio = rig.clip("A1@4");
+    // Pressed plainly (links followed), Alt added while dragging: the copy carries the linked partner.
+    dragChanging(rig, {rig.x(5.5), rig.y("V1")}, {rig.x(9.5), rig.y("V1")}, {}, Qt::AltModifier, 3, false);
+    REQUIRE(rig.view->gestureActive());
+    CHECK(rig.view->cursorKey() == QStringLiteral("copy"));
+    CHECK(rig.view->gestureReadout().startsWith(QStringLiteral("Copy ")));
+    CHECK(rig.undoSteps() == 0);
+    // The originals stay in place, not lifted; the copies are drawn lifted at the drop.
+    const auto& lifted = rig.view->stats().liftedRects;
+    CHECK(lifted.size() == 2);
+    CHECK_FALSE(lifted.contains(b.value));
+    CHECK_FALSE(lifted.contains(bAudio.value));
+    CHECK(rig.view->clipAt(rig.x(5.5), rig.y("V1")) == clipKey(b));
+
+    rig.release({rig.x(9.5), rig.y("V1")}, Qt::AltModifier);
+    CHECK(rig.picture() == normalize(R"(
+        V1 |AaaaBbbbBbbb|
+        A1 |AaaaBbbbBbbb|
+    )"));
+    CHECK(rig.undoSteps() == 1);
+    CHECK(rig.controller.undoText() == QStringLiteral("Undo Duplicate"));
+    CHECK(rig.clip("V1@4") == b); // the original keeps its id and place
+    CHECK(links(*rig.controller.snapshot(), rig.tl.seq) == "V1@0+A1@0 V1@4+A1@4 V1@8+A1@8");
+    // The copies are the selection (Premiere).
+    CHECK(sortedIds(rig.controller.selection()) == sortedIds({rig.clip("V1@8"), rig.clip("A1@8")}));
+    REQUIRE(rig.controller.undo());
+    CHECK(rig.picture() == normalize(rig.original));
+}
+
+TEST_CASE("Alt held from the press copies only the clicked side", "[app][timeline][edit][duplicate]") {
+    Rig rig(R"(
+        V1 |AaaaBbbb....|
+        A1 |AaaaBbbb....|
+    )");
+    rig.drag({rig.x(5.5), rig.y("V1")}, {rig.x(9.5), rig.y("V1")}, Qt::AltModifier);
+    CHECK(rig.picture() == normalize(R"(
+        V1 |AaaaBbbbBbbb|
+        A1 |AaaaBbbb....|
+    )"));
+    CHECK(rig.controller.undoText() == QStringLiteral("Undo Duplicate"));
+    CHECK(links(*rig.controller.snapshot(), rig.tl.seq) == "V1@0+A1@0 V1@4+A1@4"); // the copy is unlinked
+}
+
+TEST_CASE("Alt and Shift copy a clip onto the track above at the same time", "[app][timeline][edit][duplicate]") {
+    SECTION("no free audio track below: a video copy only") {
+        Rig rig(R"(
+            V2 |............|
+            V1 |AaaaBbbb....|
+            A1 |AaaaBbbb....|
+        )");
+        dragChanging(rig, {rig.x(5.5), rig.y("V1")}, {rig.x(7.5), rig.y("V2")}, {},
+                     Qt::AltModifier | Qt::ShiftModifier, 3);
+        CHECK(rig.picture() == normalize(R"(
+            V2 |....Bbbb....|
+            V1 |AaaaBbbb....|
+            A1 |AaaaBbbb....|
+        )"));
+        CHECK(rig.controller.undoText() == QStringLiteral("Undo Duplicate"));
+    }
+    SECTION("a free A2: the audio copy goes there") {
+        Rig rig(R"(
+            V2 |............|
+            V1 |AaaaBbbb....|
+            A1 |AaaaBbbb....|
+            A2 |............|
+        )");
+        dragChanging(rig, {rig.x(5.5), rig.y("V1")}, {rig.x(7.5), rig.y("V2")}, {},
+                     Qt::AltModifier | Qt::ShiftModifier, 3);
+        CHECK(rig.picture() == normalize(R"(
+            V2 |....Bbbb....|
+            V1 |AaaaBbbb....|
+            A1 |AaaaBbbb....|
+            A2 |....Bbbb....|
+        )"));
+        CHECK(links(*rig.controller.snapshot(), rig.tl.seq) == "V1@0+A1@0 V1@4+A1@4 V2@4+A2@4");
+    }
+}
+
+TEST_CASE("Esc cancels an Alt-drag copy", "[app][timeline][edit][duplicate]") {
+    Rig rig(R"(
+        V1 |AaaaBbbb....|
+        A1 |AaaaBbbb....|
+    )");
+    const auto before = rig.controller.snapshot();
+    dragChanging(rig, {rig.x(5.5), rig.y("V1")}, {rig.x(9.5), rig.y("V1")}, {}, Qt::AltModifier, 3, false);
+    REQUIRE(rig.view->gestureActive());
+    rig.key(Qt::Key_Escape);
+    CHECK_FALSE(rig.view->gestureActive());
+    rig.release({rig.x(9.5), rig.y("V1")}, Qt::AltModifier);
+    CHECK(rig.controller.snapshot() == before);
+    CHECK(rig.undoSteps() == 0);
+    CHECK(rig.picture() == normalize(rig.original));
+}
+
+TEST_CASE("Ctrl and Alt drag rearranges in one undo step", "[app][timeline][edit][rearrange]") {
+    Rig rig(R"(
+        V1 |AaaaBbbbCccc|
+    )");
+    const ClipId a = rig.clip("V1@0");
+    const Qt::KeyboardModifiers ctrlAlt = Qt::ControlModifier | Qt::AltModifier;
+    // A dropped at the cut after B (8 frames on): the two swap (the drop is read before A's place closes).
+    rig.drag({rig.x(1.5), rig.y("V1")}, {rig.x(9.5), rig.y("V1")}, ctrlAlt, false);
+    REQUIRE(rig.view->gestureActive());
+    CHECK(rig.view->cursorKey() == QStringLiteral("rearrange"));
+    CHECK(rig.view->gestureReadout().startsWith(QStringLiteral("Rearrange ")));
+    rig.release({rig.x(9.5), rig.y("V1")}, ctrlAlt);
+    const ClipId sel[] = {a};
+    CHECK(rig.picture() == rig.expected(edit::moveClips(rig.tl.state, rig.tl.seq, sel, f(8), {}, edit::MoveMode::Rearrange)));
+    CHECK(rig.picture() == normalize("V1 |BbbbAaaaCccc|"));
+    CHECK(rig.undoSteps() == 1);
+    CHECK(rig.controller.undoText() == QStringLiteral("Undo Rearrange"));
+    REQUIRE(rig.controller.undo());
+    CHECK(rig.picture() == normalize(rig.original));
+
+    // Past the next clip too: to the end.
+    rig.drag({rig.x(1.5), rig.y("V1")}, {rig.x(13.5), rig.y("V1")}, ctrlAlt);
+    CHECK(rig.picture() == normalize("V1 |BbbbCcccAaaa|"));
+}
+
+TEST_CASE("Ctrl and Alt at the press rearrange the linked pair", "[app][timeline][edit][rearrange]") {
+    Rig rig(R"(
+        V1 |AaaaBbbbCccc|
+        A1 |AaaaBbbbCccc|
+    )");
+    // C selected first: a Ctrl+Alt press on unselected A replaces the selection with A and its sound (links followed,
+    // not the Alt override).
+    rig.controller.selectClipById(rig.clip("V1@8"), ProjectController::Replace, true);
+    const ClipId a = rig.clip("V1@0");
+    const ClipId aAudio = rig.clip("A1@0");
+    const Qt::KeyboardModifiers ctrlAlt = Qt::ControlModifier | Qt::AltModifier;
+    rig.press({rig.x(1.5), rig.y("V1")}, ctrlAlt);
+    CHECK(sortedIds(rig.controller.selection()) == sortedIds({a, aAudio}));
+    for (int i = 1; i <= 6; ++i)
+        rig.move({rig.x(1.5 + 8 * i / 6.0), rig.y("V1")}, ctrlAlt);
+    rig.release({rig.x(9.5), rig.y("V1")}, ctrlAlt);
+    CHECK(rig.picture() == normalize(R"(
+        V1 |BbbbAaaaCccc|
+        A1 |BbbbAaaaCccc|
+    )"));
+    CHECK(rig.controller.undoText() == QStringLiteral("Undo Rearrange"));
+}
+
+TEST_CASE("A refused Ctrl and Alt rearrange drops the overwrite preview and says why", "[app][timeline][edit][rearrange]") {
+    Rig rig(R"(
+        V1 |AaaBbbCcc...|
+        A1 |..Xxxxx.....|
+    )", 10.0, false);
+    // B's sound runs longer than its picture (an L cut): closing B's place would take A and C off V1, so a rearrange of
+    // B is refused wherever it is dropped.
+    rig.tl.link("V1@3 A1@2");
+    rig.controller.resetProject(rig.tl.state, rig.tl.seq);
+    rig.harness.frame();
+    const ClipId c = rig.clip("V1@6");
+    const auto before = rig.controller.snapshot();
+    const Qt::KeyboardModifiers ctrlAlt = Qt::ControlModifier | Qt::AltModifier;
+
+    // Pressed plainly and dragged 3 frames right (an overwrite preview over C's head), Ctrl+Alt added on the way and
+    // held at the drop: the overwrite preview goes, the readout says why, and the drop changes nothing.
+    dragChanging(rig, {rig.x(4.5), rig.y("V1")}, {rig.x(7.5), rig.y("V1")}, {}, ctrlAlt, 3, false);
+    REQUIRE(rig.view->gestureActive());
+    CHECK(rig.view->cursorKey() == QStringLiteral("rearrange"));
+    CHECK(rig.view->gestureReadout().startsWith(QStringLiteral("Rearrange would also remove unselected clip")));
+    CHECK(rig.view->clipAt(rig.x(7.5), rig.y("V1")) == clipKey(c)); // the model again, not B over C's head
+    rig.release({rig.x(7.5), rig.y("V1")}, ctrlAlt);
+    CHECK(rig.controller.snapshot() == before);
+    CHECK(rig.undoSteps() == 0);
+    CHECK(rig.picture() == normalize(rig.original));
+
+    // Ctrl+Alt from the press: refused at every position, and said so.
+    rig.drag({rig.x(4.5), rig.y("V1")}, {rig.x(7.5), rig.y("V1")}, ctrlAlt, false);
+    REQUIRE(rig.view->gestureActive());
+    CHECK(rig.view->gestureReadout().startsWith(QStringLiteral("Rearrange would also remove unselected clip")));
+    rig.release({rig.x(7.5), rig.y("V1")}, ctrlAlt);
+    CHECK(rig.undoSteps() == 0);
+
+    // Ctrl+Alt let go again before the drop: the overwrite comes back and is what the drop commits.
+    dragChanging(rig, {rig.x(4.5), rig.y("V1")}, {rig.x(7.5), rig.y("V1")}, ctrlAlt, {}, 3);
+    const ClipId sel[] = {rig.tl.clip("V1@3")};
+    CHECK(rig.picture() == rig.expected(edit::moveClips(rig.tl.state, rig.tl.seq, sel, f(3))));
+    CHECK(rig.undoSteps() == 1);
+    CHECK(rig.controller.undoText() == QStringLiteral("Undo Move"));
+}
+
+TEST_CASE("Ctrl and Alt drag packs clips selected apart", "[app][timeline][edit][rearrange]") {
+    const Qt::KeyboardModifiers ctrlAlt = Qt::ControlModifier | Qt::AltModifier;
+    {
+        Rig rig(R"(
+            V1 |AaaCcccBbbDddd|
+        )");
+        // A and B selected with C between them, dragged by A to the end: they land side by side after D (no gap opens
+        // between them) and the sequence keeps its length.
+        const ClipId a = rig.clip("V1@0");
+        const ClipId b = rig.clip("V1@7");
+        rig.controller.selectClipById(a, ProjectController::Replace, true);
+        rig.controller.selectClipById(b, ProjectController::Add, true);
+        rig.drag({rig.x(1.5), rig.y("V1")}, {rig.x(15.5), rig.y("V1")}, ctrlAlt, false);
+        REQUIRE(rig.view->gestureActive());
+        CHECK(rig.view->gestureReadout().startsWith(QStringLiteral("Rearrange ")));
+        rig.release({rig.x(15.5), rig.y("V1")}, ctrlAlt);
+        const ClipId sel[] = {a, b};
+        CHECK(rig.picture()
+              == rig.expected(edit::moveClips(rig.tl.state, rig.tl.seq, sel, f(14), {}, edit::MoveMode::Rearrange)));
+        CHECK(rig.picture() == normalize("V1 |CcccDdddAaaBbb|"));
+        CHECK(rig.controller.snapshot()->findSequence(rig.tl.seq)->contentEnd() == rig.tl.sequence().contentEnd());
+        CHECK(rig.undoSteps() == 1);
+        CHECK(rig.controller.undoText() == QStringLiteral("Undo Rearrange"));
+    }
+
+    // A's sound sits apart from its picture: packing would pull the two together, so the drag is refused wherever it
+    // is (out, back over its own place and out again), the readout says why and the drop changes nothing.
+    Rig rig(R"(
+        V1 |AaaCcc......|
+        A1 |......Xxx...|
+    )", 10.0, false);
+    rig.tl.link("V1@0 A1@6");
+    rig.controller.resetProject(rig.tl.state, rig.tl.seq);
+    rig.harness.frame();
+    const QString why = QStringLiteral("Rearrange works on clips that are side by side; use Ctrl-drag to insert");
+    rig.press({rig.x(1.5), rig.y("V1")}, ctrlAlt);
+    rig.move({rig.x(3.0), rig.y("V1")}, ctrlAlt);
+    rig.move({rig.x(4.5), rig.y("V1")}, ctrlAlt);
+    REQUIRE(rig.view->gestureActive());
+    CHECK(rig.view->gestureReadout() == why);
+    rig.move({rig.x(1.5), rig.y("V1")}, ctrlAlt);
+    CHECK(rig.view->gestureReadout() == why);
+    rig.move({rig.x(7.5), rig.y("V1")}, ctrlAlt);
+    CHECK(rig.view->gestureReadout() == why);
+    rig.release({rig.x(7.5), rig.y("V1")}, ctrlAlt);
+    CHECK(rig.undoSteps() == 0);
+    CHECK(rig.picture() == normalize(rig.original));
+}
+
+TEST_CASE("Shift during a drag keeps the time and changes only the track", "[app][timeline][edit]") {
+    Rig rig(R"(
+        V2 |............|
+        V1 |AaaaBbbb....|
+        A1 |AaaaBbbb....|
+        A2 |............|
+    )");
+    // Pressed plainly, dragged right and up; Shift added on the way: B keeps its start, only the track changes.
+    dragChanging(rig, {rig.x(5.5), rig.y("V1")}, {rig.x(8.5), rig.y("V2")}, {}, Qt::ShiftModifier, 3, false);
+    REQUIRE(rig.view->gestureActive());
+    CHECK(std::isnan(rig.view->snapX()));
+    CHECK(rig.view->gestureReadout() == QStringLiteral("+00:00:00:00"));
+    rig.release({rig.x(8.5), rig.y("V2")}, Qt::ShiftModifier);
+    CHECK(rig.picture() == normalize(R"(
+        V2 |....Bbbb....|
+        V1 |Aaaa........|
+        A1 |Aaaa........|
+        A2 |....Bbbb....|
+    )"));
+    CHECK(rig.controller.undoText() == QStringLiteral("Undo Move"));
+}
+
 // ---- Trims, ripple, roll, slip, slide -------------------------------------------------------------------------------
 
 TEST_CASE("Edge drags trim; Ctrl and the B tool ripple-trim; N rolls", "[app][timeline][edit]") {
@@ -310,6 +601,46 @@ TEST_CASE("Y slips the source with an In/Out readout; U slides the clip", "[app]
         rig.drag({rig.x(6), rig.y("V1")}, {rig.x(7), rig.y("V1")});
         CHECK(rig.picture() == rig.expected(edit::slide(rig.tl.state, rig.tl.seq, b, f(1))));
         CHECK(rig.controller.undoText() == QStringLiteral("Undo Slide"));
+    }
+}
+
+TEST_CASE("Trim readouts show the new duration", "[app][timeline][edit][readout]") {
+    // 0.4: one line, the signed delta first. 2 px per frame; a 50-frame (2 s) clip.
+    const std::string one = "V1 |A" + std::string(49, 'a') + std::string(60, '.') + "|";
+    SECTION("a trim of the tail") {
+        Rig rig(one, 2.0);
+        rig.view->setSnapping(false);
+        rig.drag({rig.x(50) - 1, rig.y("V1")}, {rig.x(75) - 1, rig.y("V1")}, {}, false);
+        CHECK(rig.view->gestureReadout() == QStringLiteral("+00:00:01:00 · Duration 00:00:03:00"));
+        rig.release({rig.x(75) - 1, rig.y("V1")});
+        CHECK(rig.controller.undoText() == QStringLiteral("Undo Trim"));
+    }
+    SECTION("a ripple trim") {
+        Rig rig(one, 2.0);
+        rig.view->setSnapping(false);
+        rig.drag({rig.x(50) - 1, rig.y("V1")}, {rig.x(75) - 1, rig.y("V1")}, Qt::ControlModifier, false);
+        CHECK(rig.view->gestureReadout() == QStringLiteral("+00:00:01:00 · Duration 00:00:03:00"));
+        rig.release({rig.x(75) - 1, rig.y("V1")}, Qt::ControlModifier);
+        CHECK(rig.controller.undoText() == QStringLiteral("Undo Ripple Trim"));
+    }
+    SECTION("a rate stretch adds the new speed") {
+        Rig rig(one, 2.0);
+        rig.view->setSnapping(false);
+        rig.view->setTool(QStringLiteral("rateStretch"));
+        rig.drag({rig.x(50) - 1, rig.y("V1")}, {rig.x(100) - 1, rig.y("V1")}, {}, false);
+        INFO("readout: " << rig.view->gestureReadout().toStdString());
+        CHECK(rig.view->gestureReadout() == QStringLiteral("+00:00:02:00 · Duration 00:00:04:00 · 50%"));
+        rig.release({rig.x(100) - 1, rig.y("V1")});
+    }
+    SECTION("a roll shows both clips") {
+        const std::string two = "V1 |A" + std::string(49, 'a') + "B" + std::string(49, 'b') + std::string(20, '.') + "|";
+        Rig rig(two, 2.0);
+        rig.view->setSnapping(false);
+        rig.view->setTool(QStringLiteral("roll"));
+        rig.drag({rig.x(50) - 2, rig.y("V1")}, {rig.x(75) - 2, rig.y("V1")}, {}, false);
+        CHECK(rig.view->gestureReadout() == QStringLiteral("+00:00:01:00 · 00:00:03:00 | 00:00:01:00"));
+        rig.release({rig.x(75) - 2, rig.y("V1")});
+        CHECK(rig.controller.undoText() == QStringLiteral("Undo Rolling Edit"));
     }
 }
 
@@ -664,6 +995,100 @@ TEST_CASE("Drag screenshots: lift, ghost preview, snap line, drop", "[app][qml][
         const QImage image = shell.grab();
         REQUIRE_FALSE(image.isNull());
         REQUIRE(image.save(outputDir() + QLatin1Char('/') + QLatin1String(step.file)));
+    }
+}
+
+TEST_CASE("Drag screenshots: an Alt-drag copy and a Ctrl and Alt rearrange and a trim readout",
+          "[app][qml][screenshots][dragshots]") {
+    // 0.4: mid-drag, the readout beside the pointer: the demo's Lower Third (V3) copied with Alt (the original stays,
+    // the copy is drawn lifted), Interview B (V1) rearranged with Ctrl+Alt to the start of Interview A (the two swap),
+    // and the Lower Third's tail trimmed (the readout adds the new duration). A fresh window for each image (an
+    // offscreen grab tears the scene graph down).
+    struct Shot {
+        const char* file;
+        const char* what; // "copy", "rearrange", "trim"
+    };
+    const Shot shots[] = {
+        {"timeline-alt-drag-copy.png", "copy"},
+        {"timeline-rearrange.png", "rearrange"},
+        {"timeline-trim-readout.png", "trim"},
+    };
+    for (const Shot& shot : shots) {
+        INFO(shot.what);
+        resetSettings();
+        clearMessages();
+        Shell shell;
+        REQUIRE(shell.window != nullptr);
+        shell.resize(kShotWidth, kShotHeight);
+        shell.theme->setProperty("reduceMotion", true);
+        auto* view = qobject_cast<TimelineView*>(shell.object("timelineView"));
+        REQUIRE(view != nullptr);
+        auto* controller = shell.engine.singletonInstance<ProjectController*>("Wabcut", "ProjectController");
+        REQUIRE(controller != nullptr);
+        QQuickItem* panel = shell.item("timelinePanel");
+        REQUIRE(panel != nullptr);
+        spin(400); // layout and theme settle
+
+        const std::string what = shot.what;
+        const SequencePtr seq = controller->currentSequence();
+        const auto& rows = view->rows();
+        // V3 is the top row, V1 the third.
+        const std::size_t row = what == "rearrange" ? 2 : 0;
+        const Clip& clip = what == "rearrange" ? seq->videoTracks[0]->clips[1] : seq->videoTracks[2]->clips.front();
+        const double y = rows[row].y + rows[row].height / 2 - view->scrollY();
+        const double startX = what == "trim" ? clip.end().toSeconds() * view->pixelsPerSecond() - view->scrollX() - 3
+                                             : (clip.start().toSeconds() + 1.0) * view->pixelsPerSecond() - view->scrollX();
+        const double toFirst = (seq->videoTracks[0]->clips.front().start() - clip.start()).toSeconds() * view->pixelsPerSecond();
+        const double dx = what == "copy" ? 150 : what == "rearrange" ? toFirst : 90;
+        const Qt::KeyboardModifiers mods = what == "copy"        ? Qt::KeyboardModifiers(Qt::AltModifier)
+                                           : what == "rearrange" ? (Qt::ControlModifier | Qt::AltModifier)
+                                                                 : Qt::KeyboardModifiers{};
+        const auto scene = [&](double x) { return view->mapToScene(QPointF(x, y)); };
+        const auto send = [&](QEvent::Type type, QPointF pos, Qt::MouseButton button, Qt::MouseButtons buttons,
+                              Qt::KeyboardModifiers m) {
+            QMouseEvent event(type, pos, pos, button, buttons, m);
+            QCoreApplication::sendEvent(shell.window.get(), &event);
+        };
+        REQUIRE(startX > 0);
+        REQUIRE(startX < view->width());
+        REQUIRE(startX + dx > 0);
+        REQUIRE(startX + dx < view->width());
+        const std::size_t undoBefore = controller->session().undoCount();
+        // Pressed plainly (links followed); the modifiers come in while dragging, as Premiere users do.
+        send(QEvent::MouseButtonPress, scene(startX), Qt::LeftButton, Qt::LeftButton, {});
+        for (int i = 1; i <= 8; ++i)
+            send(QEvent::MouseMove, scene(startX + dx * i / 8.0), Qt::NoButton, Qt::LeftButton, i <= 2 ? Qt::KeyboardModifiers{} : mods);
+        spin(100);
+        REQUIRE(view->gestureActive());
+        const QString readout = view->gestureReadout();
+        INFO("readout " << readout.toStdString());
+        if (what == "copy") {
+            CHECK(view->cursorKey() == QStringLiteral("copy"));
+            CHECK(readout.startsWith(QStringLiteral("Copy ")));
+        } else if (what == "rearrange") {
+            CHECK(view->cursorKey() == QStringLiteral("rearrange"));
+            CHECK(readout.startsWith(QStringLiteral("Rearrange −"))); // to the left, before Interview A
+            // The preview: Interview B first, then Interview A.
+            CHECK(view->clipAt(startX + dx, y) == clipKey(clip.id));
+        } else {
+            CHECK(readout.contains(QStringLiteral(" · Duration ")));
+        }
+        QQuickItem* pill = shell.item("gestureReadout");
+        REQUIRE(pill != nullptr);
+        CHECK(pill->isVisible());
+        const QImage image = shell.grab();
+        REQUIRE_FALSE(image.isNull());
+        const double dpr = image.devicePixelRatio();
+        const QRectF r = panel->mapRectToScene(QRectF(0, 0, panel->width(), panel->height()))
+                             .intersected(QRectF(0, 0, image.width() / dpr, image.height() / dpr));
+        REQUIRE(image.copy(QRectF(r.topLeft() * dpr, r.size() * dpr).toRect())
+                    .save(outputDir() + QLatin1Char('/') + QLatin1String(shot.file)));
+        // Esc: nothing was committed.
+        REQUIRE(view->cancelGesture());
+        CHECK(controller->session().undoCount() == undoBefore);
+        const QStringList messages = takeMessages();
+        INFO(join(messages));
+        CHECK(messages.isEmpty());
     }
 }
 

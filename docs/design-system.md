@@ -84,11 +84,27 @@ nav and project cards. Semantic: success mint (dark) / `#0B7A5C` (light), warnin
 - **`Panel`:** an island. Docked (the outermost panel of a `DockSlot`), it opens with a **tab strip**: a `sunken` band
   with the island's top corners, the panel's `PanelTab` (named and coloured from the catalog: `Workspaces.panelLabel` /
   `panelHue`), then the `leading` tools, and at the right the `trailing` tools and `DockHandle` (grip, pop-out, close).
-  Each tool row hides when the strip has no room. Undocked with a `title`: a `SectionHeader`. A docked panel without a
-  title (a monitor in single mode) keeps the corner handle.
+  0.4: `leading` / `trailing` are `list<Item>`; each tool sits in a slot (0 wide and clipped while it has no room, never
+  `visible: false`; a button's `focusPolicy` is `Qt.NoFocus` meanwhile, and the slot of any other tool is disabled, so
+  nothing inside it - the Timeline's palette buttons - stays in the Tab chain). Short of room the tools hide one at a
+  time (`fitTools()`: trailing from the right end kept first, then leading from the left end; the trailing row's last
+  tool hides last) and `panelToolsOverflow` (a single-chevron `chevron-right` IconButton, tooltip "More tools", before
+  the handle; not the "···" some panels use for their own menu) opens `panelToolsMenu`, a row per hidden IconButton /
+  PillButton (`hiddenTools`) that runs the tool's `click()` once the menu closed (a checkable tool toggles and emits
+  `toggled()`, as a real click). A row's label is the tool's optional `menuText` (a short name that does not change with
+  its state: "Keyframe lane", not the tooltip "Hide the keyframe lane"), else its text, else its tooltip. Other tools
+  just hide; a tool whose own `visible` is false is not counted. Undocked with a `title`: a `SectionHeader`. A docked panel
+  without a title (a monitor in single mode) keeps the corner handle.
 - **`DockTabs`:** a group's browser-style tabs, one instance per `DockSlot` (`tabPanels`, `tabbed`, `tabsWidth`), laid
   over the shown panel's strip; the panel hides its own tab and leaves them `tabsWidth`. Click or Left/Right shows a
   panel, × or a middle click closes it, dragging a tab moves that panel. `DockManager.headerZone` is the strip.
+  0.4: the strip is the tabs' up to `DockSlot.toolsReserve` (handle and the More tools chevron); only the shown tab keeps room for its ×
+  (`chromeOf`), the others show it on hover; `layoutTabs()` gives natural widths, else proportional shrinking down to
+  `minTabWidth(i)` (dot + about four characters), else the tabs that fit in order (the current one always) and
+  `dockTabsOverflow` (chevron-down, "All panels in this group") opening `dockTabsOverflowMenu` (`dockTabsOverflow_<key>`:
+  catalog icon, name, check, focus key from `panelCommands`, kept in step with `WindowMenu.panelCommands`). Each tab has
+  a tooltip and `tooltipText` ("Library  [Shift+1]"). A lone panel's tab (`panelTabArea`) is in the Tab chain with a
+  focus ring; Menu / Shift+F10 open its tab menu.
 - **Active group, maximized frame, tab menu (UX rework):** `DockManager.activeGroup` is the group the user worked in
   last (a press in it: the slot's top-most `dockGlass_<gid>` watches with a non-grabbing `PointHandler` and tracks the
   pointer for the backtick key; a tab; a drop; a focus key, the Window menu, `showBrowserPanel`; never startup focus;
@@ -109,8 +125,11 @@ nav and project cards. Semantic: success mint (dark) / `#0B7A5C` (light), warnin
 ## Chrome
 - **Title bar (`TopBar`):** the echo mark in a round badge plus the project name and `W×H · fps` (the File menu target,
   `brandArea`), the menu bar (`AppMenuBar`), the sequence switcher, `WorkspaceTabs` (a segmented pill group, centred;
-  `workspacePlate` slides under the active one), job pills while something runs, round command palette / undo / redo,
-  Save (unsaved dot) and Export, round window controls.
+  `workspacePlate` slides under the active one), job pills while something runs (0.4: one `activityPill`, the Background
+  tasks pill: the first running job's text and " +N", only its percentage while the menus are folded - it counts at that
+  short width in `menuRoom` and shows its full text only in the room left over -, a 2 px `BeamProgress` at its foot,
+  warning hue when paused or held; `ActivityPopover` below it), round command palette / undo / redo, Save (unsaved dot;
+  0.4: danger red after a failed autosave) and Export, round window controls.
 - **Menu bar (UX rework; it replaced the left rail, `panels/menubar/`):** `AppMenuBar` holds Premiere's nine menus
   (`FileMenu`, `EditMenu`, `ClipMenu`, `SequenceBarMenu`, `MarkersMenu`, `GraphicsMenu`, `ViewMenu`, `WindowMenu`,
   `HelpMenu`; objectNames `fileMenu` … `helpMenu`, the Sequence one `sequenceMenuBar`) under `MenuBarButton` titles
@@ -170,9 +189,9 @@ nav and project cards. Semantic: success mint (dark) / `#0B7A5C` (light), warnin
 The APIs are stable; v1/v2 names are kept so other panels do not break.
 | Component | v3 notes |
 |---|---|
-| `Panel` | Island, radius 22; docked → tab strip (`PanelTab` or the group's `DockTabs`), `leading` / `trailing` tools, `DockHandle`. |
+| `Panel` | Island, radius 22; docked → tab strip (`PanelTab` or the group's `DockTabs`), `leading` / `trailing` tools (0.4: `list<Item>` in slots; the ones without room go into the More tools menu behind a chevron button, `hiddenTools`), `DockHandle`. |
 | `PanelTab` | A strip tab: rounded top, flared feet when active, hue dot, bold name. |
-| `DockTabs`, `DockSlot`, `DockHolder`, `DockHandle`, `DockTabMenu` | The group's tabs (one per slot), the slot (active outline, glass), what floats, the grip / pop-out / close, the tab menu. |
+| `DockTabs`, `DockSlot`, `DockHolder`, `DockHandle`, `DockTabMenu` | The group's tabs (one per slot; 0.4: readable minimum widths, × room on the shown tab only, the tab list `dockTabsOverflow`, tooltips with the focus key), the slot (active outline, glass, `toolsReserve`), what floats, the grip / pop-out / close, the tab menu. |
 | `SectionHeader` / `SliceMark` | Dot + bold title / an 8 px dot. |
 | `PillButton` | Pill. `primary` accent + black ExtraBold, `danger` (the confirm button of a destructive question: Delete, Remove) `Theme.danger` + black ExtraBold (white on a dark custom red), `secondary` raised, `ghost` transparent with a hairline. `beamAccent` is a no-op. |
 | `IconButton` | Circle; `ghost` / `secondary` / `primary`; checked = accent with a black glyph. |
@@ -181,6 +200,10 @@ The APIs are stable; v1/v2 names are kept so other panels do not break.
 | `FieldInput`, `NumberField` | Raised pills with a focus edge. |
 | `ContextMenu` / `ContextMenuItem` / `Popover` / `Tooltip` | Radius 20 with a soft shadow, pill highlights; tooltips are inverted pills with an accent keycap. |
 | `StatusPill`, `Toast`, `ThinScrollBar`, `FocusRing`, `EmptyState`, `Icon`, `KeyframeShape` | Raised pill / section card with an optional accent action pill / `well` thumb / `Theme.focus` / illustration + action. |
+| `Toast` (0.4) | `show(message, color, options)` unchanged; options add `secondaryActionText` / `secondaryAction` (a ghost pill before the accent one; max width `space(170)`) and `untilSeen` (its time runs only while the window is active). An error (`Theme.danger`) is never replaced: later messages wait in `pending` (FIFO, at most 5; when full the oldest waiting non-error goes), shown when it leaves (time, ×, action); "+N" and × on the card while messages wait; the same text and colour restarts its time with the new call's actions. Option `replaceKey` (a running readout, the clip volume keys): it replaces the shown or waiting message with the same key, here and in the log. `dismiss()` shows the next, `dismissAll()` drops the queue. Every `show()` is logged in `MessageLog` (`entryId`). |
+| `MessageLog` (0.4, singleton) | The recent messages (toasts and Home's strip), newest first, `limit` 30 (past it the oldest info / success entry goes first: errors and warnings stay; all problems: the oldest goes): `entries` `{ id, time, text, tone, actionText, action, missed, key }`, `count`, `unseen` (errors that left on their timer: `missed(id)`, or that Home's strip lost; one that leaves the log stops counting), `add()` (a repeat of the newest only refreshes its time), `addKeyed(..., key)` (replaces the entry with the same key), `markSeen()`, `clear()`, `toneOf(color)`. |
+| `ActivityPopover` (0.4, panels/) | The Background tasks popover (a `Popover`): `activityExport_<jobId>` `ExportJobPill`s on a `sunken` well with Start Queue / Clear Finished / Export Queue…, a `JobRow` (icon, name · detail, %, ghost action, `BeamProgress`) per other job (`activityRender`, `activityProxies`, `activityTranscription`, `activityHighlights`, `activityShorts`, `activityCollect`, `activityExtension`), `activityNothing`, then Recent messages (`activityMessages`: tone dot, mono time, two lines - a click on a longer one shows all of it, `expanded` - ghost action). Opening it marks errors seen. TopBar parents it to `activityAnchor` (the pill, or where it would be), so a press elsewhere in the title bar closes it. |
+| `BackgroundWorkCloseDialog` (0.4, dialogs/) | The quit guard: a `WabcutDialog` with a live `message`, danger "Cancel Exports and Quit", ghost "Quit When Done" (`canWait`), primary "Keep Wabcut Open" (focused; Enter, Esc). Work that ends while it asks: Main closes it (`settle()`) and goes on with the close, unless something failed. |
 | `EchoMark`, `EchoLoader`, `LoaderPill`, `BrandLogo`, `BeamProgress` | Brand mark, loaders, logo, pill progress. |
 | C++ items | `SliceShape`, `SvgArt` (tinted SVG), `BundledFonts` (singleton: type families). |
 
@@ -324,12 +347,16 @@ The sections below record what each milestone built. Their behaviour still holds
   EditSession gesture: **one drag = one undo step**, and the drop never jumps because it is exactly the preview.
   Esc cancels and nothing is committed.
 - Locked tracks: the model refuses the edit, so no preview appears and nothing is committed. A move that would land
-  on a locked track keeps its last valid preview.
+  on a locked track keeps its last valid preview. 0.4: a move mode the modifiers switch to that the model refuses (a
+  Ctrl+Alt rearrange that would take an unselected clip off a track, after a plain move was fine) drops that preview
+  instead, since what is held at the drop decides: the drop commits nothing and the readout gives the model's reason
+  ("Rearrange would also remove unselected clip 'A' on V1"). The model refuses such a rearrange at the clips' own
+  place too, so the reason stays in the readout when the drag passes back over it.
 
 ### Tools (keys from docs/keymap.md; buttons in the Tracks header with keymap tooltips)
 | Tool | Key | Press / drag |
 |---|---|---|
-| Selection | V | Body drag moves the selection. Ctrl/⌘ inserts instead of overwriting; Alt ignores links. Dragging across tracks moves video up and linked audio down. Edge drag trims; Ctrl/⌘ on an edge ripple-trims. |
+| Selection | V | Body drag moves the selection. Ctrl/⌘ at the drop inserts; Alt at the drop copies (Alt at the press: only the clicked side of a linked clip); Ctrl+Alt (⌘⌥) rearranges; Shift during the drag keeps the time. Dragging across tracks moves video up and linked audio down. Edge drag trims; Ctrl/⌘ on an edge ripple-trims. |
 | Track select forward / backward | A / Shift+A | Click selects every clip from the click on (or before it), on all tracks; Shift: the clicked track only. A drag then moves them. |
 | Ripple edit | B | Edge drag ripple-trims. |
 | Rolling edit | N | Drag an edit point to roll it. |
@@ -361,6 +388,23 @@ The sections below record what each milestone built. Their behaviour still holds
     palette becomes one button showing the active tool. The toolbar never disappears.
 - **Clicks:** Shift toggles a clip. A plain click on a clip that is already selected narrows a multi-selection to it;
   Ctrl/⌘-click deselects it. Right-click opens the clip context menu.
+- **What is held at the drop (0.4, Premiere):** the modifiers are read on every pointer move and modifier change, so
+  they can come in after the drag started. None moves, Ctrl/⌘ inserts ("Insert Move"), **Alt copies** ("Duplicate":
+  `edit::duplicateClips`; the originals stay drawn in place, the copies are drawn lifted at the drop, the cursor is the
+  system copy cursor, the readout says `Copy +00:00:01:05`, snapping also reaches the originals' own edges, and after
+  the drop the copies are the selection), **Ctrl+Alt (⌘⌥) rearranges** ("Rearrange": `MoveMode::Rearrange`, the swap
+  arrows cursor, `Rearrange +…`; the gap closes on the dragged clips' tracks and room opens at the drop on the
+  destination tracks only, so other tracks, captions and sequence markers stay; the drop time is read on the grabbed
+  clip's destination track as it was before the drag, so a shot dropped at the cut after its neighbour swaps with it,
+  and one dragged to another track lands at the pointer; clips selected apart pack at the drop in time order, each
+  stretch of touching clips keeping its own timing so linked pairs stay in sync, and only their total length opens, so
+  no gap appears between them; a link group spread over two stretches is refused at every position, its own place
+  included: "Rearrange works on clips that are side by side; use Ctrl-drag to insert"), and **Shift keeps the time**
+  (delta 0, no snapping; only the track changes, with any of the above). Alt at the press still means "ignore links": held from the press to the drop it copies only the clicked side,
+  let go before the drop it moves only that side. A copy's linked partner follows it across tracks only onto a free
+  stretch of an unlocked track; otherwise the copy is the grabbed kind alone. A copy or rearrange back onto its own
+  place changes nothing (no undo step); clips selected apart and dropped over the first one's place do pack there. Insert-copy has no mouse gesture (`clip.move {copy, mode: "insert"}` and Paste
+  Insert).
 
 ### Snapping
 - S toggles snapping (the labelled Snap toggle on the sequence tab row).
@@ -369,6 +413,11 @@ The sections below record what each milestone built. Their behaviour still holds
 - **Reach:** `Theme.snapThreshold` (12 px since 0.1.3; was 8), converted to time at the current zoom, so snapping reaches further when
   zoomed out.
 - **Which edge snaps:** of the dragged edges, the one closest to a target lands on it.
+- **The playhead (0.4, Premiere's "Snap Playhead in Timeline When Snap Is Enabled"):** pressing or dragging in the
+  ruler with Snap on and Settings > Timeline & editing > Snap the playhead on (`Preferences.snapPlayhead`, default on)
+  puts the playhead on the nearest clip edge (any track), marker start or end, In, Out or beat within the same reach;
+  the snap line and its tick show in the lanes while the button is held. Shift snaps with Snap off. The Program
+  Monitor's time bar does not snap (as Premiere).
 - **Indicator:** a full-height line in `accentStroke` (selection width). The razor preview line turns accent when it
   snaps.
 - **Drops (0.1.3):** a Library card, the Source Monitor's picture, a search hit or a graphics template dragged over the
@@ -397,10 +446,35 @@ the view animate; clips further away move at once.
 
 ### Readout and context menu
 - **Readout:** while dragging, a scrim pill next to the pointer shows the applied delta (`+00:00:01:05`, prefixed with
-  "Insert" for an insert move) or, for slip, the source In/Out.
+  "Insert" for an insert move, "Copy" for an Alt-drag copy and "Rearrange" for a Ctrl+Alt rearrange) or, for slip, the
+  source In/Out. 0.4: trims add the clip's new length on the same line: Trim and Ripple Trim
+  `+00:00:01:00 · Duration 00:00:03:00`, Rate Stretch also the new speed (`· 50%`), Roll and Slide the two clips around
+  the edit point (`· 00:00:03:00 | 00:00:05:12`, left | right; next to a gap, the grabbed clip's `· Duration`), in
+  audio samples on audio-only drags with audio time units on. The pill sizes to its text.
+- **Clip tooltip (0.4):** resting the pointer on a clip for `Theme.tooltipDelay` shows a `Tooltip` below-right of the
+  pointer (a rounded card, `radiusField`, since it has several lines): the name; `Start … · End …` (End is the clip's
+  Out, exclusive, as Effect Controls shows it); `Duration … · Speed 50%`; `Source x.mov · In … · Out …` (the last source
+  frame, as the Slip readout), `Source x.mov · time remapped`, `Sequence <name>` or `Multi-Camera <name> · <angle>`;
+  `2 effects · Disabled · Offline`. Parts that say nothing are left out. It hides on a press, a drag, a marquee, a
+  scroll or zoom, an edit, during playback, with the hand and zoom tools, while a timeline menu is open and when the
+  pointer leaves the clip; another clip starts the wait again. Settings > Timeline & editing > Tracks > Clip tooltips
+  (`Preferences.showClipTooltips`), also in the display settings.
+- **Clip badges (0.4):** a clip that does not play at a uniform 100 % forward shows its speed after the name in brackets
+  as Premiere does (`Interview [50%]`, `[−100%]` reversed, `[Variable speed]` time-remapped, `[Hold]` a frame hold),
+  audio clips too; while the time remapping view is on, video clips keep the ` · 100%` suffix instead. An **fx** chip
+  follows the name: `accentFill` (violet) when the clip has effects in its stack, else `warning` (amber) when Motion,
+  Opacity or its blend mode, Volume or Pan differ from the defaults or are keyframed, or the clip is time-remapped;
+  `clipInk` text with a `clipInk` hairline, so it reads on every label colour in both themes; on a clip whose own fill
+  is close to the chip's colour (the default violet label under the violet chip) the chip is inverted, a `clipInk`
+  pill with "fx" in the chip's colour. Untouched clips show no
+  chip (Premiere shows a grey one; a lead decision keeps them clean). Like the other tags it shows only where the whole
+  name fits. Switches: Show > Clip speed and fx badges in the display settings, Settings > Timeline & editing > Tracks
+  (`Preferences.timelineShowClipSpeed`, `timelineShowFxBadges`).
 - **Context menu** (right-click on a clip, ClipContextMenu.qml), for the selection:
   - Cut, Copy, Paste;
-  - Ripple Delete;
+  - Clear (0.4; Delete: the clips go and leave gaps, undo "Delete") and Ripple Delete;
+  - 0.4: Audio Gain… (G) at the top of the audio tools, only on clips with sound; the dialog opens after the menu
+    closed;
   - Enable (checked state);
   - Link/Unlink (by state);
   - Speed/Duration… (disabled placeholder);
@@ -899,6 +973,10 @@ unlocked sync-locked track.
   - Alt-click to switch an indicator off or on; Space does the same from the keyboard.
   - Patching is view state per sequence, checked by `sequence.setPatches`.
 - **Targeting (the name chip):** a ring and "▸" when targeted; changed through `sequence.setTargets`.
+- **Toggles (0.4):** they look like their state, in the mixers' colours: the speaker is plain while the track plays and
+  crossed only when muted ("Mute A1" / "Unmute A1"), mute `warning` (amber), solo `success` (green), record arm
+  `danger` (red), `clipInk` glyphs when on. Output, mute, solo and lock are check boxes for screen readers
+  (`trackOutput_` / `trackMute_` / `trackSolo_` / `trackLock_` + the track's short name).
 
 ### Fit Clip (`FitClipDialog`)
 - **When:** a four-point Insert / Overwrite whose source and sequence ranges differ by a frame or more.
@@ -977,6 +1055,14 @@ unlocked sync-locked track.
   wash across it.
   - Drag a flag to move the marker; Alt-drag sets its duration.
   - Double-click opens `MarkerEditor`: name, comment, In, duration, colour, type, URL.
+  - **The ruler menu (0.4, `timeline/RulerContextMenu`):** a right click anywhere on the ruler opens it at the pointer
+    (down from it, or up from it with its bottom edge there when the window has no room below; never pushed over the
+    panel header) and leaves the playhead where it is: Mark In, Mark Out, Mark Clip | Go to In, Go to Out | Clear In, Clear Out,
+    Clear In and Out | Add Marker, Go to Next / Previous Marker, Clear All Markers, Ripple Sequence Markers (checked
+    per sequence) | Show Audio Time Units (checked). Marks and markers go at the playhead and act on the sequence even
+    when the Source Monitor had the focus; rows that cannot run are greyed out; each shows its shortcut and is the
+    existing undo step. On a marker's flag the menu starts with Edit Marker… (the editor opens after the menu closed)
+    and Clear Marker.
 - **Clip markers:** they live on the media item and draw on every clip that uses that part of the source, as a flag at
   the clip's top. M with a selected clip under the playhead (Timeline) or in the Source Monitor adds one.
 - **The Markers panel:**
@@ -1001,6 +1087,15 @@ unlocked sync-locked track.
 - **Render bar (0.2):** a 3 px bar along the ruler's top edge in `Theme.renderRed` / `renderYellow` / `renderGreen`
   (render.status's segments), redrawn a moment after edits and when Render In to Out finishes.
 - **Track heights:** expand all, minimise all, reset, and the presets.
+- **0.4:** Show > Clip speed, fx badges and Clip tooltips; Playback auto-scroll (No scroll / Page / Smooth, Premiere's
+  Timeline Playback Auto-Scrolling, default Page): Page turns a screen when the playhead runs off the right edge and
+  puts it on the left edge (0.3 put it at 90 % and re-scrolled every tenth of a screen), Smooth lets the playhead travel
+  to the middle and then scrolls the clips under it (a jump re-centres; at the sequence end the playhead moves on),
+  No scroll leaves the view alone. Reverse playback (J) mirrors Page and Smooth (Main passes `Playback.speed < 0` to
+  `followPlayhead`): Page turns back a screen with the playhead on the right edge, Smooth keeps it in the middle. Keyboard steps, marker jumps and typed times still reveal the playhead. The same
+  rows are in Settings > Timeline & editing.
+- **Zoom to Sequence (`\`, 0.4):** fits the sequence; pressed again while the view is still exactly at that fit, it
+  goes back to the zoom and scroll from before. Any zoom, scroll or sequence switch in between forgets it.
 - **Persistence:** all of it is saved in `Preferences` (timeline/*).
 
 ## M5j: accessibility, onboarding and the v2 polish pass

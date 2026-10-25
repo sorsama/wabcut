@@ -1,0 +1,281 @@
+{
+  "format": "wabcut-graphic-template",
+  "template": {
+    "description": "Lower third with a name over a title or role and a thin accent bar.",
+    "duration": 1270080000000,
+    "fields": [
+      {
+        "id": "name",
+        "kind": "text",
+        "label": "Name",
+        "layer": 3,
+        "property": "text",
+        "value": "Full Name"
+      },
+      {
+        "id": "role",
+        "kind": "text",
+        "label": "Title or role",
+        "layer": 4,
+        "property": "text",
+        "value": "Title or role"
+      },
+      {
+        "id": "accent",
+        "kind": "color",
+        "label": "Accent colour",
+        "layer": 2,
+        "property": "fill",
+        "value": {
+          "brand": "Accent",
+          "rgba": [
+            0.93,
+            0.92,
+            0.88,
+            1.0
+          ]
+        }
+      },
+      {
+        "id": "length",
+        "kind": "duration",
+        "label": "Length",
+        "property": "clip",
+        "value": 1270080000000
+      }
+    ],
+    "graphic": {
+      "height": 1080,
+      "layers": [
+        {
+          "children": [
+            {
+              "id": 2,
+              "kind": "shape",
+              "masks": [
+                {
+                  "enabled": true,
+                  "id": 1,
+                  "inverted": false,
+                  "mode": "add",
+                  "name": "Wipe",
+                  "params": {
+                    "center.x": {
+                      "value": 0.0
+                    },
+                    "center.y": {
+                      "keys": [
+                        {
+                          "t": 25401600000,
+                          "v": 0.05740740740740741
+                        },
+                        {
+                          "i": "easeIn",
+                          "t": 101606400000,
+                          "v": 0.0
+                        }
+                      ]
+                    },
+                    "size.x": {
+                      "value": 0.003125
+                    },
+                    "size.y": {
+                      "keys": [
+                        {
+                          "t": 25401600000,
+                          "v": 0.0
+                        },
+                        {
+                          "i": "easeIn",
+                          "t": 101606400000,
+                          "v": 0.11481481481481481
+                        }
+                      ]
+                    }
+                  },
+                  "shape": "rectangle"
+                }
+              ],
+              "name": "Accent bar",
+              "shape": {
+                "fill": {
+                  "color": {
+                    "brand": "Accent",
+                    "rgba": [
+                      0.93,
+                      0.92,
+                      0.88,
+                      1.0
+                    ]
+                  },
+                  "type": "solid"
+                },
+                "height": 124.0,
+                "type": "rectangle",
+                "width": 6.0
+              },
+              "transform": {
+                "x": 3.0,
+                "y": 62.0
+              }
+            },
+            {
+              "id": 3,
+              "kind": "text",
+              "name": "Name",
+              "shadow": {
+                "angle": 90.0,
+                "color": [
+                  0.03,
+                  0.03,
+                  0.04,
+                  1.0
+                ],
+                "distance": 3.0,
+                "enabled": true,
+                "opacity": 0.6,
+                "softness": 10.0
+              },
+              "text": {
+                "runs": [
+                  {
+                    "brandFont": "heading",
+                    "fill": [
+                      0.96,
+                      0.96,
+                      0.95,
+                      1.0
+                    ],
+                    "font": "IBM Plex Sans Thai",
+                    "size": 64.0,
+                    "text": "Full Name",
+                    "weight": 600
+                  }
+                ]
+              },
+              "transform": {
+                "x": 28.0
+              }
+            },
+            {
+              "id": 4,
+              "kind": "text",
+              "name": "Role",
+              "shadow": {
+                "angle": 90.0,
+                "color": [
+                  0.03,
+                  0.03,
+                  0.04,
+                  1.0
+                ],
+                "distance": 3.0,
+                "enabled": true,
+                "opacity": 0.6,
+                "softness": 10.0
+              },
+              "text": {
+                "runs": [
+                  {
+                    "brandFont": "body",
+                    "fill": [
+                      0.96,
+                      0.96,
+                      0.95,
+                      0.88
+                    ],
+                    "font": "IBM Plex Sans Thai",
+                    "size": 36.0,
+                    "text": "Title or role",
+                    "tracking": 10.0
+                  }
+                ]
+              },
+              "transform": {
+                "opacity": {
+                  "keys": [
+                    {
+                      "t": 63504000000,
+                      "v": 0.0
+                    },
+                    {
+                      "i": "easeIn",
+                      "t": 139708800000,
+                      "v": 100.0
+                    }
+                  ]
+                },
+                "x": 28.0,
+                "y": {
+                  "keys": [
+                    {
+                      "t": 63504000000,
+                      "v": 96.8
+                    },
+                    {
+                      "i": "easeIn",
+                      "t": 139708800000,
+                      "v": 80.8
+                    }
+                  ]
+                }
+              }
+            }
+          ],
+          "id": 1,
+          "kind": "group",
+          "name": "Name and title",
+          "transform": {
+            "opacity": {
+              "keys": [
+                {
+                  "t": 0,
+                  "v": 0.0
+                },
+                {
+                  "i": "easeIn",
+                  "t": 76204800000,
+                  "v": 100.0
+                },
+                {
+                  "i": "easeOut",
+                  "t": 1168473600000,
+                  "v": 100.0
+                },
+                {
+                  "t": 1270080000000,
+                  "v": 0.0
+                }
+              ]
+            },
+            "x": 150.0,
+            "y": {
+              "keys": [
+                {
+                  "t": 0,
+                  "v": 846.0
+                },
+                {
+                  "i": "easeIn",
+                  "t": 127008000000,
+                  "v": 806.0
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "name": "Name and title",
+      "responsive": {
+        "duration": 1270080000000,
+        "intro": 177811200000,
+        "outro": 101606400000
+      },
+      "width": 1920
+    },
+    "id": "wabcut.essay.nameTitle",
+    "name": "Name and title",
+    "version": 1
+  },
+  "version": 1
+}

@@ -1,5 +1,9 @@
 // P.2 (E6): Premiere's Source and Program Monitor settings and keys (docs/monitors.md): Loop and Play In to Out in both
 // monitors, the Monitors bridge's routing of the monitor keys. Offscreen; no window is shown.
+// 0.4: Play Around and Play from Playhead to Out in both monitors (also when the postroll runs into the end); platform
+// safe zones on vertical sequences (wrench > Platform Safe Zones; screenshots program-safe-zones-*.png, the bright one
+// over a white picture); transports that fit their panels with a "···" menu of the hidden buttons
+// (monitor-transport-overflow.png, monitor-transport-overflow-menu.png).
 
 #include "BridgeIds.h"
 #include "MonitorBridge.h"
@@ -19,13 +23,17 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <functional>
 #include <memory>
+#include <string_view>
 
 #include <QGuiApplication>
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QImage>
+#include <QQmlComponent>
 #include <QQuickItem>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -121,6 +129,176 @@ TEST_CASE("Program Monitor Play In to Out stops on the last marked frame unless 
     spin(600);
     CHECK(rig.playback->playing()); // repeats
     rig.playback->togglePlay();
+}
+
+TEST_CASE("Play Around plays the preroll and postroll and parks back on the playhead", "[app][monitor][transport]") {
+    // 0.4, Premiere's Play Around (Shift+K): Main.qml passes Settings > Timeline's "Play around the edit" times.
+    ProgramRig rig; // 20 frames at 25 fps
+    rig.controller.setPlayhead(f(10));
+    rig.playback->playAround(0.2, 0.2); // 5 frames before, 5 after
+    CHECK(rig.playback->playing());
+    CHECK(rig.controller.playhead() >= f(5));
+    REQUIRE(waitFor([&] { return !rig.playback->playing(); }, 3000));
+    CHECK(rig.controller.playhead() == f(10)); // parked back
+
+    // Loop is ignored while it plays once, and comes back after.
+    rig.playback->setLoop(true);
+    const std::optional<TimeRange> loop = rig.playback->session()->loop();
+    REQUIRE(loop);
+    rig.playback->playAround(0.2, 0.2);
+    CHECK_FALSE(rig.playback->session()->loop());
+    REQUIRE(waitFor([&] { return !rig.playback->playing(); }, 3000));
+    CHECK(rig.controller.playhead() == f(10));
+    CHECK(rig.playback->session()->loop() == loop);
+    rig.playback->setLoop(false);
+
+    // Space during it stops it where it is: no park-back.
+    rig.playback->playAround(0.2, 0.4);
+    spin(60);
+    rig.playback->togglePlay();
+    CHECK_FALSE(rig.playback->playing());
+    const Ticks stopped = rig.controller.playhead();
+    spin(500);
+    CHECK(rig.controller.playhead() == stopped);
+
+    // Clamped at the start.
+    rig.controller.setPlayhead(f(1));
+    rig.playback->playAround(2.0, 0.1);
+    CHECK(rig.playback->playing());
+    REQUIRE(waitFor([&] { return !rig.playback->playing(); }, 3000));
+    CHECK(rig.controller.playhead() == f(1));
+}
+
+namespace {
+
+/// Gives every media item of `state` a file in `dir` (64 zero bytes: nothing decodes, the picture stays black). Only
+/// media with files get a sequence to play, and only then does the scheduler stop at the end on its own.
+void giveFiles(ProjectState& state, const QTemporaryDir& dir) {
+    for (MediaPtr& media : state.media) {
+        auto item = std::make_shared<MediaItem>(*media);
+        const QString path = dir.filePath(QString::fromStdString(item->name) + QStringLiteral(".mov"));
+        QFile file(path);
+        REQUIRE(file.open(QIODevice::WriteOnly));
+        file.write(QByteArray(64, '\0'));
+        item->locator.path = QDir::toNativeSeparators(path).toStdString();
+        item->info.path = item->locator.path;
+        media = std::move(item);
+    }
+}
+
+} // namespace
+
+TEST_CASE("Play Around parks back on the playhead when the postroll reaches the sequence end", "[app][monitor][transport]") {
+    // 0.4 (fix round): the scheduler stops at the sequence end itself, a display latency early, and parks on the last
+    // frame before the bridge's tick sees the stop point. Play Around must still go back to where it started.
+    resetSettings();
+    QTemporaryDir dir;
+    REQUIRE(dir.isValid());
+    Timeline tl{kPicture}; // 20 frames at 25 fps
+    giveFiles(tl.state, dir);
+    ProjectController controller;
+    controller.resetProject(tl.state, tl.seq);
+    REQUIRE(controller.hasMediaFiles());
+    PlaybackBridge playback(&controller);
+    controller.setPlayhead(f(16));
+    playback.playAround(0.2, 0.4); // from frame 11; the postroll runs into the end
+    CHECK(playback.playing());
+    REQUIRE(waitFor([&] { return !playback.playing(); }, 3000));
+    INFO("parked on " << controller.playheadText().toStdString());
+    CHECK(waitFor([&] { return controller.playhead() == f(16); }, 1000));
+    spin(200);
+    CHECK(controller.playhead() == f(16)); // and stays there
+    CHECK_FALSE(playback.playing());
+
+    // Space during it still stops it where it is (no park-back).
+    playback.playAround(0.4, 0.4);
+    spin(80);
+    playback.togglePlay();
+    CHECK_FALSE(playback.playing());
+    const Ticks stopped = controller.playhead();
+    spin(300);
+    CHECK(controller.playhead() == stopped);
+}
+
+TEST_CASE("Source Monitor Play Around parks back when the postroll reaches the media end", "[app][monitor][transport]") {
+    resetSettings();
+    QTemporaryDir dir;
+    REQUIRE(dir.isValid());
+    Timeline tl(kPicture, {{'S', 50}});
+    giveFiles(tl.state, dir);
+    ProjectController controller;
+    controller.resetProject(tl.state, tl.seq);
+    SourceMonitorBridge source;
+    source.setController(&controller);
+    REQUIRE(source.load(mediaKey(tl.media('S'))));
+    REQUIRE(source.lengthTicks() == f(50));
+    source.seek(f(46));
+    source.playAround(0.2, 0.4); // the postroll runs into the end of the media
+    CHECK(source.playing());
+    REQUIRE(waitFor([&] { return !source.playing(); }, 3000));
+    INFO("parked on " << source.positionText().toStdString());
+    CHECK(waitFor([&] { return source.positionTicks() == f(46); }, 1000));
+    spin(200);
+    CHECK(source.positionTicks() == f(46));
+    CHECK_FALSE(source.playing());
+}
+
+TEST_CASE("Play from Playhead to Out stops on the last marked frame", "[app][monitor][transport]") {
+    // 0.4, Premiere's Play from Playhead to Out (Ctrl+Space), through the Monitors bridge as Main.qml routes it.
+    ProgramRig rig;
+    MonitorBridge monitors;
+    monitors.setPlayback(rig.playback.get());
+    CHECK(MonitorBridge::handlesCommand(QStringLiteral("transport.playFromPlayheadToOut")));
+    rig.mark(4, 9); // Out after frame 9
+    rig.controller.setPlayhead(f(6));
+    REQUIRE(monitors.runCommand(QStringLiteral("transport.playFromPlayheadToOut")));
+    CHECK(rig.playback->playing());
+    CHECK(rig.controller.playhead() >= f(6));
+    REQUIRE(waitFor([&] { return !rig.playback->playing(); }, 3000));
+    CHECK(rig.controller.playhead() == f(9));
+    // On the last marked frame (or past it) there is nothing to play.
+    rig.playback->playToOut();
+    CHECK_FALSE(rig.playback->playing());
+    rig.controller.setPlayhead(f(12));
+    rig.playback->playToOut();
+    CHECK_FALSE(rig.playback->playing());
+    // Loop on is ignored: it stops all the same, and Loop is back after.
+    rig.playback->setLoop(true);
+    rig.controller.setPlayhead(f(5));
+    rig.playback->playToOut();
+    CHECK(rig.playback->playing());
+    REQUIRE(waitFor([&] { return !rig.playback->playing(); }, 3000));
+    CHECK(rig.controller.playhead() == f(9));
+    CHECK(rig.playback->session()->loop() == TimeRange::fromStartEnd(f(4), f(10)));
+    rig.playback->setLoop(false);
+}
+
+TEST_CASE("Source Monitor Play Around and Play from Playhead to Out", "[app][monitor][transport]") {
+    resetSettings();
+    Timeline tl(kPicture, {{'S', 50}});
+    ProjectController controller;
+    controller.resetProject(tl.state, tl.seq);
+    SourceMonitorBridge source;
+    source.setController(&controller);
+    REQUIRE(source.load(mediaKey(tl.media('S'))));
+    // Play Around the frame shown: back on it at the end.
+    source.seek(f(20));
+    source.playAround(0.2, 0.2);
+    CHECK(source.playing());
+    REQUIRE(waitFor([&] { return !source.playing(); }, 3000));
+    CHECK(source.positionTicks() == f(20));
+    // Play from the frame shown to the source Out (the key while the Source Monitor has focus).
+    source.seek(f(10));
+    source.markIn();
+    source.seek(f(19));
+    source.markOut(); // Out after frame 19
+    source.seek(f(12));
+    REQUIRE(source.runCommand(QStringLiteral("transport.playFromPlayheadToOut")));
+    CHECK(source.playing());
+    REQUIRE(waitFor([&] { return !source.playing(); }, 3000));
+    CHECK(source.positionTicks() == f(19));
+    source.playToOut(); // on the last marked frame: nothing
+    CHECK_FALSE(source.playing());
 }
 
 TEST_CASE("Source Monitor Loop repeats the source In to Out", "[app][monitor][loop]") {
@@ -632,6 +810,493 @@ TEST_CASE("Transparency Grid in both monitors: a checkerboard under the picture 
     CHECK(again.sourceTransparencyGrid());
     REQUIRE(monitors->runCommand(QStringLiteral("programMonitor.transparencyGrid")));
     CHECK_FALSE(program->property("transparencyGrid").toBool());
+    const QStringList messages = takeMessages();
+    INFO(join(messages));
+    CHECK(messages.isEmpty());
+}
+
+// ---- 0.4: platform safe zones and transports that fit (the window) -------------------------------------------------
+
+namespace {
+
+QQuickItem* findIn(QQuickItem* root, const QString& name) {
+    if (!root)
+        return nullptr;
+    if (root->objectName() == name)
+        return root;
+    for (QQuickItem* child : root->childItems()) {
+        if (QQuickItem* found = findIn(child, name))
+            return found;
+    }
+    return nullptr;
+}
+
+/// The editor at `width` x `height`, motion off, Transmit's windows not shown.
+struct MonitorShell {
+    Shell shell;
+    ProjectController* controller = nullptr;
+
+    explicit MonitorShell(int width = kShotWidth, int height = kShotHeight) {
+        REQUIRE(shell.window != nullptr);
+        INFO(join(shell.errors));
+        REQUIRE(shell.errors.isEmpty());
+        shell.resize(width, height);
+        shell.theme->setProperty("reduceMotion", true);
+        controller = shell.engine.singletonInstance<ProjectController*>("Wabcut", "ProjectController");
+        REQUIRE(controller != nullptr);
+        auto* monitors = shell.engine.singletonInstance<MonitorBridge*>("Wabcut", "Monitors");
+        REQUIRE(monitors != nullptr);
+        monitors->setPresentWindows(false);
+        spin(50);
+    }
+    QQuickItem* find(const char* name) const {
+        QQuickItem* item = findIn(shell.window->contentItem(), QString::fromLatin1(name));
+        INFO(name);
+        REQUIRE(item != nullptr);
+        return item;
+    }
+    /// The current sequence's frame size (Sequence Settings, one undo step).
+    void setFrame(int width, int height) const {
+        command::CommandEngine engine(controller->session());
+        command::CommandRequest request;
+        request.command = "sequence.setSettings";
+        request.params = command::Json{{"sequence", controller->currentSequenceId().value}, {"width", width}, {"height", height}};
+        const auto result = engine.execute(request);
+        INFO(command::toJson(result).dump());
+        REQUIRE(result.ok());
+        REQUIRE(controller->frameWidth() == width);
+        spin(20);
+    }
+    /// A title in the Source Monitor (it renders without media files), marked 1-5 s.
+    void loadTitleSource() {
+        command::CommandEngine engine(controller->session());
+        command::CommandRequest title;
+        title.command = "title.add";
+        title.params = command::Json{{"text", "Source Monitor"},
+                                     {"at", controller->currentSequence()->contentEnd().value},
+                                     {"duration", Ticks::fromSeconds(8).value},
+                                     {"track", "V3"},
+                                     {"sequence", controller->currentSequenceId().value}};
+        const auto added = engine.execute(title);
+        INFO(command::toJson(added).dump());
+        REQUIRE(added.ok());
+        MediaId titleMedia;
+        for (const MediaPtr& m : controller->snapshot()->media) {
+            if (m->isTitle())
+                titleMedia = m->id;
+        }
+        auto* source = shell.engine.singletonInstance<SourceMonitorBridge*>("Wabcut", "SourceMonitor");
+        REQUIRE(source != nullptr);
+        REQUIRE(source->load(mediaKey(titleMedia)));
+        source->seek(Ticks::fromSeconds(1));
+        source->markIn();
+        source->seek(Ticks::fromSeconds(5));
+        source->markOut();
+        source->seek(Ticks::fromSeconds(2));
+    }
+    /// The transport Item of the monitor whose overflow button is `overflowName`.
+    QQuickItem* transportOf(const char* overflowName) const {
+        QQuickItem* row = find(overflowName)->parentItem();
+        REQUIRE(row != nullptr);
+        REQUIRE(row->parentItem() != nullptr);
+        return row->parentItem();
+    }
+    /// Every shown button of the transport lies inside it; returns how many are hidden.
+    int checkInside(const char* overflowName) const {
+        QQuickItem* transport = transportOf(overflowName);
+        QQuickItem* row = find(overflowName)->parentItem();
+        CHECK(row->width() <= transport->width() + 0.5);
+        int hidden = 0;
+        for (QQuickItem* child : row->childItems()) {
+            if (!child->isVisible()) {
+                ++hidden;
+                continue;
+            }
+            const QPointF at = child->mapToItem(transport, QPointF(0, 0));
+            INFO(overflowName << ": " << child->objectName().toStdString() << " at " << at.x() << " + " << child->width()
+                              << " in " << transport->width());
+            CHECK(at.x() >= -0.5);
+            CHECK(at.x() + child->width() <= transport->width() + 0.5);
+        }
+        return hidden;
+    }
+};
+
+bool shown(QObject* popup) { return popup && popup->property("visible").toBool(); }
+
+} // namespace
+
+TEST_CASE("Platform safe zones show on vertical sequences only", "[app][monitor][safezones][qml]") {
+    resetSettings();
+    clearMessages();
+    MonitorShell s;
+    QQuickItem* zone = s.find("platformSafeZone");
+    QQuickItem* frame = s.find("programFrameArea");
+    CHECK_FALSE(zone->isVisible()); // off by default
+    s.shell.preferences->setProperty("platformSafeZone", QStringLiteral("shorts"));
+    CHECK_FALSE(zone->isVisible()); // the sample sequence is 16:9
+    s.setFrame(1080, 1920);
+    REQUIRE(waitFor([&] { return zone->isVisible(); }));
+    CHECK_FALSE(zone->isEnabled()); // no input: clicks reach the picture
+    CHECK(zone->width() == Approx(frame->width()).margin(1));
+    CHECK(zone->height() == Approx(frame->height()).margin(1));
+    CHECK(frame->height() > frame->width());
+    // Shorts: the top bar, the bottom band and the right-hand column.
+    CHECK(s.find("platformSafeTop")->height() == Approx(0.08 * zone->height()).margin(1));
+    CHECK(s.find("platformSafeBottom")->y() == Approx(0.79 * zone->height()).margin(1));
+    CHECK(s.find("platformSafeBottom")->width() == Approx(0.86 * zone->width()).margin(1));
+    QQuickItem* right = s.find("platformSafeRight");
+    CHECK(right->x() == Approx(0.86 * zone->width()).margin(1));
+    CHECK(right->y() == Approx(0.45 * zone->height()).margin(1));
+    CHECK(right->y() + right->height() == Approx(0.79 * zone->height()).margin(1));
+    QQuickItem* label = s.find("platformSafeLabel");
+    CHECK(label->isVisible());
+    const QList<QQuickItem*> labelText = label->childItems();
+    REQUIRE_FALSE(labelText.isEmpty());
+    CHECK(labelText.front()->property("text").toString() == QStringLiteral("Shorts UI"));
+    // TikTok and Reels move the bands.
+    s.shell.preferences->setProperty("platformSafeZone", QStringLiteral("reels"));
+    CHECK(s.find("platformSafeTop")->height() == Approx(0.10 * zone->height()).margin(1));
+    CHECK(right->y() == Approx(0.50 * zone->height()).margin(1));
+    // Off, landscape, the Trim view or the multi-camera view: nothing.
+    s.shell.preferences->setProperty("platformSafeZone", QStringLiteral("off"));
+    CHECK_FALSE(zone->isVisible());
+    s.shell.preferences->setProperty("platformSafeZone", QStringLiteral("tiktok"));
+    CHECK(zone->isVisible());
+    QObject* multicam = s.shell.engine.singletonInstance<QObject*>("Wabcut", "Multicam");
+    REQUIRE(multicam != nullptr);
+    multicam->setProperty("viewOn", true);
+    CHECK_FALSE(zone->isVisible());
+    multicam->setProperty("viewOn", false);
+    CHECK(zone->isVisible());
+    s.setFrame(1920, 1080);
+    CHECK_FALSE(zone->isVisible());
+    s.setFrame(1080, 1080); // square
+    CHECK_FALSE(zone->isVisible());
+
+    const QStringList messages = takeMessages();
+    INFO(join(messages));
+    CHECK(messages.isEmpty());
+}
+
+TEST_CASE("Platform safe zones menu switches between Shorts TikTok and Reels", "[app][monitor][safezones][qml]") {
+    resetSettings();
+    clearMessages();
+    MonitorShell s;
+    QObject* menu = s.shell.object("platformSafeZoneMenu");
+    REQUIRE(menu != nullptr);
+    CHECK(menu->property("title").toString() == QStringLiteral("Platform Safe Zones"));
+    // The wrench menu and its Platform Safe Zones submenu, open (a row's visibility follows its menu's).
+    QObject* settings = s.shell.object("programMonitorSettingsMenu");
+    REQUIRE(settings != nullptr);
+    REQUIRE(QMetaObject::invokeMethod(s.find("programMonitorSettingsButton"), "clicked"));
+    REQUIRE(waitFor([&] { return settings->property("opened").toBool(); }));
+    REQUIRE(QMetaObject::invokeMethod(menu, "open"));
+    REQUIRE(waitFor([&] { return menu->property("opened").toBool(); }));
+    QObject* hint = menu->findChild<QObject*>(QStringLiteral("platformSafeZoneHint"));
+    REQUIRE(hint != nullptr);
+    CHECK(hint->property("visible").toBool()); // a landscape sequence: the hint says when they show
+    CHECK_FALSE(hint->property("enabled").toBool());
+    QObject* off = menu->findChild<QObject*>(QStringLiteral("platformSafeZone_off"));
+    REQUIRE(off != nullptr);
+    CHECK(off->property("visible").toBool());
+    CHECK(off->property("checked").toBool());
+    s.setFrame(1080, 1920);
+    CHECK_FALSE(hint->property("visible").toBool());
+    CHECK(settings->findChild<QObject*>(QStringLiteral("programSafeMarginsItem")) != nullptr);
+    REQUIRE(QMetaObject::invokeMethod(menu, "close"));
+    REQUIRE(QMetaObject::invokeMethod(settings, "close"));
+    REQUIRE(waitFor([&] { return !shown(settings) && !shown(menu); }));
+    for (const char* key : {"shorts", "tiktok", "reels", "off"}) {
+        INFO(key);
+        QObject* item = menu->findChild<QObject*>(QStringLiteral("platformSafeZone_%1").arg(QLatin1String(key)));
+        REQUIRE(item != nullptr);
+        CHECK(item->property("checkable").toBool());
+        REQUIRE(QMetaObject::invokeMethod(item, "clicked"));
+        CHECK(s.shell.preferences->property("platformSafeZone").toString() == QLatin1String(key));
+        CHECK(item->property("checked").toBool());
+        int checked = 0;
+        for (const char* other : {"off", "shorts", "tiktok", "reels"}) {
+            checked += menu->findChild<QObject*>(QStringLiteral("platformSafeZone_%1").arg(QLatin1String(other)))
+                           ->property("checked").toBool() ? 1 : 0;
+        }
+        CHECK(checked == 1);
+        CHECK(s.find("platformSafeZone")->isVisible() == (QLatin1String(key) != QLatin1String("off")));
+    }
+    // Remembered (monitor/platformSafeZone).
+    s.shell.preferences->setProperty("platformSafeZone", QStringLiteral("tiktok"));
+    CHECK(waitFor([] { return QSettings().value(QStringLiteral("monitor/platformSafeZone")).toString() == QStringLiteral("tiktok"); },
+                  3000));
+
+    const QStringList messages = takeMessages();
+    INFO(join(messages));
+    CHECK(messages.isEmpty());
+}
+
+TEST_CASE("Screenshots: platform safe zones on a vertical sequence", "[app][monitor][safezones][qml][screenshot]") {
+    struct Shot {
+        const char* zone;
+        const char* file;
+        bool dark;
+    };
+    for (const Shot shot : {Shot{"shorts", "program-safe-zones-shorts.png", true},
+                            Shot{"tiktok", "program-safe-zones-tiktok.png", true},
+                            Shot{"reels", "program-safe-zones-reels.png", true},
+                            Shot{"shorts", "program-safe-zones-light.png", false}}) {
+        INFO(shot.file);
+        resetSettings();
+        clearMessages();
+        MonitorShell s(2560, 1440); // a monitor large enough to read the bands
+        s.setFrame(1080, 1920);
+        s.shell.preferences->setProperty("platformSafeZone", QString::fromLatin1(shot.zone));
+        if (!shot.dark) {
+            s.shell.setAppearance(false, "ultraviolet");
+            REQUIRE(s.shell.settle(false, s.shell.themeColor("accentFill")));
+        }
+        REQUIRE(s.find("platformSafeZone")->isVisible());
+        const QImage image = s.shell.grab();
+        REQUIRE_FALSE(image.isNull());
+        // The Program Monitor panel.
+        QQuickItem* panel = s.shell.item("monitorPanel");
+        REQUIRE(panel != nullptr);
+        const double dpr = s.shell.window->effectiveDevicePixelRatio();
+        const QRectF r = panel->mapRectToScene(QRectF(0, 0, panel->width(), panel->height()));
+        CHECK(image.copy(QRectF(r.topLeft() * dpr, r.size() * dpr).toRect())
+                  .save(QDir(outputDir()).filePath(QString::fromLatin1(shot.file))));
+        const QStringList messages = takeMessages();
+        INFO(join(messages));
+        CHECK(messages.isEmpty());
+    }
+}
+
+TEST_CASE("Platform safe zone edges read on a bright picture", "[app][monitor][safezones][qml][screenshot]") {
+    // 0.4 QA: a faint white edge alone was lost on bright footage. Each edge is two-tone (a dark line outside a light
+    // one), so it reads on bright and dark pictures. Screenshot program-safe-zones-bright.png.
+    resetSettings();
+    clearMessages();
+    MonitorShell s(2560, 1440);
+    s.setFrame(1080, 1920);
+    s.shell.preferences->setProperty("platformSafeZone", QStringLiteral("shorts"));
+    QQuickItem* zone = s.find("platformSafeZone");
+    REQUIRE(zone->isVisible());
+    // A white picture over the monitor's own (in its slot, under the overlays), standing in for high-key footage: the
+    // sample project has no files to show.
+    QQuickItem* slot = s.find("programMonitorSlot");
+    QQmlComponent component(&s.shell.engine);
+    component.setData("import QtQuick\nRectangle { anchors.fill: parent; color: \"white\" }\n", QUrl());
+    std::unique_ptr<QObject> object(component.createWithInitialProperties({{QStringLiteral("parent"), QVariant::fromValue(slot)}}));
+    INFO(component.errorString().toStdString());
+    REQUIRE(qobject_cast<QQuickItem*>(object.get()) != nullptr);
+    REQUIRE_FALSE(s.shell.grab().isNull()); // lays it out
+    const QImage image = s.shell.grab();
+    REQUIRE_FALSE(image.isNull());
+    const double dpr = s.shell.window->effectiveDevicePixelRatio();
+    const auto gray = [&](const QQuickItem* item, QPointF at) {
+        const QPointF p = item->mapToScene(at) * dpr;
+        return qGray(image.pixel(static_cast<int>(p.x()), static_cast<int>(p.y())));
+    };
+    REQUIRE(gray(zone, QPointF(zone->width() * 0.4, zone->height() * 0.4)) > 230); // the picture is white
+    // The top band's lower edge, and the bottom band's upper edge: dark pixels along them. Just outside, the picture.
+    for (const char* name : {"platformSafeTop", "platformSafeBottom"}) {
+        INFO(name);
+        QQuickItem* band = s.find(name);
+        const bool top = std::string_view(name) == "platformSafeTop";
+        const double edge = top ? band->height() - 0.5 : 0.5;
+        int darkest = 255;
+        for (double x = band->width() * 0.3; x < band->width() * 0.7; x += 1.0)
+            darkest = std::min({darkest, gray(band, QPointF(x, edge)), gray(band, QPointF(x, top ? edge - 1 : edge + 1))});
+        CHECK(darkest < 110);
+        CHECK(gray(band, QPointF(band->width() / 2, top ? band->height() + 3 : -3)) > 230);
+    }
+    QQuickItem* panel = s.shell.item("monitorPanel");
+    REQUIRE(panel != nullptr);
+    const QRectF r = panel->mapRectToScene(QRectF(0, 0, panel->width(), panel->height()));
+    CHECK(image.copy(QRectF(r.topLeft() * dpr, r.size() * dpr).toRect())
+              .save(QDir(outputDir()).filePath(QStringLiteral("program-safe-zones-bright.png"))));
+    object.reset();
+
+    const QStringList messages = takeMessages();
+    INFO(join(messages));
+    CHECK(messages.isEmpty());
+}
+
+TEST_CASE("Monitor transports stay inside their panels at 1600x960", "[app][monitor][transport][qml][screenshot]") {
+    resetSettings();
+    clearMessages();
+    MonitorShell s;
+    s.loadTitleSource();
+    // The source renders on its own thread; a few frames until it presents (each frame lays the hidden window out).
+    QQuickItem* picture = s.find("sourceMonitorPicture");
+    QImage image;
+    waitFor([&] {
+        image = s.shell.grab();
+        return picture->property("hasFrame").toBool();
+    });
+    // Both rows fit; what does not fit is in the "···" menu, and the always-shown buttons are there.
+    for (const char* overflow : {"programTransportOverflow", "sourceTransportOverflow"}) {
+        INFO(overflow);
+        const int hidden = s.checkInside(overflow);
+        CHECK(s.find(overflow)->isVisible() == (hidden > 0));
+    }
+    for (const char* always : {"programAddMarker", "programPlay", "programLift", "programExtract", "programRecordVoiceOver",
+                               "sourceMarkIn", "sourceMarkOut", "sourcePlay", "sourceInsertButton", "sourceOverwriteButton"}) {
+        INFO(always);
+        CHECK(s.find(always)->isVisible());
+    }
+    // A pair shows or hides together; the Source row keeps Go to In / Out before the rest.
+    CHECK(s.find("programMarkIn")->isVisible() == s.find("programMarkOut")->isVisible());
+    CHECK(s.find("programStepBack")->isVisible() == s.find("programStepForward")->isVisible());
+    CHECK(s.find("sourceGoToIn")->isVisible() == s.find("sourceGoToOut")->isVisible());
+    CHECK(s.find("sourceGoToIn")->isVisible());
+    CHECK(s.find("sourceTransportOverflow")->isVisible());
+    REQUIRE_FALSE(image.isNull());
+    CHECK(image.save(QDir(outputDir()).filePath(QStringLiteral("monitor-transport-overflow.png"))));
+
+    const QStringList messages = takeMessages();
+    INFO(join(messages));
+    CHECK(messages.isEmpty());
+}
+
+TEST_CASE("Monitor transport overflow menu runs the hidden buttons", "[app][monitor][transport][qml][screenshot]") {
+    // At 1600x960 the Editing workspace's monitors are about 330 px wide: the Program Monitor shows Add Marker, the
+    // marks, Play, Lift, Extract and Record; the Source Monitor the marks, Go to In / Out, Play In to Out, Play, Insert
+    // and Overwrite. The rest is in their "···" menus.
+    resetSettings();
+    clearMessages();
+    MonitorShell s;
+    s.loadTitleSource();
+    auto* playback = s.shell.engine.singletonInstance<PlaybackBridge*>("Wabcut", "Playback");
+    REQUIRE(playback != nullptr);
+    REQUIRE_FALSE(s.shell.grab().isNull()); // a frame lays the hidden window out
+    INFO("program transport " << s.transportOf("programTransportOverflow")->width());
+    QQuickItem* overflow = s.find("programTransportOverflow");
+    REQUIRE(overflow->isVisible());
+    REQUIRE_FALSE(s.find("programGoToIn")->isVisible());
+    REQUIRE_FALSE(s.find("programStepForward")->isVisible());
+    REQUIRE_FALSE(s.find("programLoopButton")->isVisible());
+    QObject* menu = s.shell.object("programTransportOverflowMenu");
+    REQUIRE(menu != nullptr);
+    const auto open = [&] {
+        REQUIRE(QMetaObject::invokeMethod(overflow, "clicked"));
+        REQUIRE(waitFor([&] { return menu->property("opened").toBool(); }));
+    };
+    // The rows are declared in the "···" button (its default property fills the menu): look them up there.
+    const auto choose = [&](const char* row) {
+        QObject* item = overflow->findChild<QObject*>(QLatin1String(row));
+        INFO(row);
+        REQUIRE(item != nullptr);
+        CHECK(item->property("visible").toBool());
+        REQUIRE(QMetaObject::invokeMethod(item, "clicked"));
+        REQUIRE(waitFor([&] { return !shown(menu); }));
+        spin(30); // the button's action runs once the menu has closed
+    };
+    // Marks for Go to In; the playhead elsewhere.
+    REQUIRE(s.controller->seekToText(QStringLiteral("00:00:02:00")));
+    s.controller->markInAtPlayhead();
+    REQUIRE(s.controller->seekToText(QStringLiteral("00:00:04:00")));
+    open();
+    // Exactly the hidden buttons, with the button's text and shortcut; the shown and always-shown ones are not there.
+    QObject* goToInRow = overflow->findChild<QObject*>(QStringLiteral("overflow_programGoToIn"));
+    REQUIRE(goToInRow != nullptr);
+    CHECK(goToInRow->property("visible").toBool());
+    CHECK(goToInRow->property("text").toString() == QStringLiteral("Go to In"));
+    CHECK(goToInRow->property("command").toString() == QStringLiteral("marker.goToIn"));
+    QObject* markInRow = overflow->findChild<QObject*>(QStringLiteral("overflow_programMarkIn"));
+    REQUIRE(markInRow != nullptr);
+    CHECK(s.find("programMarkIn")->isVisible());
+    CHECK_FALSE(markInRow->property("visible").toBool()); // Mark In shows in the row
+    CHECK(overflow->findChild<QObject*>(QStringLiteral("overflow_programLift")) == nullptr);
+    const QImage image = s.shell.grab();
+    REQUIRE_FALSE(image.isNull());
+    CHECK(image.save(QDir(outputDir()).filePath(QStringLiteral("monitor-transport-overflow-menu.png"))));
+    // Go to In from the menu moves the playhead to the In.
+    choose("overflow_programGoToIn");
+    CHECK(waitFor([&] { return s.controller->playheadText() == QStringLiteral("00:00:02:00"); }));
+    // Step forward moves one frame.
+    const QString next = s.controller->timeEntryText(QStringLiteral("+1"));
+    open();
+    choose("overflow_programStepForward");
+    CHECK(waitFor([&] { return s.controller->playheadText() == next; }));
+    // Loop is checkable: the row shows the check and switches it.
+    const bool loop = playback->property("loop").toBool();
+    open();
+    QObject* loopRow = overflow->findChild<QObject*>(QStringLiteral("overflow_programLoopButton"));
+    REQUIRE(loopRow != nullptr);
+    CHECK(loopRow->property("checkable").toBool());
+    CHECK(loopRow->property("checked").toBool() == loop);
+    choose("overflow_programLoopButton");
+    CHECK(waitFor([&] { return playback->property("loop").toBool() != loop; }));
+    open();
+    CHECK(loopRow->property("checked").toBool() != loop);
+    REQUIRE(QMetaObject::invokeMethod(menu, "close"));
+    REQUIRE(waitFor([&] { return !shown(menu); }));
+    playback->setProperty("loop", loop);
+
+    // The Source Monitor: Redactions opens its list from the "···" button; Settings is a submenu there.
+    QQuickItem* sourceOverflow = s.find("sourceTransportOverflow");
+    REQUIRE(sourceOverflow->isVisible());
+    REQUIRE_FALSE(s.find("sourceRedactionsButton")->isVisible());
+    QObject* sourceMenu = s.shell.object("sourceTransportOverflowMenu");
+    REQUIRE(sourceMenu != nullptr);
+    CHECK(sourceOverflow->findChild<QObject*>(QStringLiteral("overflow_sourceMonitorSettingsMenu")) != nullptr);
+    CHECK(sourceOverflow->findChild<QObject*>(QStringLiteral("overflow_sourceLoopItem")) != nullptr);
+    REQUIRE(QMetaObject::invokeMethod(sourceOverflow, "clicked"));
+    REQUIRE(waitFor([&] { return sourceMenu->property("opened").toBool(); }));
+    QObject* redactions = sourceOverflow->findChild<QObject*>(QStringLiteral("overflow_sourceRedactionsButton"));
+    REQUIRE(redactions != nullptr);
+    CHECK(redactions->property("visible").toBool());
+    CHECK(redactions->property("text").toString() == QStringLiteral("Redactions…"));
+    if (redactions->property("enabled").toBool()) {
+        REQUIRE(QMetaObject::invokeMethod(redactions, "clicked"));
+        REQUIRE(waitFor([&] { return !shown(sourceMenu); }));
+        QObject* popover = s.shell.object("redactionsPopover");
+        REQUIRE(popover != nullptr);
+        CHECK(waitFor([&] { return popover->property("opened").toBool(); }));
+        REQUIRE(QMetaObject::invokeMethod(popover, "close"));
+        REQUIRE(waitFor([&] { return !shown(popover); }));
+    } else {
+        REQUIRE(QMetaObject::invokeMethod(sourceMenu, "close"));
+    }
+
+    const QStringList messages = takeMessages();
+    INFO(join(messages));
+    CHECK(messages.isEmpty());
+}
+
+TEST_CASE("Monitor transports show every button at 2560x1440", "[app][monitor][transport][qml]") {
+    resetSettings();
+    clearMessages();
+    MonitorShell s(2560, 1440);
+    s.loadTitleSource();
+    REQUIRE_FALSE(s.shell.grab().isNull()); // a frame lays the hidden window out
+    INFO("program transport " << s.transportOf("programTransportOverflow")->width() << ", source transport "
+                              << s.transportOf("sourceTransportOverflow")->width());
+    CHECK(s.checkInside("programTransportOverflow") == 1); // only the "···" button is hidden
+    CHECK(s.checkInside("sourceTransportOverflow") == 1);
+    CHECK_FALSE(s.find("programTransportOverflow")->isVisible());
+    CHECK_FALSE(s.find("sourceTransportOverflow")->isVisible());
+    for (const char* name : {"programMarkIn", "programGoToIn", "programStepBack", "programPlayInToOut", "programLoopButton",
+                             "programExportFrame", "multicamViewToggle", "sourceGoToIn", "sourcePlayInToOut",
+                             "sourceStepBack", "sourceLoopButton", "sourceExportFrame", "sourceRedactButton",
+                             "sourceRedactionsButton", "sourceMonitorSettingsButton"}) {
+        INFO(name);
+        CHECK(s.find(name)->isVisible());
+    }
+    // Redactions opens its list right above its button, where the button is now (not where it was at start-up).
+    QQuickItem* redactions = s.find("sourceRedactionsButton");
+    REQUIRE(redactions->isEnabled());
+    REQUIRE(QMetaObject::invokeMethod(redactions, "clicked"));
+    QObject* popover = s.shell.object("redactionsPopover");
+    REQUIRE(popover != nullptr);
+    REQUIRE(waitFor([&] { return popover->property("opened").toBool(); }));
+    const QPointF at = redactions->mapToItem(s.transportOf("sourceTransportOverflow"), QPointF(0, 0));
+    INFO("Redactions button at " << at.x() << ", " << at.y() << "; popover at " << popover->property("x").toDouble()
+                                 << ", " << popover->property("y").toDouble());
+    CHECK(popover->property("x").toDouble() == Approx(at.x()).margin(1));
+    CHECK(popover->property("y").toDouble() + popover->property("height").toDouble() <= at.y() + 0.5);
+    REQUIRE(QMetaObject::invokeMethod(popover, "close"));
+    REQUIRE(waitFor([&] { return !shown(popover); }));
+
     const QStringList messages = takeMessages();
     INFO(join(messages));
     CHECK(messages.isEmpty());

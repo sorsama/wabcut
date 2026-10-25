@@ -17,6 +17,7 @@
 #include <wabcut/ai/reframe/ReframeCommands.h>
 #include <wabcut/ai/shorts/Rerank.h>
 #include <wabcut/ai/shorts/ShortsCommands.h>
+#include <wabcut/model/CaptionOps.h>
 #include <wabcut/model/EditOps.h>
 
 #include "../FakeTransport.h"
@@ -428,6 +429,30 @@ TEST_CASE("shorts.create makes reframed, captioned, titled shorts in one undo st
         REQUIRE(s.captionTracks.size() == 1);
         CHECK_FALSE(s.captionTracks[0].cues.empty());
         CHECK(s.captionTracks[0].cues.front().start >= Ticks{0});
+        // 0.4: the vertical short's captions in the "Shorts" style (above the platforms' buttons), short lines.
+        const CaptionStyle& style = s.captionTracks[0].style;
+        CHECK(style.placement == CaptionPlacement::Custom);
+        CHECK(style.positionY.valueAt(Ticks{}) == Approx(0.68));
+        CHECK(style.animation == CaptionAnimation::Pop);
+        CHECK_FALSE(style.box);
+        CHECK(made.data["sequences"][i].value("captionPreset", std::string()) == "Shorts");
+        for (const CaptionCue& cue : s.captionTracks[0].cues) {
+            std::size_t lines = 1;
+            std::size_t from = 0;
+            for (std::size_t at = cue.text.find('\n'); ; at = cue.text.find('\n', from)) {
+                const std::size_t end = at == std::string::npos ? cue.text.size() : at;
+                INFO(cue.text);
+                // At most 10 characters (fix round 1: what stays one line on a rendered 1080x1920 frame), unless the
+                // line is one longer word (a word is never split).
+                CHECK((end - from <= 10 || cue.text.substr(from, end - from).find(' ') == std::string::npos));
+                if (at == std::string::npos)
+                    break;
+                from = at + 1;
+                ++lines;
+            }
+            CHECK(lines <= 2);
+            CHECK(cue.duration <= Ticks{kTicksPerSecond * 5 / 2} + f(1)); // 2.5 s
+        }
         // The hook title on its own top track, for its first seconds.
         const Track& top = *s.videoTracks.back();
         CHECK(top.name == "Hook title");
@@ -465,6 +490,51 @@ TEST_CASE("shorts.create makes reframed, captioned, titled shorts in one undo st
     CHECK(readOnly.errorOf("shorts.find").empty());
     CommandHarness bare(w.tl, command::EnginePolicy{}, ai::edit::editingCommands());
     CHECK(bare.errorOf("shorts.find") == "InvalidRequest");
+}
+
+TEST_CASE("shorts.create takes another caption preset and warns about an unknown one", "[ai][shorts][commands]") {
+    World w;
+    auto subjects = std::make_shared<vision::MapSubjectProvider>();
+    auto services = std::make_shared<command::ServiceBundle>(std::vector<std::shared_ptr<command::CommandServices>>{
+        std::make_shared<ai::edit::TranscriptServices>(w.transcripts), std::make_shared<reframe::ReframeServices>(subjects)});
+    CommandHarness h(w.tl, command::EnginePolicy{command::CapabilitySet::all(), 64, services}, ai::edit::editingCommands());
+    const auto found = h.ok("shorts.find", Json{{"count", 1}});
+    REQUIRE(found.data["shorts"].size() == 1);
+    const Json pick{{"start", found.data["shorts"][0]["start"]}, {"end", found.data["shorts"][0]["end"]}};
+    const auto styleOf = [&](const command::CommandResult& made) -> CaptionTrack {
+        const Sequence& s = *h.state()->findSequence(SequenceId{made.createdIds.front()});
+        REQUIRE(s.captionTracks.size() == 1);
+        return s.captionTracks.front();
+    };
+
+    // Every call names the source: the shorts made before are sequences too.
+    // "Clean": that preset's look (no box, bottom), mid-size cues on a vertical short.
+    const auto clean = h.ok("shorts.create", Json{{"sequence", h.tl.seq.value}, {"shorts", Json::array({pick})}, {"captionPreset", "Clean"}, {"hookTitle", false}});
+    const CaptionTrack cleanTrack = styleOf(clean);
+    const auto cleanStyle = wabcut::edit::captionPresetStyle(*h.state(), "Clean");
+    REQUIRE(cleanStyle);
+    CHECK(cleanTrack.style.box == cleanStyle->box);
+    CHECK(cleanTrack.style.placement == cleanStyle->placement);
+    CHECK(cleanTrack.style.outlineWidth == Approx(cleanStyle->outlineWidth));
+    CHECK(clean.data["sequences"][0].value("captionPreset", std::string()) == "Clean");
+    for (const CaptionCue& cue : cleanTrack.cues)
+        CHECK(cue.duration <= Ticks::fromSeconds(4) + f(1));
+
+    // An unknown preset: the short is made in the default look, with a warning.
+    const auto unknown = h.ok("shorts.create", Json{{"sequence", h.tl.seq.value}, {"shorts", Json::array({pick})}, {"captionPreset", "Nope"}, {"hookTitle", false}});
+    CHECK_FALSE(unknown.data["sequences"][0].contains("captionPreset"));
+    CHECK(styleOf(unknown).style.placement == CaptionStyle{}.placement);
+    CHECK(styleOf(unknown).style.box == CaptionStyle{}.box);
+    CHECK(std::any_of(unknown.warnings.begin(), unknown.warnings.end(),
+                      [](const std::string& warning) { return warning.find("Nope") != std::string::npos; }));
+
+    // "" is the default look; landscape output keeps it unless a preset is given.
+    const auto plain = h.ok("shorts.create", Json{{"sequence", h.tl.seq.value}, {"shorts", Json::array({pick})}, {"captionPreset", ""}, {"hookTitle", false}});
+    CHECK(styleOf(plain).style.placement == CaptionStyle{}.placement);
+    const auto wide = h.ok("shorts.create", Json{{"sequence", h.tl.seq.value}, {"shorts", Json::array({pick})}, {"aspect", "16:9"}, {"hookTitle", false}});
+    CHECK(styleOf(wide).style.placement == CaptionStyle{}.placement);
+    CHECK_FALSE(wide.data["sequences"][0].contains("captionPreset"));
+    CHECK(h.errorOf("shorts.create", Json{{"sequence", h.tl.seq.value}, {"shorts", Json::array({pick})}, {"captionPreset", std::string(65, 'x')}}) == "InvalidParams");
 }
 
 TEST_CASE("A cut sequence keeps what lies inside the range", "[ai][shorts]") {

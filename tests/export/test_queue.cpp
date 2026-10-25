@@ -119,3 +119,58 @@ TEST_CASE("ExportQueue cancels running and queued jobs; the destructor cancels t
     }
     CHECK(partialFiles(dir).empty());
 }
+
+// 0.4 (export-failed-toast-reason): the listener hears a finished job once, with its outcome - never "Done" without
+// the result or "Failed" without the error (the app's failed toast lost its reason, and a done export its warnings,
+// that way). The request's own onProgress still sees the terminal phase (watch folders need it).
+TEST_CASE("ExportQueue reports a finished job only with its result or error", "[export][queue]") {
+    const TestProject project(640, 360, Rate{30, 1}, Ticks::fromSeconds(1)); // an empty sequence: no media needed
+    const auto dir = freshOutputDir("queue_outcome");
+
+    std::mutex mutex;
+    std::vector<ExportJobStatus> statuses;
+    std::vector<ExportPhase> ownPhases;
+    const auto request = [&](const std::filesystem::path& output) {
+        ExportRequest r = makeRequest(project, wavSettings(), output);
+        r.onProgress = [&](const ExportProgress& p) {
+            std::lock_guard lock(mutex);
+            ownPhases.push_back(p.phase);
+        };
+        return r;
+    };
+    {
+        ExportQueue queue([&](const ExportJobStatus& s) {
+            std::lock_guard lock(mutex);
+            statuses.push_back(s);
+        });
+        const ExportJobId failing = queue.enqueue(request(dir / "no-such-folder" / "fails.wav"));
+        const ExportJobId working = queue.enqueue(request(dir / "works.wav"));
+        const auto failed = queue.wait(failing);
+        const auto done = queue.wait(working);
+        REQUIRE(failed.has_value());
+        REQUIRE(done.has_value());
+        CHECK(failed->progress.phase == ExportPhase::Failed);
+        REQUIRE(failed->error.has_value());
+        CHECK(failed->error->code == ErrorCode::IoError);
+        CHECK(done->progress.phase == ExportPhase::Done);
+        CHECK(done->result.has_value());
+    } // the worker has joined: every report was delivered
+
+    std::lock_guard lock(mutex);
+    int outcomes = 0;
+    for (const ExportJobStatus& s : statuses) {
+        INFO("job " << s.id << " phase " << static_cast<int>(s.progress.phase));
+        if (s.progress.phase == ExportPhase::Failed) {
+            CHECK(s.error.has_value());
+            ++outcomes;
+        } else if (s.progress.phase == ExportPhase::Done) {
+            CHECK(s.result.has_value());
+            ++outcomes;
+        }
+        CHECK(s.progress.phase != ExportPhase::Cancelled);
+    }
+    CHECK(outcomes == 2); // each finished job once
+    CHECK(std::count(ownPhases.begin(), ownPhases.end(), ExportPhase::Done) == 1);
+    CHECK(std::count(ownPhases.begin(), ownPhases.end(), ExportPhase::Failed) == 1);
+    CHECK(std::filesystem::is_regular_file(dir / "works.wav"));
+}

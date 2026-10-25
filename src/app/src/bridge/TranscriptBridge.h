@@ -147,6 +147,9 @@ class TranscriptBridge : public QObject {
     Q_PROPERTY(QString jobStatus READ jobStatus NOTIFY jobChanged FINAL)
     Q_PROPERTY(double jobProgress READ jobProgress NOTIFY jobChanged FINAL)
     Q_PROPERTY(QString jobText READ jobText NOTIFY jobChanged FINAL)
+    /// 0.4: the sequence's audio tracks for the Tracks checklist: [{ index, label ("A2 · Mic"), name, role
+    /// ("dialogue", "music", ... or ""), muted, chosen }]. Only chosen tracks are transcribed.
+    Q_PROPERTY(QVariantList audioTracks READ audioTracks NOTIFY audioTracksChanged FINAL)
 
 public:
     /// A transcriber: media file + container stream -> transcript (worker thread; `progress` takes 0..1).
@@ -203,6 +206,7 @@ public:
     QString jobStatus() const { return m_jobStatus; }
     double jobProgress() const { return m_jobProgress; }
     QString jobText() const { return m_jobText; }
+    QVariantList audioTracks() const { return m_audioTracks; }
 
     Q_INVOKABLE bool isSelected(int word) const;
     Q_INVOKABLE bool isRemoving(int word) const;
@@ -223,6 +227,9 @@ public:
     Q_INVOKABLE void cancelPreview();
     /// The selected words' text (one range), for the Fix field.
     Q_INVOKABLE QString selectedText() const;
+    /// 0.4 Find All: the first selected run as its language writes it (Thai without spaces), the way the search
+    /// matches the shown text; "" without a selection.
+    Q_INVOKABLE QString selectionSearchText() const;
     /// C.7 corrections: the selected words read `text` from now on (transcript.correctWord / correctRange, saved with
     /// the project over the cached transcript; captions follow on "Update from transcript"). "" or why not.
     Q_INVOKABLE QString correctSelection(const QString& text);
@@ -250,6 +257,26 @@ public:
     /// What a cloud provider needs before it may send audio: AiController.consentPrompt(...) for the job, or {}.
     Q_INVOKABLE QVariantMap consentFor(const QString& scope) const;
 
+    // ---- 0.4: follow the playhead, the word menu, voice tracks ----
+    /// The paragraph (row of `paragraphs`) that holds word `word`, or -1.
+    Q_INVOKABLE int paragraphOfWord(int word) const;
+    /// The first selected word, or -1.
+    Q_INVOKABLE int selectionFirst() const;
+    /// Copies the selected words to the system clipboard as plain text (separate runs on separate lines);
+    /// `withTimecodes`: one "[00:01:02:03] Speaker: text" line per run and paragraph. "" or why not (also `message`).
+    Q_INVOKABLE QString copySelection(bool withTimecodes);
+    /// Sequence In at the start of the first selected word's frame, Out at the end of the last one's: one undo step
+    /// "Mark In and Out". "" or why not.
+    Q_INVOKABLE QString markSelection();
+    /// A range marker over the selected span named from its words (`chapter`: a chapter point marker), one undo step
+    /// "Add Marker". "" or why not.
+    Q_INVOKABLE QString addMarkerFromSelection(bool chapter);
+    /// Lifts the selected span (first to last word) from the tracks its words are heard on and their linked partners'
+    /// tracks, leaving a gap; clears In/Out and parks the playhead at the gap. One undo step "Lift". "" or why not.
+    Q_INVOKABLE QString liftSelection();
+    /// Chooses whether audio track `index` (0 = A1) is transcribed; remembered by track name for every project.
+    Q_INVOKABLE void setTrackChosen(int index, bool chosen);
+
 signals:
     void reviewProgressChanged();
     void transcriptChanged();
@@ -263,6 +290,7 @@ signals:
     void reviewOptionsChanged();
     void providersChanged();
     void jobChanged();
+    void audioTracksChanged();
 
 private:
     struct Pending {
@@ -293,6 +321,13 @@ private:
     ai::edit::CutOptions cutOptions() const;
     std::vector<JobItem> jobItems(const QString& scope) const;
     void finishJob(std::vector<std::pair<JobItem, std::expected<ai::Transcript, Error>>> results, bool cancelled);
+    /// 0.4: whether audio track `index` is transcribed: the user's choice for its name, else the default (Dialogue role
+    /// or a Mic / Voice / Commentary name, unmuted, not voice chat; every unmuted track when none matches).
+    bool trackChosen(const Track& track, int index) const;
+    /// Rebuilds audioTracks from the current sequence; emits audioTracksChanged only when it differs.
+    void rebuildAudioTracks();
+    /// The first..last selected words' span on the timeline (frame-snapped outward), or nullopt.
+    std::optional<TimeRange> selectionSpan() const;
 
     QPointer<ProjectController> m_controller;
     QPointer<AiController> m_ai;
@@ -335,6 +370,7 @@ private:
     QString m_jobText;
     std::jthread m_job;
     std::atomic<int> m_jobGeneration{0};
+    QVariantList m_audioTracks;
 };
 
 /// QML registration through the factory (see ProjectControllerSingleton).

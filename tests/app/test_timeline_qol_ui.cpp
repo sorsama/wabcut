@@ -3,6 +3,9 @@
 // Delete Track, Delete Empty Tracks, Sync Lock), the timeline transition and gap menus, marker names and tooltips on
 // the ruler and the Program time bar, the Source Monitor's drops, the Library card's In/Out band, Reveal in Project
 // from the clip menu and the remembered Snap toggle. Screenshots under test-output/ui (timeline-*.png and others).
+// 0.4 (stream A): clip speed and fx badges in both themes, the clip hover tooltip, the playback auto-scroll and snap
+// playhead settings, the ruler menu (and the ruler's playhead snap), Audio Gain… and Clear in the clip menu, and the
+// track mute / solo toggles.
 
 #include "ShellFixture.h"
 
@@ -17,6 +20,8 @@
 #include "TimelineView.h"
 
 #include <wabcut/model/EditOps.h>
+#include <wabcut/model/Effects.h>
+#include <wabcut/model/FinishingOps.h>
 #include <wabcut/model/Sequence.h>
 #include <wabcut/model/SequenceSettings.h>
 
@@ -1072,5 +1077,677 @@ TEST_CASE("Settings Timeline page picks the default video and audio transitions"
     REQUIRE(image.copy(QRectF(row.topLeft() * dpr, row.size() * dpr).toRect())
                 .save(QDir(outputDir()).filePath(QStringLiteral("settings-default-transitions.png"))));
     REQUIRE(editing->setDefaultTransition(QStringLiteral("crossDissolve")));
+    checkNoMessages();
+}
+
+// =====================================================================================================================
+// 0.4 (stream A): clip facts on the timeline, the settings behind them, the ruler menu, the clip menu's Audio Gain… and
+// Clear, the track toggles
+
+namespace {
+
+std::string run(char letter, int frames) {
+    return std::string(1, letter) + std::string(static_cast<std::size_t>(frames - 1), static_cast<char>(letter + 32));
+}
+std::string gap(int frames) { return std::string(static_cast<std::size_t>(frames), '.'); }
+
+/// A user's flip of a Toggle (a Switch): the new state, then `toggled` (its handler writes Preferences).
+void flip(QObject* toggle, bool on) {
+    REQUIRE(toggle);
+    toggle->setProperty("checked", on);
+    REQUIRE(QMetaObject::invokeMethod(toggle, "toggled"));
+}
+
+/// A mouse event through the window, at `scene`.
+void mouseAt(QQuickWindow* window, QEvent::Type type, QPointF scene, Qt::MouseButton button, Qt::MouseButtons buttons,
+             Qt::KeyboardModifiers mods = {}) {
+    QMouseEvent event(type, scene, scene, button, buttons, mods);
+    QCoreApplication::sendEvent(window, &event);
+}
+
+/// A control inside a popover (its body), by objectName.
+QObject* inPopover(QObject* popover, const char* name) {
+    if (QObject* found = popover->findChild<QObject*>(QLatin1String(name)))
+        return found;
+    auto* content = popover->property("contentItem").value<QQuickItem*>();
+    REQUIRE(content);
+    QQuickItem* found = findNamed(content->parentItem() ? content->parentItem() : content, QLatin1String(name));
+    INFO(name);
+    REQUIRE(found);
+    return found;
+}
+
+/// The middle of track `label`'s row in the view's coordinates.
+double rowMiddle(const TimelineView& view, const Timeline& tl, std::string_view label) {
+    const TrackId id = tl.track(label);
+    for (const auto& row : view.rows()) {
+        if (row.track->id == id)
+            return row.y + row.height / 2 - view.scrollY();
+    }
+    FAIL("no row for " << std::string(label));
+    return 0;
+}
+
+} // namespace
+
+TEST_CASE("Clip badges show speed and fx in the dark and light themes", "[app][qml][timeline][badges][screenshot]") {
+    bool dark = true;
+    SECTION("dark") { dark = true; }
+    SECTION("light") { dark = false; }
+    resetSettings();
+    clearMessages();
+    const std::string clips = run('A', 25) + gap(5) + run('B', 25) + gap(5) + run('C', 25) + gap(5) + run('D', 25);
+    ShellProject p("V1 tgt |" + clips + "|\nA1 tgt |" + clips + "|\n");
+    if (!dark)
+        p.shell.setAppearance(false, "ultraviolet");
+    ProjectController& c = *p.controller;
+    const ClipId a = p.tl.clip("V1@0");
+    const ClipId b = p.tl.clip("V1@30");
+    const ClipId keyed = p.tl.clip("V1@60");
+    const ClipId plain = p.tl.clip("V1@90");
+    const std::pair<const char*, const char*> names[] = {
+        {"0", "Interview"}, {"30", "Blurred plate"}, {"60", "Push in"}, {"90", "Untouched"}};
+    for (const auto& [at, name] : names) {
+        c.renameClip(clipKey(p.tl.clip(std::string("V1@") + at)), QString::fromUtf8(name));
+        c.renameClip(clipKey(p.tl.clip(std::string("A1@") + at)), QString::fromUtf8(name));
+    }
+    // 50 % (the video and its audio), a blur, a keyframed Scale, nothing.
+    edit::SpeedChange half;
+    half.speed = Speed{1, 2};
+    half.keepDuration = true;
+    const std::vector<ClipId> slow{a};
+    REQUIRE(c.applyEditFn("Speed/Duration", [&](const ProjectState& s) { return edit::setSpeed(s, p.tl.seq, slow, half); }));
+    REQUIRE(c.applyEditFn("Add Effect", [&](const ProjectState& s) {
+        return edit::addEffect(s, p.tl.seq, std::span(&b, 1), "wabcut.blur.gaussian");
+    }));
+    REQUIRE(c.applyEditFn("Add Keyframe", [&](const ProjectState& s) {
+        return edit::addKeyframe(s, p.tl.seq, keyed, edit::ParamRef::of(ParamId::Scale), Keyframe{f(2), 0.5});
+    }));
+    auto* view = qobject_cast<TimelineView*>(p.item(QStringLiteral("timelineView")));
+    REQUIRE(view);
+    CHECK(view->showClipSpeed());
+    CHECK(view->showFxBadges());
+    view->setPixelsPerSecond(260);
+    view->setScrollX(0);
+    spin(400); // the theme settles
+    p.settle();
+    const auto label = [&](ClipId id) { return view->stats().labelTexts.value(id.value); };
+    CHECK(label(a) == QStringLiteral("Interview [50%]"));
+    CHECK(label(p.tl.clip("A1@0")) == QStringLiteral("Interview [50%]")); // audio clips too
+    CHECK(label(plain) == QStringLiteral("Untouched"));
+    CHECK(view->stats().fxBadges.value(b.value) == QStringLiteral("effects"));
+    CHECK(view->stats().fxBadges.value(keyed.value) == QStringLiteral("changed"));
+    CHECK_FALSE(view->stats().fxBadges.contains(plain.value));
+    CHECK_FALSE(view->stats().fxBadges.contains(a.value)); // a uniform speed is not an fx
+    QQuickItem* panel = p.item(QStringLiteral("timelinePanel"));
+    REQUIRE(panel);
+    p.shot(sceneRect(panel), dark ? QStringLiteral("timeline-clip-badges.png") : QStringLiteral("timeline-clip-badges-light.png"));
+
+    if (dark) {
+        // The display popover's switches (and the playback auto-scroll) write Preferences; the lanes follow.
+        QObject* popover = p.object(QStringLiteral("timelineDisplayPopover"));
+        REQUIRE(popover);
+        REQUIRE(QMetaObject::invokeMethod(popover, "open"));
+        waitOpened(popover);
+        QObject* speedToggle = inPopover(popover, "clipSpeedToggle");
+        QObject* fxToggle = inPopover(popover, "fxBadgesToggle");
+        QObject* tipToggle = inPopover(popover, "clipTooltipsToggle");
+        QObject* scrollTabs = inPopover(popover, "playbackScrollTabs");
+        CHECK(speedToggle->property("checked").toBool());
+        CHECK(fxToggle->property("checked").toBool());
+        CHECK(tipToggle->property("checked").toBool());
+        CHECK(scrollTabs->property("currentIndex").toInt() == 1); // Page
+        p.settle();
+        p.shot(popupRect(popover).adjusted(-12, -12, 12, 12), QStringLiteral("timeline-display-popover.png"));
+        flip(speedToggle, false);
+        CHECK_FALSE(p.shell.preferences->property("timelineShowClipSpeed").toBool());
+        CHECK_FALSE(view->showClipSpeed());
+        flip(fxToggle, false);
+        CHECK_FALSE(p.shell.preferences->property("timelineShowFxBadges").toBool());
+        CHECK_FALSE(view->showFxBadges());
+        flip(tipToggle, false);
+        CHECK_FALSE(p.shell.preferences->property("showClipTooltips").toBool());
+        REQUIRE(QMetaObject::invokeMethod(scrollTabs, "activated", Q_ARG(int, 2)));
+        CHECK(p.shell.preferences->property("timelinePlaybackScroll").toString() == QStringLiteral("smooth"));
+        REQUIRE(QMetaObject::invokeMethod(popover, "close"));
+        waitClosed(popover);
+        p.settle();
+        CHECK(label(a) == QStringLiteral("Interview"));
+        CHECK(view->stats().fxBadges.isEmpty());
+    }
+    resetSettings();
+    checkNoMessages();
+}
+
+TEST_CASE("The clip tooltip shows after a pause and hides while dragging", "[app][qml][timeline][tooltip][screenshot]") {
+    resetSettings();
+    clearMessages();
+    const std::string clips = gap(4) + run('A', 35) + gap(6) + run('B', 25) + gap(30);
+    ShellProject p("V1 tgt |" + clips + "|\nA1 tgt |" + clips + "|\n");
+    ProjectController& c = *p.controller;
+    QQuickWindow* window = p.shell.window.get();
+    auto* view = qobject_cast<TimelineView*>(p.item(QStringLiteral("timelineView")));
+    REQUIRE(view);
+    view->setPixelsPerSecond(250); // 10 px per frame
+    view->setScrollX(0);
+    c.renameClip(clipKey(p.tl.clip("V1@4")), QStringLiteral("Interview"));
+    spin(100);
+    QObject* tip = p.object(QStringLiteral("clipHoverTooltip"));
+    REQUIRE(tip);
+    CHECK_FALSE(tip->property("visible").toBool());
+    const double y = rowMiddle(*view, p.tl, "V1");
+    const QPointF onA = view->mapToScene(QPointF(10 * 14, y));
+    const QPointF onGap = view->mapToScene(QPointF(10 * 41, y));
+    const QPointF onB = view->mapToScene(QPointF(10 * 50, y));
+
+    // Rest on Interview: after the delay, its facts below-right of the pointer.
+    hoverItem(view, onA);
+    CHECK(view->hoveredClip() == clipKey(p.tl.clip("V1@4")));
+    spin(200);
+    CHECK_FALSE(tip->property("opened").toBool()); // not before the delay
+    REQUIRE(waitFor([&] { return tip->property("opened").toBool(); }, 4000));
+    const QString text = tip->property("text").toString();
+    INFO(text.toStdString());
+    CHECK(text.startsWith(QStringLiteral("Interview\n")));
+    CHECK(text.contains(QStringLiteral("Start 00:00:00:04 · End 00:00:01:14")));
+    CHECK(text.contains(QStringLiteral("Duration 00:00:01:10")));
+    CHECK(text.contains(QStringLiteral("Source A.mov")));
+    spin(100);
+    p.settle();
+    const QRectF tipRect = popupRect(tip);
+    CHECK(tipRect.left() > onA.x());
+    CHECK(tipRect.top() > onA.y());
+    p.shot(tipRect.united(QRectF(onA - QPointF(220, 70), QSizeF(1, 1))).adjusted(-16, -16, 24, 24),
+           QStringLiteral("timeline-clip-tooltip.png"));
+
+    // Off the clip it goes; another clip starts the wait again.
+    hoverItem(view, onGap);
+    REQUIRE(waitFor([&] { return !tip->property("visible").toBool(); }, 2000));
+    hoverItem(view, onB);
+    REQUIRE(waitFor([&] { return tip->property("opened").toBool(); }, 4000));
+    CHECK(tip->property("text").toString().startsWith(QStringLiteral("B\n")));
+
+    // A press hides it and a drag keeps it hidden.
+    mouseAt(window, QEvent::MouseButtonPress, onB, Qt::LeftButton, Qt::LeftButton);
+    REQUIRE(waitFor([&] { return !tip->property("visible").toBool(); }, 2000));
+    for (int i = 1; i <= 6; ++i) {
+        mouseAt(window, QEvent::MouseMove, onB + QPointF(8.0 * i, 0), Qt::NoButton, Qt::LeftButton);
+        spin(5);
+    }
+    CHECK(view->gestureActive());
+    spin(900);
+    CHECK_FALSE(tip->property("visible").toBool());
+    REQUIRE(view->cancelGesture());
+    mouseAt(window, QEvent::MouseButtonRelease, onB + QPointF(48, 0), Qt::LeftButton, Qt::NoButton);
+    spin(50);
+
+    // Switched off (Settings > Timeline & editing > Clip tooltips): never.
+    p.shell.preferences->setProperty("showClipTooltips", false);
+    hoverItem(view, onGap);
+    hoverItem(view, onA);
+    spin(1000);
+    CHECK_FALSE(tip->property("visible").toBool());
+    resetSettings();
+    checkNoMessages();
+}
+
+TEST_CASE("Timeline settings rows for playback scroll and snap playhead persist", "[app][qml][settings][timeline][screenshot]") {
+    resetSettings();
+    clearMessages();
+    {
+        Shell shell;
+        REQUIRE(shell.window);
+        shell.resize(kShotWidth, kShotHeight);
+        shell.theme->setProperty("reduceMotion", true);
+        auto* view = qobject_cast<TimelineView*>(shell.item("timelineView"));
+        REQUIRE(view);
+        CHECK(shell.preferences->property("timelinePlaybackScroll").toString() == QStringLiteral("page"));
+        CHECK(view->snapPlayhead());
+        CHECK(view->showClipSpeed());
+        CHECK(view->showFxBadges());
+
+        // \ (Zoom to Sequence) twice: the fit, then the zoom and scroll from before.
+        spin(200);
+        view->zoomAt(0.6, 0);
+        view->setScrollX(400);
+        const double zoom = view->zoomLevel();
+        const double scroll = view->scrollX();
+        REQUIRE(QMetaObject::invokeMethod(shell.window.get(), "runCommand", Q_ARG(QVariant, QStringLiteral("sequence.zoomToSequence"))));
+        CHECK(std::abs(view->zoomLevel()) < 1e-6);
+        REQUIRE(QMetaObject::invokeMethod(shell.window.get(), "runCommand", Q_ARG(QVariant, QStringLiteral("sequence.zoomToSequence"))));
+        CHECK(std::abs(view->zoomLevel() - zoom) < 1e-6);
+        CHECK(std::abs(view->scrollX() - scroll) < 0.5);
+
+        // Settings > Timeline & editing, opened at the playback auto-scroll row.
+        REQUIRE(QMetaObject::invokeMethod(shell.window.get(), "openSettings", Q_ARG(QString, QStringLiteral("timeline")),
+                                          Q_ARG(QString, QStringLiteral("playbackScroll"))));
+        QObject* loader = shell.object("settingsWindowLoader");
+        REQUIRE(loader);
+        QObject* window = loader->property("item").value<QObject*>();
+        REQUIRE(window);
+        REQUIRE(waitFor([&] { return window->property("opened").toBool(); }));
+        QQuickItem* page = nullptr;
+        REQUIRE(waitFor([&] {
+            REQUIRE(QMetaObject::invokeMethod(window, "page", Q_RETURN_ARG(QQuickItem*, page), Q_ARG(QString, QStringLiteral("timeline"))));
+            return page != nullptr && page->isVisible();
+        }));
+        QQuickItem* tabs = findNamed(page, QStringLiteral("settingsPlaybackScroll"));
+        QQuickItem* snap = findNamed(page, QStringLiteral("settingsSnapPlayhead"));
+        QQuickItem* speed = findNamed(page, QStringLiteral("settingsClipSpeed"));
+        QQuickItem* fx = findNamed(page, QStringLiteral("settingsFxBadges"));
+        QQuickItem* tips = findNamed(page, QStringLiteral("settingsClipTooltips"));
+        REQUIRE(tabs);
+        REQUIRE(snap);
+        REQUIRE(speed);
+        REQUIRE(fx);
+        REQUIRE(tips);
+        CHECK(tabs->property("currentIndex").toInt() == 1);
+        CHECK(snap->property("checked").toBool());
+        CHECK(speed->property("checked").toBool());
+        CHECK(fx->property("checked").toBool());
+        CHECK(tips->property("checked").toBool());
+        spin(600); // the reveal's scroll and highlight
+        REQUIRE_FALSE(shell.grab().isNull());
+        spin(50);
+        {
+            const QImage image = shell.grab();
+            REQUIRE_FALSE(image.isNull());
+            const double dpr = image.devicePixelRatio();
+            const QRectF rows = sceneRect(snap).united(sceneRect(tabs));
+            const QRectF pageRect = sceneRect(page);
+            const QRectF r = QRectF(pageRect.left(), rows.top() - 16, pageRect.width(), rows.height() + 72)
+                                 .intersected(QRectF(0, 0, image.width() / dpr, image.height() / dpr));
+            REQUIRE(image.copy(QRectF(r.topLeft() * dpr, r.size() * dpr).toRect())
+                        .save(QDir(outputDir()).filePath(QStringLiteral("settings-timeline-playback.png"))));
+        }
+
+        // Each choice writes Preferences and the lanes follow.
+        REQUIRE(QMetaObject::invokeMethod(tabs, "activated", Q_ARG(int, 2)));
+        CHECK(shell.preferences->property("timelinePlaybackScroll").toString() == QStringLiteral("smooth"));
+        CHECK(tabs->property("currentIndex").toInt() == 2);
+        REQUIRE(QMetaObject::invokeMethod(tabs, "activated", Q_ARG(int, 0)));
+        CHECK(shell.preferences->property("timelinePlaybackScroll").toString() == QStringLiteral("none"));
+        flip(snap, false);
+        CHECK_FALSE(shell.preferences->property("snapPlayhead").toBool());
+        CHECK_FALSE(view->snapPlayhead());
+        flip(speed, false);
+        CHECK_FALSE(view->showClipSpeed());
+        flip(fx, false);
+        CHECK_FALSE(view->showFxBadges());
+        flip(tips, false);
+        CHECK_FALSE(shell.preferences->property("showClipTooltips").toBool());
+    }
+    spin(50);
+    {
+        QSettings settings;
+        CHECK(settings.value(QStringLiteral("timeline/playbackScroll")).toString() == QStringLiteral("none"));
+        CHECK_FALSE(settings.value(QStringLiteral("timeline/snapPlayhead"), true).toBool());
+        CHECK_FALSE(settings.value(QStringLiteral("timeline/showClipSpeed"), true).toBool());
+        CHECK_FALSE(settings.value(QStringLiteral("timeline/showFxBadges"), true).toBool());
+        CHECK_FALSE(settings.value(QStringLiteral("timeline/clipTooltips"), true).toBool());
+    }
+    // A reset brings the defaults back.
+    resetSettings();
+    {
+        Shell shell;
+        REQUIRE(shell.window);
+        CHECK(shell.preferences->property("timelinePlaybackScroll").toString() == QStringLiteral("page"));
+        CHECK(shell.preferences->property("snapPlayhead").toBool());
+        CHECK(shell.preferences->property("showClipTooltips").toBool());
+    }
+    checkNoMessages();
+}
+
+TEST_CASE("The ruler menu marks and clears In and Out without moving the playhead",
+          "[app][qml][timeline][ruler][markers][screenshot]") {
+    resetSettings();
+    clearMessages();
+    const std::string clips = run('A', 40) + run('B', 40) + gap(140);
+    ShellProject p("V1 tgt |" + clips + "|\nA1 tgt |" + clips + "|\n");
+    ProjectController& c = *p.controller;
+    QQuickWindow* window = p.shell.window.get();
+    auto* view = qobject_cast<TimelineView*>(p.item(QStringLiteral("timelineView")));
+    REQUIRE(view);
+    view->setPixelsPerSecond(50); // 2 px per frame
+    view->setScrollX(0);
+    c.setPlayhead(f(10));
+    spin(100);
+    QQuickItem* ruler = p.item(QStringLiteral("timelineRuler"));
+    REQUIRE(ruler);
+    QObject* menu = p.object(QStringLiteral("rulerContextMenu"));
+    REQUIRE(menu);
+    QObject* keymap = p.shell.engine.singletonInstance<QObject*>("Wabcut", "KeymapDispatcher");
+    REQUIRE(keymap);
+    const auto at = [&](double x) { return ruler->mapToScene(QPointF(x, ruler->height() / 2)); };
+    const auto rightClick = [&](QPointF scene) {
+        mouseAt(window, QEvent::MouseButtonPress, scene, Qt::RightButton, Qt::RightButton);
+        mouseAt(window, QEvent::MouseButtonRelease, scene, Qt::RightButton, Qt::NoButton);
+        waitOpened(menu);
+    };
+    const auto choose = [&](const char* row) {
+        trigger(child(menu, row));
+        waitClosed(menu);
+    };
+    // Anchored at the click: opening down from it, or up from it where the window has no room below (its bottom edge at
+    // the click), never pushed up over the panel header with the click somewhere in its middle.
+    const auto anchoredAt = [&](QPointF scene) {
+        p.settle(); // laid out and grown to its final rows (a menu measured too early grows past the click)
+        const QRectF r = popupRect(menu);
+        INFO("menu " << r.left() << "," << r.top() << " to " << r.bottom() << ", click " << scene.x() << "," << scene.y());
+        CHECK(std::abs(r.left() - scene.x()) < 1.5);
+        CHECK((std::abs(r.top() - scene.y()) < 1.5 || std::abs(r.bottom() - scene.y()) < 1.5));
+    };
+
+    // A right click anywhere on the ruler: the menu at the pointer; the playhead stays.
+    rightClick(at(200));
+    anchoredAt(at(200));
+    CHECK(c.playhead() == f(10));
+    CHECK(menu->property("markerIndex").toInt() == -1);
+    CHECK_FALSE(child(menu, "rulerMenuEditMarker")->property("visible").toBool());
+    CHECK_FALSE(child(menu, "rulerMenuClearMarker")->property("visible").toBool());
+    // Each row shows its command's shortcut.
+    for (const char* name : {"rulerMenuMarkIn", "rulerMenuMarkOut", "rulerMenuMarkClip", "rulerMenuGoToIn", "rulerMenuGoToOut",
+                             "rulerMenuClearIn", "rulerMenuClearOut", "rulerMenuClearInOut", "rulerMenuAddMarker",
+                             "rulerMenuNextMarker", "rulerMenuPreviousMarker", "rulerMenuClearAllMarkers",
+                             "rulerMenuRippleMarkers", "rulerMenuAudioTimeUnits"}) {
+        INFO(name);
+        QObject* row = child(menu, name);
+        const QString command = row->property("command").toString();
+        CHECK_FALSE(command.isEmpty());
+        QString expected;
+        REQUIRE(QMetaObject::invokeMethod(keymap, "shortcutText", Q_RETURN_ARG(QString, expected), Q_ARG(QString, command)));
+        CHECK(row->property("shortcut").toString() == expected);
+    }
+    CHECK(child(menu, "rulerMenuMarkIn")->property("shortcut").toString() == QStringLiteral("I"));
+    CHECK(child(menu, "rulerMenuAddMarker")->property("shortcut").toString() == QStringLiteral("M"));
+    // Nothing to go to or clear yet.
+    CHECK_FALSE(child(menu, "rulerMenuGoToIn")->property("enabled").toBool());
+    CHECK_FALSE(child(menu, "rulerMenuClearInOut")->property("enabled").toBool());
+    CHECK_FALSE(child(menu, "rulerMenuNextMarker")->property("enabled").toBool());
+    CHECK_FALSE(child(menu, "rulerMenuClearAllMarkers")->property("enabled").toBool());
+    CHECK(child(menu, "rulerMenuRippleMarkers")->property("checked").toBool());
+
+    // Mark In and Mark Out at the playhead; Go to In; Clear In and Out.
+    choose("rulerMenuMarkIn");
+    CHECK(p.sequence().markIn == f(10));
+    c.setPlayhead(f(30));
+    rightClick(at(200));
+    CHECK(child(menu, "rulerMenuGoToIn")->property("enabled").toBool());
+    choose("rulerMenuMarkOut");
+    CHECK(p.sequence().markOut.has_value());
+    rightClick(at(200));
+    choose("rulerMenuGoToIn");
+    CHECK(c.playhead() == f(10));
+    rightClick(at(200));
+    CHECK(child(menu, "rulerMenuClearInOut")->property("enabled").toBool());
+    choose("rulerMenuClearInOut");
+    CHECK_FALSE(p.sequence().markIn.has_value());
+    CHECK_FALSE(p.sequence().markOut.has_value());
+
+    // Two markers, then Clear All Markers: one undo step that one undo reverts.
+    for (const int frame : {20, 60}) {
+        Marker m;
+        m.start = f(frame);
+        m.name = frame == 20 ? "Hook" : "Payoff";
+        REQUIRE(c.applyEditFn("Add Marker", [&](const ProjectState& s) { return edit::addMarker(s, p.tl.seq, m); }));
+    }
+    spin(50);
+    rightClick(at(200));
+    CHECK(child(menu, "rulerMenuClearAllMarkers")->property("enabled").toBool());
+    std::size_t steps = p.undo();
+    choose("rulerMenuClearAllMarkers");
+    CHECK(p.sequence().markers.empty());
+    CHECK(p.undo() == steps + 1);
+    REQUIRE(c.undo());
+    CHECK(p.sequence().markers.size() == 2);
+
+    // Ripple Sequence Markers (on for a sequence by default): the row turns it off in one undo step.
+    REQUIRE(c.rippleSequenceMarkers());
+    rightClick(at(200));
+    steps = p.undo();
+    choose("rulerMenuRippleMarkers");
+    CHECK_FALSE(c.rippleSequenceMarkers());
+    CHECK(p.undo() == steps + 1);
+    rightClick(at(200));
+    CHECK_FALSE(child(menu, "rulerMenuRippleMarkers")->property("checked").toBool());
+    REQUIRE(QMetaObject::invokeMethod(menu, "close"));
+    waitClosed(menu);
+    REQUIRE(c.undo());
+    CHECK(c.rippleSequenceMarkers());
+
+    // A right click on a marker's flag: Edit Marker… and Clear Marker for it, then the rest; the playhead stays.
+    spin(100);
+    QQuickItem* flag = findNamed(ruler, QStringLiteral("rulerMarker_0"));
+    REQUIRE(flag);
+    const QPointF onFlag = flag->mapToScene(QPointF(0, flag->height() - 8));
+    const Ticks playhead = c.playhead();
+    rightClick(onFlag);
+    CHECK(c.playhead() == playhead);
+    CHECK(menu->property("markerIndex").toInt() == 0);
+    CHECK(child(menu, "rulerMenuEditMarker")->property("visible").toBool());
+    CHECK(child(menu, "rulerMenuClearMarker")->property("visible").toBool());
+    anchoredAt(onFlag); // measured with the two flag rows in it
+    p.settle();
+    p.shot(popupRect(menu).united(sceneRect(ruler).intersected(popupRect(menu).adjusted(-260, -80, 40, 80)))
+               .adjusted(-16, -16, 16, 16),
+           QStringLiteral("timeline-ruler-menu.png"));
+    // Edit Marker…: the marker editor, once the menu has closed.
+    choose("rulerMenuEditMarker");
+    QObject* editor = ruler->findChild<QObject*>(QStringLiteral("markerEditor"));
+    REQUIRE(editor);
+    waitOpened(editor);
+    REQUIRE(QMetaObject::invokeMethod(editor, "close"));
+    waitClosed(editor);
+    // Clear Marker: that marker only.
+    rightClick(onFlag);
+    steps = p.undo();
+    choose("rulerMenuClearMarker");
+    REQUIRE(p.sequence().markers.size() == 1);
+    CHECK(p.sequence().markers[0].start == f(60));
+    CHECK(p.undo() == steps + 1);
+
+    // A left click on a marker's flag puts the playhead on the marker and leaves no snap line in the lanes (it is not
+    // a scrub).
+    spin(100);
+    QQuickItem* payoff = findNamed(ruler, QStringLiteral("rulerMarker_0"));
+    REQUIRE(payoff);
+    const QPointF onPayoff = payoff->mapToScene(QPointF(0, payoff->height() - 8));
+    mouseAt(window, QEvent::MouseButtonPress, onPayoff, Qt::LeftButton, Qt::LeftButton);
+    mouseAt(window, QEvent::MouseButtonRelease, onPayoff, Qt::LeftButton, Qt::NoButton);
+    CHECK(c.playhead() == f(60));
+    CHECK(std::isnan(view->snapX()));
+
+    // The ruler's playhead snap: a left press 3 px past the cut at frame 40 lands on the cut, with the snap line until
+    // the release; with Snap off it does not snap unless Shift is held.
+    const double cutX = 40 * 2.0 - view->scrollX();
+    mouseAt(window, QEvent::MouseButtonPress, at(cutX + 3), Qt::LeftButton, Qt::LeftButton);
+    CHECK(c.playhead() == f(40));
+    CHECK(std::abs(view->snapX() - cutX) < 0.5);
+    mouseAt(window, QEvent::MouseButtonRelease, at(cutX + 3), Qt::LeftButton, Qt::NoButton);
+    CHECK(std::isnan(view->snapX()));
+    p.shell.preferences->setProperty("timelineSnapping", false);
+    spin(20);
+    mouseAt(window, QEvent::MouseButtonPress, at(cutX + 3), Qt::LeftButton, Qt::LeftButton);
+    CHECK(c.playhead() != f(40));
+    mouseAt(window, QEvent::MouseButtonRelease, at(cutX + 3), Qt::LeftButton, Qt::NoButton);
+    mouseAt(window, QEvent::MouseButtonPress, at(cutX + 3), Qt::LeftButton, Qt::LeftButton, Qt::ShiftModifier);
+    CHECK(c.playhead() == f(40));
+    mouseAt(window, QEvent::MouseButtonRelease, at(cutX + 3), Qt::LeftButton, Qt::NoButton, Qt::ShiftModifier);
+    resetSettings();
+    checkNoMessages();
+}
+
+TEST_CASE("The clip menu has Audio Gain for clips with sound and Clear", "[app][qml][timeline][audio][screenshot]") {
+    resetSettings();
+    clearMessages();
+    ShellProject p(R"(
+        V2 tgt |........Gggg|
+        V1 tgt |AaaaBbbbCccc|
+        A1 tgt |AaaaBbbbCccc|
+    )");
+    ProjectController& c = *p.controller;
+    // G is a picture without sound (no audio stream).
+    {
+        ProjectState state = p.tl.state;
+        for (MediaPtr& m : state.media) {
+            if (m->id == p.tl.media('G')) {
+                auto silent = std::make_shared<MediaItem>(*m);
+                silent->info.audio.clear();
+                m = std::move(silent);
+            }
+        }
+        c.resetProject(std::move(state), p.tl.seq);
+        spin(100);
+    }
+    QObject* menu = p.object(QStringLiteral("clipContextMenu"));
+    REQUIRE(menu);
+    QQuickItem* lanes = p.item(QStringLiteral("timelineLanesArea"));
+    REQUIRE(lanes);
+    const auto openFor = [&](ClipId id) {
+        c.selectClip(clipKey(id));
+        REQUIRE(QMetaObject::invokeMethod(menu, "openAt", Q_ARG(QVariant, QVariant::fromValue<QObject*>(lanes)),
+                                          Q_ARG(QVariant, clipKey(id)), Q_ARG(QVariant, QPointF(200, 20))));
+        waitOpened(menu);
+    };
+
+    // A clip with sound: Audio Gain… (G) at the top of the audio tools; Clear (Delete) before Ripple Delete.
+    openFor(p.tl.clip("A1@4"));
+    QObject* gain = child(menu, "audioGainMenuItem");
+    QObject* clear = child(menu, "clearMenuItem");
+    CHECK(gain->property("visible").toBool());
+    CHECK(gain->property("shortcut").toString() == QStringLiteral("G"));
+    CHECK(clear->property("enabled").toBool());
+    CHECK(clear->property("command").toString() == QStringLiteral("edit.clear"));
+    p.settle();
+    p.shot(popupRect(menu).adjusted(-8, -8, 8, 8), QStringLiteral("timeline-clip-menu-audio.png"));
+    // Audio Gain…: the dialog for the selection, once the menu has closed.
+    trigger(gain);
+    waitClosed(menu);
+    QObject* loader = p.object(QStringLiteral("audioGainDialogLoader"));
+    REQUIRE(loader);
+    QObject* dialog = nullptr;
+    REQUIRE(waitFor([&] {
+        dialog = loader->property("item").value<QObject*>();
+        return dialog && dialog->property("opened").toBool();
+    }, 3000));
+    REQUIRE(QMetaObject::invokeMethod(dialog, "close"));
+    waitClosed(dialog);
+
+    // A picture without sound: no Audio Gain….
+    openFor(p.tl.clip("V2@8"));
+    CHECK_FALSE(child(menu, "audioGainMenuItem")->property("visible").toBool());
+    REQUIRE(QMetaObject::invokeMethod(menu, "close"));
+    waitClosed(menu);
+
+    // Clear: B goes and leaves a gap (C stays where it was), one undo step "Delete" that one undo reverts.
+    openFor(p.tl.clip("V1@4"));
+    const std::size_t steps = p.undo();
+    trigger(child(menu, "clearMenuItem"));
+    waitClosed(menu);
+    CHECK(p.undo() == steps + 1);
+    CHECK(c.undoText() == QStringLiteral("Undo Delete"));
+    const Track& v1 = *p.sequence().findTrack(p.tl.track("V1"));
+    REQUIRE(v1.clips.size() == 2);
+    CHECK(v1.clips[1].start() == f(8));
+    REQUIRE(c.undo());
+    CHECK(p.sequence().findTrack(p.tl.track("V1"))->clips.size() == 3);
+    checkNoMessages();
+}
+
+TEST_CASE("The clip menu Paste pastes copied effects as Ctrl+V does", "[app][qml][timeline][effects]") {
+    resetSettings();
+    clearMessages();
+    ShellProject p(R"(
+        V1 tgt |AaaaBbbbCccc........|
+    )");
+    ProjectController& c = *p.controller;
+    EffectControlsModel& fx = *c.effectControls();
+    const ClipId a = p.tl.clip("V1@0");
+    const ClipId b = p.tl.clip("V1@4");
+    const auto stackOf = [&](ClipId id) { return p.sequence().findClip(id)->clip().effects(); };
+    const auto clipCount = [&] { return p.sequence().findTrack(p.tl.track("V1"))->clips.size(); };
+    // A crop on A, copied in Effect Controls: the newest copy.
+    REQUIRE(c.applyEditFn("Add Effect", [&](const ProjectState& s) {
+        return edit::addEffect(s, p.tl.seq, std::span(&a, 1), "wabcut.crop");
+    }));
+    c.selectClipById(a, ProjectController::Replace);
+    spin(50);
+    REQUIRE(stackOf(a).size() == 1);
+    fx.selectSection(effectKey(stackOf(a)[0].id), 0);
+    REQUIRE(fx.copySelectedSections() == 1);
+    REQUIRE(fx.canPasteEffects());
+
+    // Right-click B: Paste (Ctrl+V) is there and pastes the crop onto B, not clips at the playhead.
+    QObject* menu = p.object(QStringLiteral("clipContextMenu"));
+    REQUIRE(menu);
+    QQuickItem* lanes = p.item(QStringLiteral("timelineLanesArea"));
+    REQUIRE(lanes);
+    c.selectClip(clipKey(b));
+    REQUIRE(QMetaObject::invokeMethod(menu, "openAt", Q_ARG(QVariant, QVariant::fromValue<QObject*>(lanes)),
+                                      Q_ARG(QVariant, clipKey(b)), Q_ARG(QVariant, QPointF(200, 20))));
+    waitOpened(menu);
+    QObject* paste = child(menu, "pasteMenuItem");
+    CHECK(paste->property("enabled").toBool());
+    CHECK(paste->property("command").toString() == QStringLiteral("edit.paste"));
+    const std::size_t clips = clipCount();
+    const std::size_t steps = p.undo();
+    trigger(paste);
+    waitClosed(menu);
+    CHECK(c.undoText() == QStringLiteral("Undo Paste Effects"));
+    CHECK(p.undo() == steps + 1);
+    REQUIRE(stackOf(b).size() == 1);
+    CHECK(stackOf(b)[0].effect == "wabcut.crop");
+    CHECK(clipCount() == clips);
+    checkNoMessages();
+}
+
+TEST_CASE("Track mute shows a crossed speaker only when muted", "[app][qml][timeline][tracks][screenshot]") {
+    resetSettings();
+    clearMessages();
+    ShellProject p(R"(
+        V1 tgt |AaaaaaaaBbbbbbbb|
+        A1 tgt |AaaaaaaaBbbbbbbb|
+        A2     |Cccccccc........|
+    )");
+    ProjectController& c = *p.controller;
+    const auto mute = [&](const char* track) { return p.item(QStringLiteral("trackMute_") + QLatin1String(track)); };
+    const auto solo = [&](const char* track) { return p.item(QStringLiteral("trackSolo_") + QLatin1String(track)); };
+    REQUIRE(mute("A1"));
+    REQUIRE(solo("A1"));
+    REQUIRE(p.item(QStringLiteral("trackLock_A1")));
+    REQUIRE(p.item(QStringLiteral("trackOutput_V1")));
+    CHECK(mute("A1")->property("iconName").toString() == QStringLiteral("volume-2"));
+    CHECK_FALSE(mute("A1")->property("checked").toBool());
+    CHECK(mute("A1")->property("tooltip").toString() == QStringLiteral("Mute A1"));
+    // The mixers' colours: mute amber, solo green.
+    CHECK(mute("A1")->property("checkedColor").value<QColor>() == p.shell.themeColor("warning"));
+    CHECK(solo("A1")->property("checkedColor").value<QColor>() == p.shell.themeColor("success"));
+
+    // Muted: the crossed speaker, checked, "Unmute A1"; one undo step brings the plain speaker back.
+    const std::size_t steps = p.undo();
+    c.setTrackFlag(p.track("A1"), QStringLiteral("muted"), true);
+    spin(50);
+    CHECK(p.undo() == steps + 1);
+    REQUIRE(mute("A1"));
+    CHECK(mute("A1")->property("iconName").toString() == QStringLiteral("volume-x"));
+    CHECK(mute("A1")->property("checked").toBool());
+    CHECK(mute("A1")->property("tooltip").toString() == QStringLiteral("Unmute A1"));
+    REQUIRE(c.undo());
+    spin(50);
+    CHECK(mute("A1")->property("iconName").toString() == QStringLiteral("volume-2"));
+
+    // A1 plays, A2 muted and soloed.
+    c.setTrackFlag(p.track("A2"), QStringLiteral("muted"), true);
+    c.setTrackFlag(p.track("A2"), QStringLiteral("solo"), true);
+    spin(50);
+    REQUIRE(mute("A2"));
+    CHECK(mute("A2")->property("iconName").toString() == QStringLiteral("volume-x"));
+    CHECK(solo("A2")->property("checked").toBool());
+    p.settle();
+    QQuickItem* v1 = p.header(QStringLiteral("V1"));
+    QQuickItem* a2 = p.header(QStringLiteral("A2"));
+    REQUIRE(v1);
+    REQUIRE(a2);
+    p.shot(sceneRect(v1).united(sceneRect(a2)).adjusted(-8, -8, 8, 8), QStringLiteral("timeline-track-toggles.png"));
     checkNoMessages();
 }

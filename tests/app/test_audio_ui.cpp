@@ -391,6 +391,130 @@ TEST_CASE("Audio tools: loudness report, normalize and auto-duck dry run then on
     CHECK_FALSE(m.reduceNoise().isEmpty());
 }
 
+// ---- 0.4: "Game under my voice" ducking -----------------------------------------------------------------------------
+
+namespace {
+
+/// A gaming recording's tracks, named as OBS writes them (renamed through the controller, one undo step each): Mic on A1
+/// (also the dialogue role), Game on A2 and, unless `withMusic` is false, Music on A3. 4 s clips at 25 fps.
+struct GameFixture {
+    Timeline tl;
+    ProjectController controller;
+    AudioMixerBridge mixer;
+
+    explicit GameFixture(bool withMusic = true)
+        : tl(withMusic ? R"(
+            V1 tgt          |Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|
+            A1 tgt dialogue |Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|
+            A2              |Gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg|
+            A3              |Mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm|
+        )"
+                         : R"(
+            V1 tgt          |Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|
+            A1 tgt dialogue |Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|
+            A2              |Gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg|
+        )") {
+        tl.linkMatching();
+        controller.resetProject(tl.state, tl.seq);
+        mixer.setController(&controller);
+        mixer.setServices(fakeServices());
+        mixer.setSynchronous(true);
+        const char* names[] = {"Mic", "Game", "Music"};
+        for (std::size_t i = 0; i < controller.currentSequence()->audioTracks.size(); ++i)
+            REQUIRE(controller.renameTrack(trackKey(audio(static_cast<int>(i)).id), QString::fromLatin1(names[i])));
+    }
+    const Track& audio(int i) const { return *controller.currentSequence()->audioTracks[static_cast<std::size_t>(i)]; }
+    std::size_t undoCount() { return controller.session().undoCount(); }
+    double lowest(int track) const {
+        const ParamValue v = audio(track).clips[0].properties()[ParamId::VolumeDb];
+        double out = v.isCurve() ? 0.0 : v.valueAt(Ticks{});
+        if (v.isCurve()) {
+            for (const Keyframe& k : v.curve()->keys)
+                out = std::min(out, k.value);
+        }
+        return out;
+    }
+};
+
+} // namespace
+
+TEST_CASE("Audio tools: Game under my voice ducks the game and music under the mic by track name", "[app][audio][duck]") {
+    GameFixture fx;
+    AudioMixerBridge& m = fx.mixer;
+    // Suggested for a sequence with a track named for the game and a voice track; its own timing.
+    CHECK(m.duckMode() == QStringLiteral("gameUnderVoice"));
+    CHECK(m.gameTracks().value(QStringLiteral("voice")).toStringList() == QStringList{QStringLiteral("Mic")});
+    CHECK(m.gameTracks().value(QStringLiteral("game")).toStringList() ==
+          (QStringList{QStringLiteral("Game"), QStringLiteral("Music")}));
+    CHECK(m.duckAmount() == -10.0);
+    CHECK(m.duckAttack() == 0.12);
+    CHECK(m.duckRelease() == 0.8);
+    CHECK(m.duckHold() == 0.35);
+
+    const std::size_t undo = fx.undoCount();
+    REQUIRE(m.previewAutoDuck().isEmpty());
+    INFO(m.message().toStdString());
+    const QVariantMap pending = m.pending();
+    REQUIRE(pending.value("kind").toString() == QStringLiteral("autoDuck"));
+    CHECK(pending.value("title").toString().startsWith(QStringLiteral("Duck the game by")));
+    CHECK(pending.value("info").toString().startsWith(QStringLiteral("Mic → ducks Game, Music · ")));
+    CHECK(fx.audio(1).clips[0].properties()[ParamId::VolumeDb].isConstant()); // nothing yet
+    REQUIRE(m.applyPending().isEmpty());
+    CHECK(fx.undoCount() == undo + 1);
+    CHECK(fx.controller.undoText() == QStringLiteral("Undo Duck Game Under Voice"));
+    CHECK(fx.lowest(1) == -10.0);                                                 // the game
+    CHECK(fx.lowest(2) == -10.0);                                                 // the music, with it
+    CHECK(fx.audio(0).clips[0].properties()[ParamId::VolumeDb].isConstant());     // the mic is untouched
+
+    // Without the music: only the game ducks.
+    REQUIRE(fx.controller.undo());
+    m.setDuckIncludeMusic(false);
+    CHECK(m.gameTracks().value(QStringLiteral("game")).toStringList() == QStringList{QStringLiteral("Game")});
+    REQUIRE(m.previewAutoDuck().isEmpty());
+    REQUIRE(m.applyPending().isEmpty());
+    CHECK(fx.lowest(1) == -10.0);
+    CHECK(fx.audio(2).clips[0].properties()[ParamId::VolumeDb].isConstant());
+}
+
+TEST_CASE("Audio tools: each duck mode keeps its own timing", "[app][audio][duck]") {
+    GameFixture fx(false); // Mic and Game, no music track
+    AudioMixerBridge& m = fx.mixer;
+    REQUIRE(m.duckMode() == QStringLiteral("gameUnderVoice"));
+    int changes = 0;
+    QObject::connect(&m, &AudioMixerBridge::duckChanged, &m, [&] { ++changes; });
+    m.setDuckAmount(-14.0);
+    CHECK(m.duckAmount() == -14.0);
+    m.setDuckMode(QStringLiteral("default"));
+    CHECK(changes == 1);
+    CHECK(m.duckMode() == QStringLiteral("default"));
+    CHECK(m.duckAmount() == -12.0);
+    CHECK(m.duckAttack() == 0.25);
+    m.setDuckMode(QStringLiteral("gameUnderVoice"));
+    CHECK(m.duckAmount() == -14.0);
+    m.setDuckMode(QStringLiteral("nonsense")); // ignored
+    CHECK(m.duckMode() == QStringLiteral("gameUnderVoice"));
+
+    // Music under dialogue on a Mic / Game sequence: there is no music track to duck.
+    m.setDuckMode(QStringLiteral("default"));
+    REQUIRE(m.previewAutoDuck().isEmpty());
+    CHECK(m.pending().isEmpty());
+    CHECK(m.message().contains(QStringLiteral("music")));
+
+    // The pick sticks while the sequence stays (an edit does not suggest again); another sequence suggests again.
+    const std::size_t undo = fx.undoCount();
+    fx.controller.setTrackFlag(trackKey(fx.audio(1).id), QStringLiteral("muted"), true);
+    REQUIRE(fx.undoCount() == undo + 1);
+    CHECK(m.duckMode() == QStringLiteral("default"));
+    fx.controller.newSequence();
+    REQUIRE(fx.controller.sequenceNames().size() == 2);
+    fx.controller.setCurrentSequenceIndex(1);
+    CHECK(m.duckMode() == QStringLiteral("default")); // nothing named for the game there
+    CHECK(m.gameTracks().value(QStringLiteral("game")).toStringList().isEmpty());
+    fx.controller.setCurrentSequenceIndex(0);
+    CHECK(m.duckMode() == QStringLiteral("gameUnderVoice"));
+    CHECK(m.duckAmount() == -14.0); // the timing stays with its mode for the session
+}
+
 // ---- Bezier handles -------------------------------------------------------------------------------------------------
 
 TEST_CASE("Value graph: Bezier keys show handles; dragging one shapes the tangents (linked, Alt breaks)", "[app][audio][keyframes]") {
@@ -651,6 +775,102 @@ TEST_CASE("Audio workspace: mixer strips with meters, tools with a report and an
     CHECK_FALSE(view->showVolume());
     CHECK_FALSE(mixer->metersActive());
 
+    const QStringList messages = takeMessages();
+    INFO(join(messages));
+    CHECK(messages.isEmpty());
+}
+
+// 0.4: the Auto-duck card in "Game under my voice" mode, suggested for a sequence with tracks named Mic, Game and Music.
+TEST_CASE("Audio Tools: the Auto-duck card in Game under my voice mode; screenshot", "[app][audio][duck][screenshots][qml]") {
+    resetSettings();
+    clearMessages();
+    Shell shell;
+    REQUIRE(shell.window != nullptr);
+    INFO(join(shell.errors));
+    REQUIRE(shell.errors.isEmpty());
+    shell.resize(kShotWidth, kShotHeight);
+    shell.theme->setProperty("reduceMotion", true);
+    auto* controller = shell.engine.singletonInstance<ProjectController*>("Wabcut", "ProjectController");
+    auto* mixer = shell.engine.singletonInstance<AudioMixerBridge*>("Wabcut", "AudioMixer");
+    REQUIRE(controller != nullptr);
+    REQUIRE(mixer != nullptr);
+    mixer->setServices(fakeServices());
+    mixer->setSynchronous(true);
+    const SequencePtr seq = controller->currentSequence();
+    REQUIRE(seq);
+    REQUIRE(seq->audioTracks.size() >= 3);
+    const char* names[] = {"Mic", "Game", "Music"};
+    for (std::size_t i = 0; i < 3; ++i)
+        REQUIRE(controller->renameTrack(trackKey(seq->audioTracks[i]->id), QString::fromLatin1(names[i])));
+    CHECK(mixer->duckMode() == QStringLiteral("gameUnderVoice"));
+
+    // The Audio workspace: Audio Tools in the browser.
+    shell.window->setProperty("workspace", 1);
+    spin(500);
+    QQuickItem* tools = shell.item("audioToolsPanel");
+    REQUIRE(tools != nullptr);
+    REQUIRE(tools->isVisible());
+    const auto named = [&](const char* name) {
+        return findItem(tools, [name](QQuickItem* i) { return i->objectName() == QLatin1String(name); });
+    };
+    QQuickItem* card = named("duckTool");
+    QQuickItem* tabs = named("duckModeTabs");
+    QQuickItem* line = named("duckTracksLine");
+    QQuickItem* includeMusic = named("duckIncludeMusic");
+    QQuickItem* preview = named("previewDuckButton");
+    QQuickItem* amount = named("duckAmount");
+    REQUIRE(card != nullptr);
+    REQUIRE(tabs != nullptr);
+    REQUIRE(line != nullptr);
+    REQUIRE(includeMusic != nullptr);
+    REQUIRE(preview != nullptr);
+    REQUIRE(amount != nullptr);
+    CHECK(tabs->property("currentIndex").toInt() == 1);
+    CHECK(line->isVisible());
+    CHECK(line->property("text").toString() == QStringLiteral("Mic → ducks Game, Music"));
+    CHECK(includeMusic->isVisible());
+    CHECK(includeMusic->property("checked").toBool());
+    CHECK(preview->isEnabled());
+    CHECK(amount->property("value").toDouble() == -10.0);
+
+    // Include music off: the game alone; back on.
+    REQUIRE(QMetaObject::invokeMethod(includeMusic, "toggle"));
+    REQUIRE(QMetaObject::invokeMethod(includeMusic, "toggled"));
+    CHECK_FALSE(mixer->duckIncludeMusic());
+    CHECK(line->property("text").toString() == QStringLiteral("Mic → ducks Game"));
+    REQUIRE(QMetaObject::invokeMethod(includeMusic, "toggle"));
+    REQUIRE(QMetaObject::invokeMethod(includeMusic, "toggled"));
+    CHECK(mixer->duckIncludeMusic());
+
+    // The other mode: its own timing, no tracks line; then back to the game.
+    REQUIRE(QMetaObject::invokeMethod(tabs, "activated", Q_ARG(int, 0)));
+    CHECK(mixer->duckMode() == QStringLiteral("default"));
+    CHECK(tabs->property("currentIndex").toInt() == 0);
+    CHECK_FALSE(line->isVisible());
+    CHECK_FALSE(includeMusic->isVisible());
+    CHECK(amount->property("value").toDouble() == -12.0);
+    REQUIRE(QMetaObject::invokeMethod(tabs, "activated", Q_ARG(int, 1)));
+    CHECK(mixer->duckMode() == QStringLiteral("gameUnderVoice"));
+
+    // The card in view (Audio Tools scrolls), then the screenshot of the panel.
+    QQuickItem* flick = card->parentItem();
+    while (flick != nullptr && !flick->inherits("QQuickFlickable"))
+        flick = flick->parentItem();
+    REQUIRE(flick != nullptr);
+    const double cardTop = card->mapToItem(flick->property("contentItem").value<QQuickItem*>(), QPointF(0, 0)).y();
+    const double room = flick->property("contentHeight").toDouble() - flick->height();
+    flick->setProperty("contentY", std::max(0.0, std::min(cardTop - 8.0, room)));
+    spin(150);
+    {
+        const QImage image = shell.grab();
+        REQUIRE_FALSE(image.isNull());
+        const double dpr = image.devicePixelRatio();
+        const QRectF r = tools->mapRectToScene(QRectF(0, 0, tools->width(), tools->height()));
+        REQUIRE(image.copy(QRectF(r.topLeft() * dpr, r.size() * dpr).toRect()).save(outputDir() + QStringLiteral("/audio-duck-game.png")));
+    }
+
+    shell.window->setProperty("workspace", 0);
+    spin(450);
     const QStringList messages = takeMessages();
     INFO(join(messages));
     CHECK(messages.isEmpty());

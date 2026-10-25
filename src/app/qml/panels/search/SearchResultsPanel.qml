@@ -172,17 +172,39 @@ Item {
         spacing: Theme.space(0.5)
         model: root.results
         boundsBehavior: Flickable.StopAtBounds
-        activeFocusOnTab: false
+        // 0.4: Tab from the search field reaches the results; Up / Down move between the cards (the keymap's plain
+        // Up / Down stay out while the list has focus) and the focused card follows the current one.
+        activeFocusOnTab: true
+        keyNavigationEnabled: true
+        currentIndex: -1
         Accessible.role: Accessible.List
         Accessible.name: qsTr("Smart search results")
 
+        Keys.onShortcutOverride: event => event.accepted = (event.key === Qt.Key_Up || event.key === Qt.Key_Down)
+                                                           && (event.modifiers & ~Qt.KeypadModifier) === Qt.NoModifier
+        onActiveFocusChanged: {
+            if (activeFocus && count > 0 && (currentIndex < 0 || !currentItem))
+                currentIndex = 0
+        }
+        onCurrentItemChanged: {
+            if (currentItem && activeFocus)
+                currentItem.forceActiveFocus(Qt.TabFocusReason)
+        }
+
         ScrollBar.vertical: ThinScrollBar {}
 
+        // 0.4: double-click or Enter opens the hit in the Source Monitor with its range marked (`,` / `.` then edit
+        // exactly that range); the Program Monitor keeps the sequence.
         delegate: SearchHitCard {
             required property var modelData
+            required property int index
             width: list.width
             hit: modelData
-            onOpened: Playback.showSource(modelData.mediaId)
+            onOpened: SourceMonitor.loadRange(modelData.mediaId, modelData.sourceIn, modelData.sourceOut)
+            onActiveFocusChanged: {
+                if (activeFocus)
+                    list.currentIndex = index
+            }
         }
     }
 }

@@ -10,9 +10,11 @@
 #include <wabcut/ai/edit/TranscriptCommands.h>
 #include <wabcut/audio/LevelMeter.h>
 #include <wabcut/audio/edit/AudioAnalysis.h>
+#include <wabcut/audio/edit/GameAudio.h>
 #include <wabcut/audio/edit/MediaAnalysis.h>
 #include <wabcut/command/Engine.h>
 #include <wabcut/command/ExecutionContext.h>
+#include <wabcut/model/EditOps.h>
 #include <wabcut/model/EditSession.h>
 #include <wabcut/model/Effects.h>
 #include <wabcut/model/FinishingOps.h>
@@ -286,6 +288,7 @@ std::shared_ptr<command::CommandServices> AudioMixerBridge::services() {
 // ---- Strips ---------------------------------------------------------------------------------------------
 
 void AudioMixerBridge::rebuild() {
+    updateDuckTracks(); // 0.4: before the early return below (a track rename changes no strip key)
     QVariantList strips;
     QVariantMap master;
     m_trackOrder.clear();
@@ -1092,33 +1095,112 @@ QVariantMap AudioMixerBridge::loudness() const {
     return out;
 }
 
+// 0.4: each duck mode keeps its own timing (m_duckTiming[m_duckIndex]).
 void AudioMixerBridge::setDuckAmount(double v) {
     v = std::clamp(v, -60.0, 0.0);
-    if (v != m_duckAmount) {
-        m_duckAmount = v;
+    DuckTiming& t = m_duckTiming[static_cast<std::size_t>(m_duckIndex)];
+    if (v != t.amount) {
+        t.amount = v;
         emit toolSettingsChanged();
     }
 }
 void AudioMixerBridge::setDuckAttack(double v) {
     v = std::clamp(v, 0.0, 10.0);
-    if (v != m_duckAttack) {
-        m_duckAttack = v;
+    DuckTiming& t = m_duckTiming[static_cast<std::size_t>(m_duckIndex)];
+    if (v != t.attack) {
+        t.attack = v;
         emit toolSettingsChanged();
     }
 }
 void AudioMixerBridge::setDuckRelease(double v) {
     v = std::clamp(v, 0.0, 10.0);
-    if (v != m_duckRelease) {
-        m_duckRelease = v;
+    DuckTiming& t = m_duckTiming[static_cast<std::size_t>(m_duckIndex)];
+    if (v != t.release) {
+        t.release = v;
         emit toolSettingsChanged();
     }
 }
 void AudioMixerBridge::setDuckHold(double v) {
     v = std::clamp(v, 0.0, 10.0);
-    if (v != m_duckHold) {
-        m_duckHold = v;
+    DuckTiming& t = m_duckTiming[static_cast<std::size_t>(m_duckIndex)];
+    if (v != t.hold) {
+        t.hold = v;
         emit toolSettingsChanged();
     }
+}
+
+QString AudioMixerBridge::duckMode() const {
+    return m_duckIndex == 1 ? QStringLiteral("gameUnderVoice") : QStringLiteral("default");
+}
+
+void AudioMixerBridge::setDuckMode(const QString& mode) {
+    int index = 0;
+    if (mode == QLatin1String("gameUnderVoice"))
+        index = 1;
+    else if (mode != QLatin1String("default"))
+        return;
+    m_duckModeChosen = true; // the pick sticks until the current sequence changes
+    if (index == m_duckIndex)
+        return;
+    m_duckIndex = index;
+    emit duckChanged();
+    emit toolSettingsChanged(); // the timing of the other mode
+}
+
+void AudioMixerBridge::setDuckIncludeMusic(bool on) {
+    if (on == m_duckIncludeMusic)
+        return;
+    m_duckIncludeMusic = on;
+    updateDuckTracks();
+    emit duckChanged();
+}
+
+void AudioMixerBridge::updateDuckTracks() {
+    const SequencePtr seq = m_controller ? m_controller->currentSequence() : nullptr;
+    const SequenceId sequence = seq ? seq->id : SequenceId{};
+    bool changed = false;
+    if (sequence != m_duckSequence) {
+        m_duckSequence = sequence;
+        m_duckModeChosen = false; // another sequence: suggest again
+    }
+    QStringList voice;
+    QStringList game;
+    bool gameNamed = false; // an audio track named for the game ("Game", "Desktop Audio", ...)
+    if (seq) {
+        const auto nameOf = [&](TrackId id) {
+            for (std::size_t i = 0; i < seq->audioTracks.size(); ++i) {
+                const Track& t = *seq->audioTracks[i];
+                if (t.id == id)
+                    return t.name.empty() ? QStringLiteral("A%1").arg(i + 1) : QString::fromStdString(t.name);
+            }
+            return QString();
+        };
+        const audio::edit::GameVoiceTracks chosen = audio::edit::chooseGameVoiceTracks(*seq, m_duckIncludeMusic);
+        for (const TrackId id : chosen.voice)
+            voice << nameOf(id);
+        for (const TrackId id : chosen.game)
+            game << nameOf(id);
+        for (const TrackPtr& t : seq->audioTracks) {
+            const edit::SourceTrackName named = edit::sourceTrackName(t->name);
+            if (named.origin == edit::SourceTrackName::Origin::Recognised && named.name.starts_with("Game"))
+                gameNamed = true;
+        }
+    }
+    if (!m_duckModeChosen) {
+        const int suggested = gameNamed && !voice.isEmpty() ? 1 : 0;
+        if (suggested != m_duckIndex) {
+            m_duckIndex = suggested;
+            changed = true;
+            emit toolSettingsChanged();
+        }
+    }
+    const QVariantMap tracks{{QStringLiteral("voice"), voice}, {QStringLiteral("game"), game}};
+    if (tracks != m_gameTracks) {
+        m_gameTracks = tracks;
+        changed = true;
+    }
+    if (changed)
+        emit duckChanged();
 }
 void AudioMixerBridge::setDenoiseAmount(double v) {
     v = std::clamp(v, 0.0, 1.0);
@@ -1279,6 +1361,7 @@ void AudioMixerBridge::finishJob(const QString& kind, std::vector<command::Comma
         return;
     }
     if (kind == QLatin1String("normalize")) {
+        p.undoLabel = tx("Normalize Loudness").toStdString();
         p.title = tx("Normalize to %1 LUFS").arg(QLocale().toString(data.value("targetLufs", targetLufs()), 'f', 1));
         for (const Json& r : data.value("results", Json::array())) {
             const Json& before = r.value("before", Json::object());
@@ -1299,10 +1382,30 @@ void AudioMixerBridge::finishJob(const QString& kind, std::vector<command::Comma
         int keys = 0;
         for (const Json& c : clips)
             keys += c.value("keys", 0);
-        p.title = tx("Duck the music by %1 dB").arg(QLocale().toString(std::abs(m_duckAmount), 'f', 1));
-        p.info = tx("%n speech region(s), %1 volume keyframes on %2 music clip(s)", "", regions)
-                     .arg(keys)
-                     .arg(clips.size());
+        const double amount = std::abs(data.value("amountDb", duckAmount()));
+        if (data.value("preset", std::string()) == "gameUnderVoice") {
+            // 0.4: "Mic → ducks Game, Music · 4 speech regions, 12 volume keyframes on 2 clips"
+            const auto names = [](const Json& tracks) {
+                QStringList out;
+                for (const Json& t : tracks) {
+                    const std::string name = t.value("name", std::string());
+                    out << QString::fromStdString(name.empty() ? t.value("track", std::string()) : name);
+                }
+                return out.join(QStringLiteral(", "));
+            };
+            p.undoLabel = tx("Duck Game Under Voice").toStdString();
+            p.title = tx("Duck the game by %1 dB").arg(QLocale().toString(amount, 'f', 1));
+            p.info = tx("%1 → ducks %2 · %n speech region(s), %3 volume keyframes on %4 clip(s)", "", regions)
+                         .arg(names(data.value("dialogue", Json::array())), names(data.value("music", Json::array())))
+                         .arg(keys)
+                         .arg(clips.size());
+        } else {
+            p.undoLabel = tx("Auto-Duck Music").toStdString();
+            p.title = tx("Duck the music by %1 dB").arg(QLocale().toString(amount, 'f', 1));
+            p.info = tx("%n speech region(s), %1 volume keyframes on %2 music clip(s)", "", regions)
+                         .arg(keys)
+                         .arg(clips.size());
+        }
         p.rows.append(QVariantMap{{QStringLiteral("target"), tx("Speech regions")}, {QStringLiteral("value"), regions}});
         p.rows.append(QVariantMap{{QStringLiteral("target"), tx("Volume keyframes")}, {QStringLiteral("value"), keys}});
         showDuckPreview(*p.preview);
@@ -1363,7 +1466,13 @@ QString AudioMixerBridge::previewNormalize(const QString& scope) {
 QString AudioMixerBridge::previewAutoDuck() {
     command::CommandRequest request;
     request.command = "audio.autoDuck";
-    request.params = Json{{"amount", m_duckAmount}, {"attack", m_duckAttack}, {"release", m_duckRelease}, {"hold", m_duckHold}};
+    const DuckTiming& timing = m_duckTiming[static_cast<std::size_t>(m_duckIndex)];
+    request.params = Json{{"amount", timing.amount}, {"attack", timing.attack}, {"release", timing.release}, {"hold", timing.hold}};
+    if (m_duckIndex == 1) {
+        // 0.4: the gaming preset picks the voice and the game by track name (the timing sent still wins).
+        request.params["preset"] = "gameUnderVoice";
+        request.params["includeMusic"] = m_duckIncludeMusic;
+    }
     return startJob(QStringLiteral("autoDuck"), {request});
 }
 
@@ -1412,8 +1521,9 @@ QString AudioMixerBridge::applyPending() {
         setPending(std::nullopt);
         return tx("The project changed since the preview: preview it again");
     }
-    const std::string label = m_pending->kind == QLatin1String("normalize") ? tx("Normalize Loudness").toStdString()
-                                                                           : tx("Auto-Duck Music").toStdString();
+    const std::string label = !m_pending->undoLabel.empty()                  ? m_pending->undoLabel
+                              : m_pending->kind == QLatin1String("normalize") ? tx("Normalize Loudness").toStdString()
+                                                                              : tx("Auto-Duck Music").toStdString();
     const auto preview = m_pending->preview;
     setPending(std::nullopt);
     if (auto committed = m_controller->session().commit(label, *preview); !committed)

@@ -158,6 +158,11 @@ TEST_CASE("Only stepping-style commands auto-repeat", "[keymap][registry]") {
     const CommandRegistry& registry = CommandRegistry::builtin();
     CHECK(registry.find("transport.stepForward")->autoRepeat);
     CHECK(registry.find("timeline.nudgeClipLeft")->autoRepeat);
+    CHECK(registry.find("timeline.nudgeClipUp")->autoRepeat);   // 0.4
+    CHECK(registry.find("timeline.nudgeClipDown")->autoRepeat); // 0.4
+    CHECK(registry.find("clip.increaseVolume")->autoRepeat);    // 0.4: ] held keeps raising the level
+    CHECK_FALSE(registry.find("transport.playFromPlayheadToOut")->autoRepeat);
+    CHECK_FALSE(registry.find("marker.toggleRipple")->autoRepeat);
     CHECK(registry.find("sequence.zoomIn")->autoRepeat);
     CHECK(registry.find("edit.undo")->autoRepeat);
     CHECK_FALSE(registry.find("transport.playStop")->autoRepeat);

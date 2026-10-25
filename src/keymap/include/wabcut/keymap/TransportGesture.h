@@ -10,6 +10,9 @@
 //   hold K, tap J/L  StepFrames(-1 / +1)
 //   hold K, hold J/L SetSpeed(-1/4 / +1/4) while both are held
 //   release J/L or K during slow play: Stop
+//   Shift+L / Shift+J (0.4, Shuttle Slow Right / Left): SetSpeed(±1/4) and stays playing after the release
+//                    (latched); the next press the same way steps 1/4 -> 1/2 -> 1x and stays at 1x; a press while
+//                    stopped or going the other way starts at 1/4x that way. K, Space and J/L end or change it.
 //
 // The gesture is K-first: only a J/L that goes down while K is held takes part; pressing K always stops (also
 // during slow play). OS auto-repeat never climbs the ladder. A hold is recognised by the first auto-repeat
@@ -66,15 +69,19 @@ struct TransportIntent {
 
 class TransportGesture {
 public:
-    enum class Role { Backward, Stop, Forward }; ///< the J, K and L roles
+    /// The J, K and L roles; 0.4: Shift+J and Shift+L (latched slow shuttle).
+    enum class Role { Backward, Stop, Forward, SlowBackward, SlowForward };
 
     static constexpr std::chrono::milliseconds kDefaultHoldThreshold{300};
     static constexpr Rational kSlowSpeed{1, 4};
     static constexpr std::int32_t kMaxShuttleSpeed = 8;
+    /// 0.4: the slow shuttle's rungs (Shift+J / Shift+L), from a stop or the other direction: 1/4, 1/2, 1x.
+    static constexpr Rational kSlowLadder[] = {{1, 4}, {1, 2}, {1, 1}};
 
     explicit TransportGesture(std::chrono::milliseconds holdThreshold = kDefaultHoldThreshold);
 
-    /// The role of a shuttle command id (transport.shuttleBackward/Stop/Forward), nullopt for other commands.
+    /// The role of a shuttle command id (transport.shuttleBackward/Stop/Forward, 0.4: shuttleSlowBackward/Forward),
+    /// nullopt for other commands.
     static std::optional<Role> roleOf(std::string_view command);
 
     /// A key with `role` went down (`autoRepeat` = OS key repeat). `now` must come from the same monotonic
@@ -107,6 +114,8 @@ private:
     std::vector<TransportIntent> startSlow(int dir);
     std::vector<TransportIntent> stopAll();
     Rational nextRung(int dir) const;
+    /// 0.4: a Shift+J (-1) / Shift+L (+1) press: the next slow rung that way (latched; no release ends it).
+    std::vector<TransportIntent> slowStep(int dir);
 
     std::chrono::milliseconds m_holdThreshold;
     int m_stopKeysDown = 0;

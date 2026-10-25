@@ -3,8 +3,8 @@ import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls.Basic
 
-// Callouts > Browse: the built-in gaming templates (Graphics' "builtin" library: template.list's, category "gaming"),
-// Lottie stickers (animations imported with "Import Lottie sticker…", kept in the project's library as
+// Callouts > Browse: the built-in gaming templates (Graphics' "builtin" library: template.list's, category "gaming"), the
+// essay and documentary ones (0.4, category "essay": they take the project's brand kit colours and fonts), Lottie stickers (animations imported with "Import Lottie sticker…", kept in the project's library as
 // "lottie.<name>"), the project's other templates and the user's, searched by name, description or field, with live
 // thumbnails. A card is dragged onto the timeline, or added at the playhead with a double-click or Enter (its first
 // text layer selected, ready to type). "Save as template…" keeps the selected graphic with the fields chosen.
@@ -28,7 +28,12 @@ Item {
         "wabcut.gaming.circleCallout": qsTr("Circle callout"),
         "wabcut.gaming.webcamFrame": qsTr("Webcam frame"),
         "wabcut.gaming.endCard": qsTr("End card"),
-        "wabcut.gaming.intro": qsTr("Intro")
+        "wabcut.gaming.intro": qsTr("Intro"),
+        "wabcut.essay.nameTitle": qsTr("Name and title"),
+        "wabcut.essay.location": qsTr("Location and date"),
+        "wabcut.essay.quote": qsTr("Quote"),
+        "wabcut.essay.source": qsTr("Source"),
+        "wabcut.essay.chapterCard": qsTr("Chapter card")
     })
 
     function matches(t) {
@@ -49,7 +54,8 @@ Item {
     readonly property var builtinTemplates: Graphics.templates.filter(t => t.library === "builtin")
         .map(t => Object.assign({}, t, { name: root.builtinNames[t.id] ?? t.name })).filter(t => root.matches(t))
     readonly property var gamingTemplates: root.builtinTemplates.filter(t => t.category === "gaming")
-    readonly property var otherBuiltinTemplates: root.builtinTemplates.filter(t => t.category !== "gaming")
+    readonly property var essayTemplates: root.builtinTemplates.filter(t => t.category === "essay")
+    readonly property var otherBuiltinTemplates: root.builtinTemplates.filter(t => t.category !== "gaming" && t.category !== "essay")
     readonly property var stickerTemplates: Graphics.templates.filter(t => root.isSticker(t) && root.matches(t))
     readonly property var projectTemplates: Graphics.templates.filter(t => t.library === "project" && !root.isSticker(t)
                                                                            && root.matches(t))
@@ -108,8 +114,8 @@ Item {
                 Layout.fillWidth: true
                 iconName: "search"
                 clearOnEscape: true
-                placeholderText: qsTr("Search callouts")
-                Accessible.name: qsTr("Search callouts")
+                placeholderText: qsTr("Search graphics")
+                Accessible.name: qsTr("Search graphics")
                 onTextChanged: root.query = text
             }
             IconButton {
@@ -141,6 +147,15 @@ Item {
                     listName: "graphicsGamingTemplates"
                     templates: root.gamingTemplates
                     empty: root.query !== "" ? qsTr("No callout matches.") : qsTr("Gaming templates arrive with the next update.")
+                    onMenuRequested: key => root.openMenu(key)
+                }
+                // 0.4: essay and documentary graphics (name and title, location, quote, source, chapter card).
+                TemplateGroup {
+                    objectName: "calloutsEssay"
+                    visible: root.essayTemplates.length > 0
+                    title: qsTr("Essay & documentary")
+                    listName: "graphicsEssayTemplates"
+                    templates: root.essayTemplates
                     onMenuRequested: key => root.openMenu(key)
                 }
                 // Built-in templates of other categories (none yet), when there are some.

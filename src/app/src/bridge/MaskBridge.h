@@ -65,6 +65,9 @@ class MaskBridge : public QObject {
     Q_PROPERTY(QString target READ target WRITE setTarget NOTIFY stateChanged FINAL)
     /// The target's masks: [{key, name, shape, mode, inverted, enabled, tracked}]; key = "e12/3".
     Q_PROPERTY(QVariantList masks READ masks NOTIFY stateChanged FINAL)
+    /// 0.4: the clip's masks on every target (its opacity mask and every effect's local masks); 0 without a clip.
+    /// Effect Controls' Masks section opens on its own while it is > 0.
+    Q_PROPERTY(int maskCount READ maskCount NOTIFY stateChanged FINAL)
     Q_PROPERTY(QString selected READ selected WRITE select NOTIFY stateChanged FINAL)
     /// The selected mask's values at the playhead: {name, shape, mode, inverted, enabled, feather, expansion,
     /// opacity, animated: [keys]} (empty when none is selected).
@@ -113,6 +116,7 @@ public:
     QString target() const { return m_target; }
     void setTarget(const QString& effect);
     QVariantList masks() const { return m_masks; }
+    int maskCount() const { return m_maskCount; }
     QString selected() const { return m_selected; }
     void select(const QString& key);
     QVariantMap current() const { return m_current; }
@@ -237,6 +241,7 @@ private:
     QVariantList m_targets;
     QString m_target;
     QVariantList m_masks;
+    int m_maskCount = 0;
     QString m_selected;
     QVariantMap m_current;
     QString m_tool;

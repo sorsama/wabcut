@@ -9,6 +9,7 @@
 
 #include <wabcut/command/Command.h>
 #include <wabcut/media/Probe.h>
+#include <wabcut/model/EditOps.h>
 #include <wabcut/model/ProjectState.h>
 #include <wabcut/model/Time.h>
 #include <wabcut/model/Vfr.h>
@@ -166,6 +167,23 @@ QString GamingStartBridge::suggestedTrackName(int position) {
     }
 }
 
+QString GamingStartBridge::suggestedTrackName(const MediaInfo& info, int position) {
+    // 0.4: the names later drops of such a recording route by (edit::sourceTrackNames: the stream titles, else Game /
+    // Mic for two untitled streams with video, else Track 1, Track 2, ...); kept as they are (untranslated), so the
+    // tracks match the next recording.
+    const std::vector<edit::SourceTrackName> names = edit::sourceTrackNames(info);
+    if (position >= 0 && static_cast<std::size_t>(position) < names.size() &&
+        !names[static_cast<std::size_t>(position)].name.empty())
+        return QString::fromStdString(names[static_cast<std::size_t>(position)].name);
+    return suggestedTrackName(position); // a single untitled stream
+}
+
+QString GamingStartBridge::trackRoleOf(const QString& name) {
+    const edit::SourceTrackName named = edit::sourceTrackName(name.toStdString());
+    const std::string_view role = toString(named.role);
+    return QString::fromUtf8(role.data(), static_cast<qsizetype>(role.size()));
+}
+
 QVariantMap GamingStartBridge::describe(const MediaInfo& info, const QString& file) {
     const QFileInfo fileInfo(file);
     QVariantMap out{{QStringLiteral("ok"), false},
@@ -212,15 +230,41 @@ QVariantMap GamingStartBridge::describe(const MediaInfo& info, const QString& fi
         reasons << tr("%1 long").arg(durationText(seconds));
     const bool proxies = !reasons.isEmpty();
 
+    // 0.4: each stream's name from its title (as later drops route by), its role, and where the name comes from.
+    const std::vector<edit::SourceTrackName> names = edit::sourceTrackNames(info);
+    const auto originText = [](edit::SourceTrackName::Origin origin) {
+        switch (origin) {
+        case edit::SourceTrackName::Origin::Title:
+            return QStringLiteral("title");
+        case edit::SourceTrackName::Origin::Recognised:
+            return QStringLiteral("recognised");
+        case edit::SourceTrackName::Origin::Inferred:
+            return QStringLiteral("inferred");
+        case edit::SourceTrackName::Origin::None:
+            break;
+        }
+        return QStringLiteral("none");
+    };
     QVariantList audio;
     for (std::size_t i = 0; i < info.audio.size(); ++i) {
         const AudioStreamInfo& a = info.audio[i];
+        const QString suggested = suggestedTrackName(info, static_cast<int>(i));
         audio.append(QVariantMap{{QStringLiteral("index"), static_cast<int>(i)},
                                  {QStringLiteral("stream"), a.index},
                                  {QStringLiteral("channels"), a.channels},
                                  {QStringLiteral("layout"), layoutText(a)},
                                  {QStringLiteral("codec"), codecText(a.codec)},
-                                 {QStringLiteral("suggested"), suggestedTrackName(static_cast<int>(i))}});
+                                 {QStringLiteral("suggested"), suggested},
+                                 {QStringLiteral("title"), QString::fromStdString(a.title).trimmed()},
+                                 {QStringLiteral("role"), trackRoleOf(suggested)},
+                                 {QStringLiteral("origin"),
+                                  originText(i < names.size() ? names[i].origin : edit::SourceTrackName::Origin::None)}});
+    }
+    // OBS often records the full mix on Track 1: with 3+ streams and stream 1 untitled or "Track 1", say so.
+    bool mixHint = false;
+    if (info.audio.size() >= 3) {
+        const std::string& first = info.audio.front().title;
+        mixHint = QString::fromStdString(first).trimmed().isEmpty() || edit::sourceTrackName(first).name == "Track 1";
     }
 
     out.insert(QStringLiteral("ok"), true);
@@ -246,6 +290,7 @@ QVariantMap GamingStartBridge::describe(const MediaInfo& info, const QString& fi
                proxies ? tr("%1: proxies keep editing smooth; the export uses the original.").arg(reasons.join(QStringLiteral(", ")))
                        : QString());
     out.insert(QStringLiteral("audio"), audio);
+    out.insert(QStringLiteral("mixHint"), mixHint);
     return out;
 }
 
@@ -347,7 +392,7 @@ QString GamingStartBridge::create(const QString& name, const QUrl& folder, const
     for (std::size_t i = 0; i < given.size(); ++i) {
         if (!given[i])
             plan.append(QVariantMap{{QStringLiteral("index"), static_cast<int>(i)},
-                                    {QStringLiteral("name"), suggestedTrackName(static_cast<int>(i))},
+                                    {QStringLiteral("name"), suggestedTrackName(*m_info, static_cast<int>(i))},
                                     {QStringLiteral("include"), true}});
     }
 

@@ -444,3 +444,61 @@ TEST_CASE("Integer params above int64 are refused, never wrapped into an index",
     CHECK(h.errorOf("marker.remove", Json{{"index", 9223372036854775807LL}}) == "NotFound"); // fits: just no such marker
     CHECK(*h.state() == *before);
 }
+
+TEST_CASE("clip.move copies with copy true and rearranges with mode rearrange", "[command][edit][move]") {
+    SECTION("copy: the originals stay and createdIds lists the copies") {
+        Timeline tl(R"(
+            V1 tgt |AaaaBbbb....|
+            A1 tgt |AaaaBbbb....|
+        )");
+        tl.linkMatching();
+        CommandHarness h(std::move(tl));
+        const ProjectSnapshot before = h.state();
+        const ClipId b = h.clip("V1@4");
+        const auto r = h.ok("clip.move", Json{{"clips", Json::array({at("V1", 4)})}, {"delta", tc(4)}, {"copy", true}});
+        CHECK_SESSION(h, R"(
+            V1 |AaaaBbbbBbbb|
+            A1 |AaaaBbbbBbbb|
+        )");
+        CHECK(h.clip("V1@4") == b);
+        REQUIRE(r.createdIds.size() == 2);
+        CHECK(r.createdIds[0] == h.clip("V1@8").value);
+        CHECK(r.createdIds[1] == h.clip("A1@8").value);
+        CHECK(r.data["appliedDelta"]["timecode"] == tc(4));
+        CHECK(links(*h.state(), h.tl.seq) == "V1@0+A1@0 V1@4+A1@4 V1@8+A1@8");
+        CHECK(h.session.undoCount() == 1);
+        REQUIRE(h.session.undo().has_value());
+        CHECK(*h.state() == *before);
+
+        // Insert mode makes room; linked false copies one side.
+        h.ok("clip.move", Json{{"clips", Json::array({at("V1", 0)})}, {"delta", tc(4)}, {"copy", true},
+                               {"mode", "insert"}, {"linked", false}});
+        CHECK_SESSION(h, R"(
+            V1 |AaaaAaaaBbbb|
+            A1 |Aaaa....Bbbb|
+        )");
+    }
+    SECTION("rearrange: the old place closes and the drop opens") {
+        CommandHarness h(R"(
+            V1 tgt |AaaaBbbbCccc|
+        )");
+        const ProjectSnapshot before = h.state();
+        h.ok("clip.move", Json{{"clips", Json::array({at("V1", 0)})}, {"delta", tc(12)}, {"mode", "rearrange"}});
+        CHECK_SESSION(h, "V1 |BbbbCcccAaaa|");
+        CHECK(h.session.undoCount() == 1);
+        REQUIRE(h.session.undo().has_value());
+        CHECK(*h.state() == *before);
+        h.ok("clip.move", Json{{"clips", Json::array({at("V1", 0)})}, {"delta", tc(8)}, {"mode", "rearrange"}});
+        CHECK_SESSION(h, "V1 |BbbbAaaaCccc|"); // dropped at the cut after B: the two swap
+    }
+    SECTION("a rearranged copy is refused") {
+        CommandHarness h(R"(
+            V1 tgt |AaaaBbbb....|
+        )");
+        const ProjectSnapshot before = h.state();
+        CHECK(h.errorOf("clip.move", Json{{"clips", Json::array({at("V1", 0)})}, {"delta", tc(8)}, {"copy", true},
+                                          {"mode", "rearrange"}}) == "EditRejected");
+        CHECK(h.errorOf("clip.move", Json{{"clips", Json::array({at("V1", 0)})}, {"mode", "sideways"}}) == "InvalidParams");
+        CHECK(*h.state() == *before);
+    }
+}

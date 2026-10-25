@@ -179,3 +179,6 @@ target_sources(wabcut_app_tests PRIVATE test_qol_settings_export.cpp)
 # UX rework (stream T): typed playhead entry, gap selection, the track header menu, default transitions, Reveal in
 # Project, Library drops with marks, the Source Monitor drop and marker tooltips (C++ side), and their QML in the shell.
 target_sources(wabcut_app_tests PRIVATE test_timeline_qol.cpp test_timeline_qol_ui.cpp)
+# 0.4 (qol round): stream E's background work (export summary, quit guard, activity pill, keep awake, taskbar) and
+# stream B's keys and transport (nudge, clip volume keys, play around, paging, numpad timecode entry).
+target_sources(wabcut_app_tests PRIVATE test_background_work.cpp test_keys_transport.cpp)

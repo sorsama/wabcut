@@ -25,7 +25,11 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <QCoreApplication>
+#include <QGuiApplication>
+#include <QMouseEvent>
 #include <QQuickItem>
+#include <QStyleHints>
 
 #include <functional>
 
@@ -606,4 +610,162 @@ TEST_CASE("Masks UI: thumbnails of a matte redaction are redone when the matte t
     source->version = 12;                                 // the track was refined: same name, new mattes
     CHECK(redacted::keyOf(added->state, media) != first);
     render::setMatteSource(nullptr);
+}
+
+TEST_CASE("Masks UI: maskCount counts the opacity mask and local masks of every effect", "[app][masks]") {
+    MaskShell m;
+    MaskBridge& masks = *m.masks;
+    ProjectController& c = *m.controller;
+    CHECK(masks.maskCount() == 0);
+
+    // A local mask on the grade: 1 (the section opens for it, whatever target the panel shows).
+    REQUIRE(c.applyEditFn("Add Effect", [&](const ProjectState& s) {
+        const std::vector<ClipId> clips{m.clip};
+        return edit::addEffect(s, m.tl.seq, clips, std::string("wabcut.color.grade"));
+    }));
+    REQUIRE(waitFor([&] { return masks.targets().size() == 2; }));
+    masks.setTarget(masks.targets()[1].toMap().value(QStringLiteral("effect")).toString());
+    REQUIRE(masks.addMask(QStringLiteral("ellipse")));
+    CHECK(masks.maskCount() == 1);
+    masks.setTarget(QString());
+    CHECK(masks.masks().isEmpty()); // the opacity mask has none yet
+    CHECK(masks.maskCount() == 1);
+
+    // Plus a mask on the clip's opacity: 2.
+    REQUIRE(masks.addMask(QStringLiteral("rectangle")));
+    CHECK(masks.masks().size() == 1);
+    CHECK(masks.maskCount() == 2);
+    REQUIRE(c.undo());
+    REQUIRE(waitFor([&] { return masks.maskCount() == 1; }));
+
+    // No video clip: 0.
+    c.setSelection({});
+    c.setPlayhead(f(200));
+    REQUIRE(waitFor([&] { return masks.clip().isEmpty(); }));
+    CHECK(masks.maskCount() == 0);
+}
+
+TEST_CASE("Masks UI: the section is one row until the clip has a mask and remembers its toggle", "[app][masks][qml][screenshots]") {
+    resetSettings();
+    clearMessages();
+    Shell shell;
+    REQUIRE(shell.window != nullptr);
+    shell.theme->setProperty("reduceMotion", true);
+    shell.resize(kShotWidth, kShotHeight);
+    auto* controller = shell.engine.singletonInstance<ProjectController*>("Wabcut", "ProjectController");
+    auto* masks = shell.engine.singletonInstance<MaskBridge*>("Wabcut", "Masks");
+    REQUIRE(controller);
+    REQUIRE(masks);
+    Timeline tl("V1 |AaaaaaaaaaaaBbbbbbbbbbbb|\n"
+                "A1 |AaaaaaaaaaaaBbbbbbbbbbbb|");
+    tl.linkMatching();
+    controller->resetProject(tl.state, tl.seq);
+    const ClipId a = clipAt(*controller->snapshot(), tl.seq, "V1@0");
+    const ClipId b = clipAt(*controller->snapshot(), tl.seq, "V1@12");
+    controller->selectClipById(a, ProjectController::Replace);
+    controller->setPlayhead(Ticks{});
+    REQUIRE(waitFor([&] { return masks->clip() == clipKey(a); }));
+    const std::function<QQuickItem*(QQuickItem*, const QString&)> find = [&](QQuickItem* item, const QString& name) -> QQuickItem* {
+        if (item->objectName() == name)
+            return item;
+        for (QQuickItem* child : item->childItems()) {
+            if (QQuickItem* found = find(child, name))
+                return found;
+        }
+        return nullptr;
+    };
+    QQuickItem* section = nullptr;
+    REQUIRE(waitFor([&] {
+        section = find(shell.window->contentItem(), QStringLiteral("maskSection"));
+        return section && section->isVisible();
+    }));
+    QVariant row;
+    REQUIRE(QMetaObject::invokeMethod(shell.theme, "space", Q_RETURN_ARG(QVariant, row), Q_ARG(QVariant, 12)));
+    const double oneRow = row.toDouble();
+    REQUIRE(oneRow > 0);
+    QQuickItem* toggle = find(section, QStringLiteral("maskSectionToggle"));
+    QQuickItem* ellipse = find(section, QStringLiteral("maskToolEllipse"));
+    REQUIRE(toggle);
+    REQUIRE(ellipse);
+    const auto click = [&](QQuickItem* item) {
+        // A frame first: a hidden window places its layouts' items when it renders, so the toggle is where it shows.
+        REQUIRE_FALSE(shell.grab().isNull());
+        spin(QGuiApplication::styleHints()->mouseDoubleClickInterval() + 30); // two clicks, not a double-click
+        const QPointF p = item->mapToScene(QPointF(item->width() / 2, item->height() / 2));
+        QMouseEvent press(QEvent::MouseButtonPress, p, p, Qt::LeftButton, Qt::LeftButton, {});
+        QCoreApplication::sendEvent(shell.window.get(), &press);
+        QMouseEvent release(QEvent::MouseButtonRelease, p, p, Qt::LeftButton, Qt::NoButton, {});
+        QCoreApplication::sendEvent(shell.window.get(), &release);
+        spin(50);
+    };
+    // A hidden window lays its layouts out when it renders: a frame before a height is read.
+    const auto height = [&] {
+        REQUIRE_FALSE(shell.grab().isNull());
+        return section->height();
+    };
+
+    // A clip without a mask: one row (chevron, "Masks", the target), the tools hidden.
+    spin(100);
+    CHECK_FALSE(section->property("expanded").toBool());
+    CHECK(height() < oneRow);
+    CHECK_FALSE(ellipse->isVisible());
+    CHECK_FALSE(shell.preferences->property("masksExpanded").toBool());
+    {
+        const QImage image = shell.grab();
+        REQUIRE_FALSE(image.isNull());
+        const double dpr = image.devicePixelRatio();
+        QQuickItem* panel = shell.item("effectControls");
+        REQUIRE(panel != nullptr);
+        const QRectF r = panel->mapRectToScene(QRectF(0, 0, panel->width(), panel->height()));
+        REQUIRE(image.copy(QRectF(r.topLeft() * dpr, r.size() * dpr).toRect()).save(outputDir() + QStringLiteral("/masks-collapsed.png")));
+    }
+
+    // The chevron opens it, and it stays open (remembered) on another clip without a mask.
+    click(toggle);
+    CHECK(shell.preferences->property("masksExpanded").toBool());
+    CHECK(section->property("expanded").toBool());
+    CHECK(ellipse->isVisible());
+    controller->selectClipById(b, ProjectController::Replace);
+    REQUIRE(waitFor([&] { return masks->clip() == clipKey(b); }));
+    spin(50);
+    CHECK(section->property("expanded").toBool());
+    CHECK(height() > oneRow);
+    // Closed again: closed for every clip without a mask.
+    click(toggle);
+    CHECK_FALSE(shell.preferences->property("masksExpanded").toBool());
+    CHECK_FALSE(section->property("expanded").toBool());
+    CHECK(height() < oneRow);
+
+    // A mask on the closed clip opens it.
+    REQUIRE(masks->addMask(QStringLiteral("ellipse")));
+    REQUIRE(waitFor([&] { return masks->maskCount() == 1; }));
+    spin(50);
+    CHECK(section->property("expanded").toBool());
+    CHECK(height() > oneRow);
+    // Closing a clip that has masks hides them for this clip; arming a tool opens it again.
+    click(toggle);
+    CHECK_FALSE(section->property("expanded").toBool());
+    CHECK(section->property("collapsedFor").toString() == clipKey(b));
+    masks->setTool(QStringLiteral("pen"));
+    spin(50);
+    CHECK(section->property("expanded").toBool());
+    CHECK(section->property("collapsedFor").toString().isEmpty());
+    masks->setTool(QString());
+    // Another clip and back: the clip's masks show again.
+    click(toggle);
+    CHECK_FALSE(section->property("expanded").toBool());
+    CHECK(masks->maskCount() == 1);
+    controller->selectClipById(a, ProjectController::Replace);
+    REQUIRE(waitFor([&] { return masks->clip() == clipKey(a); }));
+    spin(50);
+    CHECK(section->property("collapsedFor").toString().isEmpty());
+    controller->selectClipById(b, ProjectController::Replace);
+    REQUIRE(waitFor([&] { return masks->clip() == clipKey(b); }));
+    spin(50);
+    CHECK(masks->maskCount() == 1);
+    CHECK(section->property("expanded").toBool());
+
+    const QStringList messages = takeMessages();
+    INFO(join(messages));
+    CHECK(messages.isEmpty());
 }

@@ -10,6 +10,7 @@
 #include <wabcut/color/Looks.h>
 #include <wabcut/color/Scopes.h>
 #include <wabcut/model/EditOps.h>
+#include <wabcut/model/FinishingOps.h>
 #include <wabcut/model/Nesting.h>
 
 #include <catch2/catch_approx.hpp>
@@ -19,6 +20,9 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <map>
+#include <string>
+#include <vector>
 
 using namespace wabcut;
 using namespace wabcut::color;
@@ -578,4 +582,190 @@ TEST_CASE("color.match with faceDetection matches the faces' skin tones first (P
     REQUIRE(refused.error);
     CHECK(refused.error->message.find("Face Detection needs the face detector") != std::string::npos);
     CHECK(bare.session.undoCount() == 0);
+}
+
+// ---- 0.4: color.grade.copy (Apply Grade) ------------------------------------------------------------------------------
+
+namespace {
+
+const Clip& clipIn(const ColorHarness& c, ClipId id) { return c.h.state()->findSequence(c.h.tl.seq)->findClip(id)->clip(); }
+
+std::vector<const EffectInstance*> gradesOf(const Clip& clip) {
+    std::vector<const EffectInstance*> out;
+    for (const EffectInstance& e : clip.effects()) {
+        if (e.effect == kGradeEffect) {
+            out.push_back(&e);
+        }
+    }
+    return out;
+}
+
+/// A1's grade: exposure 0.5, a master curve, a look and an animated saturation (100 -> 140 over its first 3 frames).
+void gradeSource(ColorHarness& c, ClipId a1) {
+    c.h.ok("color.grade.set", Json{{"clip", a1.value},
+                                   {"params", Json{{"basic.exposure", 0.5}}},
+                                   {"curves", Json{{"master", Json::array({Json::array({0, 0}), Json::array({0.5, 0.62}), Json::array({1, 1})})}}},
+                                   {"look", "builtin:teal-orange"}});
+    const ProjectSnapshot snap = c.h.state();
+    const Clip& clip = snap->findSequence(c.h.tl.seq)->findClip(a1)->clip();
+    const EffectInstanceId grade = gradeOf(clip)->id;
+    Curve saturation;
+    saturation.keys.push_back(Keyframe{clip.curveTimeAt(clip.start()), 100.0, Interpolation::Linear, {}, {}});
+    saturation.keys.push_back(Keyframe{clip.curveTimeAt(clip.start() + f(3)), 140.0, Interpolation::Linear, {}, {}});
+    const SequenceId seq = c.h.tl.seq;
+    REQUIRE(c.h.session.apply("Saturation", [&](const ProjectState& s) {
+        return edit::setParameter(s, seq, a1, edit::ParamRef::ofEffect(grade, "basic.saturation"), ParamValue(saturation));
+    }));
+}
+
+/// The two clips' grades look the same at the same times from their starts (keys included).
+void checkSameGrade(const Clip& from, const EffectInstance& a, const Clip& to, const EffectInstance& b) {
+    CHECK(a.enabled == b.enabled);
+    CHECK(a.data == b.data);
+    for (int frame = 0; frame < 4; ++frame) {
+        INFO("frame " << frame);
+        const GradeParams pa = gradeParamsAt(a, from.curveTimeAt(from.start() + f(frame)));
+        const GradeParams pb = gradeParamsAt(b, to.curveTimeAt(to.start() + f(frame)));
+        CHECK(pb.exposure == Approx(pa.exposure));
+        CHECK(pb.saturation == Approx(pa.saturation));
+        CHECK(pb.contrast == Approx(pa.contrast));
+    }
+    const ParamValue* sa = a.find("basic.saturation");
+    const ParamValue* sb = b.find("basic.saturation");
+    REQUIRE(sa);
+    REQUIRE(sb);
+    REQUIRE(sa->curve());
+    REQUIRE(sb->curve());
+    CHECK(sb->curve()->keys.size() == sa->curve()->keys.size());
+}
+
+} // namespace
+
+TEST_CASE("color.grade.copy replaces the targets grade in one undo step", "[color][commands][gradecopy]") {
+    // A1, A2 and A3 are clips of media A (A2 already graded), B1 of media B.
+    ColorHarness c(R"(
+        V1 tgt |AaaaA4aaBbbbA8aa|
+    )");
+    const ClipId a1 = c.h.clip("V1@0");
+    const ClipId a2 = c.h.clip("V1@4");
+    const ClipId b1 = c.h.clip("V1@8");
+    c.h.ok("color.grade.set", Json{{"clip", a2.value}, {"params", Json{{"basic.exposure", -1.0}, {"basic.contrast", 30}}}});
+    const EffectInstanceId a2Grade = c.grade("V1@4")->id;
+    gradeSource(c, a1);
+
+    const auto before = c.h.session.undoCount();
+    const auto copied = c.h.ok("color.grade.copy", Json{{"from", a1.value}, {"clips", Json::array({a2.value, b1.value})}});
+    CHECK(c.h.session.undoCount() == before + 1);
+    CHECK(copied.data["changed"] == 2);
+    CHECK(copied.data["from"] == a1.value);
+    CHECK(copied.data["scope"] == "clips");
+    REQUIRE(copied.data["clips"].size() == 2);
+    CHECK(copied.data["clips"][0]["result"] == "replaced");
+    CHECK(copied.data["clips"][1]["result"] == "added");
+
+    // Each target has exactly one grade equal to A1's, keys included; A2 keeps its instance (id and place).
+    const ProjectSnapshot snap = c.h.state();
+    const Sequence& seq = *snap->findSequence(c.h.tl.seq);
+    const Clip& from = seq.findClip(a1)->clip();
+    for (const ClipId id : {a2, b1}) {
+        INFO(id.value);
+        const Clip& to = seq.findClip(id)->clip();
+        const auto grades = gradesOf(to);
+        REQUIRE(grades.size() == 1);
+        checkSameGrade(from, *gradeOf(from), to, *grades.front());
+    }
+    CHECK(c.grade("V1@4")->id == a2Grade);
+    CHECK(c.params("V1@4").contrast == Approx(0.0)); // replaced, not merged
+    CHECK_FALSE(c.grade("V1@12"));                  // A3 was not named
+
+    // One undo gives A2 its old grade back and takes B1's away.
+    REQUIRE(c.h.session.undo());
+    CHECK(c.params("V1@4").exposure == Approx(-1.0));
+    CHECK(c.params("V1@4").contrast == Approx(30.0));
+    CHECK_FALSE(c.grade("V1@8"));
+
+    // A dry run changes nothing.
+    const auto revision = c.h.session.revision();
+    const auto dry = c.h.run(Json{{"command", "color.grade.copy"}, {"dryRun", true},
+                                  {"params", Json{{"from", a1.value}, {"clips", Json::array({a2.value})}}}});
+    REQUIRE(dry.ok());
+    CHECK(c.h.session.revision() == revision);
+}
+
+TEST_CASE("color.grade.copy scope media reaches every clip of the source and skips locked tracks", "[color][commands][gradecopy]") {
+    ColorHarness c(R"(
+        V2 lock |....A2aa........|
+        V1 tgt  |AaaaA4aaBbbbA8aa|
+    )");
+    const ClipId a1 = c.h.clip("V1@0");
+    const ClipId a2 = c.h.clip("V1@4");
+    const ClipId b1 = c.h.clip("V1@8");
+    const ClipId a3 = c.h.clip("V1@12");
+    const ClipId locked = c.h.clip("V2@4");
+    gradeSource(c, a1);
+
+    const auto result = c.h.ok("color.grade.copy", Json{{"from", a1.value}, {"scope", "media"}});
+    CHECK(result.data["scope"] == "media");
+    CHECK(result.data["changed"] == 2);
+    std::map<std::uint64_t, std::string> outcome;
+    for (const Json& r : result.data["clips"]) {
+        outcome[r["clip"].get<std::uint64_t>()] = r["result"].get<std::string>();
+    }
+    CHECK(outcome.size() == 3); // A2, A3 and the A clip on the locked V2; never B1 or A1 itself
+    CHECK(outcome[a2.value] == "added");
+    CHECK(outcome[a3.value] == "added");
+    CHECK(outcome[locked.value] == "skipped");
+    CHECK_FALSE(outcome.contains(b1.value));
+    CHECK_FALSE(outcome.contains(a1.value));
+    CHECK(c.grade("V1@4"));
+    CHECK(c.grade("V1@12"));
+    CHECK_FALSE(c.grade("V1@8"));
+    CHECK_FALSE(c.grade("V2@4"));
+    // A source no other clip shows: refused, nothing changed.
+    c.h.ok("color.grade.set", Json{{"clip", b1.value}, {"params", Json{{"basic.exposure", 0.2}}}});
+    const auto undos = c.h.session.undoCount();
+    CHECK(c.h.errorOf("color.grade.copy", Json{{"from", b1.value}, {"scope", "media"}}) == "EditRejected");
+    CHECK(c.h.session.undoCount() == undos);
+}
+
+TEST_CASE("color.grade.copy refuses a source without a grade and keeps the target masks", "[color][commands][gradecopy]") {
+    ColorHarness c(R"(
+        V1 tgt |AaaaA4aaBbbb|
+        A1 tgt |AaaaA4aaBbbb|
+    )");
+    const ClipId a1 = c.h.clip("V1@0");
+    const ClipId a2 = c.h.clip("V1@4");
+    const ClipId b1 = c.h.clip("V1@8");
+    const ClipId audio = c.h.clip("A1@4");
+    // No grade to copy.
+    const auto undos = c.h.session.undoCount();
+    CHECK(c.h.errorOf("color.grade.copy", Json{{"from", b1.value}, {"clips", Json::array({a2.value})}}) == "EditRejected");
+    CHECK(c.h.session.undoCount() == undos);
+
+    // A2's grade has a local mask (drawn for that shot): it stays when A1's grade replaces the grade.
+    c.h.ok("color.grade.set", Json{{"clip", a1.value}, {"params", Json{{"basic.exposure", 0.3}}}});
+    CHECK(c.h.errorOf("color.grade.copy", Json{{"from", a1.value}}) == "InvalidParams"); // no clips, no scope media
+    CHECK(c.h.errorOf("color.grade.copy", Json{{"from", a1.value}, {"scope", "track"}}) == "InvalidParams");
+    c.h.ok("color.grade.set", Json{{"clip", a2.value}, {"params", Json{{"basic.exposure", -0.4}}}});
+    c.h.ok("mask.add", Json{{"clip", a2.value}, {"effect", c.grade("V1@4")->id.value}, {"shape", "ellipse"}});
+    REQUIRE(c.grade("V1@4")->masks.size() == 1);
+    c.h.ok("color.grade.copy", Json{{"from", a1.value}, {"clips", Json::array({a2.value})}});
+    CHECK(c.params("V1@4").exposure == Approx(0.3));
+    CHECK(c.grade("V1@4")->masks.size() == 1);
+    // The same again changes nothing: refused, no undo step.
+    const auto same = c.h.session.undoCount();
+    CHECK(c.h.errorOf("color.grade.copy", Json{{"from", a1.value}, {"clips", Json::array({a2.value})}}) == "EditRejected");
+    CHECK(c.h.session.undoCount() == same);
+    // Audio clips and the source itself are skipped; with nothing else to change, refused.
+    const auto skipped = c.h.run(Json{{"command", "color.grade.copy"},
+                                      {"params", Json{{"from", a1.value}, {"clips", Json::array({audio.value, a1.value})}}}});
+    REQUIRE_FALSE(skipped.ok());
+    CHECK(skipped.error->code == command::ErrorCode::EditRejected);
+
+    // replace: false stacks another grade, as Paste Attributes does.
+    c.h.ok("color.grade.copy", Json{{"from", a1.value}, {"clips", Json::array({b1.value})}});
+    CHECK(gradesOf(clipIn(c, b1)).size() == 1);
+    const auto stacked = c.h.ok("color.grade.copy", Json{{"from", a1.value}, {"clips", Json::array({b1.value})}, {"replace", false}});
+    CHECK(stacked.data["clips"][0]["result"] == "added");
+    CHECK(gradesOf(clipIn(c, b1)).size() == 2);
 }

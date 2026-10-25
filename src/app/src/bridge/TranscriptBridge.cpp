@@ -17,10 +17,16 @@
 #include <wabcut/model/ChangeSet.h>
 #include <wabcut/model/MediaLocator.h>
 
+#include <QClipboard>
 #include <QCoreApplication>
 #include <QDir>
+#include <QGuiApplication>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QQmlEngine>
+#include <QSettings>
 #include <QStandardPaths>
+#include <QTextBoundaryFinder>
 
 #include <algorithm>
 #include <optional>
@@ -48,6 +54,54 @@ Json rangesJson(const std::vector<ai::edit::WordRange>& ranges) {
     for (const ai::edit::WordRange& r : ranges)
         out.push_back(Json::array({r.first, r.last}));
     return out;
+}
+
+// ---- 0.4: voice tracks (transcribe-voice-tracks) ----
+
+/// QSettings key of the remembered track choices: a JSON object of lower-case track name -> bool (C++ only).
+constexpr const char* kTrackChoicesKey = "transcript/trackChoices";
+
+/// A track name for matching: lower case, letters and digits only ("Mic/Aux 2" -> "micaux2").
+QString matchName(const std::string& name) {
+    QString out;
+    for (const QChar ch : QString::fromStdString(name).toLower()) {
+        if (ch.isLetterOrNumber())
+            out += ch;
+    }
+    return out;
+}
+
+/// Voice chat (Discord, party chat, TeamSpeak: the names sourceTrackName gives them): friends' voices, left out.
+bool isVoiceChatName(const QString& n) {
+    return n.startsWith(QLatin1String("discord")) || n.startsWith(QLatin1String("voicechat"))
+        || n.startsWith(QLatin1String("partychat")) || n.startsWith(QLatin1String("teamspeak"))
+        || n.startsWith(QLatin1String("ts3")) || n.startsWith(QLatin1String("chat"));
+}
+
+/// A creator's own voice by name: Mic, Microphone, Voice, Commentary, Narration, VO.
+bool isVoiceName(const QString& n) {
+    return n.startsWith(QLatin1String("mic")) || (n.startsWith(QLatin1String("voice")) && !isVoiceChatName(n))
+        || n.startsWith(QLatin1String("commentary")) || n.startsWith(QLatin1String("narration"))
+        || n == QLatin1String("vo") || n.startsWith(QLatin1String("voiceover"));
+}
+
+/// The key a track's choice is remembered under: its name in lower case (OBS recordings repeat their names), else its
+/// position ("a2") for an unnamed track.
+QString choiceKey(const Track& track, int index) {
+    const QString name = QString::fromStdString(track.name).trimmed().toLower();
+    return name.isEmpty() ? QStringLiteral("a%1").arg(index + 1) : name;
+}
+
+QJsonObject storedTrackChoices() {
+    const QByteArray text = QSettings().value(QLatin1String(kTrackChoicesKey)).toString().toUtf8();
+    const QJsonDocument doc = QJsonDocument::fromJson(text);
+    return doc.isObject() ? doc.object() : QJsonObject();
+}
+
+/// The default choice: the voice tracks (Dialogue role or a voice name), unmuted and not voice chat.
+bool defaultVoice(const Track& track) {
+    const QString n = matchName(track.name);
+    return !track.muted && !isVoiceChatName(n) && (track.role == TrackRole::Dialogue || isVoiceName(n));
 }
 } // namespace
 
@@ -228,6 +282,7 @@ void TranscriptBridge::rebuild() {
     updateHighlights();
     updateCurrentWord();
     bumpMarks();
+    rebuildAudioTracks();
     emit transcriptChanged();
     emit reviewChanged();
 }
@@ -253,8 +308,18 @@ void TranscriptBridge::onModelChanged() {
         changes = &*computed;
     }
     m_mapped = next;
-    if (changes->sequence(m_transcript.sequence()) == nullptr && changes->addedMedia.empty() && changes->removedMedia.empty())
+    const SequenceChange* sequenceChange = changes->sequence(m_transcript.sequence());
+    if (sequenceChange == nullptr && changes->addedMedia.empty() && changes->removedMedia.empty())
         return;
+    // 0.4: only In/Out, markers or captions changed (Mark In and Out, Add Marker from the words, their undo): the words
+    // are the same, so the selection stays.
+    if (sequenceChange && changes->sequences.size() == 1 && sequenceChange->tracks.empty()
+        && sequenceChange->addedClips.empty() && sequenceChange->removedClips.empty()
+        && sequenceChange->modifiedClips.empty() && !sequenceChange->trackListChanged && !sequenceChange->settingsChanged
+        && changes->addedMedia.empty() && changes->removedMedia.empty() && changes->modifiedMedia.empty()
+        && !changes->redactionsChanged && !changes->speakersChanged && !changes->transcriptEditsChanged)
+        return;
+    rebuildAudioTracks(); // 0.4: a track renamed, muted, added or removed
     // Incremental: clips that only moved shift their words; changed clips are mapped again.
     m_transcript.update(*next, *changes, *m_chain);
     m_selection.clear();
@@ -479,6 +544,14 @@ QString TranscriptBridge::selectedText() const {
     for (std::size_t i = ranges.front().first; i <= ranges.front().last; ++i)
         words << fromStd(std::string(m_transcript.text(i)));
     return words.join(QLatin1Char(' '));
+}
+
+QString TranscriptBridge::selectionSearchText() const {
+    // As shown (and as search() matches): spaces only where the language writes them. Several runs: the first one.
+    const auto ranges = selectionRanges();
+    if (ranges.empty())
+        return {};
+    return fromStd(m_transcript.textOf(ranges.front().first, ranges.front().last));
 }
 
 QString TranscriptBridge::correctSelection(const QString& text) {
@@ -810,7 +883,12 @@ std::vector<TranscriptBridge::JobItem> TranscriptBridge::jobItems(const QString&
             wanted.insert(c.value);
     }
     std::set<std::pair<std::uint64_t, int>> seen;
-    for (const TrackPtr& track : seq->audioTracks) {
+    for (std::size_t t = 0; t < seq->audioTracks.size(); ++t) {
+        const TrackPtr& track = seq->audioTracks[t];
+        // 0.4: only the chosen (voice) tracks, for both scopes: a selected clip's linked partners on other tracks
+        // (game audio, voice chat) are left out unless their track is chosen.
+        if (!trackChosen(*track, static_cast<int>(t)))
+            continue;
         for (const Clip& clip : track->clips) {
             if (!wanted.empty() && !wanted.contains(clip.id.value))
                 continue;
@@ -847,8 +925,44 @@ QString TranscriptBridge::transcribe(const QString& scope, bool allowOnce) {
     if (m_provider.startsWith(QLatin1String("cloud:")) && m_ai && !allowOnce &&
         m_ai->consentPrompt(m_provider.mid(6), QStringLiteral("transcribe"), QString()).value(QStringLiteral("needed")).toBool())
         return tr("Cloud transcription needs your consent first: nothing was uploaded");
+    // 0.4: only chosen tracks are transcribed; with none chosen there is nothing to send.
+    if (const SequencePtr seq = m_controller ? m_controller->currentSequence() : nullptr; seq && !seq->audioTracks.empty()) {
+        bool any = false;
+        for (std::size_t t = 0; t < seq->audioTracks.size() && !any; ++t)
+            any = trackChosen(*seq->audioTracks[t], static_cast<int>(t));
+        if (!any) {
+            setMessage(tr("Choose at least one audio track"));
+            return m_message;
+        }
+    }
     std::vector<JobItem> items = jobItems(scope);
     if (items.empty()) {
+        // Selected clips heard only on tracks switched off under Tracks: say so, and which tracks (fix round 1: the
+        // message below blamed transcripts or missing files).
+        const SequencePtr seq = m_controller ? m_controller->currentSequence() : nullptr;
+        if (seq && scope == QLatin1String("selection")) {
+            std::set<std::uint64_t> wanted;
+            const std::vector<ClipId> clips = m_controller->selection();
+            for (ClipId c : edit::withLinkedClips(*seq, clips))
+                wanted.insert(c.value);
+            QStringList off;
+            bool onChosen = false;
+            for (std::size_t t = 0; t < seq->audioTracks.size() && !wanted.empty(); ++t) {
+                const Track& track = *seq->audioTracks[t];
+                if (std::none_of(track.clips.begin(), track.clips.end(), [&](const Clip& c) { return wanted.contains(c.id.value); }))
+                    continue;
+                if (trackChosen(track, static_cast<int>(t)))
+                    onChosen = true;
+                else
+                    off << (track.name.empty() ? QStringLiteral("A%1").arg(static_cast<int>(t) + 1)
+                                               : QStringLiteral("A%1 · %2").arg(static_cast<int>(t) + 1).arg(QString::fromStdString(track.name)));
+            }
+            if (!onChosen && !off.isEmpty()) {
+                setMessage(tr("Nothing to transcribe: the selected clips are on tracks switched off under Tracks (%1)")
+                               .arg(off.join(QStringLiteral(", "))));
+                return m_message;
+            }
+        }
         setMessage(tr("Nothing to transcribe: every clip here has a transcript, or its media file is missing"));
         return m_message;
     }
@@ -1003,6 +1117,254 @@ void TranscriptBridge::cancelTranscription() {
     m_job.request_stop();
     m_jobText = tr("Cancelling…");
     emit jobChanged();
+}
+
+// ---- 0.4: follow the playhead and the word menu ---------------------------------------------------------
+
+int TranscriptBridge::paragraphOfWord(int word) const {
+    const auto& rows = m_paragraphs->paragraphs();
+    if (word < 0 || rows.empty())
+        return -1;
+    // The first paragraph whose last word is at or after `word` (paragraphs are in word order, without gaps).
+    const auto it = std::lower_bound(rows.begin(), rows.end(), word,
+                                     [](const TranscriptParagraphModel::Paragraph& p, int w) { return p.last < w; });
+    if (it == rows.end() || it->first > word)
+        return -1;
+    return static_cast<int>(it - rows.begin());
+}
+
+int TranscriptBridge::selectionFirst() const {
+    return m_selection.empty() ? -1 : static_cast<int>(*m_selection.begin());
+}
+
+std::optional<TimeRange> TranscriptBridge::selectionSpan() const {
+    if (m_selection.empty() || !m_controller)
+        return std::nullopt;
+    const SequencePtr seq = m_controller->currentSequence();
+    const std::size_t first = *m_selection.begin();
+    const std::size_t last = *m_selection.rbegin();
+    if (!seq || last >= m_transcript.size())
+        return std::nullopt;
+    const Rate rate = seq->frameRate;
+    // From the start of the first word's frame to the end of the last word's last frame.
+    const Ticks start = framesToTicks(ticksToFrames(m_transcript[first].timeline.start, rate), rate);
+    const Ticks lastTick = std::max(m_transcript[last].timeline.end() - Ticks{1}, m_transcript[last].timeline.start);
+    const Ticks end = framesToTicks(ticksToFrames(lastTick, rate) + 1, rate);
+    if (end <= start)
+        return std::nullopt;
+    return TimeRange::fromStartEnd(start, end);
+}
+
+QString TranscriptBridge::copySelection(bool withTimecodes) {
+    if (m_selection.empty()) {
+        setMessage(tr("Select words first"));
+        return m_message;
+    }
+    QStringList lines;
+    const auto& paragraphs = m_paragraphs->paragraphs();
+    for (const ai::edit::WordRange& r : selectionRanges()) {
+        if (!withTimecodes) {
+            lines << fromStd(m_transcript.textOf(r.first, r.last));
+            continue;
+        }
+        // One line per run and paragraph: "[00:01:02:03] Speaker 1: text" (no speaker when it is not known).
+        for (const TranscriptParagraphModel::Paragraph& p : paragraphs) {
+            const std::size_t a = std::max(r.first, static_cast<std::size_t>(std::max(p.first, 0)));
+            const std::size_t b = p.last < 0 ? 0 : std::min(r.last, static_cast<std::size_t>(p.last));
+            if (p.last < 0 || a > b)
+                continue;
+            QString line = QLatin1Char('[') + (m_controller ? m_controller->formatTimecode(m_transcript[a].timeline.start) : QString())
+                         + QStringLiteral("] ");
+            if (!p.speaker.isEmpty())
+                line += p.speaker + QStringLiteral(": ");
+            lines << line + fromStd(m_transcript.textOf(a, b));
+        }
+    }
+    const QString text = lines.join(QLatin1Char('\n'));
+    QClipboard* clipboard = qobject_cast<QGuiApplication*>(QCoreApplication::instance()) ? QGuiApplication::clipboard() : nullptr;
+    if (!clipboard) {
+        setMessage(tr("The clipboard is not available"));
+        return m_message;
+    }
+    clipboard->setText(text);
+    setMessage({});
+    return {};
+}
+
+QString TranscriptBridge::markSelection() {
+    const auto span = selectionSpan();
+    if (!span) {
+        setMessage(tr("Select words first"));
+        return m_message;
+    }
+    const SequenceId seq = m_controller->currentSequenceId();
+    const Ticks in = span->start;
+    const Ticks lastFrame = span->end() - m_controller->frameTicks();
+    const bool ok = m_controller->applyEditFn(
+        QT_TRANSLATE_NOOP("wabcut::app::ProjectController", "Mark In and Out"), [&](const ProjectState& state) -> edit::EditOutcome {
+            auto marked = edit::markIn(state, seq, in);
+            if (!marked)
+                return marked;
+            return edit::markOut(marked->state, seq, lastFrame);
+        });
+    if (!ok) {
+        setMessage(m_controller->lastError());
+        return m_message;
+    }
+    setMessage({});
+    return {};
+}
+
+QString TranscriptBridge::addMarkerFromSelection(bool chapter) {
+    const auto span = selectionSpan();
+    if (!span) {
+        setMessage(tr("Select words first"));
+        return m_message;
+    }
+    const std::size_t first = *m_selection.begin();
+    const std::size_t last = *m_selection.rbegin();
+    const QString text = fromStd(m_transcript.textOf(first, last)).simplified();
+    // The name: the first ~60 characters, cut at a word, with "…"; the comment: the whole text.
+    QString name = text;
+    constexpr qsizetype kNameLength = 60;
+    if (name.size() > kNameLength) {
+        qsizetype cut = name.lastIndexOf(QLatin1Char(' '), kNameLength);
+        if (cut < kNameLength / 2) {
+            // One long word, or Thai (written without spaces): cut between grapheme clusters, never inside one.
+            QTextBoundaryFinder finder(QTextBoundaryFinder::Grapheme, name);
+            finder.setPosition(kNameLength);
+            if (!finder.isAtBoundary())
+                finder.toPreviousBoundary();
+            cut = finder.position() > 0 ? finder.position() : kNameLength;
+        }
+        name = name.left(cut).trimmed() + QChar(0x2026);
+    }
+    Json params{{"time", span->start.value}, {"name", name.toStdString()}, {"comment", text.toStdString()}};
+    if (chapter)
+        params["type"] = "chapter";
+    else
+        params["duration"] = span->duration.value;
+    const command::CommandResult result = run("marker.add", std::move(params));
+    if (!result.ok()) {
+        setMessage(fromStd(result.error->message));
+        return m_message;
+    }
+    setMessage({});
+    return {};
+}
+
+QString TranscriptBridge::liftSelection() {
+    const auto span = selectionSpan();
+    const SequencePtr seq = m_controller ? m_controller->currentSequence() : nullptr;
+    if (!span || !seq) {
+        setMessage(tr("Select words first"));
+        return m_message;
+    }
+    const std::size_t first = *m_selection.begin();
+    const std::size_t last = *m_selection.rbegin();
+    // The tracks the words are heard on, plus their linked partners' tracks (the video too).
+    std::vector<TrackId> tracks;
+    const auto addTrack = [&](TrackId id) {
+        if (id.isValid() && std::find(tracks.begin(), tracks.end(), id) == tracks.end())
+            tracks.push_back(id);
+    };
+    for (std::size_t i = first; i <= last; ++i)
+        addTrack(m_transcript[i].track);
+    const std::vector<ClipId> clips = m_transcript.clipsFor(first, last, *seq);
+    for (const ClipId clip : edit::withLinkedClips(*seq, clips)) {
+        if (const auto loc = seq->findClip(clip))
+            addTrack(loc->track->id);
+    }
+    // A locked track would keep its part of the words: refuse the whole lift (nothing changes).
+    for (const TrackId id : tracks) {
+        if (const Track* track = seq->findTrack(id); track && track->locked) {
+            setMessage(tr("A locked track would change"));
+            return m_message;
+        }
+    }
+    Json ids = Json::array();
+    for (const TrackId id : tracks)
+        ids.push_back(id.value);
+    cancelPreview();
+    // sequence.lift: one undo step "Lift"; it clears In/Out (Premiere's Lift); the playhead parks at the gap's start.
+    const command::CommandResult result =
+        run("sequence.lift", Json{{"in", span->start.value}, {"out", span->end().value}, {"tracks", std::move(ids)}});
+    if (!result.ok()) {
+        setMessage(result.error->code == command::ErrorCode::LockedTrack ? tr("A locked track would change")
+                                                                         : fromStd(result.error->message));
+        return m_message;
+    }
+    m_controller->setPlayhead(span->start);
+    setMessage({});
+    return {};
+}
+
+// ---- 0.4: voice tracks --------------------------------------------------------------------------------
+
+bool TranscriptBridge::trackChosen(const Track& track, int index) const {
+    const QJsonObject stored = storedTrackChoices();
+    const QString key = choiceKey(track, index);
+    if (const auto it = stored.find(key); it != stored.end() && it->isBool())
+        return it->toBool();
+    if (defaultVoice(track))
+        return true;
+    // No voice track in the sequence: every unmuted track is transcribed (as before 0.4).
+    const SequencePtr seq = m_controller ? m_controller->currentSequence() : nullptr;
+    if (!seq)
+        return !track.muted;
+    const bool anyVoice = std::any_of(seq->audioTracks.begin(), seq->audioTracks.end(),
+                                      [](const TrackPtr& t) { return defaultVoice(*t); });
+    return !anyVoice && !track.muted;
+}
+
+void TranscriptBridge::rebuildAudioTracks() {
+    QVariantList list;
+    const SequencePtr seq = m_controller ? m_controller->currentSequence() : nullptr;
+    if (seq) {
+        for (std::size_t t = 0; t < seq->audioTracks.size(); ++t) {
+            const Track& track = *seq->audioTracks[t];
+            const int index = static_cast<int>(t);
+            const QString name = QString::fromStdString(track.name);
+            QString role;
+            QString roleLabel;
+            switch (track.role) {
+            case TrackRole::Dialogue: role = QStringLiteral("dialogue"); roleLabel = tr("Dialogue"); break;
+            case TrackRole::Music: role = QStringLiteral("music"); roleLabel = tr("Music"); break;
+            case TrackRole::Effects: role = QStringLiteral("effects"); roleLabel = tr("Effects"); break;
+            case TrackRole::None: break;
+            }
+            // "A2 · Mic", then the role and "(muted)" when set.
+            QString label = QStringLiteral("A%1").arg(index + 1);
+            if (!name.isEmpty())
+                label += QStringLiteral(" · ") + name;
+            if (!roleLabel.isEmpty())
+                label += QStringLiteral(" · ") + roleLabel;
+            if (track.muted)
+                label += QLatin1Char(' ') + tr("(muted)");
+            list.append(QVariantMap{{QStringLiteral("index"), index},
+                                    {QStringLiteral("label"), label},
+                                    {QStringLiteral("name"), name},
+                                    {QStringLiteral("role"), role},
+                                    {QStringLiteral("muted"), track.muted},
+                                    {QStringLiteral("chosen"), trackChosen(track, index)}});
+        }
+    }
+    if (list == m_audioTracks)
+        return;
+    m_audioTracks = std::move(list);
+    emit audioTracksChanged();
+}
+
+void TranscriptBridge::setTrackChosen(int index, bool chosen) {
+    const SequencePtr seq = m_controller ? m_controller->currentSequence() : nullptr;
+    if (!seq || index < 0 || index >= static_cast<int>(seq->audioTracks.size()))
+        return;
+    const Track& track = *seq->audioTracks[static_cast<std::size_t>(index)];
+    QJsonObject stored = storedTrackChoices();
+    stored.insert(choiceKey(track, index), chosen);
+    QSettings().setValue(QLatin1String(kTrackChoicesKey),
+                         QString::fromUtf8(QJsonDocument(stored).toJson(QJsonDocument::Compact)));
+    rebuildAudioTracks();
 }
 
 } // namespace wabcut::app

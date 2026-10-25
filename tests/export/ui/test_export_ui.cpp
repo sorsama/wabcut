@@ -408,12 +408,19 @@ TEST_CASE("ExportController queues exports of the current sequence and tracks th
     CHECK_FALSE(std::filesystem::exists(dir / "queued.wav"));
 
     // Errors in plain language: a folder that does not exist; offline media.
+    // 0.4: jobFinished's message is the row's detail (the failed toast says what the queue says), and the row knows
+    // the kind of problem (the toast offers Relink… for offline media).
+    QVariantMap finishedMessages;
+    QObject::connect(&controller, &ExportController::jobFinished,
+                     [&](const QString& id, bool, const QString& message) { finishedMessages[id] = message; });
     const QString badFolder = controller.queueExport(
         {}, QStringLiteral("audio-wav"), {{QStringLiteral("output"), q(dir / "missing" / "a.wav")}});
     REQUIRE(waitFinished(controller, badFolder));
     CHECK(row(controller, badFolder)->state == QStringLiteral("failed"));
     CHECK(row(controller, badFolder)->detail ==
           QStringLiteral("The folder does not exist. Choose another location."));
+    CHECK(finishedMessages.value(badFolder).toString() == row(controller, badFolder)->detail);
+    CHECK(row(controller, badFolder)->errorKind == QStringLiteral("folder"));
 
     project.resetProject(makeProject(seconds(2), "sine_48k.wav", true));
     const QString offline = controller.queueExport({}, QStringLiteral("audio-wav"),
@@ -422,6 +429,9 @@ TEST_CASE("ExportController queues exports of the current sequence and tracks th
     CHECK(row(controller, offline)->state == QStringLiteral("failed"));
     CHECK(row(controller, offline)
               ->detail.startsWith(QStringLiteral("Some original media is offline or missing")));
+    CHECK(finishedMessages.value(offline).toString() == row(controller, offline)->detail);
+    CHECK(row(controller, offline)->errorKind == QStringLiteral("offline"));
+    CHECK(controller.job(offline).value(QStringLiteral("errorKind")).toString() == QStringLiteral("offline"));
 
     // Bad settings never reach the queue.
     const int before = controller.jobs()->rowCount();
@@ -505,6 +515,19 @@ TEST_CASE("Export workspace screenshots: settings drawer, and the queue with a r
     CHECK(row(*controller, failed)->detail ==
           QStringLiteral(
               "Some original media is offline or missing: sine_48k.wav. Relink it, then export again."));
+    // 0.4: its toast says why (the same text as its row), with Relink… (the media is offline) and Show the queue.
+    CHECK(row(*controller, failed)->errorKind == QStringLiteral("offline"));
+    QQuickItem* toast = shell.item("toast");
+    REQUIRE(toast != nullptr);
+    CHECK(toast->property("text").toString().contains(QStringLiteral("offline")));
+    CHECK(toast->property("text").toString() == QStringLiteral("Export failed: ") + row(*controller, failed)->detail);
+    QQuickItem* toastAction = toast->findChild<QQuickItem*>(QStringLiteral("toastAction"));
+    QQuickItem* toastSecondary = toast->findChild<QQuickItem*>(QStringLiteral("toastSecondaryAction"));
+    REQUIRE(toastAction != nullptr);
+    REQUIRE(toastSecondary != nullptr);
+    CHECK(toastAction->property("text").toString() == QStringLiteral("Relink…"));
+    CHECK(toastSecondary->property("text").toString() == QStringLiteral("Show the queue"));
+    CHECK(toastSecondary->isVisible());
     REQUIRE(shell.settle(true, kViolet));
     save(shell.grab(), "workspace-export-job.png");
 

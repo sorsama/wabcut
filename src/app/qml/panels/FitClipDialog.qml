@@ -46,7 +46,7 @@ WabcutDialog {
         Layout.fillWidth: true
         //: Fit Clip dialog; %1 = source In/Out duration, %2 = sequence In/Out duration
         text: qsTr("The source In to Out (%1) and the sequence In to Out (%2) have different lengths. How should the clip fit?")
-                  .arg(SourceMonitor.inOutText).arg(SourceMonitor.sequenceInOutText)
+                  .arg(SourceMonitor.inOutText).arg(ProjectController.markDurationText)
         color: Theme.textSecondary
         font.family: Theme.fontSans
         font.pixelSize: Theme.textMd

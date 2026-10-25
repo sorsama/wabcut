@@ -85,8 +85,7 @@ class SourceMonitorBridge : public QObject {
     Q_PROPERTY(QString outText READ outText NOTIFY marksChanged FINAL)
     /// Length of the marked range (the whole source without marks): Premiere's In/Out duration.
     Q_PROPERTY(QString inOutText READ inOutText NOTIFY marksChanged FINAL)
-    /// Length of the sequence In/Out range ("" without both marks), for the Fit Clip dialog.
-    Q_PROPERTY(QString sequenceInOutText READ sequenceInOutText NOTIFY marksChanged FINAL)
+    // 0.4: the sequence In/Out length moved to ProjectController.markDurationText (sequenceInOutText is gone).
     Q_PROPERTY(bool playing READ playing NOTIFY transportChanged FINAL)
     /// P.2: Premiere's Loop button in the Source Monitor.
     Q_PROPERTY(bool loop READ loop WRITE setLoop NOTIFY loopChanged FINAL)
@@ -145,7 +144,6 @@ public:
     QString inText() const;
     QString outText() const;
     QString inOutText() const;
-    QString sequenceInOutText() const;
     bool playing() const;
     bool loop() const { return m_loop; }
     void setLoop(bool loop);
@@ -158,6 +156,11 @@ public:
     // ---- QML: the source ----
     /// Loads a library item ("m12"); false (with `message`) for unknown or offline media.
     Q_INVOKABLE bool load(const QString& media);
+    /// 0.4: loads a media item ("m12") with its source In / Out set to [sourceIn, sourceOut) (tick strings, as
+    /// SmartSearch cards carry them), frame-snapped (In = the start of the frame holding sourceIn, Out = the end of the
+    /// frame holding its last tick) and clamped to the media, and moves to the In. The marks are one undo step ("Set
+    /// Source Marks"). False (with `message`) for an unknown or offline item or an empty range.
+    Q_INVOKABLE bool loadRange(const QString& media, const QString& sourceIn, const QString& sourceOut);
     /// 0.2 Media Browser: shows `file` (a file, or the first file of a camera card's clip) without importing it; false
     /// (with `message`) when it is not media Wabcut reads.
     Q_INVOKABLE bool loadFile(const QString& file);
@@ -204,6 +207,13 @@ public:
     Q_INVOKABLE void goToOut();
     /// Plays from the In (or the start) and stops at the Out (or the end).
     Q_INVOKABLE void playInToOut();
+    /// 0.4, Premiere's Play Around (Shift+K) with the Source Monitor focused: plays from the frame shown minus
+    /// `prerollSeconds` to it plus `postrollSeconds` once (Loop ignored), clamped to the source, then parks back on the
+    /// frame shown. Space / K / J / L or a seek during it stop it where it is.
+    Q_INVOKABLE void playAround(double prerollSeconds, double postrollSeconds);
+    /// 0.4, Premiere's Play from Playhead to Out (Ctrl+Space): plays from the frame shown to the source Out (no Out: the
+    /// end) once and stops on the last marked frame. At or past the Out: nothing.
+    Q_INVOKABLE void playToOut();
 
     /// A keymap command while the Source Monitor has focus (marks, transport, Reverse Match Frame); false when it is
     /// not a Source Monitor command (the caller routes it on).
@@ -320,6 +330,7 @@ private:
     QTimer m_tick;
     bool m_wasPlaying = false;
     std::optional<Ticks> m_stopAt; ///< Play In to Out
+    std::optional<Ticks> m_returnTo; ///< 0.4 Play Around: where playback parks when it reaches m_stopAt
     bool m_loop = false;           ///< P.2: Premiere's Loop
     Ticks m_lastPosition{-1};
     std::vector<MediaId> m_recent;

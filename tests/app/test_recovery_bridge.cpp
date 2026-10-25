@@ -15,13 +15,16 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <QCoreApplication>
 #include <QFileInfo>
 #include <QSettings>
 #include <QStandardPaths>
 #include <QUrl>
 
+#include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <thread>
 
 using namespace wabcut;
 using namespace wabcut::app;
@@ -92,6 +95,28 @@ struct BlockedUntitledAutosaves {
         }
     }
 };
+
+/// One edit through the session (the revision moves on, so there is something to autosave).
+void addSequenceTo(ProjectController& controller) {
+    REQUIRE(controller.session().apply("add sequence", [](const ProjectState& s) -> std::expected<ProjectState, Error> {
+        auto created = edit::addSequence(s, edit::SequenceSettings{});
+        if (!created) {
+            return std::unexpected(created.error());
+        }
+        return std::move(created->state);
+    }));
+}
+
+/// Runs the event loop until `done` or 10 s.
+template <class Done>
+bool processUntil(Done done) {
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!done() && std::chrono::steady_clock::now() < until) {
+        QCoreApplication::processEvents();
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    return done();
+}
 
 } // namespace
 
@@ -179,4 +204,64 @@ TEST_CASE("A .wabcut on the command line is the project to open; other arguments
     CHECK(ProjectLifecycle::launchProjectIn({QStringLiteral("wabcut.exe"), notes, missing}).isEmpty());
     CHECK(ProjectLifecycle::launchProjectIn({QStringLiteral("wabcut.exe"), QStringLiteral("--rhi"), file}).isEmpty()); // --rhi's value
     CHECK(ProjectLifecycle::launchProjectIn({QStringLiteral("wabcut.exe")}).isEmpty());
+}
+
+// 0.4 (autosave-failure-silent): an autosave that cannot be written says so - autosaveOk turns false, the text names
+// the failure, autosaveFailed fires for every failure (QML toasts once per streak) - until an autosave or a save works.
+TEST_CASE("Autosave failure: autosaveOk turns false and every failure is signalled until an autosave succeeds",
+          "[app][autosave]") {
+    const fs::path dir = workDir("autosave-failure");
+    const fs::path project = dir / "film.wabcut";
+    REQUIRE(io::saveProject(withSequences(1), project, io::SaveOptions{0}));
+    ProjectController controller;
+    ProjectLifecycle lifecycle(&controller);
+    REQUIRE(lifecycle.open(url(project)));
+    CHECK(lifecycle.autosaveOk());
+    QStringList reasons;
+    QObject::connect(&lifecycle, &ProjectLifecycle::autosaveFailed, [&](const QString& reason) { reasons << reason; });
+    int changes = 0;
+    QObject::connect(&lifecycle, &ProjectLifecycle::autosaveChanged, [&] { ++changes; });
+
+    // A folder where the atomic write's temporary file goes: the autosave cannot be written.
+    fs::path blocked = io::autosavePath(project);
+    blocked += ".tmp";
+    fs::create_directories(blocked);
+    addSequenceTo(controller);
+    CHECK_FALSE(lifecycle.autosaveNow());
+    CHECK_FALSE(lifecycle.autosaveOk());
+    REQUIRE(reasons.size() == 1);
+    CHECK_FALSE(reasons.front().isEmpty());
+    CHECK(lifecycle.autosaveText().startsWith(QStringLiteral("Autosave failed")));
+    CHECK(lifecycle.autosaveText().contains(reasons.front()));
+    CHECK(lifecycle.lastError().startsWith(QStringLiteral("Autosave failed: ")));
+    CHECK(changes >= 1);
+
+    // The revision stays pending: the next try fails again and says so again (not deduplicated).
+    CHECK_FALSE(lifecycle.autosaveNow());
+    CHECK(reasons.size() == 2);
+    CHECK_FALSE(lifecycle.autosaveOk());
+
+    // The timer's path (written on a worker, collected from the event loop) fails the same way.
+    lifecycle.startBackgroundAutosave();
+    REQUIRE(processUntil([&] { return reasons.size() == 3; }));
+    CHECK_FALSE(lifecycle.autosaveOk());
+
+    // The way is clear again: the next autosave works and clears the failure.
+    fs::remove_all(blocked);
+    addSequenceTo(controller);
+    CHECK(lifecycle.autosaveNow());
+    CHECK(lifecycle.autosaveOk());
+    CHECK(lifecycle.autosaveText().startsWith(QStringLiteral("Autosaved")));
+    CHECK(reasons.size() == 3);
+
+    // A save clears a failure too.
+    fs::create_directories(blocked);
+    addSequenceTo(controller);
+    CHECK_FALSE(lifecycle.autosaveNow());
+    CHECK_FALSE(lifecycle.autosaveOk());
+    CHECK(reasons.size() == 4);
+    fs::remove_all(blocked);
+    REQUIRE(lifecycle.save());
+    CHECK(lifecycle.autosaveOk());
+    CHECK(lifecycle.autosaveText().startsWith(QStringLiteral("Saved")));
 }

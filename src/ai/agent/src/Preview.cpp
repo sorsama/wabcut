@@ -94,6 +94,12 @@ void difference(const Sequence& from, const Sequence& other, std::vector<StagedP
     });
 }
 
+/// The same marker apart from where it is and how long (what a ripple edit changes).
+bool sameMarkerElsewhere(const Marker& a, const Marker& b) {
+    return a.name == b.name && a.comment == b.comment && a.colorIndex == b.colorIndex && a.type == b.type &&
+           a.url == b.url && a.target == b.target;
+}
+
 } // namespace
 
 StagedPreview stagedPreview(const ProjectState& base, const ProjectState& staged, SequenceId sequence) {
@@ -107,11 +113,50 @@ StagedPreview stagedPreview(const ProjectState& base, const ProjectState& staged
     p.lengthAfter = after->contentEnd();
     difference(*before, *after, p.removed);
     difference(*after, *before, p.added);
-    for (const Marker& m : after->markers) {
-        const bool known = std::any_of(before->markers.begin(), before->markers.end(),
-                                       [&](const Marker& b) { return b.start == m.start && b.name == m.name; });
+    // New markers: a staged marker is known when a base marker sits at the same time with the same name, or (0.4:
+    // ripple edits move the sequence markers after the edit and shorten range markers they cut) when it is a base
+    // marker a ripple moved: the same text, colour and type, paired nearest first with the base markers left over.
+    const std::vector<Marker>& was = before->markers;
+    const std::vector<Marker>& now = after->markers;
+    std::vector<bool> used(was.size(), false);
+    std::vector<std::size_t> unknown;
+    for (std::size_t a = 0; a < now.size(); ++a) {
+        bool known = false;
+        for (std::size_t b = 0; b < was.size() && !known; ++b) {
+            if (!used[b] && was[b].start == now[a].start && was[b].name == now[a].name) {
+                used[b] = true;
+                known = true;
+            }
+        }
         if (!known) {
-            p.markers.push_back(m.start);
+            unknown.push_back(a);
+        }
+    }
+    struct Pair {
+        std::size_t staged;
+        std::size_t base;
+        Ticks distance;
+    };
+    std::vector<Pair> pairs;
+    constexpr std::size_t kMaxPairs = 1'000'000; // project files are untrusted: bound the work
+    for (std::size_t a : unknown) {
+        for (std::size_t b = 0; b < was.size() && pairs.size() < kMaxPairs; ++b) {
+            if (!used[b] && sameMarkerElsewhere(was[b], now[a])) {
+                pairs.push_back({a, b, was[b].start > now[a].start ? was[b].start - now[a].start : now[a].start - was[b].start});
+            }
+        }
+    }
+    std::stable_sort(pairs.begin(), pairs.end(), [](const Pair& x, const Pair& y) { return x.distance < y.distance; });
+    std::vector<bool> paired(now.size(), false);
+    for (const Pair& pair : pairs) {
+        if (!paired[pair.staged] && !used[pair.base]) {
+            paired[pair.staged] = true;
+            used[pair.base] = true;
+        }
+    }
+    for (std::size_t a : unknown) {
+        if (!paired[a]) {
+            p.markers.push_back(now[a].start);
         }
     }
     return p;

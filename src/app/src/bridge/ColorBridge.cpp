@@ -769,6 +769,94 @@ bool ColorBridge::matchScene(double strength, bool skinPriority, bool faceDetect
     return ok;
 }
 
+// ---- 0.4: Apply Grade to other clips (color.grade.copy) ----------------------------------------------------------
+
+QVariantMap ColorBridge::gradeCopyTargets() const {
+    QVariantMap out{{QStringLiteral("selection"), 0}, {QStringLiteral("media"), 0}, {QStringLiteral("mediaName"), QString()}};
+    ProjectController* c = controller();
+    const SequencePtr seq = c ? c->currentSequence() : nullptr;
+    const auto loc = seq && m_clip.isValid() ? seq->findClip(m_clip) : std::nullopt;
+    if (!loc) {
+        return out;
+    }
+    const Clip& source = loc->clip();
+    int selection = 0;
+    for (const ClipId id : c->selection()) {
+        const auto other = id == m_clip ? std::nullopt : seq->findClip(id);
+        if (other && other->clip().stream.kind == StreamKind::Video) {
+            ++selection;
+        }
+    }
+    int media = 0;
+    seq->forEachTrack([&](const Track& t) {
+        if (t.kind != TrackKind::Video) {
+            return;
+        }
+        for (const Clip& cl : t.clips) {
+            if (cl.id != m_clip && color::sameSource(cl, source)) {
+                ++media;
+            }
+        }
+    });
+    QString name;
+    if (const ProjectSnapshot snapshot = c->session().snapshot()) {
+        if (source.isNested()) {
+            if (const Sequence* nested = snapshot->findSequence(source.sequence)) {
+                name = toQString(nested->name);
+            }
+        } else if (const MediaItem* item = snapshot->findMedia(source.media)) {
+            name = toQString(item->name);
+        }
+    }
+    if (name.size() > 32) {
+        name = name.left(31) + QChar(0x2026);
+    }
+    out[QStringLiteral("selection")] = selection;
+    out[QStringLiteral("media")] = media;
+    out[QStringLiteral("mediaName")] = name;
+    return out;
+}
+
+bool ColorBridge::applyGradeTo(const QString& scope) {
+    ProjectController* c = controller();
+    const SequencePtr seq = c ? c->currentSequence() : nullptr;
+    if (!seq || !m_clip.isValid()) {
+        setStatus(tr("Select a graded clip first"));
+        return false;
+    }
+    if (!m_grade.isValid()) {
+        setStatus(tr("This clip has no grade to apply"));
+        return false;
+    }
+    QVariantMap params{{QStringLiteral("from"), static_cast<qulonglong>(m_clip.value)}};
+    if (scope == QLatin1String("media")) {
+        params.insert(QStringLiteral("scope"), QStringLiteral("media"));
+    } else if (scope == QLatin1String("selection")) {
+        QVariantList clips;
+        for (const ClipId id : c->selection()) {
+            const auto other = id == m_clip ? std::nullopt : seq->findClip(id);
+            if (other && other->clip().stream.kind == StreamKind::Video) {
+                clips.append(static_cast<qulonglong>(id.value));
+            }
+        }
+        if (clips.isEmpty()) {
+            setStatus(tr("Select the other clips to apply the grade to"));
+            return false;
+        }
+        params.insert(QStringLiteral("clips"), clips);
+    } else {
+        return false;
+    }
+    QString data;
+    if (!runCommand("color.grade.copy", params, &data)) {
+        return false; // runCommand put the refusal in status
+    }
+    const auto json = command::Json::parse(data.toStdString(), nullptr, false);
+    const int changed = json.is_object() ? json.value("changed", 0) : 0;
+    setStatus(changed == 1 ? tr("Grade applied to 1 clip") : tr("Grade applied to %1 clips").arg(changed));
+    return true;
+}
+
 QString ColorBridge::importLut(const QUrl& file, const QString& slot) {
     QString data;
     if (!runCommand("lut.import", {{QStringLiteral("path"), file.toLocalFile()}}, &data)) {

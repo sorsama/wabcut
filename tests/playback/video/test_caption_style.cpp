@@ -190,3 +190,70 @@ TEST_CASE("Caption style: pop, fade and word-by-word animations", "[playback][ca
         CHECK(later->opacity == 1.0);
     }
 }
+
+TEST_CASE("Caption style: vertical Short cue lines stay one line each in the preset they are cut for",
+          "[playback][captions]") {
+    // 0.4 (D, fix round 1): shorts.create and highlights.toShort cut a vertical Short's cues to 10 characters a line
+    // with the "Shorts" preset and to 14 with any other preset, two lines a cue (ShortsCommands.cpp kShortsCaptionChars
+    // and kVerticalCaptionChars; HighlightCommands.cpp). Drawn on a 1080x1920 frame as the renderer draws them, such
+    // lines stay one line each, so a cue never wraps past two lines. (The first rule, 12 and 20, wrapped: "Oh my god we"
+    // is wider than the 828 px the Shorts preset's 128 px heavy words get.) Widths are the platform sans-serif's:
+    // checked on Windows, reported elsewhere. A line in capitals may still wrap with the Shorts preset ("WE WON THE").
+    const std::vector<std::string> sentences{
+        "Oh my god we just won the whole round", "What a crazy clutch round that was", "Wait wait no he is behind you",
+        "Let's go boys we did it", "No way that actually worked", "I can't believe he missed that shot",
+        "Who was that guy with the sniper", "Okay okay I'm going in now", "Mom said it's my turn on the Xbox",
+        "We won World Cup mode GG", "Watch my aim on this one", "Somebody help me I'm getting wrecked"};
+    const std::vector<std::string> shouted{"NO WAY DUDE WHAT A SHOT", "LET'S GO WE WON THE GAME"};
+    // Lines of at most `chars` characters, broken between words (a longer word stands alone), as captions.generate does.
+    const auto linesOf = [](const std::string& s, std::size_t chars) {
+        std::vector<std::string> out;
+        std::string line;
+        std::size_t at = 0;
+        while (at < s.size()) {
+            std::size_t end = s.find(' ', at);
+            if (end == std::string::npos)
+                end = s.size();
+            const std::string word = s.substr(at, end - at);
+            at = end + 1;
+            if (!line.empty() && line.size() + 1 + word.size() > chars) {
+                out.push_back(line);
+                line.clear();
+            }
+            line += (line.empty() ? "" : " ") + word;
+        }
+        if (!line.empty())
+            out.push_back(line);
+        return out;
+    };
+    struct Rule {
+        const char* preset;
+        std::size_t chars;
+        bool shoutedToo;
+    };
+    for (const Rule& rule : {Rule{"Shorts", 10, false}, Rule{"Clean", 14, true}, Rule{"Bold Box", 14, true},
+                             Rule{"Podcast", 14, true}, Rule{"Thai-friendly", 14, true}}) {
+        const CaptionPreset* preset = findBuiltinCaptionPreset(rule.preset);
+        REQUIRE(preset);
+        std::vector<std::string> texts = sentences;
+        if (rule.shoutedToo)
+            texts.insert(texts.end(), shouted.begin(), shouted.end());
+        for (const std::string& text : texts) {
+            for (const std::string& line : linesOf(text, rule.chars)) {
+                Captioned c({{Ticks{}, Ticks::fromSeconds(2), line}}, preset->style);
+                c.seq.width = 1080;
+                c.seq.height = 1920;
+                const auto frame = c.at(Ticks::fromSeconds(1)); // after the pop
+                REQUIRE(frame);
+                const int drawn = render::CaptionRenderer::renderUncached(*frame)->info().lines;
+#ifdef _WIN32
+                INFO(rule.preset << ": [" << line << "]");
+                CHECK(drawn == 1);
+#else
+                if (drawn > 1)
+                    WARN(rule.preset << ": [" << line << "] wraps to " << drawn << " lines in this platform's font");
+#endif
+            }
+        }
+    }
+}

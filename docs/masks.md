@@ -289,6 +289,12 @@ undo step per click, drag or slider gesture.
   key at the playhead when the parameter is animated), and **Track**: to the start, one frame back, one frame forward,
   to the end, Stop, with a progress bar and a **confidence strip** (one bar per frame: green sure, amber unsure, red
   lost) and what happened ("Tracked 120 frame(s)", "Lost after 37 frame(s)").
+  0.4: for a clip without a mask (no opacity mask, no local mask on any effect) the section is **one row**: the chevron,
+  "Masks" and the target menu, so Transform and Opacity get the room. It opens by itself while the clip has a mask
+  (the count beside "Masks" is every mask of the clip, on any target), a monitor tool or the AI Object tool is armed,
+  or the tracker runs. The chevron is remembered (Preferences, `panels/masksExpanded`): opening keeps the section open
+  for every clip; closing a clip that has masks hides them for that clip until another clip is shown or a tool is
+  armed. Premiere nests masks under Opacity and each effect; Wabcut keeps one Masks section and folds it away.
 - **Program monitor**: the target's outlines (the selected one solid, the others dashed), the selected mask's feather
   band (dashed, inside and outside) and handles - centre (move), corner (size), the round handle above (rotate), path
   points (move) and their tangent ends, the expansion square and the feather dot on the right. Click an outline to

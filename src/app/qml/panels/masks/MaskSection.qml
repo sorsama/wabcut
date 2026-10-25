@@ -12,11 +12,25 @@ import QtQuick.Controls.Basic as QC // qualified: unqualified, its ContextMenu w
 //     opacity (one undo step per drag; a key at the playhead when animated) and its handles on the monitor;
 //   * the tracker: to the start, one frame back, one frame forward, to the end, with its progress and a per-frame
 //     confidence strip; it stops where the picture is lost. Every result is ordinary keyframes, one undo step.
+// 0.4: a clip without a mask shows the section as one row (chevron, "Masks", the target), so Transform and Opacity get the
+// room. It opens on its own while the clip has a mask, a monitor tool or the AI Object tool is armed or the tracker
+// runs; the chevron is remembered (Preferences.masksExpanded keeps it open for every clip; closing a clip that has masks
+// hides them for that clip until the selection changes or a tool is armed).
 Rectangle {
     id: root
     objectName: "maskSection"
 
-    property bool expanded: true
+    /// The clip whose masks the user closed (until another clip or a tool); "" when none.
+    property string collapsedFor: ""
+    /// Reasons to open on its own: the clip has a mask, a tool is armed, the tracker runs.
+    readonly property bool autoOpen: Masks.maskCount > 0 || Masks.tool !== "" || Masks.tracking || ObjectMasks.armed
+    readonly property bool expanded: Preferences.masksExpanded || (autoOpen && collapsedFor !== Masks.clip)
+    // Another clip forgets the closed one (its masks show again when it comes back).
+    readonly property string shownClip: Masks.clip
+    onShownClipChanged: {
+        if (shownClip !== collapsedFor)
+            collapsedFor = ""
+    }
     /// The owner caps the section (the effect list keeps its room); the rest scrolls.
     property real maximumHeight: Number.POSITIVE_INFINITY
     readonly property var current: Masks.current
@@ -40,12 +54,23 @@ Rectangle {
         return mode === "subtract" ? 1 : mode === "intersect" ? 2 : 0
     }
 
-    // While tracking, keep the tracker's progress and confidence in view.
+    // While tracking, keep the tracker's progress and confidence in view. Arming a tool opens a closed section.
     Connections {
         target: Masks
         function onTrackingChanged() {
             if (Masks.tracking)
                 flick.contentY = Math.max(0, flick.contentHeight - flick.height)
+        }
+        function onToolChanged() {
+            if (Masks.tool !== "")
+                root.collapsedFor = ""
+        }
+    }
+    Connections {
+        target: ObjectMasks
+        function onStateChanged() {
+            if (ObjectMasks.armed)
+                root.collapsedFor = ""
         }
     }
 
@@ -75,7 +100,16 @@ Rectangle {
                 compact: true
                 iconName: root.expanded ? "chevron-down" : "chevron-right"
                 tooltip: root.expanded ? qsTr("Collapse masks") : qsTr("Expand masks")
-                onClicked: root.expanded = !root.expanded
+                onClicked: {
+                    if (root.expanded) {
+                        Preferences.masksExpanded = false
+                        if (root.autoOpen)
+                            root.collapsedFor = Masks.clip
+                    } else {
+                        Preferences.masksExpanded = true
+                        root.collapsedFor = ""
+                    }
+                }
             }
             Text {
                 text: qsTr("Masks")
@@ -85,8 +119,9 @@ Rectangle {
                 font.weight: Font.DemiBold
             }
             Text {
-                visible: Masks.masks.length > 0
-                text: Masks.masks.length
+                objectName: "maskSectionCount"
+                visible: Masks.maskCount > 0
+                text: Masks.maskCount
                 color: Theme.textTertiary
                 font.family: Theme.fontMono
                 font.pixelSize: Theme.textXs
@@ -418,7 +453,7 @@ Rectangle {
 
         Text {
             Layout.fillWidth: true
-            visible: Masks.status !== ""
+            visible: root.expanded && Masks.status !== ""
             text: Masks.status
             wrapMode: Text.Wrap
             color: Theme.warning

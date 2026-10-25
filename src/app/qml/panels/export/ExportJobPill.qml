@@ -7,6 +7,8 @@ import QtQuick.Layouts
 // scan loader while it renders (a status dot otherwise), the file name and the live figures in monospace (percent ·
 // fps · time left). Cancel (×) while queued or rendering; "Show" (in Explorer / Finder) when done. A failed job
 // shows its plain-language error under the pill.
+// 0.4: a done job also has "Open" (the file in its default app; a double-click on the pill does the same) before "Show";
+// `notice` (set by the owner, e.g. "The file was moved or deleted.") shows in the danger colour under the pill.
 Item {
     id: root
 
@@ -21,6 +23,8 @@ Item {
     required property string encoder
     required property string detail
     required property bool finished
+    /// 0.4: a problem to show under the pill instead of its usual line ("" for none).
+    property string notice: ""
 
     signal cancelRequested()
     signal revealRequested()
@@ -28,6 +32,8 @@ Item {
     signal pauseRequested()
     signal resumeRequested()
     signal startRequested()
+    /// 0.4: open the finished file in its default app.
+    signal openRequested()
 
     readonly property bool running: jobState === "running"
     readonly property color stateColor: jobState === "done" ? Theme.success
@@ -54,6 +60,13 @@ Item {
             Accessible.role: Accessible.ProgressBar
             Accessible.name: qsTr("Export %1").arg(root.title)
             Accessible.description: root.phaseText
+
+            // 0.4: a double-click on a finished export opens it.
+            TapHandler {
+                objectName: "exportJobOpenTap"
+                enabled: root.jobState === "done"
+                onDoubleTapped: root.openRequested()
+            }
 
             Rectangle {
                 id: fill
@@ -140,6 +153,7 @@ Item {
                 }
 
                 IconButton {
+                    objectName: "exportJobCancel"
                     visible: !root.finished
                     compact: true
                     iconName: "x"
@@ -147,7 +161,18 @@ Item {
                     onClicked: root.cancelRequested()
                 }
 
+                // 0.4: the finished file in its default app.
                 PillButton {
+                    objectName: "exportJobOpen"
+                    visible: root.jobState === "done"
+                    compact: true
+                    variant: "ghost"
+                    text: qsTr("Open")
+                    tooltip: qsTr("Open %1").arg(root.title)
+                    onClicked: root.openRequested()
+                }
+                PillButton {
+                    objectName: "exportJobShow"
                     visible: root.jobState === "done"
                     compact: true
                     variant: "ghost"
@@ -159,14 +184,16 @@ Item {
         }
 
         Text {
+            objectName: "exportJobDetail"
             Layout.fillWidth: true
             Layout.leftMargin: Theme.space(3)
-            text: root.jobState === "failed" || root.jobState === "cancelled" ? root.detail
+            text: root.notice !== "" ? root.notice
+                  : root.jobState === "failed" || root.jobState === "cancelled" ? root.detail
                   : root.encoder !== "" ? qsTr("%1 · %2").arg(root.presetName).arg(root.encoder)
                   : root.presetName
             wrapMode: Text.WordWrap
-            color: root.jobState === "failed" ? Theme.danger : Theme.textTertiary
-            font.family: root.jobState === "failed" ? Theme.fontSans : Theme.fontMono
+            color: root.notice !== "" || root.jobState === "failed" ? Theme.danger : Theme.textTertiary
+            font.family: root.notice !== "" || root.jobState === "failed" ? Theme.fontSans : Theme.fontMono
             font.pixelSize: Theme.textSm
         }
     }

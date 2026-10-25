@@ -993,7 +993,8 @@ void registerGraphicsCommands(CommandRegistry& registry) {
     addBuiltin(registry,
                {"template.list", 1, "Templates",
                 "The graphic templates of the project's library, the user's and the built-in ones that ship with Wabcut (C.16: "
-                "gaming lower thirds, banners, callouts, stingers, end cards...): id, name, version, default length, canvas, "
+                "gaming lower thirds, banners, callouts, stingers, end cards...; 0.4: essay and documentary name and title, "
+                "location, quote, source and chapter cards that follow the brand kit): id, name, version, default length, canvas, "
                 "and the fields (id, label, kind, default value) template.instantiate and template.setField take. Built-ins "
                 "also give their category and \"posterTime\" (the design time a thumbnail shows: template.resolve draws it). "
                 "With \"id\", that template only, with its graphic.",

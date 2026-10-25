@@ -295,6 +295,28 @@ TEST_CASE("J/K/L press and release traces; auto-repeat never climbs the ladder",
     CHECK(scene.takeCommands().isEmpty());
 }
 
+TEST_CASE("Shift+L latches slow play through the bridge", "[app][keymap]") {
+    // 0.4, Premiere's Shuttle Slow Right / Left: SetSpeed intents (Main.qml's onTransportIntent plays them on the
+    // focused monitor), latched past the key's release, one rung per press; K stops.
+    Scene scene;
+    REQUIRE(scene.window != nullptr);
+    scene.focus("timeline");
+    CHECK(scene.press(Qt::Key_L, Qt::ShiftModifier, QStringLiteral("L")));
+    CHECK(scene.press(Qt::Key_L, Qt::ShiftModifier, QStringLiteral("L"), true)); // OS repeat: consumed, no step
+    CHECK(scene.release(Qt::Key_L, Qt::ShiftModifier, QStringLiteral("L")));
+    CHECK(scene.takeIntents() == Intents{slow(1)});
+    scene.tap(Qt::Key_L, Qt::ShiftModifier, QStringLiteral("L"));
+    CHECK(scene.takeIntents() == (Intents{{Kind::SetSpeed, 1, 2, 0}}));
+    scene.tap(Qt::Key_J, Qt::ShiftModifier, QStringLiteral("J"));
+    CHECK(scene.takeIntents() == Intents{slow(-1)});
+    CHECK_FALSE(scene.dispatcher->isGestureActive());
+    scene.tap(Qt::Key_K, Qt::NoModifier, QStringLiteral("k"));
+    CHECK(scene.takeIntents() == Intents{kStop});
+    CHECK(scene.takeCommands().isEmpty()); // transport only: no "Not available yet" command reaches the app
+    CHECK(scene.dispatcher->trigger(QStringLiteral("transport.shuttleSlowForward")));
+    CHECK(scene.takeIntents() == Intents{slow(1)});
+}
+
 TEST_CASE("A K+L hold is recognised without key repeat", "[app][keymap]") {
     Scene scene;
     REQUIRE(scene.window != nullptr);

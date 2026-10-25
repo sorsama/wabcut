@@ -331,6 +331,15 @@ enum class MoveMode {
     /// Ctrl-drag: room is opened at the destination (destination tracks and sync-locked tracks shift);
     /// their old place becomes a gap.
     Insert,
+    /// 0.4, Ctrl+Alt-drag (Premiere's rearrange edit): the clips' time is ripple-removed at their old place and opened
+    /// at the drop (as Insert), ONLY on the unlocked tracks that hold a dragged clip and the destination tracks: other
+    /// tracks (sync-locked or not), the captions and the sequence markers are untouched, so a music bed under rearranged
+    /// shots stays whole. Refused like rippleDeleteClips when closing the old place would take an unselected clip off a
+    /// track the selection is on. The drop time is measured on the timeline before the removal, so a clip dropped at the
+    /// cut after its neighbour swaps with it. Dropping it back where it was changes nothing. Clips selected apart
+    /// pack at the drop in time order (only their total length opens); a link group spread over separate stretches
+    /// is refused.
+    Rearrange,
 };
 
 /// Track change for a move, counted outward from the video/audio divider like Premiere draws it:
@@ -345,6 +354,18 @@ struct TrackShift {
 EditOutcome moveClips(const ProjectState& state, SequenceId sequence, std::span<const ClipId> clips, Ticks delta,
                       TrackShift tracks = {}, MoveMode mode = MoveMode::Overwrite,
                       LinkMode links = LinkMode::FollowLinks);
+
+/// 0.4, Alt-drag (Premiere): copies the clips (with their linked partners unless IgnoreLinks) to where moveClips would
+/// move them, leaving the originals in place. Copies get new clip ids, one new link group per copied link group, one new
+/// clip group per copied group with 2+ copies (else none), new effect instance ids (parameters, keyframes, time remap,
+/// speed, label, enabled state kept) and copies of the transitions between two copied clips. Overwrite replaces what lies
+/// under each copy (an original included); Insert opens room first (destination and unlocked sync-locked tracks,
+/// captions). EditResult::created lists the copies in resolveClips order; appliedDelta is the clamped delta. No change
+/// when the copy would land exactly on its original (delta 0, no track shift). Errors as moveClips (no such track, a
+/// locked destination); InvalidArgument for MoveMode::Rearrange.
+EditOutcome duplicateClips(const ProjectState& state, SequenceId sequence, std::span<const ClipId> clips, Ticks delta,
+                           TrackShift tracks = {}, MoveMode mode = MoveMode::Overwrite,
+                           LinkMode links = LinkMode::FollowLinks);
 
 // ---------------------------------------------------------------------------------------------------
 // Link / unlink

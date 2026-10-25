@@ -10,6 +10,8 @@ import QtQuick.Shapes
 // change goes back through EffectControls (one undo step per drag, merged until endEdit()).
 // An animated parameter's lane can open into its value graph (the graph button): the curve, the keys at their values
 // and, on Bezier keys, in/out handles (InspectorPanel's lane area drags them: Alt breaks the pair).
+// 0.4: a click on a section header selects it (Ctrl toggles, Shift extends; Premiere's Effect Controls) for Backspace,
+// Cut / Copy / Paste and the header's right-click menu (EffectSectionMenu); a selected header has the accent outline.
 Item {
     id: row
 
@@ -48,6 +50,8 @@ Item {
     required property bool known
     required property bool graphOpen
     required property var graph
+    /// 0.4: the header is selected (Backspace removes it, Ctrl+C copies it; EffectControls.selectedSections).
+    required property bool sectionSelected
 
     // ---- From the panel ----
     /// Width of the keyframe lane on the right (0: no lane; the slider gets the room).
@@ -262,6 +266,8 @@ Item {
 
         // ---- Header ----
         Rectangle {
+            id: headerBox
+            objectName: row.header ? "effectHeader_" + row.section : ""
             visible: row.header
             anchors.left: parent.left
             anchors.right: row.hasLane ? lane.left : parent.right
@@ -269,16 +275,40 @@ Item {
             anchors.verticalCenter: parent.verticalCenter
             height: Theme.controlHeight - Theme.space(1)
             radius: Theme.radiusField
-            color: row.dragging ? Theme.hover : Theme.raised
-            border.width: Theme.hairline
-            border.color: row.dragging ? Theme.accentStroke : Theme.border
+            color: row.dragging ? Theme.hover : row.sectionSelected ? Theme.accentWash : Theme.raised
+            border.width: row.sectionSelected ? Theme.selectionWidth : Theme.hairline
+            border.color: row.dragging || row.sectionSelected ? Theme.accentStroke : Theme.border
+            Accessible.role: Accessible.ListItem
+            Accessible.name: row.title
+            Accessible.selectable: row.sectionKind !== "transition"
+            Accessible.selected: row.sectionSelected
+            Accessible.onPressAction: {
+                if (row.sectionKind !== "transition")
+                    row.controls.selectSection(row.section, 0)
+            }
 
-            // 0.2: right-click a clip's effect for Save Preset… (EffectSectionMenu).
+            // 0.4: a click selects the section (Ctrl/Cmd toggles it, Shift selects from the anchor) and gives Effect
+            // Controls the keys (Backspace, Ctrl+C / X / V, Esc). The buttons on the header keep their own clicks.
+            TapHandler {
+                id: sectionSelect
+                acceptedButtons: Qt.LeftButton
+                enabled: row.header && row.sectionKind !== "transition"
+                onTapped: {
+                    row.ListView.view?.forceActiveFocus(Qt.MouseFocusReason)
+                    row.controls.selectSection(row.section, sectionSelect.point.modifiers)
+                }
+            }
+
+            // 0.2: right-click a clip's effect for its menu (EffectSectionMenu); 0.4: an unselected header is selected
+            // alone first, a selected one keeps the selection (Cut / Copy / Clear act on it).
             TapHandler {
                 id: sectionTap
                 acceptedButtons: Qt.RightButton
                 enabled: row.header && row.sectionKind !== "transition"
                 onTapped: point => {
+                    row.ListView.view?.forceActiveFocus(Qt.MouseFocusReason)
+                    if (!row.sectionSelected)
+                        row.controls.selectSection(row.section, 0)
                     sectionMenu.active = true
                     const menu = sectionMenu.item as EffectSectionMenu
                     menu.popupAt(sectionTap.parent, point.position.x, point.position.y, row.section)

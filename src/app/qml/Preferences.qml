@@ -19,6 +19,14 @@ import QtCore
 //   home/starred — the projects starred on Home, as a JSON list of file paths (design language v3)
 //   home/projectFilter, home/projectSort, home/projectView, home/advancedOpen, home/newProjectChoices — the Projects
 //     page's filter, sort and view, the New project page's Advanced state and last choices (UX rework)
+//   timeline/playbackScroll, snapPlayhead, clipTooltips, showClipSpeed, showFxBadges — playback auto-scroll, the
+//     playhead snap, the clip hover tooltip, the speed and fx badges on clips (0.4)
+//   monitor/platformSafeZone — the Program Monitor's platform safe zones on portrait sequences (0.4)
+//   panels/masksExpanded, panels/transcriptFollowPlayhead — Effect Controls' Masks section, the Transcript following
+//     the playhead (0.4)
+//   mediaBrowser/lastFolder, highlights/shortLeadIn, shortTail, shortMinLength, shortCaptionPreset,
+//     shorts/captionPreset — the Media Browser's folder, Highlights' and the Shorts panel's Short options (0.4)
+//   power/keepAwake — keep the computer awake while exports and long jobs run (0.4)
 // The singleton is created when Main first reads it, which applies the saved appearance before the panels bind
 // to Theme, then turns on Theme.colorTransitions (start-up never animates).
 QtObject {
@@ -184,6 +192,8 @@ QtObject {
         category: "panels"
         property alias keyframeLane: prefs.keyframeLane
         property alias dockLayout: prefs.dockLayout
+        property alias masksExpanded: prefs.masksExpanded
+        property alias transcriptFollowPlayhead: prefs.transcriptFollowPlayhead
     }
 
     readonly property Settings _workspaces: Settings {
@@ -199,6 +209,7 @@ QtObject {
     readonly property Settings _monitor: Settings {
         category: "monitor"
         property alias safeMargins: prefs.safeMargins
+        property alias platformSafeZone: prefs.platformSafeZone
     }
 
     readonly property Settings _timeline: Settings {
@@ -231,6 +242,56 @@ QtObject {
         category: "timeline"
         property alias snapping: prefs.timelineSnapping
         property alias showSpeed: prefs.timelineShowSpeed
+    }
+
+    // ---- 0.4, stream A (the timeline): Premiere's Timeline Playback Auto-Scrolling ("page", "smooth" or "none") and
+    // Snap Playhead in Timeline When Snap Is Enabled; the clip hover tooltip; the speed and fx badges on clips.
+    property string timelinePlaybackScroll: "page"
+    property bool snapPlayhead: true
+    property bool showClipTooltips: true
+    property bool timelineShowClipSpeed: true
+    property bool timelineShowFxBadges: true
+    readonly property Settings _timeline04: Settings {
+        category: "timeline"
+        property alias playbackScroll: prefs.timelinePlaybackScroll
+        property alias snapPlayhead: prefs.snapPlayhead
+        property alias clipTooltips: prefs.showClipTooltips
+        property alias showClipSpeed: prefs.timelineShowClipSpeed
+        property alias showFxBadges: prefs.timelineShowFxBadges
+    }
+    // 0.4, stream B: the Program Monitor's platform safe zones on portrait sequences ("off", "shorts", "tiktok", "reels").
+    property string platformSafeZone: "off"
+    // 0.4, stream C: Effect Controls' Masks section open while the clip has no mask; the Transcript follows the playhead.
+    property bool masksExpanded: false
+    property bool transcriptFollowPlayhead: true
+    // 0.4, stream D: the folder the Media Browser showed last; Highlights' Short options (lead-in, tail, "at least"
+    // seconds with 0 = Off, caption style) and the Shorts panel's caption style.
+    property string mediaBrowserLastFolder: ""
+    property real highlightsShortLeadIn: 3
+    property real highlightsShortTail: 1
+    property int highlightsShortMinLength: 0
+    property string highlightsShortCaptionPreset: "Shorts"
+    property string shortsCaptionPreset: "Shorts"
+    readonly property Settings _mediaBrowser: Settings {
+        category: "mediaBrowser"
+        property alias lastFolder: prefs.mediaBrowserLastFolder
+    }
+    readonly property Settings _highlights: Settings {
+        category: "highlights"
+        property alias shortLeadIn: prefs.highlightsShortLeadIn
+        property alias shortTail: prefs.highlightsShortTail
+        property alias shortMinLength: prefs.highlightsShortMinLength
+        property alias shortCaptionPreset: prefs.highlightsShortCaptionPreset
+    }
+    readonly property Settings _shorts: Settings {
+        category: "shorts"
+        property alias captionPreset: prefs.shortsCaptionPreset
+    }
+    // 0.4, stream E: keep the computer awake while exports and long jobs run (Windows; Settings > General).
+    property bool keepAwake: true
+    readonly property Settings _power: Settings {
+        category: "power"
+        property alias keepAwake: prefs.keepAwake
     }
 
     readonly property Settings _review: Settings {

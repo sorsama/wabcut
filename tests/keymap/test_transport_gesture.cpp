@@ -202,12 +202,59 @@ TEST_CASE("reset() forgets held keys and stops only slow play", "[keymap][gestur
     CHECK(g.speed() == Rational{1, 1});
 }
 
-TEST_CASE("roleOf maps only the three shuttle commands", "[keymap][gesture]") {
+TEST_CASE("roleOf maps the shuttle and slow shuttle commands", "[keymap][gesture]") {
     CHECK(TransportGesture::roleOf("transport.shuttleBackward") == Role::Backward);
     CHECK(TransportGesture::roleOf("transport.shuttleStop") == Role::Stop);
     CHECK(TransportGesture::roleOf("transport.shuttleForward") == Role::Forward);
-    CHECK_FALSE(TransportGesture::roleOf("transport.shuttleSlowForward"));
+    // 0.4: Shuttle Slow Left / Right (Shift+J / Shift+L).
+    CHECK(TransportGesture::roleOf("transport.shuttleSlowBackward") == Role::SlowBackward);
+    CHECK(TransportGesture::roleOf("transport.shuttleSlowForward") == Role::SlowForward);
     CHECK_FALSE(TransportGesture::roleOf("transport.playStop"));
+    CHECK_FALSE(TransportGesture::roleOf("transport.playAround"));
+}
+
+TEST_CASE("Shift+J and Shift+L latch slow play and step up to 1x", "[keymap][gesture]") {
+    TransportGesture g;
+    // From a stop: 1/4x, then 1/2x, then 1x, and 1x stays.
+    CHECK(g.press(Role::SlowForward, false, 0ms) == Intents{TransportIntent::setSpeed({1, 4})});
+    CHECK(g.press(Role::SlowForward, true, 500ms).empty()); // OS auto-repeat does not climb
+    CHECK(g.release(Role::SlowForward).empty());
+    CHECK(g.press(Role::SlowForward, false, 1s) == Intents{TransportIntent::setSpeed({1, 2})});
+    CHECK(g.release(Role::SlowForward).empty());
+    CHECK(g.press(Role::SlowForward, false, 2s) == Intents{TransportIntent::setSpeed({1, 1})});
+    CHECK(g.release(Role::SlowForward).empty());
+    CHECK(g.press(Role::SlowForward, false, 3s).empty()); // at 1x: no change
+    CHECK(g.speed() == Rational{1, 1});
+    // The other way: 1/4x backward at once.
+    CHECK(g.press(Role::SlowBackward, false, 4s) == Intents{TransportIntent::setSpeed({-1, 4})});
+    CHECK(g.release(Role::SlowBackward).empty());
+    CHECK(g.press(Role::SlowBackward, false, 5s) == Intents{TransportIntent::setSpeed({-1, 2})});
+    // Faster than 1x that way (J J): Shift+J changes nothing.
+    g.syncSpeed({-2, 1});
+    CHECK(g.press(Role::SlowBackward, false, 6s).empty());
+    // L after slow play goes to 1x, then up the ladder.
+    g.syncSpeed({1, 4});
+    CHECK(g.press(Role::Forward, false, 7s) == Intents{shuttle(1)});
+    CHECK(g.release(Role::Forward).empty());
+    CHECK(g.press(Role::Forward, false, 8s) == Intents{shuttle(2)});
+}
+
+TEST_CASE("Releasing Shift+L does not stop latched slow play and K does", "[keymap][gesture]") {
+    TransportGesture g;
+    CHECK(g.press(Role::SlowForward, false, 0ms) == Intents{TransportIntent::setSpeed({1, 4})});
+    CHECK(g.release(Role::SlowForward).empty()); // latched: still playing
+    CHECK(g.slowDirection() == 0);               // not the K+L hold
+    CHECK(g.tick(2s).empty());
+    CHECK(g.reset().empty()); // focus loss keeps latched play going, as with L
+    CHECK(g.speed() == Rational{1, 4});
+    CHECK(g.press(Role::Stop, false, 3s) == Intents{kStop});
+    CHECK(g.release(Role::Stop).empty());
+    CHECK(g.speed() == Rational{});
+    // A slow press with K held still latches (it is not part of the K-first gesture).
+    CHECK(g.press(Role::Stop, false, 4s) == Intents{kStop});
+    CHECK(g.press(Role::SlowBackward, false, 4100ms) == Intents{TransportIntent::setSpeed({-1, 4})});
+    CHECK(g.release(Role::SlowBackward).empty());
+    CHECK(g.release(Role::Stop).empty()); // K's release ends only K+J/L slow play
 }
 
 // ---- KeyDispatcher: press/release routing over the real default keymap ----
@@ -331,4 +378,34 @@ TEST_CASE("trigger() runs commands for menus and buttons", "[keymap][dispatcher]
     CHECK_FALSE(d.trigger("no.such").handled);
     d.syncTransportSpeed({2, 1});
     CHECK(d.trigger("transport.shuttleForward").transport == Intents{shuttle(4)});
+}
+
+TEST_CASE("KeyDispatcher drives slow shuttle from Shift+J and Shift+L", "[keymap][dispatcher]") {
+    for (const Platform platform : {Platform::Windows, Platform::MacOS}) {
+        INFO(platformId(platform));
+        const auto keymap = KeymapManager::withDefaults(platform);
+        REQUIRE(keymap.has_value());
+        FakeClock clock;
+        KeyDispatcher d(*keymap, clock.fn());
+        // Shift+L: 1/4x, latched past the release; the next press 1/2x. No command reaches the app: transport only.
+        KeyResult r = d.keyPress(Scope::Timeline, {Key_L, Modifier::Shift}, false);
+        CHECK(r.handled);
+        CHECK(r.commands.empty());
+        CHECK(r.transport == Intents{TransportIntent::setSpeed({1, 4})});
+        CHECK(d.keyRelease({Key_L, Modifier::Shift}, false).transport.empty());
+        clock.now = 300ms;
+        CHECK(d.keyPress(Scope::SourceMonitor, {Key_L, Modifier::Shift}, false).transport ==
+              Intents{TransportIntent::setSpeed({1, 2})});
+        CHECK(d.keyRelease({Key_L, Modifier::Shift}, false).transport.empty());
+        CHECK(d.focusLost().empty()); // latched play is not the K+J/L hold
+        // Shift+J turns round at 1/4x; K stops.
+        CHECK(d.keyPress(Scope::Timeline, {Key_J, Modifier::Shift}, false).transport ==
+              Intents{TransportIntent::setSpeed({-1, 4})});
+        CHECK(d.keyRelease({Key_J, Modifier::Shift}, false).transport.empty());
+        CHECK(d.keyPress(Scope::Timeline, {Key_K}, false).transport == Intents{kStop});
+        CHECK(d.keyRelease({Key_K}, false).transport.empty());
+        // The palette and menus (trigger: press and release at once) latch too.
+        CHECK(d.trigger("transport.shuttleSlowForward").transport == Intents{TransportIntent::setSpeed({1, 4})});
+        CHECK_FALSE(d.isGestureActive());
+    }
 }

@@ -5,6 +5,8 @@
 //
 //   color.grade.set    set grade parameters (partial), stage switches, curves and LUTs on clips; adds a grade if needed
 //   color.grade.get    a clip's grade at a time: every parameter, curve, LUT and its stage switches
+//   color.grade.copy   0.4 Apply Grade: a clip's whole grade over other clips' grades (the clips, or every clip of its
+//                      source), keeping each target's own masks; adds a grade where there is none
 //   color.auto         Auto: white balance and levels from the clip's own picture (editable Basic parameters)
 //   color.match        Color Match: the clip's grade fitted so it looks like a reference frame
 //   color.matchScene   match every clip of a scene (C.5 shot pieces of one take), a track or a list to a reference clip
@@ -58,5 +60,10 @@ const EffectInstance* gradeOf(const Clip& clip, EffectInstanceId preferred = {})
 /// The clips of the "scene" around `reference` (C.5): the reference and its neighbours on the same track that touch
 /// it without a gap and come from the same media item - the pieces clip.splitAtShots cut one take into.
 std::vector<ClipId> sceneClips(const Sequence& sequence, ClipId reference);
+
+/// Whether two clips show the same source (0.1.2): the same media item, or the same nested sequence - for a multicam
+/// clip also the same video angle, since each angle is another camera. (color.matchScene and color.grade.copy scope
+/// "media"; 0.4 public for the app.)
+bool sameSource(const Clip& a, const Clip& b);
 
 } // namespace wabcut::color

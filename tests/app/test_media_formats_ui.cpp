@@ -16,6 +16,7 @@
 #include "LibraryBridge.h"
 #include "MediaBridge.h"
 #include "ProjectController.h"
+#include "ProjectLifecycle.h"
 #include "SourceMonitorBridge.h"
 
 #include <wabcut/export/VideoFrameSource.h>
@@ -27,8 +28,15 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QQmlComponent>
+#include <QQmlContext>
+#include <QQmlExpression>
+#include <QQuickItem>
 #include <QQuickImageResponse>
 #include <QQuickTextureFactory>
+#include <QScopeGuard>
+#include <QSettings>
+#include <QStorageInfo>
 #include <QTemporaryDir>
 #include <QUrl>
 
@@ -200,6 +208,9 @@ TEST_CASE("Media Browser: GoPro chapters list as one clip; folders first", "[app
     const QVariantList entries = library.browseFolder(dir.path());
     REQUIRE(entries.size() == 3);
     CHECK(entries[0].toMap().value(QStringLiteral("folder")).toBool());
+    // 0.4: every row has its file URL (folder rows import through ProjectFile.importFiles).
+    CHECK(entries[0].toMap().value(QStringLiteral("url")).toUrl() ==
+          QUrl::fromLocalFile(entries[0].toMap().value(QStringLiteral("path")).toString()));
     const QVariantMap gopro = entries[1].toMap();
     CHECK(gopro.value(QStringLiteral("name")).toString() == QStringLiteral("GX010042"));
     CHECK(gopro.value(QStringLiteral("spanned")).toBool());
@@ -489,4 +500,312 @@ TEST_CASE("Media Browser hover scrub: a clip's strip is ten of its frames side b
     REQUIRE_FALSE(stillStrip.isNull());
     CHECK(stillStrip.width() == 640);
     CHECK(stillStrip.pixelColor(600, 18).green() > 200);
+}
+
+// 0.4: the Media Browser's places: Videos and Home, the game capture tools' folders that exist (an OBS profile's
+// recording folder here, from a fake OBS config), the folders the last dialog imports came from, then the drives.
+TEST_CASE("Media Browser: places list game capture folders and recent import folders", "[app][library][media-browser]") {
+    QSettings().remove(QStringLiteral("import"));
+    QTemporaryDir dir;
+    REQUIRE(dir.isValid());
+    const QString recordings = dir.filePath(QStringLiteral("obsrec"));
+    REQUIRE(QDir().mkpath(recordings));
+    const QString config = dir.filePath(QStringLiteral("config"));
+    const QString profile = config + QStringLiteral("/obs-studio/basic/profiles/Untitled");
+    REQUIRE(QDir().mkpath(profile));
+    {
+        QFile ini(profile + QStringLiteral("/basic.ini"));
+        REQUIRE(ini.open(QIODevice::WriteOnly));
+        ini.write("[General]\nName=Untitled\n\n[SimpleOutput]\nFilePath=");
+        ini.write(QDir::toNativeSeparators(recordings).toUtf8());
+        ini.write("\n");
+    }
+    // OBS's config folder comes from APPDATA (Windows) or XDG_CONFIG_HOME (Linux): both point at the fake one.
+    const bool hadAppData = qEnvironmentVariableIsSet("APPDATA");
+    const QByteArray appData = qgetenv("APPDATA");
+    const bool hadXdg = qEnvironmentVariableIsSet("XDG_CONFIG_HOME");
+    const QByteArray xdg = qgetenv("XDG_CONFIG_HOME");
+    qputenv("APPDATA", QDir::toNativeSeparators(config).toLocal8Bit());
+    qputenv("XDG_CONFIG_HOME", QDir::toNativeSeparators(config).toLocal8Bit());
+    const auto restore = qScopeGuard([&] {
+        if (hadAppData)
+            qputenv("APPDATA", appData);
+        else
+            qunsetenv("APPDATA");
+        if (hadXdg)
+            qputenv("XDG_CONFIG_HOME", xdg);
+        else
+            qunsetenv("XDG_CONFIG_HOME");
+        QSettings().remove(QStringLiteral("import"));
+    });
+
+    LibraryBridge library;
+    library.setPersistent(false);
+    const auto find = [](const QVariantList& places, const QString& name) {
+        for (const QVariant& v : places) {
+            if (v.toMap().value(QStringLiteral("name")).toString() == name)
+                return v.toMap();
+        }
+        return QVariantMap{};
+    };
+    const auto indexOf = [](const QVariantList& places, const QString& kind) {
+        for (qsizetype i = 0; i < places.size(); ++i) {
+            if (places[i].toMap().value(QStringLiteral("kind")).toString() == kind)
+                return i;
+        }
+        return qsizetype{-1};
+    };
+    QVariantList places = library.browserPlaces();
+    REQUIRE_FALSE(places.isEmpty());
+    CHECK(places.front().toMap().value(QStringLiteral("kind")).toString() == QStringLiteral("folder"));
+#ifndef Q_OS_MACOS
+    const QVariantMap obs = find(places, QStringLiteral("OBS recordings"));
+    REQUIRE_FALSE(obs.isEmpty());
+    CHECK(QDir::cleanPath(obs.value(QStringLiteral("path")).toString()) == QDir::cleanPath(recordings));
+    CHECK(obs.value(QStringLiteral("kind")).toString() == QStringLiteral("capture"));
+#endif
+
+    // A dialog import's folder is listed as a recent place, after the capture folders and before the drives.
+    REQUIRE(QDir().mkpath(dir.filePath(QStringLiteral("a"))));
+    ProjectController controller;
+    ProjectLifecycle lifecycle(&controller);
+    lifecycle.rememberImportFolder({QUrl::fromLocalFile(dir.filePath(QStringLiteral("a/x.mp4")))});
+    places = library.browserPlaces();
+    const QVariantMap recent = find(places, QStringLiteral("Recent: a"));
+    REQUIRE_FALSE(recent.isEmpty());
+    CHECK(recent.value(QStringLiteral("kind")).toString() == QStringLiteral("recent"));
+    CHECK(QDir::cleanPath(recent.value(QStringLiteral("path")).toString()) == QDir::cleanPath(dir.filePath(QStringLiteral("a"))));
+    const qsizetype recentAt = indexOf(places, QStringLiteral("recent"));
+    CHECK(recentAt > indexOf(places, QStringLiteral("folder")));
+#ifndef Q_OS_MACOS
+    CHECK(recentAt > indexOf(places, QStringLiteral("capture")));
+#endif
+    if (const qsizetype driveAt = indexOf(places, QStringLiteral("drive")); driveAt >= 0)
+        CHECK(recentAt < driveAt);
+
+    // Fix round 1 (D): an import from a drive's root (an SD card, a USB stick) is no "Recent: " row without a name:
+    // the drive is listed anyway.
+    const QString root = QStorageInfo(dir.path()).rootPath();
+    REQUIRE_FALSE(root.isEmpty());
+    lifecycle.rememberImportFolder({QUrl::fromLocalFile(QDir(root).filePath(QStringLiteral("clip.mp4")))});
+    places = library.browserPlaces();
+    QStringList names;
+    int rootRows = 0;
+    for (const QVariant& v : places) {
+        const QVariantMap p = v.toMap();
+        names << p.value(QStringLiteral("name")).toString();
+        if (QDir::cleanPath(p.value(QStringLiteral("path")).toString()).compare(QDir::cleanPath(root), Qt::CaseInsensitive) == 0) {
+            ++rootRows;
+            CHECK(p.value(QStringLiteral("kind")).toString() == QStringLiteral("drive"));
+        }
+    }
+    INFO(names.join(QStringLiteral(" | ")).toStdString());
+    CHECK_FALSE(names.contains(QStringLiteral("Recent: ")));
+    CHECK(rootRows == 1);
+    CHECK_FALSE(find(places, QStringLiteral("Recent: a")).isEmpty()); // the folder before is still there
+}
+
+namespace {
+
+/// A Media Browser panel made in the shell's engine (its own Component.onCompleted reads where to open), over the
+/// window's content.
+std::unique_ptr<QQuickItem> makeBrowser(Shell& shell, const QByteArray& panel = "MediaBrowserPanel {}") {
+    QQmlComponent component(&shell.engine);
+    component.setData("import Wabcut\n" + panel + "\n", QUrl(QStringLiteral("qrc:/d04-browser/Host.qml")));
+    std::unique_ptr<QObject> object(component.create());
+    INFO(component.errorString().toStdString());
+    REQUIRE(object);
+    auto* item = qobject_cast<QQuickItem*>(object.get());
+    REQUIRE(item);
+    object.release();
+    item->setParentItem(shell.window->contentItem());
+    item->setSize(QSizeF(420, 600));
+    return std::unique_ptr<QQuickItem>(item);
+}
+
+/// Runs `code` in Main.qml's context (its ids: docking, window, ...) and returns its value.
+QVariant evaluateInWindow(const Shell& shell, const QString& code) {
+    QQmlExpression expression(qmlContext(shell.window.get()), shell.window.get(), code);
+    const QVariant result = expression.evaluate();
+    INFO(code.toStdString() << ": " << expression.error().toString().toStdString());
+    REQUIRE_FALSE(expression.hasError());
+    return result;
+}
+
+/// Maximize Frame on the Media Browser's panel group (or back): its header has room for its tools beside the tabs.
+void toggleMaximizeMediaBrowser(const Shell& shell) {
+    evaluateInWindow(shell, QStringLiteral("docking.toggleMaximize(docking.groupOfPanel('mediaBrowser').group)"));
+    spin(100);
+}
+
+QQuickItem* findItemNamed(QQuickItem* root, const QString& name) {
+    if (!root)
+        return nullptr;
+    if (root->objectName() == name)
+        return root;
+    for (QQuickItem* child : root->childItems()) {
+        if (QQuickItem* found = findItemNamed(child, name))
+            return found;
+    }
+    return nullptr;
+}
+
+} // namespace
+
+// 0.4: the Media Browser opens at the folder it showed last (Preferences.mediaBrowserLastFolder) while that folder is
+// there, else at the first place (Videos); its places menu lists the capture tools' folders.
+TEST_CASE("Media Browser: it reopens the folder it showed last", "[app][library][media-browser][qml][screenshots]") {
+    resetSettings();
+    clearMessages();
+    QSettings().remove(QStringLiteral("import"));
+    QTemporaryDir dir;
+    REQUIRE(dir.isValid());
+    const QString clips = dir.filePath(QStringLiteral("Clips"));
+    REQUIRE(QDir().mkpath(clips + QStringLiteral("/Session 1")));
+    // A fake OBS profile, so the places menu has an "OBS recordings" row (as in the places test above).
+    const QString recordings = dir.filePath(QStringLiteral("obsrec"));
+    REQUIRE(QDir().mkpath(recordings));
+    const QString config = dir.filePath(QStringLiteral("config"));
+    const QString profile = config + QStringLiteral("/obs-studio/basic/profiles/Untitled");
+    REQUIRE(QDir().mkpath(profile));
+    {
+        QFile ini(profile + QStringLiteral("/basic.ini"));
+        REQUIRE(ini.open(QIODevice::WriteOnly));
+        ini.write("[General]\nName=Untitled\n\n[SimpleOutput]\nFilePath=");
+        ini.write(QDir::toNativeSeparators(recordings).toUtf8());
+        ini.write("\n");
+    }
+    const bool hadAppData = qEnvironmentVariableIsSet("APPDATA");
+    const QByteArray appData = qgetenv("APPDATA");
+    const bool hadXdg = qEnvironmentVariableIsSet("XDG_CONFIG_HOME");
+    const QByteArray xdg = qgetenv("XDG_CONFIG_HOME");
+    qputenv("APPDATA", QDir::toNativeSeparators(config).toLocal8Bit());
+    qputenv("XDG_CONFIG_HOME", QDir::toNativeSeparators(config).toLocal8Bit());
+    const auto restore = qScopeGuard([&] {
+        if (hadAppData)
+            qputenv("APPDATA", appData);
+        else
+            qunsetenv("APPDATA");
+        if (hadXdg)
+            qputenv("XDG_CONFIG_HOME", xdg);
+        else
+            qunsetenv("XDG_CONFIG_HOME");
+        QSettings().remove(QStringLiteral("import"));
+    });
+    const auto same = [](const QString& a, const QString& b) {
+        return QDir::cleanPath(QDir::fromNativeSeparators(a)) == QDir::cleanPath(QDir::fromNativeSeparators(b));
+    };
+
+    Shell shell;
+    REQUIRE(shell.window);
+    INFO(join(shell.errors));
+    REQUIRE(shell.errors.isEmpty());
+    shell.resize(kShotWidth, kShotHeight);
+    shell.theme->setProperty("reduceMotion", true);
+    REQUIRE(shell.preferences);
+    auto* library = shell.engine.singletonInstance<LibraryBridge*>("Wabcut", "Library");
+    REQUIRE(library);
+    library->setPersistent(false);
+    REQUIRE(QMetaObject::invokeMethod(shell.window.get(), "runCommand", Q_ARG(QVariant, QStringLiteral("window.mediaBrowser"))));
+    QObject* panelObject = nullptr;
+    REQUIRE(waitFor([&] {
+        panelObject = shell.window->findChild<QObject*>(QStringLiteral("mediaBrowserPanel"));
+        return panelObject != nullptr;
+    }, 5000));
+    auto* panel = qobject_cast<QQuickItem*>(panelObject);
+    REQUIRE(panel);
+
+    // A folder that opens is remembered.
+    bool ok = false;
+    REQUIRE(QMetaObject::invokeMethod(panel, "openFolder", Q_RETURN_ARG(bool, ok), Q_ARG(QVariant, clips)));
+    CHECK(ok);
+    CHECK(same(shell.preferences->property("mediaBrowserLastFolder").toString(), clips));
+
+    // A new Media Browser opens there.
+    {
+        const auto again = makeBrowser(shell);
+        CHECK(same(again->property("folder").toString(), clips));
+        QQuickItem* location = findItemNamed(again.get(), QStringLiteral("mediaBrowserLocation"));
+        REQUIRE(location);
+        CHECK(same(location->property("text").toString(), clips));
+        const QVariantList entries = again->property("entries").toList();
+        REQUIRE(entries.size() == 1);
+        CHECK(entries.front().toMap().value(QStringLiteral("name")).toString() == QStringLiteral("Session 1"));
+    }
+    // Fix round 1 (D): a Media Browser made hidden (the window preloads its panels) reads no folder until it shows: a
+    // folder on a share that does not answer would hold the window just after start-up.
+    {
+        const auto hidden = makeBrowser(shell, "MediaBrowserPanel { visible: false }");
+        spin(50);
+        CHECK(hidden->property("folder").toString().isEmpty());
+        CHECK(hidden->property("entries").toList().isEmpty());
+        hidden->setVisible(true);
+        REQUIRE(waitFor([&] { return !hidden->property("folder").toString().isEmpty(); }, 5000));
+        CHECK(same(hidden->property("folder").toString(), clips));
+        CHECK(hidden->property("entries").toList().size() == 1);
+    }
+
+    // The places menu over the OBS recordings: Videos and Home, the capture folders, the folder the last import came
+    // from, the drives (the screenshot, with the panel's group maximized so its header tools show beside the tabs).
+    REQUIRE(QDir().mkpath(recordings + QStringLiteral("/2026-10-20 Ranked")));
+    REQUIRE(QDir().mkpath(dir.filePath(QStringLiteral("Footage"))));
+    auto* lifecycle = shell.engine.singletonInstance<ProjectLifecycle*>("Wabcut", "ProjectFile");
+    REQUIRE(lifecycle);
+    lifecycle->rememberImportFolder({QUrl::fromLocalFile(dir.filePath(QStringLiteral("Footage/x.mp4")))});
+    toggleMaximizeMediaBrowser(shell);
+    REQUIRE(QMetaObject::invokeMethod(panel, "openFolder", Q_RETURN_ARG(bool, ok), Q_ARG(QVariant, recordings)));
+    CHECK(ok);
+    QObject* placesButton = panel->findChild<QObject*>(QStringLiteral("mediaBrowserPlaces"));
+    if (!placesButton)
+        placesButton = findItemNamed(panel, QStringLiteral("mediaBrowserPlaces"));
+    REQUIRE(placesButton);
+    QObject* placesMenu = panel->findChild<QObject*>(QStringLiteral("mediaBrowserPlacesMenu"));
+    REQUIRE(placesMenu);
+    spin(100);
+    REQUIRE(QMetaObject::invokeMethod(placesButton, "clicked"));
+    REQUIRE(waitFor([&] { return placesMenu->property("opened").toBool(); }, 5000));
+    QStringList names;
+    for (const QVariant& v : placesMenu->property("options").toList())
+        names << v.toMap().value(QStringLiteral("name")).toString();
+    INFO(names.join(QStringLiteral(" | ")).toStdString());
+#ifndef Q_OS_MACOS
+    CHECK(names.contains(QStringLiteral("OBS recordings")));
+#endif
+    CHECK(names.contains(QStringLiteral("Recent: Footage")));
+    spin(50);
+    const QImage image = shell.grab();
+    REQUIRE_FALSE(image.isNull());
+    REQUIRE(image.save(QDir(outputDir()).filePath(QStringLiteral("media-browser-places.png"))));
+    REQUIRE(QMetaObject::invokeMethod(placesMenu, "close"));
+    toggleMaximizeMediaBrowser(shell);
+
+    // A folder that does not open is not remembered.
+    REQUIRE(QMetaObject::invokeMethod(panel, "openFolder", Q_RETURN_ARG(bool, ok),
+                                      Q_ARG(QVariant, dir.filePath(QStringLiteral("missing")))));
+    CHECK_FALSE(ok);
+    CHECK(same(shell.preferences->property("mediaBrowserLastFolder").toString(), recordings));
+
+    // The folder shown last gone: the first place (Videos), and no message about it.
+    REQUIRE(QMetaObject::invokeMethod(panel, "openFolder", Q_RETURN_ARG(bool, ok), Q_ARG(QVariant, clips)));
+    REQUIRE(QDir(clips).removeRecursively());
+    {
+        QStringList said; // what the Library said meanwhile (each message is a toast in the window)
+        const auto listen = QObject::connect(library, &LibraryBridge::messageChanged, library, [&] {
+            if (!library->message().isEmpty())
+                said << library->message();
+        });
+        const auto again = makeBrowser(shell);
+        QObject::disconnect(listen);
+        const QVariantList places = library->browserPlaces();
+        REQUIRE_FALSE(places.isEmpty());
+        CHECK(same(again->property("folder").toString(), places.front().toMap().value(QStringLiteral("path")).toString()));
+        INFO(said.join(QStringLiteral(" | ")).toStdString());
+        CHECK(said.isEmpty());
+    }
+
+    shell.preferences->setProperty("mediaBrowserLastFolder", QString());
+    const QStringList messages = takeMessages();
+    INFO(join(messages));
+    CHECK(messages.isEmpty());
+    resetSettings();
 }

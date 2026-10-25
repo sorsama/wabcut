@@ -10,10 +10,16 @@ import QtQuick.Controls.Basic
 //                       undo step), Cancel / Esc drops it
 //   paragraph grip      drag a paragraph before another one (transcript.moveRange)
 //   find                every occurrence is marked; ↑/↓ jump; Select all selects them
+//   right-click         (0.4) the word menu: Copy (Ctrl+C), Copy with Timecodes, Mark In and Out, Add Marker, Add Chapter
+//                       Marker, Lift, Delete, Keep Only, Fix…, Find All (also the Menu key and Shift+F10)
+//   follow              (0.4) the word under the playhead stays in view while playing or scrubbing, with its paragraph
+//                       when that fits (the crosshair button; scrolling pauses it for 3 s)
 // The word under the playhead is filled with the accent. Thai and other unspaced languages sit word unit by word unit
 // with no spaces (the model's word boundaries), so lines only break between units.
 // Without a transcript: choose a transcriber (this computer or a cloud model from Preferences > AI, with the consent
 // prompt before the first upload) and transcribe the sequence or the selected clips, with progress and Cancel.
+// 0.4: the audio tracks to transcribe are switches (the mic and dialogue tracks by default; the choice is remembered by
+// track name).
 FocusScope {
     id: root
     objectName: "transcriptPage"
@@ -21,6 +27,94 @@ FocusScope {
     signal setupRequested()
 
     readonly property bool hasWords: Transcript.wordCount > 0
+    /// The audio tracks Transcribe sends (Transcript.audioTracks' chosen ones).
+    readonly property int chosenTracks: Transcript.audioTracks.filter(t => t.chosen === true).length
+    readonly property bool tracksReady: chosenTracks > 0 || Transcript.audioTracks.length === 0
+    /// What the word menu runs once it has closed ("fix", "find"): a row that moves the focus waits for the menu.
+    property string pendingMenuAction: ""
+
+    function tracksSummary(chosen: int, total: int): string {
+        return total === 1 ? qsTr("%1 of 1 audio track").arg(chosen) : qsTr("%1 of %2 audio tracks").arg(chosen).arg(total)
+    }
+
+    // The word menu from the keyboard (Menu, Shift+F10): under the first selected word, scrolled into view.
+    function openWordMenuFromKeys() {
+        let x = Theme.space(4)
+        let y = Theme.space(4)
+        const first = Transcript.selectionFirst()
+        const wordItem = first >= 0 ? root.showWord(first) : null
+        if (wordItem) {
+            const at = wordItem.mapToItem(textArea, 0, wordItem.height)
+            x = at.x
+            y = at.y
+        }
+        wordMenu.popup(textArea, x, y)
+    }
+
+    // The WordText of word `word` in a paragraph delegate (null when it is not built).
+    function wordItemIn(item: Item, word: int): Item {
+        const pending = [item]
+        while (pending.length > 0) {
+            const at = pending.pop()
+            const text = at as WordText
+            if (text && text.wordIndex === word)
+                return text
+            for (let i = 0; i < at.children.length; ++i)
+                pending.push(at.children[i])
+        }
+        return null
+    }
+
+    // Brings word `word` into view and returns its WordText (null when it is not built). Its paragraph is contained (no
+    // jump while it shows). A paragraph taller than the view (a long monologue runs to 80 words) scrolls to the word's
+    // line instead: Contain would put that paragraph's top at the view's top on every word and hide its later lines.
+    function showWord(word: int): Item {
+        const paragraph = Transcript.paragraphOfWord(word)
+        if (paragraph < 0)
+            return null
+        let item = list.itemAtIndex(paragraph)
+        if (!item || item.height <= list.height) {
+            list.positionViewAtIndex(paragraph, ListView.Contain)
+            item = list.itemAtIndex(paragraph)
+        }
+        if (!item)
+            return null
+        const wordItem = root.wordItemIn(item, word)
+        if (!wordItem || item.height <= list.height)
+            return wordItem
+        const top = wordItem.mapToItem(list.contentItem, 0, 0).y
+        if (top >= list.contentY && top + wordItem.height <= list.contentY + list.height)
+            return wordItem
+        const lowest = list.originY + Math.max(0, list.contentHeight - list.height)
+        list.contentY = Math.max(list.originY, Math.min(top - Theme.space(2), lowest))
+        return wordItem
+    }
+
+    function openFixRow() {
+        fixField.text = Transcript.selectedText()
+        fixRow.visible = true
+        fixField.forceActiveFocus()
+        fixField.selectAll()
+    }
+
+    // Follow the playhead (0.4): the word under it comes into view (showWord: its paragraph, or its line in a paragraph
+    // taller than the view), unless the user scrolled in the last 3 s. A Find jump always shows its match.
+    Connections {
+        target: Transcript
+        function onCurrentWordChanged() {
+            const word = Transcript.currentWord
+            if (!root.hasWords || !Preferences.transcriptFollowPlayhead || word < 0 || Date.now() - list.userScrolledAt < 3000)
+                return
+            root.showWord(word)
+        }
+        function onSearchChanged() {
+            if (!root.hasWords || Transcript.matchIndex < 0)
+                return
+            const first = Transcript.selectionFirst()
+            if (first >= 0)
+                root.showWord(first)
+        }
+    }
 
     function start(scope) {
         const prompt = Transcript.consentFor(scope)
@@ -272,6 +366,55 @@ FocusScope {
                 }
             }
 
+            // 0.4: the audio tracks to transcribe (the voice ones by default; game audio, music and voice chat off).
+            GroupLabel {
+                objectName: "transcribeTracksLabel"
+                visible: Transcript.audioTracks.length > 0
+                text: qsTr("Tracks")
+            }
+            ColumnLayout {
+                objectName: "transcribeTracks"
+                Layout.fillWidth: true
+                visible: Transcript.audioTracks.length > 0
+                spacing: 0
+                Repeater {
+                    // By count, so a switch keeps its focus when the choice changes.
+                    model: Transcript.audioTracks.length
+                    delegate: Toggle {
+                        id: trackToggle
+                        required property int index
+                        readonly property var track: Transcript.audioTracks[index] ?? ({})
+                        objectName: "transcribeTrack_" + index
+                        Layout.fillWidth: true
+                        text: track.label ?? ""
+                        checked: track.chosen === true
+                        tooltip: checked ? qsTr("Leave %1 out of the transcription").arg(text) : qsTr("Transcribe %1 too").arg(text)
+                        onToggled: Transcript.setTrackChosen(trackToggle.index, trackToggle.checked)
+                    }
+                }
+                Text {
+                    objectName: "transcribeTracksSummary"
+                    Layout.fillWidth: true
+                    Layout.topMargin: Theme.space(1)
+                    text: root.tracksSummary(root.chosenTracks, Transcript.audioTracks.length)
+                    color: root.chosenTracks > 0 ? Theme.textSecondary : Theme.warning
+                    font.family: Theme.fontSans
+                    font.pixelSize: Theme.textSm
+                    font.weight: Font.DemiBold
+                }
+                Text {
+                    objectName: "transcribeTracksHint"
+                    Layout.fillWidth: true
+                    visible: root.chosenTracks < Transcript.audioTracks.length
+                    text: root.chosenTracks > 0 ? qsTr("Game audio, music and voice chat are left out; switch them on to transcribe them too.")
+                                                : qsTr("Choose at least one audio track")
+                    wrapMode: Text.Wrap
+                    color: Theme.textTertiary
+                    font.family: Theme.fontSans
+                    font.pixelSize: Theme.textSm
+                }
+            }
+
             RowLayout {
                 Layout.fillWidth: true
                 spacing: Theme.space(2)
@@ -281,13 +424,14 @@ FocusScope {
                     variant: "primary"
                     iconName: "captions"
                     text: qsTr("Transcribe sequence")
-                    enabled: !Transcript.setupNeeded && Transcript.jobStatus !== "running"
+                    enabled: !Transcript.setupNeeded && Transcript.jobStatus !== "running" && root.tracksReady
                     onClicked: root.start("sequence")
                 }
                 PillButton {
                     objectName: "transcribeSelectionButton"
                     text: qsTr("Selected clips")
                     enabled: !Transcript.setupNeeded && Transcript.jobStatus !== "running" && ProjectController.selectedClips.length > 0
+                             && root.tracksReady
                     onClicked: root.start("selection")
                 }
             }
@@ -380,6 +524,19 @@ FocusScope {
                 text: qsTr("Select all")
                 onClicked: Transcript.selectAllMatches()
             }
+            // 0.4: follow the playhead (remembered).
+            IconButton {
+                objectName: "transcriptFollowToggle"
+                compact: true
+                checkable: true
+                checked: Preferences.transcriptFollowPlayhead
+                iconName: "crosshair"
+                tooltip: checked ? qsTr("Stop following the playhead") : qsTr("Follow the playhead")
+                onClicked: {
+                    Preferences.transcriptFollowPlayhead = checked
+                    checked = Qt.binding(() => Preferences.transcriptFollowPlayhead)
+                }
+            }
         }
 
         JobRow { Layout.fillWidth: true }
@@ -403,6 +560,7 @@ FocusScope {
 
             // Delete / Backspace previews deleting the selection, Return applies a preview, Esc drops it (claimed before
             // the keymap's Delete, which would delete clips).
+            // 0.4: Ctrl+C copies the selected words (the clip clipboard is untouched), Menu / Shift+F10 open the word menu.
             Keys.onShortcutOverride: event => {
                 if ((event.key === Qt.Key_Delete || event.key === Qt.Key_Backspace) && Transcript.hasSelection)
                     event.accepted = true
@@ -410,9 +568,21 @@ FocusScope {
                     event.accepted = true
                 else if (event.key === Qt.Key_Escape && (Transcript.previewing || Transcript.hasSelection))
                     event.accepted = true
+                else if (event.matches(StandardKey.Copy) && Transcript.hasSelection)
+                    event.accepted = true
+                else if ((event.key === Qt.Key_Menu || (event.key === Qt.Key_F10 && event.modifiers === Qt.ShiftModifier))
+                         && Transcript.hasSelection)
+                    event.accepted = true
             }
             Keys.onPressed: event => {
-                if ((event.key === Qt.Key_Delete || event.key === Qt.Key_Backspace) && Transcript.hasSelection) {
+                if (event.matches(StandardKey.Copy) && Transcript.hasSelection) {
+                    Transcript.copySelection(false)
+                    event.accepted = true
+                } else if ((event.key === Qt.Key_Menu || (event.key === Qt.Key_F10 && event.modifiers === Qt.ShiftModifier))
+                           && Transcript.hasSelection) {
+                    root.openWordMenuFromKeys()
+                    event.accepted = true
+                } else if ((event.key === Qt.Key_Delete || event.key === Qt.Key_Backspace) && Transcript.hasSelection) {
                     Transcript.previewDelete()
                     event.accepted = true
                 } else if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter) && Transcript.previewing) {
@@ -435,7 +605,13 @@ FocusScope {
                 model: Transcript.paragraphs
                 spacing: Theme.space(3)
                 boundsBehavior: Flickable.StopAtBounds
-                ScrollBar.vertical: ThinScrollBar {}
+                // 0.4: when the user last scrolled (wheel, drag, the scroll bar): following waits 3 s after it.
+                property double userScrolledAt: 0
+                onMovementStarted: userScrolledAt = Date.now()
+                onMovementEnded: userScrolledAt = Date.now()
+                ScrollBar.vertical: ThinScrollBar {
+                    onPressedChanged: list.userScrolledAt = Date.now()
+                }
 
                 delegate: Item {
                     id: para
@@ -463,12 +639,25 @@ FocusScope {
                         anchors.fill: parent
                         anchors.topMargin: flow.y
                         preventStealing: true
+                        acceptedButtons: Qt.LeftButton | Qt.RightButton
                         property int anchorWord: -1
                         onPressed: mouse => {
                             textArea.pointerFocus = true
                             textArea.forceActiveFocus(Qt.MouseFocusReason)
                             const p = mapToItem(para, mouse.x, mouse.y)
                             const w = root.wordUnder(para, p.x, p.y)
+                            // 0.4: the right button selects the word when it is not selected and opens the word menu
+                            // (no drag).
+                            if (mouse.button === Qt.RightButton) {
+                                anchorWord = -1
+                                if (w >= 0 && !Transcript.isSelected(w))
+                                    Transcript.clickWord(w, 0)
+                                if (Transcript.hasSelection) {
+                                    const at = mapToItem(textArea, mouse.x, mouse.y)
+                                    wordMenu.popup(textArea, at.x, at.y)
+                                }
+                                return
+                            }
                             anchorWord = w
                             if (w >= 0)
                                 Transcript.clickWord(w, mouse.modifiers)
@@ -678,12 +867,7 @@ FocusScope {
                         iconName: "pencil"
                         text: qsTr("Fix…")
                         tooltip: qsTr("Correct a transcription mistake")
-                        onClicked: {
-                            fixField.text = Transcript.selectedText()
-                            fixRow.visible = true
-                            fixField.forceActiveFocus()
-                            fixField.selectAll()
-                        }
+                        onClicked: root.openFixRow()
                     }
                     PillButton {
                         objectName: "transcriptApply"
@@ -707,6 +891,99 @@ FocusScope {
                     }
                 }
             }
+        }
+    }
+
+    // 0.4: the word menu (right-click, Menu, Shift+F10). It acts on the span from the first to the last selected word,
+    // except Copy (the selected words). OptionsMenu, not ContextMenu: this file imports QtQuick.Controls.
+    OptionsMenu {
+        id: wordMenu
+        objectName: "transcriptContextMenu"
+        onClosed: {
+            const action = root.pendingMenuAction
+            root.pendingMenuAction = ""
+            if (action === "fix") {
+                root.openFixRow()
+            } else if (action === "find") {
+                // As the language writes it (Thai without spaces), as the search matches the shown words; with several
+                // runs (Ctrl-click), the first one.
+                search.text = Transcript.selectionSearchText()
+                search.forceActiveFocus()
+            }
+        }
+
+        ContextMenuItem {
+            objectName: "transcriptCopyItem"
+            text: qsTr("Copy")
+            iconName: "copy"
+            command: "edit.copy"
+            onTriggered: Transcript.copySelection(false)
+        }
+        ContextMenuItem {
+            objectName: "transcriptCopyTimecodesItem"
+            text: qsTr("Copy with Timecodes")
+            iconName: "clock"
+            enabled: !Transcript.previewing
+            onTriggered: Transcript.copySelection(true)
+        }
+        ContextMenuSeparator {}
+        ContextMenuItem {
+            objectName: "transcriptMarkItem"
+            text: qsTr("Mark In and Out")
+            iconName: "play-in-out"
+            enabled: !Transcript.previewing
+            onTriggered: Transcript.markSelection()
+        }
+        ContextMenuItem {
+            objectName: "transcriptMarkerItem"
+            text: qsTr("Add Marker")
+            iconName: "bookmark"
+            enabled: !Transcript.previewing
+            onTriggered: Transcript.addMarkerFromSelection(false)
+        }
+        ContextMenuItem {
+            objectName: "transcriptChapterItem"
+            text: qsTr("Add Chapter Marker")
+            iconName: "book-open"
+            enabled: !Transcript.previewing
+            onTriggered: Transcript.addMarkerFromSelection(true)
+        }
+        ContextMenuSeparator {}
+        ContextMenuItem {
+            objectName: "transcriptLiftItem"
+            text: qsTr("Lift")
+            iconName: "lift-edit"
+            enabled: !Transcript.previewing
+            onTriggered: Transcript.liftSelection()
+        }
+        ContextMenuItem {
+            objectName: "transcriptDeleteItem"
+            text: qsTr("Delete")
+            iconName: "trash-2"
+            enabled: !Transcript.previewing
+            onTriggered: Transcript.previewDelete()
+        }
+        ContextMenuItem {
+            objectName: "transcriptKeepItem"
+            text: qsTr("Keep Only")
+            iconName: "scissors"
+            enabled: !Transcript.previewing
+            onTriggered: Transcript.previewKeep()
+        }
+        ContextMenuItem {
+            objectName: "transcriptFixItem"
+            text: qsTr("Fix…")
+            iconName: "pencil"
+            enabled: !Transcript.previewing
+            onTriggered: root.pendingMenuAction = "fix"
+        }
+        ContextMenuSeparator {}
+        ContextMenuItem {
+            objectName: "transcriptFindAllItem"
+            text: qsTr("Find All")
+            iconName: "search"
+            enabled: !Transcript.previewing
+            onTriggered: root.pendingMenuAction = "find"
         }
     }
 

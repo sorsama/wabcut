@@ -6,18 +6,21 @@
 //                 rate (the nominal rate, also for a variable frame rate capture: the probe snaps it to a standard
 //                 rate), duration, codec, HDR (PQ / HLG, shown tone-mapped), the flags that suggest proxies (above
 //                 60 fps, 4K, 20 minutes or longer) with the reason, and one row per audio stream with a suggested
-//                 track name: Game, Mic, Discord, then "Audio n" (OBS's usual track order).
+//                 track name and its role (0.4: from the stream's title, as later drops route by).
 //   create(...)   makes the project in one go through Home's media start (HomeBridge::createFromMediaWith, UX rework):
 //                 Home.createProject at the recording's size and nominal rate (saved and opened),
 //                 ProjectFile.importFiles, one audio track per included stream (sequence.addTrack while the sequence has
 //                 fewer), the recording at 00:00 with V1 and the included streams on A1, A2, ... in stream order
 //                 (edit.insertFromSource with explicit patches: an excluded stream is not patched), the track names
-//                 (track.setState), proxies when suggested (MediaReadiness.generateProxies), then a save. It returns ""
-//                 or the failed step's message; no step is skipped silently (a step after the project was made leaves
-//                 it open). The Home screen's New project page ("Start with media") calls Home.createFromMedia itself;
-//                 inspect() still gives it the recording's streams, badges and notes.
-// Stream titles: FFmpeg's AudioStreamInfo carries no title, so the names are suggestions by position. A.10's OBS ingest
-// should provide the real track titles (OBS writes them as the streams' "title" tags) and replace these suggestions.
+//                 (track.setState) and roles (0.4, track.setRole), proxies when suggested
+//                 (MediaReadiness.generateProxies), then a save. It returns "" or the failed step's message; no step is
+//                 skipped silently (a step after the project was made leaves it open). The Home screen's New project
+//                 page ("Start with media") calls Home.createFromMedia itself; inspect() still gives it the recording's
+//                 streams, badges and notes.
+// Stream titles (0.4): the suggested names are edit::sourceTrackNames' - the titles OBS, ShadowPlay and Game Bar write
+// ("Mic/Aux" -> Mic, "Desktop Audio" -> Game, "Track1" -> Track 1, others as written); untitled streams: two with video
+// Game, Mic; three or more Track 1, Track 2, ...; one Game - so the first recording's tracks are the ones later drops of
+// the same kind of recording route to. Each track gets the role its name implies (trackRoleOf).
 
 #include <wabcut/model/Error.h>
 #include <wabcut/model/MediaInfo.h>
@@ -49,8 +52,11 @@ class GamingStartBridge : public QObject {
     Q_OBJECT
     /// The last inspected recording: {ok, error, url, file, name, width, height, fps: {num, den, text}, vfr,
     /// durationSeconds, durationText, videoCodec, hdr ("PQ", "HLG" or ""), sizeText, fileSizeText, highFps, is4k,
-    /// isLong, proxies, proxyReason, audio: [{index, stream, channels, layout, codec, suggested}]}; empty before any.
-    /// `index` is the stream's place among the audio streams (0 = A1 of the source), `stream` its container index.
+    /// isLong, proxies, proxyReason, audio: [{index, stream, channels, layout, codec, suggested, title (0.4: the raw
+    /// stream title, "" when none), role ("dialogue" | "music" | "effects" | "none"), origin ("title" | "recognised" |
+    /// "inferred" | "none")}], mixHint (0.4: 3+ streams and stream 1 untitled or "Track 1": OBS's full mix)}; empty
+    /// before any. `index` is the stream's place among the audio streams (0 = A1 of the source), `stream` its container
+    /// index.
     Q_PROPERTY(QVariantMap recording READ recording NOTIFY recordingChanged FINAL)
     Q_PROPERTY(bool inspecting READ inspecting NOTIFY inspectingChanged FINAL)
     /// FileDialog filters for game recordings (OBS, ShadowPlay, Xbox Game Bar, ...).
@@ -80,6 +86,11 @@ public:
     static QVariantMap describe(const MediaInfo& info, const QString& file);
     /// "Game", "Mic", "Discord", then "Audio 4", ... for the stream at `position` among the audio streams.
     static QString suggestedTrackName(int position);
+    /// 0.4: the suggested track name of audio stream `position` of `info`: edit::sourceTrackNames' name, else (a single
+    /// untitled stream) suggestedTrackName(position).
+    static QString suggestedTrackName(const MediaInfo& info, int position);
+    /// 0.4: the role a track of this name gets: "dialogue" | "music" | "effects" | "none" (edit::sourceTrackName).
+    static QString trackRoleOf(const QString& name);
 
     QVariantMap recording() const { return m_recording; }
     bool inspecting() const { return m_inspecting; }

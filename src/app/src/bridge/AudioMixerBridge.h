@@ -21,7 +21,10 @@
 //     (audio.normalize), auto-duck music under dialogue (audio.autoDuck; its keys show as ghost curves on the
 //     timeline through TimelineView's external preview) and reduce noise on the selected clips (the denoise
 //     effect). Measuring commands run as dry runs on a worker thread over a copy of the project; the preview is
-//     applied as one undo step (when the project has not changed since), or dropped.
+//     applied as one undo step (when the project has not changed since), or dropped. 0.4: auto-duck has two modes
+//     (`duckMode`): "default" (music under dialogue, by role) and "gameUnderVoice" (audio.autoDuck's gaming preset:
+//     the game, and music with duckIncludeMusic, under the mic, found by track name); each mode keeps its own timing,
+//     and the mode is suggested per sequence (game mode when a game track and a voice track are there) until picked.
 //
 // Keys cross into QML as opaque strings ("t12", "e5", "c7", "master"); levels are dB; no ticks or 64-bit ids
 // (principle 9).
@@ -125,6 +128,13 @@ class AudioMixerBridge : public QObject {
     Q_PROPERTY(double duckRelease READ duckRelease WRITE setDuckRelease NOTIFY toolSettingsChanged FINAL)
     Q_PROPERTY(double duckHold READ duckHold WRITE setDuckHold NOTIFY toolSettingsChanged FINAL)
     Q_PROPERTY(double denoiseAmount READ denoiseAmount WRITE setDenoiseAmount NOTIFY toolSettingsChanged FINAL)
+    /// 0.4: "default" (music under dialogue, by role) or "gameUnderVoice" (audio.autoDuck's gaming preset, by name).
+    Q_PROPERTY(QString duckMode READ duckMode WRITE setDuckMode NOTIFY duckChanged FINAL)
+    /// 0.4, gameUnderVoice: the music tracks duck with the game (default true).
+    Q_PROPERTY(bool duckIncludeMusic READ duckIncludeMusic WRITE setDuckIncludeMusic NOTIFY duckChanged FINAL)
+    /// 0.4: what gameUnderVoice would use on the current sequence: { voice: [names], game: [names] } (the ducked
+    /// tracks: game, then music with duckIncludeMusic; audio::edit::chooseGameVoiceTracks).
+    Q_PROPERTY(QVariantMap gameTracks READ gameTracks NOTIFY duckChanged FINAL)
 
 public:
     /// Channels a meter shows: stereo strips 2; a 5.1 master 6 (M5n, A.9: L, R, C, LFE, Ls, Rs).
@@ -198,16 +208,23 @@ public:
     QString busy() const { return m_busy; }
     QVariantMap pending() const;
     QString message() const { return m_message; }
-    double duckAmount() const { return m_duckAmount; }
+    /// The duck timing of the current duckMode (each mode keeps its own).
+    double duckAmount() const { return m_duckTiming[static_cast<std::size_t>(m_duckIndex)].amount; }
     void setDuckAmount(double v);
-    double duckAttack() const { return m_duckAttack; }
+    double duckAttack() const { return m_duckTiming[static_cast<std::size_t>(m_duckIndex)].attack; }
     void setDuckAttack(double v);
-    double duckRelease() const { return m_duckRelease; }
+    double duckRelease() const { return m_duckTiming[static_cast<std::size_t>(m_duckIndex)].release; }
     void setDuckRelease(double v);
-    double duckHold() const { return m_duckHold; }
+    double duckHold() const { return m_duckTiming[static_cast<std::size_t>(m_duckIndex)].hold; }
     void setDuckHold(double v);
     double denoiseAmount() const { return m_denoiseAmount; }
     void setDenoiseAmount(double v);
+    QString duckMode() const;
+    /// "default" or "gameUnderVoice" (anything else is ignored); a pick sticks until the current sequence changes.
+    void setDuckMode(const QString& mode);
+    bool duckIncludeMusic() const { return m_duckIncludeMusic; }
+    void setDuckIncludeMusic(bool on);
+    QVariantMap gameTracks() const { return m_gameTracks; }
 
     /// The levels of a strip ("t12" or "master"); channels 0 when there is nothing to show.
     MeterLevels meter(const QString& key) const;
@@ -275,7 +292,8 @@ public:
     Q_INVOKABLE QString analyze(const QString& scope);
     /// Dry run of normalizing "mix", "tracks" or "clips" to the target; applyPending() applies it.
     Q_INVOKABLE QString previewNormalize(const QString& scope);
-    /// Dry run of ducking the music tracks under the dialogue tracks (roles); its keys show on the timeline.
+    /// Dry run of ducking the music tracks under the dialogue tracks (roles); its keys show on the timeline. 0.4: in
+    /// gameUnderVoice mode the game (and music, duckIncludeMusic) under the voice tracks, by track name.
     Q_INVOKABLE QString previewAutoDuck();
     /// Adds the Reduce Noise effect to the selected audio clips, or sets its amount where it is: one undo step.
     Q_INVOKABLE QString reduceNoise();
@@ -298,6 +316,8 @@ signals:
     void toolSettingsChanged();
     void faderValuesChanged();
     void liveLoudnessChanged();
+    /// 0.4: duckMode, duckIncludeMusic or gameTracks changed.
+    void duckChanged();
 
 private:
     struct Job;
@@ -307,7 +327,15 @@ private:
         QStringList warnings;
         std::shared_ptr<const ProjectState> preview;
         std::uint64_t baseRevision = 0;
+        /// 0.4: the undo step applyPending() names ("" = the command's own label).
+        std::string undoLabel;
     };
+    /// 0.4: one duck mode's timing (amount dB; attack, release, hold seconds).
+    struct DuckTiming {
+        double amount, attack, release, hold;
+    };
+    /// Recomputes gameTracks and, unless the user picked a mode for this sequence, the suggested mode.
+    void updateDuckTracks();
 
     void rebuild();
     /// p02 audio (AudioMixerRouting.cpp): a strip's routing fields (output, outputName, sends), the submix strips and the
@@ -388,7 +416,13 @@ private:
     QString m_busy;
     std::optional<Pending> m_pending;
     QString m_message;
-    double m_duckAmount = -12.0, m_duckAttack = 0.25, m_duckRelease = 0.75, m_duckHold = 0.25;
+    /// 0.4: per duck mode (0 "default", 1 "gameUnderVoice"; audio::edit's music and gaming ducking defaults).
+    std::array<DuckTiming, 2> m_duckTiming{{{-12.0, 0.25, 0.75, 0.25}, {-10.0, 0.12, 0.8, 0.35}}};
+    int m_duckIndex = 0;
+    bool m_duckModeChosen = false; ///< the user picked the mode for m_duckSequence
+    bool m_duckIncludeMusic = true;
+    QVariantMap m_gameTracks;
+    SequenceId m_duckSequence; ///< the sequence the mode was suggested (or picked) for
     double m_denoiseAmount = 1.0;
     std::unique_ptr<Job> m_job;
     bool m_duckPreviewShown = false;

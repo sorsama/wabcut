@@ -1,0 +1,365 @@
+{
+  "format": "wabcut-graphic-template",
+  "template": {
+    "description": "Centred pull quote in a dimmed box that grows with the text, with the attribution below.",
+    "duration": 1778112000000,
+    "fields": [
+      {
+        "id": "quote",
+        "kind": "text",
+        "label": "Quote",
+        "layer": 4,
+        "property": "text",
+        "value": "A sentence worth quoting, set large and centred so it reads at a glance."
+      },
+      {
+        "id": "attribution",
+        "kind": "text",
+        "label": "Attribution",
+        "layer": 5,
+        "property": "text",
+        "value": "Name, source"
+      },
+      {
+        "id": "accent",
+        "kind": "color",
+        "label": "Accent colour",
+        "layer": 3,
+        "property": "fill",
+        "value": {
+          "brand": "Accent",
+          "rgba": [
+            0.93,
+            0.92,
+            0.88,
+            1.0
+          ]
+        }
+      },
+      {
+        "id": "length",
+        "kind": "duration",
+        "label": "Length",
+        "property": "clip",
+        "value": 1778112000000
+      }
+    ],
+    "graphic": {
+      "height": 1080,
+      "layers": [
+        {
+          "children": [
+            {
+              "id": 2,
+              "kind": "shape",
+              "name": "Quote box",
+              "pin": {
+                "edges": [
+                  "left",
+                  "top",
+                  "right",
+                  "bottom"
+                ],
+                "offsets": [
+                  -56.0,
+                  -44.0,
+                  56.0,
+                  44.0
+                ],
+                "to": 4
+              },
+              "shape": {
+                "cornerRadius": 18.0,
+                "fill": {
+                  "color": {
+                    "brand": "Primary",
+                    "rgba": [
+                      0.07,
+                      0.07,
+                      0.08,
+                      1.0
+                    ]
+                  },
+                  "type": "solid"
+                },
+                "height": 222.4,
+                "type": "rectangle",
+                "width": 1312.0
+              },
+              "transform": {
+                "opacity": 84.0,
+                "scaleX": {
+                  "keys": [
+                    {
+                      "t": 0,
+                      "v": 0.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 62233920000,
+                      "v": 104.0
+                    },
+                    {
+                      "i": "easeIn",
+                      "t": 88905600000,
+                      "v": 100.0
+                    }
+                  ]
+                },
+                "scaleY": {
+                  "keys": [
+                    {
+                      "t": 0,
+                      "v": 0.0
+                    },
+                    {
+                      "i": "easeInOut",
+                      "t": 62233920000,
+                      "v": 104.0
+                    },
+                    {
+                      "i": "easeIn",
+                      "t": 88905600000,
+                      "v": 100.0
+                    }
+                  ]
+                },
+                "y": 67.2
+              }
+            },
+            {
+              "id": 3,
+              "kind": "shape",
+              "masks": [
+                {
+                  "enabled": true,
+                  "id": 1,
+                  "inverted": false,
+                  "mode": "add",
+                  "name": "Wipe",
+                  "params": {
+                    "center.x": {
+                      "keys": [
+                        {
+                          "t": 76204800000,
+                          "v": 0.020833333333333332
+                        },
+                        {
+                          "i": "easeIn",
+                          "t": 139708800000,
+                          "v": 0.0
+                        }
+                      ]
+                    },
+                    "center.y": {
+                      "value": 0.0
+                    },
+                    "size.x": {
+                      "keys": [
+                        {
+                          "t": 76204800000,
+                          "v": 0.0
+                        },
+                        {
+                          "i": "easeIn",
+                          "t": 139708800000,
+                          "v": 0.041666666666666664
+                        }
+                      ]
+                    },
+                    "size.y": {
+                      "value": 0.005555555555555556
+                    }
+                  },
+                  "shape": "rectangle"
+                }
+              ],
+              "name": "Accent rule",
+              "pin": {
+                "edges": [
+                  "top"
+                ],
+                "offsets": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "to": 2
+              },
+              "shape": {
+                "fill": {
+                  "color": {
+                    "brand": "Accent",
+                    "rgba": [
+                      0.93,
+                      0.92,
+                      0.88,
+                      1.0
+                    ]
+                  },
+                  "type": "solid"
+                },
+                "height": 6.0,
+                "type": "rectangle",
+                "width": 80.0
+              },
+              "transform": {
+                "y": -41.0
+              }
+            },
+            {
+              "id": 4,
+              "kind": "text",
+              "name": "Quote",
+              "text": {
+                "align": "center",
+                "animators": [
+                  {
+                    "name": "Words In",
+                    "offsetY": 21.6,
+                    "opacity": 0.0,
+                    "shape": "ramp",
+                    "start": {
+                      "keys": [
+                        {
+                          "t": 50803200000,
+                          "v": 0.0
+                        },
+                        {
+                          "t": 177811200000,
+                          "v": 100.0
+                        }
+                      ]
+                    },
+                    "unit": "word"
+                  }
+                ],
+                "boxWidth": 1200.0,
+                "runs": [
+                  {
+                    "brandFont": "heading",
+                    "fill": [
+                      0.96,
+                      0.96,
+                      0.95,
+                      1.0
+                    ],
+                    "font": "IBM Plex Sans Thai",
+                    "size": 56.0,
+                    "text": "A sentence worth quoting, set large and centred so it reads at a glance.",
+                    "weight": 500
+                  }
+                ]
+              }
+            },
+            {
+              "id": 5,
+              "kind": "text",
+              "name": "Attribution",
+              "pin": {
+                "edges": [
+                  "bottom"
+                ],
+                "offsets": [
+                  0.0,
+                  0.0,
+                  0.0,
+                  64.8
+                ],
+                "to": 2
+              },
+              "shadow": {
+                "angle": 90.0,
+                "color": [
+                  0.03,
+                  0.03,
+                  0.04,
+                  1.0
+                ],
+                "distance": 3.0,
+                "enabled": true,
+                "opacity": 0.6,
+                "softness": 10.0
+              },
+              "text": {
+                "align": "center",
+                "runs": [
+                  {
+                    "brandFont": "body",
+                    "fill": [
+                      0.96,
+                      0.96,
+                      0.95,
+                      0.88
+                    ],
+                    "font": "IBM Plex Sans Thai",
+                    "size": 34.0,
+                    "text": "Name, source",
+                    "tracking": 20.0
+                  }
+                ]
+              },
+              "transform": {
+                "opacity": {
+                  "keys": [
+                    {
+                      "t": 127008000000,
+                      "v": 0.0
+                    },
+                    {
+                      "i": "easeIn",
+                      "t": 190512000000,
+                      "v": 100.0
+                    }
+                  ]
+                },
+                "y": 202.4
+              }
+            }
+          ],
+          "id": 1,
+          "kind": "group",
+          "name": "Quote",
+          "transform": {
+            "opacity": {
+              "keys": [
+                {
+                  "t": 0,
+                  "v": 0.0
+                },
+                {
+                  "i": "easeIn",
+                  "t": 76204800000,
+                  "v": 100.0
+                },
+                {
+                  "i": "easeOut",
+                  "t": 1651104000000,
+                  "v": 100.0
+                },
+                {
+                  "t": 1778112000000,
+                  "v": 0.0
+                }
+              ]
+            },
+            "x": 960.0,
+            "y": 430.0
+          }
+        }
+      ],
+      "name": "Quote",
+      "responsive": {
+        "duration": 1778112000000,
+        "intro": 203212800000,
+        "outro": 127008000000
+      },
+      "width": 1920
+    },
+    "id": "wabcut.essay.quote",
+    "name": "Quote",
+    "version": 1
+  },
+  "version": 1
+}

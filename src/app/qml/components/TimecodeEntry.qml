@@ -11,6 +11,8 @@ import QtQuick
 // While typing, the field claims its keys (ShortcutOverride) so the keymap does not take digits, + or - meanwhile, and
 // `preview` (optional, (text) -> string) shows where Enter would go. Focus goes back where it was afterwards.
 // `pill`: the monitors' accent pill; otherwise plain accent text (the Timeline's corner) that becomes a field pill.
+// 0.4: the panel around it hands it numpad keys (`openFromKeypad`): a numpad digit, + , - or . with the Timeline or a
+// monitor focused opens the field seeded with that key, as Premiere's "type a timecode" (main-row digits stay commands).
 Item {
     id: root
 
@@ -106,6 +108,16 @@ Item {
     function opensWith(event: KeyEvent): bool {
         return event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space
                || /^[0-9+\-]$/.test(event.text)
+    }
+    /// 0.4: a numpad key from the panel around it (Premiere's "type a timecode"): opens the field seeded with it.
+    /// True when it took the key (a numpad digit, +, -, . or , with no other modifier; never while editing).
+    function openFromKeypad(event: KeyEvent): bool {
+        if (!root.enabled || !root.visible || root.editing || !(event.modifiers & Qt.KeypadModifier))
+            return false
+        if ((event.modifiers & ~Qt.KeypadModifier) !== Qt.NoModifier || !/^[0-9+\-.,]$/.test(event.text))
+            return false
+        root.startEditing(event.text)
+        return root.editing
     }
     Keys.onShortcutOverride: event => event.accepted = !root.editing && root.opensWith(event)
     Keys.onPressed: event => {

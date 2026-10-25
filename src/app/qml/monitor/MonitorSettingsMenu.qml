@@ -4,10 +4,23 @@ import QtQuick
 // P.2 (E6): Premiere's Program Monitor settings menu (the wrench; bridges Monitors and Playback; docs/monitors.md):
 // Loop, rulers and guides (Show Rulers, Show Guides, Lock Guides, Add Guide…, Clear Guides, Guide Templates, Snap in
 // Program Monitor), Transparency Grid, Show Dropped Frame Indicator, Overlays, Show Audio Time Units, Toggle Full Screen
-// and Transmit (the display, and whether it goes dark with Wabcut in the background). Its own file, importing only QtQuick, so QtQuick.Controls' ContextMenu does not shadow ours.
+// and Transmit (the display, and whether it goes dark with Wabcut in the background). 0.4: Playback Resolution (Auto,
+// Full, 1/2, 1/4 and Use proxies, as the readout row's pill, which gives way on a narrow monitor), Safe Margins, and
+// Platform Safe Zones (Off, YouTube Shorts, TikTok, Instagram Reels; Preferences.platformSafeZone), shaded on vertical
+// sequences only. Its own file, importing only QtQuick, so QtQuick.Controls' ContextMenu does not shadow ours.
 ContextMenu {
     id: menu
     objectName: "programMonitorSettingsMenu"
+
+    // One playback resolution (MediaReadiness.previewQuality).
+    component ResolutionItem: ContextMenuItem {
+        id: resolution
+        required property string value
+        objectName: "playbackResolution_" + resolution.value
+        checkable: true
+        checked: MediaReadiness.previewQuality === resolution.value
+        onTriggered: MediaReadiness.previewQuality = resolution.value
+    }
 
     ContextMenuItem {
         objectName: "programLoopItem"
@@ -16,6 +29,24 @@ ContextMenu {
         checked: Playback.loop
         command: "monitor.loop"
         onTriggered: Playback.loop = !Playback.loop
+    }
+    // 0.4: Premiere's wrench has the playback resolution too.
+    ContextMenu {
+        objectName: "playbackResolutionMenu"
+        title: qsTr("Playback Resolution")
+
+        ResolutionItem { value: "auto"; text: qsTr("Auto (fit the monitor)") }
+        ResolutionItem { value: "full"; text: qsTr("Full") }
+        ResolutionItem { value: "half"; text: qsTr("1/2") }
+        ResolutionItem { value: "quarter"; text: qsTr("1/4") }
+        ContextMenuSeparator {}
+        ContextMenuItem {
+            objectName: "playbackResolutionProxies"
+            text: qsTr("Use proxies")
+            checkable: true
+            checked: MediaReadiness.useProxies
+            onTriggered: MediaReadiness.useProxies = !MediaReadiness.useProxies
+        }
     }
     ContextMenuSeparator {}
     ContextMenuItem {
@@ -115,6 +146,58 @@ ContextMenu {
         checked: Monitors.overlays
         command: "programMonitor.overlays"
         onTriggered: Monitors.overlays = !Monitors.overlays
+    }
+    // 0.4: Premiere's wrench has Safe Margins too (the readout row's toggle hides when the monitor is narrow).
+    ContextMenuItem {
+        objectName: "programSafeMarginsItem"
+        text: qsTr("Safe Margins")
+        checkable: true
+        checked: Preferences.safeMargins
+        onTriggered: Preferences.safeMargins = !Preferences.safeMargins
+    }
+    // 0.4: where Shorts, TikTok or Reels put their buttons and captions over a vertical picture (PlatformSafeZoneOverlay).
+    ContextMenu {
+        id: platformZones
+        objectName: "platformSafeZoneMenu"
+        title: qsTr("Platform Safe Zones")
+
+        readonly property bool portrait: ProjectController.frameHeight > ProjectController.frameWidth
+
+        ContextMenuItem {
+            objectName: "platformSafeZoneHint"
+            text: qsTr("Shown on vertical sequences")
+            enabled: false
+            visible: !platformZones.portrait
+            height: visible ? implicitHeight : 0
+        }
+        ContextMenuItem {
+            objectName: "platformSafeZone_off"
+            text: qsTr("Off")
+            checkable: true
+            checked: Preferences.platformSafeZone === "off"
+            onTriggered: Preferences.platformSafeZone = "off"
+        }
+        ContextMenuItem {
+            objectName: "platformSafeZone_shorts"
+            text: qsTr("YouTube Shorts")
+            checkable: true
+            checked: Preferences.platformSafeZone === "shorts"
+            onTriggered: Preferences.platformSafeZone = "shorts"
+        }
+        ContextMenuItem {
+            objectName: "platformSafeZone_tiktok"
+            text: qsTr("TikTok")
+            checkable: true
+            checked: Preferences.platformSafeZone === "tiktok"
+            onTriggered: Preferences.platformSafeZone = "tiktok"
+        }
+        ContextMenuItem {
+            objectName: "platformSafeZone_reels"
+            text: qsTr("Instagram Reels")
+            checkable: true
+            checked: Preferences.platformSafeZone === "reels"
+            onTriggered: Preferences.platformSafeZone = "reels"
+        }
     }
     ContextMenuItem {
         objectName: "audioTimeUnitsItem"

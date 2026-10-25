@@ -319,6 +319,9 @@ EditOutcome setSequenceSettings(const ProjectState& state, SequenceId sequenceId
     if (change.colorIndex) {
         h.colorIndex = *change.colorIndex;
     }
+    if (change.rippleMarkers) { // 0.4: Markers > Ripple Sequence Markers
+        h.rippleMarkers = *change.rippleMarkers;
+    }
     return ed.finish();
 }
 

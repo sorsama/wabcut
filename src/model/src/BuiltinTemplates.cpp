@@ -21,6 +21,7 @@ namespace wabcut {
 namespace {
 
 constexpr std::string_view kGamingPrefix = "wabcut.gaming.";
+constexpr std::string_view kEssayPrefix = "wabcut.essay."; // 0.4: the essay and documentary pack
 
 std::vector<GraphicTemplate> readEmbedded() {
     std::vector<GraphicTemplate> out;
@@ -68,6 +69,9 @@ Ticks templatePosterTime(const GraphicTemplate& tmpl) {
 std::string_view templateCategory(const GraphicTemplate& tmpl) {
     if (tmpl.id.size() > kGamingPrefix.size() && std::string_view(tmpl.id).starts_with(kGamingPrefix)) {
         return "gaming";
+    }
+    if (tmpl.id.size() > kEssayPrefix.size() && std::string_view(tmpl.id).starts_with(kEssayPrefix)) {
+        return "essay";
     }
     return {};
 }

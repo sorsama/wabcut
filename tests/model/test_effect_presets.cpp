@@ -10,8 +10,10 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
+#include <cmath>
 #include <set>
 #include <string>
+#include <vector>
 
 using namespace wabcut;
 using namespace wabcut::test;
@@ -195,7 +197,7 @@ TEST_CASE("The built-in Presets bin is valid and frame-aware", "[model][effects]
     for (const char* name : {"Bevel Edges Thick", "Bevel Edges Thin", "Fast Blur In", "Fast Blur Out", "Mosaic In", "Mosaic Out",
                              "PiP 25% UL", "PiP 25% LR Scale In", "PiP 40% LL", "PiP 25% Motion UL to LR", "Solarize In",
                              "Solarize Out", "Twirl In", "Twirl Out", "Horizontal Image Pan Left to Right", "Teal & Orange",
-                             "Sony S-Log3 (S-Gamut3.Cine) to Rec.709"}) {
+                             "Sony S-Log3 (S-Gamut3.Cine) to Rec.709", "Slow Push In"}) {
         INFO(name);
         CHECK(findBuiltinEffectPreset(name));
     }
@@ -293,4 +295,93 @@ TEST_CASE("Animations: In and Out on one clip both stay and only the animated pa
                                        *findBuiltinEffectPreset("Horizontal Image Pan Left to Right"));
     REQUIRE(pan);
     CHECK(clipOf(pan->edit.state, fx.tl.seq, fx.target).properties()[ParamId::Scale].constant() == 1.2);
+}
+
+// ---- 0.4 Ken Burns moves (Image Pans) ---------------------------------------------------------------------------------
+
+TEST_CASE("Image Pans: Slow Push In and Pull Out are eased scale moves across the clip", "[model][effects][presets][kenburns]") {
+    // Three 40-frame clips (1.6 s at 25 fps): a Scale preset stretches its keys to each clip's length.
+    Timeline tl{R"(
+        V1 tgt |AaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaBbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbCccccccccccccccccccccccccccccccccccccccc|
+    )"};
+    const std::vector<ClipId> clips{tl.clip("V1@0"), tl.clip("V1@40"), tl.clip("V1@80")};
+    const auto push = findBuiltinEffectPreset("Slow Push In");
+    REQUIRE(push);
+    CHECK(push->bin == "Image Pans");
+    CHECK(push->type == EffectPresetType::Scale);
+    // Only the scale is set: rotation, anchor and position stay the clip's.
+    REQUIRE(push->effects.size() == 1);
+    CHECK(push->effects[0].find("motion.rotation") == nullptr);
+    CHECK(push->effects[0].find("motion.position.x") == nullptr);
+
+    // One edit (one undo step) puts the move on every clip.
+    ProjectState s = ok(edit::setParameter(tl.state, tl.seq, clips[1], edit::ParamRef::of(ParamId::Rotation), ParamValue(10.0))).state;
+    auto r = edit::applyEffectPreset(s, tl.seq, clips, *push);
+    INFO((r ? std::string() : r.error().message));
+    REQUIRE(r);
+    requireValid(r->edit.state);
+    CHECK(r->clips.size() == 3);
+    for (const ClipId id : clips) {
+        const Clip& c = clipOf(r->edit.state, tl.seq, id);
+        const ParamValue& scale = c.properties()[ParamId::Scale];
+        REQUIRE(scale.curve());
+        REQUIRE(scale.curve()->keys.size() == 2);
+        CHECK(scale.curve()->keys.front().interpolation == Interpolation::EaseInOut);
+        CHECK_THAT(c.parameterAt(ParamId::Scale, c.start()), WithinAbs(1.0, 1e-9));
+        CHECK_THAT(c.parameterAt(ParamId::Scale, c.end()), WithinAbs(1.12, 1e-9));
+        // A slow start: a quarter of the way through, well under a quarter of the move.
+        CHECK(c.parameterAt(ParamId::Scale, c.start() + f(10)) < 1.03);
+        CHECK(c.parameterAt(ParamId::Scale, c.start() + f(20)) > 1.04);
+    }
+    CHECK(clipOf(r->edit.state, tl.seq, clips[1]).properties()[ParamId::Rotation].constant() == 10.0); // untouched
+
+    // Pull Out is the reverse.
+    const auto pull = findBuiltinEffectPreset("Slow Pull Out");
+    REQUIRE(pull);
+    auto back = edit::applyEffectPreset(tl.state, tl.seq, std::vector<ClipId>{clips[0]}, *pull);
+    REQUIRE(back);
+    const Clip& c = clipOf(back->edit.state, tl.seq, clips[0]);
+    CHECK_THAT(c.parameterAt(ParamId::Scale, c.start()), WithinAbs(1.12, 1e-9));
+    CHECK_THAT(c.parameterAt(ParamId::Scale, c.end()), WithinAbs(1.0, 1e-9));
+    CHECK(c.parameterAt(ParamId::Scale, c.start() + f(10)) > 1.09);
+}
+
+TEST_CASE("Image Pans: directional push-ins never show the frame edge", "[model][effects][presets][kenburns]") {
+    constexpr int kWidth = 1920;
+    constexpr int kHeight = 1080;
+    for (const char* name : {"Push In to Top", "Push In to Bottom", "Push In Left to Right", "Push In Right to Left",
+                             "Slow Push In", "Slow Pull Out"}) {
+        INFO(name);
+        const auto p = findBuiltinEffectPreset(name, kWidth, kHeight);
+        REQUIRE(p);
+        CHECK_FALSE(effectPresetProblem(*p));
+        REQUIRE(p->effects.size() == 1);
+        const EffectInstance& m = p->effects[0];
+        const ParamValue* scale = m.find("motion.scale");
+        REQUIRE(scale);
+        REQUIRE(scale->curve());
+        const ParamValue* x = m.find("motion.position.x");
+        const ParamValue* y = m.find("motion.position.y");
+        // Position keys share the scale keys' times and easing.
+        for (const ParamValue* pos : {x, y}) {
+            if (!pos)
+                continue;
+            REQUIRE(pos->curve());
+            REQUIRE(pos->curve()->keys.size() == scale->curve()->keys.size());
+            for (std::size_t i = 0; i < pos->curve()->keys.size(); ++i) {
+                CHECK(pos->curve()->keys[i].time == scale->curve()->keys[i].time);
+                CHECK(pos->curve()->keys[i].interpolation == scale->curve()->keys[i].interpolation);
+            }
+        }
+        // At 10 times across the preset: the picture still covers the frame.
+        for (int i = 0; i <= 9; ++i) {
+            const Ticks t{p->duration.value * i / 9};
+            const double s = scale->valueAt(t);
+            CHECK(s >= 1.0 - 1e-9);
+            const double xv = x ? x->valueAt(t) : 0.0;
+            const double yv = y ? y->valueAt(t) : 0.0;
+            CHECK(std::abs(xv) <= (s - 1.0) / 2.0 * kWidth + 1e-6);
+            CHECK(std::abs(yv) <= (s - 1.0) / 2.0 * kHeight + 1e-6);
+        }
+    }
 }

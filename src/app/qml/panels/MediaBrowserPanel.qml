@@ -11,7 +11,13 @@ import QtQuick.Dialogs
 // beside the switch) first copies the clips to a folder, transcodes them there with an export preset, or makes their
 // proxies (Library.importFromBrowser). Hovering a thumbnail scrubs through the clip (a strip of frames, Library's
 // hover scrub setting); the metadata view shows what probing the current clip reads. Places: the video and home
-// folders and the drives.
+// folders, the game capture folders that exist (0.4: Game Bar, NVIDIA ShadowPlay, each OBS profile's recordings), the
+// folders of the last dialog imports ("Recent: …") and the drives; the panel reopens the folder it showed last
+// (Preferences.mediaBrowserLastFolder) once it shows (a preloaded, hidden panel reads no folder).
+// 0.4: folder rows can be chosen too (click, Ctrl+click, Space; a double-click still opens them). Import (and File >
+// Import from Media Browser, Ctrl+Alt+I) brings the chosen clips in as before and the chosen folders through the
+// window's folder import (importUrlsRequested: a bin each, subfolders nested; Ingest applies to clips only); clips and
+// folders chosen together are one undo step.
 Panel {
     id: root
 
@@ -29,20 +35,47 @@ Panel {
     /// What Library.browserFileInfo read of the current clip (only while the metadata view is shown).
     readonly property var metadata: root.showMetadata && root.currentIsClip ? Library.browserFileInfo(root.currentEntry.path) : ({})
     readonly property int selectedCount: Object.keys(root.selected).length
+    /// 0.4: Import has something to bring in: chosen rows (clips or folders), else the current clip.
+    readonly property bool canImport: root.selectedCount > 0 || root.currentIsClip
     readonly property var ingestActions: [
         { id: "copy", label: qsTr("Copy") },
         { id: "transcode", label: qsTr("Transcode") },
         { id: "proxies", label: qsTr("Create Proxies") }
     ]
 
+    /// 0.4: the chosen folders' URLs (Main imports them as bins: ProjectFile.importFiles), and the clips chosen with
+    /// them (their paths; Main imports them through Library.importFromBrowser in the same undo step).
+    signal importUrlsRequested(var urls, var clips)
+    /// Fix round 1: a folder has been listed (or tried). The first listing waits until the panel shows: the window
+    /// preloads its panels just after start-up, and the folder shown last may be on a share that does not answer.
+    property bool browsed: false
+
     function focusContent() {
         list.forceActiveFocus(Qt.TabFocusReason)
     }
-    function openFolder(path) {
+    // Lists `path`; true when it could be read (Library.browseFolder leaves no message then), and then it is the folder
+    // the panel reopens next time.
+    function openFolder(path): bool {
+        root.browsed = true
         root.folder = path
         root.entries = Library.browseFolder(path)
         root.selected = ({})
         list.currentIndex = root.entries.length > 0 ? 0 : -1
+        const opened = Library.message === ""
+        if (opened)
+            Preferences.mediaBrowserLastFolder = path
+        return opened
+    }
+    // Whether `path` is a folder that is there, asked without listing it (a folder that is gone would toast "This
+    // folder cannot be opened" at start-up): ExportController.folderUrlOf gives a folder's own URL, else the URL of the
+    // folder around the path, so a folder is there when it is its own child's folder.
+    function folderExists(path: string): bool {
+        return path !== "" && ExportController.folderUrlOf(path).toString()
+                              === ExportController.folderUrlOf(path + "/.wabcut-probe").toString()
+    }
+    // The places menu's rows, read when it opens (recent import folders change).
+    function placeOptions(): var {
+        return Library.browserPlaces().map(p => ({ id: p.path, name: p.name }))
     }
     function toggle(path, additive) {
         const next = additive ? Object.assign({}, root.selected) : ({})
@@ -52,11 +85,24 @@ Panel {
             next[path] = true
         root.selected = next
     }
+    // Clips through Library.importFromBrowser (Ingest applies), folders through the window's folder import; clips and
+    // folders chosen together are one undo step (fix round 1: the window runs both in one gesture).
     function importSelected() {
-        const files = Object.keys(root.selected)
-        if (files.length === 0 && root.currentIsClip)
+        const files = []
+        const folders = []
+        for (const entry of root.entries) {
+            if (root.selected[entry.path] !== true)
+                continue
+            if (entry.folder === true)
+                folders.push(entry.url)
+            else
+                files.push(entry.path)
+        }
+        if (files.length === 0 && folders.length === 0 && root.currentIsClip)
             files.push(root.currentEntry.path)
-        if (files.length > 0)
+        if (folders.length > 0)
+            root.importUrlsRequested(folders, files)
+        else if (files.length > 0)
             Library.importFromBrowser(files)
     }
     function activate(entry) {
@@ -105,10 +151,26 @@ Panel {
         return lines
     }
 
-    Component.onCompleted: {
+    // 0.4: the folder shown last when it still opens, else the first place (Videos); read once the panel shows (fix
+    // round 1: a preloaded, hidden panel reads no folder).
+    function browseFirstFolder() {
+        if (root.browsed)
+            return
+        root.browsed = true
+        const last = Preferences.mediaBrowserLastFolder
+        if (root.folderExists(last) && root.openFolder(last))
+            return
         const places = Library.browserPlaces()
         if (places.length > 0)
             root.openFolder(places[0].path)
+    }
+    Component.onCompleted: {
+        if (root.visible)
+            root.browseFirstFolder()
+    }
+    onVisibleChanged: {
+        if (root.visible)
+            root.browseFirstFolder()
     }
 
     leading: [
@@ -121,11 +183,15 @@ Panel {
             onClicked: root.openFolder(Library.parentFolder(root.folder))
         },
         IconButton {
+            id: placesButton
             objectName: "mediaBrowserPlaces"
             compact: true
             iconName: "folder-open"
             tooltip: qsTr("Drives and places")
-            onClicked: placesMenu.popup()
+            onClicked: {
+                placesMenu.options = root.placeOptions()
+                placesMenu.popup(placesButton, 0, placesButton.height + Theme.space(1))
+            }
         }
     ]
     trailing: [
@@ -164,8 +230,9 @@ Panel {
         PillButton {
             objectName: "mediaBrowserImport"
             variant: "primary"
-            text: root.selectedCount > 1 ? qsTr("Import %1").arg(root.selectedCount) : qsTr("Import")
-            enabled: root.selectedCount > 0 || root.currentIsClip
+            text: root.selectedCount > 0 ? qsTr("Import %1").arg(root.selectedCount) : qsTr("Import")
+            tooltip: qsTr("Import the selected clips and folders into the current bin (folders become bins; Ingest applies to clips)")
+            enabled: root.canImport
             onClicked: root.importSelected()
         }
     ]
@@ -178,7 +245,9 @@ Panel {
 
     OptionsMenu {
         id: placesMenu
-        options: Library.browserPlaces().map(p => ({ id: p.path, name: p.name }))
+        objectName: "mediaBrowserPlacesMenu"
+        options: root.placeOptions()
+        current: root.folder
         onChosen: id => root.openFolder(id)
     }
 
@@ -301,7 +370,7 @@ Panel {
         Accessible.role: Accessible.List
         Accessible.name: qsTr("Media Browser: %n item(s)", "", count)
         Keys.onReturnPressed: if (currentIndex >= 0) root.activate(root.entries[currentIndex])
-        Keys.onSpacePressed: if (currentIndex >= 0 && !root.entries[currentIndex].folder) root.toggle(root.entries[currentIndex].path, true)
+        Keys.onSpacePressed: if (currentIndex >= 0) root.toggle(root.entries[currentIndex].path, true)
 
         delegate: Rectangle {
             id: row
@@ -317,6 +386,7 @@ Panel {
             color: chosen ? Theme.accentSoft : ListView.isCurrentItem ? Theme.hover : "transparent"
             Accessible.role: Accessible.ListItem
             Accessible.name: modelData.name + (isFolder ? qsTr(", folder") : modelData.spanned ? qsTr(", spanned clip of %1 files").arg(modelData.files) : "")
+                             + (chosen ? qsTr(", selected") : "")
 
             // The thumbnail; hovering it scrubs through the clip (the tile of its strip under the pointer).
             Item {
@@ -378,6 +448,7 @@ Panel {
                 anchors.verticalCenter: parent.verticalCenter
                 visible: row.isFolder
                 name: "folder"
+                color: row.chosen ? Theme.accentOnFill : Theme.textPrimary // 0.4: dark on the chosen row's accent
             }
             Column {
                 anchors.left: thumbBox.right
@@ -389,7 +460,7 @@ Panel {
                 Text {
                     width: parent.width
                     text: row.modelData.name
-                    color: Theme.textPrimary
+                    color: row.chosen ? Theme.accentOnFill : Theme.textPrimary
                     font.family: Theme.fontSans
                     font.pixelSize: Theme.textMd
                     elide: Text.ElideRight
@@ -401,7 +472,7 @@ Panel {
                            row.modelData.spanned ? qsTr("Spanned: %1 files").arg(row.modelData.files) : "",
                            (row.modelData.audioChannels ?? 0) > 0 ? qsTr("%1 audio channels").arg(row.modelData.audioChannels) : "",
                            Math.round((row.modelData.bytes ?? 0) / 1048576) + " MB"].filter(s => s !== "").join(" · ")
-                    color: Theme.textTertiary
+                    color: row.chosen ? Theme.accentOnFill : Theme.textTertiary
                     font.family: Theme.fontSans
                     font.pixelSize: Theme.textSm
                     elide: Text.ElideRight
@@ -411,8 +482,7 @@ Panel {
                 id: tap
                 onTapped: {
                     list.currentIndex = row.index
-                    if (!row.isFolder)
-                        root.toggle(row.modelData.path, (tap.point.modifiers & Qt.ControlModifier) !== 0)
+                    root.toggle(row.modelData.path, (tap.point.modifiers & Qt.ControlModifier) !== 0)
                 }
                 onDoubleTapped: root.activate(row.modelData)
             }

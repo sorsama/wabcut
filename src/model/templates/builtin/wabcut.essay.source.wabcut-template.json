@@ -1,0 +1,271 @@
+{
+  "format": "wabcut-graphic-template",
+  "template": {
+    "description": "Small source citation in the lower right with a detail line.",
+    "duration": 1270080000000,
+    "fields": [
+      {
+        "id": "citation",
+        "kind": "text",
+        "label": "Citation",
+        "layer": 3,
+        "property": "text",
+        "value": "Source: Archive name"
+      },
+      {
+        "id": "detail",
+        "kind": "text",
+        "label": "Detail",
+        "layer": 4,
+        "property": "text",
+        "value": "Collection, year"
+      },
+      {
+        "id": "accent",
+        "kind": "color",
+        "label": "Accent colour",
+        "layer": 2,
+        "property": "fill",
+        "value": {
+          "brand": "Accent",
+          "rgba": [
+            0.93,
+            0.92,
+            0.88,
+            1.0
+          ]
+        }
+      },
+      {
+        "id": "length",
+        "kind": "duration",
+        "label": "Length",
+        "property": "clip",
+        "value": 1270080000000
+      }
+    ],
+    "graphic": {
+      "height": 1080,
+      "layers": [
+        {
+          "children": [
+            {
+              "id": 2,
+              "kind": "shape",
+              "masks": [
+                {
+                  "enabled": true,
+                  "id": 1,
+                  "inverted": false,
+                  "mode": "add",
+                  "name": "Wipe",
+                  "params": {
+                    "center.x": {
+                      "value": 0.0
+                    },
+                    "center.y": {
+                      "keys": [
+                        {
+                          "t": 12700800000,
+                          "v": 0.03185185185185185
+                        },
+                        {
+                          "i": "easeIn",
+                          "t": 88905600000,
+                          "v": 0.0
+                        }
+                      ]
+                    },
+                    "size.x": {
+                      "value": 0.0020833333333333333
+                    },
+                    "size.y": {
+                      "keys": [
+                        {
+                          "t": 12700800000,
+                          "v": 0.0
+                        },
+                        {
+                          "i": "easeIn",
+                          "t": 88905600000,
+                          "v": 0.0637037037037037
+                        }
+                      ]
+                    }
+                  },
+                  "shape": "rectangle"
+                }
+              ],
+              "name": "Accent bar",
+              "shape": {
+                "fill": {
+                  "color": {
+                    "brand": "Accent",
+                    "rgba": [
+                      0.93,
+                      0.92,
+                      0.88,
+                      1.0
+                    ]
+                  },
+                  "type": "solid"
+                },
+                "height": 68.8,
+                "type": "rectangle",
+                "width": 4.0
+              },
+              "transform": {
+                "x": -2.0,
+                "y": 34.4
+              }
+            },
+            {
+              "id": 3,
+              "kind": "text",
+              "name": "Citation",
+              "shadow": {
+                "angle": 90.0,
+                "color": [
+                  0.03,
+                  0.03,
+                  0.04,
+                  1.0
+                ],
+                "distance": 3.0,
+                "enabled": true,
+                "opacity": 0.6,
+                "softness": 10.0
+              },
+              "text": {
+                "align": "right",
+                "runs": [
+                  {
+                    "brandFont": "heading",
+                    "fill": [
+                      0.96,
+                      0.96,
+                      0.95,
+                      1.0
+                    ],
+                    "font": "IBM Plex Sans Thai",
+                    "size": 30.0,
+                    "text": "Source: Archive name",
+                    "weight": 600
+                  }
+                ]
+              },
+              "transform": {
+                "x": -24.0
+              }
+            },
+            {
+              "id": 4,
+              "kind": "text",
+              "name": "Detail",
+              "shadow": {
+                "angle": 90.0,
+                "color": [
+                  0.03,
+                  0.03,
+                  0.04,
+                  1.0
+                ],
+                "distance": 3.0,
+                "enabled": true,
+                "opacity": 0.6,
+                "softness": 10.0
+              },
+              "text": {
+                "align": "right",
+                "runs": [
+                  {
+                    "brandFont": "body",
+                    "fill": [
+                      0.96,
+                      0.96,
+                      0.95,
+                      0.85
+                    ],
+                    "font": "IBM Plex Sans Thai",
+                    "size": 24.0,
+                    "text": "Collection, year",
+                    "tracking": 10.0
+                  }
+                ]
+              },
+              "transform": {
+                "opacity": {
+                  "keys": [
+                    {
+                      "t": 50803200000,
+                      "v": 0.0
+                    },
+                    {
+                      "i": "easeIn",
+                      "t": 114307200000,
+                      "v": 100.0
+                    }
+                  ]
+                },
+                "x": -24.0,
+                "y": 40.0
+              }
+            }
+          ],
+          "id": 1,
+          "kind": "group",
+          "name": "Source",
+          "transform": {
+            "opacity": {
+              "keys": [
+                {
+                  "t": 0,
+                  "v": 0.0
+                },
+                {
+                  "i": "easeIn",
+                  "t": 76204800000,
+                  "v": 100.0
+                },
+                {
+                  "i": "easeOut",
+                  "t": 1168473600000,
+                  "v": 100.0
+                },
+                {
+                  "t": 1270080000000,
+                  "v": 0.0
+                }
+              ]
+            },
+            "x": {
+              "keys": [
+                {
+                  "t": 0,
+                  "v": 1810.0
+                },
+                {
+                  "i": "easeIn",
+                  "t": 114307200000,
+                  "v": 1780.0
+                }
+              ]
+            },
+            "y": 930.0
+          }
+        }
+      ],
+      "name": "Source",
+      "responsive": {
+        "duration": 1270080000000,
+        "intro": 152409600000,
+        "outro": 101606400000
+      },
+      "width": 1920
+    },
+    "id": "wabcut.essay.source",
+    "name": "Source",
+    "version": 1
+  },
+  "version": 1
+}

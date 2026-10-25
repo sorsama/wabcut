@@ -207,10 +207,11 @@ cannot be pushed to; deleting a preset leaves its tracks' look. The Caption Styl
 
 ## Built-in templates (C.16)
 
-Wabcut ships a gaming pack of 12 templates for YouTube, Twitch and TikTok creators. They are ordinary C.13 template files,
-compiled into the model (`BuiltinTemplates.h`: `builtinTemplates()` in id order, `findBuiltinTemplate(id)`,
-`templatePosterTime`, `templateCategory` - `"gaming"` for `wabcut.gaming.*`), so every host has them without a resource
-folder. `template.list` returns them with library `"builtin"`; `template.instantiate` finds an id in the project's
+Wabcut ships a gaming pack of 12 templates for YouTube, Twitch and TikTok creators and (0.4) an essay and documentary
+pack of 5. They are ordinary C.13 template files, compiled into the model (`BuiltinTemplates.h`: `builtinTemplates()` in
+id order, `findBuiltinTemplate(id)`, `templatePosterTime`, `templateCategory` - `"gaming"` for `wabcut.gaming.*`,
+`"essay"` for `wabcut.essay.*`), so every host has them without a resource folder. Callouts > Browse shows them in a
+**Gaming** and an **Essay & documentary** group (search covers names, descriptions and field labels: "Search graphics"). `template.list` returns them with library `"builtin"`; `template.instantiate` finds an id in the project's
 library, then the user's, then the built-ins; `clip.instantReplay` lays `wabcut.gaming.replay` (`kReplayTemplateId`) over its slow-motion segment and sets its `label`
 field.
 
@@ -229,6 +230,23 @@ field.
 | `subscribe` | Subscribe, like and bell | `label` (text), `accent` (color: button fill), `showLike`, `showBell`, `showCursor` (checkbox) | 4 s | 1.4 / 0.6 s | the three buttons scale pop 0.2 s apart, the pointer fades and slides up, a click (scale keys), the bell swings (rotation keys); pop out in reverse order |
 | `webcamFrame` | Webcam frame | `name` (text), `accent` (color: border stroke), `tagColor` (color: tag background), `length` | 6 s | 0.7 / 0.35 s | the border draws on and off (trim), glow fade, corner brackets pop, name tag fade + typewriter; fades out |
 
+**Essay and documentary (0.4).** Quiet, editorial graphics for video essays, interviews and documentaries:
+
+| Id (`wabcut.essay.`) | Name | Fields (kind) | Length | Intro / outro | Look and animation |
+|---|---|---|---|---|---|
+| `nameTitle` | Name and title | `name`, `role` (text), `accent` (color: bar), `length` | 5 s | 0.7 / 0.4 s | lower-left name (heading) over the title or role (body) beside a thin accent bar; fades and slides up in, fades out |
+| `location` | Location and date | `place`, `date` (text), `accent` (color: rule), `length` | 5 s | 0.7 / 0.4 s | upper-left place (heading) and date (body) under a short accent rule |
+| `quote` | Quote | `quote`, `attribution` (text), `accent` (color: rule), `length` | 7 s | 0.8 / 0.5 s | a centred pull quote (heading) in a dimmed box that grows with the text, the attribution (body) below |
+| `source` | Source | `citation`, `detail` (text), `accent` (color: bar), `length` | 5 s | 0.6 / 0.4 s | a small lower-right citation ("Source: ...") over a detail line, right-aligned beside a thin bar |
+| `chapterCard` | Chapter card | `number`, `title` (text), `accent` (color: rule), `backgroundColor` (color: card), `length` | 4 s | 0.8 / 0.6 s | a full-frame card: "CHAPTER 1" in spaced capitals over an accent rule and the chapter title, both headings |
+
+  Unlike the gaming pack they follow the project's **brand kit** (below): the boxes, bars and the card take the kit's
+  "Primary" / "Accent" colours (neutral greys and off-white without a kit), the first text of each template and the
+  other main lines take the kit's "heading" font and the secondary lines its "body" font, all with IBM Plex Sans Thai
+  (400 to 600) as the family, so Thai renders whatever the kit says. Premiere ships Adobe's lower thirds and titles in
+  Essential Graphics > Browse; these are Wabcut's own shapes and text, with no logos or platform names. They are made by
+  `tests/model/essay_templates_author.cpp` (the same update and check flow as the gaming files below).
+
 - **Design rules.** A 1920 x 1080 canvas with responsive time; the template's `duration` is the responsive duration.
   Everything animates in from nothing during the intro and out to nothing during the outro; the middle, which stretches
   with the clip, only holds or plays loops. Animations are presets baked with `edit::applyPresetToLayer` (plus a few hand
@@ -242,7 +260,8 @@ field.
   Thai (400, 500, 600). The default texts are English; every text field takes Thai (the tests set each to Thai and check
   the fonts and grapheme clusters).
 - **Artwork.** Original shapes and text only: icons (thumbs-up, bell, pointer, play triangle, arrow, person) are paths;
-  no logos, brand-kit references or platform names.
+  no logos or platform names. The gaming pack has no brand-kit references; the essay pack refers to the kit's colours
+  and font roles (above).
 - **Video slots.** A graphic image layer cannot play video (C.13), so the end card's two rounded 16:9 frames are
   placeholders where the platform's end-screen video elements go (YouTube end screens are 5-20 s); each has an optional
   thumbnail image field (`video1Thumb`, `video2Thumb`), empty by default. An empty image slot resolves to an image item

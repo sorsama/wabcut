@@ -29,6 +29,7 @@
 #include <QWindow>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <limits>
@@ -247,6 +248,34 @@ bool SourceMonitorBridge::load(const QString& media) {
         return false;
     }
     return loadMedia(*id, std::nullopt);
+}
+
+bool SourceMonitorBridge::loadRange(const QString& media, const QString& sourceIn, const QString& sourceOut) {
+    bool inOk = false;
+    bool outOk = false;
+    const qint64 in = sourceIn.toLongLong(&inOk);
+    const qint64 out = sourceOut.toLongLong(&outOk);
+    if (!inOk || !outOk || in < 0 || out <= in) {
+        setMessage(tr("This result has no time range to open"));
+        return false;
+    }
+    if (!load(media))
+        return false; // load() said why (unknown or offline media)
+    // In: the start of the frame holding sourceIn; Out: the end of the frame holding the range's last tick.
+    Ticks inMark = snapToFrame(Ticks{in}, m_rate);
+    Ticks outMark = snapToFrame(Ticks{out - 1}, m_rate) + frame();
+    if (m_length) {
+        outMark = std::min(outMark, *m_length);
+        inMark = std::min(inMark, std::max(Ticks{}, *m_length - frame()));
+    }
+    if (outMark <= inMark) {
+        setMessage(tr("This result has no time range to open"));
+        return false;
+    }
+    if (!setMarks(Json{{"in", inMark.value}, {"out", outMark.value}}))
+        return false;
+    seek(inMark);
+    return true;
 }
 
 bool SourceMonitorBridge::loadFile(const QString& file) {
@@ -577,13 +606,6 @@ QString SourceMonitorBridge::inOutText() const {
     return timecodeOf(std::max(Ticks{}, end - m.in.value_or(Ticks{})));
 }
 
-QString SourceMonitorBridge::sequenceInOutText() const {
-    const SequencePtr seq = m_controller ? m_controller->currentSequence() : nullptr;
-    if (!seq || !seq->markIn || !seq->markOut)
-        return {};
-    return m_controller->formatTimecode(*seq->markOut - *seq->markIn);
-}
-
 bool SourceMonitorBridge::playing() const { return m_playback && m_playback->isPlaying(); }
 
 QVariantList SourceMonitorBridge::recent() const {
@@ -623,16 +645,23 @@ void SourceMonitorBridge::tick() {
         return;
     const bool isPlaying = m_playback->isPlaying();
     const Ticks position = positionTicks();
-    if (isPlaying && m_length && position >= *m_length) {
+    const Ticks end = m_length.value_or(Ticks::max());
+    if (isPlaying && m_stopAt && position >= std::min(*m_stopAt, end)) {
+        // Play In to Out, Play from Playhead to Out (0.4): park on the last marked frame. Play Around (0.4): park back
+        // where it started. Loop (suspended while they play once) comes back.
+        const Ticks last = std::max(Ticks{}, std::min(snapToFrame(position, m_rate), std::min(*m_stopAt, end)) - frame());
+        const Ticks park = m_returnTo.value_or(last);
+        m_stopAt.reset();
+        m_returnTo.reset();
+        m_playback->pause();
+        m_playback->scrub(park);
+        applyLoop();
+    } else if (isPlaying && m_length && position >= *m_length) {
         // The end (also without a picture to run off): park on the last frame.
         m_playback->pause();
         m_playback->scrub(std::max(Ticks{}, *m_length - frame()));
         m_stopAt.reset();
-    } else if (isPlaying && m_stopAt && position >= *m_stopAt) {
-        // Play In to Out: park on the last marked frame.
-        m_stopAt.reset();
-        m_playback->pause();
-        m_playback->scrub(std::max(Ticks{}, snapToFrame(position, m_rate) - frame()));
+        m_returnTo.reset();
     }
     if (position != m_lastPosition) {
         m_lastPosition = position;
@@ -640,10 +669,65 @@ void SourceMonitorBridge::tick() {
     }
     if (m_playback->isPlaying() != m_wasPlaying) {
         m_wasPlaying = m_playback->isPlaying();
-        if (!m_wasPlaying)
+        if (!m_wasPlaying && m_stopAt) {
+            // Stopped before a tick saw the stop point. A Play Around whose postroll runs into the media end stops
+            // there on its own (the scheduler parks on the last frame or two, a display latency early): it still parks
+            // back. Space, K, J / L, steps and seeks clear m_returnTo first, so they leave it where it is.
+            const Ticks slack{2 * frame().value + kTicksPerSecond / 20};
+            const std::optional<Ticks> park =
+                m_returnTo && position + slack >= std::min(*m_stopAt, end) ? m_returnTo : std::nullopt;
             m_stopAt.reset();
+            m_returnTo.reset();
+            applyLoop();
+            if (park) {
+                m_playback->scrub(*park);
+                m_lastPosition = *park;
+                emit positionChanged();
+            }
+        }
         emit transportChanged();
     }
+}
+
+void SourceMonitorBridge::playAround(double prerollSeconds, double postrollSeconds) {
+    if (!m_playback || !loaded())
+        return;
+    const auto seconds = [](double s) {
+        return Ticks{static_cast<std::int64_t>(std::llround(std::clamp(s, 0.0, 3600.0) * kTicksPerSecond))};
+    };
+    const Ticks here = positionTicks();
+    const Ticks from = snapToFrame(std::max(Ticks{}, here - seconds(prerollSeconds)), m_rate);
+    const Ticks to = std::min(here + seconds(postrollSeconds), m_length.value_or(Ticks::max()));
+    if (to <= from)
+        return;
+    if (m_programPlayback)
+        m_programPlayback->pause();
+    m_playback->pause();
+    m_playback->setLoop(std::nullopt); // plays once, whatever Loop says (applyLoop puts it back at the end)
+    m_playback->scrub(from);
+    startAudio();
+    m_stopAt = to;
+    m_returnTo = here;
+    m_playback->play();
+    tick();
+}
+
+void SourceMonitorBridge::playToOut() {
+    if (!m_playback || !loaded())
+        return;
+    const Ticks end = m_length.value_or(Ticks::max());
+    const Ticks out = std::min(marks().out.value_or(end), end);
+    if (positionTicks() + frame() >= out)
+        return; // at (or past) the last marked frame: nothing to play
+    if (m_programPlayback)
+        m_programPlayback->pause();
+    m_playback->pause();
+    m_playback->setLoop(std::nullopt);
+    startAudio();
+    m_stopAt = out;
+    m_returnTo.reset();
+    m_playback->play();
+    tick();
 }
 
 void SourceMonitorBridge::play() {
@@ -668,6 +752,7 @@ void SourceMonitorBridge::setLoop(bool loop) {
     m_loop = loop;
     QSettings().setValue(QLatin1String(kSourceLoopKey), loop);
     m_stopAt.reset();
+    m_returnTo.reset();
     applyLoop();
     emit loopChanged();
 }
@@ -695,7 +780,11 @@ void SourceMonitorBridge::pause() {
     if (!m_playback)
         return;
     m_playback->pause();
+    const bool once = m_stopAt.has_value();
     m_stopAt.reset();
+    m_returnTo.reset();
+    if (once)
+        applyLoop(); // a play-once stops where it is; Loop comes back
     tick();
 }
 
@@ -715,6 +804,11 @@ void SourceMonitorBridge::shuttle(int direction) {
     }
     if (m_programPlayback)
         m_programPlayback->pause();
+    if (m_returnTo) { // 0.4: J / L during Play Around end it (no park-back)
+        m_stopAt.reset();
+        m_returnTo.reset();
+        applyLoop();
+    }
     startAudio();
     const int sign = direction > 0 ? 1 : -1;
     const playback::TransportSpeed current = m_playback->speed();
@@ -736,6 +830,11 @@ void SourceMonitorBridge::applyTransportIntent(int kind, int speedNum, int speed
         } else {
             if (m_programPlayback)
                 m_programPlayback->pause();
+            if (m_returnTo) { // 0.4: J / L / Shift+J / Shift+L during Play Around end it (no park-back)
+                m_stopAt.reset();
+                m_returnTo.reset();
+                applyLoop();
+            }
             startAudio();
             m_playback->setSpeed({speedNum, std::max(1, speedDen)});
             tick();
@@ -755,6 +854,11 @@ void SourceMonitorBridge::seek(Ticks t) {
         return;
     const Ticks last = m_length ? std::max(Ticks{}, *m_length - frame()) : t;
     const Ticks target = snapToFrame(std::clamp(t, Ticks{}, last), m_rate);
+    if (m_playback->isPlaying() && m_returnTo) { // 0.4: a seek during Play Around ends it (no park-back)
+        m_stopAt.reset();
+        m_returnTo.reset();
+        applyLoop();
+    }
     if (m_playback->isPlaying())
         m_playback->seek(target);
     else
@@ -765,6 +869,7 @@ void SourceMonitorBridge::seek(Ticks t) {
 void SourceMonitorBridge::stepFrames(int frames) {
     if (!m_playback)
         return;
+    m_returnTo.reset(); // 0.4: a step during Play Around stops it where it is
     m_playback->pause();
     seek(positionTicks() + Ticks{frame().value * frames});
 }
@@ -901,6 +1006,7 @@ bool SourceMonitorBridge::runCommand(const QString& id) {
         {QStringLiteral("marker.goToIn"), &SourceMonitorBridge::goToIn},
         {QStringLiteral("marker.goToOut"), &SourceMonitorBridge::goToOut},
         {QStringLiteral("transport.playInToOut"), &SourceMonitorBridge::playInToOut},
+        {QStringLiteral("transport.playFromPlayheadToOut"), &SourceMonitorBridge::playToOut}, // 0.4: Ctrl+Space
         {QStringLiteral("monitor.loop"), &SourceMonitorBridge::toggleLoop},
         {QStringLiteral("transport.playStop"), &SourceMonitorBridge::togglePlay},
         {QStringLiteral("transport.goToStart"), &SourceMonitorBridge::goToStart},

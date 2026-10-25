@@ -157,16 +157,6 @@ std::vector<EffectParam> basicParams(const GradeParams& p, std::initializer_list
     return out;
 }
 
-/// Whether two clips show the same source (0.1.2): the same media item, or the same nested sequence - for a multicam
-/// clip also the same video angle, since each angle is another camera. Nested clips have no media item, so comparing
-/// Clip::media alone would make every nested clip one source.
-bool sameSource(const Clip& a, const Clip& b) {
-    if (a.isNested() || b.isNested()) {
-        return a.isNested() && b.isNested() && a.sequence == b.sequence && a.angles == b.angles;
-    }
-    return a.media.isValid() && a.media == b.media;
-}
-
 /// A time inside the clip: "time" when given (and inside), else the clip's middle frame.
 Ticks sampleTime(ExecutionContext& c, const Clip& clip, const char* key = "time") {
     if (c.has(key)) {
@@ -584,6 +574,165 @@ CommandOutput matchSceneCommand(ExecutionContext& c) {
     if (faceDetection) {
         out.data["referenceFaces"] = reference.faces.found;
     }
+    return out;
+}
+
+// ---- color.grade.copy (0.4 Apply Grade) -----------------------------------------------------------------------
+
+/// A key's curve time on `from` as the curve time on `to` at the same time from the clip's start (Paste Attributes'
+/// mapping without stretching): exact when both play at the same rate.
+Ticks mapKeyTime(const Clip& from, const Clip& to, Ticks t) {
+    const auto rate = [](const Clip& cl) -> std::pair<std::int64_t, std::int64_t> {
+        if (cl.isFreeze() || cl.isRemapped()) {
+            return {1, 1};
+        }
+        return {cl.reversed ? -std::int64_t{cl.speed.num} : std::int64_t{cl.speed.num}, cl.speed.den};
+    };
+    const Ticks fromStart = from.curveTimeAt(from.start());
+    const Ticks toStart = to.curveTimeAt(to.start());
+    const auto a = rate(from);
+    const auto b = rate(to);
+    if (a.first * b.second == b.first * a.second) {
+        return toStart + (t - fromStart);
+    }
+    const long double u = static_cast<long double>((t - fromStart).value) * static_cast<long double>(a.second) /
+                          static_cast<long double>(a.first);
+    const long double v = u * static_cast<long double>(b.first) / static_cast<long double>(b.second);
+    return toStart + Ticks{static_cast<std::int64_t>(std::llround(static_cast<double>(v)))};
+}
+
+ParamValue mapKeys(const ParamValue& value, const Clip& from, const Clip& to) {
+    const Curve* curve = value.curve();
+    if (!curve) {
+        return value;
+    }
+    Curve out = *curve;
+    for (Keyframe& k : out.keys) {
+        k.time = mapKeyTime(from, to, k.time);
+    }
+    std::sort(out.keys.begin(), out.keys.end(), [](const Keyframe& a, const Keyframe& b) { return a.time < b.time; });
+    out.keys.erase(std::unique(out.keys.begin(), out.keys.end(), [](const Keyframe& a, const Keyframe& b) { return a.time == b.time; }),
+                   out.keys.end());
+    return ParamValue(std::move(out));
+}
+
+/// The change that makes `target`'s grade (`current`, or none yet) equal to `source` on `from`: every descriptor
+/// parameter (the source's value or curve, else the default), every data entry of the source (curves, LUTs), the
+/// target's own other data entries removed, and the on / off state. Masks are not touched (a mask is drawn for one shot).
+edit::EffectChange gradeCopyChange(const EffectInstance& source, const Clip& from, const Clip& target,
+                                   const EffectInstance* current) {
+    edit::EffectChange change;
+    change.enabled = source.enabled;
+    for (const EffectParamInfo& p : gradeDescriptor().params) {
+        const ParamValue* v = source.find(p.key);
+        change.params.push_back(EffectParam{std::string(p.key), v ? mapKeys(*v, from, target) : ParamValue(p.defaultValue)});
+    }
+    std::sort(change.params.begin(), change.params.end(), [](const EffectParam& a, const EffectParam& b) { return a.key < b.key; });
+    change.data = source.data;
+    if (current) {
+        for (const EffectData& d : current->data) {
+            if (!source.findData(d.key)) {
+                EffectData gone{d.key, {}};
+                if (d.text()) {
+                    gone.value = std::string();
+                }
+                change.data.push_back(std::move(gone));
+            }
+        }
+    }
+    std::sort(change.data.begin(), change.data.end(), [](const EffectData& a, const EffectData& b) { return a.key < b.key; });
+    return change;
+}
+
+CommandOutput gradeCopy(ExecutionContext& c) {
+    const ClipId fromId = c.clip("from");
+    const Clip from = clipIn(c.state(), c.sequenceId(), fromId);
+    const EffectInstance* found = gradeOf(from);
+    if (!found) {
+        fail(ErrorCode::EditRejected, "clip " + std::to_string(fromId.value) + " has no grade to copy");
+    }
+    const EffectInstance source = *found;
+    const std::string scope = c.string("scope", "clips");
+    const bool replace = c.boolean("replace", true);
+    const Sequence& seq = c.sequence();
+    std::vector<ClipId> targets;
+    if (scope == "media") {
+        // Every video clip of the source's media (the same nested sequence and angle for nested / multicam clips).
+        seq.forEachTrack([&](const Track& t) {
+            if (t.kind != TrackKind::Video) {
+                return;
+            }
+            for (const Clip& cl : t.clips) {
+                if (cl.id != fromId && sameSource(cl, from)) {
+                    targets.push_back(cl.id);
+                }
+            }
+        });
+    } else if (scope == "clips") {
+        if (!c.has("clips")) {
+            fail(ErrorCode::InvalidParams, "name the \"clips\" to copy the grade to, or use scope \"media\"");
+        }
+        targets = c.clips("clips");
+    } else {
+        fail(ErrorCode::InvalidParams, "scope is \"clips\" or \"media\"", Json{{"path", "/scope"}});
+    }
+
+    ProjectState state = c.state();
+    CommandOutput out;
+    Json results = Json::array();
+    int changed = 0;
+    for (const ClipId id : targets) {
+        const auto skip = [&](const std::string& reason) {
+            results.push_back(Json{{"clip", id.value}, {"result", "skipped"}, {"reason", reason}});
+        };
+        const auto loc = state.findSequence(c.sequenceId())->findClip(id);
+        if (!loc) {
+            fail(ErrorCode::NotFound, "clip " + std::to_string(id.value) + " does not exist");
+        }
+        const Clip target = loc->clip();
+        if (id == fromId) {
+            skip("the clip the grade comes from");
+            continue;
+        }
+        if (target.stream.kind != StreamKind::Video) {
+            skip("not a video clip");
+            continue;
+        }
+        if (loc->track->locked) {
+            skip("on a locked track");
+            continue;
+        }
+        const EffectInstance* current = replace ? gradeOf(target) : nullptr;
+        std::optional<EffectInstance> before = current ? std::optional<EffectInstance>(*current) : std::nullopt;
+        EffectInstanceId effect;
+        if (current) {
+            effect = current->id;
+        } else {
+            const std::vector<ClipId> one{id};
+            edit::EditResult added = c.take(edit::addEffect(state, c.sequenceId(), one, std::string(kGradeEffect)));
+            effect = added.createdEffects.at(0);
+            state = std::move(added.state);
+        }
+        const edit::EffectChange change = gradeCopyChange(source, from, target, before ? &*before : nullptr);
+        state = c.take(edit::setEffect(state, c.sequenceId(), id, effect, change)).state;
+        const EffectInstance* after = gradeOf(clipIn(state, c.sequenceId(), id), effect);
+        const bool differs = !before || !after || !(*after == *before);
+        if (differs) {
+            ++changed;
+            out.createdIds.push_back(effect.value);
+        }
+        results.push_back(Json{{"clip", id.value},
+                               {"result", current ? (differs ? "replaced" : "skipped") : "added"},
+                               {"reason", differs ? "" : "it already has this grade"},
+                               {"effect", effect.value}});
+    }
+    if (changed == 0) {
+        fail(ErrorCode::EditRejected, targets.empty() ? (scope == "media" ? "no other clips show this source" : "no clips to copy the grade to")
+                                                      : "no clip changes: the targets are skipped or already have this grade",
+             Json{{"clips", std::move(results)}});
+    }
+    out.state = std::move(state);
+    out.data = Json{{"from", fromId.value}, {"scope", scope}, {"clips", std::move(results)}, {"changed", changed}};
     return out;
 }
 
@@ -1007,6 +1156,14 @@ const EffectInstance* gradeOf(const Clip& clip, EffectInstanceId preferred) {
     return nullptr;
 }
 
+// Nested clips have no media item, so comparing Clip::media alone would make every nested clip one source.
+bool sameSource(const Clip& a, const Clip& b) {
+    if (a.isNested() || b.isNested()) {
+        return a.isNested() && b.isNested() && a.sequence == b.sequence && a.angles == b.angles;
+    }
+    return a.media.isValid() && a.media == b.media;
+}
+
 std::vector<ClipId> sceneClips(const Sequence& sequence, ClipId reference) {
     const auto loc = sequence.findClip(reference);
     if (!loc) {
@@ -1066,6 +1223,23 @@ void registerColorCommands(command::CommandRegistry& registry) {
                        {"all", schema::boolean("List every parameter, not only those changed. Default false.")}},
                       {"clip"}),
          Json{{"clip", 42}}, {}, gradeGet});
+    add(registry,
+        {"color.grade.copy", 1, "Apply Grade",
+         "Copies a clip's whole colour grade (every parameter with its keyframes, curves, LUTs, stage switches and the on / "
+         "off state) over other clips' grades: \"clips\", or with \"scope\": \"media\" every other video clip that shows "
+         "the same source (the same media item; for nested clips the same sequence, and for multicam the same angle). Each "
+         "target's first grade is replaced in place (its id, stack position and its own masks stay); a target without a "
+         "grade gets one at the end of its stack. \"replace\": false appends a second grade instead, as Paste Attributes "
+         "does. Audio clips, clips on locked tracks and the source itself are skipped (listed with the reason). One undo "
+         "step; refused when the source has no grade or no target changes.",
+         Capability::EditSequence,
+         withSequence({{"from", clipParam("The clip whose grade is copied.")},
+                       {"clips", clipsParam("The clips to apply the grade to (scope \"clips\").")},
+                       {"scope", schema::enumeration({"clips", "media"}, "Which clips: \"clips\" (default) or every video clip "
+                                                                         "of the source's media (\"media\").")},
+                       {"replace", schema::boolean("Replace each target's grade (default true); false appends another grade.")}},
+                      {"from"}),
+         Json{{"from", 42}, {"scope", "media"}}, {}, gradeCopy});
     add(registry,
         {"color.auto", 1, "Auto Color",
          "Auto colour: looks at the clip (at \"time\", default its middle) without its grade and sets the grade's white "

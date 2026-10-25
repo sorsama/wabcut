@@ -124,17 +124,25 @@ public:
     /// Deletes a clip (reported in EditResult::removed).
     void removeClip(TrackId track, ClipId clip);
 
-    // --- Captions follow edits (C.7, Sequence.h): every caption track's cues, as a sync-locked track. -----------
+    // --- Captions and markers follow edits (C.7, Sequence.h): every caption track's cues, as a sync-locked track; ----
+    // --- 0.4: the sequence's markers too while markersFollow() (Sequence::rippleMarkers, Ripple Sequence Markers). ---
 
     /// A ripple insert of `duration` at `at`: later cues move, a cue across `at` is cut in two (both keep the text).
     /// With `until` (a time remap inside one clip) only material before it moves; what is pushed past it is cut off.
+    /// Markers (without `until`): those starting at or after `at` move by `duration`, a range marker across `at` grows.
     void captionsInsert(Ticks at, Ticks duration, std::optional<Ticks> until = std::nullopt);
     /// A ripple removal of `range`: the cues' time inside it goes (cues left without time go), later cues move back.
-    /// With `until`, material from it on stays where it is.
+    /// With `until`, material from it on stays where it is. Markers (without `until`): later ones move back, one
+    /// starting inside moves to the cut, a range marker loses the removed part (never deleted); peaks are clamped.
     void captionsRemove(TimeRange range, std::optional<Ticks> until = std::nullopt);
     /// The clip time `range` now lasting `duration` (a speed change of an audio clip): cues inside scale with it;
     /// with `ripple` later cues move by the difference, else the earlier of two cues that now meet is trimmed.
+    /// Markers: with `ripple`, those after the clip move by the difference.
     void captionsStretch(TimeRange range, Ticks duration, bool ripple);
+    /// 0.4: whether the sequence's markers follow the caption hooks above. Starts as the sequence's rippleMarkers;
+    /// ops with their own option (dead-time removal, instant replay) set it before rippling.
+    void setMarkersFollow(bool on) { m_markersFollow = on; }
+    bool markersFollow() const { return m_markersFollow; }
     /// Deletes clips in one pass per track. `refs` hold input-sequence indices, grouped by track with
     /// ascending indices (resolveClips order), and must precede any other change to those tracks.
     void removeClips(std::span<const ClipRef> refs) { extract(refs, true); }
@@ -181,6 +189,13 @@ private:
     /// two cues that now overlap (unless the track allows overlaps), and stores the tracks if anything changed.
     template <class Map>
     void mapCaptions(Map&& map);
+    /// 0.4: the sequence markers through a ripple insert / removal (Ripple Sequence Markers rules, see captionsInsert
+    /// and captionsRemove); they stay sorted by start, and the header is touched only when a marker moved.
+    void markersInsert(Ticks at, Ticks duration);
+    void markersRemove(TimeRange range);
+    /// Maps every marker's start (and highlight peak) through `map` and its end through `mapEnd`, keeping start <= end.
+    template <class Map, class EndMap>
+    void mapMarkers(Map&& map, EndMap&& mapEnd);
     void dissolveSingletonGroups();
     void pruneTransitions();
 
@@ -198,6 +213,7 @@ private:
     std::vector<EffectInstanceId> m_createdEffects;
     std::vector<TrackId> m_createdTracks;
     bool m_headerChanged = false;
+    bool m_markersFollow = true; ///< 0.4: Ripple Sequence Markers (set from the sequence in the constructor)
 };
 
 /// The state unchanged, as an EditResult.

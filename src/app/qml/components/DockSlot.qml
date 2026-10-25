@@ -11,6 +11,8 @@ import QtQuick.Window
 // UX rework (Premiere's frames): a press anywhere in the group makes it the active group (DockManager.activeGroup),
 // which wears a 2 px accent outline; a tab's right-click opens the tab menu (DockTabMenu), its double-click maximizes
 // the group.
+// 0.4: the tabs may take the whole strip but the handle's and the More tools button's room (`toolsReserve`); a crowded
+// group shrinks them to readable widths, then lists the rest behind its tab list button (DockTabs).
 Item {
     id: slot
 
@@ -23,6 +25,11 @@ Item {
     /// Several panels: the group's tabs show over the strip, and the shown panel leaves them `tabsWidth` of it.
     readonly property bool tabbed: tabPanels.length > 1
     readonly property real tabsWidth: tabbed ? tabs.width : 0
+    /// 0.4: the strip's room the tabs leave at its right end: the dock's handle (grip, pop-out, close), the shown
+    /// panel's More tools button and their gaps.
+    readonly property real toolsReserve: Theme.iconSm + Theme.space(2) + 3 * Theme.controlHeightSmall + Theme.space(6)
+    /// 0.4: the panels' focus keys (Premiere's Window shortcuts) for the tabs' tooltips and the tab list.
+    readonly property var panelCommands: tabs.panelCommands
     /// The window title while it floats.
     property string title: ""
     property DockManager manager: null
@@ -103,8 +110,10 @@ Item {
             x: Theme.space(3)
             y: 0
             height: Theme.tabStripHeight
-            // As wide as its tabs, at most most of the strip (the tabs elide beyond that).
-            width: slot.tabbed ? Math.min(naturalWidth, Math.max(Theme.space(24), holder.width * 0.62)) : 0
+            // As wide as its tabs, at most the whole strip but the room of the handle and the More tools button (0.4: no
+            // 62 % cap; the tabs shrink to readable widths, then the rest go into the tab list).
+            width: slot.tabbed ? Math.min(naturalWidth, Math.max(Theme.space(24), holder.width - Theme.space(3) - slot.toolsReserve))
+                               : 0
             panels: slot.tabPanels
             current: slot.currentPanel
             onActivated: key => {

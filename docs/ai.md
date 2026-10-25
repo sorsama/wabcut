@@ -428,6 +428,18 @@ Local extraction, cloud uploads and VAD energy inputs each reserve a job directo
 directory is claimed atomically across processes and removed on success, cancellation or extraction failure;
 concurrent editor and CLI jobs never reuse an upload path. Cloud policy is checked again for each chunk.
 
+**Which tracks the panel transcribes (0.4).** The Transcript panel's "No transcript yet" setup lists the sequence's audio
+tracks under **Tracks**, one switch each ("A2 · Mic · Dialogue", "(muted)" when muted), with a summary ("1 of 3 audio
+tracks"). By default the voice tracks are on: the Dialogue role or a Mic / Microphone / Voice / Commentary / Narration /
+VO name, not muted and not voice chat (Discord, voice chat, party chat, TeamSpeak). When no track matches, every unmuted
+track is on, as before 0.4. A choice is remembered **by track name** (case-insensitive, for every project; QSettings
+`transcript/trackChoices`), since OBS recordings repeat their track names (Home names them from the streams' titles).
+**Transcribe sequence** and **Selected clips** send only the streams on chosen tracks (the selection's linked partners
+too), and the cloud consent prompt counts the same files; with no track chosen both wait ("Choose at least one audio
+track"). Selected clips heard only on switched-off tracks say so and name the tracks. Premiere's "Transcribe audio on track" picks one track or the mix; Wabcut picks several with defaults for game
+recordings. Streams that already have a transcript stay listed (they come from the cache). `transcript.transcribe`
+itself takes media or clips, not tracks.
+
 **`transcript.transcribe`** (Capability `MediaAnalysis`; `TranscriptCommands.h`). Params: `media` (media items), `clips`, or
 neither for every audio clip of the sequence (each media stream once); `provider`; `language`; `force`; `check` (only list the
 providers with availability and which audio has a transcript). The result has one row per media stream (`transcribed`,
@@ -460,6 +472,32 @@ require an equally long in-memory sample vector. Damaged energy-cache records ar
 Transcript-first editing core (AI-3): `src/ai/edit`, library `wabcut_ai_edit`. It is pure C++ on the model, command and ai
 libraries, and deterministic. Its media-backed services are in `wabcut_ai_edit_media` (full builds only). The Transcript
 panel (UI) builds on it later.
+
+**The Transcript panel (0.4).**
+- *Follows the playhead.* While **Follow the playhead** is on (the crosshair button in the find row, on by default and
+  remembered), the paragraph of the word under the playhead stays in view during playback, scrubbing and clicks; the
+  view only moves when that paragraph is out of sight. A paragraph taller than the view (a long monologue: up to 80
+  words) scrolls by the word's line instead, so the word never leaves the view. Scrolling (wheel, drag, the scroll bar) pauses following for
+  3 s, and in a pause between words the view stays. Find's next / previous always bring the match into view. Premiere's
+  Text panel follows playback too; the switch and the pause after scrolling are Wabcut's.
+- *The word menu.* Right-click a word (it is selected first when it is not; a selection stays), or press the Menu key
+  or Shift+F10 in the text: **Copy** (Ctrl+C), **Copy with Timecodes** | **Mark In and Out**, **Add Marker**, **Add
+  Chapter Marker** | **Lift**, **Delete**, **Keep Only**, **Fix…** | **Find All**. Everything but Copy acts on the span
+  from the first to the last selected word and waits while a Delete / Keep preview is shown.
+  - *Copy* puts the selected words on the system clipboard as their language writes them (Thai without spaces), one
+    line per separate run (Ctrl-click); Ctrl+C with words selected does the same (the clip clipboard is untouched, and
+    without a selection Ctrl+C copies timeline clips as before). *Copy with Timecodes* writes one line per run and
+    paragraph: `[00:01:02:03] Speaker 1: text` (the speaker left out when unknown).
+  - *Mark In and Out* sets the sequence In at the start of the first word's frame and Out at the end of the last word's
+    frame (one undo step "Mark In and Out"; the playhead and the selection stay).
+  - *Add Marker* adds a range marker over the span, named from its first ~60 characters (cut at a word, with "…") and
+    with the whole text as its comment; *Add Chapter Marker* a chapter marker at its start. One undo step each.
+  - *Lift* removes the span from the tracks the words are heard on and their linked partners' tracks (video included),
+    leaving a gap (Premiere's Lift): one undo step, In and Out cleared, the playhead at the gap. A locked track among
+    them refuses it ("A locked track would change"). *Delete* (Premiere's Extract) and *Keep Only* are the previews
+    below; *Fix…* opens the correction row; *Find All* puts the words in the find field as they are shown (Thai
+    without spaces; with several runs, the first one).
+  Edit > Copy in the menu bar still copies clips (the transcript has no keymap scope).
 
 **Transcript ↔ timeline (`SequenceTranscript`).**
 - Transcripts belong to a media audio stream, in source time. A sequence is heard through its audio clips: a word is on the
@@ -1287,6 +1325,25 @@ order (each effect marked with its section):
   section switches (Repair, Clarity) cover the gate and the limiter. The EQ menu shows `streamerVoice` by its id until it gets
   a name. One-click entries: "Streamer voice" on a mic track's menu runs `audio.essentialSound` with `"tracks"`; "Game under
   voice" runs `audio.autoDuck` with the preset (dryRun first for the ghost keyframes).
+- **In the app (0.4).** Audio Tools' **Auto-duck** card has two modes, **"Music under dialogue"** (the 0.3 card: music
+  under the dialogue roles) and **"Game under my voice"** (this preset, with `includeMusic` from its **"Include music"**
+  switch). `AudioMixer.duckMode` ("default" | "gameUnderVoice") is suggested per sequence: game mode when an audio track
+  is named for the game ("Game", "Desktop Audio", ...) and a voice track exists; a pick sticks until the current sequence
+  changes (not saved). `AudioMixer.gameTracks` (`{voice, game}`, from `chooseGameVoiceTracks`) gives the card's line
+  "Mic → ducks Game, Music", or what is missing ("No voice track: name your mic track “Mic” or give it the Dialogue
+  role"; Preview is off then). Each mode keeps its own amount, attack, release and hold for the session (music -12 dB /
+  0.25 / 0.75 / 0.25 s, game -10 dB / 0.12 / 0.8 / 0.35 s). Preview shows the ghost keyframes ("Duck the game by 10.0
+  dB", "Mic → ducks Game, Music · 4 speech regions, 12 volume keyframes on 2 clips"); Apply is one undo step "Duck Game
+  Under Voice" (music mode keeps "Auto-Duck Music"). Tests: `test_audio_ui.cpp` "Audio tools: Game under my voice ducks
+  the game and music under the mic by track name", "Audio tools: each duck mode keeps its own timing" and "Audio Tools:
+  the Auto-duck card in Game under my voice mode; screenshot" (`audio-duck-game.png`).
+- **Track names from Home (0.4).** Home's "Start with media" names a recording's audio streams the way later drops route
+  them (`edit::sourceTrackNames`): "Mic/Aux" -> Mic, "Desktop Audio" -> Game, "Discord" -> Discord, other titles as
+  written; untitled, two streams with video are Game and Mic, three or more Track 1, Track 2, ... (with a hint that OBS
+  often records the full mix on Track 1). Each track gets the role its name implies (`track.setRole`: Mic and Discord
+  dialogue, Game and Alerts effects, Music music), so Game under voice and Essential Sound work without setting roles,
+  and the next recording dropped on the timeline lands on the same tracks. `GamingStart.recording.audio[i]` has
+  `title`, `suggested`, `role` and `origin`; `recording.mixHint` says when to show the hint.
 
 **Measured** (`wabcut_audio_edit_tests "[streamer]"`, `test_streamer_audio_media.cpp`). The fixture is a synthetic 24 s OBS-like
 recording. The mic has commentary in three phrases (voiced speech with formants and syllables, "s" sounds) over a fan floor
@@ -2099,6 +2156,12 @@ tokenizer vocabulary), in onnx-community's 8-bit ONNX export (revision `ba1f3b08
 - Dragging a card onto the timeline (`application/x-wabcut-search-hit`) edits in just that range, as one undo step:
   it overwrites (Ctrl/Cmd inserts) and snapping applies, like library drops (`SmartSearch.dropHit` →
   `editor::MediaDrop::sourceRange`).
+- 0.4: double-click a card, or press Enter while it has the focus, to open the clip in the Source Monitor with the hit's
+  range marked: the In at the start of the frame holding the hit's start, the Out at the end of the frame holding its
+  last moment, the position at the In (`SourceMonitor.loadRange`; the marks are one undo step, "Set Source Marks").
+  Then `,` and `.` insert or overwrite exactly that range. The Source Monitor comes forward (in a narrow window it takes
+  the monitor's place); the Program Monitor keeps the sequence. Tab from the search field reaches the results, Up and
+  Down move between the cards. Offline media say so in the Source Monitor and set no marks.
 - The pill above the results shows "Indexing 3/12" with progress, then "Indexed 12/12"; click it to index or stop.
 - When the helper is built but the model is missing, the panel offers the download (412 MB, once, with the license
   card), through the AI network stack. Offline mode refuses it.
@@ -2217,7 +2280,14 @@ On the photo both find 57 faces and 9 people. `wabcut-cli subjects <file> --devi
 **`shorts.create`** (EditProject) makes one new sequence per chosen short (at most 10 per call). It cuts the range out of the source with `cutSequence` (clips trimmed, transitions and captions inside kept, lonely link partners unlinked), then runs, on a nested engine:
 - optional `transcript.cleanup`;
 - the reframe (default: speaker);
-- `captions.generate` (24 characters per line on 9:16);
+- `captions.generate`, then (0.4) `captions.applyPreset` with `captionPreset`: by default the **"Shorts"** preset on
+  vertical output (big outlined words two thirds down, Pop, a yellow highlight; cues of at most 10 characters by 2 lines
+  and 2.5 s), none on landscape output (37 characters by 2 lines, the default look). Another preset on a vertical short
+  gets cues of 14 characters by 2 lines and at most 4 s; `""` keeps the default look. (The line lengths are what stays
+  one line on a rendered 1080x1920 frame: the playback test "Caption style: vertical Short cue lines stay one line each
+  in the preset they are cut for"; 12 and 20 wrapped.) A preset the project does not
+  have is a warning in the result and the short is made in the default look. `highlights.toShort` takes the same
+  `captionPreset` (always vertical, so "Shorts" by default);
 - the title as a hook on its own top track for its first 3 s;
 - optional `audio.normalize` to −14 LUFS.
 
@@ -2233,7 +2303,9 @@ All the shorts of one call are one undo step, and each records `derivedFrom` (`s
 - an editable title;
 - Include and Create.
 
-**Create N shorts** stages them, **Apply** commits them, and **Export all** queues them.
+**Create N shorts** stages them, **Apply** commits them, and **Export all** queues them. Beside the **Captions** switch,
+**"Style: Shorts"** (0.4) opens the caption presets (built in, "Shorts" first, then the project's); the choice is
+remembered (`Preferences.shortsCaptionPreset`) and sent as `captionPreset` while captions are on.
 
 ### Tests (`ai` suite, core preset; `ai_ui` for the app)
 - `test_vision_detection.cpp`: letterboxing, both input tensors, YuNet and YOLOX decoding on fixture tensors, NMS, the tracker (ids through occlusion, low-score extension, reset at cuts, maxLost), saliency, the detect protocol.
@@ -2244,7 +2316,8 @@ All the shorts of one call are one undo step, and each records `derivedFrom` (`s
 - `test_shorts.cpp`: sentences (Thai too) and topics, a deterministic, explained ranking (the hook topic first, the messy one least clean, no overlap), the query, snapping to a cut, energy and visual signals, the re-rank (order, titles, text only, a bad answer), consent / no-cloud through `AiPlatform` (no call without consent or with the lock; logged otherwise), `shorts.create` (cut, 1080 × 1920, captions, hook title, reframed; one undo; cleanup; the cap; permissions), `cutSequence`, and the 78-minute benchmark.
 - `test_shorts_agent.cpp`: the assistant makes two shorts, verified and applied without EditProject; the cap; other project commands refused; the *others* check.
 - `test_vision_model.cpp` (optional): with `WABCUT_TEST_DETECT_DIR` / `WABCUT_TEST_DETECT_IMAGE` / `WABCUT_TEST_SUBJECT_VIDEO`, the real YuNet and YOLOX on CPU and DirectML (SHA-256 checked, faces, people, throughput).
-- `test_shorts_ui.cpp` (`ai_ui`): the Shorts panel and the Reframe dialog on the real Main.qml; saves `shorts-panel.png`, `shorts-window.png` and `reframe-dialog.png`.
+- `test_shorts.cpp` (0.4): "shorts.create gives vertical shorts the Shorts caption style" (in "shorts.create makes reframed, captioned, titled shorts in one undo step") and "shorts.create takes another caption preset and warns about an unknown one"; `highlights/test_highlights.cpp`: "highlights.toShort applies a caption preset after the captions".
+- `test_shorts_ui.cpp` (`ai_ui`): the Shorts panel and the Reframe dialog on the real Main.qml (0.4: the caption style chooser, its choice in the made short); saves `shorts-panel.png`, `shorts-window.png`, `shorts-caption-style.png` and `reframe-dialog.png`.
 
 ## Creator superpowers (AI-11)
 

@@ -4,6 +4,8 @@ wabcut_add_test_suite(model
         TimelineFixture.h
         ScaleProject.cpp
         ScaleProject.h
+        essay_templates_author.cpp
+        essay_templates_author.h
         gaming_templates_author.cpp
         gaming_templates_author.h
         test_beat_grid.cpp

@@ -7,8 +7,12 @@ import QtQuick.Layouts
 // (name, size, a remove x), the first video read by GamingStart.inspect() off the GUI thread (its size, rate, length and
 // codec, with chips: 4K, high fps, long -> proxies, VFR, HDR, and one line on what each means), "Add the clips to the
 // sequence", and - when the first video has more than one audio stream (a game recording: game, mic, voice chat) - the
-// audio streams table: include, the track name (Game / Mic / Discord suggested), the channel layout and the track it
-// lands on. `tracks()` is the plan Home.createFromMedia takes. The objectNames of the old gaming card are kept.
+// audio streams table: include, the track name, the channel layout and the track it lands on. `tracks()` is the plan
+// Home.createFromMedia takes. The objectNames of the old gaming card are kept.
+// 0.4: the suggested names come from the stream titles the capture tool wrote, as later drops route by ("Mic/Aux" ->
+// Mic, "Desktop Audio" -> Game, "Discord"; untitled: two streams Game / Mic, three or more Track 1, Track 2, ...); a
+// title that differs from the name shows in quotes beside it, and with 3+ streams whose first is untitled (OBS's full
+// mix on Track 1) a hint says to leave Track 1 out. The tracks also get the role their name implies (HomeBridge).
 HomeCard {
     id: card
     objectName: "homeStartWithMedia"
@@ -23,6 +27,8 @@ HomeCard {
     readonly property bool inspecting: GamingStart.inspecting
     /// The streams table shows: the first video has several audio streams.
     readonly property bool showStreams: card.loaded && streams.count > 1
+    /// 0.4: a stream's title differs from its suggested name: the rows get a column for the titles (rows stay aligned).
+    property bool showTitles: false
     /// Bumped when a stream is included or left out: the rows' target tracks follow it.
     property int includeRevision: 0
     readonly property int includedCount: {
@@ -62,11 +68,17 @@ HomeCard {
     function load() {
         ++card.includeRevision
         streams.clear()
+        card.showTitles = false
         if (!card.loaded)
             return
         const audio = card.recording.audio ?? []
-        for (const a of audio)
-            streams.append({ stream: a.index, name: a.suggested, suggested: a.suggested, include: true, layout: a.layout })
+        for (const a of audio) {
+            const title = String(a.title ?? "")
+            streams.append({ stream: a.index, name: a.suggested, suggested: a.suggested, include: true, layout: a.layout,
+                             title: title })
+            if (title !== "" && title !== a.suggested)
+                card.showTitles = true
+        }
     }
     function iconFor(kind: string): string {
         return kind === "video" ? "film" : kind === "audio" ? "music" : kind === "image" ? "image"
@@ -327,6 +339,8 @@ HomeCard {
                 required property string suggested
                 required property bool include
                 required property string layout
+                /// The stream's title in the file ("" when it has none).
+                required property string title
                 objectName: "gamingStream_" + index
                 Layout.fillWidth: true
                 spacing: Theme.space(2)
@@ -349,8 +363,20 @@ HomeCard {
                     placeholderText: streamRow.suggested
                     maximumLength: 64
                     Accessible.name: qsTr("Track name for audio stream %1").arg(streamRow.index + 1)
+                    Accessible.description: streamRow.title !== "" ? qsTr("Stream title in the file: %1").arg(streamRow.title) : ""
                     onTextEdited: streams.setProperty(streamRow.index, "name", text)
                     onAccepted: card.createRequested()
+                }
+                // 0.4: the title the capture tool wrote, when the name differs from it (an empty cell otherwise).
+                Text {
+                    objectName: "gamingStreamTitle_" + streamRow.index
+                    Layout.preferredWidth: Theme.space(30)
+                    visible: card.showTitles
+                    text: streamRow.title !== "" && streamRow.title !== streamRow.suggested ? "“" + streamRow.title + "”" : ""
+                    elide: Text.ElideRight
+                    color: Theme.textTertiary
+                    font.family: Theme.fontMono
+                    font.pixelSize: Theme.textXs
                 }
                 Text {
                     Layout.preferredWidth: Theme.space(14)
@@ -375,6 +401,18 @@ HomeCard {
                     font.pixelSize: Theme.textXs
                 }
             }
+        }
+        // 0.4: OBS often records the full mix on Track 1 (nothing is switched off for the user).
+        Text {
+            objectName: "gamingMixHint"
+            Layout.fillWidth: true
+            Layout.topMargin: Theme.space(1)
+            visible: card.recording.mixHint === true
+            text: qsTr("OBS often records the full mix on Track 1. If the other tracks hold the game and your mic, leave Track 1 out so nothing plays twice.")
+            wrapMode: Text.Wrap
+            color: Theme.textSecondary
+            font.family: Theme.fontSans
+            font.pixelSize: Theme.textSm
         }
     }
 }

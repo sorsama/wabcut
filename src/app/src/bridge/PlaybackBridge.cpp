@@ -23,6 +23,7 @@
 #include <QtGlobal>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <system_error>
@@ -357,15 +358,31 @@ void PlaybackBridge::tick() {
         m_controller->setPlayhead(active->position());
         m_settingPlayhead = false;
     }
-    // Play In to Out (P.2): stop on the last marked frame.
+    // Play In to Out (P.2), Play from Playhead to Out (0.4): stop on the last marked frame; Play Around (0.4): park
+    // back on the playhead it started from. Loop (suspended while they play once) comes back with applyLoop().
     if (m_stopAt && !m_sourceVideo && m_controller && m_session) {
         if (!isPlaying) {
+            // Stopped before this tick saw the stop point. A Play Around whose postroll runs into the sequence end
+            // stops there on its own: the scheduler parks on the last frame or two (it stops a display latency early),
+            // so it still parks back. Space, K, J / L, steps, seeks and pause() clear m_returnTo before they stop it,
+            // so they leave it where it is.
+            const Ticks slack{2 * m_controller->frameTicks().value + kTicksPerSecond / 20};
+            const std::optional<Ticks> park =
+                m_returnTo && active->position() + slack >= *m_stopAt ? m_returnTo : std::nullopt;
             m_stopAt.reset();
+            m_returnTo.reset();
+            applyLoop();
+            if (park) {
+                m_controller->setPlayhead(*park); // parks there (onPlayheadChanged scrubs)
+            }
         } else if (active->transportSpeed().num > 0 && active->position() >= *m_stopAt) {
             const Ticks last{std::max<std::int64_t>(0, (*m_stopAt - m_controller->frameTicks()).value)};
+            const Ticks park = m_returnTo.value_or(last);
             m_stopAt.reset();
+            m_returnTo.reset();
             m_session->pause();
-            m_controller->setPlayhead(last); // parks there (onPlayheadChanged scrubs)
+            m_controller->setPlayhead(park); // parks there (onPlayheadChanged scrubs)
+            applyLoop();
             emit transportChanged();
             m_wasPlaying = false;
             return;
@@ -446,6 +463,12 @@ void PlaybackBridge::onPlayheadChanged() {
     }
     const Ticks t = m_controller->playhead();
     if (m_session->isPlaying()) {
+        if (m_returnTo) {
+            // 0.4: a seek during Play Around ends it where it is: no stop at its end, no park-back.
+            m_stopAt.reset();
+            m_returnTo.reset();
+            applyLoop();
+        }
         m_session->seek(t);
     } else {
         m_session->scrub(t); // ruler scrub, arrows, Home/End: show that frame
@@ -468,6 +491,7 @@ void PlaybackBridge::onSequenceChanged() {
     m_session->setSequence(sequence);
     m_session->scrub(m_controller->playhead());
     m_stopAt.reset();
+    m_returnTo.reset();
     applyLoop();
     updateStats();
 }
@@ -509,6 +533,7 @@ void PlaybackBridge::setLoop(bool loop) {
     m_loop = loop;
     QSettings().setValue(QLatin1String(kProgramLoopKey), loop);
     m_stopAt.reset();
+    m_returnTo.reset();
     applyLoop();
     emit loopChanged();
 }
@@ -525,6 +550,7 @@ void PlaybackBridge::playInToOut() {
     m_controller->setPlayhead(range->start);
     // Loop on: the range repeats (applyLoop has it); off: playback stops at the Out.
     m_stopAt = m_loop ? std::nullopt : std::optional<Ticks>(range->end());
+    m_returnTo.reset();
     applyLoop();
     startAudio();
     m_session->play();
@@ -554,10 +580,14 @@ void PlaybackBridge::attachAll(playback::PlaybackController* controller) {
 void PlaybackBridge::togglePlay() {
     startAudio();
     if (auto* active = activeController()) {
+        const bool once = m_stopAt.has_value();
+        m_stopAt.reset();
+        m_returnTo.reset();
         if (!active->isPlaying() && !m_sourceVideo) {
             applyLoop(true);
+        } else if (once) {
+            applyLoop(); // Space stops a play-once where it is; Loop comes back
         }
-        m_stopAt.reset();
         active->togglePlay();
     }
     tick();
@@ -578,6 +608,7 @@ void PlaybackBridge::pause() {
     if (auto* active = activeController()) {
         active->pause();
     }
+    m_returnTo.reset(); // 0.4: a pause during Play Around stops it where it is (tick() ends the play-once)
     tick();
 }
 
@@ -588,9 +619,20 @@ bool PlaybackBridge::setSpeed(int num, int den) {
     }
     if (num == 0) {
         active->pause();
+        const bool once = m_stopAt.has_value();
         m_stopAt.reset();
+        m_returnTo.reset();
+        if (once) {
+            applyLoop();
+        }
         tick();
         return true;
+    }
+    if (m_returnTo) {
+        // 0.4: J / L during Play Around end it: no stop at its end, no park-back.
+        m_stopAt.reset();
+        m_returnTo.reset();
+        applyLoop();
     }
     startAudio();
     if (!active->isPlaying() && num > 0 && !m_sourceVideo) {
@@ -641,68 +683,64 @@ void PlaybackBridge::stepFrames(int frames) {
     if (!m_session || !m_controller) {
         return;
     }
+    m_returnTo.reset(); // 0.4: a step during Play Around stops it where it is
     m_session->pause();
     tick();
     m_controller->stepFrames(frames); // the playhead moves; onPlayheadChanged scrubs to it
 }
 
-// ---- Source view ------------------------------------------------------------------------------------
+// ---- Play once: Play Around, Play from Playhead to Out (0.4) -----------------------------------------
 
-bool PlaybackBridge::showSource(const QString& mediaId) {
-    const auto id = detail::parseId<MediaId>(QLatin1Char('m'), mediaId);
-    if (!id || !m_controller || !m_session) {
-        return false;
+void PlaybackBridge::playAround(double prerollSeconds, double postrollSeconds) {
+    if (!m_session || !m_controller || m_sourceVideo) {
+        return;
     }
-    const ProjectSnapshot snap = m_controller->session().snapshot();
-    const MediaItem* item = snap->findMedia(*id);
-    if (!item || item->locator.offline) {
-        return false;
+    const SequencePtr seq = m_controller->currentSequence();
+    if (!seq) {
+        return;
     }
-    // A one-clip project: the media on V1 (and A1..), in a sequence of its own size and rate.
-    edit::SequenceSettings settings;
-    settings.name = item->name;
-    if (item->info.hasVideo()) {
-        const VideoStreamInfo& v = item->info.video.front();
-        if (v.width > 0 && v.height > 0) {
-            settings.width = v.width;
-            settings.height = v.height;
-        }
-        if (v.frameRate.num > 0 && v.frameRate.den > 0) {
-            settings.frameRate = v.frameRate;
-        }
+    const auto seconds = [](double s) {
+        return Ticks{static_cast<std::int64_t>(std::llround(std::clamp(s, 0.0, 3600.0) * kTicksPerSecond))};
+    };
+    const Ticks here = m_controller->playhead();
+    const Ticks end = std::max(seq->duration, seq->contentEnd());
+    const Ticks from = std::max(Ticks{}, here - seconds(prerollSeconds));
+    const Ticks to = std::min(end, here + seconds(postrollSeconds));
+    if (to <= from) {
+        return;
     }
-    MediaItem copy = *item;
-    auto withMedia = edit::addMedia(ProjectState{}, copy);
-    if (!withMedia) {
-        return false;
-    }
-    auto withSequence = edit::addSequence(withMedia->state, settings);
-    if (!withSequence) {
-        return false;
-    }
-    auto session = std::make_unique<EditSession>(std::move(withSequence->state));
-    if (!editor::dropMedia(*session, {.media = withMedia->id, .sequence = withSequence->id, .at = Ticks{}})) {
-        return false;
-    }
-
     m_session->pause();
-    playback::PlaybackOptions options;
-    options.scheduler.zeroCopy = qEnvironmentVariable("WABCUT_ZERO_COPY") != QStringLiteral("0");
-    auto video = std::make_unique<playback::PlaybackController>(options);
-    video->scheduler().setPreview(m_preview); // proxies and preview resolution apply to source views too
-    video->setSession(session.get());
-    video->setSequence(withSequence->id);
-    video->seek(Ticks{});
-    attachAll(video.get());
-    m_sourceVideo = std::move(video); // the previous source (if any) is detached already
-    m_sourceSession = std::move(session);
-    m_sourceName = QString::fromStdString(item->name);
-    m_wasPlaying = false;
-    emit sourceChanged();
-    emit sourceTimeChanged();
-    emit transportChanged();
-    return true;
+    m_session->setLoop(std::nullopt); // plays once, whatever Loop says (applyLoop puts it back at the end)
+    m_controller->setPlayhead(from);
+    m_stopAt = to;
+    m_returnTo = here;
+    startAudio();
+    m_session->play();
+    tick();
 }
+
+void PlaybackBridge::playToOut() {
+    if (!m_session || !m_controller || m_sourceVideo) {
+        return;
+    }
+    const SequencePtr seq = m_controller->currentSequence();
+    if (!seq) {
+        return;
+    }
+    const Ticks out = seq->markOut.value_or(std::max(seq->duration, seq->contentEnd()));
+    if (m_controller->playhead() + m_controller->frameTicks() >= out) {
+        return; // at (or past) the last marked frame: nothing to play
+    }
+    m_session->pause();
+    m_session->setLoop(std::nullopt);
+    m_stopAt = out;
+    m_returnTo.reset();
+    startAudio();
+    m_session->play();
+    tick();
+}
+
+// ---- Source view (legacy) ---------------------------------------------------------------------------
 
 void PlaybackBridge::showProgram() {
     if (!m_sourceVideo) {

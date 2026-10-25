@@ -9,11 +9,16 @@
 //     changes to the sample project?" first, once, before anything is imported.
 //   * The History panel's keys: Left / Right step one state back / forward while it has the focus.
 //   * Reveal in Project (Editing.libraryRequested) brings the Library forward.
+//   * 0.4: an error toast is never replaced (what comes after it waits; MessageLog keeps every message), a second
+//     action and untilSeen; a failed autosave toasts once per failure streak with Save As… and turns the save dot red.
 
 #include "ShellFixture.h"
 
 #include "ProjectController.h"
 #include "ProjectLifecycle.h"
+#include "TimelineFixture.h"
+
+#include <wabcut/model/ProjectIO.h>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -28,6 +33,8 @@
 #include <QQuickItem>
 #include <QTemporaryDir>
 #include <QUrl>
+
+#include <filesystem>
 
 using namespace wabcut;
 using namespace wabcut::app;
@@ -116,6 +123,8 @@ TEST_CASE("Toast: an action pill runs its action and problems stay longer", "[ap
     CHECK(sameColor(toast->property("accent").value<QColor>(), shell.themeColor("warning")));
     evaluate(shell, QStringLiteral("toast.show('Export failed', Theme.danger)"));
     CHECK(toast->property("timeout").toInt() == 7000);
+    // 0.4: an error is never replaced (what comes next waits behind it): close it first.
+    evaluate(shell, QStringLiteral("toast.dismiss()"));
 
     // With an action: the pill shows its text, stays 8 s (or timeoutMs), and a click runs the action and closes it.
     evaluate(shell, QStringLiteral("toast.show('Exported Final cut.mp4', undefined, { actionText: 'Show in Explorer', "
@@ -152,6 +161,200 @@ TEST_CASE("Toast: an action pill runs its action and problems stay longer", "[ap
     shell.setAppearance(false, "ultraviolet");
     REQUIRE(shell.settle(false, shell.themeColor("accentFill")));
     REQUIRE(shell.grab().save(outputDir() + QStringLiteral("/toast-long-warning.png")));
+
+    const QStringList messages = takeMessages();
+    INFO(join(messages));
+    CHECK(messages.isEmpty());
+}
+
+TEST_CASE("Toast: an error is not replaced and the messages after it wait their turn", "[app][shell][toast][qml]") {
+    resetSettings();
+    clearMessages();
+    Shell shell;
+    REQUIRE(shell.window != nullptr);
+    shell.theme->setProperty("reduceMotion", true);
+    shell.resize(kShotWidth, kShotHeight);
+    spin(50);
+    QQuickItem* toast = shell.item("toast");
+    REQUIRE(toast != nullptr);
+    QObject* timer = toast->findChild<QObject*>(QStringLiteral("toastHideTimer"));
+    QQuickItem* waiting = toast->findChild<QQuickItem*>(QStringLiteral("toastPending"));
+    QQuickItem* close = toast->findChild<QQuickItem*>(QStringLiteral("toastClose"));
+    REQUIRE(timer != nullptr);
+    REQUIRE(waiting != nullptr);
+    REQUIRE(close != nullptr);
+    evaluate(shell, QStringLiteral("MessageLog.clear()"));
+    const auto text = [&] { return toast->property("text").toString(); };
+    const auto shown = [&] { return toast->property("shown").toBool(); };
+    const auto pending = [&] { return toast->property("pendingCount").toInt(); };
+    const auto logged = [&] { return evaluate(shell, QStringLiteral("MessageLog.count")).toInt(); };
+    const auto unseen = [&] { return evaluate(shell, QStringLiteral("MessageLog.unseen")).toInt(); };
+
+    // An error, then a note: the error stays and the note waits behind it; both are in the log.
+    evaluate(shell, QStringLiteral("toast.show('Export failed: The disk is full.', Theme.danger)"));
+    evaluate(shell, QStringLiteral("toast.show('Frame saved next to the project')"));
+    CHECK(text() == QStringLiteral("Export failed: The disk is full."));
+    CHECK(pending() == 1);
+    CHECK(logged() == 2);
+    // The same error again only restarts its time: nothing more waits.
+    evaluate(shell, QStringLiteral("toast.show('Export failed: The disk is full.', Theme.danger)"));
+    CHECK(pending() == 1);
+    CHECK(timer->property("running").toBool());
+    // The card says one more message waits, and has a close button (an error without an action too).
+    spin(50);
+    CHECK(waiting->isVisible());
+    CHECK(waiting->property("text").toString() == QStringLiteral("+1"));
+    CHECK(close->isVisible());
+    REQUIRE(shell.grab().save(outputDir() + QStringLiteral("/toast-error-queue.png")));
+    // The error goes (×): the note shows.
+    evaluate(shell, QStringLiteral("toast.dismiss()"));
+    CHECK(shown());
+    CHECK(text() == QStringLiteral("Frame saved next to the project"));
+    CHECK(pending() == 0);
+    // Notes and warnings still replace each other.
+    evaluate(shell, QStringLiteral("toast.show('Clip volume +1 dB')"));
+    CHECK(text() == QStringLiteral("Clip volume +1 dB"));
+    evaluate(shell, QStringLiteral("toast.show('Clip volume +2 dB', Theme.warning)"));
+    CHECK(text() == QStringLiteral("Clip volume +2 dB"));
+    CHECK(pending() == 0);
+
+    // An error that leaves on its time (nobody saw it) counts as unseen; one closed with × does not.
+    evaluate(shell, QStringLiteral("toast.show('Autosave could not save your project', Theme.danger)"));
+    CHECK(unseen() == 0);
+    REQUIRE(QMetaObject::invokeMethod(timer, "triggered"));
+    CHECK_FALSE(shown());
+    CHECK(unseen() == 1);
+    evaluate(shell, QStringLiteral("toast.show('Render In to Out failed', Theme.danger)"));
+    evaluate(shell, QStringLiteral("toast.dismiss()"));
+    CHECK(unseen() == 1);
+    // Newest first; a repeat of the newest message only refreshes its time.
+    CHECK(evaluate(shell, QStringLiteral("MessageLog.entries[0].text")).toString() == QStringLiteral("Render In to Out failed"));
+    CHECK(evaluate(shell, QStringLiteral("MessageLog.entries[0].tone")).toString() == QStringLiteral("danger"));
+    const int before = logged();
+    evaluate(shell, QStringLiteral("toast.show('Render In to Out failed', Theme.danger)"));
+    CHECK(logged() == before);
+    evaluate(shell, QStringLiteral("MessageLog.markSeen()"));
+    CHECK(unseen() == 0);
+
+    // At most five wait: when full, the oldest waiting message that is not an error goes.
+    for (const char* note : {"Note 1", "Note 2"})
+        evaluate(shell, QStringLiteral("toast.show('%1')").arg(QLatin1String(note)));
+    evaluate(shell, QStringLiteral("toast.show('Second error', Theme.danger)"));
+    for (const char* note : {"Note 4", "Note 5", "Note 6"})
+        evaluate(shell, QStringLiteral("toast.show('%1')").arg(QLatin1String(note)));
+    CHECK(text() == QStringLiteral("Render In to Out failed"));
+    CHECK(pending() == 5);
+    CHECK(evaluate(shell, QStringLiteral("toast.pending[0].text")).toString() == QStringLiteral("Note 2"));
+    // dismissAll drops what waits; the error that never showed counts as unseen.
+    evaluate(shell, QStringLiteral("toast.dismissAll()"));
+    CHECK_FALSE(shown());
+    CHECK(pending() == 0);
+    CHECK(unseen() == 1);
+
+    // 0.4: a second action, a ghost pill before the first; each closes the toast and runs its own.
+    evaluate(shell, QStringLiteral("toast.show('Exported Highlights.mp4', Theme.success, { actionText: 'Open', "
+                                   "action: () => toast.objectName = 'opened', secondaryActionText: 'Show in Explorer', "
+                                   "secondaryAction: () => toast.objectName = 'revealed' })"));
+    spin(50);
+    QQuickItem* secondary = toast->findChild<QQuickItem*>(QStringLiteral("toastSecondaryAction"));
+    QQuickItem* action = toast->findChild<QQuickItem*>(QStringLiteral("toastAction"));
+    REQUIRE(secondary != nullptr);
+    REQUIRE(action != nullptr);
+    CHECK(secondary->isVisible());
+    CHECK(action->isVisible());
+    CHECK(secondary->property("text").toString() == QStringLiteral("Show in Explorer"));
+    // Before the primary pill in the row (a hidden window lays the Row out only when it renders).
+    const QList<QQuickItem*> row = action->parentItem()->childItems();
+    CHECK(row.indexOf(secondary) >= 0);
+    CHECK(row.indexOf(secondary) < row.indexOf(action));
+    CHECK(toast->property("hasSecondary").toBool());
+    REQUIRE(QMetaObject::invokeMethod(secondary, "clicked"));
+    CHECK(toast->objectName() == QStringLiteral("revealed"));
+    CHECK_FALSE(shown());
+    toast->setObjectName(QStringLiteral("toast"));
+
+    // untilSeen: its time waits while the window is not active (a hidden test window never is); others keep theirs.
+    evaluate(shell, QStringLiteral("toast.show('Exported Teaser.mp4', Theme.success, { untilSeen: true })"));
+    CHECK(shown());
+    CHECK_FALSE(timer->property("running").toBool());
+    evaluate(shell, QStringLiteral("toast.show('Frame saved next to the project')"));
+    CHECK(timer->property("running").toBool());
+    evaluate(shell, QStringLiteral("toast.dismiss()"));
+
+    const QStringList messages = takeMessages();
+    INFO(join(messages));
+    CHECK(messages.isEmpty());
+}
+
+TEST_CASE("Recent messages keep errors past the limit and a readout or a repeat replaces its own message",
+          "[app][shell][toast][qml]") {
+    resetSettings();
+    clearMessages();
+    Shell shell;
+    REQUIRE(shell.window != nullptr);
+    shell.theme->setProperty("reduceMotion", true);
+    spin(50);
+    QQuickItem* toast = shell.item("toast");
+    REQUIRE(toast != nullptr);
+    QObject* timer = toast->findChild<QObject*>(QStringLiteral("toastHideTimer"));
+    REQUIRE(timer != nullptr);
+    evaluate(shell, QStringLiteral("toast.dismissAll()"));
+    evaluate(shell, QStringLiteral("MessageLog.clear()"));
+    const auto logged = [&] { return evaluate(shell, QStringLiteral("MessageLog.count")).toInt(); };
+    const auto unseen = [&] { return evaluate(shell, QStringLiteral("MessageLog.unseen")).toInt(); };
+    const auto inLog = [&](const QString& text) {
+        return evaluate(shell, QStringLiteral("MessageLog.entries.some(e => e.text === '%1')").arg(text)).toBool();
+    };
+
+    // An export failure nobody saw (its toast left on its time), then forty different notes - more than the log keeps
+    // (30): the oldest notes go, the error stays and still counts as unseen.
+    evaluate(shell, QStringLiteral("toast.show('Export failed: The disk is full.', Theme.danger)"));
+    REQUIRE(QMetaObject::invokeMethod(timer, "triggered"));
+    CHECK(unseen() == 1);
+    for (int i = 1; i <= 40; ++i)
+        evaluate(shell, QStringLiteral("MessageLog.add('Nudged clip %1', 'info', '', null)").arg(i));
+    CHECK(logged() == 30);
+    CHECK(inLog(QStringLiteral("Export failed: The disk is full.")));
+    CHECK(inLog(QStringLiteral("Nudged clip 40")));
+    CHECK_FALSE(inLog(QStringLiteral("Nudged clip 1")));
+    CHECK(unseen() == 1);
+    // Only when every entry is a problem does the oldest problem go - and an unseen one stops counting with it.
+    for (int i = 1; i <= 30; ++i)
+        evaluate(shell, QStringLiteral("MessageLog.add('Proxy %1 failed', 'warning', '', null)").arg(i));
+    CHECK(logged() == 30);
+    CHECK_FALSE(inLog(QStringLiteral("Export failed: The disk is full.")));
+    CHECK(unseen() == 0);
+
+    // A readout (the clip volume keys hold ] down): each value replaces the last one, in the toast's queue behind an
+    // error and in the log.
+    evaluate(shell, QStringLiteral("MessageLog.clear()"));
+    evaluate(shell, QStringLiteral("toast.show('Export failed: The disk is full.', Theme.danger)"));
+    for (int i = 1; i <= 12; ++i)
+        evaluate(shell, QStringLiteral("toast.show('Volume +1 dB (now %1 dB)', undefined, { replaceKey: 'clipVolume' })").arg(i));
+    CHECK(toast->property("text").toString() == QStringLiteral("Export failed: The disk is full."));
+    CHECK(toast->property("pendingCount").toInt() == 1);
+    CHECK(evaluate(shell, QStringLiteral("toast.pending[0].text")).toString() == QStringLiteral("Volume +1 dB (now 12 dB)"));
+    CHECK(logged() == 2);
+    CHECK(evaluate(shell, QStringLiteral("MessageLog.entries[0].text")).toString() == QStringLiteral("Volume +1 dB (now 12 dB)"));
+    // The error goes: the readout shows; the next value replaces it there too.
+    evaluate(shell, QStringLiteral("toast.dismiss()"));
+    CHECK(toast->property("text").toString() == QStringLiteral("Volume +1 dB (now 12 dB)"));
+    evaluate(shell, QStringLiteral("toast.show('Volume +1 dB (now 13 dB)', undefined, { replaceKey: 'clipVolume' })"));
+    CHECK(toast->property("text").toString() == QStringLiteral("Volume +1 dB (now 13 dB)"));
+    CHECK(logged() == 2);
+
+    // The same message again (two exports of one file name, in two folders): the toast takes the new call's actions,
+    // so Open opens the second export's file.
+    evaluate(shell, QStringLiteral("toast.dismissAll()"));
+    evaluate(shell, QStringLiteral("toast.show('Exported Sequence 01.mp4', Theme.success, { actionText: 'Open', "
+                                   "action: () => toast.objectName = 'first', untilSeen: true })"));
+    evaluate(shell, QStringLiteral("toast.show('Exported Sequence 01.mp4', Theme.success, { actionText: 'Open', "
+                                   "action: () => toast.objectName = 'second', secondaryActionText: 'Show in Explorer', "
+                                   "secondaryAction: () => toast.objectName = 'revealed', untilSeen: true })"));
+    CHECK(toast->property("hasSecondary").toBool());
+    REQUIRE(QMetaObject::invokeMethod(toast, "runAction"));
+    CHECK(toast->objectName() == QStringLiteral("second"));
+    toast->setObjectName(QStringLiteral("toast"));
 
     const QStringList messages = takeMessages();
     INFO(join(messages));
@@ -288,6 +491,97 @@ TEST_CASE("Open and save failures are never silent in the editor or on Home", "[
     CHECK_FALSE(homeAction->isVisible());
     evaluate(shell, QStringLiteral("home.close()"));
     spin(50);
+
+    const QStringList messages = takeMessages();
+    INFO(join(messages));
+    CHECK(messages.isEmpty());
+}
+
+TEST_CASE("Autosave failure: one danger toast per failure streak with Save As and a red save dot", "[app][shell][toast][qml]") {
+    resetSettings();
+    clearMessages();
+    Shell shell;
+    REQUIRE(shell.window != nullptr);
+    shell.theme->setProperty("reduceMotion", true);
+    shell.resize(kShotWidth, kShotHeight);
+    spin(50);
+    QQuickItem* toast = shell.item("toast");
+    QQuickItem* dot = shell.item("unsavedDot");
+    REQUIRE(toast != nullptr);
+    REQUIRE(dot != nullptr);
+    auto* file = shell.engine.singletonInstance<ProjectLifecycle*>("Wabcut", "ProjectFile");
+    REQUIRE(file != nullptr);
+    QTemporaryDir dir;
+    REQUIRE(dir.isValid());
+    const QString saved = dir.filePath(QStringLiteral("Film.wabcut"));
+    REQUIRE(file->saveAs(QUrl::fromLocalFile(saved)));
+    makeEdit(shell, 1);
+    REQUIRE(file->dirty());
+    CHECK(dot->isVisible());
+    CHECK(sameColor(dot->property("color").value<QColor>(), shell.themeColor("warning")));
+    evaluate(shell, QStringLiteral("toast.dismissAll()"));
+    evaluate(shell, QStringLiteral("MessageLog.clear()"));
+    const auto logged = [&] { return evaluate(shell, QStringLiteral("MessageLog.count")).toInt(); };
+
+    // A folder where the autosave's temporary file goes: it cannot be written. One danger toast says why, with
+    // Save As…; the Save button's dot turns red.
+    std::filesystem::path blocked = io::autosavePath(std::filesystem::path(saved.toStdU16String()));
+    blocked += ".tmp";
+    std::filesystem::create_directories(blocked);
+    CHECK_FALSE(file->autosaveNow());
+    spin(50);
+    CHECK_FALSE(file->autosaveOk());
+    const QString status = file->autosaveText();
+    REQUIRE(status.startsWith(QStringLiteral("Autosave failed ")));
+    QString reason = status.mid(status.indexOf(QStringLiteral(": ")) + 2);
+    if (reason.endsWith(QLatin1Char('.')))
+        reason.chop(1);
+    CHECK(toast->property("shown").toBool());
+    const QString text = toast->property("text").toString();
+    // What to do comes first (the reason, which may hold a long path, is last: the toast shows three lines).
+    CHECK(text.startsWith(QStringLiteral("Autosave could not save your project. Save it somewhere else to keep your work safe. ")));
+    CHECK(text.contains(reason));
+    CHECK(text.endsWith(reason + QStringLiteral(".")));
+    CHECK_FALSE(text.contains(QStringLiteral("..")));
+    CHECK(sameColor(toast->property("accent").value<QColor>(), shell.themeColor("danger")));
+    CHECK(toast->property("actionText").toString() == QStringLiteral("Save As…"));
+    CHECK(toast->property("timeout").toInt() == 15000);
+    CHECK(dot->isVisible());
+    CHECK(sameColor(dot->property("color").value<QColor>(), shell.themeColor("danger")));
+    CHECK(logged() == 1);
+    QQuickItem* save = shell.item("saveButton");
+    REQUIRE(save != nullptr);
+    CHECK(save->property("tooltip").toString().contains(QStringLiteral("Autosave failed")));
+    spin(300);
+    REQUIRE(shell.grab().save(outputDir() + QStringLiteral("/autosave-failed.png")));
+
+    // Every tick retries; the same streak toasts no more.
+    evaluate(shell, QStringLiteral("toast.dismiss()"));
+    makeEdit(shell, 2);
+    CHECK_FALSE(file->autosaveNow());
+    spin(50);
+    CHECK_FALSE(toast->property("shown").toBool());
+    CHECK(logged() == 1);
+
+    // The way is clear again: the autosave works, the dot is the unsaved one again (the project is still unsaved).
+    std::filesystem::remove_all(blocked);
+    makeEdit(shell, 3);
+    CHECK(file->autosaveNow());
+    CHECK(file->autosaveOk());
+    CHECK(sameColor(dot->property("color").value<QColor>(), shell.themeColor("warning")));
+    // A later failure starts a new streak: it says so again.
+    std::filesystem::create_directories(blocked);
+    makeEdit(shell, 4);
+    CHECK_FALSE(file->autosaveNow());
+    spin(50);
+    CHECK(toast->property("shown").toBool());
+    CHECK(toast->property("text").toString() == text);
+    // The log's newest entry is the same message: it only gets the new time.
+    CHECK(logged() == 1);
+    evaluate(shell, QStringLiteral("toast.dismissAll()"));
+    std::filesystem::remove_all(blocked);
+    makeEdit(shell, 5);
+    CHECK(file->autosaveNow());
 
     const QStringList messages = takeMessages();
     INFO(join(messages));
@@ -518,7 +812,8 @@ TEST_CASE("Background work that ends while Home is open says so on Home's strip 
     CHECK(homeMessage() == QStringLiteral("Exported the sequence"));
     CHECK(homeTone() == QStringLiteral("info"));
     CHECK(action->isVisible());
-    CHECK(action->property("text").toString().startsWith(QStringLiteral("Show in ")));
+    // 0.4: Home's strip takes one action: Open (the toast has "Show in Explorer" beside it).
+    CHECK(action->property("text").toString() == QStringLiteral("Open"));
     // A failed one: a danger strip; Show the queue leaves Home for the editor's Export panel.
     finished(false, QStringLiteral("the disk is full"));
     CHECK_FALSE(toast->property("shown").toBool());
@@ -541,6 +836,63 @@ TEST_CASE("Background work that ends while Home is open says so on Home's strip 
     CHECK(action->property("text").toString() == QStringLiteral("Try Again"));
     evaluate(shell, QStringLiteral("home.close()"));
     spin(50);
+
+    const QStringList messages = takeMessages();
+    INFO(join(messages));
+    CHECK(messages.isEmpty());
+}
+
+TEST_CASE("Home strip: an error is not replaced by a later message and an error nobody closed counts as unseen",
+          "[app][shell][toast][qml]") {
+    resetSettings();
+    clearMessages();
+    Shell shell;
+    REQUIRE(shell.window != nullptr);
+    shell.theme->setProperty("reduceMotion", true);
+    spin(50);
+    QObject* exports = evaluate(shell, QStringLiteral("ExportController")).value<QObject*>();
+    REQUIRE(exports != nullptr);
+    const auto homeMessage = [&] { return evaluate(shell, QStringLiteral("home.message")).toString(); };
+    const auto unseen = [&] { return evaluate(shell, QStringLiteral("MessageLog.unseen")).toInt(); };
+    const auto logged = [&] { return evaluate(shell, QStringLiteral("MessageLog.count")).toInt(); };
+    const auto finished = [&](bool succeeded, const QString& message) {
+        REQUIRE(QMetaObject::invokeMethod(exports, "jobFinished", Q_ARG(QString, QStringLiteral("no-such-job")),
+                                          Q_ARG(bool, succeeded), Q_ARG(QString, message)));
+        spin(30);
+    };
+    evaluate(shell, QStringLiteral("home.open()"));
+    spin(50);
+    evaluate(shell, QStringLiteral("MessageLog.clear()"));
+
+    // Export A fails while Home is open, then export B finishes: the failure stays on the strip, B's message waits
+    // (both are in Recent messages) and shows once the failure is closed.
+    finished(false, QStringLiteral("The disk is full."));
+    CHECK(homeMessage() == QStringLiteral("Export failed: The disk is full."));
+    finished(true, QString());
+    CHECK(homeMessage() == QStringLiteral("Export failed: The disk is full."));
+    CHECK(evaluate(shell, QStringLiteral("home.messageTone")).toString() == QStringLiteral("danger"));
+    CHECK(logged() == 2);
+    CHECK(unseen() == 0);
+    evaluate(shell, QStringLiteral("home.message = ''")); // its ×
+    spin(30);
+    CHECK(homeMessage() == QStringLiteral("Exported the sequence"));
+    CHECK(unseen() == 0); // closed by the user: seen
+
+    // A later error replaces an earlier one on the strip: the earlier one counts as unseen.
+    finished(false, QStringLiteral("The disk is full."));
+    finished(false, QStringLiteral("No permission to write the file."));
+    CHECK(homeMessage() == QStringLiteral("Export failed: No permission to write the file."));
+    CHECK(unseen() == 1);
+    // Home closes with the error still on the strip (nobody closed it): unseen too, so the Background tasks pill says
+    // "2 problems" in the editor.
+    evaluate(shell, QStringLiteral("home.close()"));
+    spin(50);
+    CHECK(unseen() == 2);
+    QQuickItem* pill = shell.item("activityPill");
+    REQUIRE(pill != nullptr);
+    CHECK(pill->isVisible());
+    CHECK(pill->property("fullText").toString() == QStringLiteral("2 problems"));
+    evaluate(shell, QStringLiteral("MessageLog.markSeen()"));
 
     const QStringList messages = takeMessages();
     INFO(join(messages));
@@ -598,6 +950,60 @@ TEST_CASE("Reveal in Project brings the Library forward through Editing.libraryR
     CHECK(evaluate(shell, QStringLiteral("docking.isOpen('library')")).toBool());
     CHECK(shell.item("libraryPanel")->isVisible());
     CHECK(evaluate(shell, QStringLiteral("docking.activeGroup === docking.groupOfPanel('library').group")).toBool());
+
+    const QStringList messages = takeMessages();
+    INFO(join(messages));
+    CHECK(messages.isEmpty());
+}
+
+TEST_CASE("Clip volume keys held down leave one readout in the toast queue and in Recent messages",
+          "[app][shell][toast][qml]") {
+    resetSettings();
+    clearMessages();
+    Shell shell;
+    REQUIRE(shell.window != nullptr);
+    shell.theme->setProperty("reduceMotion", true);
+    spin(50);
+    if (evaluate(shell, QStringLiteral("home.opened")).toBool())
+        evaluate(shell, QStringLiteral("home.close()"));
+    auto* controller = shell.engine.singletonInstance<ProjectController*>("Wabcut", "ProjectController");
+    REQUIRE(controller != nullptr);
+    Timeline tl(R"(
+        V1 tgt |Aaaaaaaaaa|
+        A1 tgt |Aaaaaaaaaa|
+    )");
+    tl.linkMatching();
+    controller->resetProject(tl.state, tl.seq);
+    controller->setSelection({clipAt(*controller->snapshot(), tl.seq, "V1@0")});
+    spin(50);
+    QQuickItem* toast = shell.item("toast");
+    REQUIRE(toast != nullptr);
+    evaluate(shell, QStringLiteral("toast.dismissAll()"));
+    evaluate(shell, QStringLiteral("MessageLog.clear()"));
+    const auto logged = [&] { return evaluate(shell, QStringLiteral("MessageLog.count")).toInt(); };
+
+    // An export failure shows; then ] is held down (key repeat: eight presses, each with its own value). The readout
+    // waits behind the error as one message - the latest value - and Recent messages keeps one line for it, so the
+    // presses neither replay for half a minute after the error nor push the error out of the log.
+    evaluate(shell, QStringLiteral("toast.show('Export failed: The disk is full.', Theme.danger)"));
+    for (int i = 0; i < 8; ++i)
+        evaluate(shell, QStringLiteral("window.runCommand('clip.increaseVolume')"));
+    CHECK(toast->property("text").toString() == QStringLiteral("Export failed: The disk is full."));
+    CHECK(toast->property("pendingCount").toInt() == 1);
+    const QString last = evaluate(shell, QStringLiteral("toast.pending[0].text")).toString();
+    CHECK(last == QStringLiteral("Volume +1 dB (now 8.0 dB)"));
+    CHECK(logged() == 2);
+    CHECK(evaluate(shell, QStringLiteral("MessageLog.entries[0].text")).toString() == last);
+    CHECK(evaluate(shell, QStringLiteral("MessageLog.entries[1].text")).toString()
+          == QStringLiteral("Export failed: The disk is full."));
+    // The error goes: the readout shows, and the next press replaces it there.
+    evaluate(shell, QStringLiteral("toast.dismiss()"));
+    CHECK(toast->property("text").toString() == last);
+    evaluate(shell, QStringLiteral("window.runCommand('clip.decreaseVolume')"));
+    CHECK(toast->property("text").toString() == QStringLiteral("Volume -1 dB (now 7.0 dB)"));
+    CHECK(toast->property("pendingCount").toInt() == 0);
+    CHECK(logged() == 2);
+    evaluate(shell, QStringLiteral("toast.dismissAll()"));
 
     const QStringList messages = takeMessages();
     INFO(join(messages));

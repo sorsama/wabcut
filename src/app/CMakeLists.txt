@@ -11,6 +11,7 @@ set_source_files_properties(
     qml/Preferences.qml
     qml/theme/Theme.qml
     qml/panels/workspace/Workspaces.qml
+    qml/components/MessageLog.qml
     PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
 
 qt_add_qml_module(wabcut_ui
@@ -1185,6 +1186,23 @@ wabcut_ui_qml_sources(
         qml/dialogs/TransitionDurationDialog.qml
         qml/panels/timeline/GapContextMenu.qml
         qml/panels/timeline/TransitionContextMenu.qml
+)
+
+# 0.4 (qol round). Stream E: keep-awake and taskbar progress (Windows; no-ops elsewhere), the title bar's Background
+# tasks popover, the recent-messages singleton and the quit guard. Stream A: the ruler menu. Stream B: platform safe
+# zones and the monitors' transport overflow.
+target_sources(wabcut_ui PRIVATE src/PowerKeeper.h src/PowerKeeper.cpp src/TaskbarProgress.h src/TaskbarProgress.cpp)
+if(WIN32)
+    target_link_libraries(wabcut_ui PRIVATE ole32 uuid) # ITaskbarList3: CoCreateInstance, CLSID_TaskbarList
+endif()
+wabcut_ui_qml_sources(
+    QML_FILES
+        qml/components/MessageLog.qml
+        qml/dialogs/BackgroundWorkCloseDialog.qml
+        qml/panels/ActivityPopover.qml
+        qml/panels/timeline/RulerContextMenu.qml
+        qml/panels/PlatformSafeZoneOverlay.qml
+        qml/monitor/TransportOverflowButton.qml
 )
 
 # Every block's QML files and resources (wabcut_ui_qml_sources above), in one call.

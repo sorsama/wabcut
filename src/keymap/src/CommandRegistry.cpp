@@ -24,6 +24,7 @@ constexpr std::array kBuiltinCommands{
     CommandInfo{"file.saveCopy", Scope::Application, "File", "Save a Copy…", "Save a Copy...", "context.global", "cmd.file.savecopy", false},
     CommandInfo{"file.importFromMediaBrowser", Scope::Application, "File", "Import from Media Browser", "Import from Media Browser", "context.global", "cmd.file.importfrombrowser", false},
     CommandInfo{"file.import", Scope::Application, "File", "Import…", "Import...", "context.global", "cmd.file.import", false},
+    CommandInfo{"file.importFolder", Scope::Application, "File", "Import Folder…", "", "", "", false},
     CommandInfo{"file.exportMedia", Scope::Application, "File", "Export Media…", "Export Media", "context.global", "cmd.file.export.movie", false},
     // P.2 (E6): File > Export > Frame (the monitors' camera): Ctrl+Shift+E on Windows, Shift+E on macOS (shipped key sets).
     CommandInfo{"file.exportFrame", Scope::Application, "File", "Export Frame…", "Export Frame", "context.global", "cmd.export.frame", false},
@@ -58,6 +59,10 @@ constexpr std::array kBuiltinCommands{
     CommandInfo{"clip.makeSubclip", Scope::Application, "Clip", "Make Subclip…", "Make Subclip...", "context.global", "cmd.clip.makesubclip", false},
     CommandInfo{"clip.audioChannels", Scope::Application, "Clip", "Audio Channels…", "Audio Channels...", "context.global", "cmd.clip.audiooptions.sourcechannelmappings", false},
     CommandInfo{"clip.audioGain", Scope::Application, "Clip", "Audio Gain…", "Audio Gain…", "context.global", "cmd.clip.audiooptions.gain", false},
+    CommandInfo{"clip.increaseVolume", Scope::Application, "Clip", "Increase Clip Volume", "Increase Clip Volume", "context.global", "cmd.sequence.increaseclipvolume", true},
+    CommandInfo{"clip.decreaseVolume", Scope::Application, "Clip", "Decrease Clip Volume", "Decrease Clip Volume", "context.global", "cmd.sequence.decreaseclipvolume", true},
+    CommandInfo{"clip.increaseVolumeMany", Scope::Application, "Clip", "Increase Clip Volume Many", "Increase Clip Volume Many", "context.global", "cmd.sequence.increaseclipvolumemany", true},
+    CommandInfo{"clip.decreaseVolumeMany", Scope::Application, "Clip", "Decrease Clip Volume Many", "Decrease Clip Volume Many", "context.global", "cmd.sequence.decreaseclipvolumemany", true},
     CommandInfo{"clip.speedDuration", Scope::Application, "Clip", "Speed/Duration…", "Speed/Duration...", "context.global", "cmd.clip.speed", false},
     CommandInfo{"clip.insert", Scope::Application, "Clip", "Insert", "Insert", "context.global", "cmd.clip.insert", false},
     CommandInfo{"clip.overwrite", Scope::Application, "Clip", "Overwrite", "Overwrite", "context.global", "cmd.clip.overlay", false},
@@ -171,6 +176,7 @@ constexpr std::array kBuiltinCommands{
     CommandInfo{"marker.goToPrevious", Scope::Application, "Markers", "Go to Previous Marker", "Go to Previous Marker", "context.global", "cmd.marker.gotomarker.previous", false},
     CommandInfo{"marker.clearSelected", Scope::Application, "Markers", "Clear Selected Marker", "Clear Selected Marker", "context.global", "cmd.marker.clearmarker.current", false},
     CommandInfo{"marker.clearAll", Scope::Application, "Markers", "Clear All Markers", "Clear All Markers", "context.global", "cmd.marker.clearmarker.all", false},
+    CommandInfo{"marker.toggleRipple", Scope::Application, "Markers", "Ripple Sequence Markers", "Ripple Sequence Markers", "context.global", "cmd.marker.style.ripplesequencemarkers", false},
     // Graphics and Titles
     CommandInfo{"graphics.newTextLayer", Scope::Application, "Graphics and Titles", "New Layer: Text", "Text", "context.global", "cmd.graphics.add.text", false},
     CommandInfo{"graphics.newRectangleLayer", Scope::Application, "Graphics and Titles", "New Layer: Rectangle", "Rectangle", "context.global", "cmd.graphics.add.shape.rectangle", false},
@@ -204,6 +210,7 @@ constexpr std::array kBuiltinCommands{
     CommandInfo{"window.timeline", Scope::Application, "Window", "Timeline", "Timeline", "context.global", "uif.window.Timelines", false},
     // P.2 (E5): Window > History (the undo steps).
     CommandInfo{"window.history", Scope::Application, "Window", "History", "History", "context.global", "uif.window.History", false},
+    CommandInfo{"window.backgroundTasks", Scope::Application, "Window", "Background Tasks", "", "", "", false},
     // Tools
     CommandInfo{"tool.selection", Scope::Application, "Tools", "Selection Tool", "Selection Tool", "context.global", "cmd.tools.01pointer", false},
     CommandInfo{"tool.trackSelectForward", Scope::Application, "Tools", "Track Select Forward Tool", "Track Select Forward Tool", "context.global", "cmd.tools.02trackselectforward", false},
@@ -238,6 +245,7 @@ constexpr std::array kBuiltinCommands{
     CommandInfo{"transport.goToSelectedClipStart", Scope::Application, "Playback", "Go to Selected Clip Start", "Go to Selected Clip Start", "context.global", "cmd.transport.selectedclip.start", false},
     CommandInfo{"transport.goToSelectedClipEnd", Scope::Application, "Playback", "Go to Selected Clip End", "Go to Selected Clip End", "context.global", "cmd.transport.selectedclip.end", false},
     CommandInfo{"transport.playInToOut", Scope::Application, "Playback", "Play In to Out", "Play In to Out", "context.global", "cmd.transport.playintoout", false},
+    CommandInfo{"transport.playFromPlayheadToOut", Scope::Application, "Playback", "Play from Playhead to Out", "Play from Playhead to Out Point", "context.global", "cmd.transport.play.ctitoout", false},
     CommandInfo{"transport.playAround", Scope::Application, "Playback", "Play Around", "Play Around", "context.global", "cmd.transport.playedit", false},
     // P.2 (E6): the monitors' Loop button (the focused monitor's; no default key in either shipped key set).
     CommandInfo{"monitor.loop", Scope::Application, "Playback", "Loop", "Loop", "context.global", "cmd.monitor.loop", false},
@@ -341,6 +349,8 @@ constexpr std::array kBuiltinCommands{
     CommandInfo{"timeline.nudgeClipLeft", Scope::Timeline, "Timeline", "Nudge Clip Selection Left One Frame", "Nudge Clip Selection Left One Frame", "context.timeline", "cmd.timeline.nudge.left.one", true},
     CommandInfo{"timeline.nudgeClipRightFive", Scope::Timeline, "Timeline", "Nudge Clip Selection Right Five Frames", "Nudge Clip Selection Right Five Frames", "context.timeline", "cmd.timeline.nudge.right.several", true},
     CommandInfo{"timeline.nudgeClipRight", Scope::Timeline, "Timeline", "Nudge Clip Selection Right One Frame", "Nudge Clip Selection Right One Frame", "context.timeline", "cmd.timeline.nudge.right.one", true},
+    CommandInfo{"timeline.nudgeClipUp", Scope::Timeline, "Timeline", "Nudge Clip Selection Up", "Nudge Clip Selection Up", "context.timeline", "cmd.timeline.nudge.up", true},
+    CommandInfo{"timeline.nudgeClipDown", Scope::Timeline, "Timeline", "Nudge Clip Selection Down", "Nudge Clip Selection Down", "context.timeline", "cmd.timeline.nudge.down", true},
     CommandInfo{"timeline.previousSequenceTab", Scope::Timeline, "Timeline", "Previous Sequence Tab", "", "", "", true},
     // 0.2: Select Next / Previous Clip (on the selected clip's track; nothing selected: from the playhead). No default key.
     CommandInfo{"timeline.selectNextClip", Scope::Timeline, "Timeline", "Select Next Clip", "Select Next Clip", "", "", true},

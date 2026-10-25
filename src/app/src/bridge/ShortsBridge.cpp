@@ -668,6 +668,10 @@ QString ShortsBridge::create(const QVariantList& indices, const QVariantMap& opt
                 {"captions", options.value(QStringLiteral("captions"), true).toBool()},
                 {"hookTitle", options.value(QStringLiteral("hookTitle"), true).toBool()},
                 {"normalize", options.value(QStringLiteral("normalize"), false).toBool()}};
+    // 0.4: the caption style (a preset's name, "" = the default look), with captions.
+    if (params["captions"].get<bool>() && options.contains(QStringLiteral("captionPreset"))) {
+        params["captionPreset"] = options.value(QStringLiteral("captionPreset")).toString().trimmed().left(64).toStdString();
+    }
     const auto services = this->services();
     setJob(tr("Making %n short(s)", "", static_cast<int>(shorts.size())), -1.0);
     QPointer<ShortsBridge> self(this);

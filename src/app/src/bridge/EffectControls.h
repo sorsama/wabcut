@@ -23,6 +23,10 @@
 // Value graph (M5g): an animated parameter's lane can open into a graph of its curve (setGraphOpen), with the keys at
 // their values and, on Bezier keys, their in/out handles. Dragging a handle shapes that side's tangent (influence and
 // slope, edit::setKeyframe); the two handles of a key stay linked (same slope) unless Alt breaks them.
+// 0.4 (Premiere's Effect Controls): section headers can be selected (a click, Ctrl toggles, Shift extends from the
+// anchor; clip mode only). Backspace (effectControls.removeSelectedEffect) and Delete remove the selected stack effects
+// and reset the selected fixed sections; Copy / Cut put them on an in-session effects clipboard, and Paste puts them on
+// every selected clip (newest copy wins over the clip clipboard: ProjectController::clipboardChanged clears it).
 
 #include "BridgeIds.h"
 #include "ParameterUi.h"
@@ -38,7 +42,9 @@
 #include <QVariantMap>
 #include <QtQml/qqmlregistration.h>
 
+#include <functional>
 #include <map>
+#include <memory>
 #include <optional>
 #include <set>
 #include <tuple>
@@ -81,6 +87,10 @@ class EffectControlsModel : public QAbstractListModel {
     Q_PROPERTY(QString selectedKeyInterpolation READ selectedKeyInterpolation NOTIFY keySelectionChanged FINAL)
     /// A one-line message about the last edit ("Shortened to the available media"), or "".
     Q_PROPERTY(QString notice READ notice NOTIFY noticeChanged FINAL)
+    /// 0.4: the selected section headers ("motion", "opacity", "audio", "e12"), in panel order.
+    Q_PROPERTY(QStringList selectedSections READ selectedSections NOTIFY sectionSelectionChanged FINAL)
+    /// 0.4: copied effects wait to be pasted (no clip was copied since): Paste puts them on the selected clips.
+    Q_PROPERTY(bool canPasteEffects READ canPasteEffects NOTIFY effectsClipboardChanged FINAL)
 
 public:
     enum Role {
@@ -118,6 +128,7 @@ public:
         GraphOpenRole,      // the lane shows the value graph (animated parameters)
         GraphRole,          // { path: [x0, y0, x1, y1, ...], keys: [{ index, x, y, selected, shape, hasIn, inX, inY,
                             //   hasOut, outX, outY, broken }], min, max }: x 0..1 across the lane, y 0..1 down
+        SectionSelectedRole, // 0.4, headers: the section is selected (selectedSections)
     };
     Q_ENUM(Role)
 
@@ -138,6 +149,8 @@ public:
     int selectedKeyCount() const { return static_cast<int>(m_selectedKeys.size()); }
     QString selectedKeyInterpolation() const;
     QString notice() const { return m_notice; }
+    QStringList selectedSections() const { return m_selectedSections; }
+    bool canPasteEffects() const { return effectsPastePending(); }
 
     /// Row index of a key, or -1.
     Q_INVOKABLE int rowOf(const QString& key) const;
@@ -175,6 +188,37 @@ public:
     Q_INVOKABLE void resetSection(const QString& section);
     /// Moves a stack effect to `stackIndex` in its clip's stack.
     Q_INVOKABLE void moveEffect(const QString& section, int stackIndex);
+
+    // ---- Section selection and the effects clipboard (0.4) ----
+    /// A click on a section header (clip mode; not a transition): selects it alone, Ctrl/Cmd toggles it, Shift selects
+    /// from the anchor to it in panel order. Clears the selected keyframes.
+    Q_INVOKABLE void selectSection(const QString& section, int modifiers);
+    /// Every section of the shown clip(s) (Ctrl+A with Effect Controls focused).
+    Q_INVOKABLE void selectAllSections();
+    Q_INVOKABLE void clearSectionSelection();
+    /// Removes the selected stack effects and resets the selected fixed sections (Transform, Opacity, Audio) to their
+    /// defaults (keys deleted): one undo step ("Remove Effect", "Remove Effects" or "Reset Effect"). Returns the count.
+    Q_INVOKABLE int removeSelectedSections();
+    /// Puts the selected sections on the effects clipboard (`cut`: also removes them, one undo step "Cut Effects").
+    /// Returns how many sections were copied (0: nothing selected).
+    Q_INVOKABLE int copySelectedSections(bool cut = false);
+    /// Pastes the effects clipboard onto every selected clip (video part on video clips, audio part on audio clips; a
+    /// clip of the other kind stands for its linked partner): one undo step "Paste Effects". Returns "" or why not
+    /// (the toast text is ProjectController::clipboardNotice either way).
+    Q_INVOKABLE QString pasteEffects();
+    /// Whether the stack effect `section` can move by `delta` (-1 up, +1 down) in its stack.
+    Q_INVOKABLE bool canMoveSection(const QString& section, int delta) const;
+    Q_INVOKABLE void moveSectionBy(const QString& section, int delta);
+    /// The keymap commands Effect Controls takes while it has the focus (Main.qml's hook): true when it handled
+    /// `commandId` (effectControls.removeSelectedEffect always; edit.clear / edit.copy / edit.cut / edit.deselectAll
+    /// with sections selected; edit.selectAll in clip mode), false to let the command fall through.
+    Q_INVOKABLE bool runCommand(const QString& commandId);
+    /// The commands runCommand() always takes (the palette): effectControls.removeSelectedEffect.
+    static bool handlesCommand(const QString& id);
+    /// C++ (ProjectController's edit.paste): pastes the effects clipboard when it is pending; false when not.
+    bool pasteEffectsIfPending();
+    /// The effects clipboard is not empty and no clip was copied after it.
+    bool effectsPastePending() const;
 
     // ---- Adding effects ----
     /// The effect library for the Effects panel, grouped: [{ title, icon, kind, key, count, items: [{ id, name,
@@ -251,6 +295,8 @@ signals:
     void laneChanged();
     void keySelectionChanged();
     void noticeChanged();
+    void sectionSelectionChanged();
+    void effectsClipboardChanged();
 
 private:
     struct Row {
@@ -260,6 +306,7 @@ private:
         bool effectEnabled = true, collapsed = false, removable = false, movable = false, resettable = false;
         bool known = true;
         bool graphOpen = false;
+        bool sectionSelected = false;
         int stackIndex = -1;
         QVariantList keys, options;
         QVariantMap graph;
@@ -339,6 +386,25 @@ private:
         double min = 0, max = 1; ///< the graph's value range, frozen while dragging (UI units)
         std::string mergeKey;
     } m_handleDrag;
+
+    // ---- 0.4: section selection and the effects clipboard ----
+    /// The sections of the shown clip(s) in panel order (headers that can be selected: not a transition).
+    QStringList selectableSections() const;
+    /// Sets the selection (kept in panel order) and its anchor; clears the selected keys when sections are selected.
+    void setSectionSelection(QStringList sections, const QString& anchor);
+    /// The edit steps that remove / reset `sections` (stack effects removed, fixed sections reset from the registry).
+    std::vector<std::function<edit::EditOutcome(const ProjectState&)>> removeSteps(const QStringList& sections,
+                                                                                  int* removed, int* reset) const;
+    /// Snapshot of the selected sections for the effects clipboard (null when nothing can be copied).
+    struct EffectsClipboard;
+    std::shared_ptr<const EffectsClipboard> snapshotSections() const;
+    void setEffectsPending(bool pending);
+
+    std::shared_ptr<const EffectsClipboard> m_effects;
+    bool m_effectsPending = false;
+    QStringList m_selectedSections;
+    QString m_sectionAnchor;
+    ClipId m_sectionsOf; ///< the primary clip the selection belongs to (another clip shown clears it)
 };
 
 } // namespace wabcut::app
