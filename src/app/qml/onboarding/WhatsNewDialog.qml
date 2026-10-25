@@ -9,9 +9,21 @@ WabcutDialog {
     id: dialog
     objectName: "whatsNewDialog"
 
-    // Keep in step with docs/roadmap.md when a milestone lands. This build: 0.3's Home, menu bar, Effects panel and
-    // everyday editing first, then 0.2's Premiere parity, the gaming wave (M5o), M5k-M5n, C.7-C.12, A.3-A.9, AI-9-AI-13.
+    // Keep in step with docs/roadmap.md when a milestone lands. This build: 0.4's timeline copy and clip facts, Premiere
+    // keys, Effect Controls and transcript tools, gaming Shorts and safe quitting first, then 0.3's Home, menu bar,
+    // Effects panel and everyday editing, 0.2's Premiere parity, the gaming wave (M5o), M5k-M5n, C.7-C.12, A.3-A.9,
+    // AI-9-AI-13.
     readonly property var highlights: [
+        { key: "timelineCopy", icon: "copy", title: qsTr("Copy and rearrange on the timeline"),
+          text: qsTr("Alt-drag copies a clip and Ctrl+Alt-drag rearranges shots, as in Premiere. Clips show their speed and an fx badge, and pointing at one shows its times and source.") },
+        { key: "premiereKeys", icon: "keyboard", title: qsTr("Premiere's keys and transport"),
+          text: qsTr("Shift+J and Shift+L slow shuttle, Shift+K Play Around, Alt+Up and Alt+Down, ] and [ for clip volume, Page Up and Page Down, timecodes typed on the numpad, and markers that move with ripple edits.") },
+        { key: "effectsTranscript", icon: "clipboard-paste", title: qsTr("Copy effects, work from the transcript"),
+          text: qsTr("Copy and paste effects between clips in Effect Controls and apply a grade to many clips. The transcript follows the playhead, has a word menu, and Transcribe picks your voice tracks.") },
+        { key: "gamingShorts", icon: "gamepad-2", title: qsTr("Gaming Shorts in one go"),
+          text: qsTr("Highlights makes a Short of every moment you accept, with a lead-in, a tail and the Shorts caption style, and Export all queues them. File > Import Folder brings a capture folder in as bins.") },
+        { key: "safeWork", icon: "shield-check", title: qsTr("Safe quitting and background work"),
+          text: qsTr("Quitting asks while an export or a render runs, a Background tasks pill shows their progress and the recent messages, failed autosaves and exports say why, and Windows stays awake until the export is done.") },
         { key: "homeStart", icon: "house", title: qsTr("A new Home"),
           text: qsTr("Home, Projects and Learn pages, one Import for files, folders and timelines, and a New project page with Advanced settings that can start from your media.") },
         { key: "menuBar", icon: "columns-3", title: qsTr("A menu bar and a Window menu"),

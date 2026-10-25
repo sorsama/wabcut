@@ -8,6 +8,23 @@ will change as people use the editor and tell us what matters to them.
 
 ## Shipped
 
+### 0.4.0 (25 October 2026)
+Premiere's muscle memory and quicker creator work:
+- Alt-drag copies clips and Ctrl+Alt-drag rearranges shots; clips show their speed, an fx badge and a tooltip with
+  their times; a ruler menu, trim readouts with the new duration, and Page / Smooth / No playback scrolling.
+- Premiere keys that did nothing: Shift+J / Shift+L, Shift+K, Ctrl+Space, Alt+Up / Alt+Down, ] and [ for clip volume,
+  PageUp / PageDown and numpad timecodes. Ripple Sequence Markers; the Program Monitor shows the In to Out length and
+  platform safe zones.
+- Copy and paste effects in Effect Controls, Apply Grade to many clips, a transcript that follows the playhead with a
+  word menu, Transcribe that picks the voice tracks, Shift Captions…, Ken Burns presets and five essay and documentary
+  templates.
+- Import Folder… makes bins; Highlights makes a Short of every accepted moment and Export all queues them; Shorts get
+  a lead-in, a tail and their own caption style; "Game under my voice" ducking.
+- Quitting asks while exports run, a Background tasks pill with recent messages, failed autosaves and exports say why,
+  and Windows stays awake while it exports.
+
+The full list is in the [0.4 release notes](release-notes-0.4.md).
+
 ### 0.3.1 (23 October 2026)
 - Save Preset… in Effect Controls' right-click menu works, so a clip's animation can be saved as a preset and exported.
 
@@ -81,7 +98,7 @@ The full list is in the [release notes](release-notes-0.1.md).
 ## Next: toward a beta
 
 Make Wabcut safe to trust with real projects:
-- Fix what people find in real projects. 0.1 to 0.3 were tested with a demo project and scripted test media, not yet
+- Fix what people find in real projects. 0.1 to 0.4 were tested with a demo project and scripted test media, not yet
   with real users' projects.
 - Check AAF, OMF and broadcast caption files in Pro Tools, Media Composer and Resolve.
 - Code-signed installers, so Windows SmartScreen stops warning, and automatic updates.
