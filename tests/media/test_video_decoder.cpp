@@ -1,5 +1,6 @@
 #include "TestMedia.h"
 
+#include <wabcut/media/GpuInfo.h>
 #include <wabcut/media/VideoDecoder.h>
 
 #include <algorithm>
@@ -137,8 +138,14 @@ TEST_CASE("Video: preferred backend is tried first", "[media][video][hw]") {
 }
 
 TEST_CASE("Video: backend order follows the GPU vendor policy and can be overridden", "[media][video][hw]") {
+#if defined(_WIN32)
+    // Issue #10: the GPU the preview uses decides (previewGpu(): the high-performance one here).
+    const GpuSelection preview = previewGpu();
+    [[maybe_unused]] const bool nvidia = preview.adapter && preview.adapter->vendor == "NVIDIA";
+#else
     const std::vector<std::string> vendors = gpuVendors();
     [[maybe_unused]] const bool nvidia = std::find(vendors.begin(), vendors.end(), "NVIDIA") != vendors.end();
+#endif
     const std::vector<std::string> policy = hardwareBackendOrder();
 #if defined(_WIN32)
     // Measured readback throughput: cuda beats d3d11va on NVIDIA (see hardwareBackendOrder()).

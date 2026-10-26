@@ -53,6 +53,9 @@ class EditingBridge : public QObject {
     Q_OBJECT
     /// Preferences > Media > Default Media Scaling: "none", "scaleToFrameSize", "setToFrameSize" or "setToFillFrame".
     Q_PROPERTY(QString defaultMediaScaling READ defaultMediaScaling WRITE setDefaultMediaScaling NOTIFY preferencesChanged FINAL)
+    /// P0 round, Preferences > Media: a recording's chapter markers (OBS "Add Chapter Marker") become clip markers of its
+    /// item on import (QSettings "media/chapterMarkersOnImport", on by default).
+    Q_PROPERTY(bool chapterMarkersOnImport READ chapterMarkersOnImport WRITE setChapterMarkersOnImport NOTIFY preferencesChanged FINAL)
     /// Preferences > Timeline: the still image default duration and the default transition durations, in seconds.
     Q_PROPERTY(double stillDuration READ stillDuration WRITE setStillDuration NOTIFY preferencesChanged FINAL)
     Q_PROPERTY(double videoTransitionDuration READ videoTransitionDuration WRITE setVideoTransitionDuration NOTIFY preferencesChanged FINAL)
@@ -83,11 +86,15 @@ public:
     static MediaScaling defaultMediaScalingSetting();
     /// Still Image Default Duration; nullopt while it is the built-in 5 seconds.
     static std::optional<Ticks> stillDurationSetting();
+    /// P0 round: chapter markers on import (MediaImportOptions::readChapters).
+    static bool chapterMarkersSetting();
     /// The default transitions with the preferred lengths.
     static edit::DefaultTransitions defaultTransitionsSetting();
 
     QString defaultMediaScaling() const;
     void setDefaultMediaScaling(const QString& scaling);
+    bool chapterMarkersOnImport() const { return chapterMarkersSetting(); }
+    void setChapterMarkersOnImport(bool on);
     double stillDuration() const;
     void setStillDuration(double seconds);
     double videoTransitionDuration() const;

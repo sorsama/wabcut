@@ -3,13 +3,9 @@
 #include <wabcut/ai/AnalysisCache.h>
 #include <wabcut/ai/analysis/MediaAnalysis.h>
 #include <wabcut/media/AudioDecoder.h>
+#include <wabcut/media/Chapters.h>
 #include <wabcut/media/Fingerprint.h>
 #include <wabcut/model/MediaLocator.h>
-
-extern "C" {
-#include <libavformat/avformat.h>
-#include <libavutil/dict.h>
-}
 
 #include <algorithm>
 #include <cmath>
@@ -27,8 +23,6 @@ const std::string kMomentsAnalyzer = "highlights";
 const std::string kChatAnalyzer = "highlights.chat";
 
 std::string version(std::string_view what) { return std::string(what) + "-" + std::to_string(kVersion); }
-
-Ticks ticksOf(double s) { return Ticks{static_cast<std::int64_t>(std::llround(s * static_cast<double>(kTicksPerSecond)))}; }
 
 } // namespace
 
@@ -87,27 +81,17 @@ std::expected<VisualFeatures, Error> measureVideo(const std::string& path, int c
 }
 
 std::expected<std::vector<Hint>, Error> readChapters(const std::string& path) {
-    AVFormatContext* raw = nullptr;
-    if (const int r = avformat_open_input(&raw, path.c_str(), nullptr, nullptr); r < 0) {
+    // P0 round: the reading lives in media::readChapters (import turns chapters into clip markers too); here they
+    // become hints, as before.
+    auto chapters = media::readChapters(path);
+    if (!chapters) {
         return std::unexpected(Error(ErrorCode::IoError, "cannot open the recording to read its chapters"));
     }
     std::vector<Hint> hints;
-    for (unsigned i = 0; i < raw->nb_chapters && hints.size() < 10000; ++i) {
-        const AVChapter* chapter = raw->chapters[i];
-        if (!chapter || chapter->time_base.den == 0) {
-            continue;
-        }
-        const double start = static_cast<double>(chapter->start) * chapter->time_base.num / chapter->time_base.den;
-        if (!(start >= 0.0) || !std::isfinite(start)) {
-            continue;
-        }
-        std::string title;
-        if (const AVDictionaryEntry* e = av_dict_get(chapter->metadata, "title", nullptr, 0); e && e->value) {
-            title = std::string(e->value).substr(0, 200);
-        }
-        hints.push_back({ticksOf(start), std::move(title), "chapter"});
+    hints.reserve(chapters->size());
+    for (media::MediaChapter& chapter : *chapters) {
+        hints.push_back({chapter.start, std::move(chapter.title), "chapter"});
     }
-    avformat_close_input(&raw);
     return hints;
 }
 

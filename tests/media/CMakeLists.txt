@@ -28,12 +28,14 @@ wabcut_add_test_suite(media
         test_alpha.cpp
         test_audio_decoder.cpp
         test_camera_log.cpp # 0.2: camera log auto-detection
+        test_chapters.cpp # P0 round: OBS chapter markers on import
         test_container_tags.cpp # 0.2 P.3: the Metadata panel File section
         test_decoder_pool.cpp
         test_ffmpeg_info.cpp
         test_fingerprint.cpp
         test_frame_cache.cpp
         test_frame_handle.cpp
+        test_gpu_adapters.cpp # P0 round (issue #10): which GPU previews, decodes and exports
         test_leaks.cpp
         test_media_formats.cpp # 0.2: layered PSD, spanned clips, camera RAW, field order
         test_native_output.cpp

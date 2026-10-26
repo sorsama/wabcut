@@ -23,8 +23,8 @@ playback::TransportSpeed unpackSpeed(std::uint64_t v) {
 
 class TimelineAudioTransport final : public playback::TransportClock {
 public:
-    TimelineAudioTransport(playback::TimelineAudioPlayer& player, audio::AudioEngine& engine)
-        : m_player(player), m_engine(engine) {
+    TimelineAudioTransport(playback::TimelineAudioPlayer& player, audio::AudioEngine& engine, playback::AudioScrubber* scrubber)
+        : m_player(player), m_engine(engine), m_scrubber(scrubber) {
         const playback::TransportSpeed speed = engine.speed().normalized();
         m_speed.store(packSpeed(speed.isZero() ? playback::TransportSpeed::normal() : speed));
         m_playing.store(!engine.isPaused());
@@ -43,6 +43,9 @@ public:
 
     void play() override {
         std::lock_guard lock(m_commands);
+        if (m_scrubber != nullptr) {
+            m_scrubber->cancel(); // 0.5: a scrub window still sounding fades out; one being rendered is dropped
+        }
         m_player.play();
         m_playing.store(true, std::memory_order_release);
     }
@@ -57,6 +60,9 @@ public:
             return;
         }
         std::lock_guard lock(m_commands);
+        if (m_scrubber != nullptr) {
+            m_scrubber->cancel();
+        }
         m_player.setSpeed(n);
         m_speed.store(packSpeed(n), std::memory_order_release);
     }
@@ -76,6 +82,7 @@ public:
 private:
     playback::TimelineAudioPlayer& m_player;
     audio::AudioEngine& m_engine;
+    playback::AudioScrubber* m_scrubber = nullptr;
     std::mutex m_commands; // GUI thread and the scheduler's end-of-sequence stop
     std::atomic<std::uint64_t> m_speed{0};
     std::atomic<bool> m_playing{false};
@@ -84,8 +91,9 @@ private:
 } // namespace
 
 std::shared_ptr<playback::TransportClock> makeTimelineAudioTransport(playback::TimelineAudioPlayer& player,
-                                                                     audio::AudioEngine& engine) {
-    return std::make_shared<TimelineAudioTransport>(player, engine);
+                                                                     audio::AudioEngine& engine,
+                                                                     playback::AudioScrubber* scrubber) {
+    return std::make_shared<TimelineAudioTransport>(player, engine, scrubber);
 }
 
 PlaybackSession::PlaybackSession(const EditSession& session, PlaybackSessionOptions options)
@@ -98,10 +106,15 @@ PlaybackSession::PlaybackSession(const EditSession& session, PlaybackSessionOpti
     m_player->setSession(&session);
     m_video = std::make_unique<playback::PlaybackController>(m_options.video);
     m_video->setSession(&session);
+    // 0.5: audio scrubbing renders on its own worker, through a feed of its own.
+    m_scrubFeed = std::make_shared<playback::MediaAudioFeed>(session, m_options.maxScrubDecoders);
+    m_scrubber = std::make_unique<playback::AudioScrubber>(*m_engine, m_scrubFeed, m_options.scrub);
+    m_scrubber->setSession(&session);
 }
 
 PlaybackSession::~PlaybackSession() {
     stop();
+    m_scrubber.reset();
     m_video.reset(); // its scheduler may still read the transport, which refers to the player and the engine
     m_player.reset();
 }
@@ -121,8 +134,9 @@ std::expected<void, Error> PlaybackSession::start() {
     }
     m_audioStarted = true;
     const Ticks here = m_video->position();
-    m_video->setTransport(makeTimelineAudioTransport(*m_player, *m_engine));
+    m_video->setTransport(makeTimelineAudioTransport(*m_player, *m_engine, m_scrubber.get()));
     m_video->seek(here);
+    (void)m_scrubber->start(); // without it the session plays as before, only scrubbing stays silent
     return {};
 }
 
@@ -133,6 +147,7 @@ void PlaybackSession::stop() {
     const Ticks here = m_video->position();
     m_video->pause();
     m_video->setTransport(playback::makeFreeRunTransport(here));
+    m_scrubber->stop();
     m_player->stop();
     m_engine->stop();
     m_audioStarted = false;
@@ -142,6 +157,7 @@ void PlaybackSession::setSequence(SequenceId sequence) {
     m_sequence = sequence;
     m_player->setSequence(sequence);
     m_video->setSequence(sequence);
+    m_scrubber->setSequence(sequence); // drops a window of the other sequence
 }
 
 void PlaybackSession::play() {
@@ -179,6 +195,13 @@ void PlaybackSession::setLoop(std::optional<TimeRange> range) {
 }
 std::optional<TimeRange> PlaybackSession::loop() const {
     return m_video->loop();
+}
+bool PlaybackSession::scrubAudio(Ticks at, int direction) {
+    if (!m_audioStarted || !m_scrubber->isStarted() || m_video->isPlaying() || !m_sequence.isValid()) {
+        return false;
+    }
+    m_scrubber->scrub(at, direction); // never blocks: the worker renders it
+    return true;
 }
 
 PlaybackSessionStats PlaybackSession::stats() const {

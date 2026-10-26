@@ -30,7 +30,8 @@ Item {
     readonly property var panelCommands: ({ library: "window.projects", mediaBrowser: "window.mediaBrowser",
                                              effects: "window.effects", effectControls: "window.effectControls",
                                              source: "window.sourceMonitor", program: "window.programMonitor",
-                                             timeline: "window.timeline", mixer: "window.audioTrackMixer" })
+                                             timeline: "window.timeline", mixer: "window.audioTrackMixer",
+                                             audioMeters: "window.audioMeters" })
 
     /// The width every tab would take at its label's size.
     readonly property real naturalWidth: {

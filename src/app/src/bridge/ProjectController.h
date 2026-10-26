@@ -312,6 +312,10 @@ public:
     TransitionId selectedTransitionId() const { return m_selectedTransition; }
     /// Ranges lit on the timeline by other panels (the transcript); UI state, not in undo.
     void setTimelineHighlights(std::vector<TimelineHighlight> highlights);
+    /// 0.5: an owner's own ranges ("deadTime": Remove dead time's review bands), kept apart from the others': each
+    /// owner replaces only its own (the overload above is the transcript's, owner ""). Empty clears the owner's.
+    void setTimelineHighlights(const QString& owner, std::vector<TimelineHighlight> highlights);
+    /// Every owner's ranges (the transcript's first), as the timeline draws them.
     const std::vector<TimelineHighlight>& timelineHighlights() const { return m_highlights; }
     void selectTransitionById(TransitionId transition);
     /// The selected transition's track and value in the current sequence.
@@ -743,7 +747,8 @@ private:
     EffectControlsModel* m_effectControls = nullptr;
     TransitionId m_selectedTransition;
     std::optional<GapSelection> m_gap; // 0.2 UX (stream T): the selected gap
-    std::vector<TimelineHighlight> m_highlights;
+    std::vector<TimelineHighlight> m_highlights; // every owner's, merged
+    std::vector<std::pair<QString, std::vector<TimelineHighlight>>> m_highlightOwners; // 0.5: by owner ("" first)
     QString m_selectedEdge;
     bool m_selectionFollowsPlayhead = false;
     int m_revision = 0;

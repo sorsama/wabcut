@@ -966,6 +966,42 @@ QString TranscriptBridge::transcribe(const QString& scope, bool allowOnce) {
         setMessage(tr("Nothing to transcribe: every clip here has a transcript, or its media file is missing"));
         return m_message;
     }
+    return startJob(std::move(items), allowOnce);
+}
+
+QVariantMap TranscriptBridge::consentForMedia() const {
+    if (!m_ai || !m_provider.startsWith(QLatin1String("cloud:")))
+        return {};
+    return m_ai->consentPrompt(m_provider.mid(6), QStringLiteral("transcribe"), tr("the audio of %n media file(s)", nullptr, 1));
+}
+
+QString TranscriptBridge::transcribeMedia(MediaId media, int audioStream, bool allowOnce) {
+    if (m_jobStatus == QLatin1String("running"))
+        return tr("A transcription is running");
+    if (m_provider.startsWith(QLatin1String("cloud:")) && m_ai && !allowOnce &&
+        m_ai->consentPrompt(m_provider.mid(6), QStringLiteral("transcribe"), QString()).value(QStringLiteral("needed")).toBool())
+        return tr("Cloud transcription needs your consent first: nothing was uploaded");
+    const ProjectSnapshot snap = m_controller ? m_controller->snapshot() : nullptr;
+    const MediaItem* item = snap ? snap->findMedia(media) : nullptr;
+    if (!item || item->isGenerator() || audioStream < 0 || audioStream >= static_cast<int>(item->info.audio.size())) {
+        setMessage(tr("This clip has no sound to transcribe"));
+        return m_message;
+    }
+    if (m_chain->transcript(*item, audioStream)) {
+        setMessage(tr("This clip has a transcript already"));
+        return m_message;
+    }
+    const auto path = resolveMediaPath(item->locator, m_controller->projectFile());
+    if (!path || !std::filesystem::is_regular_file(*path)) {
+        setMessage(tr("The clip's media file is missing"));
+        return m_message;
+    }
+    std::vector<JobItem> items{{item->id, audioStream, item->info.audio[static_cast<std::size_t>(audioStream)].index,
+                                pathToUtf8(*path)}};
+    return startJob(std::move(items), allowOnce);
+}
+
+QString TranscriptBridge::startJob(std::vector<JobItem> items, bool allowOnce) {
     // Review P1-3: what the project bleeps or mutes is silenced before any transcriber hears it (TranscribeSource::
     // redacted) and never comes back as words (every result is redacted below, whatever made it). Per file: every media
     // item of the project that plays it adds its redactions - two items of one file share its transcript (review

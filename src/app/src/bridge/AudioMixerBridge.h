@@ -91,8 +91,11 @@ class AudioMixerBridge : public QObject {
     /// shortTermText, integratedText, truePeakText, deltaText (integrated against the target), over (true peak above
     /// the target's ceiling), seconds (measured) }.
     Q_PROPERTY(QVariantMap liveLoudness READ liveLoudness NOTIFY liveLoudnessChanged FINAL)
-    /// Poll the meters (~30 Hz) while true: the mixer sets it while it is on screen.
+    /// Poll the meters (~30 Hz) while true: someone shows them. 0.5: a count of viewers (setMeterViewer: the mixer and the
+    /// Audio Meters panel each count while they are on screen); setting it is one more viewer of its own (tests).
     Q_PROPERTY(bool metersActive READ metersActive WRITE setMetersActive NOTIFY metersActiveChanged FINAL)
+    /// 0.5: the items that show meters now (setMeterViewer).
+    Q_PROPERTY(int meterViewers READ meterViewers NOTIFY metersActiveChanged FINAL)
     /// p02 audio (AudioMixerRouting.cpp): the submix strips, in submix order: [{ key ("t15"), name, shortName ("S1"),
     /// format, muted, solo, gainDb, pan, automated, automation, effects, output, outputName, meter }]. Every strip (tracks
     /// too) also has `output` ("mix" or a submix key), `outputName` and `sends`: [{ index (1..5), submix, submixName,
@@ -196,6 +199,9 @@ public:
     QString faderNote() const;
     bool metersActive() const { return m_metersActive; }
     void setMetersActive(bool active);
+    int meterViewers() const { return static_cast<int>(m_meterViewers.size()); }
+    /// Whether `viewer` holds the meters on (tests).
+    bool isMeterViewer(const QObject* viewer) const;
     QVariantList targets() const;
     QString target() const { return m_target; }
     void setTarget(const QString& target);
@@ -265,6 +271,9 @@ public:
     Q_INVOKABLE QString addMasterLimiter();
     /// Clears a strip's clip indicator.
     Q_INVOKABLE void clearClip(const QString& key);
+    /// 0.5: `viewer` (the mixer, the Audio Meters panel) shows meters now, or no longer: the meters poll while any viewer
+    /// does. A viewer that goes away stops counting by itself.
+    Q_INVOKABLE void setMeterViewer(QObject* viewer, bool showing);
 
     // ---- Routing (p02 audio, AudioMixerRouting.cpp): submixes, output assignment, sends ----
     QVariantList submixes() const { return m_submixes; }
@@ -400,6 +409,10 @@ private:
     bool m_playing = false;
     QTimer m_meterTimer;
     bool m_metersActive = false;
+    /// 0.5: the viewers showing meters (setMeterViewer), and setMetersActive's own hold.
+    std::vector<QObject*> m_meterViewers;
+    bool m_metersHeld = false;
+    void updateMetersActive();
     bool m_synchronous = false;
     QVariantList m_strips;
     QVariantMap m_master;

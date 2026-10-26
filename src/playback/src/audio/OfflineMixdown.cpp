@@ -130,7 +130,7 @@ struct OfflineMixdown::Impl {
     bool guardAfterDownmix = false; ///< the master's soft clip guard runs after the downmix instead
     const Rate rate;
     const std::int64_t tpf;
-    const Ticks start;
+    Ticks start; ///< where the mix starts (0.5: seek() moves it)
     const bool routed; ///< p02 audio: the sequence routes tracks through submixes
     audio::Mixer mixer;
     detail::MasterBus master;
@@ -260,6 +260,19 @@ void OfflineMixdown::render(std::span<float> interleaved) {
         }
         d.blockPos += n;
         done += n;
+    }
+}
+
+void OfflineMixdown::seek(Ticks start) {
+    Impl& d = *m_impl;
+    d.start = start;
+    d.primed = false; // the next block restarts the master (and the submix paths) at `start` and primes them
+    d.blockPos = kBlockFrames;
+    d.blocksRendered = 0;
+    for (Impl::Bus& bus : d.buses) {
+        if (bus.renderer) {
+            bus.renderer->reset(); // effects reset, pre-roll before `start`
+        }
     }
 }
 

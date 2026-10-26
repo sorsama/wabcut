@@ -270,6 +270,8 @@ Popover {
         }
 
         // Remove dead time (C.16): find it (measured off the GUI thread), see how much, remove it in one undo step.
+        // 0.5: Find opens the review in the Highlights panel (each stretch listed with a remove switch, Removal bands on
+        // the timeline) and Review… goes back to it; Remove is there, so nothing is cut unseen.
         Column {
             width: parent.width
             spacing: Theme.space(1.5)
@@ -281,19 +283,26 @@ Popover {
                     compact: true
                     iconName: "scissors"
                     text: Moments.deadTime.busy === true ? qsTr("Measuring…") : qsTr("Find dead time")
-                    tooltip: qsTr("Finds loading screens, walking and waiting: quiet game audio and little motion for 3 seconds or more")
+                    tooltip: qsTr("Finds loading screens, walking and waiting: quiet game audio and little motion. You review the stretches before anything is cut.")
                     enabled: Moments.deadTime.busy !== true
-                    onClicked: Moments.findDeadTime()
+                    onClicked: {
+                        root.close() // the review comes forward in the Highlights panel
+                        Moments.openDeadTimeReview()
+                        Moments.findDeadTime({})
+                    }
                 }
                 PillButton {
-                    objectName: "momentsRemoveDeadTimeButton"
+                    objectName: "momentsReviewDeadTimeButton"
                     visible: Moments.deadTime.found === true
                     compact: true
                     variant: "primary"
-                    iconName: "scissors"
-                    text: qsTr("Remove")
-                    tooltip: qsTr("Removes the stretches found, keeping a short handle at each end (one undo step)")
-                    onClicked: Moments.removeDeadTime()
+                    iconName: "list"
+                    text: qsTr("Review…")
+                    tooltip: qsTr("The stretches found, one by one: keep some, remove the rest in one undo step")
+                    onClicked: {
+                        root.close()
+                        Moments.openDeadTimeReview()
+                    }
                 }
             }
             Text {
@@ -302,7 +311,7 @@ Popover {
                 visible: text !== ""
                 text: Moments.deadTime.error ?? Moments.deadTime.text ?? ""
                 wrapMode: Text.Wrap
-                color: Moments.deadTime.error !== undefined ? Theme.warning : Theme.textSecondary
+                color: Moments.deadTime.error !== undefined ? Theme.warningText : Theme.textSecondary
                 font.family: Theme.fontSans
                 font.pixelSize: Theme.textSm
             }
@@ -315,7 +324,7 @@ Popover {
             visible: Moments.message !== ""
             text: Moments.message
             wrapMode: Text.Wrap
-            color: Theme.warning
+            color: Theme.warningText
             font.family: Theme.fontSans
             font.pixelSize: Theme.textSm
         }

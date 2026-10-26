@@ -15,14 +15,22 @@ Rectangle {
     property bool last: false
 
     readonly property bool active: Captions.activeCue === modelData.index
+    /// 0.5: the cue selected on the timeline's caption lane (an outline, as a selected clip has).
+    readonly property bool selected: Captions.selectedCue === modelData.index
     property string speakerEdit: ""   // "" | "new" | "rename"
+
+    /// 0.5: the text takes the keyboard (a double-click on the cue in the timeline), the cursor at its end.
+    function editText() {
+        cueText.forceActiveFocus(Qt.OtherFocusReason)
+        cueText.cursorPosition = cueText.length
+    }
 
     objectName: "captionCue_" + modelData.index
     implicitHeight: cueColumn.implicitHeight + Theme.space(2)
     radius: Theme.radiusField
     color: active ? Theme.accentWash : Theme.sunken
-    border.width: Theme.hairline
-    border.color: active ? Theme.accentStroke : Theme.border
+    border.width: selected ? Theme.selectionWidth : Theme.hairline
+    border.color: selected ? Theme.textPrimary : active ? Theme.accentStroke : Theme.border
 
     component TimeField: TextField {
         id: field

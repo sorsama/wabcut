@@ -98,6 +98,33 @@ def multitrack_recipe(frequencies: list[int], tags: list[dict[str, str]]) -> lis
     ]]
 
 
+def chapters_recipe(seconds: int) -> list[list[str]]:
+    """A recording with chapter markers (P0 round: OBS "Add Chapter Marker" -> clip markers on import): H.264 320x180
+    10 fps + one AAC stereo stream (440 Hz), `seconds` long, and the chapters of the clip's "ffmetadata" (an FFMETADATA
+    file the driver writes to {meta}; FFmpeg here has no lavfi input, so the sources stay in -filter_complex). Global
+    metadata is dropped for determinism; the chapters keep their titles."""
+    return [[
+        "-f", "ffmetadata", "-i", "{meta}",
+        "-filter_complex",
+        video_source("320x180", "10", str(seconds), "yuv420p") +
+        f";aevalsrc=exprs='0.5*sin(2*PI*440*t)|0.5*sin(2*PI*440*t)':s=48000:d={seconds}[a]",
+        "-map", "[v]", "-map", "[a]", "-map_chapters", "0",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-g", "10", "-bf", "0", *BT709,
+        "-c:a", "aac", "-b:a", "96k",
+        "-fflags", "+bitexact", "-flags:v", "+bitexact", "-flags:a", "+bitexact", "-map_metadata:g", "-1", "{out}",
+    ]]
+
+
+def ffmetadata_chapters(chapters: list[tuple[int, int, bytes | None]]) -> bytes:
+    """FFMETADATA text of chapters (start ms, end ms, raw title bytes or None for an untitled chapter)."""
+    out = b";FFMETADATA1\n"
+    for start, end, title in chapters:
+        out += b"[CHAPTER]\nTIMEBASE=1/1000\nSTART=%d\nEND=%d\n" % (start, end)
+        if title is not None:
+            out += b"title=" + title + b"\n"
+    return out
+
+
 CLIPS: list[dict] = [
     {
         "name": "h264_1080p60_aac.mp4",
@@ -315,6 +342,30 @@ CLIPS: list[dict] = [
         "recipes": [multitrack_recipe([220, 440], [])],
     },
     {
+        # P0 round: OBS chapter markers on import (media::readChapters, editor::chapterMarkers).
+        "name": "obs_chapters.mkv",
+        "what": "OBS-style MKV with chapter markers: H.264 320x180 10 fps, 4 s + AAC stereo; chapters at 1 s \"Boss "
+                "fight\", 2 s untitled, 2.5 s a title with an invalid UTF-8 byte, 3 s a 216-byte Thai title, 5 s (past the "
+                "end) \"After the end\"",
+        "expect": {"codec_name": "h264"},
+        "ffmetadata": ffmetadata_chapters([
+            (1000, 2000, b"Boss fight"),
+            (2000, 2500, None),
+            (2500, 3000, b"Clutch \xff win"),
+            (3000, 4000, ("\u0e44\u0e2e\u0e44\u0e25\u0e15\u0e4c" * 12).encode("utf-8")),
+            (5000, 6000, b"After the end"),
+        ]),
+        "recipes": [chapters_recipe(4)],
+    },
+    {
+        "name": "obs_chapter_zero.mkv",
+        "what": "MKV with one chapter at 00:00 covering the file (what muxers write by themselves): H.264 320x180 10 fps, "
+                "2 s + AAC stereo",
+        "expect": {"codec_name": "h264"},
+        "ffmetadata": ffmetadata_chapters([(0, 2000, b"Chapter 1")]),
+        "recipes": [chapters_recipe(2)],
+    },
+    {
         "name": "untitled_three_track.mkv",
         "what": "MKV: H.264 320x180 10 fps, 2 s + 3 untitled AAC stereo streams (220, 440, 660 Hz)",
         "expect": {"codec_name": "h264"},
@@ -453,9 +504,10 @@ def probe_first_stream(ffmpeg: Path, file: Path) -> dict[str, str]:
 
 
 def run_recipe(ffmpeg: Path, recipe: list[list[str]], out: Path, tmp: Path,
-               expect: dict[str, str]) -> tuple[bool, str]:
+               expect: dict[str, str], meta: Path | None = None) -> tuple[bool, str]:
     for step in recipe:
-        args = [str(ffmpeg), *COMMON, *[a.replace("{out}", str(out)).replace("{tmp}", str(tmp)) for a in step]]
+        args = [str(ffmpeg), *COMMON, *[a.replace("{out}", str(out)).replace("{tmp}", str(tmp))
+                                         .replace("{meta}", str(meta) if meta else "") for a in step]]
         proc = subprocess.run(args, capture_output=True, text=True, timeout=900)
         if proc.returncode != 0:
             lines = (proc.stderr or proc.stdout or "").strip().splitlines()
@@ -500,8 +552,12 @@ def generate(ffmpeg: Path, out_dir: Path, force: bool) -> int:
         scratch = out_dir / (target.stem + ".step1" + target.suffix)
         started = time.monotonic()
         errors = []
+        # P0 round: a clip's FFMETADATA (chapters) goes to a scratch file the recipe reads as {meta}.
+        meta = out_dir / (target.stem + ".ffmeta.txt") if clip.get("ffmetadata") else None
+        if meta:
+            meta.write_bytes(clip["ffmetadata"])
         for recipe in clip["recipes"]:
-            ok, error = run_recipe(ffmpeg, recipe, partial, scratch, clip.get("expect", {}))
+            ok, error = run_recipe(ffmpeg, recipe, partial, scratch, clip.get("expect", {}), meta)
             encoders = [step[step.index("-c:v") + 1] for step in recipe if "-c:v" in step]
             if ok:
                 os.replace(partial, target)
@@ -518,7 +574,7 @@ def generate(ffmpeg: Path, out_dir: Path, force: bool) -> int:
             else:
                 print(f"  FAILED      {name}: {' | '.join(errors)}")
                 failures += 1
-        for leftover in (partial, scratch):
+        for leftover in (partial, scratch, *([meta] if meta else [])):
             if leftover.exists():
                 leftover.unlink()
 

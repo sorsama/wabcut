@@ -3,6 +3,7 @@
 #include "CommandHarness.h"
 #include "EditTestUtil.h"
 
+#include <wabcut/ai/edit/MediaTranscript.h>
 #include <wabcut/ai/edit/TranscriptCommands.h>
 #include <wabcut/command/Schema.h>
 #include <wabcut/command/ToolExport.h>
@@ -61,14 +62,15 @@ TEST_CASE("The editing catalog is the built-in one plus the transcript and analy
                              "transcript.deleteRanges", "transcript.keepRanges", "transcript.moveRange",
                              "transcript.cleanup", "captions.generate", "captions.generateFromTranscript",
                              "captions.updateFromTranscript", "transcript.correctWord", "transcript.correctRange",
-                             "transcript.speakers", "transcript.corrections"}) {
+                             "transcript.speakers", "transcript.corrections", "transcript.mediaWords"}) {
         INFO(name);
         CHECK(registry.knows(name));
         CHECK_FALSE(command::builtinCommands().knows(name));
         CHECK(command::unsupportedSchemaKeywords(registry.find(name)->params).empty());
     }
-    // The 20 transcript commands (AI-3, AI-7 transcribe, C.7 captions from the transcript, corrections, speakers, p02's
-    // captions.hideProfanity and audio.bleepProfanity, 0.2 transcript.export / transcript.findReplace / transcript.find),
+    // The 21 transcript commands (AI-3, AI-7 transcribe, C.7 captions from the transcript, corrections, speakers, p02's
+    // captions.hideProfanity and audio.bleepProfanity, 0.2 transcript.export / transcript.findReplace / transcript.find,
+    // the P0 round's transcript.mediaWords),
     // + analysis.*, clip.splitAtShots (C.5), the 44 audio commands (AI-4, A.3 faders, A.4 enhance / stems, A.5 sync,
     // A.6's plugins.list / plugins.scan, A.7's audio.essentialSound / audio.remix and A.8's audio.remixRender /
     // track.setRecordArm / record.takes / record.useTake, A.9's ten channel commands, p02's six submix commands and audio.autoTag),
@@ -82,7 +84,7 @@ TEST_CASE("The editing catalog is the built-in one plus the transcript and analy
     // analysis.speakers / multicam.autoSwitch / workflow.podcast (AI-13), mask.objectSelect / mask.refine /
     // mask.propagate (AI-14), highlights.find / importChat / toReel / toShort (G.2), and effect.analyzeStabilization /
     // effect.analyzeRollingShutter (P.2), and gen.sfx / redaction.detectFaces (0.2).
-    CHECK(registry.all().size() == command::builtinCommands().all().size() + 20 + 3 + 44 + 2 + 16 + 5 + 11 + 8 + 5 + 3 + 3 + 3 + 4 + 2 + 2);
+    CHECK(registry.all().size() == command::builtinCommands().all().size() + 21 + 3 + 44 + 2 + 16 + 5 + 11 + 8 + 5 + 3 + 3 + 3 + 4 + 2 + 2);
     for (const char* name : {"effect.analyzeStabilization", "effect.analyzeRollingShutter"}) {
         INFO(name);
         CHECK(registry.knows(name));
@@ -433,4 +435,129 @@ TEST_CASE("Enhance Speech and stems refuse a multicam clip with where to go inst
     REQUIRE_FALSE(enhanced.ok());
     CHECK(command::toJson(enhanced).dump().find("multicam or nested sequence") != std::string::npos);
     CHECK(h.session.undoCount() == 0);
+}
+
+// P0 round: the source clip transcript for the CLI and MCP (transcript.mediaWords, MediaTranscript.h).
+TEST_CASE("transcript.mediaWords reads a media item's words in source time whatever the sequence keeps",
+          "[ai][edit][commands][source]") {
+    Fixture fx;
+    // The sequence loses its first two words; the media keeps all ten.
+    fx.h.ok("transcript.deleteRanges", Json{{"words", Json::array({Json::array({0, 1})})}});
+    CHECK(fx.h.ok("transcript.words").data["total"] == 8);
+
+    const auto all = fx.h.ok("transcript.mediaWords", Json{{"media", "A"}});
+    CHECK(all.warnings.empty());
+    CHECK(all.data["total"] == 10);
+    CHECK(all.data["audioStream"] == 0);
+    CHECK(all.data["language"] == "en");
+    CHECK(all.data["name"] == "A");
+    CHECK(all.data["wordFields"] == Json::array({"index", "text", "start", "end", "startTicks", "endTicks", "speaker", "confidence"}));
+    REQUIRE(all.data["words"].size() == 10);
+    CHECK(all.data["words"][1] == Json::array({1, "um,", tc(4), tc(7), frames(4).value, frames(7).value, 0, 0.9}));
+    CHECK(all.data["words"][6] == Json::array({6, "Thanks", tc(62), tc(67), frames(62).value, frames(67).value, 1, 0.9}));
+
+    // A source-time window (timecodes in the media's rate, or ticks), an index window and a limit.
+    const auto window = fx.h.ok("transcript.mediaWords", Json{{"media", "A"}, {"from", tc(60)}, {"to", tc(70)}});
+    CHECK(window.data["words"].size() == 3);
+    const auto ticks = fx.h.ok("transcript.mediaWords", Json{{"media", "A"}, {"from", frames(60).value}, {"to", frames(70).value}});
+    CHECK(ticks.data["words"] == window.data["words"]);
+    const auto some = fx.h.ok("transcript.mediaWords", Json{{"media", "A"}, {"first", 2}, {"limit", 3}});
+    REQUIRE(some.data["words"].size() == 3);
+    CHECK(some.data["words"][0][1] == "welcome");
+    CHECK(some.data["truncated"] == true);
+    // A read: no undo step.
+    CHECK(fx.h.session.undoCount() == 1);
+}
+
+TEST_CASE("transcript.mediaWords applies the project's corrections and redactions", "[ai][edit][commands][source][redaction]") {
+    Fixture fx;
+    fx.h.ok("transcript.correctWord", Json{{"word", 2}, {"text", "Welcome"}});
+    fx.h.ok("redaction.add", Json{{"media", "A"},
+                                  {"source", Json{{"start", tc(0)}, {"end", tc(90)}}},
+                                  {"audio", "bleep"},
+                                  {"words", Json::array({Json{{"start", tc(69)}, {"end", tc(74)}}})}});
+    const auto words = fx.h.ok("transcript.mediaWords", Json{{"media", "A"}}).data["words"];
+    REQUIRE(words.size() == 10);
+    CHECK(words[2][1] == "Welcome");
+    CHECK(words[8][1] == "[bleep]"); // "having"
+    CHECK(words[9][1] == "me.");
+}
+
+TEST_CASE("transcript.mediaWords says when there is nothing to read and refuses a wrong stream",
+          "[ai][edit][commands][source]") {
+    Fixture fx;
+    CHECK(fx.h.errorOf("transcript.mediaWords", Json{{"media", "A"}, {"audioStream", 3}}) == "InvalidParams");
+    CHECK(fx.h.errorOf("transcript.mediaWords", Json{{"media", 999999}}) != ""); // no such item
+    CHECK(fx.h.errorOf("transcript.mediaWords") == "InvalidParams"); // media is required
+
+    // Services without a transcript of the media: an empty answer that says why.
+    CommandHarness empty(Timeline(kPicture),
+                         command::EnginePolicy{command::CapabilitySet::all(), 1024,
+                                               std::make_shared<TranscriptServices>(std::make_shared<MapTranscriptProvider>())},
+                         editingCommands());
+    const auto none = empty.ok("transcript.mediaWords", Json{{"media", "A"}});
+    CHECK(none.data["total"] == 0);
+    CHECK(none.warnings.size() == 1);
+    // Without transcript services at all.
+    CommandHarness bare(Timeline(kPicture), {}, editingCommands());
+    CHECK(bare.errorOf("transcript.mediaWords", Json{{"media", "A"}}) == "InvalidRequest");
+}
+
+TEST_CASE("MediaTranscript: words in source time; Thai joins without spaces; the nearest word; sameAs",
+          "[ai][edit][source]") {
+    Timeline tl(kPicture);
+    const auto thai = transcript("th", {{"\xE0\xB8\xAA\xE0\xB8\xA7\xE0\xB8\xB1\xE0\xB8\xAA\xE0\xB8\x94\xE0\xB8\xB5", 2, 6, 0},
+                                        {"\xE0\xB8\x84\xE0\xB8\xA3\xE0\xB8\xB1\xE0\xB8\x9A", 6, 9, 0},
+                                        {"OK", 20, 24, 1}});
+    const auto p = provider(tl, {{'A', thai}});
+    const MediaTranscript mt = MediaTranscript::build(tl.state, tl.media('A'), 0, *p);
+    REQUIRE(mt.size() == 3);
+    CHECK(mt.language() == "th");
+    CHECK(mt[0].source == TimeRange::fromStartEnd(frames(2), frames(6)));
+    CHECK(mt.textOf(0, 1) == "\xE0\xB8\xAA\xE0\xB8\xA7\xE0\xB8\xB1\xE0\xB8\xAA\xE0\xB8\x94\xE0\xB8\xB5\xE0\xB8\x84\xE0\xB8\xA3\xE0\xB8\xB1\xE0\xB8\x9A");
+    CHECK(mt.wordAt(frames(7)) == std::optional<std::size_t>(1));  // inside
+    CHECK(mt.wordAt(frames(18)) == std::optional<std::size_t>(2)); // nearer the third
+    CHECK(mt.wordAt(frames(11)) == std::optional<std::size_t>(1)); // nearer the second
+    const auto [b, e] = mt.wordsIn(TimeRange::fromStartEnd(frames(5), frames(21)));
+    CHECK(b == 0);
+    CHECK(e == 3);
+    CHECK(mt.sameAs(MediaTranscript::build(tl.state, tl.media('A'), 0, *p)));
+    // Another stream (none here), an unknown item: no words.
+    CHECK(MediaTranscript::build(tl.state, tl.media('A'), 1, *p).empty());
+    CHECK(MediaTranscript::build(tl.state, MediaId{999}, 0, *p).empty());
+    CHECK_FALSE(mt.sameAs(MediaTranscript{}));
+}
+
+TEST_CASE("Fix round 1: a zero-length word is in its range and mediaWords lists only the words in the window",
+          "[ai][edit][commands][source]") {
+    Timeline tl(kPicture);
+    tl.linkMatching();
+    // A long word over two short ones (overlapping speech), and a zero-length word at 40.
+    const auto p = provider(tl, {{'A', transcript("en", {{"Sooo", 0, 60, 0},
+                                                         {"yes", 10, 20, 1},
+                                                         {"no", 22, 24, 1},
+                                                         {"[click]", 40, 40, 0},
+                                                         {"done.", 70, 80, 0}})}});
+    const MediaTranscript mt = MediaTranscript::build(tl.state, tl.media('A'), 0, *p);
+    REQUIRE(mt.size() == 5);
+    // The zero-length word is inside a range that starts at its instant.
+    const auto [b, e] = mt.wordsIn(TimeRange::fromStartEnd(frames(40), frames(50)));
+    CHECK(b <= 3);
+    CHECK(e >= 4);
+    // Without a long word before it, the zero-length word starts the span of a range that starts at its instant.
+    const auto plain = provider(tl, {{'A', transcript("en", {{"yes", 10, 20, 1}, {"[click]", 40, 40, 0}, {"done.", 70, 80, 0}})}});
+    const MediaTranscript three = MediaTranscript::build(tl.state, tl.media('A'), 0, *plain);
+    REQUIRE(three.size() == 3);
+    CHECK(three.wordsIn(TimeRange::fromStartEnd(frames(40), frames(50))) == std::pair<std::size_t, std::size_t>{1, 2});
+    CommandHarness h(tl, command::EnginePolicy{command::CapabilitySet::all(), 1024, std::make_shared<TranscriptServices>(p)},
+                     editingCommands());
+    // [30, 45): the long word and the zero-length one; not the short words the long one spans.
+    const auto window = h.ok("transcript.mediaWords", Json{{"media", "A"}, {"from", frames(30).value}, {"to", frames(45).value}});
+    REQUIRE(window.data["words"].size() == 2);
+    CHECK(window.data["words"][0][1] == "Sooo");
+    CHECK(window.data["words"][1][1] == "[click]");
+    // [40, 41): the zero-length word at its start.
+    const auto instant = h.ok("transcript.mediaWords", Json{{"media", "A"}, {"from", frames(40).value}, {"to", frames(41).value}});
+    REQUIRE(instant.data["words"].size() == 2);
+    CHECK(instant.data["words"][1][1] == "[click]");
 }

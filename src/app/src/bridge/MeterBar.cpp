@@ -41,6 +41,15 @@ void MeterBar::setChannel(const QString& channel) {
     emit channelChanged();
 }
 
+void MeterBar::setIdleChannels(int channels) {
+    const int next = std::clamp(channels, 1, AudioMixerBridge::kMeterChannels);
+    if (next == m_idleChannels)
+        return;
+    m_idleChannels = next;
+    update();
+    emit appearanceChanged();
+}
+
 void MeterBar::setFloorDb(double db) {
     if (m_floorDb == db)
         return;
@@ -106,7 +115,7 @@ QSGNode* MeterBar::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
         root->appendChildNode(new QSGSimpleRectNode(r, color));
         ++drawn;
     };
-    const int channels = std::max(1, m_levels.channels);
+    const int channels = m_levels.channels > 0 ? m_levels.channels : m_idleChannels;
     const double gap = channels > 1 ? 1.0 : 0.0;
     const double barWidth = (w - gap * (channels - 1)) / channels;
     const double yMid = h * (1.0 - fraction(kMidDb));

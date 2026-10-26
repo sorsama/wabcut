@@ -8,6 +8,8 @@ import QtQuick
 // still and transition durations, project locking) open in their own dialog (EditingPreferencesDialog).
 // 0.4 (stream A): Editing gets the playback auto-scroll (No scroll, Page, Smooth) and "Snap the playhead"; Tracks gets
 // the clip speed, the fx badges and the clip tooltips (the display popover shows them too).
+// 0.5 (stream B): Editing gets "Play audio while scrubbing" (Playback.audioScrubbing: Shift+S and the Sequence menu's
+// Audio Scrubbing are the same switch).
 SettingsPage {
     id: page
     objectName: "timelineSettingsPage"
@@ -117,6 +119,21 @@ SettingsPage {
                 suffix: qsTr(" s")
                 Accessible.name: qsTr("Postroll in seconds")
                 onValueModified: value => Preferences.trimPostroll = value
+            }
+        }
+        // 0.5 (stream B): Premiere's Play Audio While Scrubbing (Toggle Audio Scrubbing, Shift+S); on by default.
+        SettingsRow {
+            rowKey: "audioScrubbing"
+            label: qsTr("Play audio while scrubbing")
+            description: qsTr("While stopped, dragging the playhead and stepping frames play a little of the sound there (Shift+S turns it on and off).")
+            Toggle {
+                objectName: "settingsAudioScrubbing"
+                tooltip: qsTr("Play audio while scrubbing")
+                checked: Playback.audioScrubbing
+                onToggled: {
+                    Playback.audioScrubbing = checked
+                    checked = Qt.binding(() => Playback.audioScrubbing) // Shift+S and the menu move it too
+                }
             }
         }
         SettingsRow {

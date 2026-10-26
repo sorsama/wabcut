@@ -16,17 +16,25 @@
 #include <wabcut/model/FinishingOps.h>
 #include <wabcut/model/TimeRemap.h>
 
+#include <wabcut/command/ExecutionContext.h>
+
+#include <QCoreApplication>
+#include <QLocale>
 #include <QQmlEngine>
 #include <QSettings>
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <charconv>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <memory>
 #include <string>
+#include <string_view>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -222,6 +230,90 @@ bool commitSteps(ProjectController* controller, const char* label, ClipId clip, 
     return true;
 }
 
+// ---- 0.5: Remove dead time's review ----
+
+/// A Find dead time option, clamped to what sequence.removeDeadTime takes (the UI's ranges): sensitivity 0..1,
+/// minSeconds 0.5..600, handleSeconds 0..5.
+double deadTimeOptionValue(std::string_view name, const QVariant& value) {
+    const double v = value.toDouble();
+    if (name == "sensitivity")
+        return std::isfinite(v) ? std::clamp(v, 0.0, 1.0) : 0.5;
+    if (name == "minSeconds")
+        return std::isfinite(v) ? std::clamp(v, 0.5, 600.0) : 3.0;
+    return std::isfinite(v) ? std::clamp(v, 0.0, 5.0) : 0.3; // handleSeconds
+}
+
+/// The sequence's clips (track, id, place): a found stretch only means something while it is the same.
+std::uint64_t layoutOf(const Sequence& seq) {
+    std::uint64_t h = 1469598103934665603ULL;
+    const auto mix = [&h](std::uint64_t v) {
+        h ^= v;
+        h *= 1099511628211ULL;
+    };
+    for (const std::vector<TrackPtr>* tracks : {&seq.videoTracks, &seq.audioTracks}) {
+        for (const TrackPtr& track : *tracks) {
+            mix(track->id.value);
+            for (const Clip& c : track->clips) {
+                mix(c.id.value);
+                mix(static_cast<std::uint64_t>(c.start().value));
+                mix(static_cast<std::uint64_t>(c.duration().value));
+            }
+        }
+    }
+    return h;
+}
+
+/// The frame a sequence shows at timeline time `t` (its top enabled video clip of media with a picture), as an
+/// image://wabcut-frames URL (decoded off the GUI thread and cached by the provider), or "".
+QString frameUrlAt(const ProjectState& state, const Sequence& seq, Ticks t) {
+    for (auto it = seq.videoTracks.rbegin(); it != seq.videoTracks.rend(); ++it) {
+        if (!(*it)->enabled)
+            continue;
+        for (const Clip& clip : (*it)->clips) {
+            if (!clip.enabled || t < clip.start() || t >= clip.end())
+                continue;
+            const MediaItem* media = state.findMedia(clip.media);
+            if (media && !media->isGenerator() && !media->info.video.empty())
+                return QStringLiteral("image://wabcut-frames/%1/%2").arg(mediaKey(clip.media)).arg(clip.sourceTimeAt(t).value);
+        }
+    }
+    return {};
+}
+
+/// "m:ss" of a length.
+QString clockText(double seconds) {
+    const auto whole = static_cast<int>(std::lround(std::max(0.0, seconds)));
+    return QStringLiteral("%1:%2").arg(whole / 60).arg(whole % 60, 2, 10, QLatin1Char('0'));
+}
+
+/// Find dead time on the worker: stops at the next checkpoint once cancelled, reports "measuring activity (NN%)".
+class DeadTimeControl final : public command::ExecutionControl {
+public:
+    DeadTimeControl(const std::atomic<bool>& cancelled, std::function<void(double)> report)
+        : m_cancelled(cancelled), m_report(std::move(report)) {}
+    std::optional<command::CommandError> checkpoint(std::string_view message) override {
+        if (m_report && message.size() > 3 && message.ends_with("%)")) {
+            if (const auto open = message.rfind('('); open != std::string_view::npos) {
+                const std::string_view digits = message.substr(open + 1, message.size() - open - 3);
+                int percent = 0;
+                if (std::from_chars(digits.data(), digits.data() + digits.size(), percent).ec == std::errc{})
+                    m_report(std::clamp(percent, 0, 100) / 100.0);
+            }
+        }
+        if (m_cancelled.load()) {
+            command::CommandError error;
+            error.code = command::ErrorCode::Cancelled;
+            error.message = "cancelled";
+            return error;
+        }
+        return std::nullopt;
+    }
+
+private:
+    const std::atomic<bool>& m_cancelled;
+    std::function<void(double)> m_report;
+};
+
 } // namespace
 
 MomentsBridge::MomentsBridge(QObject* parent) : QObject(parent), m_deadTimeJob(std::make_unique<BridgeJob>()) {
@@ -230,6 +322,12 @@ MomentsBridge::MomentsBridge(QObject* parent) : QObject(parent), m_deadTimeJob(s
     m_replaySpeed = settings.value(QStringLiteral("moments/replaySpeed"), 0.5).toDouble() < 0.375 ? 0.25 : 0.5;
     m_replaySound = settings.value(QStringLiteral("moments/replaySound"), false).toBool();
     m_replayLabel = settings.value(QStringLiteral("moments/replayLabel"), true).toBool();
+    // 0.5: Find dead time's remembered options.
+    m_deadTimeSensitivity = deadTimeOptionValue("sensitivity", settings.value(QStringLiteral("moments/deadTimeSensitivity"), 0.5));
+    m_deadTimeMinSeconds = deadTimeOptionValue("minSeconds", settings.value(QStringLiteral("moments/deadTimeMinSeconds"), 3.0));
+    m_deadTimeHandleSeconds =
+        deadTimeOptionValue("handleSeconds", settings.value(QStringLiteral("moments/deadTimeHandleSeconds"), 0.3));
+    m_deadTimeInOut = settings.value(QStringLiteral("moments/deadTimeInOut"), false).toBool();
 }
 
 void MomentsBridge::setReplaySpeed(double speed) {
@@ -257,12 +355,18 @@ void MomentsBridge::setReplayLabel(bool on) {
     emit replayOptionsChanged();
 }
 
-MomentsBridge::~MomentsBridge() = default;
+MomentsBridge::~MomentsBridge() {
+    // 0.5: the review's bands go with it.
+    if (m_controller && m_deadTimeBands)
+        m_controller->setTimelineHighlights(QStringLiteral("deadTime"), {});
+}
 
 MomentsBridge* MomentsBridge::create(QQmlEngine* qmlEngine, QJSEngine*) {
     auto* bridge = new MomentsBridge;
-    if (qmlEngine)
+    if (qmlEngine) {
+        (void)qmlEngine->singletonInstance<ShortsBridge*>("Wabcut", "Shorts"); // 0.5: registers image://wabcut-frames
         bridge->setController(qmlEngine->singletonInstance<ProjectController*>("Wabcut", "ProjectController"));
+    }
     return bridge;
 }
 
@@ -277,6 +381,16 @@ void MomentsBridge::setController(ProjectController* controller) {
         connect(controller, &ProjectController::playheadChanged, this, &MomentsBridge::targetChanged);
         connect(controller, &ProjectController::selectionChanged, this, &MomentsBridge::targetChanged);
         connect(controller, &ProjectController::sequenceChanged, this, &MomentsBridge::targetChanged);
+        // 0.5: the dead-time review says when its stretches no longer match the sequence, and its bands show on the
+        // sequence they were found on only.
+        connect(controller, &ProjectController::revisionChanged, this, [this] {
+            if (!m_deadStretches.empty())
+                refreshDeadTime(false);
+        });
+        connect(controller, &ProjectController::sequenceChanged, this, [this] {
+            if (!m_deadStretches.empty() || m_deadTimeBands)
+                refreshDeadTime(false);
+        });
     }
     emit targetChanged();
 }
@@ -865,25 +979,89 @@ QString MomentsBridge::makeVersion(const QString& format) {
     return finish(true, {});
 }
 
-void MomentsBridge::findDeadTime() {
-    if (m_deadTimeJob->running())
+void MomentsBridge::findDeadTime(const QVariantMap& options) {
+    // 0.5: the options given are remembered (the review sheet's sliders, scripts).
+    for (const char* name : {"sensitivity", "minSeconds", "handleSeconds", "inOut"}) {
+        const QString key = QString::fromLatin1(name);
+        if (options.contains(key))
+            setDeadTimeOption(key, options.value(key));
+    }
+    if (m_deadTimeJob->running()) {
+        // A cancelled find still winds down (it stops at its next checkpoint): this one starts once it has.
+        if (!m_deadTimeBusy) {
+            m_deadTimeQueued = true;
+            m_deadTimeBusy = true;
+            m_deadTimeError.clear();
+            m_deadTimePhase = tr("Measuring the gameplay…");
+            m_deadTimeProgress = -1.0;
+            refreshDeadTime(false);
+        }
         return;
-    if (!m_controller || !registry().knows("sequence.removeDeadTime")) {
-        m_deadTime = {{QStringLiteral("error"), tr("Remove dead time arrives with the next engine update")}};
-        emit deadTimeChanged();
-        return;
+    }
+    m_deadTimeQueued = false;
+    const auto refuse = [this](const QString& why) {
+        m_deadTimeFoundWith.reset();
+        m_deadStretches.clear();
+        m_deadTimeBusy = false;
+        m_deadTimeSearched = false;
+        m_deadTimeError = why;
+        m_deadTimeNote.clear();
+        m_deadTimeCurrent = -1;
+        refreshDeadTime(true);
+        emit deadTimeCurrentChanged();
+    };
+    if (!m_controller || !registry().knows("sequence.removeDeadTime"))
+        return refuse(tr("Remove dead time arrives with the next engine update"));
+    const SequencePtr current = m_controller->currentSequence();
+    if (!current)
+        return refuse(tr("Open a sequence first"));
+    if (m_deadTimeInOut) {
+        const auto in = m_controller->markIn();
+        const auto out = m_controller->markOut();
+        if (!in || !out || *out <= *in)
+            return refuse(tr("Set an In and an Out mark first, or turn off Only In to Out"));
     }
     const ProjectSnapshot base = m_controller->snapshot();
     const std::uint64_t sequence = m_controller->currentSequenceId().value;
+    const std::uint64_t layout = layoutOf(*current);
     const command::CommandRegistry* catalog = &registry();
     const std::shared_ptr<command::CommandServices> hostServices = services();
-    m_deadTime = {{QStringLiteral("busy"), true}, {QStringLiteral("text"), tr("Measuring the gameplay…")}};
-    m_deadTimeRanges.clear();
-    emit deadTimeChanged();
+    const command::Json params{{"sequence", sequence},
+                               {"sensitivity", m_deadTimeSensitivity},
+                               {"minSeconds", m_deadTimeMinSeconds},
+                               {"handleSeconds", m_deadTimeHandleSeconds},
+                               {"inOut", m_deadTimeInOut}};
+    m_deadStretches.clear();
+    m_deadTimeBusy = true;
+    m_deadTimeSearched = false;
+    m_deadTimeError.clear();
+    m_deadTimeNote.clear();
+    m_deadTimePhase = tr("Measuring the gameplay…");
+    m_deadTimeProgress = -1.0;
+    m_deadTimeCurrent = -1;
+    m_deadTimeFoundWith = deadTimeOptionValues(); // what this find measures with
+    const std::uint64_t run = ++m_deadTimeRun;
+    refreshDeadTime(true);
+    emit deadTimeCurrentChanged();
     QPointer<MomentsBridge> self(this);
+    const bool synchronous = m_synchronous;
+    // Progress from the worker reaches the GUI thread queued (directly when synchronous).
+    auto report = [self, run, synchronous](double fraction) {
+        const auto show = [self, run, fraction] {
+            if (!self || self->m_deadTimeRun != run || !self->m_deadTimeBusy)
+                return;
+            self->m_deadTimeProgress = fraction;
+            self->refreshDeadTime(false);
+        };
+        if (synchronous)
+            show();
+        else
+            QMetaObject::invokeMethod(QCoreApplication::instance(), show, Qt::QueuedConnection);
+    };
     m_deadTimeJob->start(
         this, m_synchronous,
-        [base, sequence, catalog, hostServices, self](const std::atomic<bool>&) -> BridgeJob::Finish {
+        [base, params, catalog, hostServices, self, run, sequence, layout,
+         report](const std::atomic<bool>& cancelled) -> BridgeJob::Finish {
             // On the worker: the preview on a copy (it decodes and measures; nothing changes).
             EditSession scratch(*base);
             command::EnginePolicy policy;
@@ -891,68 +1069,343 @@ void MomentsBridge::findDeadTime() {
             command::CommandEngine engine(scratch, *catalog, policy);
             command::CommandRequest request;
             request.command = "sequence.removeDeadTime";
-            request.params = command::Json{{"sequence", sequence}};
-            command::CommandResult result = engine.execute(request);
-            return [self, sequence, result = std::move(result)] {
+            request.params = params;
+            DeadTimeControl control(cancelled, report);
+            command::CommandResult result = engine.execute(request, &control);
+            return [self, run, sequence, layout, result = std::move(result)] {
                 if (!self)
                     return;
-                if (!result.ok()) {
-                    self->m_deadTime = {{QStringLiteral("error"), QString::fromStdString(result.error->message)}};
-                    emit self->deadTimeChanged();
+                if (self->m_deadTimeRun != run) { // cancelled: a find asked for meanwhile starts now
+                    if (self->m_deadTimeQueued)
+                        self->findDeadTime();
                     return;
                 }
-                command::Json ranges = command::Json::array();
-                for (const command::Json& r : result.data.value("ranges", command::Json::array()))
-                    ranges.push_back(command::Json{{"start", r.value("startTicks", std::int64_t{0})},
-                                                   {"end", r.value("endTicks", std::int64_t{0})}});
-                const double seconds = result.data.value("removeSeconds", 0.0);
-                const int count = static_cast<int>(ranges.size());
-                const int whole = static_cast<int>(std::lround(seconds));
-                self->m_deadTimeRanges = ranges.dump();
+                self->m_deadTimeBusy = false;
+                if (!result.ok()) {
+                    self->m_deadTimeError = result.error->code == command::ErrorCode::Cancelled
+                                                ? QString()
+                                                : QString::fromStdString(result.error->message);
+                    self->refreshDeadTime(true);
+                    return;
+                }
+                for (const command::Json& r : result.data.value("ranges", command::Json::array())) {
+                    const Ticks start{r.value("startTicks", std::int64_t{0})};
+                    const Ticks end{r.value("endTicks", std::int64_t{0})};
+                    if (end > start)
+                        self->m_deadStretches.push_back({start, end, true});
+                }
+                std::sort(self->m_deadStretches.begin(), self->m_deadStretches.end(),
+                          [](const DeadStretch& a, const DeadStretch& b) { return a.start < b.start; });
                 self->m_deadTimeSequence = sequence;
-                self->m_deadTime = {
-                    {QStringLiteral("found"), count > 0},
-                    {QStringLiteral("count"), count},
-                    {QStringLiteral("seconds"), seconds},
-                    {QStringLiteral("text"),
-                     count > 0 ? tr("Dead time: %1 stretches, %2:%3 in all").arg(count).arg(whole / 60).arg(whole % 60, 2, 10, QLatin1Char('0'))
-                               : tr("No dead time found")}};
-                emit self->deadTimeChanged();
+                self->m_deadTimeLayout = layout; // the sequence as it was measured
+                self->m_deadTimeSearched = true;
+                self->refreshDeadTime(true);
             };
         },
-        [self](const QString& message) -> BridgeJob::Finish {
-            return [self, message] {
+        [self, run](const QString& message) -> BridgeJob::Finish {
+            return [self, run, message] {
                 if (!self)
                     return;
-                self->m_deadTime = {{QStringLiteral("error"), message}};
-                emit self->deadTimeChanged();
+                if (self->m_deadTimeRun != run) {
+                    if (self->m_deadTimeQueued)
+                        self->findDeadTime();
+                    return;
+                }
+                self->m_deadTimeBusy = false;
+                self->m_deadTimeError = message;
+                self->refreshDeadTime(true);
             };
         });
 }
 
 QString MomentsBridge::removeDeadTime() {
-    if (!m_controller || m_deadTimeRanges.empty() || !m_deadTime.value(QStringLiteral("found")).toBool())
+    if (!m_controller || m_deadTimeBusy || m_deadStretches.empty())
         return finish(false, tr("Find the dead time first"));
     if (m_controller->currentSequenceId().value != m_deadTimeSequence)
         return finish(false, tr("The dead time was found on another sequence: find it again"));
+    if (deadTimeStale())
+        return finish(false, tr("The sequence changed since the dead time was found: find it again"));
+    if (m_deadTimeFoundWith && *m_deadTimeFoundWith != deadTimeOptionValues())
+        return finish(false, tr("The options changed since the dead time was found: find it again, or set them back"));
+    // 0.5: only the switched-on stretches.
+    command::Json ranges = command::Json::array();
+    int count = 0;
+    double seconds = 0.0;
+    for (const DeadStretch& s : m_deadStretches) {
+        if (!s.remove)
+            continue;
+        ranges.push_back(command::Json{{"start", s.start.value}, {"end", s.end.value}});
+        ++count;
+        seconds += (s.end - s.start).toSeconds();
+    }
+    if (ranges.empty())
+        return finish(false, tr("Every stretch is kept: switch one on to remove it"));
     const command::CommandResult result =
         runLive(m_controller, registry(), "sequence.removeDeadTime",
-                command::Json{{"sequence", m_deadTimeSequence},
-                              {"apply", true},
-                              {"ranges", command::Json::parse(m_deadTimeRanges)}},
-                services());
-    cancelDeadTime();
+                command::Json{{"sequence", m_deadTimeSequence}, {"apply", true}, {"ranges", std::move(ranges)}}, services());
     if (!result.ok())
-        return finish(false, QString::fromStdString(result.error->message));
+        return finish(false, QString::fromStdString(result.error->message)); // the list stays for another try
+    cancelDeadTime();
+    m_deadTimeNote = count == 1 ? tr("Removed 1 stretch, %1").arg(clockText(seconds))
+                                : tr("Removed %1 stretches, %2 in all").arg(count).arg(clockText(seconds));
+    refreshDeadTime(false);
     return finish(true, {});
 }
 
 void MomentsBridge::cancelDeadTime() {
     if (m_deadTimeJob->running())
-        m_deadTimeJob->cancel();
-    m_deadTimeRanges.clear();
-    m_deadTime = {};
+        m_deadTimeJob->cancel(); // it stops at its next checkpoint; its result is dropped (m_deadTimeRun)
+    ++m_deadTimeRun;
+    m_deadTimeQueued = false;
+    m_deadTimeFoundWith.reset();
+    m_deadStretches.clear();
+    m_deadTimeBusy = false;
+    m_deadTimeSearched = false;
+    m_deadTimeError.clear();
+    m_deadTimeNote.clear();
+    const bool moved = m_deadTimeCurrent != -1;
+    m_deadTimeCurrent = -1;
+    refreshDeadTime(true);
+    if (moved)
+        emit deadTimeCurrentChanged();
+}
+
+// ---- 0.5: the review ----
+
+bool MomentsBridge::deadTimeStale() const {
+    if (!m_controller || m_deadStretches.empty())
+        return false;
+    const ProjectSnapshot snap = m_controller->snapshot();
+    const Sequence* seq = snap ? snap->findSequence(SequenceId{m_deadTimeSequence}) : nullptr;
+    return !seq || layoutOf(*seq) != m_deadTimeLayout;
+}
+
+void MomentsBridge::refreshDeadTime(bool rangesChanged) {
+    const int count = static_cast<int>(m_deadStretches.size());
+    double seconds = 0.0;
+    double removeSeconds = 0.0;
+    int removeCount = 0;
+    for (const DeadStretch& s : m_deadStretches) {
+        const double length = (s.end - s.start).toSeconds();
+        seconds += length;
+        if (s.remove) {
+            ++removeCount;
+            removeSeconds += length;
+        }
+    }
+    const int whole = static_cast<int>(std::lround(seconds));
+    QVariantMap map{{QStringLiteral("count"), count},
+                    {QStringLiteral("seconds"), seconds},
+                    {QStringLiteral("removeCount"), removeCount},
+                    {QStringLiteral("removeSeconds"), removeSeconds},
+                    {QStringLiteral("removeText"),
+                     tr("%1 of %2 to remove · %3").arg(removeCount).arg(count).arg(clockText(removeSeconds))},
+                    {QStringLiteral("searched"), m_deadTimeSearched},
+                    {QStringLiteral("stale"), deadTimeStale()},
+                    {QStringLiteral("otherSequence"),
+                     count > 0 && m_controller && m_controller->currentSequenceId().value != m_deadTimeSequence},
+                    {QStringLiteral("optionsChanged"), !m_deadTimeBusy && (count > 0 || m_deadTimeSearched) &&
+                                                           m_deadTimeFoundWith && *m_deadTimeFoundWith != deadTimeOptionValues()}};
+    if (m_deadTimeBusy) {
+        map.insert(QStringLiteral("busy"), true);
+        map.insert(QStringLiteral("text"), m_deadTimePhase);
+        map.insert(QStringLiteral("phase"), m_deadTimePhase);
+        map.insert(QStringLiteral("progress"), m_deadTimeProgress);
+    } else if (!m_deadTimeError.isEmpty()) {
+        map.insert(QStringLiteral("error"), m_deadTimeError);
+    } else if (count > 0) {
+        map.insert(QStringLiteral("found"), true);
+        map.insert(QStringLiteral("text"), tr("Dead time: %1 stretches, %2:%3 in all")
+                                               .arg(count)
+                                               .arg(whole / 60)
+                                               .arg(whole % 60, 2, 10, QLatin1Char('0')));
+    } else if (m_deadTimeSearched) {
+        map.insert(QStringLiteral("text"), tr("No dead time found"));
+    } else if (!m_deadTimeNote.isEmpty()) {
+        map.insert(QStringLiteral("text"), m_deadTimeNote);
+    }
+    m_deadTime = std::move(map);
+    // The rows' thumbnails decode from the project as it is now (image://wabcut-frames).
+    if (rangesChanged && count > 0 && m_controller)
+        setPreviewFrameContext(m_controller->snapshot(), m_controller->projectFile());
+    if (rangesChanged)
+        emit deadTimeRangesChanged();
     emit deadTimeChanged();
+    updateDeadTimeBands();
+}
+
+void MomentsBridge::updateDeadTimeBands() {
+    if (!m_controller)
+        return;
+    // The switched-on stretches, on every track (the removal ripples them all), on the sequence they were found on,
+    // while the review is open and they still match it.
+    std::vector<TimelineHighlight> bands;
+    if (m_deadTimeReviewing && !m_deadTimeBusy && m_controller->currentSequenceId().value == m_deadTimeSequence &&
+        !deadTimeStale()) {
+        for (const DeadStretch& s : m_deadStretches) {
+            if (!s.remove)
+                continue;
+            TimelineHighlight band;
+            band.kind = TimelineHighlight::Kind::Removal;
+            band.range = TimeRange::fromStartEnd(s.start, s.end);
+            bands.push_back(std::move(band));
+        }
+    }
+    if (bands.empty() && !m_deadTimeBands)
+        return;
+    m_deadTimeBands = !bands.empty();
+    m_controller->setTimelineHighlights(QStringLiteral("deadTime"), std::move(bands));
+}
+
+QVariantList MomentsBridge::deadTimeRanges() const {
+    QVariantList out;
+    const QLocale locale;
+    const ProjectSnapshot snap = m_controller ? m_controller->snapshot() : nullptr;
+    const Sequence* seq = snap ? snap->findSequence(SequenceId{m_deadTimeSequence}) : nullptr;
+    for (std::size_t i = 0; i < m_deadStretches.size(); ++i) {
+        const DeadStretch& s = m_deadStretches[i];
+        const double seconds = (s.end - s.start).toSeconds();
+        // The frame at the stretch's middle (on a frame of the sequence).
+        QString thumbnail;
+        if (seq) {
+            const Ticks middle = snapToFrame(s.start + Ticks{(s.end - s.start).value / 2}, seq->frameRate);
+            thumbnail = frameUrlAt(*snap, *seq, middle);
+        }
+        out << QVariantMap{{QStringLiteral("index"), static_cast<int>(i)},
+                           {QStringLiteral("start"), s.start.toSeconds()},
+                           {QStringLiteral("end"), s.end.toSeconds()},
+                           {QStringLiteral("startText"), m_controller ? m_controller->formatTimecode(s.start) : QString()},
+                           {QStringLiteral("lengthText"), tr("%1 s").arg(locale.toString(seconds, 'f', 1))},
+                           {QStringLiteral("seconds"), seconds},
+                           {QStringLiteral("remove"), s.remove},
+                           {QStringLiteral("thumbnail"), thumbnail}};
+    }
+    return out;
+}
+
+std::array<double, 4> MomentsBridge::deadTimeOptionValues() const {
+    return {m_deadTimeSensitivity, m_deadTimeMinSeconds, m_deadTimeHandleSeconds, m_deadTimeInOut ? 1.0 : 0.0};
+}
+
+QVariantMap MomentsBridge::deadTimeOptions() const {
+    return {{QStringLiteral("sensitivity"), m_deadTimeSensitivity},
+            {QStringLiteral("minSeconds"), m_deadTimeMinSeconds},
+            {QStringLiteral("handleSeconds"), m_deadTimeHandleSeconds},
+            {QStringLiteral("inOut"), m_deadTimeInOut}};
+}
+
+void MomentsBridge::setDeadTimeOption(const QString& name, const QVariant& value) {
+    QSettings settings;
+    if (name == QLatin1String("inOut")) {
+        if (value.toBool() == m_deadTimeInOut)
+            return;
+        m_deadTimeInOut = value.toBool();
+        settings.setValue(QStringLiteral("moments/deadTimeInOut"), m_deadTimeInOut);
+    } else {
+        double* field = name == QLatin1String("sensitivity")     ? &m_deadTimeSensitivity
+                        : name == QLatin1String("minSeconds")    ? &m_deadTimeMinSeconds
+                        : name == QLatin1String("handleSeconds") ? &m_deadTimeHandleSeconds
+                                                                 : nullptr;
+        if (!field)
+            return;
+        const QByteArray key = name.toLatin1();
+        const double clamped = deadTimeOptionValue(std::string_view(key.constData(), static_cast<std::size_t>(key.size())), value);
+        if (clamped == *field)
+            return;
+        *field = clamped;
+        settings.setValue(QStringLiteral("moments/deadTime") + name.left(1).toUpper() + name.mid(1), clamped);
+    }
+    emit deadTimeOptionsChanged();
+    // A list from other options says so (optionsChanged); nothing is measured again until Find.
+    if (m_deadTimeFoundWith && (!m_deadStretches.empty() || m_deadTimeSearched))
+        refreshDeadTime(false);
+}
+
+void MomentsBridge::setDeadTimeReviewing(bool reviewing) {
+    if (reviewing == m_deadTimeReviewing)
+        return;
+    m_deadTimeReviewing = reviewing;
+    emit deadTimeReviewingChanged();
+    updateDeadTimeBands();
+}
+
+void MomentsBridge::setDeadTimeCurrent(int index) {
+    const int count = static_cast<int>(m_deadStretches.size());
+    const int clamped = count == 0 ? -1 : std::clamp(index, -1, count - 1);
+    if (clamped == m_deadTimeCurrent)
+        return;
+    m_deadTimeCurrent = clamped;
+    emit deadTimeCurrentChanged();
+}
+
+void MomentsBridge::setDeadTimeRemove(int index, bool remove) {
+    if (index < 0 || index >= static_cast<int>(m_deadStretches.size()))
+        return;
+    DeadStretch& s = m_deadStretches[static_cast<std::size_t>(index)];
+    if (s.remove == remove)
+        return;
+    s.remove = remove;
+    refreshDeadTime(true);
+}
+
+void MomentsBridge::setAllDeadTimeRemove(bool remove) {
+    bool changed = false;
+    for (DeadStretch& s : m_deadStretches) {
+        changed = changed || s.remove != remove;
+        s.remove = remove;
+    }
+    if (changed)
+        refreshDeadTime(true);
+}
+
+void MomentsBridge::jumpToDeadTime(int index) {
+    if (index < 0 || index >= static_cast<int>(m_deadStretches.size()))
+        return;
+    setDeadTimeCurrent(index);
+    if (!m_controller || m_controller->currentSequenceId().value != m_deadTimeSequence)
+        return;
+    m_controller->setPlayhead(m_deadStretches[static_cast<std::size_t>(index)].start);
+    emit revealRequested();
+}
+
+bool MomentsBridge::reviewDeadTime(const QString& action) {
+    const int count = static_cast<int>(m_deadStretches.size());
+    if (count == 0)
+        return false;
+    const int at = m_deadTimeCurrent;
+    if (action == QLatin1String("next")) {
+        jumpToDeadTime(at < 0 ? 0 : std::min(at + 1, count - 1));
+        return true;
+    }
+    if (action == QLatin1String("previous")) {
+        jumpToDeadTime(at < 0 ? 0 : std::max(at - 1, 0));
+        return true;
+    }
+    if (action == QLatin1String("first") || action == QLatin1String("last")) {
+        jumpToDeadTime(action == QLatin1String("first") ? 0 : count - 1);
+        return true;
+    }
+    const int row = at < 0 ? 0 : at;
+    if (action == QLatin1String("toggle")) {
+        setDeadTimeRemove(row, !m_deadStretches[static_cast<std::size_t>(row)].remove);
+        setDeadTimeCurrent(row);
+        return true;
+    }
+    if (action == QLatin1String("keep") || action == QLatin1String("remove")) {
+        // Set it, then on to the next stretch (the playhead goes there): the review moves at the pace of the keys.
+        setDeadTimeRemove(row, action == QLatin1String("remove"));
+        if (row + 1 < count)
+            jumpToDeadTime(row + 1);
+        else
+            setDeadTimeCurrent(row);
+        return true;
+    }
+    return false;
+}
+
+void MomentsBridge::openDeadTimeReview() {
+    setDeadTimeReviewing(true);
+    emit deadTimeReviewRequested();
 }
 
 bool MomentsBridge::runCommand(const QString& commandId) {

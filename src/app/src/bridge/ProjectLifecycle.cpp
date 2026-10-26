@@ -1797,6 +1797,7 @@ QVariantMap ProjectLifecycle::importFiles(const QList<QUrl>& files, const QVaria
     int existing = 0;
     int unreadable = 0;
     int binsMade = 0;
+    int chapterMarkers = 0; // P0 round: clip markers made from the recordings' chapters
     if (!media.isEmpty()) {
         std::vector<std::filesystem::path> paths;
         for (const QUrl& url : media) {
@@ -1809,7 +1810,8 @@ QVariantMap ProjectLifecycle::importFiles(const QList<QUrl>& files, const QVaria
                                       .scaling = EditingBridge::defaultMediaScalingSetting(),
                                       .stillDuration = EditingBridge::stillDurationSetting(), // P.2
                                       .binPaths = mediaBins,
-                                      .undoLabel = folderNames.isEmpty() ? std::string() : std::string("Import Folder")});
+                                      .undoLabel = folderNames.isEmpty() ? std::string() : std::string("Import Folder"),
+                                      .readChapters = EditingBridge::chapterMarkersSetting()}); // P0 round
         m_importedMedia.clear();
         for (std::size_t i = 0; i < result.byFile.size(); ++i) {
             // Fix round 1: the files given themselves; a folder's files go into its bins (a folder dropped on the
@@ -1823,6 +1825,7 @@ QVariantMap ProjectLifecycle::importFiles(const QList<QUrl>& files, const QVaria
         existing = static_cast<int>(result.alreadyInProject.size());
         unreadable = static_cast<int>(result.failed.size());
         binsMade = static_cast<int>(result.createdBins.size());
+        chapterMarkers = static_cast<int>(result.chapterMarkers);
         for (const editor::FailedImport& f : result.failed) {
             failed.append(QVariantMap{{QStringLiteral("name"), toQString(f.file.filename())},
                                       {QStringLiteral("error"), QString::fromStdString(f.error.message)}});
@@ -1934,6 +1937,13 @@ QVariantMap ProjectLifecycle::importFiles(const QList<QUrl>& files, const QVaria
     summary.insert(QStringLiteral("bins"), binsMade);
     summary.insert(QStringLiteral("skipped"), skipped);
     summary.insert(QStringLiteral("truncated"), truncated);
+    // P0 round: the recordings' chapter markers that became clip markers, and the toast sentence that says so (part of
+    // the folder summary for Import Folder).
+    summary.insert(QStringLiteral("chapterMarkers"), chapterMarkers);
+    const QString chapterSummary = chapterMarkers <= 0 ? QString()
+                                 : chapterMarkers == 1 ? tr("1 chapter marker became a clip marker.")
+                                                       : tr("%1 chapter markers became clip markers.").arg(chapterMarkers);
+    summary.insert(QStringLiteral("chapterSummary"), chapterSummary);
     QString folderSummary;
     if (!folderNames.isEmpty()) {
         // Whole English words (no "file(s)"): the toast is read at a glance.
@@ -1970,6 +1980,8 @@ QVariantMap ProjectLifecycle::importFiles(const QList<QUrl>& files, const QVaria
             sentences << tr("Folders more than %1 levels deep were left out.").arg(editor::FolderImportLimits{}.maxDepth);
         if (truncated)
             sentences << tr("Only the first %1 files were looked at.").arg(editor::FolderImportLimits{}.maxFiles);
+        if (!chapterSummary.isEmpty())
+            sentences << chapterSummary;
         folderSummary = sentences.join(QLatin1Char(' '));
     }
     summary.insert(QStringLiteral("folderSummary"), folderSummary);

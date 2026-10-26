@@ -184,6 +184,7 @@
     {"scope": "application", "command": "transport.playInToOut", "keys": ["Opt+K"], "source": "adobe-2024"},
     {"scope": "application", "command": "transport.playFromPlayheadToOut", "keys": ["Ctrl+Space"], "source": "premiere-kys"},
     {"scope": "application", "command": "transport.playAround", "keys": ["Shift+K"], "source": "adobe-2024"},
+    {"scope": "application", "command": "transport.toggleAudioScrubbing", "keys": ["Shift+S"], "source": "premiere-kys"},
     {"scope": "audioMixer", "command": "audioMixer.showHideTracks", "keys": ["Opt+Cmd+T"], "source": "adobe-2026"},
     {"scope": "audioMixer", "command": "audioMixer.loop", "keys": ["Cmd+L"], "source": "adobe-2026"},
     {"scope": "audioMixer", "command": "audioMixer.meterInputsOnly", "keys": ["Ctrl+Shift+I"], "source": "adobe-2026"},

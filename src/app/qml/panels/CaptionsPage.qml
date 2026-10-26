@@ -12,6 +12,8 @@ import QtQuick.Dialogs
 // undo step.
 // 0.4: Shift Captions… (the track menu) opens a row under the track: an offset (-12 frames, +00:00:00:12, -1:12) moves
 // all the shown track's captions, or those from the playhead on, in one undo step (captions.shiftCues).
+// 0.5: the cue selected on the timeline's caption lanes is outlined and scrolled to; a double-click there opens its text
+// (editCue).
 Item {
     id: root
     objectName: "captionsPage"
@@ -39,6 +41,53 @@ Item {
         // The next try starts from the keyboard (a click on Shift took the focus).
         shiftField.forceActiveFocus()
         shiftField.selectAll()
+    }
+    /// 0.5: the timeline's caption lane asks for cue `index`: the list shows it and (`edit`: a double-click, the cue
+    /// menu's Edit Text) its text takes the keyboard for typing.
+    /// Fix round 1 (QA #15): the page may only just have been loaded or revealed (its panel opened, the Captions tab
+    /// chosen), its list not laid out yet; the request then waits for the list to have a size and the cue, a frame at a
+    /// time (a second at most).
+    property int pendingCue: -1
+    property bool pendingEdit: false
+    property int pendingTries: 0
+    function showCue(index: int, edit: bool) {
+        if (index < 0 || index >= Captions.cues.length)
+            return
+        pendingCue = index
+        pendingEdit = edit
+        pendingTries = 0
+        revealCue()
+    }
+    function revealCue() {
+        const index = pendingCue
+        if (index < 0)
+            return
+        if (index >= Captions.cues.length) { // the cues changed meanwhile
+            pendingCue = -1
+            return
+        }
+        const ready = cues.visible && cues.width > 0 && cues.height > 0 && cues.count > index
+        if (ready) {
+            cues.forceLayout()
+            cues.positionViewAtIndex(index, ListView.Contain)
+        }
+        const row = cues.itemAtIndex(index) as CaptionCueRow
+        if (!ready || !row) {
+            pendingTries += 1
+            if (pendingTries <= 60)
+                revealTimer.restart()
+            else
+                pendingCue = -1
+            return
+        }
+        pendingCue = -1
+        if (pendingEdit)
+            row.editText()
+    }
+    Timer {
+        id: revealTimer
+        interval: 16
+        onTriggered: root.revealCue()
     }
     onHasTrackChanged: {
         if (!hasTrack)
@@ -350,7 +399,8 @@ Item {
             boundsBehavior: Flickable.StopAtBounds
             activeFocusOnTab: false
             ScrollBar.vertical: ThinScrollBar {}
-            currentIndex: Captions.activeCue
+            // 0.5: the cue selected on the timeline, else the one under the playhead.
+            currentIndex: Captions.selectedCue >= 0 ? Captions.selectedCue : Captions.activeCue
             highlightFollowsCurrentItem: false
             onCurrentIndexChanged: {
                 if (currentIndex >= 0)

@@ -1,0 +1,39 @@
+# CPACK_PRE_BUILD_SCRIPTS and CPACK_POST_BUILD_SCRIPTS (generated from cmake/packaging/SignPackage.cmake.in by
+# WabcutPackaging.cmake): Authenticode signing of the Windows packages (docs/release.md, "Code signing"), run by cpack.
+#
+# Only when the environment asks for it - WABCUT_SIGN_RELEASE=1, which the release workflow sets when a certificate or
+# Azure Trusted Signing is configured - so local and pull-request builds package unsigned exactly as before. Before
+# packaging (pre-build) it signs every .exe and .dll of the staged install tree, so the portable ZIP and the MSI both
+# carry signed programs; after packaging (post-build, CPACK_PACKAGE_FILES) it signs the MSI itself. The signing is
+# tools/sign-release.ps1's (-Require: a configured signing that fails stops the package).
+
+if(NOT "$ENV{WABCUT_SIGN_RELEASE}" STREQUAL "1")
+    return()
+endif()
+
+find_program(wabcut_sign_pwsh NAMES pwsh powershell REQUIRED)
+set(wabcut_sign_script "@WABCUT_SIGN_SCRIPT@")
+
+set(wabcut_sign_targets "")
+if(DEFINED CPACK_PACKAGE_FILES)
+    foreach(wabcut_package IN LISTS CPACK_PACKAGE_FILES)
+        if(wabcut_package MATCHES "\\.msi$")
+            list(APPEND wabcut_sign_targets "${wabcut_package}")
+        endif()
+    endforeach()
+elseif(DEFINED CPACK_TEMPORARY_INSTALL_DIRECTORY AND IS_DIRECTORY "${CPACK_TEMPORARY_INSTALL_DIRECTORY}")
+    list(APPEND wabcut_sign_targets "${CPACK_TEMPORARY_INSTALL_DIRECTORY}")
+elseif(DEFINED CPACK_TEMPORARY_DIRECTORY AND IS_DIRECTORY "${CPACK_TEMPORARY_DIRECTORY}")
+    list(APPEND wabcut_sign_targets "${CPACK_TEMPORARY_DIRECTORY}")
+endif()
+
+foreach(wabcut_target IN LISTS wabcut_sign_targets)
+    message(STATUS "Wabcut: signing ${wabcut_target}")
+    execute_process(
+        COMMAND "${wabcut_sign_pwsh}" -NoProfile -ExecutionPolicy Bypass -File "${wabcut_sign_script}"
+                -Require -Path "${wabcut_target}"
+        RESULT_VARIABLE wabcut_sign_result)
+    if(NOT wabcut_sign_result EQUAL 0)
+        message(FATAL_ERROR "Wabcut: signing ${wabcut_target} failed (${wabcut_sign_result})")
+    endif()
+endforeach()

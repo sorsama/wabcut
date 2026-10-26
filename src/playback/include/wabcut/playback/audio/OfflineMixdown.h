@@ -62,6 +62,10 @@ public:
 
     /// Fills `interleaved` with the next interleaved.size() / channels frames.
     void render(std::span<float> interleaved);
+    /// 0.5: goes on from `start` as a mixdown made there would (the master and the submix paths restart and prime there,
+    /// every track renderer restarts with its pre-roll), keeping its processors: audio scrubbing renders many short
+    /// windows of one sequence revision without building the effect chains again.
+    void seek(Ticks start);
 
     const TrackRenderStats& stats() const noexcept;
     std::uint64_t feedErrors() const noexcept { return stats().feedErrors; }

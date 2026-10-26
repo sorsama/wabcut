@@ -442,6 +442,9 @@ signals:
     void statsChanged();
     void subclipSourceChanged();
     void messageChanged();
+    /// P0 round (fix round 1): a passing note for a toast that is not a result or problem (`message` stays as it
+    /// was): "4 chapter markers became clip markers." after a Media Browser import.
+    void notice(const QString& text);
     void freeformChanged();
     void freeformLinesChanged();
     /// QML: start an inline rename of `key` (after New Bin).

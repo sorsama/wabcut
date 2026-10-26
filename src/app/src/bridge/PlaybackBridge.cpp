@@ -36,6 +36,7 @@ constexpr int kTickMs = 33;          // playhead follow + transport state
 constexpr qint64 kStatsPeriodMs = 500;
 constexpr std::int32_t kMaxLadder = 8;
 constexpr const char* kProgramLoopKey = "monitor/programLoop"; // P.2: the Program Monitor's Loop button
+constexpr const char* kAudioScrubbingKey = "timeline/audioScrubbing"; // 0.5: Play audio while scrubbing
 
 editor::PlaybackSessionOptions sessionOptions() {
     editor::PlaybackSessionOptions options;
@@ -89,6 +90,7 @@ PlaybackBridge::PlaybackBridge(ProjectController* controller, QObject* parent)
     m_statsClock.start();
     // P.2: Loop follows the marks and the sequence's length.
     m_loop = QSettings().value(QLatin1String(kProgramLoopKey), false).toBool();
+    m_audioScrubbing = QSettings().value(QLatin1String(kAudioScrubbingKey), true).toBool(); // 0.5: on, as in Premiere
     connect(controller, &ProjectController::marksChanged, this, [this] { applyLoop(); });
     connect(controller, &ProjectController::revisionChanged, this, [this] {
         if (m_loop)
@@ -471,8 +473,74 @@ void PlaybackBridge::onPlayheadChanged() {
         }
         m_session->seek(t);
     } else {
+        const Ticks before = m_session->position(); // the frame shown so far (the last scrub's target)
         m_session->scrub(t); // ruler scrub, arrows, Home/End: show that frame
+        // 0.5: a drag in the ruler or the time bar, or a frame step, plays a little of the mix there too; a drag back
+        // plays it backwards, a step forward.
+        if (m_stepping) {
+            scrubAudioAt(t, 1);
+        } else if (m_scrubGestures > 0) {
+            scrubAudioAt(t, m_scrubMoving && t < before ? -1 : 1); // a click plays forward, a drag back backwards
+        }
     }
+}
+
+// ---- Audio scrubbing (0.5) --------------------------------------------------------------------------
+
+void PlaybackBridge::setAudioScrubbing(bool on) {
+    if (on == m_audioScrubbing) {
+        return;
+    }
+    m_audioScrubbing = on;
+    QSettings().setValue(QLatin1String(kAudioScrubbingKey), on);
+    emit audioScrubbingChanged();
+}
+
+void PlaybackBridge::beginScrub() {
+    ++m_scrubGestures;
+    m_scrubMoving = false;
+}
+
+void PlaybackBridge::scrubMoving() {
+    m_scrubMoving = m_scrubGestures > 0;
+}
+
+void PlaybackBridge::endScrub() {
+    m_scrubGestures = std::max(0, m_scrubGestures - 1);
+}
+
+void PlaybackBridge::beginStep() {
+    m_stepping = true;
+}
+
+void PlaybackBridge::endStep() {
+    m_stepping = false;
+}
+
+void PlaybackBridge::scrubAudioAt(Ticks at, int direction) {
+    if (!m_audioScrubbing || !m_session || m_sourceVideo || m_session->isPlaying()) {
+        return;
+    }
+    if (!m_audioScrubSink) {
+        startAudio(); // the device opens on the first need, as on the first play (nothing audible: it stays closed)
+    }
+    requestAudioScrub(m_session.get(), at, direction);
+}
+
+bool PlaybackBridge::requestAudioScrub(editor::PlaybackSession* session, Ticks at, int direction) {
+    if (!m_audioScrubbing || !session || session->isPlaying()) {
+        return false;
+    }
+    // Never blocks: the session's scrubber renders the window on its worker.
+    const bool asked = m_audioScrubSink ? m_audioScrubSink(session, at, direction) : session->scrubAudio(at, direction);
+    if (!asked) {
+        return false;
+    }
+    ++m_audioScrubRequests;
+    m_lastAudioScrub = at;
+    m_lastAudioScrubDirection = direction < 0 ? -1 : 1;
+    emit audioScrubbed();
+    return true;
 }
 
 SequenceId PlaybackBridge::playableSequence() const {
@@ -686,7 +754,9 @@ void PlaybackBridge::stepFrames(int frames) {
     m_returnTo.reset(); // 0.4: a step during Play Around stops it where it is
     m_session->pause();
     tick();
+    m_stepping = true; // 0.5: the step is heard (audio scrubbing)
     m_controller->stepFrames(frames); // the playhead moves; onPlayheadChanged scrubs to it
+    m_stepping = false;
 }
 
 // ---- Play once: Play Around, Play from Playhead to Out (0.4) -----------------------------------------

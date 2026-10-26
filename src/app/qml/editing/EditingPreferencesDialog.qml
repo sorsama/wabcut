@@ -5,6 +5,7 @@ import QtQuick.Layouts
 // Preferences (P.2, E5): Premiere's Preferences > Media and > Timeline pages that decide how edits come out.
 //   * Media: Default Media Scaling - how media imported from now on is sized in sequences of another frame size (None,
 //     Scale to frame size, Set to frame size, Set to fill frame). Items already imported keep theirs, as in Premiere.
+//     P0 round: whether a recording's chapter markers (OBS's Add Chapter Marker hotkey) become clip markers on import.
 //   * Timeline: the Still Image Default Duration (for stills imported from now on) and the Video and Audio Transition
 //     Default Durations (Ctrl+D, Ctrl+Shift+D, Shift+D).
 // Saved at once (Editing bridge, QSettings). Opened from the File menu and Edit > Preferences (the palette, keys).
@@ -76,6 +77,19 @@ WabcutDialog {
         }
         Note {
             text: qsTr("How media you import from now on is sized when it goes into a sequence of another frame size. Scale to frame size fits the picture and keeps Motion > Scale at 100 %; Set to frame size and Set to fill frame set Motion > Scale so the picture fits or fills the frame. Media already imported keeps its setting; change single clips with Video Options in the clip menu.")
+        }
+        // P0 round: OBS's "Add Chapter Marker" hotkey marks become clip markers on import.
+        Toggle {
+            objectName: "chapterMarkersToggle"
+            text: qsTr("Chapter markers in recordings become clip markers")
+            checked: Editing.chapterMarkersOnImport
+            onToggled: {
+                Editing.chapterMarkersOnImport = checked
+                checked = Qt.binding(() => Editing.chapterMarkersOnImport)
+            }
+        }
+        Note {
+            text: qsTr("Marks you set while recording (OBS Studio's Add Chapter Marker hotkey, or chapters other apps write into MP4 and MKV files) show as cyan clip markers on the media you import from now on, named after the chapter. Media already imported keeps its markers.")
         }
         // 0.2 (P.3): Premiere's Enable Project Locking (projects in a production are always locked).
         Toggle {

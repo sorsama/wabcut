@@ -173,6 +173,11 @@ QtObject {
     // ---- Semantic ----
     readonly property color success: custom("success", dark ? "#3EE6B8" : "#0B7A5C")
     readonly property color warning: custom("warning", "#FBBF24")
+    // Warning TEXT (a note, a stale-results line): the amber itself is 1.5:1 on light panels, so light themes darken it
+    // (>= 4.5:1 on panel, raised and canvas). Bars, icons and fills keep `warning`.
+    readonly property color warningText: dark ? warning : "#8A5A00"
+    // Error TEXT, the same way: the rose is 3.2:1 on light panels; light themes use a deeper one (>= 4.5:1).
+    readonly property color dangerText: dark ? danger : "#BE123C"
     readonly property color danger:  custom("danger", "#F43F5E")
     readonly property color info:    custom("info", dark ? "#4D8DFF" : "#1F5FD6")
     // Slider knobs and toggle thumbs: white in every theme (light themes add a hairline round them).
@@ -309,6 +314,10 @@ QtObject {
     readonly property int trackHeaderWidth: 204   // source patching column + target chip + toggles (M5h)
     readonly property int trackHeightVideo: compact ? 32 : 40
     readonly property int trackHeightAudio: compact ? 36 : 44
+    // 0.5: caption tracks as lanes above the video tracks: a compact row, the cues a light neutral that carries clipInk
+    // at >= 4.5:1 and reads on the lanes of both themes (like the label colours, it does not follow the theme).
+    readonly property int trackHeightCaption: compact ? 26 : 28
+    readonly property color captionCue: "#BFB6D9"
     readonly property int trackGap: 2
     readonly property int rulerHeight: 26
     readonly property int minimapHeight: 18

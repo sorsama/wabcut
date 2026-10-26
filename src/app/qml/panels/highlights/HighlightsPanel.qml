@@ -14,7 +14,8 @@ import QtQuick.Layouts
 // length). 0.4: Make Shorts (N) makes a Short of every accepted moment (else of every moment not rejected) as one job
 // and one undo step and stays on this sequence (Cancel keeps the Shorts made so far); Export all (N) then queues them
 // at 1080x1920 (H.264, or HEVC with its toggle). Keyboard: Tab to the list, Up / Down between cards, A accept, R reject,
-// Enter jump, Space preview.
+// Enter jump, Space preview. 0.5: the scissors button (and the Moments popover's Find dead time) opens Remove dead time's
+// review over the panel (DeadTimeReview.qml); its × brings the moments back.
 Panel {
     id: root
     objectName: "highlightsPanel"
@@ -22,6 +23,10 @@ Panel {
     title: qsTr("Highlights")
 
     function focusContent() {
+        if (Moments.deadTimeReviewing) {
+            deadTimeSheet.focusContent()
+            return
+        }
         if (list.count > 0)
             list.forceActiveFocus(Qt.TabFocusReason)
         else
@@ -81,10 +86,19 @@ Panel {
         wrapMode: Text.Wrap
     }
 
+    // 0.5: Remove dead time's review, a sheet over the panel while Moments.deadTimeReviewing (DeadTimeReview.qml).
+    DeadTimeReview {
+        id: deadTimeSheet
+        anchors.fill: parent
+        visible: Moments.deadTimeReviewing
+        z: 1
+    }
+
     ColumnLayout {
         anchors.fill: parent
         spacing: Theme.space(2)
         clip: true
+        visible: !Moments.deadTimeReviewing
 
         // ---- Find ----
         RowLayout {
@@ -123,6 +137,15 @@ Panel {
                     x: optionsButton.width - width
                     y: optionsButton.height + Theme.space(2)
                 }
+            }
+            // 0.5: Remove dead time's review (the sheet above).
+            IconButton {
+                objectName: "highlightsDeadTimeButton"
+                visible: Moments.gamingEdits.deadTime === true
+                compact: true
+                iconName: "scissors"
+                tooltip: qsTr("Remove dead time: review the quiet stretches before cutting them")
+                onClicked: Moments.openDeadTimeReview()
             }
         }
 

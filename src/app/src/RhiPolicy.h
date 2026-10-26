@@ -69,6 +69,13 @@ using VulkanProbe = bool (*)();
 // actually requested.
 RhiBackend applyRhiBackend(const RhiChoice& choice, VulkanProbe probe = &probeVulkanDevice);
 
+// Issue #10: puts the preview on media::previewGpu()'s adapter (Settings > Graphics card, else the Windows Graphics
+// setting for Wabcut, else the high-performance GPU) before any window exists. D3D11 and D3D12 take it through
+// QT_D3D_ADAPTER_INDEX, which every QRhi of the process reads (the offscreen renderer and the decoders' device follow the
+// same adapter); a QT_D3D_ADAPTER_INDEX set before start is kept (previewGpu() reports it as the override). Vulkan,
+// OpenGL and Metal pick their device themselves. Returns the index it set, or -1.
+int applyPreviewAdapter(RhiBackend backend);
+
 // "D3D11", "D3D12", "Vulkan", "OpenGL", "Metal", "Software" (or "Unknown").
 QString graphicsApiDisplayName(QSGRendererInterface::GraphicsApi api);
 

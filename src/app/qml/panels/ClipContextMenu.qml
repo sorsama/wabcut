@@ -14,6 +14,7 @@ import QtQuick
 // clip.revealInProject, no default key) and Reveal in File Explorer / Finder (its media file), after Rename...
 // 0.4 (stream A): Clear (Delete: the selected clips go and leave gaps) before Ripple Delete, and Audio Gain… (G) at the
 // top of the audio tools on clips with sound; its dialog opens once the menu has closed (pendingCommand).
+// 0.5 (stream C): Scene Edit Detection… after Speed/Duration… (SceneDetect; greyed out with the reason without video).
 ContextMenu {
     id: clipMenu
     objectName: "clipContextMenu"
@@ -39,6 +40,8 @@ ContextMenu {
     /// Editing.revealInfo: { item, name, inProject, inExplorer, offline }.
     property var revealInfo: ({})
     property var selection: []
+    /// 0.5: SceneDetect.availability(): { enabled, reason, note } for Scene Edit Detection….
+    property var sceneInfo: ({})
 
     function openAt(target, id, point) {
         clipId = id
@@ -47,6 +50,7 @@ ContextMenu {
         audioInfo = ClipAudio.clipInfo(id)
         revealInfo = Editing.revealInfo(id)
         selection = ClipAudio.selectedClips()
+        sceneInfo = SceneDetect.availability()
         showChannels()
         showTakes()
         momentsMenu.refresh()
@@ -230,6 +234,18 @@ ContextMenu {
         iconName: "gauge"
         command: "clip.speedDuration"
         onTriggered: KeymapDispatcher.trigger("clip.speedDuration") // Main.qml opens the dialog
+    }
+    // 0.5 (stream C): Premiere's Scene Edit Detection… on the selected video clips; its dialog opens once the menu has
+    // closed. Without a video clip it is greyed out and says why.
+    ContextMenuItem {
+        objectName: "sceneEditDetectionMenuItem"
+        text: clipMenu.sceneInfo.enabled === true || (clipMenu.sceneInfo.note ?? "") === ""
+              ? qsTr("Scene Edit Detection…") : qsTr("Scene Edit Detection… (%1)").arg(clipMenu.sceneInfo.note)
+        iconName: "clapperboard"
+        command: "clip.sceneEditDetection"
+        enabled: clipMenu.sceneInfo.enabled === true
+        Accessible.description: clipMenu.sceneInfo.reason ?? ""
+        onTriggered: clipMenu.pendingCommand = "clip.sceneEditDetection"
     }
     // P.2 (E5): Premiere's Clip > Video Options (frame holds, Scale to Frame Size, Set to Frame Size / Fill Frame),
     // Replace With Clip and Join Through Edits (on a clip at a through edit).

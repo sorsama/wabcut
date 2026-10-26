@@ -3,7 +3,9 @@
 #include <wabcut/editor/CameraCards.h>
 #include <wabcut/interchange/CaptionFiles.h>
 #include <wabcut/interchange/Xmp.h>
+#include <wabcut/media/Chapters.h>
 #include <wabcut/media/Probe.h>
+#include <wabcut/model/EditOps.h>
 #include <wabcut/model/ImageSequence.h>
 #include <wabcut/model/MediaLocator.h>
 #include <wabcut/model/ProjectIO.h>
@@ -329,10 +331,64 @@ std::expected<MediaItem, Error> describeMediaFile(const std::filesystem::path& f
     return item;
 }
 
+std::vector<Marker> chapterMarkers(const std::vector<media::MediaChapter>& chapters, std::optional<Ticks> extent) {
+    // A lone chapter at 00:00 is the whole file (muxers write one), not a mark the user set.
+    constexpr Ticks kStartSlack{kTicksPerSecond / 10};
+    std::vector<const media::MediaChapter*> sorted;
+    sorted.reserve(chapters.size());
+    for (const media::MediaChapter& c : chapters) {
+        if (c.start.value >= 0 && (!extent || c.start < *extent)) {
+            sorted.push_back(&c);
+        }
+    }
+    if (sorted.size() == 1 && sorted.front()->start < kStartSlack) {
+        return {};
+    }
+    std::stable_sort(sorted.begin(), sorted.end(),
+                     [](const media::MediaChapter* a, const media::MediaChapter* b) { return a->start < b->start; });
+    std::vector<Marker> out;
+    std::vector<bool> titled;
+    for (std::size_t i = 0; i < sorted.size() && out.size() < kMaxChapterMarkers; ++i) {
+        const media::MediaChapter& c = *sorted[i];
+        if (!out.empty() && out.back().start == c.start) {
+            // The same moment twice (an MP4 with both a Nero and a QuickTime chapter list): a title wins.
+            if (!titled.back() && !c.title.empty()) {
+                out.back().name = c.title;
+                titled.back() = true;
+            }
+            continue;
+        }
+        Marker m;
+        m.start = c.start;
+        m.type = MarkerType::Comment;
+        m.colorIndex = kChapterMarkerColor;
+        m.name = c.title.empty() ? "OBS marker " + std::to_string(out.size() + 1) : c.title;
+        out.push_back(std::move(m));
+        titled.push_back(!c.title.empty());
+    }
+    return out;
+}
+
+std::size_t addChapterMarkers(MediaItem& item) {
+    if (item.isGenerator() || item.info.isStillImage) {
+        return 0;
+    }
+    auto chapters = media::readChapters(item.locator.path); // NotFound for a spanned clip's or a sequence's path
+    if (!chapters || chapters->empty()) {
+        return 0;
+    }
+    std::vector<Marker> marks = chapterMarkers(*chapters, edit::sourceMarkExtent(item));
+    const std::size_t added = marks.size();
+    item.markers.insert(item.markers.end(), std::make_move_iterator(marks.begin()), std::make_move_iterator(marks.end()));
+    std::stable_sort(item.markers.begin(), item.markers.end(), [](const Marker& a, const Marker& b) { return a.start < b.start; });
+    return added;
+}
+
 MediaImportResult importMediaFiles(EditSession& session, std::span<const std::filesystem::path> files,
                                    const MediaImportOptions& options) {
     // Probe in parallel (headers only; the files may sit on a slow disk), commit once on this thread.
     std::vector<std::optional<std::expected<MediaItem, Error>>> probed(files.size());
+    std::vector<std::size_t> chapterCounts(files.size(), 0); // P0 round: markers made from each file's chapters
     const int threads = std::clamp(options.threads > 0 ? options.threads : 4, 1,
                                    std::max(1, static_cast<int>(files.size())));
     std::atomic<std::size_t> next{0};
@@ -346,6 +402,10 @@ MediaImportResult importMediaFiles(EditSession& session, std::span<const std::fi
                 if (auto packet = interchange::readMediaXmp(files[i], read); packet && *packet) {
                     interchange::applyXmpClipFields(**probed[i], interchange::clipFieldsFromXmp((*packet)->properties), false);
                 }
+            }
+            // P0 round: the recording's chapters (OBS "Add Chapter Marker") as clip markers of the new item.
+            if (options.readChapters && *probed[i]) {
+                chapterCounts[i] = addChapterMarkers(**probed[i]);
             }
         }
     };
@@ -467,6 +527,9 @@ MediaImportResult importMediaFiles(EditSession& session, std::span<const std::fi
     }
     result.added = std::move(ids);
     result.createdBins = std::move(createdBins);
+    for (std::size_t k = 0; k < order.size() && k < result.added.size(); ++k) {
+        result.chapterMarkers += chapterCounts[order[k]];
+    }
     return result;
 }
 

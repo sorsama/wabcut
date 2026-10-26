@@ -584,9 +584,10 @@ TimelineBench runTimelineBench(std::shared_ptr<const app::FilmstripSource> films
     CHECK(first.fullRebuild);
     CHECK(ms(first.updateNs) < 50.0);
     const int tracks = 6;
-    // Node count: 10 fixed + two meshes per track (clips, and what goes over the thumbnails) + one textured node per
-    // track and media atlas + the label text nodes (each with its glyph nodes); labels only for clips in the view.
-    CHECK(first.nodes == 10 + 2 * tracks + first.filmstripNodes + first.labelNodes);
+    // Node count: 12 fixed (0.5: the caption lanes' mesh and label group among them; no caption tracks here) + two
+    // meshes per track (clips, and what goes over the thumbnails) + one textured node per track and media atlas + the
+    // label text nodes (each with its glyph nodes); labels only for clips in the view.
+    CHECK(first.nodes == 12 + 2 * tracks + first.filmstripNodes + first.labelNodes);
     CHECK(first.labels <= first.visibleClips);
     CHECK(first.labelNodes <= 4 * first.labels);
     CHECK(first.builtClips <= 2 * first.visibleClips + 2 * tracks); // view + half a viewport each side
@@ -599,7 +600,7 @@ TimelineBench runTimelineBench(std::shared_ptr<const app::FilmstripSource> films
     INFO("fit-all build: " << ms(r.fit.updateNs) << " ms, built " << r.fit.builtClips << ", nodes " << r.fit.nodes);
     CHECK(r.fit.builtClips == 10'000);
     CHECK(ms(r.fit.updateNs) < 50.0);
-    CHECK(r.fit.nodes == 10 + 2 * tracks + r.fit.filmstripNodes + r.fit.labelNodes);
+    CHECK(r.fit.nodes == 12 + 2 * tracks + r.fit.filmstripNodes + r.fit.labelNodes);
     view->setPixelsPerSecond(48.0);
     harness.frame();
 
@@ -629,7 +630,7 @@ TimelineBench runTimelineBench(std::shared_ptr<const app::FilmstripSource> films
                 const app::TimelineStats& st = view->stats();
                 const double t = ms(st.updateNs);
                 sum += t;
-                CHECK(st.nodes == 10 + 2 * tracks + st.filmstripNodes + st.labelNodes);
+                CHECK(st.nodes == 12 + 2 * tracks + st.filmstripNodes + st.labelNodes);
                 CHECK(st.builtClips <= 2 * st.visibleClips + 2 * tracks);
                 if (t < best[static_cast<std::size_t>(i)]) {
                     best[static_cast<std::size_t>(i)] = t;

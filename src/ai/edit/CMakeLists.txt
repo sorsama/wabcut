@@ -52,6 +52,7 @@ ${_lexicon_entries}    };
 
 add_library(wabcut_ai_edit STATIC
     src/CaptionBuilder.cpp
+    src/MediaTranscript.cpp # P0 round: the source clip transcript
     src/Profanity.cpp
     src/Review.cpp
     src/SequenceTranscript.cpp

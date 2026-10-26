@@ -1,5 +1,6 @@
 #include "PerformanceCheck.h"
 
+#include "GpuBridge.h"
 #include "MediaReadinessBridge.h"
 
 #include <QDateTime>
@@ -217,6 +218,27 @@ QVariantList PerformanceCheck::rows() const {
         graphics = gpus.isEmpty() ? tr("No GPU found") : gpus.join(QStringLiteral(", "));
     }
     rows.push_back(row(QStringLiteral("graphics"), tr("Graphics"), graphics, !r.gpus.empty() || !r.graphics.empty()));
+    // Issue #10: which GPU previews, decodes and exports, and why (Settings > Graphics card, the Windows Graphics setting
+    // for Wabcut, or the high-performance GPU), with the others this computer has.
+    if (!r.gpuName.empty()) {
+        //: %1 is a GPU, %2 why Wabcut uses it ("the high-performance GPU, chosen automatically")
+        QString gpu = tr("%1: %2").arg(qs(r.gpuName), GpuBridge::reasonText(qs(r.gpuReason)));
+        QStringList others;
+        for (const std::string& name : r.gpuNames) {
+            if (name != r.gpuName) {
+                others << qs(name);
+            }
+        }
+        if (!others.isEmpty()) {
+            //: %1 lists the computer's other GPUs
+            gpu += QStringLiteral(" · ") + tr("also here: %1").arg(others.join(QStringLiteral(", ")));
+        }
+        if (!r.previewGpuName.empty()) {
+            //: %1 is the GPU the preview keeps until Wabcut restarts
+            gpu += QStringLiteral(" · ") + tr("the preview uses %1 until Wabcut restarts").arg(qs(r.previewGpuName));
+        }
+        rows.push_back(row(QStringLiteral("gpu"), tr("Graphics card"), gpu, true));
+    }
     rows.push_back(row(QStringLiteral("audio"), tr("Audio output"),
                        r.audioDevice ? qs(r.audioName) : tr("No output device found"), r.audioDevice));
     if (r.cpuThreads > 0) {

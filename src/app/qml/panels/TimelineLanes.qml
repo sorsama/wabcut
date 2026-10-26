@@ -57,6 +57,10 @@ Item {
         showClipSpeed: Preferences.timelineShowClipSpeed
         showFxBadges: Preferences.timelineShowFxBadges
         snapPlayhead: Preferences.snapPlayhead
+        // 0.5: the caption tracks as lanes (Timeline Display > Show caption tracks); a selected cue lives in Captions,
+        // so the Captions page follows it.
+        showCaptionTracks: Preferences.timelineShowCaptionTracks
+        captions: Captions
         trimPoints: Trim.points
         trimType: Trim.type
         onEditPointClicked: (clipId, edge, type, modifiers) => Trim.selectEditPoint(clipId, edge, type, modifiers)
@@ -163,7 +167,11 @@ Item {
             // 0.4: the fx badge after a clip's name: violet with stack effects, amber with changed or keyframed
             // Motion, Opacity, Volume, Pan or time remapping (its ink and hairline are markerInkColor).
             fxChangedColor: Theme.warning,
-            fxEffectsColor: Theme.accentFill
+            fxEffectsColor: Theme.accentFill,
+            // 0.5: caption lanes - compact rows, cues as solid neutral blocks with their first line in clipInk.
+            captionTrackHeight: Theme.trackHeightCaption,
+            captionColor: Theme.captionCue,
+            captionInkColor: Theme.clipInk
         })
     }
 }

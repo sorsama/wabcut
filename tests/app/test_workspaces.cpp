@@ -95,7 +95,7 @@ TEST_CASE("Workspaces: none is built in; the presets lay their panels out", "[ap
     CHECK(showing(effectControls));
     CHECK(shell.item("monitorArea")->property("sourceShown").toBool());
     CHECK(shell.item("monitorArea")->property("dual").toBool());
-    CHECK(groupsText(shell) == QStringLiteral("library source program effectControls timeline"));
+    CHECK(groupsText(shell) == QStringLiteral("library source program effectControls timeline audioMeters"));
     CHECK(shell.window->property("railPanel").toString() == QStringLiteral("library"));
 
     // Audio (its key, Alt+Shift+3): made from the Audio preset on first use; Audio Tools, the mixer (wide), the volume
@@ -182,7 +182,7 @@ TEST_CASE("Workspaces: made from a preset or as a copy, renamed, reordered, rese
         const int copy = evaluateInt(shell, QStringLiteral("Workspaces.create(%1, 'Logging')").arg(edit));
         shell.window->setProperty("workspace", copy);
         spin(100);
-        CHECK(groupsText(shell) == QStringLiteral("library+effectControls source program timeline"));
+        CHECK(groupsText(shell) == QStringLiteral("library+effectControls source program timeline audioMeters"));
         CHECK(evaluate(shell, QStringLiteral("Workspaces.label(%1)").arg(copy)).toString() == QStringLiteral("Logging"));
 
         // Renamed, moved first.
@@ -196,7 +196,7 @@ TEST_CASE("Workspaces: made from a preset or as a copy, renamed, reordered, rese
         // Reset: the preset's layout again.
         evaluate(shell, QStringLiteral("Workspaces.reset(%1)").arg(copy));
         spin(50);
-        CHECK(groupsText(shell) == QStringLiteral("library source program effectControls timeline"));
+        CHECK(groupsText(shell) == QStringLiteral("library source program effectControls timeline audioMeters"));
 
         // Deleting the current workspace goes to the first one; the last one stays.
         evaluate(shell, QStringLiteral("Workspaces.remove(%1)").arg(copy));
@@ -243,7 +243,7 @@ TEST_CASE("Workspaces: the focus keys and the Window menu open panels as tabs wh
     // A focus key (showBrowserPanel): Effects joins the Library's group as a tab and shows; that group is the active one.
     REQUIRE(QMetaObject::invokeMethod(shell.window.get(), "showBrowserPanel", Q_ARG(QVariant, QVariant(QStringLiteral("effects")))));
     spin(100);
-    CHECK(groupsText(shell) == QStringLiteral("library+effects source program effectControls timeline"));
+    CHECK(groupsText(shell) == QStringLiteral("library+effects source program effectControls timeline audioMeters"));
     CHECK(shell.window->property("browserPanel").toString() == QStringLiteral("effects"));
     CHECK(evaluate(shell, QStringLiteral("docking.activeGroup === docking.groupOfPanel('library').group")).toBool());
     CHECK_FALSE(showing(library));
@@ -258,10 +258,10 @@ TEST_CASE("Workspaces: the focus keys and the Window menu open panels as tabs wh
     // its close button closes it.
     REQUIRE(QMetaObject::invokeMethod(shell.window.get(), "showFrameInspector"));
     spin(100);
-    CHECK(groupsText(shell) == QStringLiteral("library+effects source program effectControls+frameInspector timeline"));
+    CHECK(groupsText(shell) == QStringLiteral("library+effects source program effectControls+frameInspector timeline audioMeters"));
     evaluate(shell, QStringLiteral("docking.closePanel('frameInspector')"));
     spin(50);
-    CHECK(groupsText(shell) == QStringLiteral("library+effects source program effectControls timeline"));
+    CHECK(groupsText(shell) == QStringLiteral("library+effects source program effectControls timeline audioMeters"));
 
     // The Window menu lists every panel, checked when it is open; choosing a closed one opens it as a tab of the
     // active group (here the Library's, from the focus key above).
@@ -274,7 +274,7 @@ TEST_CASE("Workspaces: the focus keys and the Window menu open panels as tabs wh
     REQUIRE(QMetaObject::invokeMethod(scopesItem, "triggered"));
     spin(100);
     CHECK(scopesItem->property("checked").toBool());
-    CHECK(groupsText(shell) == QStringLiteral("library+effects+scopes source program effectControls timeline"));
+    CHECK(groupsText(shell) == QStringLiteral("library+effects+scopes source program effectControls timeline audioMeters"));
 
     // The Program Monitor's focus key makes its group the active one: the Window menu's Markers lands there, not with
     // the browser panels where the column rule would put it.
@@ -285,7 +285,7 @@ TEST_CASE("Workspaces: the focus keys and the Window menu open panels as tabs wh
     REQUIRE(markersItem != nullptr);
     REQUIRE(QMetaObject::invokeMethod(markersItem, "triggered"));
     spin(100);
-    CHECK(groupsText(shell) == QStringLiteral("library+effects+scopes source program+markers effectControls timeline"));
+    CHECK(groupsText(shell) == QStringLiteral("library+effects+scopes source program+markers effectControls timeline audioMeters"));
     CHECK(evaluate(shell, QStringLiteral("docking.shownPanel(docking.groupOfPanel('program').group)")).toString() ==
           QStringLiteral("markers"));
 
@@ -302,7 +302,8 @@ TEST_CASE("Workspaces: without monitors or the timeline the other panels take th
     shell.theme->setProperty("reduceMotion", true);
     spin(50);
 
-    for (const char* key : {"source", "program", "timeline"})
+    // 0.5: the Audio Meters beside the timeline close too (left alone they would take the timeline's row).
+    for (const char* key : {"source", "program", "timeline", "audioMeters"})
         evaluate(shell, QStringLiteral("docking.closePanel('%1')").arg(QLatin1String(key)));
     spin(100);
     QQuickItem* area = shell.item("monitorArea");

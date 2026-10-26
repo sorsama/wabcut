@@ -464,6 +464,7 @@ wabcut-cli mcp --project <file.wabcut> [--allow-edit] [--allow-analysis] [--save
 | [`transcript.find`](#transcript.find-v1) | Read | Find in Transcript |  |
 | [`transcript.findReplace`](#transcript.findReplace-v1) | EditProject | Find and Replace in Transcript |  |
 | [`transcript.keepRanges`](#transcript.keepRanges-v1) | EditSequence | Keep Only Words |  |
+| [`transcript.mediaWords`](#transcript.mediaWords-v1) | Read | Media Transcript Words |  |
 | [`transcript.mergeSpeakers`](#transcript.mergeSpeakers-v1) | EditProject | Merge Speakers |  |
 | [`transcript.moveRange`](#transcript.moveRange-v1) | EditSequence | Move Words |  |
 | [`transcript.renameSpeaker`](#transcript.renameSpeaker-v1) | EditProject | Rename Speaker |  |
@@ -5411,7 +5412,7 @@ Capability `Read`. Tool name `media_fileMetadata`.
 
 ### `media.importCameraClips` v1: Import from Media Browser
 
-Imports clips as the Media Browser lists them (media.browse): each "files" entry is a clip's first file; a spanned clip imports as ONE item playing its parts in turn, a P2 clip as a merged clip of its picture and its audio channel files (Merge Clips). Into "bin" (default the root). "copyTo": a folder - Premiere's Ingest (Copy): each clip's files are copied into <copyTo>/<clip name>/ first and the copies imported, so the card can be taken out. One undo step.
+Imports clips as the Media Browser lists them (media.browse): each "files" entry is a clip's first file; a spanned clip imports as ONE item playing its parts in turn, a P2 clip as a merged clip of its picture and its audio channel files (Merge Clips). Into "bin" (default the root). "copyTo": a folder - Premiere's Ingest (Copy): each clip's files are copied into <copyTo>/<clip name>/ first and the copies imported, so the card can be taken out. Clip markers the host reads from the files (the app and the CLI: a recording's chapter markers, as File > Import adds them) come in with the items; "markers" counts them. One undo step.
 
 Capability `EditProject`. Tool name `media_importCameraClips`. Reads or writes the files its parameters name (extensions never run it).
 
@@ -8646,6 +8647,28 @@ Capability `EditSequence`. Tool name `transcript_keepRanges`.
 
 ```json
 {"command":"transcript.keepRanges","params":{"words":[[0,30],[95,140]]}}
+```
+
+<a id="transcript.mediaWords-v1"></a>
+
+### `transcript.mediaWords` v1: Media Transcript Words
+
+One media item's words in source time (what the clip says before any edit: the Transcript panel's Source mode), as arrays in wordFields order: index, text, start and end as source timecodes in the media's rate and as ticks, speaker and recognition confidence. Corrections of the project apply; words inside an audio redaction read "[bleep]". Pick a soundbite, then source.setMarks with its first word's start and its last word's end and edit.insertFromSource / overwriteFromSource. audioStream: an index into the media's audio streams (default: the first one with a transcript).
+
+Capability `Read`. Tool name `transcript_mediaWords`.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `audioStream` | integer (0..64) |  | Audio stream index (0 = the first). Default: the first with a transcript. |
+| `first` | integer (0..1000000000) |  | First word index. |
+| `from` | integer \| string |  | Only words that end after this source time: ticks or a timecode in the media's rate. |
+| `last` | integer (0..1000000000) |  | Last word index. |
+| `limit` | integer (1..100000) |  | Most words to return (default 500). |
+| `media` | integer \| string (1..) | yes | The media item. A media id or exact name. |
+| `to` | integer \| string |  | Only words that start before this source time: ticks or a timecode in the media's rate. |
+
+```json
+{"command":"transcript.mediaWords","params":{"from":"00:01:10:00","media":3,"to":"00:01:30:00"}}
 ```
 
 <a id="transcript.mergeSpeakers-v1"></a>

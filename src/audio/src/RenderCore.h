@@ -72,6 +72,10 @@ public:
 
     void setSource(std::shared_ptr<AudioSource> source);
     std::shared_ptr<AudioSource> source() const;
+    /// 0.5: the overlay (AudioEngine::setOverlay), rendered every block whatever the transport does and added to the
+    /// output; it never touches the transport map. Same lifetime rules as the source.
+    void setOverlay(std::shared_ptr<AudioSource> overlay);
+    std::shared_ptr<AudioSource> overlay() const;
     /// Release retired sources the audio thread can no longer be using (also done by every control call).
     void collectRetired();
 
@@ -162,8 +166,12 @@ private:
     SeqLock<TransportRequest> m_request;
     SeqLock<ClockSnapshot> m_snapshot;
 
-    // Source hand-off (see RenderCore.cpp, "Source lifetime").
+    // Source hand-off (see RenderCore.cpp, "Source lifetime"). The overlay is handed over the same way.
     std::atomic<AudioSource*> m_sourcePtr{nullptr};
+    std::shared_ptr<AudioSource> m_overlay; ///< m_mutex
+    std::atomic<AudioSource*> m_overlayPtr{nullptr};
+    /// One block of the overlay before it is added (maxBlockFrames x channels; sized by configure(), while idle).
+    std::vector<float> m_overlayScratch;
     alignas(kCacheLineSize) std::atomic<std::uint64_t> m_blockCounter{0};
 
     std::atomic<std::int64_t> m_deviceLatencyFrames{0};

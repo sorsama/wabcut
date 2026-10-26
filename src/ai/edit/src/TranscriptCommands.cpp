@@ -21,17 +21,20 @@
 
 #include <wabcut/ai/TranscriptRedaction.h>
 #include <wabcut/ai/edit/CaptionBuilder.h>
+#include <wabcut/ai/edit/MediaTranscript.h>
 #include <wabcut/ai/edit/Profanity.h>
 #include <wabcut/ai/edit/TextEdits.h>
 #include <wabcut/ai/edit/TranscriptEditing.h>
 #include <wabcut/model/CaptionOps.h>
 #include <wabcut/command/Schema.h>
+#include <wabcut/command/SourceServices.h>
 #include <wabcut/interchange/Docx.h>
 #include <wabcut/model/FinishingOps.h>
 #include <wabcut/model/ProjectOps.h>
 #include <wabcut/model/MediaLocator.h>
 #include <wabcut/model/ProjectIO.h>
 #include <wabcut/model/TextFind.h>
+#include <wabcut/model/Timecode.h>
 #include <wabcut/model/RedactionMedia.h>
 
 #include <algorithm>
@@ -249,6 +252,110 @@ CommandOutput transcriptWords(ExecutionContext& c) {
         data["truncated"] = true;
     }
     return readOutput(c, st, std::move(data));
+}
+
+// P0 round: the source clip transcript (MediaTranscript.h) for the CLI and MCP: what one media item's audio stream
+// says, in source time (the Transcript panel's Source mode reads the same words).
+CommandOutput transcriptMediaWords(ExecutionContext& c) {
+    const MediaItem& media = *c.state().findMedia(c.media("media"));
+    if (media.isGenerator() || media.info.audio.empty()) {
+        fail(ErrorCode::InvalidParams, "'" + media.name + "' has no sound to read words from", Json{{"path", "/media"}});
+    }
+    TranscriptServices& services = servicesOf(c);
+    const int streams = static_cast<int>(media.info.audio.size());
+    int stream = 0;
+    if (c.has("audioStream")) {
+        const std::int64_t given = c.integer("audioStream");
+        if (given < 0 || given >= streams) {
+            fail(ErrorCode::InvalidParams,
+                 "'" + media.name + "' has " + std::to_string(streams) + (streams == 1 ? " audio stream" : " audio streams"),
+                 Json{{"path", "/audioStream"}});
+        }
+        stream = static_cast<int>(given);
+    } else {
+        // The first stream that has words (OBS recordings: often not the first, which is the mix).
+        for (int s = 0; s < streams; ++s) {
+            if (services.transcripts->transcript(media, s)) {
+                stream = s;
+                break;
+            }
+        }
+    }
+    const MediaTranscript mt = MediaTranscript::build(c.state(), media.id, stream, *services.transcripts);
+    const Rate rate = command::sourceTimecodeRate(c.state(), media);
+    const auto sourceTime = [&](const char* key) -> std::optional<Ticks> {
+        if (!c.has(key)) {
+            return std::nullopt;
+        }
+        const Json& value = c.params()[key];
+        if (value.is_number_integer()) {
+            return Ticks{value.get<std::int64_t>()};
+        }
+        if (value.is_string()) {
+            if (auto t = parseTimecode(value.get<std::string>(), rate, false)) {
+                return *t;
+            }
+        }
+        fail(ErrorCode::InvalidParams, std::string("expected ticks or a timecode in the media's rate"),
+             Json{{"path", std::string("/") + key}});
+    };
+    // Words [lo, hi): the index window intersected with the time window.
+    std::size_t lo = c.has("first") ? c.indexValue(c.params()["first"], "/first") : 0;
+    std::size_t hi = mt.size();
+    if (c.has("last")) {
+        const std::size_t last = c.indexValue(c.params()["last"], "/last");
+        hi = last < mt.size() ? last + 1 : mt.size();
+    }
+    const std::optional<Ticks> from = sourceTime("from");
+    const std::optional<Ticks> to = sourceTime("to");
+    const TimeRange window = TimeRange::fromStartEnd(from.value_or(Ticks{Ticks::min().value / 2}),
+                                                     to.value_or(Ticks{Ticks::max().value / 2}));
+    if (from || to) {
+        const auto [b, e] = mt.wordsIn(window);
+        lo = std::max(lo, b);
+        hi = std::min(hi, e);
+    }
+    // Fix round 1: inside that span only the words that overlap the window (words may overlap each other); a
+    // zero-length word by its instant.
+    const auto inWindow = [&](const MediaWord& w) {
+        return w.source.isEmpty() ? w.source.start >= window.start && w.source.start < window.end()
+                                  : w.source.start < window.end() && w.source.end() > window.start;
+    };
+    const auto limit = static_cast<std::size_t>(c.integer("limit", 500));
+    Json words = Json::array();
+    bool truncated = false;
+    for (std::size_t i = lo; i < hi; ++i) {
+        const MediaWord& w = mt[i];
+        if ((from || to) && !inWindow(w)) {
+            continue;
+        }
+        if (words.size() == limit) {
+            truncated = true;
+            break;
+        }
+        words.push_back(Json::array({i, mt.text(i), ticksToTimecode(w.source.start, rate, false),
+                                     ticksToTimecode(w.source.end(), rate, false), w.source.start.value, w.source.end().value,
+                                     w.speaker ? Json(*w.speaker) : Json(nullptr), rounded(w.confidence)}));
+    }
+    Json data{{"media", media.id.value},
+              {"name", media.name},
+              {"audioStream", stream},
+              {"audioStreams", streams},
+              {"language", std::string(mt.language())},
+              {"frameRate", Json{{"num", rate.num}, {"den", rate.den}}},
+              {"total", mt.size()},
+              {"wordFields", Json::array({"index", "text", "start", "end", "startTicks", "endTicks", "speaker", "confidence"})},
+              {"words", std::move(words)}};
+    if (truncated) {
+        data["truncated"] = true;
+    }
+    CommandOutput out;
+    out.state = c.state();
+    out.data = std::move(data);
+    if (mt.empty()) {
+        out.warnings.push_back("this audio stream has no transcript yet (transcript.transcribe with \"media\" first)");
+    }
+    return out;
 }
 
 Json reviewJson(ExecutionContext& c, const std::vector<ReviewItem>& items) {
@@ -1172,6 +1279,27 @@ void registerTranscriptCommands(command::CommandRegistry& registry) {
                        {"to", timeParam("Only words that start before this time.")},
                        {"limit", schema::integer("Most words to return (default 500).", 1, 100000)}}),
          Json{{"first", 0}, {"last", 49}}, {}, transcriptWords});
+    // P0 round: the source clip transcript (the Transcript panel's Source mode) for the CLI and MCP.
+    add(registry,
+        {"transcript.mediaWords", 1, "Media Transcript Words",
+         "One media item's words in source time (what the clip says before any edit: the Transcript panel's Source "
+         "mode), as arrays in wordFields order: index, text, start and end as source timecodes in the media's rate and "
+         "as ticks, speaker and recognition confidence. Corrections of the project apply; words inside an audio "
+         "redaction read \"[bleep]\". Pick a soundbite, then source.setMarks with its first word's start and its last "
+         "word's end and edit.insertFromSource / overwriteFromSource. audioStream: an index into the media's audio "
+         "streams (default: the first one with a transcript).",
+         Capability::Read,
+         schema::object({{"media", mediaRef("The media item.")},
+                         {"audioStream", schema::integer("Audio stream index (0 = the first). Default: the first with a transcript.", 0, 64)},
+                         {"first", wordIndex("First word index.")},
+                         {"last", wordIndex("Last word index.")},
+                         {"from", Json{{"type", Json::array({"integer", "string"})},
+                                       {"description", "Only words that end after this source time: ticks or a timecode in the media's rate."}}},
+                         {"to", Json{{"type", Json::array({"integer", "string"})},
+                                     {"description", "Only words that start before this source time: ticks or a timecode in the media's rate."}}},
+                         {"limit", schema::integer("Most words to return (default 500).", 1, 100000)}},
+                        {"media"}),
+         Json{{"media", 3}, {"from", "00:01:10:00"}, {"to", "00:01:30:00"}}, {}, transcriptMediaWords});
     add(registry,
         {"transcript.review", 1, "Review Fillers and Silences",
          "Filler words (language-aware: um, uh, like in disfluent context; Thai อืม, เอ่อ, แบบว่า ...) and pauses longer "

@@ -475,3 +475,25 @@ TEST_CASE("Bracket keys change clip volume while the Project panel keeps Shift+]
     CHECK(keymap(Platform::Windows).conflicts().empty());
     CHECK(keymap(Platform::MacOS).conflicts().empty());
 }
+
+TEST_CASE("Verified (0.5): Toggle Audio Scrubbing is Shift+S and Audio Meters has no key", "[keymap][tables][verified]") {
+    // Premiere_default_keys.kys and Default Adobe.kys: cmd.toggle.audio.scrubbing is Shift+S (virtual key 0x80000053
+    // with Shift) in context.global on both OSes; uif.window.Audio Meter is listed (macOS) with no key.
+    const CommandRegistry& registry = CommandRegistry::builtin();
+    const CommandInfo* scrub = registry.find("transport.toggleAudioScrubbing");
+    const CommandInfo* meters = registry.find("window.audioMeters");
+    REQUIRE(scrub != nullptr);
+    REQUIRE(meters != nullptr);
+    CHECK(scrub->scope == Scope::Application);
+    CHECK(meters->scope == Scope::Application);
+    CHECK(registry.findKys("context.global", "cmd.toggle.audio.scrubbing") == scrub);
+    CHECK(registry.findKys("context.global", "uif.window.Audio Meter") == meters);
+    for (const Platform p : {Platform::Windows, Platform::MacOS}) {
+        INFO(platformId(p));
+        CHECK(keysOf(p, "transport.toggleAudioScrubbing") == Keys{"Shift+S"});
+        CHECK(resolved(p, Scope::Application, "Shift+S") == "transport.toggleAudioScrubbing");
+        CHECK(resolved(p, Scope::Timeline, "Shift+S") == "transport.toggleAudioScrubbing"); // from any panel
+        CHECK(resolved(p, Scope::Application, "S") == "sequence.snap");                     // S alone stays Snap
+        CHECK(keysOf(p, "window.audioMeters").empty());
+    }
+}

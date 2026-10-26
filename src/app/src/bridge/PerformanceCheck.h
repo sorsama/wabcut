@@ -45,7 +45,8 @@ class PerformanceCheck : public QObject {
     Q_PROPERTY(bool hasReport READ hasReport NOTIFY reportChanged FINAL)
     /// "12 Oct 2026 10:20", when the report was made.
     Q_PROPERTY(QString reportTime READ reportTime NOTIFY reportChanged FINAL)
-    /// The summary's rows: [{ key, label, value, good }] (decoding per codec, encoders, graphics, audio, CPU).
+    /// The summary's rows: [{ key, label, value, good }] (decoding per codec, encoders, graphics, the GPU in use and why
+    /// - key "gpu", issue #10 - audio, CPU).
     Q_PROPERTY(QVariantList rows READ rows NOTIFY reportChanged FINAL)
     /// One sentence per decision.
     Q_PROPERTY(QStringList reasons READ reasons NOTIFY reportChanged FINAL)

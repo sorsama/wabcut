@@ -182,3 +182,33 @@ target_sources(wabcut_app_tests PRIVATE test_timeline_qol.cpp test_timeline_qol_
 # 0.4 (qol round): stream E's background work (export summary, quit guard, activity pill, keep awake, taskbar) and
 # stream B's keys and transport (nudge, clip volume keys, play around, paging, numpad timecode entry).
 target_sources(wabcut_app_tests PRIVATE test_background_work.cpp test_keys_transport.cpp)
+# 0.5 (p0 round, stream C): Scene Edit Detection (bridge, dialog, menus) and Remove dead time's review.
+target_sources(wabcut_app_tests PRIVATE test_scene_detect.cpp test_dead_time_review.cpp)
+# 0.5 (p0 round, stream D): OBS chapter markers on import (the summary, the preference) and the source clip transcript
+# (the Transcript panel's Source mode).
+target_sources(wabcut_app_tests PRIVATE test_source_transcript.cpp)
+# 0.5 (p0 round, stream A): caption tracks as timeline lanes (drawing, selection, trims, moves, splits, deletes, the
+# headers in the shell) and the waveforms of nested, multicam and merged audio clips (NestedPeaks).
+target_sources(wabcut_app_tests PRIVATE test_caption_lanes.cpp test_nested_peaks.cpp test_nested_mix_peaks.cpp)
+# 0.5 (p0 round, stream B): the Audio Meters panel and audio scrubbing in the shell.
+target_sources(wabcut_app_tests PRIVATE test_audio_meters.cpp)
+# 0.5 (p0 round, stream E): issue #10 - the Graphics card setting and the Performance check's GPU row - and the opt-in
+# updates (the signed manifest, the verified download and the install after closing, against a loopback fake server;
+# no installer ever runs: the launcher is injected).
+target_sources(wabcut_app_tests PRIVATE test_gpu_choice_ui.cpp test_updates.cpp)
+find_package(Qt6 REQUIRED COMPONENTS Network)
+target_link_libraries(wabcut_app_tests PRIVATE Qt6::Network) # the fake update server (QTcpServer)
+if(WIN32)
+    target_link_libraries(wabcut_app_tests PRIVATE bcrypt) # test_updates.cpp signs its manifests with a test key (CNG)
+endif()
+target_compile_definitions(wabcut_app_tests PRIVATE WABCUT_UPDATE_PUBLIC_KEY_DEFAULT="${WABCUT_UPDATE_PUBLIC_KEY}")
+# Issue #10: the hybrid-GPU driver hints are exports of wabcut.exe itself (src/app/src/main.cpp); this reads them back
+# from the executable's PE export table, with their values (build `wabcut` and `wabcut_pe_exports_check`).
+if(WIN32 AND TARGET wabcut)
+    add_executable(wabcut_pe_exports_check pe_exports_check.cpp)
+    wabcut_target_defaults(wabcut_pe_exports_check)
+    set(wabcut_pe_exports_test "wabcut.exe exports the hybrid GPU driver hints")
+    add_test(NAME "${wabcut_pe_exports_test}"
+        COMMAND wabcut_pe_exports_check $<TARGET_FILE:wabcut> NvOptimusEnablement=1 AmdPowerXpressRequestHighPerformance=1)
+    set_tests_properties("${wabcut_pe_exports_test}" PROPERTIES LABELS app TIMEOUT 60)
+endif()

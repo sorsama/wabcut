@@ -61,8 +61,9 @@ and every model are downloads, on request, never part of a package.
   [WABCUT_ASSOCIATE=1]`; uninstall with `msiexec /x <msi or product code> /qn` or from Settings > Apps.
 - **Size** (0.1.0, 2026-10-12): the MSI is 81.4 MiB and the portable ZIP 100.6 MiB, for 1,527 files and 264.8 MiB
   installed (building.md lists the tree).
-- **Not signed yet.** SmartScreen warns about an unknown publisher until the project has a code-signing certificate;
-  signing is the first open item of the [release checklist](#release-checklist).
+- **Signed once the project has a certificate.** The release workflow signs the MSI and every program file it ships
+  when a certificate or Azure Trusted Signing is configured ([Code signing](#code-signing)); until then the packages
+  are unsigned and SmartScreen warns about an unknown publisher.
 
 The installer pages use the stock WixUI_InstallDir dialogs with Wabcut's banner and side art
 (`cmake/packaging/wix/Make-InstallerArt.ps1` draws them in design language v2) and one added options page
@@ -105,9 +106,56 @@ the portable ZIP and the `install.package` test reports the MSI part as skipped.
 4. The publish job creates the release "Wabcut x.y.z", marked latest (not a pre-release, even at 0.x: the README's
    Download link is `releases/latest`, which skips pre-releases), with the packages and `SHA256SUMS.txt`. Windows is required. A Linux or macOS package that failed its checks is left out, and the release
    text says so. Running the workflow again for the same tag replaces the files.
+5. With the `WABCUT_UPDATE_SIGNING_KEY` secret set, the publish job also writes and signs `wabcut-update.json`, the
+   version manifest the in-app update check reads ([Updates](#updates)), and checks it against the public key built
+   into the app before it is attached.
 
 Without a tag (Run workflow with an empty tag, or a pull request that changes the packaging) the packages are built,
 checked and kept as workflow artifacts, and nothing is published; the `platforms` choice builds one platform only.
+
+### Code signing
+
+Windows SmartScreen warns about an unknown publisher when a downloaded installer is not
+Authenticode-signed, and most people stop there. The release workflow signs as soon as the repository is set up for it,
+and builds unsigned packages, as before, while it is not. No certificate, key or password is ever in the repository.
+
+What gets signed, in `cpack` (`cmake/packaging/SignPackage.cmake.in`, run as CPack's pre- and post-build scripts when
+`WABCUT_SIGN_RELEASE=1`): every `.exe` and `.dll` of the staged install tree before packaging, so the portable ZIP and
+the MSI carry signed programs, then the MSI itself. Files that already carry a valid signature (Qt's libraries,
+Microsoft's runtime and Direct3D DLLs) keep their vendor's. Every signature is SHA-256 with an RFC 3161 timestamp, so it
+stays valid after the certificate expires, and `signtool verify /pa` checks each one; the workflow's *Check the
+signatures* step then checks the MSI and the unpacked ZIP's programs once more.
+
+`tools/sign-release.ps1` does the signing and works the same on a developer machine:
+
+```powershell
+pwsh tools/sign-release.ps1 -Path build\win-msvc\bin -WhatIf                       # what would be signed
+pwsh tools/sign-release.ps1 -Path package.msi -Thumbprint <thumbprint>               # a certificate in the store
+$env:WABCUT_SIGN_RELEASE = '1'; cpack --config build\win-msvc\CPackConfig.cmake      # sign while packaging
+```
+
+**Setting it up (the owner, once).** Pick one:
+
+1. **Azure Trusted Signing** (cheapest for an individual, no hardware token, works on GitHub's runners):
+   1. In the Azure portal create a *Trusted Signing account* and complete *identity validation* (individual developers
+      are accepted; it takes a few days), then a *certificate profile* of type Public Trust.
+   2. Create an app registration (Microsoft Entra ID > App registrations) with a client secret, and give it the
+      *Trusted Signing Certificate Profile Signer* role on the signing account.
+   3. In the GitHub repository, Settings > Secrets and variables > Actions:
+      - secrets `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET` (the app registration's);
+      - variables `WABCUT_TRUSTED_SIGNING_ENDPOINT` (the account's region endpoint, e.g.
+        `https://wus2.codesigning.azure.net`), `WABCUT_TRUSTED_SIGNING_ACCOUNT` (the account name),
+        `WABCUT_TRUSTED_SIGNING_PROFILE` (the certificate profile name), `WABCUT_SIGN_PUBLISHER` (the name the
+        certificate is issued to, exactly as Windows shows it: the update check accepts an installer signed by that name
+        only), and optionally `WABCUT_TRUSTED_SIGNING_CLIENT_VERSION` to pin the signing client's NuGet version.
+2. **An OV or EV certificate as a PFX file** (from a certificate authority; EV certificates on a hardware token cannot be
+   used on GitHub's runners - sign locally with `-Thumbprint` then): secrets `WABCUT_SIGN_PFX_BASE64` (the file in
+   base64: `[Convert]::ToBase64String([IO.File]::ReadAllBytes('cert.pfx'))`) and `WABCUT_SIGN_PFX_PASSWORD`; optionally
+   the variable `WABCUT_SIGN_PUBLISHER`. The workflow imports it into the runner's user store for the job only.
+
+Then run **Actions > release > Run workflow** without a tag: the summary says "Packages signed with ..." and the
+artifacts' MSI shows the publisher in its Properties > Digital Signatures. A new certificate still meets SmartScreen
+warnings for a while, until downloads build its reputation; EV certificates start with more.
 
 ### Linux packages
 
@@ -187,7 +235,7 @@ Within a ten-second budget (each step that no longer fits is skipped and says so
 |---|---|
 | Decoding of H.264, HEVC and ProRes 422 Proxy | a 24-frame 1080p30 sample of each is written with the export path (`ExportJob` over the synthetic test pattern; hardware encoders first), then decoded front to back with the hardware backend `VideoDecoder` picks and in software: frames per second and the backend |
 | Export encoders | what an H.264 and an HEVC export would use (`probeVideoEncoder`: each hardware candidate test-encodes, then the software encoder) |
-| GPU | the adapters (`gpuVendors`) and the app's graphics API and adapter (RendererInfo) |
+| GPU | the adapters (`gpuAdapters`), the one Wabcut uses and why (`selectedGpu`: Settings > Graphics card, the Windows Graphics setting, or the high-performance GPU; [performance.md](performance.md#which-gpu-wabcut-uses)) and the app's graphics API and adapter (RendererInfo) |
 | Audio output | whether an output device exists, and the default one's name |
 | Processor | thread count |
 
@@ -210,6 +258,60 @@ kept (`performance/report`, JSON) and shown again from Settings until the next r
 Code: `src/editor/src/PerformanceProbe.cpp`, the `PerformanceCheck` bridge and `qml/dialogs/FirstRunCheckDialog.qml`.
 Tests: `tests/editor/test_performance_probe.cpp` (the table, the JSON, a real run, cancel, an exhausted budget) and
 `tests/app/test_first_run_check.cpp` (the bridge, the offer in the window, run, apply).
+
+## Updates
+
+Wabcut can tell when a newer release is out and, on Windows, install it. It is **opt-in**: nothing is asked of the
+internet until the user turns on *Check for updates automatically* (Settings > General > Updates, off by default) or
+chooses **Help > Check for Updates...** (also in Settings and the command palette). An automatic check runs once a day
+at most, shortly after start; a newer version shows a toast with *Details*, and *Skip This Version* keeps automatic
+checks quiet about it.
+
+**The check.** A plain GET of `https://github.com/sorsama/wabcut/releases/latest/download/wabcut-update.json` with the
+user agent `Wabcut/<version>`; nothing about the user or the projects is sent. The manifest is
+`{ format, version, key, payload, signature }`: `payload` is the release's JSON (version, date, notes in Markdown, the
+release page, the MSI's address, size, SHA-256, whether it is Authenticode-signed and by whom), signed as bytes with
+ECDSA P-256 over SHA-256. Wabcut verifies the signature with the public key built into it (CMake cache variable
+`WABCUT_UPDATE_PUBLIC_KEY`, base64 SubjectPublicKeyInfo; several keys separated by `;` let a new key take over) through
+Windows CNG, and refuses a manifest that is unsigned, signed by another key, changed, incomplete or that points
+anywhere but `https://`. Then it compares versions: only a newer one is offered. A build with an empty
+`WABCUT_UPDATE_PUBLIC_KEY` never checks. `WABCUT_UPDATE_RELEASES_URL` moves the whole thing for a fork.
+
+**The install (Windows, installed with the MSI).** *Download and Install* fetches the MSI into
+`%LOCALAPPDATA%\Wabcut\Wabcut\updates`, hashing as it goes; a file that is larger, smaller or hashes differently than
+the manifest says is deleted, and so is one the manifest calls signed whose Authenticode signature is not trusted or
+names another publisher (WinVerifyTrust). The verified MSI then installs **after Wabcut closes, with the user's
+consent**: *Install When I Quit*, or *Quit and Install*, which closes the window the normal way, so unsaved changes and
+running exports ask first (the button waits while background work runs). Once the process has ended, a hidden
+PowerShell waits for it, runs `msiexec /i <msi> /passive /norestart` - a major upgrade into the same folder
+(`INSTALL_ROOT`), keeping the `.wabcut` association - and starts Wabcut again. Never during an export: the installer is
+only started after the event loop has returned from a normal close. A quit given up after *Quit and Install* (Cancel at
+"Save changes?", Keep Wabcut Open) calls the install off again, and says so.
+
+The verified MSI cannot change on its way to msiexec: from the moment it passes its checks Wabcut keeps it open without
+write or delete sharing, checks its size, SHA-256 and (when signed) its Authenticode signer against the manifest again
+right before it starts the installer (still holding it), and the PowerShell that starts msiexec checks them once more
+after Wabcut has gone. A verified download is kept: Later, a quit given up or a new check of the same release finds it
+ready (Help > Check for Updates... does not even ask the server again while it is ready); only a new download replaces
+it.
+
+**Elsewhere.** The portable ZIP, Linux and macOS show the new version and open its release page (the ZIP cannot be
+upgraded by the MSI). On Linux and macOS nothing verifies the manifest yet, so the dialog shows only the version and
+links to the fixed release page of that version, never to an address from the manifest.
+
+**The keys (the owner, once).** The key pair was made with `tools/update-keys.py generate --out <file outside every
+repository>`; its public half is `WABCUT_UPDATE_PUBLIC_KEY`'s default in `src/app/CMakeLists.txt`. Put the private key
+(the PEM text) into the repository secret `WABCUT_UPDATE_SIGNING_KEY`; the publish job then writes and signs
+`wabcut-update.json` for each release (`tools/update-keys.py manifest`, with the MSI's size and SHA-256 and the
+signing result of the Windows job) and verifies it against the built-in key before attaching it. Keep an offline copy
+of the private key: a lost key means a new key pair and an app release that trusts both, before the old one can go. A
+leaked key is replaced the same way, as fast as possible.
+
+Code: `src/app/src/update/` (`UpdateManifest`, `UpdateCrypto`), the `Updates` bridge (`src/app/src/bridge/UpdateBridge.*`),
+`qml/dialogs/UpdateDialog.qml`, `tools/update-keys.py`. Tests: `tests/app/test_updates.cpp`, against a loopback fake
+server with a test key (a newer version offered and installed through an injected launcher, the same version not
+offered, a tampered manifest, a wrong key, a tampered installer, an Authenticode check, the daily limit, the dialog) and
+a manifest signed by `tools/update-keys.py` (`tests/app/data/updates/`).
 
 ## Portability
 
@@ -244,7 +346,8 @@ Code is written for all three platforms; only Windows is run. What is known (aud
 6. Read the generated `THIRD-PARTY-NOTICES.txt`: new components, versions, the runtime library list.
 7. On a clean Windows account (or VM): install the MSI without admin rights, open a project by double-click (with the
    association ticked), export, uninstall, and confirm the projects and settings are still there.
-8. Sign the MSI and the executables (not yet available: needs a code-signing certificate), and sign and notarize the
-   macOS bundle with a Developer ID (not yet available: needs an Apple Developer account).
+8. Check that the release run signed the Windows packages ([Code signing](#code-signing); needs the certificate
+   set up) and that `wabcut-update.json` is attached ([Updates](#updates); needs `WABCUT_UPDATE_SIGNING_KEY`). Sign and
+   notarize the macOS bundle with a Developer ID (not yet available: needs an Apple Developer account).
 9. Tag `vX.Y.Z` and push the tag: the release workflow builds, checks and publishes every package
    ([Making a release](#making-a-release)).

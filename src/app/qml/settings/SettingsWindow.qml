@@ -121,6 +121,8 @@ Popup {
             root.helpRequested(what)
         else if (what === "editing")
             Editing.runCommand("edit.preferencesMedia")
+        else if (what === "updates") // P0 round: General > Check for Updates… (the dialog checks at once)
+            Updates.openDialog(true)
     }
 
     parent: Overlay.overlay

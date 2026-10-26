@@ -24,6 +24,14 @@
 //   * P.2: Premiere's Loop (`loop`, remembered): playback repeats the sequence In to Out, or the whole sequence without
 //     both marks; Play from outside that range starts at its beginning. playInToOut() (Ctrl+Shift+Space) plays In to
 //     Out once, or repeats it with Loop on.
+//   * 0.5: Premiere's audio scrubbing (`audioScrubbing`, Toggle Audio Scrubbing Shift+S, Settings > Timeline "Play audio
+//     while scrubbing"; remembered, on by default as in Premiere): while stopped, a playhead dragged in the ruler or the
+//     Program Monitor's time bar (between beginScrub() and endScrub()) and a frame step (stepFrames(), beginStep() /
+//     endStep()) play a short window of the
+//     sequence mix at the new frame (editor::PlaybackSession::scrubAudio: off the GUI thread, rate-limited). The
+//     transport and the picture stay where the playhead is. A drag that goes back plays the window before the playhead
+//     backwards (Premiere's backward scrub); steps play the frame stepped to forward. The Source Monitor scrubs its
+//     clip the same way through requestAudioScrub() (same switch).
 
 #include <wabcut/editor/PlaybackSession.h>
 #include <wabcut/model/EditSession.h>
@@ -38,7 +46,9 @@
 #include <QtQml/qqmlregistration.h>
 
 #include <cstdint>
+#include <functional>
 #include <memory>
+#include <optional>
 
 class QJSEngine;
 class QQmlEngine;
@@ -101,6 +111,10 @@ class PlaybackBridge : public QObject {
     Q_PROPERTY(QString sourceTimeText READ sourceTimeText NOTIFY sourceTimeChanged FINAL)
     /// P.2: Premiere's Loop button in the Program Monitor.
     Q_PROPERTY(bool loop READ loop WRITE setLoop NOTIFY loopChanged FINAL)
+    /// 0.5: Premiere's Play Audio While Scrubbing (Toggle Audio Scrubbing, Shift+S), remembered; on by default.
+    Q_PROPERTY(bool audioScrubbing READ audioScrubbing WRITE setAudioScrubbing NOTIFY audioScrubbingChanged FINAL)
+    /// 0.5: windows of audio scrubbing asked for so far (tests).
+    Q_PROPERTY(int audioScrubRequests READ audioScrubRequests NOTIFY audioScrubbed FINAL)
 
 public:
     explicit PlaybackBridge(ProjectController* controller, QObject* parent = nullptr);
@@ -151,6 +165,20 @@ public:
     QString sourceTimeText() const;
     bool loop() const { return m_loop; }
     void setLoop(bool loop);
+    bool audioScrubbing() const { return m_audioScrubbing; }
+    void setAudioScrubbing(bool on);
+    int audioScrubRequests() const { return m_audioScrubRequests; }
+    /// 0.5: where the last scrub window was asked for and its direction (tests; nullopt: none yet).
+    std::optional<Ticks> lastAudioScrub() const { return m_lastAudioScrub; }
+    int lastAudioScrubDirection() const { return m_lastAudioScrubDirection; }
+    /// 0.5 (tests): what a session's scrubAudio is asked instead (the app: the session's own). `session`: the program's
+    /// or the Source Monitor's.
+    using AudioScrubSink = std::function<bool(editor::PlaybackSession* session, Ticks at, int direction)>;
+    void setAudioScrubSink(AudioScrubSink sink) { m_audioScrubSink = std::move(sink); }
+    /// 0.5: a scrub window of `session` (the program's, or the Source Monitor's clip) at `at`, `direction` < 0 played
+    /// backwards, when audio scrubbing is on and `session` is stopped (through the test sink when one is set). Counted
+    /// in audioScrubRequests. Returns whether one was asked for.
+    bool requestAudioScrub(editor::PlaybackSession* session, Ticks at, int direction);
     /// The range playback repeats with Loop on: the sequence In to Out, else the whole sequence (nullopt: no sequence).
     std::optional<TimeRange> loopRange() const;
 
@@ -181,6 +209,16 @@ public:
     Q_INVOKABLE void playToOut();
     /// Returns the attached monitors from a legacy source view to the sequence.
     Q_INVOKABLE void showProgram();
+    /// 0.5: a playhead drag starts (the ruler, the Program Monitor's time bar) or ends: while it lasts, the playhead
+    /// changes of a stopped transport are scrubs and play audio (with audioScrubbing on).
+    Q_INVOKABLE void beginScrub();
+    Q_INVOKABLE void endScrub();
+    /// 0.5 (fix round): the pointer moves in the scrub begun (the drag, after the press): from now on a move back plays
+    /// backwards. The press itself (a click) plays the frame it lands on forward, wherever the playhead was.
+    Q_INVOKABLE void scrubMoving();
+    /// 0.5: a frame step (Main.qml's transport.step* commands) is under way: the frame stepped to is heard, forward.
+    Q_INVOKABLE void beginStep();
+    Q_INVOKABLE void endStep();
 
 signals:
     /// The playback session is about to go (the project closes, or this bridge does), emitted while it still exists:
@@ -192,8 +230,13 @@ signals:
     void sourceChanged();
     void sourceTimeChanged();
     void loopChanged();
+    void audioScrubbingChanged();
+    /// 0.5: a scrub window was asked for (audioScrubRequests).
+    void audioScrubbed();
 
 private:
+    /// 0.5: plays the program's scrub window at `at` (audioScrubbing on, stopped, the program shown).
+    void scrubAudioAt(Ticks at, int direction);
     void tick();
     void updateStats();
     void onPlayheadChanged();
@@ -238,6 +281,15 @@ private:
     bool m_loop = false;
     std::optional<Ticks> m_stopAt; ///< Play In to Out without Loop: where playback stops
     std::optional<Ticks> m_returnTo; ///< 0.4 Play Around: where the playhead parks when playback reaches m_stopAt
+    // 0.5: audio scrubbing
+    bool m_audioScrubbing = true;
+    int m_scrubGestures = 0;  ///< beginScrub() calls not ended yet
+    bool m_scrubMoving = false; ///< the scrub is past its press (scrubMoving())
+    bool m_stepping = false;  ///< stepFrames() moves the playhead now
+    int m_audioScrubRequests = 0;
+    std::optional<Ticks> m_lastAudioScrub;
+    int m_lastAudioScrubDirection = 0;
+    AudioScrubSink m_audioScrubSink;
 
     // Stats
     QElapsedTimer m_statsClock;

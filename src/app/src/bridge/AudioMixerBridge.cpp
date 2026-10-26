@@ -926,6 +926,41 @@ QString AudioMixerBridge::addMasterLimiter() {
 // ---- Meters ---------------------------------------------------------------------------------------------
 
 void AudioMixerBridge::setMetersActive(bool active) {
+    if (m_metersHeld == active)
+        return;
+    m_metersHeld = active;
+    updateMetersActive();
+}
+
+void AudioMixerBridge::setMeterViewer(QObject* viewer, bool showing) {
+    if (!viewer)
+        return;
+    const auto it = std::ranges::find(m_meterViewers, viewer);
+    const bool counted = it != m_meterViewers.end();
+    if (showing == counted)
+        return;
+    if (showing) {
+        m_meterViewers.push_back(viewer);
+        // A viewer destroyed while it shows meters stops counting (a panel that goes away without saying so).
+        connect(viewer, &QObject::destroyed, this, [this](QObject* gone) {
+            std::erase(m_meterViewers, gone);
+            updateMetersActive();
+            emit metersActiveChanged(); // meterViewers
+        });
+    } else {
+        m_meterViewers.erase(it);
+        disconnect(viewer, &QObject::destroyed, this, nullptr);
+    }
+    updateMetersActive();
+    emit metersActiveChanged(); // meterViewers
+}
+
+bool AudioMixerBridge::isMeterViewer(const QObject* viewer) const {
+    return std::ranges::find(m_meterViewers, viewer) != m_meterViewers.end();
+}
+
+void AudioMixerBridge::updateMetersActive() {
+    const bool active = m_metersHeld || !m_meterViewers.empty();
     if (m_metersActive == active)
         return;
     m_metersActive = active;

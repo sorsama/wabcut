@@ -261,6 +261,32 @@ QtObject {
         }
         return walk(Workspaces.copy(node))
     }
+    /// 0.5: `leaf` goes left or right (`side`) of the group `targetId`, taking `share` of its room: the Audio Meters
+    /// right of the timeline, or the timeline back left of them (the layout's least width still holds).
+    function insertSharing(node: var, targetId: string, leaf: var, side: string, share: real): var {
+        const first = side === "left"
+        function walk(n) {
+            if (manager.isGroup(n)) {
+                if (n.group !== targetId)
+                    return n
+                return { split: "row", children: first ? [leaf, n] : [n, leaf],
+                         weights: first ? [share, 1 - share] : [1 - share, share] }
+            }
+            for (let i = 0; i < n.children.length; ++i) {
+                const c = n.children[i]
+                if (manager.isGroup(c) && c.group === targetId && n.split === "row") {
+                    const w = n.weights[i]
+                    n.weights[i] = w * (1 - share)
+                    n.children.splice(first ? i : i + 1, 0, leaf)
+                    n.weights.splice(first ? i : i + 1, 0, w * share)
+                    return n
+                }
+                n.children[i] = walk(c)
+            }
+            return n
+        }
+        return walk(Workspaces.copy(node))
+    }
     /// `leaf` runs along the whole `side` of `node` (or is all of it when `node` is empty).
     function insertAtEdge(node: var, leaf: var, side: string): var {
         if (!node)
@@ -409,6 +435,18 @@ QtObject {
         const leaf = { group: id, panels: [key], current: key }
         if (groups.length === 0) {
             manager.setTree(leaf)
+            return id
+        }
+        // 0.5: the Audio Meters go right of the timeline, slim, as Premiere docks them (no timeline: along the bottom),
+        // and the timeline comes back left of the Audio Meters when they are in a group of their own.
+        const timelineGroup = key === "audioMeters" ? manager.groupOfPanel("timeline") : null
+        if (timelineGroup) {
+            manager.setTree(manager.insertSharing(manager.tree, timelineGroup.group, leaf, "right", 0.05))
+            return id
+        }
+        const metersGroup = key === "timeline" ? manager.groupOfPanel("audioMeters") : null
+        if (metersGroup && metersGroup.panels.length === 1) {
+            manager.setTree(manager.insertSharing(manager.tree, metersGroup.group, leaf, "left", 0.95))
             return id
         }
         if (column === "timeline") {

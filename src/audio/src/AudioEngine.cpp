@@ -813,6 +813,10 @@ void AudioEngine::setSource(std::shared_ptr<AudioSource> source) { m_impl->core-
 
 std::shared_ptr<AudioSource> AudioEngine::source() const { return m_impl->core->source(); }
 
+void AudioEngine::setOverlay(std::shared_ptr<AudioSource> overlay) { m_impl->core->setOverlay(std::move(overlay)); }
+
+std::shared_ptr<AudioSource> AudioEngine::overlay() const { return m_impl->core->overlay(); }
+
 void AudioEngine::setTimeline(Ticks start) { m_impl->core->seek(start, Ticks{}); }
 
 std::uint64_t AudioEngine::seek(Ticks target, Ticks preroll) { return m_impl->core->seek(target, preroll); }

@@ -3,6 +3,7 @@
 
 #include <wabcut/export/Encoders.h>
 #include <wabcut/export/ExportSettings.h>
+#include <wabcut/media/GpuInfo.h>
 #include <wabcut/media/VideoDecoder.h>
 
 #include <algorithm>
@@ -304,7 +305,7 @@ TEST_CASE("Hardware encoder policy: one candidate per GPU vendor, overridable", 
     CHECK(softwareEncoder(VideoCodec::DnxHR) == "dnxhd");
 
     const auto vendors = media::gpuVendors();
-    const bool nvidia = std::find(vendors.begin(), vendors.end(), "NVIDIA") != vendors.end();
+    const bool nvidia = !vendors.empty() && vendors.front() == "NVIDIA"; // the GPU Wabcut uses (issue #10)
     const auto h264 = hardwareEncoderOrder(VideoCodec::H264);
     if (nvidia) {
         REQUIRE_FALSE(h264.empty());
@@ -353,4 +354,54 @@ TEST_CASE("Audio channels 0 follow the master; AC-3 is up to 5.1 at 32 to 48 kHz
     s = preset("match-source");
     s.audio.channels = -1;
     CHECK_FALSE(validate(s).has_value());
+}
+
+// Issue #10 (hybrid laptops): the automatic encoder follows the GPU Wabcut uses - on the issue's laptop (Radeon 780M as
+// DXGI adapter 0, RTX 5060 Laptop GPU as adapter 1) NVENC comes before AMF; picking the integrated GPU in Settings puts
+// AMF first for the next export at once.
+TEST_CASE("Hardware encoder policy follows the GPU Wabcut uses on a hybrid laptop", "[export][encoders][gpu]") {
+    struct Restore {
+        ~Restore() {
+            setHardwareEncoderOrder({});
+            media::setGpuChoice({});
+            media::setGpuAdaptersForTesting(std::nullopt);
+        }
+    } restore;
+    setHardwareEncoderOrder({});
+    media::GpuAdapter radeon;
+    radeon.name = "AMD Radeon(TM) 780M Graphics";
+    radeon.vendor = "AMD";
+    radeon.vendorId = 0x1002;
+    radeon.deviceId = 0x15BF;
+    radeon.systemIndex = 0;
+    radeon.highPerformanceIndex = 1;
+    radeon.minimumPowerIndex = 0;
+    radeon.kind = media::GpuKind::Integrated;
+    media::GpuAdapter rtx;
+    rtx.name = "NVIDIA GeForce RTX 5060 Laptop GPU";
+    rtx.vendor = "NVIDIA";
+    rtx.vendorId = 0x10DE;
+    rtx.deviceId = 0x2D59;
+    rtx.systemIndex = 1;
+    rtx.highPerformanceIndex = 0;
+    rtx.minimumPowerIndex = 1;
+    rtx.kind = media::GpuKind::Discrete;
+    media::setGpuChoice({});
+    media::setGpuAdaptersForTesting(media::GpuTestSetup{{radeon, rtx}});
+
+#if defined(_WIN32)
+    CHECK(hardwareEncoderOrder(VideoCodec::H264) == std::vector<std::string>{"h264_nvenc", "h264_amf"});
+    CHECK(hardwareEncoderOrder(VideoCodec::Hevc) == std::vector<std::string>{"hevc_nvenc", "hevc_amf"});
+    const auto listed = media::gpuAdapters();
+    const auto it = std::ranges::find(listed, radeon.name, &media::GpuAdapter::name);
+    REQUIRE(it != listed.end());
+    media::setGpuChoice(it->key);
+    CHECK(hardwareEncoderOrder(VideoCodec::H264) == std::vector<std::string>{"h264_amf", "h264_nvenc"});
+    // The Windows setting "Power saving" for Wabcut does the same while Settings says Automatic.
+    media::setGpuChoice({});
+    media::setGpuAdaptersForTesting(media::GpuTestSetup{{radeon, rtx}, media::WindowsGpuSetting::PowerSaving});
+    CHECK(hardwareEncoderOrder(VideoCodec::H264).front() == "h264_amf");
+#elif !defined(__APPLE__)
+    CHECK(hardwareEncoderOrder(VideoCodec::H264) == std::vector<std::string>{"h264_nvenc", "h264_vaapi"});
+#endif
 }

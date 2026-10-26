@@ -157,7 +157,8 @@ Window {
                                            mediaBrowser: mediaBrowserLoader, metadata: metadataLoader,
                                            production: productionLoader, scopes: scopesLoader,
                                            captionStyle: captionStyleLoader, frameInspector: frameInspectorLoader,
-                                           mixer: mixerLoader, export: exportLoader, color: colorLoader })
+                                           mixer: mixerLoader, export: exportLoader, color: colorLoader,
+                                           audioMeters: audioMetersLoader })
     // UX rework (Premiere's Window menu): a closed panel opens as a tab of the active group (the group clicked last;
     // none: where it fits, DockManager.openPanel) and shows; an open one comes to the front where it is. Either way it
     // gets keyboard focus.
@@ -330,7 +331,7 @@ Window {
                                        shortsLoader, takesLoader, essentialLoader, reviewLoader, scopesLoader,
                                        captionStyleLoader, frameInspectorLoader, mixerLoader, exportLoader, colorLoader,
                                        graphicsLoader, highlightsLoader, mediaBrowserLoader, metadataLoader,
-                                       productionLoader]
+                                       productionLoader, audioMetersLoader]
     readonly property bool panelsReady: lazyPanels.every(p => p.ready)
     onPanelsReadyChanged: {
         if (panelsReady)
@@ -643,6 +644,16 @@ Window {
             window.focusPanel("mixer")
             mixerLoader.withItem(panel => panel.view = commandId === "window.audioClipMixer" ? 1 : 0)
             return
+        // 0.5 (stream B): Window > Audio Meters (no default key, as in Premiere): right of the timeline when it opens.
+        case "window.audioMeters":
+            window.focusPanel("audioMeters")
+            return
+        // 0.5 (stream B): Premiere's Toggle Audio Scrubbing (Shift+S), with a readout.
+        case "transport.toggleAudioScrubbing":
+            Playback.audioScrubbing = !Playback.audioScrubbing
+            window.notify(Playback.audioScrubbing ? qsTr("Audio scrubbing on: dragging the playhead and stepping frames play the sound there")
+                                                  : qsTr("Audio scrubbing off"), undefined, { replaceKey: "audioScrubbing" })
+            return
         // Premiere's workspace keys (Alt+Shift+1..9) onto the first workspace made from the matching preset.
         case "window.workspace3":
             window.openPreset("audio")
@@ -711,6 +722,17 @@ Window {
         case "clip.audioChannels":
             AudioChannels.openDialog(ClipAudio.selectedClips())
             return
+        // 0.5 (stream C): Scene Edit Detection… on the selected video clips; without one, the reason as a toast.
+        case "clip.sceneEditDetection": {
+            const scenes = SceneDetect.availability()
+            if (scenes.enabled !== true) {
+                window.notify(scenes.reason ?? "", undefined, undefined)
+                return
+            }
+            sceneEditDialog.active = true;
+            (sceneEditDialog.item as SceneEditDetectionDialog)?.openFor(scenes.clips, scenes.nested ?? 0)
+            return
+        }
         // C.11 (M5m): Paste Attributes… / Remove Attributes… open the attributes dialog (bridge `Clipboard`).
         case "edit.pasteAttributes":
             Clipboard.openAttributes("paste")
@@ -786,8 +808,14 @@ Window {
             return
         if (timeline.runCommand(commandId))
             return
-        if (ProjectController.runCommand(commandId)
-                && (commandId.startsWith("transport.") || commandId.startsWith("marker.goTo")
+        // 0.5 (stream B): a frame step (the arrow keys) is heard while stopped (audio scrubbing: the frame stepped to).
+        const step = commandId.startsWith("transport.step")
+        if (step)
+            Playback.beginStep()
+        const ran = ProjectController.runCommand(commandId)
+        if (step)
+            Playback.endStep()
+        if (ran && (commandId.startsWith("transport.") || commandId.startsWith("marker.goTo")
                     || commandId === "edit.paste" || commandId === "edit.pasteInsert"))
             timeline.revealPlayhead()
     }
@@ -1093,6 +1121,8 @@ Window {
             whenSaved(() => window.openProjectNow(result.projects[0]))
         if ((result.folderSummary ?? "") !== "")
             window.notify(result.folderSummary, (result.added ?? 0) > 0 ? undefined : Theme.warning, undefined)
+        else if ((result.chapterSummary ?? "") !== "") // P0 round (D): chapter markers that became clip markers
+            window.notify(result.chapterSummary, undefined, undefined)
         return result
     }
     // 0.4 (D): File > Import Folder… and the Library's ··· "Import folder…": the folder picker; the chosen folder comes
@@ -1264,6 +1294,7 @@ Window {
             VoiceOver.stop()
         if (!window.readyToClose())
             close.accepted = false
+        window.lastCloseAccepted = close.accepted // fix round 1: the update's Quit and Install watches it
     }
 
     Connections {
@@ -1734,6 +1765,23 @@ Window {
         active: false
         sourceComponent: AudioGainDialog {}
     }
+    // 0.5 (stream C): Scene Edit Detection… (clip.sceneEditDetection), loaded on first use; a finished run's toast (an
+    // error the open dialog shows itself).
+    Loader {
+        id: sceneEditDialog
+        objectName: "sceneEditDialogLoader"
+        active: false
+        sourceComponent: SceneEditDetectionDialog {}
+    }
+    Connections {
+        target: SceneDetect
+
+        function onFinished(ok: bool, cancelled: bool, message: string) {
+            const shown = (sceneEditDialog.item as SceneEditDetectionDialog)?.opened ?? false
+            if (!cancelled && message !== "" && (ok || !shown))
+                window.notify(message, ok ? undefined : Theme.warning, undefined)
+        }
+    }
     Connections {
         target: AudioChannels
 
@@ -2114,6 +2162,21 @@ Window {
                         window.openAiPreferences()
                     }
                 }
+                // 0.5 (stream A): a double-click on a cue in the timeline's caption lane opens its text in the Captions
+                // page (the panel is shown first; it is created on first use).
+                Connections {
+                    target: Captions
+
+                    function onEditCueRequested(index: int) {
+                        window.revealPanel("captions")
+                        captionsLoader.withItem(panel => (panel as TranscriptPanel).showCaptionCue(index, true))
+                    }
+                    // The cue menu's Select in Captions: the page scrolled to the cue.
+                    function onShowCueRequested(index: int) {
+                        window.revealPanel("captions")
+                        captionsLoader.withItem(panel => (panel as TranscriptPanel).showCaptionCue(index, false))
+                    }
+                }
                 // Audio Tools (M5g): loudness, normalize, auto-duck, reduce noise.
                 LazyPanel {
                     id: audioToolsLoader
@@ -2385,6 +2448,20 @@ Window {
                     Behavior on opacity { NumberAnimation { duration: Theme.durState } }
                     sourceComponent: AudioMixerPanel {}
                 }
+                // 0.5 (stream B): Audio Meters, the mix's level (right of the timeline in the Edit preset).
+                LazyPanel {
+                    id: audioMetersLoader
+                    name: "audioMeters"
+                    parent: workArea.hostOf("audioMeters")
+                    anchors.fill: parent
+                    shown: workArea.panelShown("audioMeters")
+                    preload: window.preloadPanels
+                    opacity: shown ? 1 : 0
+                    visible: opacity > 0
+                    enabled: shown
+                    Behavior on opacity { NumberAnimation { duration: Theme.durState } }
+                    sourceComponent: AudioMetersPanel {}
+                }
                 LazyPanel {
                     id: exportLoader
                     name: "export"
@@ -2552,6 +2629,8 @@ Window {
                                     if ((result.folderSummary ?? "") !== "")
                                         window.notify(result.folderSummary, (result.added ?? 0) > 0 ? undefined : Theme.warning,
                                                       undefined)
+                                    else if ((result.chapterSummary ?? "") !== "") // P0 round (D)
+                                        window.notify(result.chapterSummary, undefined, undefined)
                                 }
                                 for (const url of lottie)
                                     GraphicsImport.importLottie(url)
@@ -2883,6 +2962,10 @@ Window {
                 if (Library.message !== "")
                     toast.show(Library.message)
             }
+            // P0 round (D, fix round 1): passing notes ("4 chapter markers became clip markers.").
+            function onNotice(text: string) {
+                toast.show(text)
+            }
             // M5l: Reveal nested sequence in Library, a new multi-camera source: the Library comes forward.
             function onItemShown(key) {
                 window.showBrowserPanel("library")
@@ -2977,6 +3060,13 @@ Window {
             function onMessageChanged() {
                 if (Moments.message !== "")
                     toast.show(Moments.message, Theme.warning)
+            }
+            // 0.5 (stream C): Remove dead time's review is a sheet of the Highlights panel; its rows move the playhead.
+            function onDeadTimeReviewRequested() {
+                window.focusPanel("highlights")
+            }
+            function onRevealRequested() {
+                timeline.revealPlayhead()
             }
         }
         Connections {
@@ -3321,8 +3411,70 @@ Window {
     function showHelp(what) {
         if (what === "shortcuts")
             shortcutsDialog.openDialog()
+        else if (what === "updates") // P0 round: Help > Check for Updates…
+            window.showUpdates(true)
         else
             onboarding.run(what)
+    }
+    // P0 round (updates, docs/release.md "Updates"): the update dialog, loaded on first use; Help > Check for Updates…,
+    // Settings > General and the palette open it (Updates.openRequested), an automatic check's toast offers it, and its
+    // "Quit and Install" closes the window the normal way (Updates.quitRequested: unsaved changes and exports ask first;
+    // main() starts the installer once Wabcut has closed).
+    function showUpdates(checkNow: bool) {
+        updateDialog.active = true
+        const dialog = updateDialog.item as UpdateDialog
+        dialog?.open()
+        if (checkNow) // fix round 2: not again while a verified download is ready (Updates.checkIfNeeded)
+            Updates.checkIfNeeded()
+    }
+    Loader {
+        id: updateDialog
+        objectName: "updateDialogLoader"
+        active: false
+        sourceComponent: UpdateDialog {
+            backgroundWorkRunning: window.backgroundWorkRunning
+        }
+    }
+    Connections {
+        target: Updates
+
+        function onOpenRequested(checkNow) {
+            window.showUpdates(false) // Updates.openDialog() checks itself
+        }
+        function onUpdateAvailable(version) {
+            window.notify(qsTr("Wabcut %1 is available").arg(version), undefined, {
+                actionText: qsTr("Details"),
+                action: () => window.showUpdates(false)
+            })
+        }
+        function onQuitRequested() {
+            window.lastCloseAccepted = false
+            window.updateQuitArmed = true
+            window.close()
+        }
+    }
+    // Fix round 1: "Quit and Install" arms the installer for this quit only. A quit the user gives up (Cancel at "Save
+    // changes?", Keep Wabcut Open, a save that failed) calls the install off again and says so; the download stays, and
+    // the update dialog offers it again. lastCloseAccepted: the window's last close went through (onClosing).
+    property bool updateQuitArmed: false
+    property bool lastCloseAccepted: false
+    Timer {
+        objectName: "updateQuitWatch"
+        interval: 250
+        repeat: true
+        running: window.updateQuitArmed
+        onTriggered: {
+            if (window.lastCloseAccepted) { // closing: main() starts the installer after the event loop
+                window.updateQuitArmed = false
+                return
+            }
+            if (unsavedDialog.visible || saveAsDialog.visible || backgroundWorkDialog.visible || window.quitWhenIdle)
+                return // still asking, or closing once the work in progress is done
+            window.updateQuitArmed = false
+            Updates.cancelInstall()
+            window.notify(qsTr("Wabcut stayed open, so the update was not installed. Help > Check for Updates installs it later."),
+                          undefined, undefined)
+        }
     }
     // ---- The command palette's shell rows (UX rework, stream S): "Open panel: <name>" for the Window menu's panels
     // (no Generate while AI is off), every workspace, and the recent projects; kept in step with what they come from.

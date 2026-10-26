@@ -78,6 +78,8 @@ void RenderCore::configure(int channels, int sampleRate, int maxBlockFrames, int
     }
     m_sampleRate = sampleRate;
     m_ticksPerFrame = Rate{sampleRate, 1}.ticksPerUnit();
+    // 0.5: room for one block of the overlay (idle: no audio thread reads it now).
+    m_overlayScratch.assign(static_cast<std::size_t>(std::max(maxBlockFrames, 1)) * static_cast<std::size_t>(m_channels), 0.0f);
     publish();
 }
 
@@ -142,6 +144,22 @@ void RenderCore::setSource(std::shared_ptr<AudioSource> source) {
 std::shared_ptr<AudioSource> RenderCore::source() const {
     std::lock_guard lock(m_mutex);
     return m_source;
+}
+
+void RenderCore::setOverlay(std::shared_ptr<AudioSource> overlay) {
+    std::lock_guard lock(m_mutex);
+    std::shared_ptr<AudioSource> old = std::exchange(m_overlay, std::move(overlay));
+    m_overlayPtr.store(m_overlay.get(), std::memory_order_seq_cst);
+    const std::uint64_t counter = m_blockCounter.load(std::memory_order_seq_cst);
+    if (old) {
+        m_retired.push_back({std::move(old), counter}); // released like a replaced source (see "Source lifetime")
+    }
+    collectRetiredLocked();
+}
+
+std::shared_ptr<AudioSource> RenderCore::overlay() const {
+    std::lock_guard lock(m_mutex);
+    return m_overlay;
 }
 
 void RenderCore::collectRetired() {
@@ -296,6 +314,7 @@ void RenderCore::process(float* out, std::uint32_t frames, std::int64_t nowNs) n
     const rt::ScopedDenormalsOff denormals;   // FTZ / DAZ: a filter ringing down in silence never costs denormal math
     m_blockCounter.fetch_add(1, std::memory_order_seq_cst); // enter block (odd), see "Source lifetime"
     AudioSource* const source = m_sourcePtr.load(std::memory_order_seq_cst);
+    AudioSource* const overlay = m_overlayPtr.load(std::memory_order_seq_cst);
 
     // 1. A new device epoch (reopen, switch, fallback, reroute): the stream's timing starts over. Device frames
     //    stay continuous in this engine, so the transport continues where rendering left off.
@@ -349,6 +368,27 @@ void RenderCore::process(float* out, std::uint32_t frames, std::int64_t nowNs) n
         }
         declickPiece(chunk, n, audible, source, piece.timeline, piece.speed);
         done += n;
+    }
+
+    // 3b. 0.5: the overlay (one-shot previews such as audio scrubbing) on top, whatever the transport does: paused,
+    //     prerolling or at any speed. Its time is the device's (frames since start); it never reads or moves the
+    //     transport map, so the clock below does not move for it. It brings its own fades (no de-click here).
+    if (overlay != nullptr && !m_overlayScratch.empty()) {
+        const auto blockFrames = static_cast<std::uint32_t>(m_overlayScratch.size() / channels);
+        for (std::uint32_t at = 0; at < frames;) {
+            const std::uint32_t n = std::min(frames - at, blockFrames);
+            const std::size_t samples = static_cast<std::size_t>(n) * channels;
+            const std::span<float> scratch(m_overlayScratch.data(), samples);
+            overlay->render(scratch, m_channels, rate,
+                            Ticks{timemath::mulDivSaturate(m_deviceFrame + at, m_ticksPerFrame, 1, Rounding::Floor)});
+            float* const chunk = out + static_cast<std::size_t>(at) * channels;
+            for (std::size_t i = 0; i < samples; ++i) {
+                if (std::isfinite(scratch[i])) {
+                    chunk[i] += scratch[i];
+                }
+            }
+            at += n;
+        }
     }
 
     // 4. Clock. The first frame of this block is heard `latency` frames after the frames already queued, so at

@@ -93,6 +93,14 @@ if(WIN32)
     set(CPACK_WIX_PATCH_FILE "${CMAKE_CURRENT_LIST_DIR}/wix/wabcut-patch.xml")
     set(CPACK_WIX_PROPERTY_ARPCOMMENTS "Open-source non-linear video editor")
     set(CPACK_WIX_PROPERTY_ARPCONTACT "Wabcut contributors")
+
+    # Code signing (docs/release.md, "Code signing"): with WABCUT_SIGN_RELEASE=1 in cpack's environment (the release
+    # workflow, when a certificate or Azure Trusted Signing is configured), every staged .exe and .dll is signed before
+    # packaging and the MSI after it (tools/sign-release.ps1). Otherwise the scripts do nothing.
+    set(WABCUT_SIGN_SCRIPT "${CMAKE_SOURCE_DIR}/tools/sign-release.ps1")
+    configure_file("${CMAKE_CURRENT_LIST_DIR}/SignPackage.cmake.in" "${CMAKE_BINARY_DIR}/packaging/SignPackage.cmake" @ONLY)
+    set(CPACK_PRE_BUILD_SCRIPTS "${CMAKE_BINARY_DIR}/packaging/SignPackage.cmake")
+    set(CPACK_POST_BUILD_SCRIPTS "${CMAKE_BINARY_DIR}/packaging/SignPackage.cmake")
 endif()
 
 # Per-generator settings, read by cpack (not by CMake): the package names, and the WiX tool on PATH.

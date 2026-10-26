@@ -8,7 +8,8 @@
 //     the command runs again on a copy of the project as it is now, on a worker like the first time (the expensive
 //     part is cached: Enhance Speech reuses its take, the audio sync its analysis), so the user's edits in the
 //     meantime are never overwritten and the GUI thread never runs it (review wave 5, A5-P2-24).
-// runNow() runs a quick command on the live project on the calling thread.
+// runNow() runs a quick command on the live project on the calling thread. 0.5: startBatch() runs several commands the
+// same way as one engine batch (Scene Edit Detection's markers and cuts: one undo step).
 
 #include "ShortsBridge.h" // BridgeJob
 
@@ -21,6 +22,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace wabcut::command {
 class CommandServices;
@@ -52,6 +54,12 @@ public:
     /// calling thread when synchronous); `done` after the result was committed.
     bool start(QObject* context, ProjectController* controller, std::shared_ptr<command::CommandServices> services,
                Request request, Progress progress, Done done);
+    /// 0.5: several commands as ONE engine batch on one copy of the project (each gets the current sequence unless it
+    /// names one), committed like start()'s as ONE undo step named after the first request's label; the first failure
+    /// stops them and nothing changes. Progress runs over the whole batch. `done` gets the batch's result: each
+    /// command's data in `steps` (StepResult), every warning in `warnings`. One request runs as start() does.
+    bool startBatch(QObject* context, ProjectController* controller, std::shared_ptr<command::CommandServices> services,
+                    std::vector<Request> requests, Progress progress, Done done);
 
     /// A quick command on the live project now (one undo step for an edit).
     static command::CommandResult runNow(ProjectController* controller, std::shared_ptr<command::CommandServices> services,
@@ -61,7 +69,7 @@ private:
     /// Runs on a snapshot of the project; when the project changed meanwhile, again (up to 3 times) - never on the GUI
     /// thread (review wave 5, A5-P2-24).
     bool launch(QObject* context, ProjectController* controller, std::shared_ptr<command::CommandServices> services,
-                Request request, Progress progress, Done done, int attempt);
+                std::vector<Request> requests, Progress progress, Done done, int attempt);
 
     BridgeJob m_job;
     bool m_synchronous = false;

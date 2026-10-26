@@ -12,7 +12,9 @@
 namespace wabcut::exporter {
 
 /// Hardware encoders tried, in order, for `codec` with VideoSettings::encoder == "auto". Policy: one per GPU
-/// vendor present (media::gpuVendors(), primary adapter first): NVIDIA → *_nvenc, AMD → *_amf, Intel → *_qsv,
+/// vendor present (media::gpuVendors(): the vendor of the GPU Wabcut uses first - the Settings choice, else the
+/// high-performance GPU, so a hybrid laptop's NVENC goes before its integrated GPU's AMF (issue #10) - then the others in
+/// high-performance order; the choice applies to the next export at once): NVIDIA → *_nvenc, AMD → *_amf, Intel → *_qsv,
 /// Apple → *_videotoolbox; on Linux AMD/Intel use *_vaapi. ProRes and DNxHR have no hardware encoder outside
 /// macOS. Overridden by setHardwareEncoderOrder(), else by the WABCUT_HW_ENCODERS environment variable
 /// (comma-separated FFmpeg encoder names; names for other codecs are ignored).

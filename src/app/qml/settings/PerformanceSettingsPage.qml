@@ -42,6 +42,77 @@ SettingsPage {
                          ? qsTr("Now: %1").arg(Playback.decodeBackend)
                          : qsTr("Hardware decoding is chosen per clip when playback starts.")
         }
+        // P0 round (issue #10): which GPU previews, decodes and exports (Gpu). Automatic is the high-performance GPU
+        // unless Windows Graphics settings choose one for Wabcut; the integrated GPU saves battery. Exports use a new
+        // choice at once, the preview and decoding after a restart.
+        SettingsRow {
+            objectName: "settingsGraphicsCard"
+            rowKey: "graphicsCard"
+            label: qsTr("Graphics card")
+            description: {
+                const parts = []
+                if (Gpu.restartNeeded)
+                    //: %1 is a GPU
+                    parts.push(qsTr("Exports use %1 now; the preview and playback switch to it when Wabcut restarts.").arg(Gpu.selectedName))
+                else if (Gpu.inUseName !== "")
+                    //: %1 is a GPU, %2 why ("the high-performance GPU, chosen automatically")
+                    parts.push(qsTr("Now: %1 (%2).").arg(Gpu.inUseName).arg(Gpu.inUseReason))
+                parts.push(Gpu.previewFollows
+                           ? qsTr("Automatic uses the high-performance GPU unless Windows Graphics settings choose one for Wabcut. The integrated GPU saves battery.")
+                           : qsTr("The system picks the preview's GPU; this choice orders the export encoders."))
+                return parts.join(" ")
+            }
+            PillButton {
+                objectName: "graphicsCardWindowsSettings"
+                visible: Gpu.previewFollows
+                compact: true
+                variant: "ghost"
+                text: qsTr("Windows settings")
+                tooltip: qsTr("Open Windows Graphics settings, where a GPU can be set for Wabcut")
+                onClicked: Gpu.openWindowsGraphicsSettings()
+            }
+            PillButton {
+                id: gpuButton
+                objectName: "graphicsCardButton"
+                compact: true
+                variant: "secondary"
+                iconName: "chevron-down"
+                LayoutMirroring.enabled: true    // label first, chevron last
+                LayoutMirroring.childrenInherit: true
+                readonly property var chosen: Gpu.adapters.find(a => a.key === Gpu.choice)
+                text: Gpu.choice === "" || !chosen ? qsTr("Automatic") : chosen.name
+                Accessible.name: qsTr("Graphics card: %1").arg(text)
+                onClicked: gpuMenu.popup(gpuButton, 0, gpuButton.height + Theme.space(1))
+
+                ContextMenu {
+                    id: gpuMenu
+                    objectName: "graphicsCardMenu"
+
+                    ContextMenuItem {
+                        objectName: "graphicsCardAutomatic"
+                        text: Gpu.automaticText
+                        checkable: true
+                        checked: Gpu.choice === ""
+                        onTriggered: Gpu.choice = ""
+                    }
+                    ContextMenuSeparator {}
+                    Instantiator {
+                        model: Gpu.adapters
+                        delegate: ContextMenuItem {
+                            required property var modelData
+                            objectName: "graphicsCard_" + modelData.key
+                            text: modelData.detail !== "" ? qsTr("%1 · %2").arg(modelData.name).arg(modelData.detail)
+                                                          : modelData.name
+                            checkable: true
+                            checked: modelData.key === Gpu.choice
+                            onTriggered: Gpu.choice = modelData.key
+                        }
+                        onObjectAdded: (index, object) => gpuMenu.addItem(object as ContextMenuItem) // after Automatic, in order
+                        onObjectRemoved: (index, object) => gpuMenu.removeItem(object as ContextMenuItem)
+                    }
+                }
+            }
+        }
     }
 
     SettingsSection {

@@ -1205,6 +1205,58 @@ wabcut_ui_qml_sources(
         qml/monitor/TransportOverflowButton.qml
 )
 
+# 0.5 (p0 round, stream C): Scene Edit Detection… (`SceneDetect`: analysis.detectShots / clip.splitAtShots on a command
+# job, one undo step; its dialog) and Remove dead time's review sheet in the Highlights panel (`Moments`).
+target_sources(wabcut_ui PRIVATE src/bridge/SceneDetectBridge.h src/bridge/SceneDetectBridge.cpp)
+wabcut_ui_qml_sources(
+    QML_FILES
+        qml/dialogs/SceneEditDetectionDialog.qml
+        qml/panels/highlights/DeadTimeReview.qml
+)
+
+# 0.5 (p0 round, stream A): caption tracks as timeline lanes (TimelineViewCaptions.cpp, a block of TimelineView; the
+# caption track headers) and the approximate waveforms of nested, multicam and merged audio clips (NestedPeaks).
+target_sources(wabcut_ui PRIVATE src/bridge/TimelineViewCaptions.cpp src/bridge/NestedPeaks.h src/bridge/NestedPeaks.cpp
+                                 src/bridge/NestedMixPeaks.h src/bridge/NestedMixPeaks.cpp) # phase 2: rendered mixes
+wabcut_ui_qml_sources(QML_FILES qml/panels/timeline/CaptionTrackHeader.qml qml/panels/timeline/CaptionCueMenu.qml)
+
+# 0.5 (p0 round, stream D): the source clip transcript - the Transcript panel's Source mode (`SourceTranscript`: the
+# Source Monitor clip's words, a selection sets the source marks, Insert / Overwrite / Copy).
+target_sources(wabcut_ui PRIVATE src/bridge/SourceTranscriptBridge.h src/bridge/SourceTranscriptBridge.cpp)
+wabcut_ui_qml_sources(QML_FILES qml/panels/SourceTranscriptPage.qml)
+
+# 0.5 (p0 round, stream B): the Audio Meters panel (Window > Audio Meters; right of the timeline in the Edit preset). Audio
+# scrubbing itself is playback's (playback::AudioScrubber through editor::PlaybackSession; Playback.audioScrubbing).
+wabcut_ui_qml_sources(QML_FILES qml/panels/AudioMetersPanel.qml)
+
+# P0 round, stream E (issue #10 and updates). The `Gpu` singleton: Settings > Playback & performance > Graphics card over
+# media::GpuInfo (the preview's adapter itself is applied in main(), RhiPolicy's applyPreviewAdapter). The `Updates`
+# singleton: opt-in update checks - the signed version manifest (src/update: ECDSA P-256 through Windows CNG, the MSI's
+# Authenticode signature through WinVerifyTrust), the download with its size and SHA-256 checked, the MSI upgrade after
+# Wabcut closes - and qml/dialogs/UpdateDialog.qml (docs/release.md, "Updates").
+set(WABCUT_UPDATE_RELEASES_URL "https://github.com/sorsama/wabcut/releases" CACHE STRING
+    "Where releases and their wabcut-update.json manifest live (the manifest is <url>/latest/download/wabcut-update.json)")
+set(WABCUT_UPDATE_PUBLIC_KEY
+    "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEJA+tB2cvIDvjNIO/C3Urf7cm/pTCSwS2bwRVZ68IXMcc17Dow/MAbr7XoStikR5OeCgJ+efqNbimGlT7jnZplQ=="
+    CACHE STRING
+    "Public key(s) the update manifest must be signed with: base64 P-256 SubjectPublicKeyInfo, ';'-separated (tools/update-keys.py); empty: no update checks")
+target_sources(wabcut_ui PRIVATE
+    src/bridge/GpuBridge.h
+    src/bridge/GpuBridge.cpp
+    src/bridge/UpdateBridge.h
+    src/bridge/UpdateBridge.cpp
+    src/update/UpdateCrypto.h
+    src/update/UpdateCrypto.cpp
+    src/update/UpdateManifest.h
+    src/update/UpdateManifest.cpp)
+# Only the bridge sees the key and the address, so changing them rebuilds one file.
+set_property(SOURCE src/bridge/UpdateBridge.cpp APPEND PROPERTY COMPILE_DEFINITIONS
+    "WABCUT_UPDATE_RELEASES_URL=\"${WABCUT_UPDATE_RELEASES_URL}\"" "WABCUT_UPDATE_PUBLIC_KEY=\"${WABCUT_UPDATE_PUBLIC_KEY}\"")
+if(WIN32)
+    target_link_libraries(wabcut_ui PRIVATE bcrypt wintrust crypt32)
+endif()
+wabcut_ui_qml_sources(QML_FILES qml/dialogs/UpdateDialog.qml)
+
 # Every block's QML files and resources (wabcut_ui_qml_sources above), in one call.
 get_property(wabcut_ui_qml_files GLOBAL PROPERTY WABCUT_UI_QML_FILES)
 get_property(wabcut_ui_qml_resources GLOBAL PROPERTY WABCUT_UI_QML_RESOURCES)

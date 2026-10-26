@@ -2,7 +2,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 
 // Sequence (the menu bar, Premiere's order): settings and rendering, match frame, edits and trims, transitions, lift and
-// extract, gaps, replace, subsequences, zoom and snapping, selection. Every row is a keymap command (its shortcut shows;
+// extract, gaps, replace, subsequences, zoom, snapping and audio scrubbing, selection. Every row is a keymap command (its shortcut shows;
 // greyed out while it cannot run). The sequence pill's own menu (switch sequence, Reframe, Rough Cut...) stays as it is.
 MenuBarMenu {
     id: root
@@ -148,6 +148,16 @@ MenuBarMenu {
         checkable: true
         checked: Preferences.timelineSnapping
         onTriggered: checked = Qt.binding(() => Preferences.timelineSnapping)
+    }
+    // 0.5 (stream B): Premiere's Toggle Audio Scrubbing (Shift+S): a dragged playhead and frame steps play the sound there.
+    BarMenuItem {
+        id: audioScrubbing
+        objectName: "sequenceMenuAudioScrubbing"
+        text: qsTr("Audio Scrubbing")
+        command: "transport.toggleAudioScrubbing"
+        checkable: true
+        checked: Playback.audioScrubbing
+        onTriggered: audioScrubbing.checked = Qt.binding(() => Playback.audioScrubbing)
     }
     ContextMenuSeparator {}
     BarMenuItem {

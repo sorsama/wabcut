@@ -81,6 +81,10 @@ jobs:
     if: github.event_name != 'workflow_dispatch' || inputs.platforms == 'all' || inputs.platforms == 'windows'
     runs-on: windows-2025
     timeout-minutes: 300
+    outputs:
+      signed: ${{ steps.signing.outputs.signed }}
+      # The name the MSI is really signed with (read back from it in "Check the signatures"): the update manifest pins it.
+      publisher: ${{ steps.signatures.outputs.publisher }}
     env:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
@@ -149,10 +153,79 @@ jobs:
           path: ${{ steps.vcpkg.outputs.cache }}
           key: ${{ steps.vcpkg.outputs.key }}
 
+      # Code signing, when the repository is set up for it (docs/release.md, "Code signing"): Azure Trusted Signing
+      # (variables WABCUT_TRUSTED_SIGNING_ENDPOINT, WABCUT_TRUSTED_SIGNING_ACCOUNT, WABCUT_TRUSTED_SIGNING_PROFILE; secrets
+      # AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET), else a PFX certificate (secrets WABCUT_SIGN_PFX_BASE64,
+      # WABCUT_SIGN_PFX_PASSWORD), imported into this runner's user store only. Neither: the packages are built unsigned,
+      # as before, and the summary says so. cpack then signs every staged .exe and .dll before packaging and the MSI after
+      # it (cmake/packaging/SignPackage.cmake.in, tools/sign-release.ps1).
+      - name: Code signing setup
+        id: signing
+        shell: pwsh
+        env:
+          PFX_BASE64: ${{ secrets.WABCUT_SIGN_PFX_BASE64 }}
+          PFX_PASSWORD: ${{ secrets.WABCUT_SIGN_PFX_PASSWORD }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          TS_ENDPOINT: ${{ vars.WABCUT_TRUSTED_SIGNING_ENDPOINT }}
+          TS_ACCOUNT: ${{ vars.WABCUT_TRUSTED_SIGNING_ACCOUNT }}
+          TS_PROFILE: ${{ vars.WABCUT_TRUSTED_SIGNING_PROFILE }}
+          TS_CLIENT_VERSION: ${{ vars.WABCUT_TRUSTED_SIGNING_CLIENT_VERSION }}
+          PUBLISHER: ${{ vars.WABCUT_SIGN_PUBLISHER }}
+        run: |
+          $publisher = "$env:PUBLISHER"
+          if ($env:TS_ENDPOINT -and $env:AZURE_CLIENT_ID) {
+            # The Trusted Signing client: the dlib signtool loads (NuGet package Microsoft.Trusted.Signing.Client; pin it
+            # with the variable WABCUT_TRUSTED_SIGNING_CLIENT_VERSION, else the newest).
+            $id = 'microsoft.trusted.signing.client'
+            $version = "$env:TS_CLIENT_VERSION"
+            if (-not $version) {
+              $version = (Invoke-RestMethod "https://api.nuget.org/v3-flatcontainer/$id/index.json").versions[-1]
+            }
+            $dir = Join-Path $env:RUNNER_TEMP 'trusted-signing'
+            New-Item -ItemType Directory -Force $dir | Out-Null
+            $package = Join-Path $dir "$id.$version.zip"
+            Invoke-WebRequest "https://api.nuget.org/v3-flatcontainer/$id/$version/$id.$version.nupkg" -OutFile $package
+            Expand-Archive $package -DestinationPath (Join-Path $dir $version) -Force
+            $dlib = Get-ChildItem (Join-Path $dir $version) -Recurse -Filter Azure.CodeSigning.Dlib.dll |
+              Where-Object { $_.FullName -match '\\x64\\' } | Select-Object -First 1
+            if (-not $dlib) { throw "no x64 Azure.CodeSigning.Dlib.dll in $id $version" }
+            "WABCUT_TRUSTED_SIGNING_ENDPOINT=$env:TS_ENDPOINT" >> $env:GITHUB_ENV
+            "WABCUT_TRUSTED_SIGNING_ACCOUNT=$env:TS_ACCOUNT" >> $env:GITHUB_ENV
+            "WABCUT_TRUSTED_SIGNING_PROFILE=$env:TS_PROFILE" >> $env:GITHUB_ENV
+            "WABCUT_TRUSTED_SIGNING_DLIB=$($dlib.FullName)" >> $env:GITHUB_ENV
+            "WABCUT_SIGN_RELEASE=1" >> $env:GITHUB_ENV
+            "signed=true" >> $env:GITHUB_OUTPUT
+            "Packages signed with Azure Trusted Signing (client $version)" >> $env:GITHUB_STEP_SUMMARY
+          } elseif ($env:PFX_BASE64) {
+            $pfx = Join-Path $env:RUNNER_TEMP 'signing.pfx'
+            [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:PFX_BASE64))
+            try {
+              $password = ConvertTo-SecureString "$env:PFX_PASSWORD" -AsPlainText -Force
+              $cert = Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $password
+            } finally {
+              Remove-Item $pfx -Force
+            }
+            if (-not $publisher) { $publisher = $cert.GetNameInfo('SimpleName', $false) }
+            "WABCUT_SIGN_CERT_THUMBPRINT=$($cert.Thumbprint)" >> $env:GITHUB_ENV
+            "WABCUT_SIGN_RELEASE=1" >> $env:GITHUB_ENV
+            "signed=true" >> $env:GITHUB_OUTPUT
+            "Packages signed with the certificate of $publisher" >> $env:GITHUB_STEP_SUMMARY
+          } else {
+            "signed=false" >> $env:GITHUB_OUTPUT
+            "::notice::No code-signing certificate is configured: the packages are unsigned (docs/release.md, Code signing)."
+            "Packages **unsigned** (no certificate configured)" >> $env:GITHUB_STEP_SUMMARY
+          }
+          "publisher=$publisher" >> $env:GITHUB_OUTPUT
+
       # cpack builds the MSI and the portable ZIP, then both are checked the way a user meets them: the ZIP unpacked
       # and run, the MSI installed for this user, run, and uninstalled (cmake/packaging/PackageSmokeTest.ps1).
       - name: Package, install and run
         shell: pwsh
+        env:
+          # Trusted Signing's sign-in (DefaultAzureCredential); empty without it.
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
         run: |
           $env:WABCUT_QT_DIR = $env:QT_ROOT_DIR
           . ./tools/dev-env.ps1
@@ -162,6 +235,36 @@ jobs:
             -Generators 'ZIP;WIX'
           # 77 means the MSI part was skipped: a release needs it.
           exit $LASTEXITCODE
+
+      # Every signature valid, and all by one name: the MSI's signer, read back from it, becomes the publisher the update
+      # manifest pins (Trusted Signing has no local certificate to read it from earlier). A WABCUT_SIGN_PUBLISHER that
+      # differs from it fails the release here, instead of every Wabcut refusing the update later.
+      - name: Check the signatures
+        id: signatures
+        if: steps.signing.outputs.signed == 'true'
+        shell: pwsh
+        env:
+          EXPECTED_PUBLISHER: ${{ steps.signing.outputs.publisher }}
+        run: |
+          $msi = "build/win-msvc/package/wabcut-$env:VERSION-windows-x64.msi"
+          $unzipped = Join-Path $env:RUNNER_TEMP 'signed-zip'
+          Expand-Archive "build/win-msvc/package/wabcut-$env:VERSION-windows-x64-portable.zip" -DestinationPath $unzipped -Force
+          $files = @(Get-Item $msi) + @(Get-ChildItem $unzipped -Recurse -Include wabcut.exe, wabcut-cli.exe)
+          $signers = @()
+          foreach ($f in $files) {
+            $s = Get-AuthenticodeSignature -LiteralPath $f.FullName
+            "{0}: {1} ({2})" -f $f.Name, $s.Status, $s.SignerCertificate.Subject
+            if ($s.Status -ne 'Valid') { throw "$($f.Name) is not validly signed" }
+            $signers += $s.SignerCertificate.GetNameInfo([System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false)
+          }
+          $publisher = $signers[0]
+          if (-not $publisher) { throw "the MSI's signing certificate has no name" }
+          if (@($signers | Where-Object { $_ -cne $publisher }).Count -gt 0) { throw "the files are signed by different names: $($signers -join ', ')" }
+          if ($env:EXPECTED_PUBLISHER -and $env:EXPECTED_PUBLISHER -cne $publisher) {
+            throw "WABCUT_SIGN_PUBLISHER is '$env:EXPECTED_PUBLISHER' but the MSI is signed by '$publisher': fix the variable"
+          }
+          "publisher=$publisher" >> $env:GITHUB_OUTPUT
+          "Signed by **$publisher**" >> $env:GITHUB_STEP_SUMMARY
 
       - uses: actions/upload-artifact@v7
         with:
@@ -469,6 +572,7 @@ jobs:
       LINUX: ${{ needs.linux.result }}
       MACOS: ${{ needs.macos.result }}
       GH_TOKEN: ${{ github.token }}
+      HAVE_UPDATE_KEY: ${{ secrets.WABCUT_UPDATE_SIGNING_KEY != '' }}
     steps:
       - uses: actions/checkout@v7
 
@@ -485,6 +589,32 @@ jobs:
           cd ..
           python3 cmake/packaging/release_notes.py "$VERSION" "$LINUX" "$MACOS" > "$RUNNER_TEMP/notes.md"
           cat "$RUNNER_TEMP/notes.md"
+
+      # The in-app update's version manifest (docs/release.md, "Updates"): wabcut-update.json with the MSI's size and
+      # SHA-256, signed with the WABCUT_UPDATE_SIGNING_KEY secret (ECDSA P-256; read from the environment, never written
+      # to disk), then checked against the public key built into the app (WABCUT_UPDATE_PUBLIC_KEY in
+      # src/app/CMakeLists.txt), so a wrong secret fails here instead of in every Wabcut. Without the secret it is left
+      # out, and Wabcut's update check says it found no update information.
+      - name: Update manifest
+        if: env.HAVE_UPDATE_KEY == 'true'
+        env:
+          WABCUT_UPDATE_SIGNING_KEY: ${{ secrets.WABCUT_UPDATE_SIGNING_KEY }}
+          SIGNED: ${{ needs.windows.outputs.signed }}
+          PUBLISHER: ${{ needs.windows.outputs.publisher }}
+        run: |
+          python3 -m pip install --quiet "cryptography>=42,<51"
+          extra=()
+          if [ "$SIGNED" = "true" ]; then
+            # A signed installer is always pinned to its signer: Wabcut accepts no other name for it.
+            if [ -z "$PUBLISHER" ]; then echo "::error::the MSI is signed but its publisher is unknown"; exit 1; fi
+            extra+=(--authenticode --publisher "$PUBLISHER")
+          fi
+          python3 tools/update-keys.py manifest --version "$VERSION" --msi "dist/wabcut-$VERSION-windows-x64.msi" \
+            --url "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/wabcut-$VERSION-windows-x64.msi" \
+            --page "https://github.com/$GITHUB_REPOSITORY/releases/tag/$TAG" --notes-file "$RUNNER_TEMP/notes.md" \
+            --key-env WABCUT_UPDATE_SIGNING_KEY --out dist/wabcut-update.json "${extra[@]}"
+          key=$(python3 -c "import re; print(re.search(r'set\(WABCUT_UPDATE_PUBLIC_KEY\s+\"([^\"]+)\"', open('src/app/CMakeLists.txt').read()).group(1))")
+          python3 tools/update-keys.py verify --manifest dist/wabcut-update.json --public-key "$key"
 
       # A full release marked latest, not a pre-release, even while the version is 0.x: the README's Download link
       # is releases/latest, which skips pre-releases (the alpha status is in the release text). A re-run replaces the

@@ -1,5 +1,7 @@
 #include "RhiPolicy.h"
 
+#include <wabcut/media/GpuInfo.h>
+
 #include <QQuickWindow>
 #include <QtGui/qtguiglobal.h>
 
@@ -8,6 +10,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <string>
 
 // QVulkanInstance is only declared when the Vulkan headers are present at build time (Vulkan SDK / distro
 // package); without them the probe talks to the Vulkan loader library directly.
@@ -289,6 +292,17 @@ RhiBackend applyRhiBackend(const RhiChoice& choice, VulkanProbe probe) {
     qputenv("QSG_RHI_BACKEND", rhiBackendKey(backend).toLatin1());
     QQuickWindow::setGraphicsApi(toGraphicsApi(backend));
     return backend;
+}
+
+int applyPreviewAdapter(RhiBackend backend) {
+    const media::GpuSelection gpu = media::previewGpu(); // reads a QT_D3D_ADAPTER_INDEX set before start first
+    if ((backend != RhiBackend::D3D11 && backend != RhiBackend::D3D12) || !gpu.adapter || gpu.adapter->systemIndex < 0 ||
+        qEnvironmentVariableIsSet("QT_D3D_ADAPTER_INDEX"))
+        return -1;
+    qputenv("QT_D3D_ADAPTER_INDEX", QByteArray::number(gpu.adapter->systemIndex));
+    qInfo("Wabcut: the preview renders on %s (%s)", gpu.adapter->name.c_str(),
+          std::string(media::gpuReasonKey(gpu.reason)).c_str());
+    return gpu.adapter->systemIndex;
 }
 
 
