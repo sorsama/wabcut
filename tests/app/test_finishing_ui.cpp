@@ -1,6 +1,7 @@
 // M5d: the finishing UI — Effect Controls (effect stack, stopwatch and keyframes, the keyframe lane with drag, Alt
 // duplicate, rubber band and the interpolation menu), the Effects library, the Speed/Duration dialog, transitions on
 // the timeline (drop with handle feedback, selection, edge drag) and the Titles seam. Offscreen; no window is shown.
+// 0.5.1: the keyframe lane zooms (Ctrl/Alt+wheel at the pointer, Shift+wheel pans, the zoom bar).
 
 #include "ShellFixture.h"
 #include "TimelineHarness.h"
@@ -15,6 +16,7 @@
 #include <wabcut/model/Animations.h>
 #include <wabcut/model/GraphicOps.h>
 
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 #include <QCoreApplication>
@@ -24,13 +26,17 @@
 #include <QPointer>
 #include <QQuickItem>
 #include <QStyleHints>
+#include <QWheelEvent>
 
+#include <algorithm>
 #include <cmath>
 #include <functional>
+#include <limits>
 
 using namespace wabcut;
 using namespace wabcut::app;
 using namespace wabcut::test;
+using Catch::Approx;
 
 namespace {
 
@@ -88,6 +94,11 @@ QQuickItem* childNamed(QQuickItem* root, const char* name) {
 void sendMouse(Shell& shell, QEvent::Type type, QPointF scene, Qt::MouseButton button, Qt::MouseButtons buttons,
                Qt::KeyboardModifiers mods = {}) {
     QMouseEvent event(type, scene, scene, button, buttons, mods);
+    QCoreApplication::sendEvent(shell.window.get(), &event);
+}
+
+void sendWheel(Shell& shell, QPointF scene, int delta, Qt::KeyboardModifiers mods) {
+    QWheelEvent event(scene, scene, QPoint(), QPoint(0, delta), Qt::NoButton, mods, Qt::NoScrollPhase, false);
     QCoreApplication::sendEvent(shell.window.get(), &event);
 }
 
@@ -367,6 +378,112 @@ TEST_CASE("Keyframe lane: drag moves the selected keys in one undo step, Alt dup
     CHECK(fx.selectedKeyCount() == 0);
 }
 
+TEST_CASE("Keyframe lane zoom: at the pointer, pans inside the clip, five frames at most, another clip shows whole",
+          "[app][keyframes]") {
+    ProjectController controller;
+    EffectControlsModel& fx = *controller.effectControls();
+    const ClipId city = controller.primaryClip();
+    const Clip clip = controller.currentSequence()->findClip(city)->clip();
+    const Ticks frame = controller.frameTicks();
+    const QString opacity = QStringLiteral("p:opacity");
+    const double laneFrames = static_cast<double>(clip.duration().value) / static_cast<double>(frame.value);
+    REQUIRE(laneFrames > 100);
+    controller.setPlayhead(clip.start() + frame * 24);
+    fx.setAnimated(opacity, true);
+    controller.setPlayhead(clip.start() + frame * 96);
+    fx.setValue(opacity, 40.0);
+    fx.endEdit();
+    const double key0 = keyX(fx, opacity, 0);
+    CHECK_FALSE(fx.zoomed());
+    CHECK(fx.viewStart() == 0.0);
+    CHECK(fx.viewEnd() == 1.0);
+    CHECK(fx.laneStartText() == controller.formatTimecode(clip.start()));
+    CHECK(fx.laneEndText() == controller.formatTimecode(clip.end()));
+    int laneSignals = 0;
+    QObject::connect(&fx, &EffectControlsModel::laneChanged, [&] { ++laneSignals; });
+
+    // 4x in with the pointer a quarter of the way along: that time stays a quarter of the way along. Keys stay positions
+    // in the clip; the ruler shows the shown part.
+    fx.zoomLaneAt(4.0, 0.25);
+    CHECK(fx.zoomed());
+    CHECK(laneSignals >= 1);
+    CHECK(fx.viewEnd() - fx.viewStart() == Approx(0.25));
+    CHECK(fx.viewStart() + 0.25 * (fx.viewEnd() - fx.viewStart()) == Approx(0.25));
+    CHECK(keyX(fx, opacity, 0) == key0);
+    const auto timeAt = [&](double x) {
+        return clip.start() + Ticks{static_cast<std::int64_t>(std::llround(x * static_cast<double>(clip.duration().value)))};
+    };
+    CHECK(fx.laneStartText() == controller.formatTimecode(timeAt(fx.viewStart())));
+    CHECK(fx.laneEndText() == controller.formatTimecode(timeAt(fx.viewEnd())));
+
+    // The value graph samples the shown part as finely as the whole clip (97 points from viewStart to viewEnd).
+    fx.setGraphOpen(opacity, true);
+    const QVariantList path = fx.row(opacity).value(QStringLiteral("graph")).toMap().value(QStringLiteral("path")).toList();
+    REQUIRE(path.size() == 2 * 97);
+    CHECK(path.first().toDouble() == Approx(fx.viewStart()));
+    CHECK(path.value(path.size() - 2).toDouble() == Approx(fx.viewEnd()));
+
+    // Panning stays inside the clip; a view past an end keeps its width.
+    fx.panLane(-1.0);
+    CHECK(fx.viewStart() == 0.0);
+    CHECK(fx.viewEnd() == Approx(0.25));
+    fx.panLane(0.1);
+    CHECK(fx.viewStart() == Approx(0.1));
+    fx.setLaneView(0.9, 1.4);
+    CHECK(fx.viewStart() == Approx(0.5));
+    CHECK(fx.viewEnd() == 1.0);
+
+    // Five frames fill the lane at the most; out past the whole clip is the whole clip.
+    fx.zoomLaneAt(1e9, 0.5);
+    CHECK(fx.viewEnd() - fx.viewStart() == Approx(5.0 / laneFrames));
+    fx.zoomLaneAt(1e-9, 0.5);
+    CHECK_FALSE(fx.zoomed());
+    CHECK(fx.viewStart() == 0.0);
+    CHECK(fx.viewEnd() == 1.0);
+    fx.zoomLaneAt(2.0, 0.0);
+    CHECK(fx.viewStart() == 0.0);
+    CHECK(fx.viewEnd() == Approx(0.5));
+    fx.resetLaneZoom();
+    CHECK_FALSE(fx.zoomed());
+    fx.zoomLaneAt(std::nan(""), 0.5);
+    fx.setLaneView(0.2, std::numeric_limits<double>::infinity());
+    CHECK_FALSE(fx.zoomed());
+
+    // Paging from a laneChanged handler (the panel during playback): the view moves at once, the ruler's timecodes
+    // follow once the rebuild that signalled is done.
+    fx.zoomLaneAt(4.0, 0.0);
+    REQUIRE(fx.viewEnd() == Approx(0.25));
+    const QMetaObject::Connection paging = QObject::connect(&fx, &EffectControlsModel::laneChanged, [&] {
+        const double p = fx.playheadPosition();
+        if (p >= 0 && (p < fx.viewStart() || p > fx.viewEnd()))
+            fx.setLaneView(p, p + 0.25);
+    });
+    controller.setPlayhead(timeAt(0.5));
+    CHECK(fx.viewStart() == Approx(fx.playheadPosition()).margin(1e-9));
+    QCoreApplication::processEvents();
+    CHECK(fx.laneStartText() == controller.formatTimecode(timeAt(fx.viewStart())));
+    QObject::disconnect(paging);
+    fx.resetLaneZoom();
+
+    // Another clip in the lane shows whole; back to the first one, too.
+    Timeline tl(R"(
+        V1 tgt |AaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaBbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb|
+    )");
+    controller.resetProject(tl.state, tl.seq);
+    const ClipId a = tl.clip("V1@0");
+    const ClipId b = tl.clip("V1@40");
+    controller.selectClipById(a, ProjectController::Replace);
+    REQUIRE(fx.mode() == QStringLiteral("clip"));
+    fx.zoomLaneAt(4.0, 0.5);
+    CHECK(fx.zoomed());
+    controller.selectClipById(b, ProjectController::Replace);
+    CHECK_FALSE(fx.zoomed());
+    CHECK(fx.laneStartText() == controller.formatTimecode(f(40)));
+    // A 40-frame clip: five frames are an eighth of it.
+    fx.zoomLaneAt(1e9, 0.5);
+    CHECK(fx.viewEnd() - fx.viewStart() == Approx(5.0 / 40.0));
+}
+
 // ---- Effect Controls in the shell: clicks, the lane, the interpolation menu -----------------------------------------
 
 TEST_CASE("Effect Controls in the shell: stopwatch click, lane drag with the mouse, right-click interpolation menu", "[app][keyframes][qml]") {
@@ -501,6 +618,186 @@ TEST_CASE("Effect Controls in the shell: stopwatch click, lane drag with the mou
     });
     CHECK(savePreset != nullptr);
     CHECK(fx.selectedSections() == QStringList{blur}); // 0.4: the right-click selects the header it opened on
+
+    const QStringList messages = takeMessages();
+    INFO(join(messages));
+    CHECK(messages.isEmpty());
+}
+
+TEST_CASE("Effect Controls in the shell: Ctrl+wheel zooms the keyframe lane at the pointer; drag, pan and the zoom bar",
+          "[app][keyframes][qml]") {
+    resetSettings();
+    clearMessages();
+    Shell shell;
+    REQUIRE(shell.window != nullptr);
+    shell.theme->setProperty("reduceMotion", true);
+    auto* controller = shell.engine.singletonInstance<ProjectController*>("Wabcut", "ProjectController");
+    EffectControlsModel& fx = *controller->effectControls();
+    const ClipId city = controller->primaryClip();
+    const Clip clip = controller->currentSequence()->findClip(city)->clip();
+    const Ticks frame = controller->frameTicks();
+    const QString opacity = QStringLiteral("p:opacity");
+    const double laneFrames = static_cast<double>(clip.duration().value) / static_cast<double>(frame.value);
+    REQUIRE_FALSE(shell.grab().isNull());
+
+    // Opacity animated, keys at frames 24 and 96; its row scrolled to the top.
+    controller->setPlayhead(clip.start() + frame * 24);
+    fx.setAnimated(opacity, true);
+    controller->setPlayhead(clip.start() + frame * 96);
+    fx.setValue(opacity, 30.0);
+    fx.endEdit();
+    QObject* list = shell.object("effectControlsList");
+    REQUIRE(list != nullptr);
+    REQUIRE(QMetaObject::invokeMethod(list, "positionViewAtIndex", Q_ARG(int, fx.rowOf(QStringLiteral("h:opacity"))),
+                                      Q_ARG(int, 0)));
+    spin(50);
+    QQuickItem* lane = shell.item("keyframeLane");
+    REQUIRE(lane != nullptr);
+    REQUIRE(lane->isVisible());
+    QQuickItem* row = rowItem(shell, opacity);
+    REQUIRE(row != nullptr);
+    const double rowY = row->mapToItem(lane, QPointF(0, row->height() / 2)).y();
+    QQuickItem* zoomBar = shell.item("keyframeZoomBar");
+    REQUIRE(zoomBar != nullptr);
+    CHECK_FALSE(zoomBar->isVisible());
+
+    // A plain wheel over the lane is the rows' (they scroll up): the lane does not zoom.
+    const double key1 = keyX(fx, opacity, 1);
+    const QPointF at = lane->mapToScene(QPointF(key1 * lane->width(), rowY));
+    const double rowsAt = list->property("contentY").toDouble();
+    REQUIRE(rowsAt > 0);
+    sendWheel(shell, at, 120, Qt::NoModifier);
+    spin(100);
+    CHECK_FALSE(fx.zoomed());
+    CHECK(list->property("contentY").toDouble() < rowsAt);
+    REQUIRE(QMetaObject::invokeMethod(list, "positionViewAtIndex", Q_ARG(int, fx.rowOf(QStringLiteral("h:opacity"))),
+                                      Q_ARG(int, 0)));
+    spin(50);
+
+    // Ctrl+wheel up three notches over the second key: zoomed in about it, the key still under the pointer, drawn
+    // there; the zoom bar shows.
+    for (int i = 0; i < 3; ++i)
+        sendWheel(shell, at, 120, Qt::ControlModifier);
+    spin(30);
+    REQUIRE(fx.zoomed());
+    const double span = fx.viewEnd() - fx.viewStart();
+    CHECK(span == Approx(std::pow(1.25, -3)).margin(1e-9));
+    CHECK((key1 - fx.viewStart()) / span == Approx(key1).margin(1e-6));
+    CHECK(zoomBar->isVisible());
+    row = rowItem(shell, opacity);
+    REQUIRE(row != nullptr);
+    QQuickItem* diamond = findItem(row, [&](QQuickItem* i) {
+        if (!QString::fromLatin1(i->metaObject()->className()).startsWith(QLatin1String("KeyframeShape")) || !i->isVisible())
+            return false;
+        const QPointF c = i->mapToItem(lane, QPointF(i->width() / 2, i->height() / 2));
+        return std::abs(c.x() - key1 * lane->width()) < 2.0;
+    });
+    CHECK(diamond != nullptr);
+
+    // Drag that key six frames later while zoomed: six frames of the zoomed lane; one undo step.
+    const Ticks before = paramOf(*controller, city, ParamId::Opacity).curve()->keys[1].time;
+    const QPointF to = at + QPointF(lane->width() * 6.0 / (laneFrames * span), 0);
+    sendMouse(shell, QEvent::MouseButtonPress, at, Qt::LeftButton, Qt::LeftButton);
+    for (int i = 1; i <= 4; ++i)
+        sendMouse(shell, QEvent::MouseMove, at + (to - at) * (i / 4.0), Qt::NoButton, Qt::LeftButton);
+    sendMouse(shell, QEvent::MouseButtonRelease, to, Qt::LeftButton, Qt::NoButton);
+    spin(30);
+    CHECK(paramOf(*controller, city, ParamId::Opacity).curve()->keys[1].time == before + frame * 6);
+    CHECK(controller->undoText() == QStringLiteral("Undo Move Keyframes"));
+    REQUIRE(controller->undo());
+    spin(30);
+
+    // Shift+wheel down pans later by a tenth of the view (inside the clip).
+    const double start = fx.viewStart();
+    sendWheel(shell, at, -120, Qt::ShiftModifier);
+    spin(20);
+    CHECK(fx.viewStart() == Approx(std::clamp(start + span / 10, 0.0, 1.0 - span)).margin(1e-9));
+    CHECK(fx.viewEnd() - fx.viewStart() == Approx(span));
+
+    // Ctrl+wheel over the ruler zooms too; the ruler reads the shown part.
+    QQuickItem* ruler = shell.item("keyframeRuler");
+    REQUIRE(ruler != nullptr);
+    const QPointF onRuler = ruler->mapToScene(QPointF(ruler->width() - lane->width() / 2, ruler->height() / 2));
+    sendWheel(shell, onRuler, 120, Qt::ControlModifier);
+    spin(20);
+    CHECK(fx.viewEnd() - fx.viewStart() == Approx(span / 1.25).margin(1e-9));
+    CHECK(fx.laneStartText() != controller->formatTimecode(clip.start()));
+
+    // Dragging the zoom bar's thumb pans: a tenth of the bar is a tenth of the clip.
+    QQuickItem* thumb = shell.item("keyframeZoomThumb");
+    REQUIRE(thumb != nullptr);
+    REQUIRE_FALSE(shell.grab().isNull()); // a hidden window lays out the newly shown bar when it renders
+    REQUIRE(zoomBar->height() > 0);
+
+    // The zoomed lane with Opacity's value graph open (screenshot).
+    fx.setGraphOpen(opacity, true);
+    const QSize windowSize = shell.window->size();
+    shell.resize(windowSize.width(), 1280); // room for the graph row
+    REQUIRE_FALSE(shell.grab().isNull());
+    REQUIRE(QMetaObject::invokeMethod(list, "positionViewAtIndex", Q_ARG(int, fx.rowOf(QStringLiteral("h:opacity"))),
+                                      Q_ARG(int, 0)));
+    spin(50);
+    {
+        const QImage image = shell.grab();
+        REQUIRE_FALSE(image.isNull());
+        const double dpr = shell.window->effectiveDevicePixelRatio();
+        QQuickItem* panel = shell.item("effectControls");
+        REQUIRE(panel != nullptr);
+        const QRectF r = panel->mapRectToScene(QRectF(0, 0, panel->width(), panel->height()));
+        CHECK(image.copy(QRectF(r.topLeft() * dpr, r.size() * dpr).toRect())
+                  .save(outputDir() + QStringLiteral("/effect-controls-lane-zoom.png")));
+        // The curve is drawn where it runs flat (0.5.1: the curve renderer drew no line for a straight run): its
+        // accent stroke crosses a column of the graph after the last key.
+        QQuickItem* graph = childNamed(rowItem(shell, opacity), "valueGraph");
+        REQUIRE(graph != nullptr);
+        const QColor accent = shell.theme->property("accentStroke").value<QColor>();
+        const QPointF columnTop = graph->mapToScene(QPointF(graph->width() * 0.7, 0));
+        bool crossed = false;
+        for (int y = 0; y < static_cast<int>(graph->height()) && !crossed; ++y) {
+            const QColor c = image.pixelColor((QPointF(columnTop.x(), columnTop.y() + y) * dpr).toPoint());
+            crossed = std::abs(c.red() - accent.red()) + std::abs(c.green() - accent.green())
+                    + std::abs(c.blue() - accent.blue()) < 90;
+        }
+        CHECK(crossed);
+    }
+    fx.setGraphOpen(opacity, false);
+    shell.resize(windowSize.width(), windowSize.height());
+    spin(30);
+    REQUIRE_FALSE(shell.grab().isNull());
+    const double viewBefore = fx.viewStart();
+    const QPointF onThumb = thumb->mapToScene(QPointF(thumb->width() / 2, thumb->height() / 2));
+    const QPointF thumbTo = onThumb - QPointF(zoomBar->width() / 10, 0);
+    sendMouse(shell, QEvent::MouseButtonPress, onThumb, Qt::LeftButton, Qt::LeftButton);
+    for (int i = 1; i <= 5; ++i)
+        sendMouse(shell, QEvent::MouseMove, onThumb + (thumbTo - onThumb) * (i / 5.0), Qt::NoButton, Qt::LeftButton);
+    sendMouse(shell, QEvent::MouseButtonRelease, thumbTo, Qt::LeftButton, Qt::NoButton);
+    spin(30);
+    CHECK(fx.viewStart() == Approx(std::max(0.0, viewBefore - 0.1)).margin(1e-6));
+    // All the way in (five frames: the thumb at its narrowest): at the clip's end the thumb ends with the bar, at its
+    // start it starts with it.
+    fx.zoomLaneAt(1e9, 1.0);
+    fx.panLane(1.0);
+    REQUIRE(fx.viewEnd() == 1.0);
+    REQUIRE((fx.viewEnd() - fx.viewStart()) * zoomBar->width() < thumb->width()); // held at its narrowest
+    CHECK(thumb->x() + thumb->width() == Approx(zoomBar->width()).margin(0.5));
+    fx.panLane(-1.0);
+    CHECK(thumb->x() == Approx(0).margin(0.5));
+
+    // A double-click on the zoom bar shows the whole clip again; the bar goes.
+    const QPointF onBar = zoomBar->mapToScene(QPointF(zoomBar->width() / 2, zoomBar->height() / 2));
+    ulong stamp = 100000; // a double tap needs the two presses close together in time
+    for (int i = 0; i < 4; ++i) {
+        const bool press = i % 2 == 0;
+        QMouseEvent event(press ? QEvent::MouseButtonPress : QEvent::MouseButtonRelease, onBar, onBar,
+                          shell.window->mapToGlobal(onBar), Qt::LeftButton,
+                          press ? Qt::MouseButtons(Qt::LeftButton) : Qt::MouseButtons(Qt::NoButton), Qt::NoModifier);
+        event.setTimestamp(stamp += 40);
+        QCoreApplication::sendEvent(shell.window.get(), &event);
+    }
+    spin(30);
+    CHECK_FALSE(fx.zoomed());
+    CHECK_FALSE(zoomBar->isVisible());
+    CHECK(fx.laneStartText() == controller->formatTimecode(clip.start()));
 
     const QStringList messages = takeMessages();
     INFO(join(messages));

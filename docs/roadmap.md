@@ -8,6 +8,10 @@ will change as people use the editor and tell us what matters to them.
 
 ## Shipped
 
+### 0.5.1 (26 October 2026)
+- The Effect Controls keyframe lane zooms (Ctrl/Alt+wheel at the pointer, Shift+wheel pans, a zoom bar), and the
+  value graph draws the line of linear keys again.
+
 ### 0.5.0 (26 October 2026)
 Every open top-priority item, and the right GPU on hybrid laptops (issue #10):
 - Caption tracks as rows on the timeline, where captions are trimmed, moved, split and deleted like clips; nested,

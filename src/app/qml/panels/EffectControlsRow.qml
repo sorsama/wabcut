@@ -57,6 +57,13 @@ Item {
     /// Width of the keyframe lane on the right (0: no lane; the slider gets the room).
     property real laneWidth: 0
     readonly property bool hasLane: laneWidth > 0
+    /// 0.5.1: the part of the clip the lane shows (0..1 of the clip; InspectorPanel's zoom).
+    property real viewStart: 0
+    property real viewSpan: 1
+    /// A position in the clip (0..1: keys, the graph) in lane pixels.
+    function laneX(position: real): real {
+        return (position - viewStart) / viewSpan * laneWidth
+    }
     readonly property var controls: ProjectController.effectControls
     readonly property bool header: kind === "header"
     /// M5m (A.6): an audio plugin's header shows its badge and "Edit plugin…" (Plugins.effectInfo; `revision` re-reads it).
@@ -152,6 +159,8 @@ Item {
             anchors.topMargin: row.header ? Theme.space(2) : 1
             anchors.bottomMargin: row.header ? Theme.space(2) : 1
             width: row.laneWidth
+            // A zoomed lane cuts off what is outside the view (unzoomed, the end keys may stand half outside it).
+            clip: row.viewSpan < 1
             radius: row.header ? Theme.radiusClip : 0
             color: row.header ? (row.sectionKind === "transition" ? Theme.accentWash : Theme.raised) : "transparent"
             opacity: row.effectEnabled ? 1 : Theme.disabledOpacity
@@ -169,7 +178,7 @@ Item {
                 model: row.header || row.showGraph ? [] : row.keys
                 delegate: KeyframeShape {
                     required property var modelData
-                    x: Math.round(modelData.x * lane.width - width / 2)
+                    x: Math.round(row.laneX(modelData.x) - width / 2)
                     anchors.verticalCenter: parent ? parent.verticalCenter : undefined
                     shape: modelData.shape
                     selected: modelData.selected
@@ -194,9 +203,12 @@ Item {
                     border.width: Theme.hairline
                     border.color: Theme.border
                 }
+                // 0.5.1: the default renderer, multisampled. The curve renderer drew nothing for a polyline with a
+                // straight run (a linear key's flat stretch), so linear curves showed no line.
                 Shape {
                     anchors.fill: parent
-                    preferredRendererType: Shape.CurveRenderer
+                    layer.enabled: true
+                    layer.samples: 4
                     ShapePath {
                         strokeColor: Theme.accentStroke
                         strokeWidth: Theme.focusRingWidth
@@ -207,7 +219,7 @@ Item {
                                 const flat = row.graph && row.graph.path ? row.graph.path : []
                                 const points = []
                                 for (let i = 0; i + 1 < flat.length; i += 2)
-                                    points.push(Qt.point(flat[i] * graphArea.width, flat[i + 1] * graphArea.height))
+                                    points.push(Qt.point(row.laneX(flat[i]), flat[i + 1] * graphArea.height))
                                 return points
                             }
                         }
@@ -219,7 +231,7 @@ Item {
                         id: point
                         required property var modelData
                         anchors.fill: parent
-                        readonly property real kx: modelData.x * graphArea.width
+                        readonly property real kx: row.laneX(modelData.x)
                         readonly property real ky: modelData.y * graphArea.height
                         readonly property color handleColor: modelData.broken ? Theme.warning : Theme.accentStroke
 
@@ -227,7 +239,7 @@ Item {
                             visible: point.modelData.hasIn
                             fromX: point.kx
                             fromY: point.ky
-                            toX: point.modelData.inX * graphArea.width
+                            toX: row.laneX(point.modelData.inX)
                             toY: point.modelData.inY * graphArea.height
                             color: point.handleColor
                         }
@@ -235,21 +247,21 @@ Item {
                             visible: point.modelData.hasOut
                             fromX: point.kx
                             fromY: point.ky
-                            toX: point.modelData.outX * graphArea.width
+                            toX: row.laneX(point.modelData.outX)
                             toY: point.modelData.outY * graphArea.height
                             color: point.handleColor
                         }
                         HandleKnob {
                             objectName: "handleIn"
                             visible: point.modelData.hasIn
-                            atX: point.modelData.inX * graphArea.width
+                            atX: row.laneX(point.modelData.inX)
                             atY: point.modelData.inY * graphArea.height
                             border.color: point.handleColor
                         }
                         HandleKnob {
                             objectName: "handleOut"
                             visible: point.modelData.hasOut
-                            atX: point.modelData.outX * graphArea.width
+                            atX: row.laneX(point.modelData.outX)
                             atY: point.modelData.outY * graphArea.height
                             border.color: point.handleColor
                         }

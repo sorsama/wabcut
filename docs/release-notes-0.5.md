@@ -1,4 +1,4 @@
-# Wabcut 0.5: release notes (0.5.0)
+# Wabcut 0.5: release notes (0.5.0, 0.5.1)
 
 Windows 10/11 x64, with preview builds for Linux x64 and macOS on Apple silicon. Free and open source
 (GPL-3.0-or-later). No account, no subscription.
@@ -16,6 +16,20 @@ The project file format is still schema 18: Wabcut 0.5, 0.4, 0.3 and 0.2 open ea
 opens 0.1 projects. 0.5 adds nothing to the project file. Chapter markers are ordinary clip markers, which older
 versions show too, and the new choices (the caption rows, audio scrubbing, the Graphics card, updates, the Scene Edit
 Detection and dead-time options) are settings of Wabcut on your computer. Which caption rows are targeted is not saved.
+
+## 0.5.1 (26 October 2026)
+
+- **Zoom the keyframe lane in Effect Controls**, as in Premiere's Effect Controls timeline: Ctrl+wheel (or Alt+wheel)
+  over the lane or its ruler zooms in and out at the pointer, down to five frames across the lane, and Shift+wheel pans
+  it. A zoomed lane has a zoom bar under it: drag it to move along the clip, or double-click it to see the whole clip
+  again. The ruler shows the first and last frame on view, keys and Bezier handles are dragged as before (a zoomed drag
+  is finer), the value graph is drawn as finely as unzoomed, and the lane pages along with the playhead during
+  playback. Selecting another clip shows all of it. A plain wheel still scrolls the rows.
+- **Fix:** an animated parameter's value graph draws the line of linear keys and of flat stretches again; it could
+  show the keys with no line between them (Bezier curves were fine).
+
+Projects: unchanged (schema 18). Updating from 0.5.0: Help > Check for Updates… once updates are on (Settings >
+General > Updates), or install the new MSI over it.
 
 ## 0.5.0 (26 October 2026)
 

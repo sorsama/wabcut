@@ -591,6 +591,12 @@ unlocked sync-locked track.
   `sideKeyframesMaxWidth` 600 px, 36 % of the work area), animated over `durCollapse`.
   - The lane covers the clip. Its ruler shows the clip's first and last timecode and scrubs the playhead, whose line
     crosses every row.
+  - **Zoom (0.5.1):** Ctrl/Alt+wheel over the lane or the ruler zooms at the pointer (x1.25 a notch, down to five
+    frames across the lane), Shift+wheel or a sideways wheel pans; a plain wheel stays the rows' scroll. The ruler then
+    shows the first and last timecode on view, and a zoom bar (`keyframeZoomBar`, `space(1.5)` high, the Program
+    Monitor time bar's thumb) appears under the rows: drag the thumb to pan, double-click for the whole clip. Another
+    clip in the lane shows whole; during playback the view pages with the playhead. Lane positions stay 0..1 of the
+    clip in `EffectControlsModel` (`viewStart` / `viewEnd`); the panel maps its pixels through them.
   - **Shape, not colour alone:** each key's shape names its interpolation. Diamond = linear, square = hold,
     hourglass = Bezier, circle = ease in and out, half round = ease in or ease out (round on the eased side).
     Selected keys fill with the accent and grow (`grabScale`).

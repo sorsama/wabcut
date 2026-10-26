@@ -27,6 +27,8 @@
 // anchor; clip mode only). Backspace (effectControls.removeSelectedEffect) and Delete remove the selected stack effects
 // and reset the selected fixed sections; Copy / Cut put them on an in-session effects clipboard, and Paste puts them on
 // every selected clip (newest copy wins over the clip clipboard: ProjectController::clipboardChanged clears it).
+// 0.5.1: the lane zooms (Premiere's Effect Controls timeline): it shows [viewStart, viewEnd] of the clip, down to five
+// frames; another clip in the lane shows whole again. Lane positions stay 0..1 of the clip; the panel maps its pixels.
 
 #include "BridgeIds.h"
 #include "ParameterUi.h"
@@ -76,9 +78,13 @@ class EffectControlsModel : public QAbstractListModel {
     Q_PROPERTY(QString subtitle READ subtitle NOTIFY contextChanged FINAL)
     Q_PROPERTY(QString trackName READ trackName NOTIFY contextChanged FINAL)
     Q_PROPERTY(int colorIndex READ colorIndex NOTIFY contextChanged FINAL)
-    /// The keyframe lane covers the clip: its first and last frame as timecode.
+    /// The keyframe lane covers the clip: the first and last frame it shows (the clip's unless zoomed) as timecode.
     Q_PROPERTY(QString laneStartText READ laneStartText NOTIFY laneChanged FINAL)
     Q_PROPERTY(QString laneEndText READ laneEndText NOTIFY laneChanged FINAL)
+    /// 0.5.1: the part of the clip the lane shows, 0..1 of the clip (0 and 1: all of it), and whether that is less.
+    Q_PROPERTY(double viewStart READ viewStart NOTIFY laneChanged FINAL)
+    Q_PROPERTY(double viewEnd READ viewEnd NOTIFY laneChanged FINAL)
+    Q_PROPERTY(bool zoomed READ zoomed NOTIFY laneChanged FINAL)
     /// The playhead in the lane, 0..1; -1 when it is outside the clip.
     Q_PROPERTY(double playheadPosition READ playheadPosition NOTIFY laneChanged FINAL)
     Q_PROPERTY(int selectedKeyCount READ selectedKeyCount NOTIFY keySelectionChanged FINAL)
@@ -146,6 +152,9 @@ public:
     QString laneStartText() const { return m_laneStartText; }
     QString laneEndText() const { return m_laneEndText; }
     double playheadPosition() const { return m_playheadPosition; }
+    double viewStart() const { return m_viewStart; }
+    double viewEnd() const { return m_viewEnd; }
+    bool zoomed() const { return m_viewEnd - m_viewStart < 1.0 - 1e-9; }
     int selectedKeyCount() const { return static_cast<int>(m_selectedKeys.size()); }
     QString selectedKeyInterpolation() const;
     QString notice() const { return m_notice; }
@@ -261,6 +270,17 @@ public:
     /// Lane ruler scrub: the playhead to `x` of the clip.
     Q_INVOKABLE void seekLane(double x);
 
+    // ---- Lane zoom (0.5.1; Ctrl/Alt+wheel, Shift+wheel and the zoom bar) ----
+    /// Zooms the lane by `factor` (> 1 in, < 1 out), the time at `at` (0..1 across the shown lane: the pointer) staying
+    /// where it is. Five frames fill the lane at the most; the whole clip at the least.
+    Q_INVOKABLE void zoomLaneAt(double factor, double at);
+    /// Pans a zoomed lane by `dx` of the clip (it stays inside the clip).
+    Q_INVOKABLE void panLane(double dx);
+    /// Shows [start, end] of the clip: kept inside it (its width kept when it runs past an end) and to the zoom limits.
+    Q_INVOKABLE void setLaneView(double start, double end);
+    /// The whole clip again.
+    Q_INVOKABLE void resetLaneZoom();
+
     // ---- Value graph and Bezier handles (M5g) ----
     /// Opens or closes the value graph of a parameter row (animated parameters only).
     Q_INVOKABLE void setGraphOpen(const QString& row, bool open);
@@ -356,6 +376,13 @@ private:
     QString m_laneStartText, m_laneEndText;
     double m_playheadPosition = -1;
     TimeRange m_lane;
+    /// 0.5.1: the lane's shown part (0..1 of the clip), the clip it belongs to (another one resets it), and whether
+    /// laneChanged is owed for a new view.
+    double m_viewStart = 0, m_viewEnd = 1;
+    ClipId m_viewClip;
+    bool m_viewChanged = false;
+    /// The narrowest view: five frames of the lane's clip (1: the clip is that short, or there is no lane).
+    double minLaneSpan() const;
     std::set<QString> m_collapsed;
     std::set<KeyRef> m_selectedKeys;
     std::set<KeyRef> m_shownKeys; ///< keys the rows show (rebuilt with them)
