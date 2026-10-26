@@ -1,18 +1,30 @@
 pragma ComponentBehavior: Bound
 import QtQuick
 
-// The launch intro (design language v3, the brand sheet's "Launch intro · Assemble"): once when Wabcut starts, on the
-// canvas, the echo mark assembles in 2.1 s. One thin timeline splits into the mark's five clips (they fade in on the
-// middle row, thicken while moving to their rows, then trim to length) and the two echoes peel off behind it; then the
-// overlay fades away (Theme.durIntroFade). Main.qml calls play() when its window first shows. A click or Esc skips it;
-// with reduce motion play() finishes at once without showing anything. While not playing it is hidden and takes no
-// input.
+// The launch intro (design language v3, the brand sheet's "Launch intro · Assemble"): once when Wabcut starts, the echo
+// mark assembles in 2.1 s. One thin timeline splits into the mark's five clips (they fade in on the middle row, thicken
+// while moving to their rows, then trim to length) and the two echoes peel off behind it; then it fades away
+// (Theme.durIntroFade). A click or Esc skips it; with reduce motion play() finishes at once without showing anything.
+// While not playing it is hidden and takes no input.
+//
+// Wabcut plays it on the desktop before its window opens (LaunchSplash.cpp: a frameless, see-through window, so only the
+// mark shows): `backdrop: false` draws nothing behind the mark, and `holdAtEnd` keeps the assembled mark (assembled())
+// until dismiss() fades it out, while the window loads. With the defaults it covers its parent on the canvas and fades
+// by itself.
 Item {
     id: root
 
     /// The mark's size in px.
     property real markSize: 170
+    /// The canvas behind the mark (false: see-through).
+    property bool backdrop: true
+    /// After the assembly the mark stays until dismiss() (false: it fades away by itself).
+    property bool holdAtEnd: false
     readonly property bool playing: internals.playing
+    /// The mark is complete (played through or skipped).
+    readonly property bool complete: internals.complete
+    /// The mark is complete: with holdAtEnd it now waits for dismiss().
+    signal assembled()
     signal finished()
 
     function play() {
@@ -21,16 +33,28 @@ Item {
             return
         }
         intro.stop()
+        outro.stop()
         internals.reset()
         internals.focusBefore = root.Window.activeFocusItem
         internals.playing = true
         root.forceActiveFocus()
         intro.start()
     }
-    /// Ends the intro now (a click or Esc).
+    /// A click or Esc: ends the intro now; while held, completes the mark at once instead (dismiss() still ends it).
     function skip() {
-        if (internals.playing)
+        if (!internals.playing)
+            return
+        if (root.holdAtEnd)
+            internals.completeNow()
+        else
             internals.finish()
+    }
+    /// Fades the mark out and finishes (the end of a held intro; at any point, it fades from where it is).
+    function dismiss() {
+        if (!internals.playing || outro.running)
+            return
+        intro.stop()
+        outro.start()
     }
 
     anchors.fill: parent
@@ -45,6 +69,7 @@ Item {
     QtObject {
         id: internals
         property bool playing: false
+        property bool complete: false
         property Item focusBefore: null
         // The three phases of the clips (fade in, thicken and split, trim), the two echoes, and the overlay.
         property real fadeIn: 0
@@ -57,6 +82,7 @@ Item {
         readonly property real scale: Theme.durIntro / 2100
 
         function reset() {
+            complete = false
             fadeIn = 0
             split = 0
             trim = 0
@@ -64,8 +90,27 @@ Item {
             farEcho = 0
             fade = 1
         }
+        /// The assembly is over (played through, or skipped while held).
+        function assembledNow() {
+            complete = true
+            root.assembled()
+            if (!root.holdAtEnd && playing)
+                outro.start()
+        }
+        function completeNow() {
+            if (complete)
+                return
+            intro.stop()
+            fadeIn = 1
+            split = 1
+            trim = 1
+            nearEcho = 1
+            farEcho = 1
+            assembledNow()
+        }
         function finish() {
             intro.stop()
+            outro.stop()
             playing = false
             fade = 1
             const before = focusBefore
@@ -78,6 +123,7 @@ Item {
 
     Rectangle {
         anchors.fill: parent
+        visible: root.backdrop
         color: Theme.canvas
     }
 
@@ -175,8 +221,13 @@ Item {
                 }
             }
         }
+        ScriptAction { script: internals.assembledNow() }
+    }
+
+    SequentialAnimation {
+        id: outro
         NumberAnimation {
-            target: internals; property: "fade"; from: 1; to: 0; duration: Theme.durIntroFade
+            target: internals; property: "fade"; to: 0; duration: Theme.durIntroFade
             easing.type: Easing.OutCubic
         }
         ScriptAction { script: internals.finish() }

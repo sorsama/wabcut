@@ -1,7 +1,9 @@
 // Design language v3 "Echo": the echo mark (EchoMark) draws both brand inks at icon and logo sizes, its loaders
 // (EchoLoader) loop only without reduce motion and otherwise show the still mark, and the launch intro (LaunchIntro)
-// never shows in a window that is not shown and finishes at once under reduce motion. Offscreen; no window is shown.
+// finishes at once under reduce motion; on the desktop (LaunchSplash) it draws nothing behind the mark and holds the
+// complete mark until dismissed, and the saved preferences decide whether it plays. Offscreen; no window is shown.
 
+#include "LaunchSplash.h"
 #include "ShellFixture.h"
 
 #include <catch2/catch_test_macros.hpp>
@@ -10,7 +12,10 @@
 #include <QImage>
 #include <QQmlComponent>
 #include <QQuickItem>
+#include <QQuickWindow>
 #include <QSet>
+#include <QSettings>
+#include <QSurfaceFormat>
 #include <QUrl>
 
 #include <algorithm>
@@ -160,21 +165,107 @@ TEST_CASE("Echo loaders loop only without reduce motion and otherwise show the s
     CHECK(messages.isEmpty());
 }
 
-TEST_CASE("The launch intro stays hidden in a window that was not shown", "[app][design][echo]") {
+TEST_CASE("The launch intro plays on the desktop: see-through, held until dismissed, as the preferences say",
+          "[app][design][echo]") {
     resetSettings();
     clearMessages();
+
+    // main() shows it (LaunchSplash) unless Settings > Appearance turned it off or motion is reduced.
+    CHECK(wabcut::app::LaunchSplash::wanted());
+    {
+        QSettings settings;
+        settings.setValue(QStringLiteral("appearance/launchIntro"), QStringLiteral("false")); // as QtCore Settings saves it
+    }
+    CHECK_FALSE(wabcut::app::LaunchSplash::wanted());
+    {
+        QSettings settings;
+        settings.setValue(QStringLiteral("appearance/launchIntro"), true);
+        settings.setValue(QStringLiteral("appearance/reduceMotion"), true);
+    }
+    CHECK_FALSE(wabcut::app::LaunchSplash::wanted());
+    resetSettings();
+    CHECK(wabcut::app::LaunchSplash::wanted());
+
     Shell shell;
     REQUIRE(shell.window != nullptr);
-    shell.resize(kShotWidth, kShotHeight);
-    spin(100);
+    shell.theme->setProperty("reduceMotion", false);
+    // Main has none of its own any more: the splash plays before it opens.
+    CHECK(shell.item("launchIntro") == nullptr);
 
-    // Main mounts it and plays it only when its window first shows: the test window never does.
-    QQuickItem* intro = shell.item("launchIntro");
-    REQUIRE(intro != nullptr);
+    // The splash's set-up (LaunchSplash::show(): an alpha channel and a transparent colour) in a window that is never
+    // shown, grabbed offscreen. A hidden window does not size its content item itself (Shell::resize).
+    QQuickWindow window;
+    QSurfaceFormat format = window.requestedFormat();
+    format.setAlphaBufferSize(8);
+    window.setFormat(format);
+    window.setColor(Qt::transparent);
+    const int side = wabcut::app::LaunchSplash::kWindowSize;
+    window.resize(side, side);
+    window.contentItem()->setSize(QSizeF(side, side));
+    QQmlComponent component(&shell.engine);
+    component.setData("import QtQuick\nimport Wabcut\n"
+                      "LaunchIntro {\n"
+                      "    backdrop: false; holdAtEnd: true; markSize: 220\n"
+                      "    property int assembledCount: 0\n"
+                      "    property int finishedCount: 0\n"
+                      "    onAssembled: assembledCount += 1\n"
+                      "    onFinished: finishedCount += 1\n"
+                      "}\n",
+                      QUrl(QStringLiteral("qrc:/echo-motion/Splash.qml")));
+    std::unique_ptr<QObject> object(component.create());
+    INFO(component.errorString().toStdString());
+    REQUIRE(object);
+    auto* intro = qobject_cast<QQuickItem*>(object.get());
+    REQUIRE(intro);
+    intro->setParentItem(window.contentItem());
+    CHECK(intro->width() == side); // it fills the window, the mark in the middle
+    const auto count = [&](const char* name) { return intro->property(name).toInt(); };
+
+    REQUIRE(QMetaObject::invokeMethod(intro, "play"));
+    CHECK(intro->property("playing").toBool());
+    CHECK(intro->isVisible());
+    CHECK_FALSE(intro->property("complete").toBool());
+
+    // A click or Esc completes the mark at once; it stays until dismissed.
+    REQUIRE(QMetaObject::invokeMethod(intro, "skip"));
+    CHECK(intro->property("complete").toBool());
+    CHECK(count("assembledCount") == 1);
+    CHECK(intro->property("playing").toBool());
+    spin(600);
+    CHECK(intro->property("playing").toBool());
+    CHECK(intro->isVisible());
+    CHECK(count("finishedCount") == 0);
+
+    // Only the mark draws: the corners are clear, the mark has both inks at full strength.
+    const QImage image = window.grabWindow();
+    REQUIRE_FALSE(image.isNull());
+    CHECK(image.pixelColor(2, 2).alpha() == 0);
+    CHECK(image.pixelColor(image.width() - 3, image.height() - 3).alpha() == 0);
+    const InkCount drawn = inks(image, intro);
+    CHECK(drawn.violet);
+    CHECK(drawn.lime);
+    const double dpr = image.devicePixelRatio() > 0 ? image.devicePixelRatio() : 1.0;
+    // The middle clip (lime) at the mark's x 60 of 120, y 60.
+    const QPointF middle = intro->mapToScene(QPointF(intro->width() / 2, intro->height() / 2));
+    CHECK(image.pixelColor(static_cast<int>(middle.x() * dpr), static_cast<int>(middle.y() * dpr)).alpha() == 255);
+
+    // dismiss(): it fades out and finishes.
+    REQUIRE(QMetaObject::invokeMethod(intro, "dismiss"));
+    REQUIRE(waitFor([&] { return count("finishedCount") == 1; }, 5000));
     CHECK_FALSE(intro->property("playing").toBool());
     CHECK_FALSE(intro->isVisible());
-    CHECK_FALSE(intro->isEnabled());
+    CHECK(count("assembledCount") == 1);
 
+    // Played through without a skip, it assembles by itself and still holds.
+    REQUIRE(QMetaObject::invokeMethod(intro, "play"));
+    REQUIRE(waitFor([&] { return count("assembledCount") == 2; }, 10000));
+    spin(600);
+    CHECK(intro->property("playing").toBool());
+    CHECK(count("finishedCount") == 1);
+    REQUIRE(QMetaObject::invokeMethod(intro, "dismiss"));
+    REQUIRE(waitFor([&] { return count("finishedCount") == 2; }, 5000));
+
+    object.reset();
     const QStringList messages = takeMessages();
     INFO(join(messages));
     CHECK(messages.isEmpty());

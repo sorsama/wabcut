@@ -143,4 +143,20 @@ QUrl releasePage(const QString& releasesBase, const QString& version) {
     return QUrl(base + QStringLiteral("/tag/v") + version);
 }
 
+QString versionOfReleasePage(const QUrl& page) {
+    QString path = page.path();
+    while (path.endsWith(QLatin1Char('/'))) {
+        path.chop(1);
+    }
+    const qsizetype slash = path.lastIndexOf(QLatin1Char('/'));
+    if (slash < 0 || !path.left(slash).endsWith(QLatin1String("/tag"))) {
+        return {};
+    }
+    QString version = path.mid(slash + 1);
+    if (version.startsWith(QLatin1Char('v')) || version.startsWith(QLatin1Char('V'))) {
+        version.remove(0, 1);
+    }
+    return versionPattern().match(version).hasMatch() ? version : QString();
+}
+
 } // namespace wabcut::app::update

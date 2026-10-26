@@ -522,6 +522,79 @@ TEST_CASE("Updates: a tampered manifest or one signed with another key is refuse
 #endif
 }
 
+TEST_CASE("Updates: a release without its manifest is still found through releases/latest, and never installed",
+          "[app][updates]") {
+    // Where GitHub's releases/latest redirects: the version alone.
+    CHECK(update::versionOfReleasePage(QUrl(QStringLiteral("https://github.com/sorsama/wabcut/releases/tag/v0.5.1"))) ==
+          QStringLiteral("0.5.1"));
+    CHECK(update::versionOfReleasePage(QUrl(QStringLiteral("https://example.com/releases/tag/1.2.3/"))) == QStringLiteral("1.2.3"));
+    CHECK(update::versionOfReleasePage(QUrl(QStringLiteral("https://github.com/sorsama/wabcut/releases"))).isEmpty());
+    CHECK(update::versionOfReleasePage(QUrl(QStringLiteral("https://github.com/sorsama/wabcut/releases/tag/nightly"))).isEmpty());
+    CHECK(update::versionOfReleasePage(QUrl(QStringLiteral("https://github.com/sorsama/wabcut/releases/v0.5.1"))).isEmpty());
+#if !defined(_WIN32)
+    SKIP("the fake update server is set up with the signed cases (Windows CNG)");
+#else
+    resetSettings();
+    TestKey key;
+    // The release has no wabcut-update.json (a 404); its latest link redirects to `tag`.
+    const auto rigFor = [&](const QString& tag) {
+        auto rig = std::make_unique<Rig>(QList<QByteArray>{key.publicKey()});
+        UpdateBridge::Config c = rig->bridge.config();
+        c.latestUrl = rig->server.url(QStringLiteral("/latest"));
+        rig->bridge.setConfig(c);
+        rig->server.redirect(QStringLiteral("/latest"), tag);
+        return rig;
+    };
+
+    {
+        INFO("a newer version: offered with its release page only");
+        auto rig = rigFor(QStringLiteral("/releases/tag/v9.9.9"));
+        rig->check();
+        CHECK(rig->bridge.state() == QStringLiteral("available"));
+        CHECK(rig->bridge.latestVersion() == QStringLiteral("9.9.9"));
+        CHECK(rig->server.requests ==
+              QStringList({QStringLiteral("/latest/download/wabcut-update.json"), QStringLiteral("/latest")}));
+        CHECK_FALSE(rig->bridge.canInstall());
+        CHECK(rig->bridge.installHint().contains(QStringLiteral("release page")));
+        CHECK(rig->bridge.notes().isEmpty());
+        REQUIRE(rig->bridge.release().has_value());
+        CHECK_FALSE(rig->bridge.release()->verified);
+        CHECK(rig->bridge.release()->installerUrl.isEmpty());
+        CHECK(rig->bridge.release()->page == QUrl(QStringLiteral("https://github.com/sorsama/wabcut/releases/tag/v9.9.9")));
+        rig->bridge.download(); // nothing it could verify
+        CHECK(rig->bridge.state() == QStringLiteral("available"));
+        CHECK(rig->files().isEmpty());
+        CHECK(rig->server.requests.size() == 2);
+    }
+    {
+        INFO("an automatic check says so too");
+        auto rig = rigFor(QStringLiteral("/releases/tag/v9.9.9"));
+        QStringList announced;
+        QObject::connect(&rig->bridge, &UpdateBridge::updateAvailable, [&](const QString& v) { announced << v; });
+        rig->bridge.checkAutomatically(true);
+        REQUIRE(waitFor([&] { return rig->settled(); }, 30'000));
+        CHECK(rig->bridge.state() == QStringLiteral("available"));
+        CHECK(announced == QStringList{QStringLiteral("9.9.9")});
+    }
+    {
+        INFO("the version running: up to date");
+        auto rig = rigFor(QStringLiteral("/releases/tag/v0.4.0"));
+        rig->check();
+        CHECK(rig->bridge.state() == QStringLiteral("upToDate"));
+        CHECK(rig->bridge.latestVersion() == QStringLiteral("0.4.0"));
+    }
+    {
+        INFO("no release yet (GitHub's latest goes to the list): no update information");
+        auto rig = rigFor(QStringLiteral("/releases"));
+        rig->check();
+        CHECK(rig->bridge.state() == QStringLiteral("failed"));
+        CHECK(rig->bridge.error().contains(QStringLiteral("No update information")));
+        CHECK(rig->bridge.latestVersion().isEmpty());
+    }
+    resetSettings();
+#endif
+}
+
 TEST_CASE("Updates: a tampered installer is refused by its size and SHA-256 and deleted", "[app][updates]") {
 #if !defined(_WIN32)
     SKIP("manifest signatures are checked with Windows CNG");

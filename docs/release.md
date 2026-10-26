@@ -278,7 +278,10 @@ ECDSA P-256 over SHA-256. Wabcut verifies the signature with the public key buil
 `WABCUT_UPDATE_PUBLIC_KEY`, base64 SubjectPublicKeyInfo; several keys separated by `;` let a new key take over) through
 Windows CNG, and refuses a manifest that is unsigned, signed by another key, changed, incomplete or that points
 anywhere but `https://`. Then it compares versions: only a newer one is offered. A build with an empty
-`WABCUT_UPDATE_PUBLIC_KEY` never checks. `WABCUT_UPDATE_RELEASES_URL` moves the whole thing for a fork.
+`WABCUT_UPDATE_PUBLIC_KEY` never checks. `WABCUT_UPDATE_RELEASES_URL` moves the whole thing for a fork. A release
+published without its manifest (no signing secret, below) is still found: on a 404 the check asks where
+`.../releases/latest` redirects (`.../releases/tag/v0.5.1`) and offers that version, unverified, with its fixed release
+page only, as on Linux and macOS; nothing is downloaded or installed from it.
 
 **The install (Windows, installed with the MSI).** *Download and Install* fetches the MSI into
 `%LOCALAPPDATA%\Wabcut\Wabcut\updates`, hashing as it goes; a file that is larger, smaller or hashes differently than

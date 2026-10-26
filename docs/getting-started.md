@@ -29,8 +29,8 @@ Names in quotes are the exact labels you see in the app. Shortcuts are the Windo
 
 | Package | How |
 |---|---|
-| `wabcut-0.5.1-windows-x64.msi` | Double-click it. It installs **for your user only**, with no administrator rights, to `%LOCALAPPDATA%\Programs\Wabcut` (or a folder you choose). Wabcut appears in the Start menu and in Settings > Apps. The options page has an unticked *Open .wabcut project files with Wabcut* box: tick it to open projects by double-clicking them. |
-| `wabcut-0.5.1-windows-x64-portable.zip` | Unzip it anywhere, for example a USB drive, and run `bin\wabcut.exe`. Nothing is installed. |
+| `wabcut-0.5.2-windows-x64.msi` | Double-click it. It installs **for your user only**, with no administrator rights, to `%LOCALAPPDATA%\Programs\Wabcut` (or a folder you choose). Wabcut appears in the Start menu and in Settings > Apps. The options page has an unticked *Open .wabcut project files with Wabcut* box: tick it to open projects by double-clicking them. |
+| `wabcut-0.5.2-windows-x64-portable.zip` | Unzip it anywhere, for example a USB drive, and run `bin\wabcut.exe`. Nothing is installed. |
 
 **SmartScreen.** The packages are not code-signed yet, so Windows SmartScreen may say "Windows protected your PC".
 Choose **More info**, then **Run anyway**.
@@ -39,7 +39,7 @@ Choose **More info**, then **Run anyway**.
 downloaded AI models, settings and API keys stay.
 
 Admins can install silently:
-`msiexec /i wabcut-0.5.1-windows-x64.msi /qn [INSTALL_ROOT="D:\Apps\Wabcut"] [WABCUT_ASSOCIATE=1]`.
+`msiexec /i wabcut-0.5.2-windows-x64.msi /qn [INSTALL_ROOT="D:\Apps\Wabcut"] [WABCUT_ASSOCIATE=1]`.
 
 **Updates** (0.5) are off until you turn them on: **Settings > General > Updates > "Check for updates
 automatically"** looks once a day at most and says when a new version is out (**"Skip This Version"** keeps it quiet

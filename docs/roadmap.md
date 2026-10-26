@@ -8,6 +8,10 @@ will change as people use the editor and tell us what matters to them.
 
 ## Shipped
 
+### 0.5.2 (26 October 2026)
+- Update checks work (the releases now carry their signed update information), and the launch intro plays on the
+  desktop, see-through, while Wabcut starts.
+
 ### 0.5.1 (26 October 2026)
 - The Effect Controls keyframe lane zooms (Ctrl/Alt+wheel at the pointer, Shift+wheel pans, a zoom bar), and the
   value graph draws the line of linear keys again.

@@ -3520,28 +3520,8 @@ Window {
         visible: window.customFrame && !window.maximized
     }
 
-    // Design language v3: the echo mark's launch intro, over everything, once per launch when the window first shows
-    // (Main built hidden, as the tests do, never plays it). Preferences.launchIntro turns it off; reduce motion skips it.
-    LaunchIntro {
-        id: launchIntro
-        objectName: "launchIntro"
-        anchors.fill: parent
-        z: 1000
-        property bool launched: false
-        function launchOnce() {
-            if (launchIntro.launched || !window.visible)
-                return
-            launchIntro.launched = true
-            if (Preferences.launchIntro)
-                launchIntro.play()
-        }
-        Component.onCompleted: Qt.callLater(launchIntro.launchOnce)
-        Connections {
-            target: window
-            function onVisibleChanged() {
-                launchIntro.launchOnce()
-            }
-        }
-    }
+    // Design language v3: the echo mark's launch intro plays on the desktop before this window opens, in a see-through
+    // window of its own (src/LaunchSplash.cpp, main()), and fades out above it once it has drawn. Preferences.launchIntro
+    // turns it off; reduce motion skips it.
 }
 

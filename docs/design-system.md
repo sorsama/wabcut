@@ -181,6 +181,9 @@ nav and project cards. Semantic: success mint (dark) / `#0B7A5C` (light), warnin
 - **`EchoLoader`** (equalizer / chase / scan / build) and **`LoaderPill`** (a loader + label in a raised pill);
   `BeamProgress` is a solid pill bar and shows a LoaderPill when indeterminate (its `loader` picks the variant).
 - **`LaunchIntro`:** the 2.1 s assemble intro, once per launch (`Preferences.launchIntro`), skipped with reduce motion.
+  `main()` plays it before the main window exists, in a see-through frameless window of its own (`LaunchSplash`:
+  `backdrop: false`, `holdAtEnd: true`): the main window loads once the mark is complete and the mark fades out above
+  it after its first frame. A click or Esc completes the mark.
 - **Motion tokens:** `durState` 140, `durCollapse` 220, `durFast` 60, `durPress` 90, `durIntro` 2100, `durIntroFade`
   250, `easeSnapOut`, `easeIntro`. Reduce motion zeroes durations, stops the loaders and the intro, the playhead glow and
   the cut flash, and turns the workspace transition into a 120 ms fade.
@@ -233,7 +236,7 @@ to `build/<preset>/test-output/ui/`:
 - `compact-1100x700`, `popover-settings`, `popover-appearance`, `menu-sequences`;
 - `dark-ultraviolet@125` and `@150`;
 - `thai-type.png`.
-The launch intro never plays in these runs: it starts only when the window is first shown.
+The launch intro never plays in these runs: `main()` shows it (`LaunchSplash`), and the tests load Main without it.
 
 ## Feature records (M5a–M5h)
 
