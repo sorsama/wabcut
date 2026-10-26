@@ -63,4 +63,8 @@ int compareVersions(const QString& a, const QString& b);
 /// ".../releases/tag/v0.5.0"); empty for a version that is not x.y.z.
 QUrl releasePage(const QString& releasesBase, const QString& version);
 
+/// The version a release page's address names (".../releases/tag/v0.5.1" -> "0.5.1", where GitHub's releases/latest
+/// redirects); empty when its last part is not [v]x.y.z.
+QString versionOfReleasePage(const QUrl& page);
+
 } // namespace wabcut::app::update

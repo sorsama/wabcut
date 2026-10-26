@@ -1,4 +1,4 @@
-# Wabcut 0.5: release notes (0.5.0, 0.5.1)
+# Wabcut 0.5: release notes (0.5.0, 0.5.1, 0.5.2)
 
 Windows 10/11 x64, with preview builds for Linux x64 and macOS on Apple silicon. Free and open source
 (GPL-3.0-or-later). No account, no subscription.
@@ -16,6 +16,20 @@ The project file format is still schema 18: Wabcut 0.5, 0.4, 0.3 and 0.2 open ea
 opens 0.1 projects. 0.5 adds nothing to the project file. Chapter markers are ordinary clip markers, which older
 versions show too, and the new choices (the caption rows, audio scrubbing, the Graphics card, updates, the Scene Edit
 Detection and dead-time options) are settings of Wabcut on your computer. Which caption rows are targeted is not saved.
+
+## 0.5.2 (26 October 2026)
+
+- **Help > Check for Updates works.** 0.5.0 and 0.5.1 always said "No update information was found for the latest
+  release": the releases were published without the signed update information Wabcut reads. 0.5.1 now has it, and
+  every release from 0.5.2 on comes with its own, so 0.5.0 and 0.5.1 find this version and install it (with the MSI).
+  If a release ever comes out without it, Wabcut still says that a new version is out and opens its release page.
+- **The launch intro plays on your desktop**, like a game launcher's logo: the echo mark assembles on its own, with
+  nothing behind it, while Wabcut starts, and fades out above the window once the window is ready. Same animation as
+  before; a click or Esc completes it, and Settings > Appearance ("Play the intro when Wabcut starts") or Reduce
+  motion still turn it off.
+
+Projects: unchanged (schema 18). Updating from 0.5.0 or 0.5.1: Help > Check for Updates… once updates are on
+(Settings > General > Updates), or install the new MSI over it.
 
 ## 0.5.1 (26 October 2026)
 

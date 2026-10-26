@@ -3,6 +3,7 @@
 #include "CrashNotice.h"
 #include "GpuBridge.h"
 #include "HomeBridge.h"
+#include "LaunchSplash.h"
 #include "RhiPolicy.h"
 #include "SingleInstance.h"
 #include "StartupProbe.h"
@@ -17,6 +18,7 @@
 #include <QCoreApplication>
 #include <QGuiApplication>
 #include <QIcon>
+#include <QPointer>
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QQmlApplicationEngine>
@@ -137,6 +139,26 @@ int main(int argc, char* argv[]) {
     // same window, start on the editor.
     HomeBridge::setShowAtLaunch(true);
 
+    // Design language v3: the echo mark assembles on the desktop first, in a see-through window of its own
+    // (LaunchSplash); the main window loads under it once the mark is complete, and the mark fades out above it when the
+    // window has drawn. Not with the intro turned off or reduce motion (Settings > Appearance), for the startup
+    // benchmark (it measures the window), or in the process restarted on the software renderer.
+    QPointer<LaunchSplash> splash;
+    if (!startupProbe.active() && qEnvironmentVariable("QT_QUICK_BACKEND") != QLatin1String("software") &&
+        LaunchSplash::wanted()) {
+        const QVariantMap placed = restoredWindowProperties();
+        const QPoint centre = placed.contains(QStringLiteral("width"))
+                                  ? QRect(placed.value(QStringLiteral("x")).toInt(), placed.value(QStringLiteral("y")).toInt(),
+                                          placed.value(QStringLiteral("width")).toInt(),
+                                          placed.value(QStringLiteral("height")).toInt())
+                                        .center()
+                                  : QPoint();
+        splash = new LaunchSplash(centre, &app);
+        QObject::connect(splash, &LaunchSplash::finished, splash, &QObject::deleteLater);
+        if (!splash->show())
+            delete splash.data();
+    }
+
     // A scene graph that cannot initialize (broken driver, no usable device) would make Qt terminate the app; instead
     // the handler switches to the next graphics API and the window is loaded again by a fresh engine. This only
     // happens while the window starts up, before there is any work to lose.
@@ -162,8 +184,11 @@ int main(int argc, char* argv[]) {
         // Opt-in update checks (Settings > General > Updates; off by default): the daily one, if it is on.
         if (auto* updates = engine->singletonInstance<UpdateBridge*>("Wabcut", "Updates"))
             updates->startAutomaticChecks();
-        startupProbe.loaded(engine->rootObjects().isEmpty() ? nullptr
-                                                            : qobject_cast<QQuickWindow*>(engine->rootObjects().constFirst()));
+        QQuickWindow* window =
+            engine->rootObjects().isEmpty() ? nullptr : qobject_cast<QQuickWindow*>(engine->rootObjects().constFirst());
+        startupProbe.loaded(window);
+        if (splash)
+            splash->dismissOnFirstFrame(window);
     };
     fallback.setHooks({
         .recreateWindows =
@@ -199,16 +224,23 @@ int main(int argc, char* argv[]) {
         if (auto* shell = engine->singletonInstance<AppShell*>("Wabcut", "AppShell"))
             shell->requestOpen(files);
     });
-    start();
-    // Later launches are taken from here on, with the window loaded: before, this process could not answer them (its
-    // event loop is not running yet), so they start on their own at once instead of waiting for it. A hand-over is only
-    // taken while there is a window to open it in (else "no": that launch starts on its own, nothing is dropped). A
-    // Wabcut already running keeps the name (listen() is false; this one is a separate Wabcut then). AppShell's
-    // singleInstance (C++ diagnostics; QML does not read it) is known from here on.
-    if (takesLaunches) {
-        instance.setReady([&engine] { return engine && !engine->rootObjects().isEmpty(); });
-        AppShell::setSingleInstance(instance.listen());
-    }
+    const auto launch = [&] {
+        start();
+        // Later launches are taken from here on, with the window loaded: before, this process could not answer them
+        // (its event loop is not running yet, or the window is not there), so they start on their own at once instead
+        // of waiting for it. A hand-over is only taken while there is a window to open it in (else "no": that launch
+        // starts on its own, nothing is dropped). A Wabcut already running keeps the name (listen() is false; this one
+        // is a separate Wabcut then). AppShell's singleInstance (C++ diagnostics; QML does not read it) is known from
+        // here on.
+        if (takesLaunches) {
+            instance.setReady([&engine] { return engine && !engine->rootObjects().isEmpty(); });
+            AppShell::setSingleInstance(instance.listen());
+        }
+    };
+    if (splash)
+        QObject::connect(splash, &LaunchSplash::assembled, &app, launch, Qt::SingleShotConnection);
+    else
+        launch();
     const int code = QGuiApplication::exec();
     wabcut::crash::markCleanExit(); // the next start shows no notice for this run
     // An update the user agreed to install (Help > Check for Updates...): it starts once Wabcut has closed normally, so

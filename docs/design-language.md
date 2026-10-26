@@ -137,7 +137,9 @@ Transitions are white with a black diagonal.
 - App icon: the mark on a `#1D1D20` tile (radius 22%), drawn per size: 16–24 px three clips, 32–48 px one echo, 64 px
   and up the full mark.
 - **Launch intro** (once per launch, 2.1 s, skipped with reduce motion or in Settings): one thin line splits into five
-  tracks, trims to length, then the echoes peel off. A click or Esc skips it.
+  tracks, trims to length, then the echoes peel off. It plays on the desktop with nothing behind the mark (a
+  see-through, frameless window, the way a game launcher's logo does), holds while the editor loads, then fades out
+  above the opened window. A click or Esc completes it.
 - **Loaders**, all built from the mark and static under reduce motion: **Equalizer** (audio analysis, loudness),
   **Chase** (opening projects, waiting on the assistant), **Scan** (render, preview and export), **Build** (imports,
   proxies, conforming). With a label they sit in a raised pill ("Analyzing audio").

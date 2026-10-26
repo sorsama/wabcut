@@ -997,11 +997,14 @@ wabcut_ui_qml_sources(
 
 # UX rework (stream S, editor shell): `AppShell` (files another launch hands over), the single-instance handshake
 # (SingleInstance: a local socket, so Qt Network) and the main window's place kept between runs (WindowPlacement); the
-# last two are used by main() only (and their tests).
+# last two are used by main() only (and their tests). So is LaunchSplash: the echo mark's launch intro on the desktop, in
+# a see-through window of its own, before the main window opens (qml/onboarding/LaunchIntro.qml).
 find_package(Qt6 REQUIRED COMPONENTS Network)
 target_sources(wabcut_ui PRIVATE
     src/bridge/AppShell.h
     src/bridge/AppShell.cpp
+    src/LaunchSplash.h
+    src/LaunchSplash.cpp
     src/SingleInstance.h
     src/SingleInstance.cpp
     src/WindowPlacement.h

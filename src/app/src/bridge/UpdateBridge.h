@@ -7,7 +7,9 @@
 //   * A check fetches the version manifest of the latest GitHub release (WABCUT_UPDATE_RELEASES_URL +
 //     "/latest/download/wabcut-update.json"), verifies its ECDSA P-256 signature against the public key(s) built into
 //     the app (WABCUT_UPDATE_PUBLIC_KEY; UpdateManifest.h) and compares versions. Nothing about the user or the projects
-//     is sent: a plain GET with a "Wabcut/<version>" user agent.
+//     is sent: a plain GET with a "Wabcut/<version>" user agent. A release without a manifest (404) is still found: the
+//     check then reads the version from where WABCUT_UPDATE_RELEASES_URL + "/latest" redirects (".../tag/v0.5.1") and
+//     offers only that version's fixed release page, as on Linux and macOS - nothing unverified is ever installed.
 //   * Windows, installed with the MSI: the installer is downloaded to the app data folder ("updates"), its size and
 //     SHA-256 must match the manifest, and its Authenticode signature (and signer) must be trusted when the manifest says
 //     it is signed. Then, with the user's consent, it installs as an MSI major upgrade after Wabcut has closed - never
@@ -84,6 +86,9 @@ public:
         QUrl manifestUrl;
         QList<QByteArray> publicKeys;
         QString releasesBase; ///< "https://github.com/sorsama/wabcut/releases"
+        /// Redirects to the latest release's page (releasesBase + "/latest"): the version when the release has no
+        /// manifest. Empty: a missing manifest is a failed check.
+        QUrl latestUrl;
         QString currentVersion;
         QString downloadFolder;
         bool allowLoopbackHttp = false;
@@ -197,6 +202,9 @@ signals:
 private:
     void startCheck(bool manual);
     void finishCheck(QNetworkReply* reply);
+    /// No manifest on the latest release: asks where config().latestUrl redirects, for the version alone.
+    void startLatestLookup();
+    void finishLatestLookup(QNetworkReply* reply);
     void finishDownload(QNetworkReply* reply);
     void verifyDownloaded(const QString& file);
     void setState(const QString& state, const QString& error = {});

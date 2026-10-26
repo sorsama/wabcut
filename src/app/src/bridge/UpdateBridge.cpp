@@ -139,6 +139,7 @@ UpdateBridge::Config UpdateBridge::defaultConfig() {
         c.releasesBase.chop(1);
     }
     c.manifestUrl = QUrl(c.releasesBase + QStringLiteral("/latest/download/wabcut-update.json"));
+    c.latestUrl = QUrl(c.releasesBase + QStringLiteral("/latest"));
     c.publicKeys = update::parsePublicKeys(QStringLiteral(WABCUT_UPDATE_PUBLIC_KEY));
     c.currentVersion = QStringLiteral(WABCUT_VERSION);
     c.downloadFolder = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation) + QStringLiteral("/updates");
@@ -268,6 +269,9 @@ QString UpdateBridge::installHint() const {
         return {};
     }
 #if defined(Q_OS_WIN)
+    if (!m_release->verified) {
+        return tr("This release came without update information Wabcut can verify, so it cannot install it from here: download it from its release page.");
+    }
     if (m_release->installerUrl.isEmpty()) {
         return tr("This release has no Windows installer yet. Its page has the downloads.");
     }
@@ -382,6 +386,10 @@ void UpdateBridge::finishCheck(QNetworkReply* reply) {
     }
     if (reply->error() != QNetworkReply::NoError) {
         const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        if (status == 404 && m_config.latestUrl.isValid()) {
+            startLatestLookup(); // a release published without its manifest: its version at least
+            return;
+        }
         //: %1 is the network's own message
         fail(status == 404 ? tr("No update information was found for the latest release.")
                            : tr("Could not reach the update server: %1").arg(reply->errorString()));
@@ -436,6 +444,58 @@ void UpdateBridge::finishCheck(QNetworkReply* reply) {
     setState(QStringLiteral("available"));
     if (!m_manual && !skipped) {
         emit updateAvailable(m_release->version);
+    }
+}
+
+void UpdateBridge::startLatestLookup() {
+    QNetworkRequest request(m_config.latestUrl);
+    request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("Wabcut/%1").arg(m_config.currentVersion));
+    request.setTransferTimeout(30 * 1000);
+    request.setAttribute(QNetworkRequest::CacheLoadControlAttribute, QNetworkRequest::AlwaysNetwork);
+    // Only where it points: the redirect itself names the version (".../releases/tag/v0.5.1").
+    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::ManualRedirectPolicy);
+    QNetworkReply* reply = network()->get(request);
+    m_reply = reply;
+    connect(reply, &QNetworkReply::downloadProgress, this, [reply](qint64 received, qint64) {
+        if (received > kManifestLimit) {
+            reply->abort(); // a page, not a redirect: no version in it
+        }
+    });
+    connect(reply, &QNetworkReply::finished, this, [this, reply] { finishLatestLookup(reply); });
+}
+
+void UpdateBridge::finishLatestLookup(QNetworkReply* reply) {
+    reply->deleteLater();
+    if (m_reply == reply) {
+        m_reply = nullptr;
+    }
+    const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    QUrl target = reply->attribute(QNetworkRequest::RedirectionTargetAttribute).toUrl();
+    if (target.isEmpty()) {
+        target = QUrl(QString::fromUtf8(reply->rawHeader("Location")));
+    }
+    const QString version = status >= 300 && status < 400 && !target.isEmpty()
+                                ? update::versionOfReleasePage(reply->url().resolved(target))
+                                : QString();
+    if (version.isEmpty()) {
+        // An answer without a version in it (no releases yet, a page instead of a redirect), or none at all.
+        fail(status != 0 ? tr("No update information was found for the latest release.")
+                         : tr("Could not reach the update server: %1").arg(reply->errorString()));
+        return;
+    }
+    // Unverified: only the version is known. The dialog links to that version's fixed release page (openReleasePage),
+    // never to an address from the network, and nothing can be downloaded or installed from it (canInstall).
+    update::UpdateRelease release;
+    release.version = version;
+    release.page = update::releasePage(m_config.releasesBase, version);
+    m_release = std::move(release);
+    if (update::compareVersions(version, m_config.currentVersion) <= 0) {
+        setState(QStringLiteral("upToDate"));
+        return;
+    }
+    setState(QStringLiteral("available"));
+    if (!m_manual && QSettings().value(kSkippedKey).toString() != version) {
+        emit updateAvailable(version);
     }
 }
 
