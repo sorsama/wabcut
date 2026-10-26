@@ -14,6 +14,9 @@ import QtQuick.Controls.Basic
 // stack). Rows come from ProjectController.effectControls; every edit is one undo step.
 // Sections (0.4): click a header to select it (Ctrl / Shift add), Backspace removes it, Ctrl+C / Ctrl+V copy it to the
 // selected clips, Esc clears the selection.
+// Lane zoom (0.5.1; Premiere's Effect Controls timeline): Ctrl/Alt+wheel over the lane or its ruler zooms at the pointer,
+// Shift+wheel (or a sideways wheel) pans; the zoom bar under a zoomed lane drags the view and a double-click on it shows
+// the whole clip again. A plain wheel still scrolls the rows; during playback the view pages along with the playhead.
 Panel {
     id: root
     objectName: "effectControls"
@@ -27,6 +30,33 @@ Panel {
                                       && list.width >= Theme.space(110)
     readonly property real laneWidth: laneShown ? Math.round(Math.min(Theme.space(90), list.width * 0.42)) : 0
     readonly property real laneX: list.width - laneWidth
+    /// 0.5.1: the part of the clip the lane shows (0..1 of the clip; all of it unless zoomed).
+    readonly property real viewStart: controls.viewStart
+    readonly property real viewSpan: Math.max(1e-6, controls.viewEnd - controls.viewStart)
+
+    /// A point of the lane (pixels from its left) as a position in the clip (0..1), and back.
+    function clipX(px: real): real {
+        return viewStart + px / Math.max(1, laneWidth) * viewSpan
+    }
+    function laneXOf(position: real): real {
+        return (position - viewStart) / viewSpan * laneWidth
+    }
+    /// The lane's wheel (at `px` of the lane): Ctrl/Alt zooms at the pointer, Shift or a sideways wheel pans; a plain
+    /// wheel is left to the rows (they scroll). Not while the zoom bar's thumb is dragged (it owns the view then).
+    function laneWheel(wheel: var, px: real) {
+        const delta = wheel.angleDelta.y !== 0 ? wheel.angleDelta.y : wheel.angleDelta.x
+        if (zoomDrag.active) {
+            wheel.accepted = true
+        } else if (delta === 0) {
+            wheel.accepted = false
+        } else if (wheel.modifiers & (Qt.ControlModifier | Qt.MetaModifier | Qt.AltModifier)) {
+            controls.zoomLaneAt(Math.pow(1.25, delta / 120), px / Math.max(1, laneWidth))
+        } else if ((wheel.modifiers & Qt.ShiftModifier) || wheel.angleDelta.y === 0) {
+            controls.panLane(-viewSpan * delta / 1200)
+        } else {
+            wheel.accepted = false
+        }
+    }
 
     title: qsTr("Effect Controls")
 
@@ -169,11 +199,12 @@ Panel {
                 MouseArea {
                     anchors.fill: parent
                     cursorShape: Qt.SizeHorCursor
-                    onPressed: mouse => root.controls.seekLane(mouse.x / width)
+                    onPressed: mouse => root.controls.seekLane(root.clipX(mouse.x))
                     onPositionChanged: mouse => {
                         if (pressed)
-                            root.controls.seekLane(mouse.x / width)
+                            root.controls.seekLane(root.clipX(mouse.x))
                     }
+                    onWheel: wheel => root.laneWheel(wheel, wheel.x)
                 }
             }
         }
@@ -197,6 +228,8 @@ Panel {
 
                 delegate: EffectControlsRow {
                     laneWidth: root.laneWidth
+                    viewStart: root.viewStart
+                    viewSpan: root.viewSpan
                 }
 
                 // Effect sections move with a spring when reordered; rows slide when sections open or close.
@@ -217,11 +250,12 @@ Panel {
                 }
             }
 
-            // Playhead across the lane.
+            // Playhead across the lane (none while a zoomed lane shows another part of the clip).
             Rectangle {
                 objectName: "lanePlayhead"
-                visible: root.laneShown && root.controls.playheadPosition >= 0
-                x: Math.round(root.laneX + root.controls.playheadPosition * root.laneWidth - width / 2)
+                readonly property real at: root.laneXOf(root.controls.playheadPosition)
+                visible: root.laneShown && root.controls.playheadPosition >= 0 && at >= -0.5 && at <= root.laneWidth + 0.5
+                x: Math.round(root.laneX + at - width / 2)
                 y: -ruler.height - Theme.space(2)
                 width: Theme.playheadWidth
                 height: parent.height + ruler.height + Theme.space(2)
@@ -266,9 +300,9 @@ Panel {
                     pressX = mouse.x
                     pressY = mouse.y
                     const key = rowKeyAt(mouse.y)
-                    const tolerance = Theme.space(2) / width
+                    const tolerance = Theme.space(2) / width * root.viewSpan
                     if (mouse.button === Qt.RightButton) {
-                        if (key !== "" && root.controls.pressKey(key, mouse.x / width, tolerance, 0))
+                        if (key !== "" && root.controls.pressKey(key, root.clipX(mouse.x), tolerance, 0))
                             keyMenu.popup(laneArea, mouse.x, mouse.y)
                         return
                     }
@@ -276,13 +310,14 @@ Panel {
                     const g = graphAt(mouse.x, mouse.y)
                     if (g) {
                         const q = mapToItem(g.graph, mouse.x, mouse.y)
-                        if (root.controls.pressHandle(g.row, q.x / g.graph.width, q.y / g.graph.height,
-                                                      Theme.space(2) / g.graph.width, Theme.space(2) / g.graph.height)) {
+                        if (root.controls.pressHandle(g.row, root.clipX(q.x), q.y / g.graph.height,
+                                                      Theme.space(2) / g.graph.width * root.viewSpan,
+                                                      Theme.space(2) / g.graph.height)) {
                             handleGraph = g.graph
                             return
                         }
                     }
-                    const hit = key !== "" && root.controls.pressKey(key, mouse.x / width, tolerance, mouse.modifiers)
+                    const hit = key !== "" && root.controls.pressKey(key, root.clipX(mouse.x), tolerance, mouse.modifiers)
                     if (hit) {
                         draggingKeys = root.controls.beginKeyDrag((mouse.modifiers & Qt.AltModifier) !== 0)
                     } else {
@@ -293,10 +328,10 @@ Panel {
                 onPositionChanged: mouse => {
                     if (handleGraph) {
                         const q = mapToItem(handleGraph, mouse.x, mouse.y)
-                        root.controls.dragHandle(q.x / handleGraph.width, q.y / handleGraph.height,
+                        root.controls.dragHandle(root.clipX(q.x), q.y / handleGraph.height,
                                                  (mouse.modifiers & Qt.AltModifier) !== 0)
                     } else if (draggingKeys) {
-                        root.controls.dragKeys((mouse.x - pressX) / width)
+                        root.controls.dragKeys((mouse.x - pressX) / width * root.viewSpan)
                     } else if (banding) {
                         band = Qt.rect(Math.min(pressX, mouse.x), Math.min(pressY, mouse.y),
                                        Math.abs(mouse.x - pressX), Math.abs(mouse.y - pressY))
@@ -315,11 +350,12 @@ Panel {
                             if (key !== "" && rows.indexOf(key) < 0)
                                 rows.push(key)
                         }
-                        root.controls.selectKeysInRange(rows, band.x / width, (band.x + band.width) / width, mouse.modifiers)
+                        root.controls.selectKeysInRange(rows, root.clipX(band.x), root.clipX(band.x + band.width), mouse.modifiers)
                     }
                     draggingKeys = false
                     banding = false
                 }
+                onWheel: wheel => root.laneWheel(wheel, wheel.x)
 
                 Rectangle {
                     visible: laneArea.banding
@@ -392,6 +428,68 @@ Panel {
             }
         }
 
+        // 0.5.1: the zoom bar under a zoomed lane: the part of the clip it shows. Drag it to pan; a double-click shows the
+        // whole clip; the wheel zooms and pans as over the lane.
+        Item {
+            objectName: "keyframeZoomRow"
+            visible: root.laneShown && root.controls.zoomed
+            Layout.fillWidth: true
+            Layout.preferredHeight: Theme.space(1.5)
+
+            Rectangle {
+                id: zoomTrack
+                objectName: "keyframeZoomBar"
+                x: root.laneX
+                width: root.laneWidth
+                height: parent.height
+                radius: height / 2
+                color: Theme.sunken
+
+                MouseArea {
+                    anchors.fill: parent
+                    acceptedButtons: Qt.NoButton
+                    onWheel: wheel => root.laneWheel(wheel, wheel.x)
+                }
+                TapHandler {
+                    onDoubleTapped: root.controls.resetLaneZoom()
+                }
+                // The thumb travels the bar less its own width (it never gets narrower than space(3)), as the view
+                // travels the clip less its span.
+                Rectangle {
+                    id: zoomThumb
+                    objectName: "keyframeZoomThumb"
+                    readonly property real travel: Math.max(1, zoomTrack.width - width)
+                    x: root.viewSpan >= 1 ? 0 : root.viewStart / (1 - root.viewSpan) * travel
+                    width: Math.max(Theme.space(3), root.viewSpan * zoomTrack.width)
+                    height: parent.height
+                    radius: height / 2
+                    color: zoomDrag.active || zoomHover.hovered ? Theme.accentStroke : Theme.borderStrong
+
+                    HoverHandler {
+                        id: zoomHover
+                        cursorShape: Qt.SizeHorCursor
+                    }
+                    DragHandler {
+                        id: zoomDrag
+                        property real startView: 0
+                        target: null
+                        xAxis.enabled: true
+                        yAxis.enabled: false
+                        onActiveChanged: {
+                            if (active)
+                                startView = root.viewStart
+                        }
+                        onActiveTranslationChanged: {
+                            if (active) {
+                                const start = startView + activeTranslation.x / zoomThumb.travel * (1 - root.viewSpan)
+                                root.controls.setLaneView(start, start + root.viewSpan)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // Channel Volume (A.9, M5n): the volume of each channel of the clip's sound (Premiere's Channel Volume).
         ChannelVolumeSection {
             Layout.fillWidth: true
@@ -436,6 +534,17 @@ Panel {
         } else if (event.key === Qt.Key_Escape && event.modifiers === Qt.NoModifier && root.controls.selectedSections.length > 0) {
             root.controls.clearSectionSelection()
             event.accepted = true
+        }
+    }
+
+    // 0.5.1: during playback a zoomed lane pages along with the playhead (the timeline does the same).
+    Connections {
+        target: root.controls
+        enabled: root.laneShown && root.controls.zoomed && Playback.playing
+        function onLaneChanged() {
+            const p = root.controls.playheadPosition
+            if (p >= 0 && (p < root.controls.viewStart || p > root.controls.viewEnd))
+                root.controls.setLaneView(p, p + root.viewSpan)
         }
     }
 

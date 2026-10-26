@@ -377,14 +377,21 @@ QVariantMap EffectControlsModel::graphOf(const Row& r, const Curve& curve, const
         return Ticks{static_cast<std::int64_t>(std::llround(seconds * static_cast<double>(kTicksPerSecond)))};
     };
 
-    // The curve across the lane, then the keys and their handles (UI units).
-    std::vector<std::pair<double, double>> samples;
-    samples.reserve(kSamples + 1);
-    for (int i = 0; i <= kSamples; ++i) {
-        const double x = static_cast<double>(i) / kSamples;
-        const Ticks t{m_lane.start.value + static_cast<std::int64_t>(std::llround(x * laneLength))};
-        samples.emplace_back(x, ui(curve.valueAt(clip.curveTimeAt(t))));
-    }
+    // The curve across the lane, then the keys and their handles (UI units). 0.5.1: the path covers the part of the
+    // clip the lane shows (as finely zoomed as unzoomed); the value range is fitted to the whole clip, so it stays put
+    // while the lane pans.
+    const auto sampleAcross = [&](double from, double to) {
+        std::vector<std::pair<double, double>> out;
+        out.reserve(kSamples + 1);
+        for (int i = 0; i <= kSamples; ++i) {
+            const double x = from + (to - from) * static_cast<double>(i) / kSamples;
+            const Ticks t{m_lane.start.value + static_cast<std::int64_t>(std::llround(x * laneLength))};
+            out.emplace_back(x, ui(curve.valueAt(clip.curveTimeAt(t))));
+        }
+        return out;
+    };
+    const std::vector<std::pair<double, double>> samples = sampleAcross(0.0, 1.0);
+    const std::vector<std::pair<double, double>> shown = zoomed() ? sampleAcross(m_viewStart, m_viewEnd) : samples;
     struct Point {
         std::size_t index;
         double x, v;
@@ -446,8 +453,8 @@ QVariantMap EffectControlsModel::graphOf(const Row& r, const Curve& curve, const
     const auto yOf = [&](double v) { return (hi - v) / (hi - lo); };
 
     QVariantList path;
-    path.reserve(static_cast<qsizetype>(samples.size() * 2));
-    for (const auto& sample : samples) {
+    path.reserve(static_cast<qsizetype>(shown.size() * 2));
+    for (const auto& sample : shown) {
         path.append(sample.first);
         path.append(yOf(sample.second));
     }
@@ -717,6 +724,21 @@ std::vector<EffectControlsModel::Row> EffectControlsModel::buildRows() {
                               + QString::number(pos->index + 1);
                 lane = laneClip->clip().timelineRange;
                 m_lane = lane;
+                // 0.5.1: another clip in the lane shows whole; a shortened one keeps its view inside the zoom limits.
+                const ClipId laneId = video ? *video : audio ? *audio : primary;
+                if (laneId != m_viewClip) {
+                    m_viewClip = laneId;
+                    if (m_viewStart != 0.0 || m_viewEnd != 1.0) {
+                        m_viewStart = 0.0;
+                        m_viewEnd = 1.0;
+                        m_viewChanged = true;
+                    }
+                } else if (m_viewEnd - m_viewStart < minLaneSpan()) {
+                    const double span = minLaneSpan();
+                    m_viewStart = span >= 1.0 ? 0.0 : std::clamp(m_viewStart, 0.0, 1.0 - span);
+                    m_viewEnd = span >= 1.0 ? 1.0 : m_viewStart + span;
+                    m_viewChanged = true;
+                }
                 if (video)
                     addClipSections(rows, seq->findClip(*video)->clip(), true);
                 if (audio)
@@ -737,16 +759,20 @@ std::vector<EffectControlsModel::Row> EffectControlsModel::buildRows() {
     QString laneStart, laneEnd;
     double playhead = -1;
     if (lane.duration > Ticks{}) {
-        laneStart = m_controller->formatTimecode(lane.start);
-        laneEnd = m_controller->formatTimecode(lane.end());
+        const auto at = [&](double x) {
+            return lane.start + Ticks{static_cast<std::int64_t>(std::llround(x * static_cast<double>(lane.duration.value)))};
+        };
+        laneStart = m_controller->formatTimecode(zoomed() ? at(m_viewStart) : lane.start);
+        laneEnd = m_controller->formatTimecode(zoomed() ? at(m_viewEnd) : lane.end());
         const Ticks p = m_controller->playhead();
         if (p >= lane.start && p <= lane.end())
             playhead = static_cast<double>((p - lane.start).value) / static_cast<double>(lane.duration.value);
     }
-    if (laneStart != m_laneStartText || laneEnd != m_laneEndText || playhead != m_playheadPosition) {
+    if (laneStart != m_laneStartText || laneEnd != m_laneEndText || playhead != m_playheadPosition || m_viewChanged) {
         m_laneStartText = laneStart;
         m_laneEndText = laneEnd;
         m_playheadPosition = playhead;
+        m_viewChanged = false;
         emit laneChanged();
     }
     return rows;
@@ -2097,6 +2123,64 @@ void EffectControlsModel::seekLane(double x) {
         return;
     const double clamped = std::clamp(x, 0.0, 1.0);
     m_controller->setPlayhead(m_lane.start + Ticks{static_cast<std::int64_t>(std::llround(clamped * static_cast<double>(m_lane.duration.value)))});
+}
+
+// ---- Lane zoom (0.5.1) ------------------------------------------------------------------------------
+
+double EffectControlsModel::minLaneSpan() const {
+    const Ticks frame = m_controller ? m_controller->frameTicks() : Ticks{};
+    if (m_lane.duration <= Ticks{} || frame <= Ticks{})
+        return 1.0;
+    return std::min(1.0, 5.0 * static_cast<double>(frame.value) / static_cast<double>(m_lane.duration.value));
+}
+
+void EffectControlsModel::zoomLaneAt(double factor, double at) {
+    if (!std::isfinite(factor) || factor <= 0.0 || !std::isfinite(at))
+        return;
+    const double pointer = std::clamp(at, 0.0, 1.0);
+    const double span = m_viewEnd - m_viewStart;
+    const double next = std::clamp(span / factor, minLaneSpan(), 1.0);
+    const double start = m_viewStart + pointer * (span - next);
+    setLaneView(start, start + next);
+}
+
+void EffectControlsModel::panLane(double dx) {
+    if (std::isfinite(dx))
+        setLaneView(m_viewStart + dx, m_viewEnd + dx);
+}
+
+void EffectControlsModel::setLaneView(double start, double end) {
+    if (!std::isfinite(start) || !std::isfinite(end))
+        return;
+    const double span = std::clamp(end - start, minLaneSpan(), 1.0);
+    if (span >= 1.0 - 1e-9) {
+        start = 0.0;
+        end = 1.0;
+    } else {
+        start = std::clamp(start, 0.0, 1.0 - span);
+        end = start + span;
+    }
+    if (start == m_viewStart && end == m_viewEnd)
+        return;
+    m_viewStart = start;
+    m_viewEnd = end;
+    m_viewChanged = true;
+    if (m_refreshing) {
+        // Asked from a laneChanged handler (the panel pages with the playhead during playback): the panel hears of the
+        // view now, the timecodes and the value graphs follow once this rebuild is done.
+        QMetaObject::invokeMethod(this, [this] { refresh(); }, Qt::QueuedConnection);
+        emit laneChanged();
+        return;
+    }
+    refresh(); // the lane's timecodes and the open value graphs
+    if (m_viewChanged) { // no rebuild ran (no controller): the panel still hears of the new view
+        m_viewChanged = false;
+        emit laneChanged();
+    }
+}
+
+void EffectControlsModel::resetLaneZoom() {
+    setLaneView(0.0, 1.0);
 }
 
 // ---- Transition rows --------------------------------------------------------------------------------
