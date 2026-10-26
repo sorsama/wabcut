@@ -21,7 +21,7 @@ WabcutDialog {
     Text {
         objectName: "aboutVersion"
         Layout.fillWidth: true
-        //: About Wabcut: %1 is the version (0.4.0)
+        //: About Wabcut: %1 is the version (0.5.0)
         text: qsTr("Version %1").arg(Qt.application.version)
         color: Theme.textTertiary
         font.family: Theme.fontMono

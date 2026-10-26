@@ -263,10 +263,24 @@ Panel {
         // A gap is selected by any plain click in empty lane space, so Delete and Shift+Delete (application keys) close
         // it only while the Timeline has the keyboard focus: pressed in another panel they do nothing (the command
         // stops here, so ProjectController's Clear does not close the gap either).
+        // 0.5: Add Edit (Ctrl+K) splits the selected caption cue under the playhead, or with the clips the cues under it
+        // on targeted caption rows, in one undo step; without captions taking part, ProjectController cuts the clips.
+        case "sequence.addEdit":
+            if (lanes.view.addEditAtPlayhead()) {
+                // A selected cue alone is cut (Premiere cuts only the selection); when it could not be, say why.
+                if (lanes.view.captionMessage() !== "")
+                    root.messageRequested(lanes.view.captionMessage())
+                return true
+            }
+            break
         case "edit.clear":
         case "edit.rippleDelete":
         case "timeline.clearSelection":
         case "timeline.rippleDelete":
+            // 0.5: a selected caption cue (clips and a cue are selected one or the other) is deleted; captions never
+            // ripple the clips, so Ripple Delete deletes it too.
+            if (ProjectController.selectedClips.length === 0 && lanes.view.deleteSelectedCaption())
+                return true
             if ((ProjectController.selectedGap.track ?? "") === "" || ProjectController.selectedClips.length > 0)
                 break
             if (!root.hasKeyboardFocus())
@@ -312,6 +326,7 @@ Panel {
     readonly property bool clipTipAllowed: Preferences.showClipTooltips && !lanes.view.gestureActive
                                            && !lanes.view.marqueeActive && !lanes.view.playing && !root.viewTool
                                            && !clipMenu.opened && !transitionMenu.opened && !gapMenu.opened
+                                           && !captionMenu.opened
                                            && !ruler.menuOpen && !root.listMode
     onClipTipAllowedChanged: {
         if (!clipTipAllowed)
@@ -711,6 +726,14 @@ Panel {
             width: Theme.trackHeaderWidth
             spacing: Theme.trackGap
 
+            // 0.5: the caption tracks' headers, above the video tracks as their lanes are (TimelineView.captionRows).
+            Repeater {
+                model: lanes.view.captionRows
+                delegate: CaptionTrackHeader {
+                    width: headers.width
+                    view: lanes.view
+                }
+            }
             Repeater {
                 model: ProjectController.tracks
                 delegate: TrackHeader {
@@ -1006,6 +1029,16 @@ Panel {
                     if (Nesting.clipInfo(clipId).nested === true)
                         Nesting.openNested(clipId)
                 }
+                // 0.5: a double-click on a caption cue (selected by the view: the Captions page shows its track) opens
+                // its text for typing in the Captions page (Main reveals the panel).
+                function onCaptionDoubleClicked(track, cue) {
+                    Captions.editCue(cue)
+                }
+                // 0.5: a right click on a caption cue (it selected the cue): Split at Playhead, Delete, Edit Text, Select
+                // in Captions.
+                function onCaptionContextMenuRequested(track, cue, x, y) {
+                    captionMenu.openAt(lanes, lanes.view, track, cue, Qt.point(x, y))
+                }
                 // UX rework (stream T): right clicks on a transition and in a gap (each selected it first).
                 function onTransitionContextMenuRequested(transitionId, x, y) {
                     transitionMenu.openAt(lanes, transitionId, Qt.point(x, y))
@@ -1043,6 +1076,9 @@ Panel {
             GapContextMenu {
                 id: gapMenu
                 onFailed: message => root.messageRequested(message)
+            }
+            CaptionCueMenu {
+                id: captionMenu
             }
 
             RenameClipPopover {

@@ -46,6 +46,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <utility>
 #include <vector>
 
 class QJSEngine;
@@ -116,6 +117,13 @@ public:
     Ticks positionTicks() const;
     /// Moves to a source time (paused), snapped to the source's frames.
     void seek(Ticks t);
+    /// P0 round (the source clip transcript): marks source [in, out) on the loaded source, frame-snapped as loadRange
+    /// does (In = the start of the frame holding `in`, Out = the end of the frame holding the range's last tick) and
+    /// clamped to the media: one undo step "Set Source Marks" (source.setMarks); marks that are already those change
+    /// nothing. False (with `message`) without a loaded source or for an empty range.
+    bool setMarks(Ticks in, Ticks out);
+    /// The source's frame rate (source timecodes, frame snapping).
+    Rate rate() const { return m_rate; }
     std::optional<Ticks> lengthTicks() const { return m_length; }
     editor::PlaybackSession* playback() { return m_playback.get(); }
     /// The private one-clip project the Source Monitor plays (its picture, with the source's redactions), or null.
@@ -281,12 +289,17 @@ private:
     void teardown();
     void tick();
     void startAudio();
+    /// 0.5 (stream B): audio scrubbing in the Source Monitor - the clip's own sound at `at` (`direction` < 0: played
+    /// backwards from there), through the program's switch and request (PlaybackBridge::requestAudioScrub), while stopped.
+    void scrubAudioAt(Ticks at, int direction);
     void setMessage(const QString& message);
     /// Hands the loop range (In to Out of the source) to the playback, or none; with `starting` and the position
     /// outside the range, moves to its start (P.2).
     void applyLoop(bool starting = false);
     void toggleLoop() { setLoop(!m_loop); }
     bool setMarks(command::Json params);
+    /// [in, out) frame-snapped and clamped as setMarks(Ticks, Ticks) marks it, or nullopt when nothing is left.
+    std::optional<std::pair<Ticks, Ticks>> snappedMarks(Ticks in, Ticks out) const;
     void onProjectChanged();
     /// The project's redactions of the loaded media, re-pointed at the private copy (I.6: the source shows them).
     void syncRedactions();

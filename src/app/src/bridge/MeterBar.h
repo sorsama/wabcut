@@ -36,6 +36,8 @@ class MeterBar : public QQuickItem {
     Q_PROPERTY(QString peakText READ peakText NOTIFY levelsChanged FINAL)
     /// Channels shown now (0 when nothing plays).
     Q_PROPERTY(int channels READ channels NOTIFY levelsChanged FINAL)
+    /// 0.5: empty bars drawn while nothing plays (the Audio Meters panel keeps its stereo pair; default one track).
+    Q_PROPERTY(int idleChannels READ idleChannels WRITE setIdleChannels NOTIFY appearanceChanged FINAL)
 
 public:
     explicit MeterBar(QQuickItem* parent = nullptr);
@@ -59,6 +61,8 @@ public:
     bool clipped() const { return m_levels.clipped; }
     QString peakText() const { return m_peakText; }
     int channels() const { return m_levels.channels; }
+    int idleChannels() const { return m_idleChannels; }
+    void setIdleChannels(int channels);
 
     /// Where `db` sits on the bar, 0 (floor) to 1 (0 dBFS).
     double fraction(double db) const;
@@ -80,6 +84,7 @@ private:
     QPointer<AudioMixerBridge> m_source;
     QString m_channel;
     double m_floorDb = -60.0;
+    int m_idleChannels = 1;
     QColor m_trackColor{0x14, 0x13, 0x17};
     QColor m_lowColor{0x34, 0xD3, 0x99};
     QColor m_midColor{0xFB, 0xBF, 0x24};

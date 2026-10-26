@@ -329,8 +329,11 @@ EditOutcome splitCaptionCue(const ProjectState& state, SequenceId sequence, Capt
         first = wrapCaptionText(first, t.language, width, lines, breaker);
         second = wrapCaptionText(second, t.language, width, lines, breaker);
         t.cues[index] = CaptionCue{cue.start, at - cue.start, std::move(first), cue.speaker};
-        t.cues.insert(t.cues.begin() + static_cast<std::ptrdiff_t>(index) + 1,
-                      CaptionCue{at, cue.end() - at, std::move(second), cue.speaker});
+        // The second half where its start belongs: right after the first without overlaps; where overlaps are allowed,
+        // after the later cues that start before `at` too (0.5 fix round: cues kept in start order).
+        const auto place = std::upper_bound(t.cues.begin() + static_cast<std::ptrdiff_t>(index) + 1, t.cues.end(), at,
+                                            [](Ticks v, const CaptionCue& c) { return v < c.start; });
+        t.cues.insert(place, CaptionCue{at, cue.end() - at, std::move(second), cue.speaker});
         return {};
     });
 }

@@ -19,7 +19,10 @@ namespace wabcut::editor {
 std::expected<MediaItem, Error> describeLayeredFile(const LayeredFileSpec& spec, std::string name,
                                                     const std::filesystem::path& projectFile);
 
-/// The services for a project saved at `projectFile` (empty: not saved yet; paths stay absolute).
-std::shared_ptr<command::MediaFormatServices> mediaFormatServices(const std::filesystem::path& projectFile);
+/// The services for a project saved at `projectFile` (empty: not saved yet; paths stay absolute). P0 round:
+/// `readChapters` - the clips media.importCameraClips brings in get their recordings' chapter markers as clip markers
+/// (addChapterMarkers in MediaImport.h, as File > Import does; the app passes Preferences > Media's switch).
+std::shared_ptr<command::MediaFormatServices> mediaFormatServices(const std::filesystem::path& projectFile,
+                                                                  bool readChapters = true);
 
 } // namespace wabcut::editor

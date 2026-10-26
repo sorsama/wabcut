@@ -1,6 +1,7 @@
 #include "FfmpegUtil.h"
 
 #include <wabcut/media/Fingerprint.h>
+#include <wabcut/media/GpuInfo.h>
 #include <wabcut/media/RawDevelop.h>
 #include <wabcut/media/VideoDecoder.h>
 #include <wabcut/model/RawSourceSettings.h>
@@ -122,7 +123,15 @@ public:
         }
         if (!slot.device) {
             AVBufferRef* device = nullptr;
-            const int r = av_hwdevice_ctx_create(&device, type, nullptr, nullptr, 0);
+            // Issue #10: d3d11va decodes on the preview's adapter (previewGpu(); FFmpeg takes the DXGI index), not
+            // on whichever adapter Windows lists first.
+            std::string adapter;
+            if (type == AV_HWDEVICE_TYPE_D3D11VA) {
+                if (const int index = previewAdapterIndex(); index >= 0) {
+                    adapter = std::to_string(index);
+                }
+            }
+            const int r = av_hwdevice_ctx_create(&device, type, adapter.empty() ? nullptr : adapter.c_str(), nullptr, 0);
             if (r < 0) {
                 slot.failed = true;
                 log(LogLevel::Info, "Hardware device '{}' is unavailable: {}",
@@ -442,9 +451,32 @@ std::vector<std::string>& orderOverride() {
 }
 
 std::vector<std::string> policyOrder() {
+#if defined(_WIN32)
+    // Issue #10: the GPU the preview renders on decides (previewGpu(): the high-performance one, or the Settings
+    // choice at start), so decode and preview share a GPU; an NVIDIA card that is not that GPU is not tried first.
+    const GpuSelection gpu = previewGpu();
+    const bool nvidia = gpu.adapter ? gpu.adapter->vendor == "NVIDIA" : false;
+#else
+    // Linux picks the preview's GPU itself (PRIME): an NVIDIA card anywhere goes first, as before.
     const auto vendors = gpuVendors();
     const bool nvidia = std::find(vendors.begin(), vendors.end(), "NVIDIA") != vendors.end();
+#endif
 #if defined(_WIN32)
+    // A GPU the user chose (Settings > Graphics card, Power saving / a GPU in Windows Graphics settings, or a
+    // QT_D3D_ADAPTER_INDEX set before start): only the backends that decode on it - d3d11va on its adapter, CUDA when it
+    // is NVIDIA's, Quick Sync when it is Intel's - and then software, rather than waking the GPU the user turned away
+    // from (a laptop's discrete card on battery).
+    const bool pinned = gpu.reason == GpuReason::UserChoice || gpu.reason == GpuReason::WindowsPowerSaving ||
+                        gpu.reason == GpuReason::WindowsSpecific || gpu.reason == GpuReason::Override;
+    if (pinned && gpu.adapter) {
+        if (nvidia) {
+            return {"cuda", "d3d11va"};
+        }
+        if (gpu.adapter->vendor == "Intel") {
+            return {"d3d11va", "qsv"};
+        }
+        return {"d3d11va"};
+    }
     return nvidia ? std::vector<std::string>{"cuda", "d3d11va", "qsv"}
                   : std::vector<std::string>{"d3d11va", "cuda", "qsv"};
 #elif defined(__APPLE__)

@@ -3,6 +3,7 @@
 # lives in include/wabcut/playback/audio/ and src/audio/ so the video side can be added without conflicts.
 add_library(wabcut_playback STATIC
     src/audio/AudioRedactions.cpp
+    src/audio/AudioScrubber.cpp
     src/audio/AudioTakes.cpp
     src/audio/ChannelLayout.cpp
     src/audio/LiveFader.h

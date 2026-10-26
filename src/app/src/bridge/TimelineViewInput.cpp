@@ -84,6 +84,8 @@ void TimelineView::setSnapping(bool snapping) {
 double TimelineView::snapX() const {
     if (m_gesture.active)
         return m_gesture.snappedAt ? xOfTicks(*m_gesture.snappedAt) : qQNaN();
+    if (m_captionDrag.active) // 0.5: a cue drag
+        return m_captionDrag.snappedAt ? xOfTicks(*m_captionDrag.snappedAt) : qQNaN();
     return m_playheadSnapAt ? xOfTicks(*m_playheadSnapAt) : qQNaN(); // 0.4: a ruler scrub snapped the playhead
 }
 
@@ -402,6 +404,18 @@ std::optional<std::vector<ClipId>> TimelineView::groupEdgeMembers(const Hit& hit
 // ---- Mouse --------------------------------------------------------------------------------------------------------
 
 void TimelineView::mouseDoubleClickEvent(QMouseEvent* event) {
+    // 0.5: a double-click on a caption cue opens its text (QML: the Captions page).
+    if (m_controller && !m_gesture.active && event->button() == Qt::LeftButton) {
+        if (const CaptionHit caption = captionHit(event->position().x(), event->position().y()); caption.row >= 0) {
+            event->accept();
+            if (caption.cue >= 0) {
+                const CaptionTrackId track = m_captionRows[static_cast<std::size_t>(caption.row)].id;
+                selectCaptionCue(track, caption.cue);
+                emit captionDoubleClicked(captionTrackKey(track), caption.cue);
+            }
+            return;
+        }
+    }
     // Only a double-click on a clip means something (a nested clip opens); elsewhere it does what it did before.
     const Hit hit = m_controller && !m_gesture.active && event->button() == Qt::LeftButton
                         ? hitTest(event->position().x(), event->position().y())
@@ -427,6 +441,11 @@ void TimelineView::mousePressEvent(QMouseEvent* event) {
     m_pressHit = {};
     m_pressClip = {};
     m_pendingKind = GestureKind::None;
+    // 0.5: a caption row edits captions, never clips (no marquee, no track targeting, no clip drag starts there).
+    if (const CaptionHit caption = captionHit(m_pressPos.x(), m_pressPos.y()); caption.row >= 0) {
+        pressCaption(caption, event->button());
+        return;
+    }
     const Hit hit = hitTest(m_pressPos.x(), m_pressPos.y());
 
     if (event->button() == Qt::RightButton) {
@@ -596,6 +615,12 @@ void TimelineView::mouseMoveEvent(QMouseEvent* event) {
     case Drag::Fade:
         dragFade(pos);
         return;
+    case Drag::CaptionPending: // 0.5
+    case Drag::Caption:
+        dragCaption(pos, event->modifiers());
+        if (m_drag == Drag::Caption)
+            updateAutoScroll(pos);
+        return;
     case Drag::Remix:
         if (m_remix && m_controller) {
             const SequencePtr seq = m_controller->currentSequence();
@@ -655,7 +680,7 @@ void TimelineView::updateAutoScroll(QPointF pos) {
 }
 
 void TimelineView::stepAutoScroll(double seconds) {
-    const bool dragging = m_drag == Drag::Gesture || m_drag == Drag::Marquee;
+    const bool dragging = m_drag == Drag::Gesture || m_drag == Drag::Marquee || m_drag == Drag::Caption;
     const double vx = dragging ? autoScrollVelocity(m_lastPointer.x(), width(), m_style.autoScrollZone, m_style.autoScrollSpeed) : 0.0;
     const double vy = dragging && m_contentHeight > height()
                           ? autoScrollVelocity(m_lastPointer.y(), height(), m_style.autoScrollZone, m_style.autoScrollSpeed)
@@ -684,6 +709,8 @@ void TimelineView::stepAutoScroll(double seconds) {
         updateGesture(m_lastPointer, m_lastMods);
     else if (m_drag == Drag::Marquee)
         updateMarquee(m_lastPointer);
+    else if (m_drag == Drag::Caption) // 0.5: a cue drag
+        dragCaption(m_lastPointer, m_lastMods);
 }
 
 QString TimelineView::newTrackLabel() const {
@@ -756,6 +783,10 @@ void TimelineView::mouseReleaseEvent(QMouseEvent* event) {
     case Drag::Fade:
         releaseFade();
         break;
+    case Drag::CaptionPending: // 0.5: a click on a cue, or the end of its drag
+    case Drag::Caption:
+        releaseCaption();
+        break;
     case Drag::Remix:
         if (m_remix) {
             const RemixDrag r = *m_remix;
@@ -816,14 +847,39 @@ void TimelineView::hoverMoveEvent(QHoverEvent* event) {
 void TimelineView::hoverLeaveEvent(QHoverEvent*) {
     setHovered({});
     m_hoverInside = false;
+    m_hoverCaptionRow = -1;
+    setCaptionHoverEdge({});
     setHoverEdge({});
     applyCursor({});
     update();
 }
 
 void TimelineView::updateHoverCursor(QPointF pos, Qt::KeyboardModifiers mods) {
-    if (m_drag == Drag::Gesture)
+    if (m_drag == Drag::Gesture || m_drag == Drag::Caption)
         return;
+    // 0.5: over a caption row, its cues' cursors (trim brackets on their edges, the razor).
+    const int captionRow = captionRowAt(pos.y());
+    const bool razorLineMoves = m_tool == TimelineTool::Razor && (captionRow >= 0 || m_hoverCaptionRow >= 0);
+    m_hoverCaptionRow = captionRow;
+    if (captionRow >= 0) {
+        const CaptionHit caption = captionHit(pos.x(), pos.y());
+        applyCursor(captionCursorKey(caption));
+        setHoverEdge({});
+        const bool edge = m_tool == TimelineTool::Select && caption.cue >= 0
+                          && (caption.zone == Zone::Head || caption.zone == Zone::Tail);
+        setCaptionHoverEdge(edge ? CaptionHoverEdge{caption.row, caption.cue, caption.zone == Zone::Head} : CaptionHoverEdge{});
+        m_hoverX = pos.x();
+        m_hoverPos = pos;
+        m_hoverRow = -1;
+        m_hoverAllTracks = false;
+        m_hoverInside = true;
+        if (razorLineMoves)
+            update(); // the cut preview line follows the pointer
+        return;
+    }
+    if (razorLineMoves)
+        update(); // the caption row's cut preview goes
+    setCaptionHoverEdge({});
     const Hit hit = hitTest(pos.x(), pos.y());
     applyCursor(hoverCursorKey(hit, mods));
     setHoverEdge(hoverEdgeFor(hit, mods));
@@ -991,7 +1047,8 @@ void TimelineView::modifiersChanged(Qt::KeyboardModifiers mods) {
 
 bool TimelineView::event(QEvent* event) {
     // Esc belongs to a drag in progress, before any shortcut.
-    if (event->type() == QEvent::ShortcutOverride && (m_gesture.active || m_drag == Drag::Speed || m_drag == Drag::Remix)
+    if (event->type() == QEvent::ShortcutOverride
+        && (m_gesture.active || m_drag == Drag::Speed || m_drag == Drag::Remix || m_drag == Drag::Caption)
         && static_cast<QKeyEvent*>(event)->key() == Qt::Key_Escape) {
         event->accept();
         return true;
@@ -1439,6 +1496,10 @@ void TimelineView::finishGesture() {
 }
 
 bool TimelineView::cancelGesture() {
+    if (m_drag == Drag::Caption) { // 0.5: the cue goes back where it was (nothing was committed)
+        cancelCaptionDrag();
+        return true;
+    }
     if (m_drag == Drag::Remix && m_remix) {
         m_remix.reset();
         m_drag = Drag::Cancelled;

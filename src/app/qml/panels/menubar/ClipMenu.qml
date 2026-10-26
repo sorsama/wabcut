@@ -19,6 +19,11 @@ MenuBarMenu {
         text: qsTr("Speed/Duration…")
         command: "clip.speedDuration"
     }
+    // 0.5 (stream C): Premiere's Scene Edit Detection… (the dialog; greyed out with the reason without a video clip).
+    BarMenuItem {
+        text: qsTr("Scene Edit Detection…")
+        command: "clip.sceneEditDetection"
+    }
     BarMenuItem {
         text: qsTr("Audio Gain…")
         command: "clip.audioGain"

@@ -1,14 +1,17 @@
 #include "AppShell.h"
 #include "CrashHandler.h"
 #include "CrashNotice.h"
+#include "GpuBridge.h"
 #include "HomeBridge.h"
 #include "RhiPolicy.h"
 #include "SingleInstance.h"
 #include "StartupProbe.h"
 #include "SystemInfo.h"
 #include "UiScale.h"
+#include "UpdateBridge.h"
 #include "WindowPlacement.h"
 
+#include <wabcut/media/GpuInfo.h>
 #include <wabcut/media/VideoDecoder.h>
 
 #include <QCoreApplication>
@@ -33,6 +36,18 @@
 // The QML module "Wabcut" is a static library (wabcut_ui); pull its plugin into the executable.
 Q_IMPORT_QML_PLUGIN(WabcutPlugin)
 
+#if defined(_WIN32)
+// Issue #10: hybrid laptops (NVIDIA Optimus, AMD PowerXpress / switchable graphics) start Wabcut on the discrete GPU
+// without a Windows Graphics setting. The drivers look for these two exports in the executable that started the process
+// - not in a DLL or a static library the linker could drop - so they live here, in wabcut.exe's own source. The test
+// "wabcut.exe exports the hybrid GPU driver hints" reads them back from the executable's export table. The preview's
+// adapter is also chosen explicitly below (applyPreviewAdapter): the hints alone may not reorder DXGI's adapters.
+extern "C" {
+__declspec(dllexport) unsigned long NvOptimusEnablement = 0x00000001;
+__declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
+}
+#endif
+
 int main(int argc, char* argv[]) {
     wabcut::platform::hardenDllSearch(); // first: no DLL from the current directory or PATH (S5-P2-5)
     // P.1: startup milestones for the benchmarks; inert unless WABCUT_PERF_STARTUP is set (docs/performance.md).
@@ -43,6 +58,8 @@ int main(int argc, char* argv[]) {
     QCoreApplication::setOrganizationName(QStringLiteral("Wabcut"));
     QCoreApplication::setOrganizationDomain(QStringLiteral("wabcut.org"));
     wabcut::app::applySavedUiScale();
+    // Issue #10: Settings > Graphics card before anything asks which GPU to use (the decoders' order below already does).
+    wabcut::app::GpuBridge::applySavedChoice();
     // Crash safety (I.7, docs/release.md): from here on a crash leaves a minidump and a redacted report in the app data
     // folder - nothing is uploaded - and the next start shows "Wabcut closed unexpectedly" (CrashNotice).
     {
@@ -62,6 +79,9 @@ int main(int argc, char* argv[]) {
                 decoders += (decoders.empty() ? "" : ", ") + backend;
             }
             wabcut::crash::setDiagnostic("decode", decoders.empty() ? "software" : decoders + ", software");
+            if (const wabcut::media::GpuSelection gpu = wabcut::media::previewGpu(); gpu.adapter) {
+                wabcut::crash::setDiagnostic("gpu", gpu.adapter->name + " (" + std::string(wabcut::media::gpuReasonKey(gpu.reason)) + ")");
+            }
             wabcut::crash::setDiagnostic("qt", qVersion());
             static QtMessageHandler previous = nullptr;
             previous = qInstallMessageHandler([](QtMsgType type, const QMessageLogContext& context, const QString& message) {
@@ -107,6 +127,8 @@ int main(int argc, char* argv[]) {
                                                currentRhiPlatform());
     const RhiBackend backend = applyRhiBackend(choice);
     qInfo("Wabcut: requesting the %s RHI backend", qPrintable(rhiBackendDisplayName(backend)));
+    // Issue #10: the preview on the GPU decode and export use (QT_D3D_ADAPTER_INDEX; one set before start is kept).
+    const int previewAdapter = applyPreviewAdapter(backend);
 
     // Our own components draw every control; "Basic" is the lightest customizable style.
     QQuickStyle::setStyle(QStringLiteral("Basic"));
@@ -137,6 +159,9 @@ int main(int argc, char* argv[]) {
         // screens there are now (initial properties: set before it shows, so it does not jump).
         engine->setInitialProperties(restoredWindowProperties());
         engine->loadFromModule("Wabcut", "Main");
+        // Opt-in update checks (Settings > General > Updates; off by default): the daily one, if it is on.
+        if (auto* updates = engine->singletonInstance<UpdateBridge*>("Wabcut", "Updates"))
+            updates->startAutomaticChecks();
         startupProbe.loaded(engine->rootObjects().isEmpty() ? nullptr
                                                             : qobject_cast<QQuickWindow*>(engine->rootObjects().constFirst()));
     };
@@ -147,7 +172,7 @@ int main(int argc, char* argv[]) {
                 start();
             },
         .restartWithSoftwareRenderer =
-            [&instance] {
+            [&instance, previewAdapter] {
                 // The scene graph adaptation is chosen once per process: start a new one on the software renderer. It
                 // takes over the single-instance name (this one stops listening first, or the new one would hand its
                 // project straight back here).
@@ -158,6 +183,8 @@ int main(int argc, char* argv[]) {
                 QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
                 env.insert(QStringLiteral("QT_QUICK_BACKEND"), QStringLiteral("software"));
                 env.remove(QStringLiteral("QSG_RHI_BACKEND"));
+                if (previewAdapter >= 0) // ours, not the user's: the new process decides again
+                    env.remove(QStringLiteral("QT_D3D_ADAPTER_INDEX"));
                 process.setProcessEnvironment(env);
                 QCoreApplication::exit(process.startDetached() ? 0 : -1);
             },
@@ -184,5 +211,9 @@ int main(int argc, char* argv[]) {
     }
     const int code = QGuiApplication::exec();
     wabcut::crash::markCleanExit(); // the next start shows no notice for this run
+    // An update the user agreed to install (Help > Check for Updates...): it starts once Wabcut has closed normally, so
+    // never during an export (the close waited for those or cancelled them), and replaces this version (MSI upgrade).
+    if (code == 0)
+        UpdateBridge::launchPendingInstall();
     return code;
 }

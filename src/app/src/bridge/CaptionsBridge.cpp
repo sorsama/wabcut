@@ -379,10 +379,15 @@ const CaptionTrack* CaptionsBridge::shownTrack() const {
 
 void CaptionsBridge::refresh() {
     const SequencePtr seq = m_controller ? m_controller->currentSequence() : nullptr;
-    if (seq && !shownTrack())
+    if (seq && !shownTrack()) {
         m_track = seq->captionTracks.empty() ? CaptionTrackId{} : seq->captionTracks.front().id;
+        setSelectedCue(-1); // 0.5: another track is shown
+    }
     if (!shownTrack())
         setUpdateSuggested(false);
+    // 0.5: a selected cue that is gone (deleted, undone) is no longer selected.
+    if (const CaptionTrack* t = shownTrack(); !t || m_selectedCue >= static_cast<int>(t->cues.size()))
+        setSelectedCue(-1);
     emit tracksChanged();
     emit cuesChanged();
     emit styleChanged();
@@ -420,11 +425,67 @@ void CaptionsBridge::setTrack(const QString& id) {
     if (next == m_track)
         return;
     m_track = next;
+    setSelectedCue(-1); // 0.5: the selected cue was on the other track
     setUpdateSuggested(false);
     emit tracksChanged();
     emit cuesChanged();
     emit styleChanged();
     updateActive();
+}
+
+// ---- 0.5: the timeline's caption lanes ---------------------------------------------------------------------------
+
+void CaptionsBridge::setSelectedCue(int index) {
+    if (index == m_selectedCue)
+        return;
+    m_selectedCue = index;
+    emit cueSelectionChanged();
+}
+
+void CaptionsBridge::selectCue(const QString& track, int index) {
+    selectCueOf(parseCaptionTrackKey(track).value_or(CaptionTrackId{}), index);
+}
+
+void CaptionsBridge::selectCueOf(CaptionTrackId track, int index) {
+    if (!track) {
+        setSelectedCue(-1);
+        return;
+    }
+    if (track != m_track) {
+        const SequencePtr seq = m_controller ? m_controller->currentSequence() : nullptr;
+        const bool exists = seq && std::ranges::any_of(seq->captionTracks, [&](const CaptionTrack& t) { return t.id == track; });
+        if (!exists)
+            return;
+        setTrack(captionTrackKey(track)); // the page shows the cue's track (and draws it on the monitor)
+    }
+    const CaptionTrack* t = shownTrack();
+    setSelectedCue(t && index >= 0 && index < static_cast<int>(t->cues.size()) ? index : -1);
+}
+
+void CaptionsBridge::clearCueSelection() {
+    setSelectedCue(-1);
+}
+
+void CaptionsBridge::editCue(int index) {
+    const CaptionTrack* t = shownTrack();
+    if (!t || index < 0 || index >= static_cast<int>(t->cues.size()))
+        return;
+    emit editCueRequested(index);
+}
+
+void CaptionsBridge::showCue(int index) {
+    const CaptionTrack* t = shownTrack();
+    if (!t || index < 0 || index >= static_cast<int>(t->cues.size()))
+        return;
+    emit showCueRequested(index);
+}
+
+QString CaptionsBridge::setTrackEnabledFor(const QString& track, bool enabled) {
+    const auto id = parseCaptionTrackKey(track);
+    if (!id || !m_controller)
+        return tr("No such caption track");
+    return runCommand("captions.setTrack", QVariantMap{{QStringLiteral("captionTrack"), static_cast<qulonglong>(id->value)},
+                                                       {QStringLiteral("enabled"), enabled}});
 }
 
 QVariantMap CaptionsBridge::trackInfo() const {

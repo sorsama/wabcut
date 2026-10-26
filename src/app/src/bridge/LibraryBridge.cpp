@@ -2,6 +2,7 @@
 
 #include "BridgeIds.h"
 #include "CommandJob.h"
+#include "EditingBridge.h"
 #include "ExportController.h"
 #include "MediaBridge.h"
 #include "MediaReadinessBridge.h"
@@ -2416,7 +2417,8 @@ std::optional<command::Json> LibraryBridge::runCameraImport(const QStringList& f
     if (!m_controller || files.isEmpty())
         return std::nullopt;
     command::EnginePolicy policy;
-    policy.services = editor::mediaFormatServices(m_controller->projectFile());
+    // P0 round: a recording's chapter markers come in as clip markers, as with File > Import (Preferences > Media).
+    policy.services = editor::mediaFormatServices(m_controller->projectFile(), EditingBridge::chapterMarkersSetting());
     command::CommandEngine engine(m_controller->session(), ai::edit::editingCommands(), std::move(policy));
     command::CommandRequest request;
     request.command = "media.importCameraClips";
@@ -2437,6 +2439,11 @@ std::optional<command::Json> LibraryBridge::runCameraImport(const QStringList& f
         return std::nullopt;
     }
     setMessage({});
+    // P0 round: a toast says how many chapter markers came in (ProjectFile.importFiles' chapterSummary). A notice, not
+    // `message` (fix round 1): the Media Browser shows `message` as its empty / unreadable text.
+    if (const int markers = result.data.value("markers", 0); markers > 0)
+        emit notice(markers == 1 ? tr("1 chapter marker became a clip marker.")
+                                 : tr("%1 chapter markers became clip markers.").arg(markers));
     return result.data.value("imported", command::Json::array());
 }
 

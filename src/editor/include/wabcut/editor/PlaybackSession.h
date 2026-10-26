@@ -20,6 +20,7 @@
 #include <wabcut/model/EditSession.h>
 #include <wabcut/model/Error.h>
 #include <wabcut/model/Ids.h>
+#include <wabcut/playback/audio/AudioScrubber.h>
 #include <wabcut/playback/audio/TimelineAudioPlayer.h>
 #include <wabcut/playback/video/PlaybackController.h>
 #include <wabcut/playback/video/TransportClock.h>
@@ -38,6 +39,9 @@ struct PlaybackSessionOptions {
     Ticks seekPreroll{kTicksPerSecond / 10};
     /// Open decoders the audio feed keeps.
     std::size_t maxAudioDecoders = 16;
+    /// 0.5: audio scrubbing (its own feed keeps this many decoders open).
+    playback::AudioScrubOptions scrub{};
+    std::size_t maxScrubDecoders = 8;
 };
 
 struct PlaybackSessionStats {
@@ -82,6 +86,13 @@ public:
     /// P.2, Premiere's Loop: playback wraps inside `range` (sound and picture); nullopt turns it off.
     void setLoop(std::optional<TimeRange> range);
     std::optional<TimeRange> loop() const;
+    /// 0.5, Premiere's audio scrubbing: a short, faded window of the sequence mix at `at`, heard once
+    /// (playback::AudioScrubber: rendered on its worker, rate-limited, the latest request wins). The transport clock and
+    /// the picture do not move. Only while stopped and with sound; returns whether it was asked for. `direction` < 0 (a
+    /// backward drag): the window before `at`, played backwards from `at`.
+    bool scrubAudio(Ticks at, int direction = 1);
+    /// The scrubber while the session has sound (else null): its stats for tests and diagnostics.
+    playback::AudioScrubber* audioScrubber() { return m_audioStarted && m_scrubber->isStarted() ? m_scrubber.get() : nullptr; }
 
     PlaybackSessionStats stats() const;
 
@@ -98,13 +109,18 @@ private:
     std::shared_ptr<playback::AudioFeed> m_feed;
     std::unique_ptr<playback::TimelineAudioPlayer> m_player;
     std::unique_ptr<playback::PlaybackController> m_video;
+    /// 0.5: audio scrubbing, on a feed of its own (feeds are not shared between threads).
+    std::shared_ptr<playback::AudioFeed> m_scrubFeed;
+    std::unique_ptr<playback::AudioScrubber> m_scrubber;
     bool m_audioStarted = false;
 };
 
 /// A TransportClock for video that reads time from `engine` (latency compensated) and sends commands to
 /// `player`, which forwards them to the same engine and keeps its rings consistent. Commands may come from the
-/// GUI thread and from the scheduler (end of sequence); they are serialized. Both must outlive the clock.
+/// GUI thread and from the scheduler (end of sequence); they are serialized. Both must outlive the clock. 0.5: with a
+/// `scrubber`, play and a speed change cancel its window (a scrub never sounds over playback); it must outlive the clock.
 std::shared_ptr<playback::TransportClock> makeTimelineAudioTransport(playback::TimelineAudioPlayer& player,
-                                                                     audio::AudioEngine& engine);
+                                                                     audio::AudioEngine& engine,
+                                                                     playback::AudioScrubber* scrubber = nullptr);
 
 } // namespace wabcut::editor

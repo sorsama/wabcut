@@ -1,3 +1,4 @@
+#include <wabcut/media/GpuInfo.h>
 #include <wabcut/render/OffscreenRenderer.h>
 #include <wabcut/render/ZeroCopy.h>
 
@@ -221,7 +222,13 @@ OffscreenRenderer::create(const OffscreenOptions& options) {
 #if defined(Q_OS_WIN)
         QRhiD3D11InitParams params;
         params.enableDebugLayer = options.debugLayer;
-        impl->rhi.reset(QRhi::create(QRhi::D3D11, &params, flags));
+        // Issue #10: the preview's adapter (media::previewGpu()), so export renders, decodes and previews on one GPU
+        // (the CLI too, which sets no QT_D3D_ADAPTER_INDEX; Qt lets that variable win over the LUID).
+        QRhiD3D11NativeHandles adapter;
+        const std::uint64_t luid = media::previewAdapterLuid();
+        adapter.adapterLuidLow = static_cast<quint32>(luid & 0xFFFFFFFFu);
+        adapter.adapterLuidHigh = static_cast<qint32>(luid >> 32);
+        impl->rhi.reset(QRhi::create(QRhi::D3D11, &params, flags, luid != 0 ? &adapter : nullptr));
 #endif
         break;
     }
@@ -229,7 +236,11 @@ OffscreenRenderer::create(const OffscreenOptions& options) {
 #if defined(Q_OS_WIN)
         QRhiD3D12InitParams params;
         params.enableDebugLayer = options.debugLayer;
-        impl->rhi.reset(QRhi::create(QRhi::D3D12, &params, flags));
+        QRhiD3D12NativeHandles adapter;
+        const std::uint64_t luid = media::previewAdapterLuid();
+        adapter.adapterLuidLow = static_cast<quint32>(luid & 0xFFFFFFFFu);
+        adapter.adapterLuidHigh = static_cast<qint32>(luid >> 32);
+        impl->rhi.reset(QRhi::create(QRhi::D3D12, &params, flags, luid != 0 ? &adapter : nullptr));
 #endif
         break;
     }

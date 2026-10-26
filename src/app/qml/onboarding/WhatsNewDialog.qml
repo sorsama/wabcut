@@ -9,11 +9,22 @@ WabcutDialog {
     id: dialog
     objectName: "whatsNewDialog"
 
-    // Keep in step with docs/roadmap.md when a milestone lands. This build: 0.4's timeline copy and clip facts, Premiere
-    // keys, Effect Controls and transcript tools, gaming Shorts and safe quitting first, then 0.3's Home, menu bar,
-    // Effects panel and everyday editing, 0.2's Premiere parity, the gaming wave (M5o), M5k-M5n, C.7-C.12, A.3-A.9,
-    // AI-9-AI-13.
+    // Keep in step with docs/roadmap.md when a milestone lands. This build: 0.5's caption lanes and nested waveforms,
+    // Audio Meters and scrubbing, Scene Edit Detection and the dead-time review, chapter markers and the source
+    // transcript, the hybrid-laptop GPU and opt-in updates first, then 0.4's timeline copy and clip facts, Premiere
+    // keys, Effect Controls and transcript tools, gaming Shorts and safe quitting, 0.3's Home, menu bar, Effects panel
+    // and everyday editing, 0.2's Premiere parity, the gaming wave (M5o), M5k-M5n, C.7-C.12, A.3-A.9, AI-9-AI-13.
     readonly property var highlights: [
+        { key: "captionLanes", icon: "captions", title: qsTr("Captions on the timeline"),
+          text: qsTr("Caption tracks are rows above the video tracks: trim, move, split and delete captions there like clips, and Ctrl+K cuts the targeted caption rows with the clips. Nested and multicam clips show the waveform of their mix.") },
+        { key: "audioMeters", icon: "audio-lines", title: qsTr("Audio Meters and audio scrubbing"),
+          text: qsTr("The Audio Meters panel sits right of the timeline, with a clip light. While playback is stopped, dragging the playhead or stepping frames plays the sound there; Shift+S turns it on and off.") },
+        { key: "sceneDeadTime", icon: "scissors", title: qsTr("Scene Edit Detection and a dead-time review"),
+          text: qsTr("Clip > Scene Edit Detection cuts or marks the shot changes in your clips. Dead time is listed stretch by stretch in Highlights: keep some, and remove the rest in one undo step.") },
+        { key: "chaptersSource", icon: "bookmark", title: qsTr("Chapter markers and source transcripts"),
+          text: qsTr("Chapter markers you add while recording in OBS become clip markers when you import the recording. The Transcript's Source mode reads the Source Monitor's clip: select a soundbite, then Insert or Overwrite it.") },
+        { key: "gpuUpdates", icon: "download", title: qsTr("The fast GPU, and updates if you want them"),
+          text: qsTr("Laptops with two GPUs preview and export on the discrete one, or on the one you choose in Settings. Wabcut can check for updates and install them when you quit, once you turn that on.") },
         { key: "timelineCopy", icon: "copy", title: qsTr("Copy and rearrange on the timeline"),
           text: qsTr("Alt-drag copies a clip and Ctrl+Alt-drag rearranges shots, as in Premiere. Clips show their speed and an fx badge, and pointing at one shows its times and source.") },
         { key: "premiereKeys", icon: "keyboard", title: qsTr("Premiere's keys and transport"),

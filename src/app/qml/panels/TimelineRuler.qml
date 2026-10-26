@@ -18,6 +18,8 @@ import QtQuick
 // Snap off (TimelineView.seekToX(x, forceSnap), endScrub on release). A right click opens the ruler menu at the pointer
 // without moving the playhead (RulerContextMenu: marks, markers, Ripple Sequence Markers, Show Audio Time Units); on a
 // marker's flag the menu starts with Edit Marker… and Clear Marker.
+// 0.5 (stream B): a left-button press and drag is a scrub for Playback (Playback.beginScrub / endScrub): with audio
+// scrubbing on, a stopped transport plays a little of the mix at each new frame.
 Item {
     id: root
 
@@ -158,6 +160,17 @@ Item {
     MouseArea {
         id: scrubArea
         objectName: "rulerScrubArea"
+
+        /// 0.5: a left-button scrub is under way (Playback hears it: audio scrubbing).
+        property bool scrubbing: false
+        function finishScrub() {
+            root.view.endScrub()
+            if (scrubArea.scrubbing) {
+                scrubArea.scrubbing = false
+                Playback.endScrub()
+            }
+        }
+
         anchors.fill: parent
         preventStealing: true
         acceptedButtons: Qt.LeftButton | Qt.RightButton
@@ -168,14 +181,20 @@ Item {
                 rulerMenu.openAt(root, Qt.point(mouse.x, mouse.y), -1)
                 return
             }
+            if (!scrubArea.scrubbing) {
+                scrubArea.scrubbing = true
+                Playback.beginScrub()
+            }
             root.view.seekToX(mouse.x, (mouse.modifiers & Qt.ShiftModifier) !== 0)
         }
         onPositionChanged: mouse => {
-            if (pressed && (pressedButtons & Qt.LeftButton))
+            if (pressed && (pressedButtons & Qt.LeftButton)) {
+                Playback.scrubMoving() // the drag: a move back plays backwards (the press played forward)
                 root.view.seekToX(mouse.x, (mouse.modifiers & Qt.ShiftModifier) !== 0)
+            }
         }
-        onReleased: root.view.endScrub()
-        onCanceled: root.view.endScrub()
+        onReleased: scrubArea.finishScrub()
+        onCanceled: scrubArea.finishScrub()
     }
 
     // Sequence markers (M5i), over the scrub area: a flag in the marker's colour, a bar to its end for a range marker.

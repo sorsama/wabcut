@@ -9,6 +9,8 @@
 //     (subfolders nested), all in the same one undo step.
 // Every import is one undo step. Pure C++; the app's bridge only converts URLs and shows the report.
 // 0.4 also lists the game capture tools' folders (Game Bar, ShadowPlay, OBS) for the Media Browser's places.
+// P0 round: a recording's chapter markers (OBS "Add Chapter Marker" in hybrid MP4 / MKV) become clip markers of its item
+// in the same undo step (MediaImportOptions::readChapters, chapterMarkers).
 
 #include <wabcut/interchange/Import.h>
 #include <wabcut/model/EditSession.h>
@@ -24,6 +26,10 @@
 #include <span>
 #include <string>
 #include <vector>
+
+namespace wabcut::media {
+struct MediaChapter; // wabcut/media/Chapters.h
+} // namespace wabcut::media
 
 namespace wabcut::editor {
 
@@ -145,6 +151,10 @@ struct MediaImportOptions {
     std::vector<std::vector<std::string>> binPaths;
     /// 0.4: the undo step's name ("" = "Import"; Import Folder sends "Import Folder").
     std::string undoLabel;
+    /// P0 round: a recording's chapters (media::readChapters) become clip markers of its new item (chapterMarkers), in
+    /// the same undo step; read on the probing threads. Preferences > Media "Chapter markers in recordings become clip
+    /// markers" (on by default).
+    bool readChapters = true;
 };
 
 struct MediaImportResult {
@@ -157,7 +167,27 @@ struct MediaImportResult {
     std::vector<MediaId> byFile;
     /// 0.4: the bins the import made (MediaImportOptions::binPaths), outermost first.
     std::vector<BinId> createdBins;
+    /// P0 round: clip markers made from the new items' chapters (MediaImportOptions::readChapters), all files together.
+    std::size_t chapterMarkers = 0;
 };
+
+// ---- P0 round: chapter markers ----
+
+/// At most this many clip markers per file come from its chapters.
+inline constexpr std::size_t kMaxChapterMarkers = 1000;
+/// Their marker colour: Cyan (Premiere's eighth marker colour), apart from the default Green and the highlight finder's
+/// Orange, so markers from the recording read at a glance.
+inline constexpr std::int32_t kChapterMarkerColor = 7;
+
+/// The clip markers for a recording's `chapters`: point markers (Comment type, kChapterMarkerColor) at each chapter's
+/// start, sorted by time, named by the chapter's title or "OBS marker n" (n = 1, 2, ... in time order) when it has none;
+/// at most kMaxChapterMarkers. None for a lone chapter that starts at 00:00 (muxers write one for the whole file).
+/// Chapters at or past `extent` (the media's length, when known) and a second chapter at the same time are left out.
+std::vector<Marker> chapterMarkers(const std::vector<media::MediaChapter>& chapters, std::optional<Ticks> extent = std::nullopt);
+/// Reads `item`'s file's chapters (media::readChapters; not for generators, stills or files that are not one plain file,
+/// such as a spanned clip) and adds chapterMarkers() of them to its markers, kept in time order. Returns how many it added.
+/// importMediaFiles and the Media Browser's import (mediaFormatServices) use it, so every way in reads them alike.
+std::size_t addChapterMarkers(MediaItem& item);
 
 /// Probes `files` and adds every readable one to the session's project as one undo step (`options.undoLabel`, else
 /// "Import"), each in its bin (`options.bin` and `options.binPaths`). Nothing is committed when no file could be added.

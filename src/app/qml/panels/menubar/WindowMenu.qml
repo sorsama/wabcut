@@ -21,7 +21,8 @@ MenuBarMenu {
     readonly property var panelCommands: ({ library: "window.projects", mediaBrowser: "window.mediaBrowser",
                                              effects: "window.effects", effectControls: "window.effectControls",
                                              source: "window.sourceMonitor", program: "window.programMonitor",
-                                             timeline: "window.timeline", mixer: "window.audioTrackMixer" })
+                                             timeline: "window.timeline", mixer: "window.audioTrackMixer",
+                                             audioMeters: "window.audioMeters" })
     /// The catalog's panels the menu lists (AI off: no Generate).
     readonly property var panels: Workspaces.catalog.filter(p => p.key !== "generate" || Preferences.aiEnabled)
     /// Where the panels' rows start: after the separator that ends the fixed rows.

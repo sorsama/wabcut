@@ -739,7 +739,10 @@ TEST_CASE("What's new M5n: this build's highlights, each one spoken; screenshot"
         CHECK_FALSE(h.toMap().value(QStringLiteral("title")).toString().isEmpty());
         CHECK_FALSE(h.toMap().value(QStringLiteral("text")).toString().isEmpty());
     }
-    CHECK(keys == QStringList{QStringLiteral("timelineCopy"), QStringLiteral("premiereKeys"),
+    CHECK(keys == QStringList{QStringLiteral("captionLanes"), QStringLiteral("audioMeters"),
+                              QStringLiteral("sceneDeadTime"), QStringLiteral("chaptersSource"),
+                              QStringLiteral("gpuUpdates"), QStringLiteral("timelineCopy"),
+                              QStringLiteral("premiereKeys"),
                               QStringLiteral("effectsTranscript"), QStringLiteral("gamingShorts"), QStringLiteral("safeWork"),
                               QStringLiteral("homeStart"), QStringLiteral("menuBar"), QStringLiteral("effectsFolders"),
                               QStringLiteral("everyday"), QStringLiteral("premiereTools"), QStringLiteral("exportQueue"),
@@ -757,12 +760,12 @@ TEST_CASE("What's new M5n: this build's highlights, each one spoken; screenshot"
     QQuickItem* list = findNamed(popupItem(dialog), QStringLiteral("whatsNewList"));
     REQUIRE(list);
     CHECK(list->property("count").toInt() == highlights.size());
-    QQuickItem* first = findNamed(popupItem(dialog), QStringLiteral("whatsNew_timelineCopy"));
+    QQuickItem* first = findNamed(popupItem(dialog), QStringLiteral("whatsNew_captionLanes"));
     REQUIRE(first);
     QAccessibleInterface* iface = QAccessible::queryAccessibleInterface(first);
     REQUIRE(iface);
     CHECK(iface->role() == QAccessible::ListItem);
-    CHECK(iface->text(QAccessible::Name).startsWith(QStringLiteral("Copy and rearrange on the timeline. ")));
+    CHECK(iface->text(QAccessible::Name).startsWith(QStringLiteral("Captions on the timeline. ")));
     CHECK_ACCESSIBLE(popupItem(dialog));
     spin(150);
     const QImage image = shell.grab();

@@ -1165,3 +1165,50 @@ TEST_CASE("Drop: real OBS MKV and hybrid MP4 and ShadowPlay recordings land on n
     CHECK(seq.audioTracks[1]->role == TrackRole::Dialogue);
     CHECK(seq.audioTracks[3]->name == "Music");
 }
+
+TEST_CASE("Playback session: playback starting over a scrub window fades it out at once", "[editor][playback][scrub]") {
+    if (!haveMedia()) {
+        SKIP("test media missing");
+    }
+    SequenceId seqId;
+    EditSession session(projectWithSequence(&seqId));
+    const MediaId av = importOne(session, testMedia("h264_1080p60_aac.mp4"));
+    REQUIRE(dropMedia(session, {.media = av, .sequence = seqId, .at = Ticks{}}));
+
+    PlaybackSessionOptions options;
+    options.audio.backend = audio::AudioBackend::Null;
+    options.audio.declickTime = Ticks{};
+    PlaybackSession playback(session, options);
+    REQUIRE(playback.start());
+    playback.setSequence(seqId);
+    playback.seek(Ticks::fromSeconds(1));
+    std::vector<float> block(480 * 2);
+    for (int i = 0; i < 5; ++i) {
+        REQUIRE(playback.engine().pull(block));
+    }
+    playback::AudioScrubber* scrubber = playback.audioScrubber();
+    REQUIRE(scrubber != nullptr);
+
+    // A scrub window (its worker renders it), and the device starts playing it.
+    REQUIRE(playback.scrubAudio(Ticks::fromSeconds(2)));
+    for (int i = 0; i < 1000 && scrubber->stats().rendered == 0; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    REQUIRE(scrubber->stats().rendered == 1);
+    REQUIRE(playback.engine().pull(block)); // 10 ms of the 60 ms window
+    REQUIRE(scrubber->stats().started == 1);
+
+    // Space: playback starts and the window fades out at once (the rest of it is not heard over the program).
+    playback.play();
+    std::this_thread::sleep_for(std::chrono::milliseconds(20)); // the worker hands the stop over (no device time passes)
+    for (int i = 0; i < 200 && scrubber->stats().cutShort == 0; ++i) {
+        REQUIRE(playback.engine().pull(block));
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    CHECK(scrubber->stats().cutShort == 1);
+    CHECK(scrubber->stats().framesPlayed < 60 * 48); // cut short
+    // While playing nothing scrubs.
+    CHECK_FALSE(playback.scrubAudio(Ticks::fromSeconds(3)));
+    playback.pause();
+    playback.stop();
+}

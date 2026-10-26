@@ -499,6 +499,30 @@ panel (UI) builds on it later.
     without spaces; with several runs, the first one).
   Edit > Copy in the menu bar still copies clips (the transcript has no keymap scope).
 
+**Source mode: the source clip transcript (0.5).** The Transcript tab has a **Sequence | Source** switch. *Source* reads
+the clip in the Source Monitor (`SourceTranscriptBridge`, QML singleton `SourceTranscript`; Premiere's Text panel on a
+source clip): its words in source time (`ai::edit::MediaTranscript`: the cached transcript of one of its audio streams,
+the project's corrections on top, words inside any audio redaction of the media as "[bleep]"), as paragraphs with source
+timecodes. A clip with several audio streams (an OBS recording) shows one at a time behind stream tabs (A1 · Game,
+A2 · Mic, ...): the one chosen for that clip in this session, else the first with a transcript, else the Mic stream.
+- A click on a word moves the Source Monitor to it; the word is selected. Shift- or Ctrl-click extends the selection,
+  a drag selects a run, Find's next / previous select the match. The selection is always one run of words, and it sets
+  the source In at the start of its first word's frame and the Out at the end of its last word's frame
+  (`SourceMonitorBridge::setMarks` through `source.setMarks`: one undo step "Set Source Marks"; a drag sets them once,
+  when it ends; marks that are already those make no step).
+- **Insert** (`,`) and **Overwrite** (`.`) are the keymap's Insert and Overwrite with those marks (Main.qml's source
+  edit: the patching, the sequence marks and the Fit Clip question, as the Source Monitor's buttons); **Copy** (Ctrl+C)
+  copies the words. Delete, Keep only, moving paragraphs, Fix and the word menu are the Sequence view's: they edit the
+  sequence.
+- Without a transcript: **Transcribe this clip** transcribes that clip's shown stream alone
+  (`TranscriptBridge::transcribeMedia`: the provider chosen in the panel, the same job with progress and Cancel, the
+  consent prompt and the redactions), and its words appear when it ends. A Media Browser preview is read once it is
+  imported; a clip without sound has nothing to read.
+- `transcript.mediaWords` (Read) gives the same words to the CLI and MCP: `media`, optional `audioStream` (default: the
+  first with a transcript), `first` / `last`, `from` / `to` (source ticks or timecodes in the media's rate), `limit`;
+  each word as `[index, text, start, end, startTicks, endTicks, speaker, confidence]`. With `source.setMarks` and
+  `edit.insertFromSource` / `overwriteFromSource` an agent edits a soundbite in the same way.
+
 **Transcript ↔ timeline (`SequenceTranscript`).**
 - Transcripts belong to a media audio stream, in source time. A sequence is heard through its audio clips: a word is on the
   timeline when its midpoint lies inside a clip's source window, at the position the clip's speed and direction give it.
@@ -3090,6 +3114,15 @@ compared with what is usual for the same recording.
 | visual | the picture decoded small (160 px wide, every frame) | motion above its moving median, brightness flashes, bursts of picture changes (cuts, respawns, menus) |
 | chat | a Twitch (TwitchDownloader) / YouTube (yt-dlp live_chat.json) / chat-downloader log, imported once per recording | the message rate over its moving median, emote and keyword hits (KEKW, POGGERS, "clip it", ... and your own words), counted 6 s earlier (viewers react late) |
 | markers | chapter markers in the recording (OBS "Add Chapter Marker" in hybrid MP4 / MKV) and a marker file next to it (`<file>.markers.txt / .csv / .json`, `<stem>_markers.*`) | a hotkey pressed after the play lifts the 15 s before it |
+
+The chapters are read by `media::readChapters` (`src/media/Chapters.h`, 0.5): at most 10,000 per file, titles cut to 200
+bytes of valid UTF-8. Import uses the same reader: since 0.5 a recording's chapters also become clip markers of its item
+when it is imported (Preferences > Media "Chapter markers in recordings become clip markers", on by default): Cyan point
+markers at the chapter starts, named after the chapter or "OBS marker n", at most 1,000, a lone chapter at 00:00 and
+chapters past the end left out, in the same "Import" undo step; the import toast says how many. Every way media comes
+in reads them alike (`editor::addChapterMarkers`): File > Import, Import Folder, drops on the Library, the timeline or
+the Source Monitor, and the Media Browser's import and Ingest copy (`media.importCameraClips`, whose `markers` counts
+them). The highlight finder reads the raw chapter positions as hints, as before.
 
 With several audio streams (OBS multi-track), the most voice-like one is the mic and the others are game audio;
 one stream is "mixed" (game spikes from its level, the voice from its voiced parts). `audioRoles` overrides

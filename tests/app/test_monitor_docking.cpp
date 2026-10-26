@@ -329,13 +329,24 @@ TEST_CASE("Panels join another group as tabs, dock beside it or along an edge, c
         CHECK(scenePos(source).x() < scenePos(program).x());
         CHECK(scenePos(program).x() < scenePos(controls).x());
         CHECK(scenePos(timeline).y() > scenePos(program).y());
-        CHECK(std::abs(timeline->width() - workWidth) <= 1.0);
+        // 0.5: the Audio Meters at the timeline's right, slim; the two share the width.
+        QQuickItem* meters = groupOf(shell, "audioMeters");
+        REQUIRE(meters != nullptr);
+        const double gap = shell.theme->property("gap").toDouble();
+        CHECK(scenePos(meters).x() > scenePos(timeline).x());
+        CHECK(std::abs(scenePos(meters).y() - scenePos(timeline).y()) <= 1.0);
+        CHECK(std::abs(timeline->width() + gap + meters->width() - workWidth) <= 1.0);
+        CHECK(meters->width() < 200);
         // Each group's shown panel carries the grip, the pop-out and the close button.
         for (const char* name : {"dockGrip_library", "dockToggle_library", "dockClose_library", "dockClose_effectControls",
-                                 "dockToggle_program", "dockClose_timeline"}) {
+                                 "dockToggle_program", "dockClose_timeline", "dockClose_audioMeters"}) {
             INFO(name);
             CHECK(shell.object(name) != nullptr);
         }
+        // The rest of this moves the timeline around alone.
+        evaluate(shell, QStringLiteral("docking.closePanel('audioMeters')"));
+        spin(50);
+        CHECK(std::abs(timeline->width() - workWidth) <= 1.0);
 
         // Effect Controls joins the Library's group: two tabs there, Effect Controls shown; its own group is gone and
         // the monitors take its room.
@@ -438,10 +449,14 @@ TEST_CASE("Panels join another group as tabs, dock beside it or along an edge, c
         QQuickItem* program = groupOf(shell, "program");
         CHECK(scenePos(library).x() < scenePos(program).x());
         CHECK(scenePos(timeline).y() > scenePos(program).y());
-        CHECK(std::abs(timeline->width() - evaluate(shell, QStringLiteral("workArea.width")).toDouble()) <= 1.0);
+        // 0.5: with the Audio Meters at its right.
+        QQuickItem* meters = groupOf(shell, "audioMeters");
+        REQUIRE(meters != nullptr);
+        CHECK(std::abs(timeline->width() + shell.theme->property("gap").toDouble() + meters->width() -
+                       evaluate(shell, QStringLiteral("workArea.width")).toDouble()) <= 1.0);
 
         // Every panel closed: the workbench says so; the Library comes back from there.
-        for (const char* key : {"library", "source", "program", "effectControls", "timeline"})
+        for (const char* key : {"library", "source", "program", "effectControls", "timeline", "audioMeters"})
             evaluate(shell, QStringLiteral("docking.closePanel('%1')").arg(QLatin1String(key)));
         spin(50);
         CHECK(evaluate(shell, QStringLiteral("docking.tree === null")).toBool());
@@ -1045,9 +1060,9 @@ TEST_CASE("Docking: Ctrl+W closes the active panel and Shift+5 focuses Effect Co
     // Window > Workspaces > Reset to Saved Layout (Alt+Shift+0): the preset's layout; Undo on the toast puts this one
     // back.
     const QString changed = groupsText(shell);
-    REQUIRE(changed == QStringLiteral("source program effectControls+markers timeline"));
+    REQUIRE(changed == QStringLiteral("source program effectControls+markers timeline audioMeters"));
     run("window.resetToSavedLayout");
-    CHECK(groupsText(shell) == QStringLiteral("library source program effectControls timeline"));
+    CHECK(groupsText(shell) == QStringLiteral("library source program effectControls timeline audioMeters"));
     QQuickItem* toast = shell.item("toast");
     REQUIRE(toast != nullptr);
     CHECK(toast->property("shown").toBool());

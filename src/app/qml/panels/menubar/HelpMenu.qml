@@ -26,7 +26,7 @@ MenuBarMenu {
     }
     component HelpItem: BarMenuItem {
         id: help
-        /// What window.showHelp runs: "welcome", "tour", "trainer", "whatsNew" or "shortcuts".
+        /// What window.showHelp runs: "welcome", "tour", "trainer", "whatsNew", "shortcuts" or "updates".
         property string what: ""
         objectName: "helpItem_" + help.what
         runsCommand: false
@@ -79,6 +79,11 @@ MenuBarMenu {
         objectName: "helpItem_releaseNotes"
         text: qsTr("Release Notes")
         url: root.linkUrl("releaseNotes")
+    }
+    // P0 round: asks for the latest release at once (Updates; the dialog shows what it found).
+    HelpItem {
+        what: "updates"
+        text: qsTr("Check for Updates…")
     }
     ContextMenuSeparator {}
     // The demo project as at launch (after the unsaved-changes prompt).

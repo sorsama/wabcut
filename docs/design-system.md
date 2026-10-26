@@ -1672,7 +1672,20 @@ management UI, and deep layer editing of motion graphics (kept behind "Advanced"
   - Remove dead time (`sequence.removeDeadTime`): Find dead time measures the gameplay's motion and the game audio
     off the GUI thread (the app's `appGamingServices`: editor::activityMeasure). The popover then says how much it
     found ("Dead time: 3 stretches, 0:42 in all"), and Remove takes exactly those stretches out (handles kept, every
-    unlocked track) in one undo step.
+    unlocked track) in one undo step. 0.5: Find opens the review instead, a sheet over the Highlights panel
+    (`DeadTimeReview`; the panel's scissors button opens it too): Sensitivity and Shortest stretch sliders, a Keep at
+    each end field and an Only In to Out switch (remembered), Find with its progress and Cancel, then one row per
+    stretch (a red bar, its timecode, its length, "kept" when switched off, a remove switch); All / None, a click or
+    Enter jumps the playhead to the stretch, Up / Down move, K keeps, Delete removes (both go on to the next), Space
+    flips. While it is open the switched-on stretches are red removal bands on the timeline (owner-tagged highlights:
+    the transcript's selection and cleanup preview stay). Remove N stretches is one undo step; when the sequence's
+    clips changed since the find it asks for a new one. The × closes it and its bands.
+- **Scene Edit Detection… (0.5, bridge `SceneDetect`):** the Clip menu and the clip menu's row after Speed/Duration…
+  (greyed out with "(no video clip)" or "(track locked)"), `clip.sceneEditDetection` in the palette. The dialog
+  (`SceneEditDetectionDialog`): Apply a cut at each detected edit, Add a marker at each cut, Detector (a pill with its
+  menu: Cuts, fades and dissolves / Hard cuts only / Hard cuts in fast motion / Fades through black), Sensitivity
+  0..100 % (greyed for the detectors without a content threshold), the beam while it analyses, Close / Cancel and
+  Analyze. A finished run closes it and leaves a toast; a failure stays in the dialog.
   - The assistant's commands get the same host services (media activity, Auto Reframe for versions without a facecam).
 
 ### The Export panel and its gaming presets (bridge `GamingExport`; design language v3)

@@ -7,6 +7,7 @@ wabcut_add_test_suite(editor
         test_autosave_job.cpp
         test_camera_cards.cpp # 0.2: the Media Browser, spanned clips, layered files
         test_capsule.cpp
+        test_chapter_import.cpp # P0 round: OBS chapter markers on import
         test_color_editor.cpp
         test_editor.cpp
         test_image_sequence.cpp # 0.2: Import > Image Sequence

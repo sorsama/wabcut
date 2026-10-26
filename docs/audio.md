@@ -171,6 +171,27 @@ Premiere's Speech to Text **Hide profanity**: profane words in captions are show
 - **Voice-over take recovery.** When a project opens with takes that a crash, or a quit before the take was kept, left
   in its Voice-over folder, a card offers each one. **Recover** repairs the take and puts it back on its track where it
   was recorded (one undo step). **Discard** stops offering them; the files stay in the folder.
+- **Audio Meters (0.5).** Premiere's Window > Audio Meters: the level of the mix (the master's meter: peak, RMS and
+  a 1.5 s peak hold per channel, two bars for stereo, six for a 5.1 master) over the panel's height, beside a 0 to
+  -60 dB scale, with the highest peak hold as a readout and a clip light that a click (or Space) clears. The Edit
+  preset docks it right of the timeline, slim, for workspaces made or reset from the preset from 0.5 on (saved
+  workspaces keep their panels: Window > Audio Meters or Reset to Saved Layout adds it). Like any panel it closes,
+  joins a group as a tab and floats; narrower than its tab strip it shows the dock's handle over its corner on hover.
+  The meters poll (~30 Hz) while the Audio Meters panel or the Audio Track Mixer shows: each counts as one viewer
+  (`AudioMixer.setMeterViewer`). `window.audioMeters` has no default key, as in Premiere.
+- **Audio scrubbing (0.5).** Premiere's Play Audio While Scrubbing, on by default: while the transport is stopped,
+  dragging the playhead in the timeline's ruler or on the Program Monitor's time bar, and stepping frames (the arrow
+  keys, the step buttons), play a short window of the sequence mix at the new frame: 60 ms, or one frame of a sequence
+  under about 17 fps, at most 200 ms, faded in and out over 5 ms. It is the export mix (mute, solo, faders, pan, clip
+  and track effects, submixes, the master bus), rendered off the GUI thread by `playback::AudioScrubber` on a feed of
+  its own, at most one window every 30 ms (a newer request replaces one still waiting; a new window fades out the one
+  sounding), and played through the AudioEngine's overlay, so the transport clock and the picture do not move. A drag
+  that goes back plays the window before the playhead backwards, from the playhead back in time (Premiere's backward
+  scrub; the fades are applied after the reversal); a step plays the frame stepped to forward. The Source Monitor scrubs
+  its clip the same way (its time bar and waveform, its step buttons and keys: the clip's own audio streams, through its
+  own playback session). Shift+S
+  (Toggle Audio Scrubbing), Sequence > Audio Scrubbing and Settings > Timeline & editing > "Play audio while
+  scrubbing" turn it on and off (remembered). The first scrub opens the audio device if playback has not yet.
 
 ## Known gaps
 
@@ -182,6 +203,7 @@ Premiere's Speech to Text **Hide profanity**: profane words in captions are show
 - The mixer's automation modes (Read, Touch, Latch, Write) cover track faders and pans, not send levels. Send automation
   is through `track.setSend` with `time`.
 - The Audio Clip Mixer's meters are the track meters, not per-clip meters.
+- The Audio Meters panel (0.5) has none of Premiere's panel menu (dynamic peaks, the dB range, a horizontal layout).
 - The default send level (0 dB) and many effect ranges are unverified against Premiere.
 - "Show Audio Time Units" (0.2): one switch in the Program Monitor's and the timeline's settings. The playhead stops
   on audio samples (the arrow keys step one), the ruler and the readouts count samples (or milliseconds, the

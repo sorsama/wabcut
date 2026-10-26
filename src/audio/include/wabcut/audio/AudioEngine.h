@@ -197,6 +197,13 @@ public:
     /// block. The previous source is released on a control thread once the audio thread no longer uses it.
     void setSource(std::shared_ptr<AudioSource> source);
     std::shared_ptr<AudioSource> source() const;
+    /// 0.5: a second source the audio thread renders every block whatever the transport does (paused, prerolling, at
+    /// any speed) and adds to the output: one-shot previews such as audio scrubbing (playback::AudioScrubber). Its
+    /// render() gets the device time (frames delivered since start) as `startTime`. It never reads or moves the
+    /// transport, so the clock (and the picture that follows it) stays where it is. nullptr = none. Any thread; the same
+    /// lifetime rules as setSource() (released on a control thread).
+    void setOverlay(std::shared_ptr<AudioSource> overlay);
+    std::shared_ptr<AudioSource> overlay() const;
 
     /// Seek: map the next rendered frame to `start` (see class comment). Any thread. Same as seek(start, {}).
     void setTimeline(Ticks start);

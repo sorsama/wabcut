@@ -37,6 +37,7 @@ const std::set<std::string> kRunsModel{
 const std::set<std::string> kNoModel{
     // Cached transcripts.
     "transcript.text", "transcript.words", "transcript.review", "transcript.speakers", "transcript.corrections",
+    "transcript.mediaWords", // P0 round: the source clip transcript (cached words)
     "transcript.deleteRanges", "transcript.keepRanges", "transcript.moveRange", "transcript.cleanup",
     "transcript.correctWord", "transcript.correctRange", "captions.generate", "captions.generateFromTranscript",
     "captions.updateFromTranscript", "captions.hideProfanity", "audio.bleepProfanity",

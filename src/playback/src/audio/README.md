@@ -13,6 +13,7 @@ needs to change for that.
 | `TrackAudio.h` | `renderTrack()`: a one-shot TrackRenderer (tests); `continuesSeamlessly()`; `mediaHeardOn()` (the media a track plays, nested ones included). |
 | `OfflineMixdown.h` | The player's whole mix offline (TrackRenderer per track, mute/solo, mixer, master bus): export and the loudness jobs. Same samples as preview from the same start. |
 | `TimelineAudioPlayer.h` | Plays a sequence's audio tracks through the `AudioEngine`. |
+| `AudioScrubber.h` | 0.5 audio scrubbing: short, faded windows of the sequence mix (an `OfflineMixdown` it seeks, on a feed and a worker of its own), at most one every 30 ms (the latest request wins), played through the engine's overlay so the transport clock never moves. |
 | `src/audio/NestedMix.h` (internal) | C.8: the sound of a nested or multicam clip, TrackRenderer's source for it: the nested tracks' renderers summed, the nested master stage (not for multicam), silence outside the nested sequence. |
 | `src/audio/SubmixGraph.h` (internal) | p02 (docs/audio.md): submix tracks and sends, shared by the callback and OfflineMixdown: pre/post-fader sends, track outputs, the submixes' chains, faders and panners in processing order, delay compensation of their latency. |
 

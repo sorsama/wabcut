@@ -7,6 +7,8 @@
 
 #include "PerformanceCheck.h"
 
+#include <wabcut/media/GpuInfo.h>
+
 #include <catch2/catch_test_macros.hpp>
 
 #include <QQuickItem>
@@ -91,6 +93,13 @@ TEST_CASE("First-run check: runs in the background, keeps the report, applies on
     }
     CHECK_FALSE(check.reasons().isEmpty());
     CHECK_FALSE(recommended(check, "text").isEmpty());
+    // Issue #10: which GPU and why (with a GPU in the computer).
+    if (const media::GpuSelection gpu = media::selectedGpu(); gpu.adapter) {
+        CHECK(keys.contains(QStringLiteral("gpu")));
+        CHECK(check.report()->gpuName == gpu.adapter->name);
+        CHECK(check.report()->gpuReason == std::string(media::gpuReasonKey(gpu.reason)));
+        CHECK_FALSE(check.report()->gpuNames.empty());
+    }
 
     // Not applied until asked; then the media-readiness settings are the recommendation.
     QSettings settings;

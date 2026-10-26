@@ -212,7 +212,21 @@ bool ProjectController::applyDefaultTransitionsToSelection() {
 }
 
 void ProjectController::setTimelineHighlights(std::vector<TimelineHighlight> highlights) {
-    m_highlights = std::move(highlights);
+    setTimelineHighlights(QString(), std::move(highlights));
+}
+
+void ProjectController::setTimelineHighlights(const QString& owner, std::vector<TimelineHighlight> highlights) {
+    // 0.5: each owner keeps its own ranges (the transcript's selection and dry run, Remove dead time's review), so one
+    // never wipes the other's; the timeline draws them all, the transcript's (owner "") first.
+    auto it = std::find_if(m_highlightOwners.begin(), m_highlightOwners.end(),
+                           [&owner](const auto& entry) { return entry.first == owner; });
+    if (it == m_highlightOwners.end())
+        it = m_highlightOwners.insert(owner.isEmpty() ? m_highlightOwners.begin() : m_highlightOwners.end(),
+                                      {owner, {}});
+    it->second = std::move(highlights);
+    m_highlights.clear();
+    for (const auto& entry : m_highlightOwners)
+        m_highlights.insert(m_highlights.end(), entry.second.begin(), entry.second.end());
     emit timelineHighlightsChanged();
 }
 

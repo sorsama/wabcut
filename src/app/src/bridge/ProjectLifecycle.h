@@ -256,6 +256,8 @@ public:
     /// has folders (how many were given), bins (how many were made), skipped: [{ name, reason: "notMedia" | "hidden" |
     /// "link" | "bundle" | "cameraCard" | "tooDeep" }], truncated (only the first 1000 files were looked at) and
     /// folderSummary (the toast: "Imported 12 files from Session1 into 3 bins. ..."; "" when no folder was given).
+    /// P0 round: chapterMarkers (clip markers made from the recordings' chapters, Editing.chapterMarkersOnImport) and
+    /// chapterSummary (the toast's sentence for them, "" when none; also at the end of folderSummary).
     Q_INVOKABLE QVariantMap importFiles(const QList<QUrl>& files, const QVariantMap& options = {});
     /// 0.4: an import dialog's choice (files or folders): import/lastFolder = the first one's folder (a folder's parent);
     /// import/recentFolders gets each file's folder / each folder (deduplicated, case-insensitive on Windows, 5 kept).

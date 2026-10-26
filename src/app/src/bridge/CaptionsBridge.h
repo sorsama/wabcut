@@ -14,6 +14,8 @@
 //                          (`updateSuggested` after a fix on the Transcript tab)
 //   exportFile()           SRT / WebVTT through wabcut_ai_edit's writers
 //   activeCue              the cue under the playhead (the list highlights it)
+//   selectedCue            0.5: the cue selected on the timeline's caption lanes (TimelineView; selectCue), editCue()
+//                          asks the page to open its text, setTrackEnabledFor() is the lanes' eye toggle
 //
 // The compositor draws the shown track in the picture (I.4: the program monitor and burned-in exports alike) with
 // `style` (CaptionStyleMapping.h maps it to the renderer's style), so every edit previews live.
@@ -84,6 +86,9 @@ class CaptionsBridge : public QObject {
     Q_PROPERTY(bool hideProfanity READ hideProfanity WRITE setHideProfanity NOTIFY profanityChanged FINAL)
     Q_PROPERTY(QString profanityWords READ profanityWords WRITE setProfanityWords NOTIFY profanityChanged FINAL)
     Q_PROPERTY(QString allowedWords READ allowedWords WRITE setAllowedWords NOTIFY profanityChanged FINAL)
+    /// 0.5: the cue selected on the timeline's caption lanes (an index into `cues` of the shown track), or -1. The cue
+    /// list highlights it and scrolls to it; selecting clips, a gap or a transition on the timeline clears it.
+    Q_PROPERTY(int selectedCue READ selectedCue NOTIFY cueSelectionChanged FINAL)
 
 public:
     explicit CaptionsBridge(QObject* parent = nullptr);
@@ -201,6 +206,20 @@ public:
     /// nothing changed when a cue would start before 0 or overlap. "" or why not (also `message`).
     Q_INVOKABLE QString shiftCues(const QString& delta, const QString& scope);
 
+    // ---- 0.5: the timeline's caption lanes ----
+    int selectedCue() const { return m_selectedCue; }
+    /// Shows caption track `track` ("k…") and selects its cue `index` (-1: none).
+    Q_INVOKABLE void selectCue(const QString& track, int index);
+    void selectCueOf(CaptionTrackId track, int index);
+    Q_INVOKABLE void clearCueSelection();
+    /// Asks the Captions page to open cue `index`'s text for typing (a double-click on the cue in the timeline).
+    Q_INVOKABLE void editCue(int index);
+    /// Asks the Captions page to show cue `index` (the cue menu's Select in Captions): the list scrolls to it.
+    Q_INVOKABLE void showCue(int index);
+    /// Shows or hides caption track `track` ("k…"; the eye of its timeline header): captions.setTrack, one undo step.
+    /// "" or why not.
+    Q_INVOKABLE QString setTrackEnabledFor(const QString& track, bool enabled);
+
     // ---- C++ ----
     /// The track the Captions page shows (invalid when there is none): the command palette's captionTrack.
     CaptionTrackId shownTrackId() const { return m_track; }
@@ -220,6 +239,11 @@ signals:
     void messageChanged();
     void updateSuggestedChanged();
     void profanityChanged();
+    void cueSelectionChanged();
+    /// 0.5: editCue(): the Captions page opens the cue's text.
+    void editCueRequested(int index);
+    /// 0.5: showCue(): the Captions page shows the cue.
+    void showCueRequested(int index);
 
 private:
     const CaptionTrack* shownTrack() const;
@@ -237,6 +261,8 @@ private:
     QPointer<TranscriptBridge> m_transcript;
     CaptionTrackId m_track;
     int m_activeCue = -1;
+    int m_selectedCue = -1; // 0.5
+    void setSelectedCue(int index);
     bool m_overlay = true;
     bool m_updateSuggested = false;
     QString m_message;

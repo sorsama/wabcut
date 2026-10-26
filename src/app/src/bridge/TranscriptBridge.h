@@ -256,6 +256,12 @@ public:
     Q_INVOKABLE void cancelTranscription();
     /// What a cloud provider needs before it may send audio: AiController.consentPrompt(...) for the job, or {}.
     Q_INVOKABLE QVariantMap consentFor(const QString& scope) const;
+    /// P0 round (the source clip transcript, SourceTranscriptBridge): transcribes `media`'s audio stream `audioStream`
+    /// (an index into MediaInfo::audio) alone with the chosen provider, as transcribe() does (the same job, progress,
+    /// Cancel, redactions and consent rules). "" or why not (also `message`).
+    QString transcribeMedia(MediaId media, int audioStream, bool allowOnce = false);
+    /// consentFor() for one media file.
+    QVariantMap consentForMedia() const;
 
     // ---- 0.4: follow the playhead, the word menu, voice tracks ----
     /// The paragraph (row of `paragraphs`) that holds word `word`, or -1.
@@ -320,6 +326,8 @@ private:
     void seekToWord(std::size_t word);
     ai::edit::CutOptions cutOptions() const;
     std::vector<JobItem> jobItems(const QString& scope) const;
+    /// Starts the transcription job of `items` (non-empty) with the chosen provider. "" or why not.
+    QString startJob(std::vector<JobItem> items, bool allowOnce);
     void finishJob(std::vector<std::pair<JobItem, std::expected<ai::Transcript, Error>>> results, bool cancelled);
     /// 0.4: whether audio track `index` is transcribed: the user's choice for its name, else the default (Dialogue role
     /// or a Mic / Voice / Commentary name, unmuted, not voice chat; every unmuted track when none matches).

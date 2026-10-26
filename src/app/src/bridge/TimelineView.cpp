@@ -3,6 +3,8 @@
 #include "AudioChannelsBridge.h"
 #include "BridgeIds.h"
 #include "ClipAudioBridge.h"
+#include "NestedMixPeaks.h"
+#include "NestedPeaks.h"
 #include "TimelineAnalysis.h"
 #include "TimelineGeometry.h"
 #include "TimeRemapBridge.h"
@@ -37,6 +39,7 @@
 #include <cmath>
 #include <functional>
 #include <numbers>
+#include <optional>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -298,6 +301,8 @@ public:
         lanes = MeshBuilder::createNode();
         ghosts = MeshBuilder::createNode();
         content = new QSGTransformNode;
+        captions = MeshBuilder::createNode();
+        captionLabels = new QSGNode;
         markers = MeshBuilder::createNode();
         overlay = MeshBuilder::createNode();
         labels = new QSGNode;
@@ -307,6 +312,8 @@ public:
         appendChildNode(lanes);
         appendChildNode(ghosts);
         appendChildNode(content);
+        content->appendChildNode(captions);
+        content->appendChildNode(captionLabels);
         content->appendChildNode(markers);
         content->appendChildNode(overlay);
         content->appendChildNode(labels);
@@ -325,6 +332,41 @@ public:
     QSGGeometryNode* guides = nullptr; // ghost outlines, snap line, razor preview, cut flashes (view coordinates)
     QSGGeometryNode* marquee = nullptr;
     std::vector<TrackBucket> buckets;
+    // 0.5: the caption lanes' cues (content coordinates) and their labels, keyed by TimelineStats::captionKey.
+    QSGGeometryNode* captions = nullptr;
+    QSGNode* captionLabels = nullptr;
+    std::unordered_map<std::uint64_t, LabelEntry> captionEntries;
+    SequencePtr captionSequence; // the sequence whose caption tracks the layer shows
+    int captionRevision = -1;
+    double captionOrigin = -1, captionBuiltWidth = -1, captionPps = -1;
+    double captionLabelScrollX = -1, captionRectScrollX = -1, captionRectScrollY = -1;
+    bool captionPending = false; // labels wait for the next frame (text layout budget)
+    bool captionEmpty = true;    // the layer draws nothing (no cues, no labels)
+    // Fix round 1 (QA #8): the cue blocks the mesh holds (the built range; x in content coordinates, relative to originX),
+    // per row in start order. The label pass after a horizontal scroll visits only those in the view.
+    struct BuiltCue {
+        std::size_t row = 0; // index into captionBuiltRows
+        int cue = 0;
+        double x0 = 0, x1 = 0, right = 0; // right: the drawn edge (a 1 px gap to the next cue)
+        bool sliver = false;               // zoomed far out: no outline, no label
+        QString line;                      // the first line of its text
+    };
+    struct BuiltCaptionRow {
+        int row = 0;                    // index into m_captionRows
+        std::size_t begin = 0, end = 0; // its cues in captionBuilt
+        double longest = 0;             // px of its longest cue: how far left of the view a cue can start and still show
+        double top = 0, h = 0, labelY = 0;
+        QColor ink;
+    };
+    std::vector<BuiltCue> captionBuilt;
+    std::vector<BuiltCaptionRow> captionBuiltRows;
+    std::optional<BuiltCue> captionDragged;                  // a dragged cue, where it would land (out of start order)
+    std::unordered_map<std::uint64_t, Ticks> captionLongest; // caption track id -> its longest cue
+    struct CaptionStats {
+        int cues = 0, dimmed = 0;
+        QHash<quint64, QString> texts;
+        QHash<quint64, QRectF> rects;
+    } captionStats;
 
     // Filmstrip atlases uploaded as textures (M5i), per media item; swept after each full build.
     struct AtlasTexture {
@@ -580,6 +622,9 @@ void TimelineView::setStyle(const QVariantMap& map) {
     s.trackPanLane = colorFrom(map.value(QStringLiteral("trackPanLane")), s.trackPanLane);
     s.fxChangedColor = colorFrom(map.value(QStringLiteral("fxChangedColor")), s.fxChangedColor); // 0.4
     s.fxEffectsColor = colorFrom(map.value(QStringLiteral("fxEffectsColor")), s.fxEffectsColor);
+    s.captionTrackHeight = std::max<qreal>(12, realFrom(map, "captionTrackHeight", s.captionTrackHeight)); // 0.5
+    s.captionColor = colorFrom(map.value(QStringLiteral("captionColor")), s.captionColor);
+    s.captionInkColor = colorFrom(map.value(QStringLiteral("captionInkColor")), s.captionInkColor);
     m_style = std::move(s);
     ++m_styleRevision;
     m_cursorSet = false; // the edit cursors' trim colours may have changed (0.1.3)
@@ -603,6 +648,41 @@ void TimelineView::setPeakSource(std::shared_ptr<const PeakSource> source) {
     (void)m_peaks->mediaChangedSince(0, m_peakSerial); // what the full rebuild below draws
     m_pendingPeakMedia.clear();
     ++m_styleRevision; // forces a rebuild of every waveform
+    // 0.5 (phase 2): with real media, nested clips' mixes are rendered for their exact waveforms.
+    if (!m_nestedMixesSet && !m_nestedMixes && m_controller && m_controller->mediaPeakSource())
+        attachNestedMixes(std::make_shared<NestedMixPeaks>());
+    update();
+}
+
+void TimelineView::setNestedMixSource(std::shared_ptr<NestedMixPeaks> source) {
+    m_nestedMixesSet = true;
+    attachNestedMixes(std::move(source));
+}
+
+void TimelineView::attachNestedMixes(std::shared_ptr<NestedMixPeaks> source) {
+    if (m_nestedMixes)
+        disconnect(m_nestedMixes.get(), nullptr, this, nullptr);
+    m_nestedMixes = std::move(source);
+    m_pendingMixSequences.clear();
+    if (m_nestedMixes) {
+        connect(m_nestedMixes.get(), &NestedMixPeaks::mixesChanged, this, &TimelineView::refreshNestedMixes);
+        if (m_controller)
+            m_nestedMixes->setProjectFile(m_controller->projectFile());
+        (void)m_nestedMixes->sequencesChangedSince(0, m_mixSerial);
+    }
+    ++m_styleRevision; // every waveform again
+    update();
+}
+
+void TimelineView::refreshNestedMixes() {
+    if (!m_nestedMixes)
+        return;
+    std::uint64_t now = m_mixSerial;
+    const std::vector<std::uint64_t> changed = m_nestedMixes->sequencesChangedSince(m_mixSerial, now);
+    m_mixSerial = now;
+    if (changed.empty())
+        return;
+    m_pendingMixSequences.insert(changed.begin(), changed.end());
     update();
 }
 
@@ -733,6 +813,9 @@ void addClipFacts(TimelineLaneFacts& facts, const ProjectState& snap, const Trac
                 for (const MulticamAngle& a : nested->multicam->angles)
                     info.angles.push_back(QString::fromStdString(a.name));
             }
+            // 0.5: what its audio clips' waveforms read (NestedPeaks), and a stamp of the sequences they come from.
+            info.audioMedia = nestedPeakMedia(snap, c.sequence);
+            info.audioStamp = nestedPeakStamp(snap, c.sequence);
         }
         facts.nested.emplace(c.sequence.value, std::move(info));
     }
@@ -855,6 +938,11 @@ void TimelineView::onModelChanged() {
         m_speedReadout.clear();
         emit gestureChanged();
     }
+    // 0.5: an undo or another edit under a cue drag: its cue index and times belong to the old caption track (the
+    // release's own edit never gets here: releaseCaption() ends the drag first). A selected cue that is gone goes.
+    if (m_drag == Drag::Caption || m_drag == Drag::CaptionPending)
+        cancelCaptionDrag();
+    validateCaptionSelection();
     const TimelineChange& change = m_controller->lastChange();
     const SequencePtr shown = m_sequence;
     const SequencePtr next = m_controller->currentSequence();
@@ -886,6 +974,8 @@ void TimelineView::refreshFromController() {
     if (const SequenceId next = m_sequence ? m_sequence->id : SequenceId{}; next != m_shownSequence)
         switchSequenceView(next);
     m_playhead = m_controller ? m_controller->finePlayhead() : Ticks{};
+    if (m_nestedMixes && m_controller)
+        m_nestedMixes->setProjectFile(m_controller->projectFile()); // 0.5: relative media of nested mixes
     relayoutRows();
     scheduleRenderBar(); // 0.2: the render bar follows edits, undo and the sequence shown
     refreshSelection();
@@ -908,13 +998,19 @@ void TimelineView::refreshSelection() {
     } else {
         m_selectedTransition = {};
     }
+    // 0.5: clips, a transition or a gap and a caption cue are selected one or the other (Premiere).
+    if ((!m_selected.empty() || m_selectedTransition || (m_controller && m_controller->gapSelection()))
+        && captionSelection().valid())
+        setCaptionSelection({}, -1);
     ++m_selectionRevision;
     update();
 }
 
 void TimelineView::relayoutRows() {
+    const std::vector<CaptionRow> captionsBefore = m_captionRows;
     std::vector<Row> rows;
-    qreal y = 0;
+    // 0.5: the caption rows come first, above the top video track (TimelineViewCaptions.cpp).
+    qreal y = layoutCaptionRows();
     const auto add = [&](const TrackPtr& track) {
         const bool audio = track->kind == TrackKind::Audio;
         const auto custom = m_trackHeights.find(track->id.value);
@@ -928,10 +1024,14 @@ void TimelineView::relayoutRows() {
         for (const TrackPtr& t : m_sequence->audioTracks)
             add(t);
     }
-    const qreal contentHeight = rows.empty() ? 0 : y - m_style.trackGap;
+    const qreal contentHeight = rows.empty() && m_captionRows.empty() ? 0 : y - m_style.trackGap;
     const bool shapeChanged = rows.size() != m_rows.size()
         || !std::equal(rows.begin(), rows.end(), m_rows.begin(), [](const Row& a, const Row& b) {
                return a.track->id == b.track->id && a.y == b.y && a.height == b.height;
+           })
+        || captionsBefore.size() != m_captionRows.size()
+        || !std::equal(captionsBefore.begin(), captionsBefore.end(), m_captionRows.begin(), [](const CaptionRow& a, const CaptionRow& b) {
+               return a.id == b.id && a.y == b.y && a.height == b.height;
            });
     m_rows = std::move(rows);
     if (shapeChanged || contentHeight != m_contentHeight) {
@@ -939,6 +1039,7 @@ void TimelineView::relayoutRows() {
         ++m_layoutRevision;
         emit layoutChanged();
     }
+    refreshCaptionRowItems(); // 0.5: the caption headers (emits captionRowsChanged when they differ)
 }
 
 // ---- View parameters --------------------------------------------------------------------------------
@@ -1532,6 +1633,14 @@ struct BuildContext {
     int filmNodes = 0;
     int buildingWaveforms = 0; // p02 audio: audio clips shaded where their peaks are still building
     float loudestWaveform = 0;
+    // 0.5: where nested, multicam and merged audio clips find the clips their waveforms come from (NestedPeaks).
+    const ProjectState* project = nullptr;
+    std::vector<std::uint8_t> pendingScratch;
+    int nestedWaveforms = 0;
+    // 0.5 (phase 2): their mixes rendered in the background (null: the approximation only).
+    const NestedMixSource* mixes = nullptr;
+    ProjectSnapshot projectSnapshot;
+    int exactWaveforms = 0;
 };
 
 /// A thumbnail quad: where it goes (built coordinates) and which part of the atlas it shows (normalised).
@@ -2418,9 +2527,26 @@ std::pair<int, int> buildTrack(BuildContext& ctx, TrackBucket& b, const Timeline
                     const Ticks ta = std::clamp(tickAt(wx0), it->start(), it->end());
                     const Ticks tb = std::clamp(tickAt(wx1), it->start(), it->end());
                     ctx.peakScratch.resize(n);
-                    if (n > 0 && tb > ta
-                        && ctx.peaks.peaks(it->media, it->stream, it->sourceTimeAt(ta), it->sourceTimeAt(tb),
-                                           ctx.peakScratch)) {
+                    // 0.5: a nested, multicam or merged clip has no media of its own: its waveform comes from the peaks
+                    // of the clips it plays (NestedPeaks), shaded where one of those is still building.
+                    const bool fromLeaves = it->isNested() && ctx.project;
+                    NestedPeaksResult leaves;
+                    bool drawn = false;
+                    if (n > 0 && tb > ta) {
+                        if (fromLeaves) {
+                            leaves = nestedPeaks(*it, *ctx.project, ctx.peaks, ta, tb, ctx.peakScratch, &ctx.pendingScratch,
+                                                 ctx.mixes, ctx.projectSnapshot);
+                            drawn = leaves.drawn;
+                            if (drawn)
+                                ++ctx.nestedWaveforms;
+                            if (leaves.exact)
+                                ++ctx.exactWaveforms;
+                        } else {
+                            drawn = ctx.peaks.peaks(it->media, it->stream, it->sourceTimeAt(ta), it->sourceTimeAt(tb),
+                                                    ctx.peakScratch);
+                        }
+                    }
+                    if (drawn) {
                         if (ctx.volumeWaveforms)
                             scaleByClipVolume(*it, wx0, (wx1 - wx0) / static_cast<double>(n), tickAt, ctx.peakScratch);
                         ctx.loudestWaveform = std::max(ctx.loudestWaveform, *std::ranges::max_element(ctx.peakScratch));
@@ -2440,39 +2566,43 @@ std::pair<int, int> buildTrack(BuildContext& ctx, TrackBucket& b, const Timeline
                     }
                     // p02 audio: the part of the clip whose peaks are still being decoded is shaded (the waveform fills
                     // in as they build; refreshPeaks() rebuilds this track when its media's peaks move on).
-                    if (n > 0 && tb > ta) {
-                        if (const std::optional<Ticks> until = ctx.peaks.buildingUntil(it->media, it->stream)) {
-                            const double step = (wx1 - wx0) / static_cast<double>(n);
-                            const QColor shade = withAlpha(st.waveform(it->colorIndex), 0.16);
-                            const QColor edge = withAlpha(st.waveform(it->colorIndex), 0.6);
-                            const double top = rect.top() + st.waveTop;
-                            bool any = false;
-                            std::size_t k = 0;
-                            while (k < n) {
-                                // Columns whose source time is past the decoded part (either side, for reversed clips).
-                                const auto pending = [&](std::size_t c) {
-                                    return it->sourceTimeAt(tickAt(wx0 + (static_cast<double>(c) + 0.5) * step)) >= *until;
-                                };
-                                if (!pending(k)) {
-                                    ++k;
-                                    continue;
-                                }
-                                const std::size_t from = k;
-                                while (k < n && pending(k))
-                                    ++k;
-                                const double xa = wx0 + static_cast<double>(from) * step;
-                                const double xb = wx0 + static_cast<double>(k) * step;
-                                ctx.mesh.addRect(QRectF(xa, top, xb - xa, 2 * half), shade);
-                                // A thin edge where the decoded part ends (the build's progress).
-                                if (from > 0)
-                                    ctx.mesh.addRect(QRectF(xa, top, 1, 2 * half), edge);
-                                else if (k < n)
-                                    ctx.mesh.addRect(QRectF(xb - 1, top, 1, 2 * half), edge);
-                                any = true;
+                    const std::optional<Ticks> until = n > 0 && tb > ta && !fromLeaves
+                                                           ? ctx.peaks.buildingUntil(it->media, it->stream)
+                                                           : std::nullopt;
+                    if (n > 0 && tb > ta && (until || leaves.building)) {
+                        const double step = (wx1 - wx0) / static_cast<double>(n);
+                        const QColor shade = withAlpha(st.waveform(it->colorIndex), 0.16);
+                        const QColor edge = withAlpha(st.waveform(it->colorIndex), 0.6);
+                        const double top = rect.top() + st.waveTop;
+                        bool any = false;
+                        std::size_t k = 0;
+                        while (k < n) {
+                            // Columns whose source time is past the decoded part (either side, for reversed clips);
+                            // 0.5: of a nested clip, the columns whose leaf is still building there.
+                            const auto pending = [&](std::size_t c) {
+                                if (fromLeaves)
+                                    return c < ctx.pendingScratch.size() && ctx.pendingScratch[c] != 0;
+                                return it->sourceTimeAt(tickAt(wx0 + (static_cast<double>(c) + 0.5) * step)) >= *until;
+                            };
+                            if (!pending(k)) {
+                                ++k;
+                                continue;
                             }
-                            if (any)
-                                ++ctx.buildingWaveforms;
+                            const std::size_t from = k;
+                            while (k < n && pending(k))
+                                ++k;
+                            const double xa = wx0 + static_cast<double>(from) * step;
+                            const double xb = wx0 + static_cast<double>(k) * step;
+                            ctx.mesh.addRect(QRectF(xa, top, xb - xa, 2 * half), shade);
+                            // A thin edge where the decoded part ends (the build's progress).
+                            if (from > 0)
+                                ctx.mesh.addRect(QRectF(xa, top, 1, 2 * half), edge);
+                            else if (k < n)
+                                ctx.mesh.addRect(QRectF(xb - 1, top, 1, 2 * half), edge);
+                            any = true;
                         }
+                        if (any)
+                            ++ctx.buildingWaveforms;
                     }
                 }
                 if (ctx.showVolume)
@@ -2537,6 +2667,266 @@ std::pair<int, int> buildTrack(BuildContext& ctx, TrackBucket& b, const Timeline
 }
 
 } // namespace
+
+bool TimelineView::updateCaptionLayer(TimelineRootNode* root, bool full, TimelineStats& stats) {
+    // 0.5: the caption lanes, in two passes (fix round 1, QA #8). The mesh holds the cue blocks of the built range and is
+    // rebuilt only when they or their look change: the caption tracks, the cue selection or a cue drag
+    // (m_captionRevision), or a new built range (`full`: zoom, resize, rows, a scroll out of the range). Each row starts
+    // at a binary search on the cue starts (less its longest cue), so a long track costs what the built range shows.
+    // Scrolling inside the built range moves the content transform only: a horizontal scroll places the labels again
+    // (they stick to the view's left edge, as clip labels do) over the built cues in the view; a vertical scroll leaves
+    // the geometry and the labels alone.
+    bool tracksChanged = false;
+    if (root->captionSequence != m_sequence) {
+        tracksChanged = !root->captionSequence || !m_sequence
+                        || root->captionSequence->captionTracks != m_sequence->captionTracks;
+        root->captionSequence = m_sequence;
+    }
+    if (tracksChanged) {
+        root->captionLongest.clear();
+        if (m_sequence) {
+            for (const CaptionTrack& t : m_sequence->captionTracks) {
+                Ticks longest{};
+                for (const CaptionCue& c : t.cues)
+                    longest = std::max(longest, c.end() - c.start);
+                root->captionLongest[t.id.value] = longest;
+            }
+        }
+    }
+    const double builtWidth = root->builtEndX - root->builtStartX;
+    const bool meshDirty = full || tracksChanged || root->captionRevision != m_captionRevision
+                           || root->captionOrigin != root->originX || root->captionBuiltWidth != builtWidth
+                           || root->captionPps != m_pps;
+    if (meshDirty) {
+        root->captionRevision = m_captionRevision;
+        root->captionOrigin = root->originX;
+        root->captionBuiltWidth = builtWidth;
+        root->captionPps = m_pps;
+    }
+    TimelineRootNode::CaptionStats& cs = root->captionStats;
+    // Without caption rows, a layer that already draws nothing stays as it is.
+    const bool idle = m_captionRows.empty() && root->captionEmpty;
+    int visited = 0;
+    int layouts = 0;
+    const bool meshBuilt = meshDirty && !idle;
+    if (meshBuilt) {
+        cs.cues = 0;
+        cs.dimmed = 0;
+        root->captionBuilt.clear();
+        root->captionBuiltRows.clear();
+        root->captionDragged.reset();
+        MeshBuilder& mesh = root->mesh;
+        mesh.clear();
+        const QFontMetricsF metrics(m_style.labelFont);
+        const double originX = root->originX;
+        const CaptionSelection selected = captionSelection();
+        const auto xOf = [&](Ticks t) { return t.toSeconds() * m_pps - originX; };
+        const auto firstLine = [](const CaptionCue& cue) {
+            return QString::fromStdString(cue.text).section(QLatin1Char('\n'), 0, 0).trimmed();
+        };
+        for (std::size_t r = 0; m_sequence && r < m_captionRows.size(); ++r) {
+            const CaptionRow& row = m_captionRows[r];
+            const auto track = std::ranges::find_if(m_sequence->captionTracks, [&](const CaptionTrack& t) { return t.id == row.id; });
+            if (track == m_sequence->captionTracks.end())
+                continue;
+            // A hidden (disabled) track is drawn dimmed.
+            const QColor fill = row.enabled ? m_style.captionColor : withAlpha(m_style.captionColor, 0.45);
+            const qreal inset = std::min<qreal>(2, row.height / 8);
+            TimelineRootNode::BuiltCaptionRow built;
+            built.row = static_cast<int>(r);
+            built.top = row.y + inset;
+            built.h = row.height - 2 * inset;
+            built.labelY = row.y + (row.height - metrics.height()) / 2;
+            built.ink = row.enabled ? m_style.captionInkColor : withAlpha(m_style.captionInkColor, 0.55);
+            const auto reach = root->captionLongest.find(track->id.value);
+            built.longest = reach != root->captionLongest.end() ? reach->second.toSeconds() * m_pps : 0.0;
+            built.begin = root->captionBuilt.size();
+            const std::size_t builtRow = root->captionBuiltRows.size();
+            const qreal radius = std::min<qreal>(m_style.clipRadius, built.h / 2);
+            // Draws one block; false when it is outside the built range.
+            const auto block = [&](int index, Ticks from, Ticks to, TimelineRootNode::BuiltCue& out) {
+                const double x0 = xOf(from);
+                const double x1 = xOf(to);
+                if (x1 <= 0 || x0 >= builtWidth)
+                    return false;
+                ++cs.cues;
+                if (!row.enabled)
+                    ++cs.dimmed;
+                out.row = builtRow;
+                out.cue = index;
+                out.x0 = x0;
+                out.x1 = x1;
+                out.sliver = x1 - x0 < 1.5; // zoomed far out
+                if (out.sliver) {
+                    out.right = x0 + std::max(1.0, x1 - x0);
+                    mesh.addRect(QRectF(x0, built.top, out.right - x0, built.h), fill);
+                    return true;
+                }
+                out.right = x1 - (x1 - x0 > 3 ? 1.0 : 0.0); // 1 px gap between adjacent cues, as clips
+                const QRectF rect(x0, built.top, out.right - x0, built.h);
+                mesh.addRoundedRect(rect, radius, fill, m_style.clipBorder, 1.0);
+                if (selected.track == row.id && selected.cue == index)
+                    mesh.addOutline(rect, radius, m_style.selectionGap, m_style.selectionWidth, m_style.selectionColor);
+                return true;
+            };
+            const std::vector<CaptionCue>& cues = track->cues;
+            const int dragged = m_captionDrag.active && m_captionDrag.track == row.id ? m_captionDrag.cue : -1;
+            // Cues are in start order and none is longer than `longest`: the first that can reach the built range is
+            // found by its start.
+            const auto first = std::ranges::partition_point(cues, [&](const CaptionCue& c) { return xOf(c.start) + built.longest < -1; });
+            for (auto it = first; it != cues.end(); ++it) {
+                ++visited;
+                if (xOf(it->start) >= builtWidth)
+                    break;
+                const int index = static_cast<int>(it - cues.begin());
+                if (index == dragged)
+                    continue;
+                TimelineRootNode::BuiltCue b;
+                if (block(index, it->start, it->end(), b)) {
+                    if (!b.sliver)
+                        b.line = firstLine(*it);
+                    root->captionBuilt.push_back(std::move(b));
+                }
+            }
+            built.end = root->captionBuilt.size();
+            // A cue being dragged is drawn where it would land, over a ghost where it was.
+            if (dragged >= 0 && dragged < static_cast<int>(cues.size())) {
+                ++visited;
+                const CaptionCue& cue = cues[static_cast<std::size_t>(dragged)];
+                const double g0 = xOf(cue.start);
+                const double g1 = xOf(cue.end());
+                if (g1 > 0 && g0 < builtWidth)
+                    mesh.addRoundedRect(QRectF(g0, built.top, std::max(1.0, g1 - g0 - 1), built.h), radius,
+                                        withAlpha(m_style.ghostColor, 0.35), m_style.ghostColor, 1.0);
+                TimelineRootNode::BuiltCue b;
+                if (block(dragged, m_captionDrag.previewStart, m_captionDrag.previewEnd, b)) {
+                    if (!b.sliver)
+                        b.line = firstLine(cue);
+                    root->captionDragged = std::move(b);
+                }
+            }
+            root->captionBuiltRows.push_back(std::move(built));
+        }
+        mesh.commit(root->captions);
+    }
+
+    // Where each block is, in view coordinates (stats only): the built blocks, on a new mesh or any scroll.
+    if (meshBuilt || root->captionRectScrollX != m_scrollX || root->captionRectScrollY != m_scrollY) {
+        root->captionRectScrollX = m_scrollX;
+        root->captionRectScrollY = m_scrollY;
+        cs.rects.clear();
+        const auto addRect = [&](const TimelineRootNode::BuiltCue& b) {
+            if (b.sliver)
+                return;
+            const TimelineRootNode::BuiltCaptionRow& br = root->captionBuiltRows[b.row];
+            cs.rects.insert(TimelineStats::captionKey(br.row, b.cue),
+                            QRectF(b.x0 + root->originX - m_scrollX, br.top - m_scrollY, b.right - b.x0, br.h));
+        };
+        for (const TimelineRootNode::BuiltCue& b : root->captionBuilt)
+            addRect(b);
+        if (root->captionDragged)
+            addRect(*root->captionDragged);
+    }
+
+    // The labels: on a new mesh, a horizontal scroll or labels still waiting for the text layout budget.
+    const bool labelPass = !idle && (meshBuilt || root->captionPending || root->captionLabelScrollX != m_scrollX);
+    if (labelPass) {
+        root->captionLabelScrollX = m_scrollX;
+        const QFontMetricsF metrics(m_style.labelFont);
+        const double viewLeft = m_scrollX - root->originX;
+        const double viewRight = viewLeft + width();
+        std::vector<std::uint64_t> used;
+        int budget = 12; // text layouts a frame, as the clip labels' budget
+        bool pending = false;
+        cs.texts.clear();
+        const auto place = [&](const TimelineRootNode::BuiltCue& b) {
+            ++visited;
+            if (b.sliver || b.x1 <= viewLeft || b.x0 >= viewRight
+                || b.right - b.x0 < m_style.minLabelWidth + 2 * m_style.labelPadding)
+                return;
+            const TimelineRootNode::BuiltCaptionRow& br = root->captionBuiltRows[b.row];
+            // The first line of its text, for cues in the view wide enough to show some.
+            const qreal lx = std::max(b.x0, viewLeft) + m_style.labelPadding;
+            const qreal available = b.right - m_style.labelPadding - lx;
+            if (available < m_style.minLabelWidth)
+                return;
+            const QString text = root->names.width(metrics, b.line) <= available
+                                     ? b.line
+                                     : root->names.elide(metrics, b.line, std::floor(available / 8.0) * 8.0);
+            if (text.isEmpty())
+                return;
+            const quint64 key = TimelineStats::captionKey(br.row, b.cue);
+            auto existing = root->captionEntries.find(key);
+            const bool needsLayout = existing == root->captionEntries.end() || existing->second.text != text
+                                     || existing->second.color != br.ink;
+            if (needsLayout && budget <= 0) {
+                pending = true; // the old text (or none) until a later frame
+                if (existing == root->captionEntries.end())
+                    return;
+            }
+            LabelEntry& e = root->captionEntries[key];
+            if (!e.node) {
+                e.node = root->pool.take(window());
+                root->captionLabels->appendChildNode(e.node);
+            }
+            if (needsLayout && budget > 0) {
+                --budget;
+                ++layouts;
+                e.node->clear();
+                e.node->setColor(br.ink);
+                QTextLayout layout(text, m_style.labelFont);
+                layout.beginLayout();
+                QTextLine textLine = layout.createLine();
+                textLine.setLineWidth(available + m_style.labelPadding);
+                textLine.setPosition({0, 0});
+                layout.endLayout();
+                e.node->addTextLayout({0, 0}, &layout);
+                e.text = text;
+                e.color = br.ink;
+            }
+            if (e.x != lx || e.y != br.labelY) {
+                QMatrix4x4 m;
+                m.translate(static_cast<float>(lx), static_cast<float>(br.labelY));
+                e.node->setMatrix(m);
+                e.x = lx;
+                e.y = br.labelY;
+            }
+            used.push_back(key);
+            cs.texts.insert(key, e.text);
+        };
+        for (const TimelineRootNode::BuiltCaptionRow& br : root->captionBuiltRows) {
+            const auto from = root->captionBuilt.begin() + static_cast<std::ptrdiff_t>(br.begin);
+            const auto to = root->captionBuilt.begin() + static_cast<std::ptrdiff_t>(br.end);
+            // In start order: skip the cues that end before the view (none is longer than `longest`).
+            auto it = std::partition_point(from, to, [&](const TimelineRootNode::BuiltCue& b) { return b.x0 + br.longest < viewLeft - 1; });
+            for (; it != to && it->x0 < viewRight; ++it)
+                place(*it);
+        }
+        if (root->captionDragged)
+            place(*root->captionDragged);
+        std::ranges::sort(used);
+        for (auto it = root->captionEntries.begin(); it != root->captionEntries.end();) {
+            if (!std::ranges::binary_search(used, it->first)) {
+                if (it->second.node)
+                    root->pool.release(it->second.node);
+                it = root->captionEntries.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        root->captionPending = pending;
+    }
+    if (meshBuilt || labelPass)
+        root->captionEmpty = cs.cues == 0 && root->captionEntries.empty();
+    stats.captionCues = cs.cues;
+    stats.dimmedCaptionCues = cs.dimmed;
+    stats.captionTexts = cs.texts;
+    stats.captionRects = cs.rects;
+    stats.captionMeshBuilt = meshBuilt;
+    stats.captionLabelLayouts = layouts;
+    stats.captionCuesVisited = visited;
+    return root->captionPending;
+}
 
 QSGNode* TimelineView::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
     QElapsedTimer timer;
@@ -2668,6 +3058,9 @@ QSGNode* TimelineView::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
     }
     ctx.redactions = &redactions;
     ctx.redactionRoots = &redactionRoots;
+    ctx.project = drawnSnapshot.get(); // 0.5: nested clips' waveforms read the clips they play (NestedPeaks)
+    ctx.projectSnapshot = drawnSnapshot; // ... and their mixes (phase 2)
+    ctx.mixes = m_nestedMixes.get();
     ctx.offline = &offline;
     ctx.generated = &generated;
     const TimelineLaneFacts& facts = currentFacts();
@@ -2767,9 +3160,21 @@ QSGNode* TimelineView::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
                 ++stats.skippedTracks;
         }
         if (!rebuild && row.audio && !m_pendingPeakMedia.empty()) {
-            // p02 audio: new peaks for media this track plays.
-            rebuild = std::ranges::any_of(row.track->clips,
-                                          [&](const Clip& c) { return m_pendingPeakMedia.contains(c.media.value); });
+            // p02 audio: new peaks for media this track plays. 0.5: or that a nested clip's waveform reads.
+            rebuild = std::ranges::any_of(row.track->clips, [&](const Clip& c) {
+                if (c.isNested()) {
+                    const auto info = facts.nested.find(c.sequence.value);
+                    return info != facts.nested.end()
+                           && std::ranges::any_of(info->second.audioMedia, [&](std::uint64_t m) { return m_pendingPeakMedia.contains(m); });
+                }
+                return m_pendingPeakMedia.contains(c.media.value);
+            });
+        }
+        if (!rebuild && row.audio && !m_pendingMixSequences.empty()) {
+            // 0.5 (phase 2): a nested clip's mix moved on (a part rendered, done, failed).
+            rebuild = std::ranges::any_of(row.track->clips, [&](const Clip& c) {
+                return c.isNested() && m_pendingMixSequences.contains(c.sequence.value);
+            });
         }
         if (!rebuild && hoverChanged) {
             const auto touches = [&](ClipId id) {
@@ -2829,7 +3234,10 @@ QSGNode* TimelineView::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
     stats.filmstripPlaceholders = ctx.filmPlaceholders;
     stats.buildingWaveforms = ctx.buildingWaveforms;
     stats.loudestWaveform = ctx.loudestWaveform;
+    stats.nestedWaveforms = ctx.nestedWaveforms;
+    stats.exactWaveforms = ctx.exactWaveforms;
     m_pendingPeakMedia.clear();
+    m_pendingMixSequences.clear();
     stats.filmstripRedacted = ctx.filmRedacted;
     for (const TrackBucket& b : root->buckets)
         stats.filmstripNodes += static_cast<int>(b.film.size());
@@ -2838,6 +3246,9 @@ QSGNode* TimelineView::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
     m_pendingRanges.clear();
     if (!animating && !m_gesture.active)
         m_animatedTracks.clear(); // the last animation frame has been built
+
+    // ---- 0.5: caption lanes (content coordinates) ----
+    const bool captionLabelsPending = updateCaptionLayer(root, full, stats);
 
     // ---- Content transform ----
     QMatrix4x4 m;
@@ -3050,6 +3461,12 @@ QSGNode* TimelineView::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
                 continue;
             mesh.addRoundedRect(QRectF(0, y, w, row.height), m_style.laneRadius, m_style.laneColor);
         }
+        for (const CaptionRow& row : m_captionRows) { // 0.5: the caption lanes above them
+            const double y = row.y - m_scrollY;
+            if (y + row.height < 0 || y > h)
+                continue;
+            mesh.addRoundedRect(QRectF(0, y, w, row.height), std::min<qreal>(m_style.laneRadius, row.height / 2), m_style.laneColor);
+        }
         mesh.commit(root->lanes);
         root->lanesScrollY = m_scrollY;
         root->lanesWidth = w;
@@ -3112,9 +3529,20 @@ QSGNode* TimelineView::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
             root->ghostsShown = true;
             if (m_gesture.snappedAt && m_showSnapIndicator)
                 addSnapLine(*m_gesture.snappedAt);
+        } else if (m_captionDrag.active) {
+            // 0.5: a cue drag snapped (its ghost and the cue where it lands are in the caption layer).
+            if (m_captionDrag.snappedAt && m_showSnapIndicator)
+                addSnapLine(*m_captionDrag.snappedAt);
         } else if (m_playheadSnapAt && m_showSnapIndicator) {
             // 0.4: a ruler scrub snapped the playhead (until the ruler is released).
             addSnapLine(*m_playheadSnapAt);
+        } else if (m_tool == TimelineTool::Razor && m_hoverInside && m_hoverCaptionRow >= 0
+                   && m_hoverCaptionRow < static_cast<int>(m_captionRows.size())) {
+            // 0.5: the razor over a caption row cuts the cue there.
+            std::optional<Ticks> snapped;
+            const double x = std::round(xOfTicks(snappedTimeAt(m_hoverX, &snapped)));
+            const CaptionRow& r = m_captionRows[static_cast<std::size_t>(m_hoverCaptionRow)];
+            mesh.addRect(QRectF(x - 0.5, r.y - m_scrollY, 1, r.height), snapped ? m_style.snapColor : m_style.razorColor);
         } else if (m_tool == TimelineTool::Razor && m_hoverInside && m_hoverRow >= 0
                    && m_hoverRow < static_cast<int>(m_rows.size())) {
             std::optional<Ticks> snapped;
@@ -3152,6 +3580,27 @@ QSGNode* TimelineView::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
                     } else {
                         bracket(m_hoverEdge.head, fill, grow);
                     }
+                }
+            }
+        }
+        // 0.5: the caption cue edge a press would trim, lit like a clip's (a regular trim's red bracket).
+        if (!m_gesture.active && !m_captionDrag.active && m_captionHoverEdge.row >= 0
+            && m_captionHoverEdge.row < static_cast<int>(m_captionRows.size())) {
+            const CaptionRow& row = m_captionRows[static_cast<std::size_t>(m_captionHoverEdge.row)];
+            const CaptionTrack* track = captionTrackOf(row.id);
+            if (track && m_captionHoverEdge.cue >= 0 && m_captionHoverEdge.cue < static_cast<int>(track->cues.size())) {
+                const CaptionCue& cue = track->cues[static_cast<std::size_t>(m_captionHoverEdge.cue)];
+                const bool head = m_captionHoverEdge.head;
+                const double cut = std::round(xOfTicks(head ? cue.start : cue.end()));
+                const double top = row.y - m_scrollY + 1;
+                const double height = row.height - 2;
+                for (const double grow : {1.0, 0.0}) {
+                    const QColor fill = grow > 0 ? m_style.markerInkColor : m_style.trimRollColor;
+                    const double x = head ? cut : cut - 3;
+                    const double tx = head ? x : x - 5;
+                    mesh.addRect(QRectF(x - grow, top - grow, 3 + 2 * grow, height + 2 * grow), fill);
+                    mesh.addRect(QRectF(tx - grow, top - grow, 8 + 2 * grow, 2 + 2 * grow), fill);
+                    mesh.addRect(QRectF(tx - grow, top + height - 2 - grow, 8 + 2 * grow, 2 + 2 * grow), fill);
                 }
             }
         }
@@ -3249,10 +3698,10 @@ QSGNode* TimelineView::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
         }
     }
     stats.nodes = countNodes(root);
-    stats.labelsPending = ctx.labelsPending;
+    stats.labelsPending = ctx.labelsPending || captionLabelsPending;
     stats.updateNs = timer.nsecsElapsed();
     m_stats = stats;
-    if (ctx.labelsPending) // finish the deferred labels in the next frame
+    if (stats.labelsPending) // finish the deferred labels in the next frame
         QMetaObject::invokeMethod(this, &QQuickItem::update, Qt::QueuedConnection);
     return root;
 }

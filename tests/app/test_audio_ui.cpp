@@ -727,6 +727,8 @@ TEST_CASE("Audio workspace: mixer strips with meters, tools with a report and an
     CHECK(mixerPanel->isVisible());
     CHECK(tools->isVisible());
     CHECK(mixerPanel->width() >= 460);
+    CHECK(mixer->isMeterViewer(mixerPanel)); // 0.5: the mixer counts as a meter viewer while it shows
+    CHECK(mixer->meterViewers() == 1);       // (the Audio preset has no Audio Meters panel)
     auto* view = qobject_cast<TimelineView*>(shell.object("timelineView"));
     REQUIRE(view != nullptr);
     CHECK(view->showVolume());
@@ -768,12 +770,14 @@ TEST_CASE("Audio workspace: mixer strips with meters, tools with a report and an
         REQUIRE(image.copy(QRectF(r.topLeft() * dpr, r.size() * dpr).toRect()).save(outputDir() + QStringLiteral("/timeline-audio-keys.png")));
     }
 
-    // Back to Edit: the browser and the band go back.
+    // Back to Edit: the browser and the band go back; the mixer no longer meters (0.5: Edit's Audio Meters panel does).
     shell.window->setProperty("workspace", 0);
     spin(450);
     CHECK(shell.window->property("browserPanel").toString() == QStringLiteral("library"));
     CHECK_FALSE(view->showVolume());
-    CHECK_FALSE(mixer->metersActive());
+    CHECK_FALSE(mixer->isMeterViewer(mixerPanel));
+    CHECK(mixer->meterViewers() == 1);
+    CHECK(mixer->isMeterViewer(shell.item("audioMetersPanel")));
 
     const QStringList messages = takeMessages();
     INFO(join(messages));

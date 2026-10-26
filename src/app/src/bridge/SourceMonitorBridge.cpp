@@ -261,21 +261,48 @@ bool SourceMonitorBridge::loadRange(const QString& media, const QString& sourceI
     }
     if (!load(media))
         return false; // load() said why (unknown or offline media)
-    // In: the start of the frame holding sourceIn; Out: the end of the frame holding the range's last tick.
-    Ticks inMark = snapToFrame(Ticks{in}, m_rate);
-    Ticks outMark = snapToFrame(Ticks{out - 1}, m_rate) + frame();
+    const auto range = snappedMarks(Ticks{in}, Ticks{out});
+    if (!range) {
+        setMessage(tr("This result has no time range to open"));
+        return false;
+    }
+    if (!setMarks(range->first, range->second))
+        return false;
+    seek(range->first);
+    return true;
+}
+
+std::optional<std::pair<Ticks, Ticks>> SourceMonitorBridge::snappedMarks(Ticks in, Ticks out) const {
+    if (out <= in)
+        return std::nullopt;
+    // In: the start of the frame holding `in`; Out: the end of the frame holding the range's last tick.
+    Ticks inMark = snapToFrame(std::max(in, Ticks{}), m_rate);
+    Ticks outMark = snapToFrame(out - Ticks{1}, m_rate) + frame();
     if (m_length) {
         outMark = std::min(outMark, *m_length);
         inMark = std::min(inMark, std::max(Ticks{}, *m_length - frame()));
     }
-    if (outMark <= inMark) {
-        setMessage(tr("This result has no time range to open"));
+    if (outMark <= inMark)
+        return std::nullopt;
+    return std::pair{inMark, outMark};
+}
+
+bool SourceMonitorBridge::setMarks(Ticks in, Ticks out) {
+    if (!loaded()) {
+        setMessage(tr("Load a clip in the Source Monitor first"));
         return false;
     }
-    if (!setMarks(Json{{"in", inMark.value}, {"out", outMark.value}}))
+    // P0 round (the source clip transcript's selection), as 0.4's loadRange marks a search result.
+    const auto range = snappedMarks(in, out);
+    if (!range) {
+        setMessage(tr("Choose a time range to mark"));
         return false;
-    seek(inMark);
-    return true;
+    }
+    if (const edit::SourceMarks current = marks(); current.in == range->first && current.out == range->second && !preview()) {
+        setMessage({});
+        return true; // already marked so: no undo step
+    }
+    return setMarks(Json{{"in", range->first.value}, {"out", range->second.value}});
 }
 
 bool SourceMonitorBridge::loadFile(const QString& file) {
@@ -871,7 +898,10 @@ void SourceMonitorBridge::stepFrames(int frames) {
         return;
     m_returnTo.reset(); // 0.4: a step during Play Around stops it where it is
     m_playback->pause();
-    seek(positionTicks() + Ticks{frame().value * frames});
+    const Ticks before = positionTicks();
+    seek(before + Ticks{frame().value * frames});
+    if (positionTicks() != before)
+        scrubAudioAt(positionTicks(), 1); // 0.5 (stream B): the frame stepped to is heard
 }
 
 void SourceMonitorBridge::goToStart() { seek(Ticks{}); }
@@ -884,8 +914,14 @@ void SourceMonitorBridge::goToEnd() {
 void SourceMonitorBridge::seekFraction(double fraction) {
     if (!m_length)
         return;
+    const bool wasPlaying = m_playback && m_playback->isPlaying();
     pause();
+    const Ticks before = positionTicks();
     seek(Ticks{static_cast<std::int64_t>(std::clamp(fraction, 0.0, 1.0) * static_cast<double>(m_length->value))});
+    // 0.5 (stream B): a press on the time bar or the waveform of a stopped monitor is the start of a scrub: the frame it
+    // lands on is heard, forward (a click is not a backward drag). A click on a playing monitor only moves it.
+    if (!wasPlaying && positionTicks() != before)
+        scrubAudioAt(positionTicks(), 1);
 }
 
 void SourceMonitorBridge::scrubFraction(double fraction) {
@@ -894,8 +930,20 @@ void SourceMonitorBridge::scrubFraction(double fraction) {
     m_playback->pause();
     const Ticks t{static_cast<std::int64_t>(std::clamp(fraction, 0.0, 1.0) * static_cast<double>(m_length->value))};
     const Ticks last = std::max(Ticks{}, *m_length - frame());
-    m_playback->scrub(snapToFrame(std::min(t, last), m_rate));
+    const Ticks before = positionTicks();
+    const Ticks target = snapToFrame(std::min(t, last), m_rate);
+    m_playback->scrub(target);
     tick();
+    // 0.5 (stream B): a drag is heard at each new frame (a drag back plays backwards).
+    if (target != before)
+        scrubAudioAt(target, target < before ? -1 : 1);
+}
+
+void SourceMonitorBridge::scrubAudioAt(Ticks at, int direction) {
+    if (!m_playback || !m_programPlayback || !m_programPlayback->audioScrubbing() || m_playback->isPlaying())
+        return;
+    startAudio(); // the source's own output opens on the first need (a clip without sound: nothing opens)
+    m_programPlayback->requestAudioScrub(m_playback.get(), at, direction);
 }
 
 bool SourceMonitorBridge::seekToText(const QString& text) {

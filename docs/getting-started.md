@@ -13,8 +13,8 @@ This guide has four parts:
 
 Names in quotes are the exact labels you see in the app. Shortcuts are the Windows defaults.
 
-> **Wabcut 0.4 is made and tested on Windows** (Windows 10 22H2 or 11, x64); the Linux and macOS downloads are
-> previews. See the [release notes](release-notes-0.4.md) for what is in this release and its known issues.
+> **Wabcut 0.5 is made and tested on Windows** (Windows 10 22H2 or 11, x64); the Linux and macOS downloads are
+> previews. See the [release notes](release-notes-0.5.md) for what is in this release and its known issues.
 
 ## Install
 
@@ -29,8 +29,8 @@ Names in quotes are the exact labels you see in the app. Shortcuts are the Windo
 
 | Package | How |
 |---|---|
-| `wabcut-0.4.0-windows-x64.msi` | Double-click it. It installs **for your user only**, with no administrator rights, to `%LOCALAPPDATA%\Programs\Wabcut` (or a folder you choose). Wabcut appears in the Start menu and in Settings > Apps. The options page has an unticked *Open .wabcut project files with Wabcut* box: tick it to open projects by double-clicking them. |
-| `wabcut-0.4.0-windows-x64-portable.zip` | Unzip it anywhere, for example a USB drive, and run `bin\wabcut.exe`. Nothing is installed. |
+| `wabcut-0.5.0-windows-x64.msi` | Double-click it. It installs **for your user only**, with no administrator rights, to `%LOCALAPPDATA%\Programs\Wabcut` (or a folder you choose). Wabcut appears in the Start menu and in Settings > Apps. The options page has an unticked *Open .wabcut project files with Wabcut* box: tick it to open projects by double-clicking them. |
+| `wabcut-0.5.0-windows-x64-portable.zip` | Unzip it anywhere, for example a USB drive, and run `bin\wabcut.exe`. Nothing is installed. |
 
 **SmartScreen.** The packages are not code-signed yet, so Windows SmartScreen may say "Windows protected your PC".
 Choose **More info**, then **Run anyway**.
@@ -39,7 +39,16 @@ Choose **More info**, then **Run anyway**.
 downloaded AI models, settings and API keys stay.
 
 Admins can install silently:
-`msiexec /i wabcut-0.4.0-windows-x64.msi /qn [INSTALL_ROOT="D:\Apps\Wabcut"] [WABCUT_ASSOCIATE=1]`.
+`msiexec /i wabcut-0.5.0-windows-x64.msi /qn [INSTALL_ROOT="D:\Apps\Wabcut"] [WABCUT_ASSOCIATE=1]`.
+
+**Updates** (0.5) are off until you turn them on: **Settings > General > Updates > "Check for updates
+automatically"** looks once a day at most and says when a new version is out (**"Skip This Version"** keeps it quiet
+about that one), and **Help > "Check for Updates…"** looks at once. The check asks GitHub for the latest release and
+sends nothing about you or your projects. When Wabcut was installed with the MSI, **"Download and Install"** fetches the
+update and checks its signature and checksum; then **"Install When I Quit"** or **"Quit and Install"** installs it
+after Wabcut closes (unsaved changes and running exports ask first, as on any quit) and opens Wabcut again.
+**"Later"** keeps the download. The portable ZIP opens the release page instead. 0.5.0 is the first version that can
+update itself: from 0.4 or older, install it by hand.
 
 ## First run
 
@@ -94,7 +103,8 @@ Admins can install silently:
    5. **"You're set"**: **"Take the tour"**, **"Keyboard Trainer"** or **"Start editing"**.
 3. **A short performance check** is offered once. It measures decoding and encoding on your GPU (about ten seconds,
    and nothing leaves the computer) and recommends proxy and preview settings. Choose **"Use these settings"** or
-   **"Keep my settings"**. You can run it again from **Settings > "Media & cache…"**.
+   **"Keep my settings"**. You can run it again from **Settings > "Media & cache…"**. Its **"Graphics card"** row (0.5)
+   names the GPU Wabcut previews, decodes and exports on, and why.
 
 Everything here can be reopened later from the **Help** menu: "Welcome and Setup…", "Take the Tour", "Keyboard
 Trainer…", "What's New", "Keyboard Shortcuts…".
@@ -189,15 +199,17 @@ menus inside. The logo opens the File menu as well.
 search, a name, a title's text), "Undo", "Redo", "Cut", "Copy", "Paste", "Clear" and "Select All" work on its text,
 as their keys do there, not on the timeline.
 
-**Clip:** "Make Subclip…", "Speed/Duration…", "Audio Gain…", "Audio Channels…", "Video Options" (frame holds, field
-options, scale and fill), "Insert", "Overwrite", "Enable", "Link", "Group", "Ungroup", "Merge Clips…", "Interpret
-Footage…", "Source Settings…", "Modify Timecode…", "Replace Footage…", "Make Offline", "Reveal in Project", and the
-gaming moments "Slow-mo at Playhead" and "Punch-in at Playhead".
+**Clip:** "Make Subclip…", "Speed/Duration…", **"Scene Edit Detection…"** (0.5, see
+[Premiere's sequence and editing tools](#premieres-sequence-and-editing-tools)), "Audio Gain…", "Audio Channels…",
+"Video Options" (frame holds, field options, scale and fill), "Insert", "Overwrite", "Enable", "Link", "Group",
+"Ungroup", "Merge Clips…", "Interpret Footage…", "Source Settings…", "Modify Timecode…", "Replace Footage…", "Make
+Offline", "Reveal in Project", and the gaming moments "Slow-mo at Playhead" and "Punch-in at Playhead".
 
 **Sequence:** "Sequence Settings…", "Render Effects In to Out", "Match Frame", "Reverse Match Frame", "Add Edit", "Add
 Edit to All Tracks", "Trim Edit", the ripple trims to the playhead, the transitions, "Lift", "Extract", "Close Gap",
-"Join Through Edits", "Replace With Clip", "Make Subsequence", zoom, "Go to Gap", **"Snap in Timeline"**, "Select Clip at
-Playhead" and **"Selection Follows Playhead"** (the two switches show a dot while on).
+"Join Through Edits", "Replace With Clip", "Make Subsequence", zoom, "Go to Gap", **"Snap in Timeline"**, **"Audio
+Scrubbing"** (0.5, Shift+S), "Select Clip at Playhead" and **"Selection Follows Playhead"** (the three switches show a
+dot while on).
 
 **Markers:** "Mark In", "Mark Out", "Mark Clip", "Mark Selection", "Go to In" / "Out", the Clear rows, "Add Marker", "Go
 to Next" / "Previous Marker", "Clear Selected Marker" and "Clear All Markers", then **"Ripple Sequence Markers"** (0.4,
@@ -218,7 +230,8 @@ it forward where it is, and puts the keyboard in it.
 
 **Help:** "Wabcut User Guide", "Getting Started", "Coming from Premiere Pro" and "Keyboard Shortcuts Guide" (on
 [wabcut.zyphite.com](https://wabcut.zyphite.com/guide)), "Keyboard Shortcuts…", "Welcome and Setup…", "Take the Tour",
-"Keyboard Trainer…", "What's New", "Release Notes", **"Open the Sample Project"**, "Report an Issue" and "About Wabcut".
+"Keyboard Trainer…", "What's New", "Release Notes", **"Check for Updates…"** (0.5, see [Install](#install)), **"Open
+the Sample Project"**, "Report an Issue" and "About Wabcut".
 
 The **command palette** (Ctrl+Shift+P) has these too, plus **"Open panel: …"** for every panel, **"Workspace: …"** for
 every workspace and **"Open Recent: …"** for the recent projects.
@@ -257,7 +270,7 @@ every workspace and **"Open Recent: …"** for the recent projects.
 
 | Preset | What it lays out | Its key opens (or makes) the first one |
 |---|---|---|
-| Edit | Library, Source and Program Monitors, Effect Controls, the timeline | Alt+Shift+6 |
+| Edit | Library, Source and Program Monitors, Effect Controls, the timeline with the Audio Meters right of it (0.5) | Alt+Shift+6 |
 | Color | Scopes, Program Monitor, Color, the timeline | Alt+Shift+5 |
 | Audio | Audio Tools, Program Monitor, Audio Track Mixer, the timeline with volume lines | Alt+Shift+3 |
 | Captions | Transcript, Program Monitor, Caption Style, the timeline | Alt+Shift+4 |
@@ -309,6 +322,12 @@ every workspace and **"Open Recent: …"** for the recent projects.
 "Essential Sound", **"Callouts"** (titles, templates and stickers), **"Highlights"**, "Markers", "Review", "Shorts",
 "Takes", "Generate" and the rest (they replace the former left rail).
 
+**The Audio Meters panel** (0.5, Window > **"Audio Meters"**) shows the level of the mix: a bar per channel (two for
+stereo, six for a 5.1 master) with its peak hold, a 0 to −60 dB scale, the highest peak as a readout and a clip light on
+top that turns red at 0 dB; click it (or press Space) to clear it. Workspaces made or reset from the Edit preset have it
+right of the timeline; a workspace saved before keeps its layout until you add it from the Window menu. Like any
+panel it can be a tab, get a window of its own or close.
+
 **Settings** (Edit > "Settings…", **Ctrl+,**, or Home's gear) is one window with these pages:
   - **Search** (the field at the top, ready to type when Settings opens): type what you are after ("proxies",
     "dark", "default folder") and pick a result: its page opens on that setting, which lights up for a moment.
@@ -320,14 +339,20 @@ every workspace and **"Open Recent: …"** for the recent projects.
     ones always show), and project locking; the save state says **"Autosave failed"** (red) with the reason while
     autosave cannot write; **Background work** (0.4): **"Keep the computer awake while exporting"** (on by default;
     Windows only) - while exports, Render In to Out, proxies, transcription, Highlights, Shorts or Collect Files run,
-    Windows does not go to sleep on its own (the screen can still turn off);
+    Windows does not go to sleep on its own (the screen can still turn off); **Updates** (0.5): **"Check for updates
+    automatically"** (off by default) and **"Check for Updates…"** (see [Install](#install));
   - **"Appearance"**: themes (Ultraviolet, Daylight, Graphite, Midnight, Paper, and your own), dark or light, the
     accent, high contrast, reduce motion, the interface size, and **"Custom colours"** for every colour of the
     interface and the clip labels. "Save theme" keeps your colours under a name; "Import…" and "Export…" read and
     write theme files you can share;
   - **"Interface"**: the GPU and save status in the title bar, and "Resize panels live";
-  - **"Timeline & editing"**: linked selection, the snap line, trim offsets, thumbnails, waveforms and more;
-  - **"Playback & performance"**: the GPU and video decoding in use, and "Media & cache…";
+  - **"Timeline & editing"**: linked selection, the snap line, trim offsets, thumbnails, waveforms, **"Play audio while
+    scrubbing"** (0.5, on by default; Shift+S turns it on and off) and more;
+  - **"Playback & performance"**: the GPU and video decoding in use, and "Media & cache…". **"Graphics card"** (0.5)
+    chooses the GPU on a computer with two, such as a laptop with an integrated GPU next to an NVIDIA or AMD one:
+    **"Automatic"** (the high-performance GPU, unless the Windows Graphics settings choose one for Wabcut; the
+    **"Windows settings"** button opens them) or one GPU, for example the integrated one to save battery. The row says
+    which GPU is in use and why. A new choice reaches exports at once and the preview when Wabcut restarts;
   - **"Audio"**: the microphone and voice-over, and the audio plug-ins;
   - **"AI"**: see [AI with your own key](#ai-with-your-own-key);
   - **"Keyboard"**: the shortcut editor and the Keyboard Trainer;
@@ -369,6 +394,18 @@ More of the Tracks panel, as in Premiere:
   forward (assign it a key in Keyboard Shortcuts: `clip.revealInProject`); **"Reveal in File Explorer"** shows its
   file. A Library item with an In and Out set in the Source Monitor shows the marked range as a band along its card,
   and dragging it to the timeline edits in just that range.
+- **Caption tracks** (0.5) are rows above the video tracks, one per caption track (C1 on top), with each caption as a
+  block that shows its first line; the display settings (the sliders button) > Show > **"Caption tracks"** hides them.
+  Click a caption to select it (the playhead goes to its start and the Captions page shows it); double-click it to type
+  its text in the Captions page. With the Selection tool, drag an edge to trim it or its middle to move it (it snaps
+  while Snap is on, stays between its neighbours unless the track's style has **"Overlapping captions"** on, and Esc
+  cancels); the Razor splits it, Delete removes it, and a right-click has **"Split at Playhead"**, **"Delete"**,
+  **"Edit Text"** and **"Select in Captions"**. Each is one undo step. In the row's header, the **C1** chip targets the
+  row for Ctrl+K: with nothing selected, Ctrl+K splits the targeted rows' captions under the playhead along with the
+  clips, and a selected caption is split on its own. The eye shows or hides the track.
+- **Nested sequences, multicam and merged clips** (0.5) show the waveform of the mix they play, with its gains,
+  effects, faders and pan. It is worked out in the background; until it is ready the clip shows the loudest of the
+  clips inside it, shaded.
 
 ### The command palette
 
@@ -417,6 +454,11 @@ The goal is a 10-20 minute YouTube video at 1440p60 from a long OBS recording wi
 3. Check the **name** and **location**, then **"Create project"**. The project opens with the recording on its
    timeline.
 
+- **Chapter markers** (0.5). Marks you set while recording with OBS Studio's **Add Chapter Marker** hotkey (and the
+  chapters other apps write into MP4 and MKV files) come in as cyan clip markers on the recording, named after the
+  chapter, whichever way you import it; a message says how many. **"Media and Timeline Preferences…"** > **"Media"** >
+  **"Chapter markers in recordings become clip markers"** turns this off.
+
 - **Frame rates and HDR.**
   - 60, 120, 144 and 240 fps play and export frame for frame.
   - A variable-frame-rate recording ("VFR") gets a steady sequence rate and never drifts.
@@ -428,10 +470,16 @@ The goal is a 10-20 minute YouTube video at 1440p60 from a long OBS recording wi
 
 **2. Remove the boring parts.**
 1. Click the timeline's **"Moments"** button and choose **"Find dead time"**. This finds loading screens, walking and
-   waiting: quiet game audio and little motion for 3 seconds or more. It shows "Measuring…" while it reads the
-   recording, then lists what it found. Nothing is changed yet.
-2. Choose **"Remove"**. The stretches go in one undo step, keeping a short handle at each end, and markers move with
-   the material.
+   waiting: quiet game audio and little motion. The **"Dead time"** review opens over the Highlights panel (its scissors
+   button opens it too, and so does **"Review…"** in Moments) and shows "Measuring…" while it reads the recording.
+   Nothing is changed yet. **"Sensitivity"**, **"Shortest stretch"**, **"Keep at each end"** and **"Only In to Out"**
+   set what counts; after a change, choose **"Find again"**.
+2. Each stretch gets a row with a picture from it, its time, its length and a switch: on means it goes. The switched-on
+   stretches show as red bands on the timeline. Click a row (or press Enter) to jump there; **Up** and **Down** move,
+   **K** keeps a stretch, **Delete** removes it, **Space** flips it, and **"All"** and **"None"** set every row.
+3. Choose **"Remove N stretches"**. Only the switched-on stretches go, on every unlocked track, in one undo step,
+   keeping the handle at each end, and markers move with the material. If the clips changed since the find, the review
+   asks you to find again first.
 
 **3. Find the highlights.** Open **"Highlights"** from the Window menu.
 1. **"Find options"** sets what to listen for:
@@ -464,6 +512,10 @@ The goal is a 10-20 minute YouTube video at 1440p60 from a long OBS recording wi
   ("Overwrite").
 - Play with **J / K / L**. Cut with **C** ("Razor Tool") or **Ctrl+K** ("Add Edit"). Close gaps with **Q** / **W**
   ("Ripple Trim Previous/Next Edit to Playhead") and **Shift+Delete** ("Ripple Delete").
+- **Hear where you are** (0.5). While playback is stopped, dragging the playhead in the ruler or on the Program
+  Monitor's time bar, and stepping frames with the arrow keys, play a short piece of the sound there (dragging back
+  plays it backwards); the Source Monitor does the same with its clip. **Shift+S** ("Toggle Audio Scrubbing") turns it
+  off and on again.
 
 **5. Streamer voice and game under voice.**
 - **Streamer voice.**
@@ -599,6 +651,8 @@ The goal is a narrated essay: voice-over, B-roll, captions, a title, music under
 
 **3. Captions.** In the **"Captions"** tab:
 - **"Generate captions"** (later **"Update from transcript"**).
+- The captions also show as a row above the video tracks (0.5), where you trim, move, split and delete them like clips
+  (see [the Tracks panel](#the-window)).
 - **"Caption Style"** presets: "Clean", "Bold Box", "Podcast", "Shorts", "Thai-friendly".
 - **"Translate…"**, and **"SRT"** / **"VTT"** files.
 - Caption files from elsewhere (SRT, WebVTT, SCC, MCC, EBU STL, TTML / DFXP, iTT): **File > Import** them or drop them on
@@ -675,6 +729,12 @@ a file and as a timeline for Premiere or Resolve.
   sit at the right times; nested sequences work the same way.
 - Deleting words inside a multicam clip cuts that clip **in place**: the pieces stay multicam clips, so you can still
   switch angles afterwards. Each deletion is one undo step.
+- **Pick soundbites from a source clip** (0.5). In the Transcript panel's **"Transcript"** tab, switch **"Sequence"**
+  to **"Source"**: it shows the words of the clip in the Source Monitor, with source timecodes. Click a word to move the
+  Source Monitor there; select words (a click, Shift-click, a drag or a match of **"Find in this clip"**) to set the
+  source In and Out around them, then **"Insert"** (`,`) or **"Overwrite"** (`.`) edits that soundbite into the
+  sequence. **"Copy"** copies the words. A recording with several audio streams shows one stream at a time. A clip with
+  no transcript yet offers **"Transcribe this clip"**.
 
 **3. Colour.** Open the **"Color"** tab:
 - the **"Color"** panel: **"Auto"**, **"Basic Correction"**, **"Creative"**, **"Curves"**, **"Color Wheels"**,
@@ -735,6 +795,12 @@ These work as in Premiere Pro; each is also a command for scripts and agents ([c
   Footage…"**, **"Make Offline"** and **"Edit Original"** (**Ctrl+E**).
 - **Timeline.** Right-click > **"Make Subsequence"**, **"Join Through Edits"** (on a razor cut), **"Video Options"** >
   **"Frame Hold Options…"**; the palette has **"Next in Sequence"** / **"Next in Track"** (gaps) and **"Close Gap"**.
+- **Scene Edit Detection** (0.5). Select video clips (an exported edit, a clip with several shots), then Clip >
+  **"Scene Edit Detection…"** (also in the clip's right-click menu and the palette). Choose **"Apply a cut at each
+  detected edit"**, **"Add a marker at each cut"** or both, the **"Detector"** ("Cuts, fades and dissolves", "Hard cuts
+  only", "Hard cuts in fast motion", "Fades through black") and the **"Sensitivity"**, then **"Analyze"**. It runs on
+  this computer (**"Cancel"** changes nothing); the cuts, with the linked audio, and the markers are one undo step,
+  and a message says what it did. Nested and multicam clips are cut but get no markers.
 - **Footage.** In the Library: **"Merge Clips…"** (a camera clip with separately recorded sound, synced by In points,
   Out points, timecode, markers or audio), **"Modify"** > **"Interpret Footage…"** (play a 120/144/240 fps capture as
   30 or 60 fps slow motion; pixel aspect, fields, alpha) and **"Timecode…"**.
@@ -828,6 +894,7 @@ Wabcut uses **Premiere Pro's default shortcuts** (Windows and macOS tables, per 
 | F | "Match Frame" |
 | **Timeline view** | |
 | S | "Snap in Timeline" |
+| Shift+S | "Toggle Audio Scrubbing" (0.5: plays the sound under the playhead while you drag it) |
 | = / - | "Zoom In" / "Zoom Out" |
 | \ | "Zoom to Sequence" (press again to go back) |
 | Enter | "Render Effects In to Out" (0.1.1: renders previews of In to Out so they play in real time) |

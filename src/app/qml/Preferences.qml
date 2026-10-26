@@ -21,6 +21,7 @@ import QtCore
 //     page's filter, sort and view, the New project page's Advanced state and last choices (UX rework)
 //   timeline/playbackScroll, snapPlayhead, clipTooltips, showClipSpeed, showFxBadges — playback auto-scroll, the
 //     playhead snap, the clip hover tooltip, the speed and fx badges on clips (0.4)
+//   timeline/showCaptionTracks — the caption tracks as lanes above the video tracks (0.5)
 //   monitor/platformSafeZone — the Program Monitor's platform safe zones on portrait sequences (0.4)
 //   panels/masksExpanded, panels/transcriptFollowPlayhead — Effect Controls' Masks section, the Transcript following
 //     the playhead (0.4)
@@ -258,6 +259,12 @@ QtObject {
         property alias clipTooltips: prefs.showClipTooltips
         property alias showClipSpeed: prefs.timelineShowClipSpeed
         property alias showFxBadges: prefs.timelineShowFxBadges
+    }
+    // 0.5, stream A: Timeline Display > Show caption tracks (Premiere's caption tracks as lanes above the video tracks).
+    property bool timelineShowCaptionTracks: true
+    readonly property Settings _timeline05: Settings {
+        category: "timeline"
+        property alias showCaptionTracks: prefs.timelineShowCaptionTracks
     }
     // 0.4, stream B: the Program Monitor's platform safe zones on portrait sequences ("off", "shorts", "tiktok", "reels").
     property string platformSafeZone: "off"

@@ -10,6 +10,7 @@ wabcut_add_test_suite(audio
         test_transport_engine.cpp
         test_clock.cpp
         test_engine.cpp
+        test_overlay.cpp
         test_device.cpp
         test_device_status.cpp
         DspTestUtil.h

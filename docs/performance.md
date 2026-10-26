@@ -66,6 +66,56 @@ build\win-msvc\bin\wabcut_perf_sampler.exe --threads all --seconds 10 --pid <pid
 
 Windows' own `wpr` records ETW traces too, but analysing them needs WPA, which is not installed on the build machines.
 
+## Which GPU Wabcut uses
+
+On a computer with two GPUs - a hybrid laptop's integrated GPU next to an NVIDIA or AMD card, or a desktop that keeps
+its integrated GPU on - Wabcut previews, decodes and exports on **one** of them, so frames never cross between GPUs
+(issue #10). Which one:
+
+1. **Settings > Playback & performance > Graphics card**, when it names a GPU of this computer. The integrated GPU saves
+   battery; the discrete one is faster. A card that is no longer there falls back to Automatic, and says so.
+2. **Automatic** (the default): the GPU the Windows Graphics settings choose for `wabcut.exe` when the user set one
+   there (Power saving, High performance, or a specific GPU: Settings > System > Display > Graphics), else the
+   **high-performance GPU** - DXGI's high-performance order (`IDXGIFactory6::EnumAdapterByGpuPreference`), discrete
+   before integrated. Without that order (Windows before 10 1803), discrete before integrated (DXCore) and then more
+   dedicated video memory. Software adapters (WARP) and indirect-display proxies of a real GPU are never chosen.
+3. A `QT_D3D_ADAPTER_INDEX` set before Wabcut starts wins over both (a developer's override), for the preview and the
+   export encoders alike.
+
+On Linux the GPUs come from sysfs (`/sys/bus/pci/devices`): NVIDIA cards and Intel GPUs off bus 0 (Arc) count as
+discrete, Intel's GPU on bus 0 as integrated, an AMD GPU by its dedicated memory (`mem_info_vram_total`: 4 GiB or more is
+a card, less an APU's carve-out; without it, the firmware's display GPU, `boot_vga`, counts as integrated). So the
+export encoders of a hybrid laptop try NVENC before the integrated GPU's VA-API there too; Linux picks the preview's GPU
+itself (PRIME).
+
+Where it applies:
+
+- **Preview and offscreen render**: before any window exists, `main()` sets `QT_D3D_ADAPTER_INDEX` to that adapter's
+  DXGI index (D3D11 and D3D12; RhiPolicy's `applyPreviewAdapter`), which every QRhi of the process reads; the offscreen
+  renderer also asks for its LUID, so `wabcut-cli` renders there too. OpenGL and Metal pick their device. Vulkan on
+  Windows (`--rhi vulkan`, not the default) does not follow the choice either: its device order is not DXGI's, and
+  matching the two needs each Vulkan device's LUID; `QT_VK_PHYSICAL_DEVICE_INDEX` picks one by hand.
+- **Hardware decoding**: the d3d11va device is created on the same adapter, and CUDA goes first only when that GPU is
+  NVIDIA's (zero-copy decoding shares the preview's own device anyway). When the user **chose** the GPU (Settings, or
+  Power saving or a named GPU in Windows Graphics settings), only the backends that decode on it are tried - d3d11va,
+  plus CUDA on an NVIDIA GPU or Quick Sync on an Intel one - and then software: a clip the integrated GPU cannot decode
+  does not wake the discrete card the user turned away from. Automatic keeps every hardware backend.
+- **Export encoders**: the automatic encoder is that GPU's (NVENC, AMF or Quick Sync), then the other GPUs' in
+  high-performance order, then software. On the issue's laptop (Radeon 780M as DXGI adapter 0, RTX 5060 Laptop GPU as
+  adapter 1) that is NVENC, where it used to be AMF.
+
+A new Graphics card choice reaches the export encoders at once and the preview and decoding at the next start (the
+row says so). Wabcut's own executable also exports `NvOptimusEnablement` and `AmdPowerXpressRequestHighPerformance`,
+the hints NVIDIA Optimus and AMD switchable-graphics drivers read to start a program on the discrete GPU; the explicit
+choice above does not depend on them. The Performance check's *Graphics card* row names the GPU in use and why, and
+lists the others; the log says it at start ("GPU for preview, decoding and export: ...").
+
+Code: `src/media/src/GpuInfo.cpp` (the listing, the ranking and the choice, pure and unit-tested on fake adapter lists
+in `tests/media/test_gpu_adapters.cpp`), `src/app/src/RhiPolicy.cpp`, `src/app/src/bridge/GpuBridge.*`, the exports in
+`src/app/src/main.cpp` (checked in wabcut.exe's export table by the test "wabcut.exe exports the hybrid GPU driver
+hints"). Known limit: on a computer with two GPUs of the **same** vendor (two NVIDIA cards, an AMD APU with an AMD
+card), the encoder picks its own device of that vendor.
+
 ## The machine
 
 Machine `4dc96eaa790eeafc` (the id hashes the CPU, its logical cores, the memory size and the GPU): Intel Core

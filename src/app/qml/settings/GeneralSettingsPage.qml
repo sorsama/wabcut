@@ -223,6 +223,45 @@ SettingsPage {
         }
     }
 
+    // P0 round: opt-in update checks (Updates; docs/release.md "Updates"). Off by default: Wabcut asks the internet nothing
+    // until the user turns this on or checks by hand.
+    SettingsSection {
+        title: qsTr("Updates")
+
+        SettingsRow {
+            rowKey: "autoUpdate"
+            label: qsTr("Check for updates automatically")
+            description: qsTr("Once a day Wabcut asks GitHub whether a newer version is out, and says so. Nothing about you or your projects is sent. Nothing installs without your OK.")
+            Toggle {
+                objectName: "autoUpdateToggle"
+                tooltip: qsTr("Check for updates automatically")
+                checked: Updates.automatic
+                onToggled: {
+                    Updates.automatic = checked
+                    checked = Qt.binding(() => Updates.automatic)
+                }
+            }
+        }
+        SettingsRow {
+            objectName: "checkUpdatesRow"
+            rowKey: "checkUpdates"
+            //: %1 is this version, e.g. 0.4.0
+            label: qsTr("Wabcut %1").arg(Updates.currentVersion)
+            description: Updates.lastChecked !== ""
+                         //: %1 is a date and time
+                         ? qsTr("Last checked %1.").arg(Updates.lastChecked)
+                         : qsTr("Not checked for updates yet.")
+            PillButton {
+                objectName: "checkUpdatesButton"
+                compact: true
+                iconName: "download"
+                text: qsTr("Check for Updates…")
+                tooltip: qsTr("Ask for the latest Wabcut release now")
+                onClicked: page.actionRequested("updates") // the dialog opens once Settings has closed
+            }
+        }
+    }
+
     SettingsSection {
         title: qsTr("Review")
 

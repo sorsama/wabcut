@@ -1,0 +1,78 @@
+name: Pilot report
+description: You edited a real project with Wabcut for the pilot (docs/pilot.md). Tell us how it went.
+title: "[Pilot] "
+labels: ["pilot"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for piloting Wabcut. The pilot guide is in [docs/pilot.md](https://github.com/sorsama/wabcut/blob/main/docs/pilot.md).
+        Do not attach private media or API keys. Screenshots and short screen recordings help most.
+  - type: dropdown
+    id: project
+    attributes:
+      label: Pilot project
+      options:
+        - A. Long gaming video
+        - B. Short or TikTok
+        - C. Video essay
+        - D. Short documentary
+        - Something else
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Wabcut version and package
+      description: Help > About Wabcut, and MSI, portable ZIP, AppImage, tar.gz or DMG.
+      placeholder: 0.5.0, MSI
+    validations:
+      required: true
+  - type: textarea
+    id: system
+    attributes:
+      label: System
+      description: Operating system, CPU, RAM and graphics card(s). Settings > Media & cache > "Performance check" shows what Wabcut uses.
+    validations:
+      required: true
+  - type: dropdown
+    id: finished
+    attributes:
+      label: Did you finish the edit?
+      options:
+        - Yes, and I exported it
+        - Yes, but the export was wrong
+        - No, something blocked me
+        - No, I ran out of time
+    validations:
+      required: true
+  - type: textarea
+    id: problems
+    attributes:
+      label: Problems
+      description: |
+        One block per problem: what you did (exact menu, button or shortcut), what you expected, what happened, and
+        how bad it was (crash or lost work / wrong export / blocked me / slowed me down / cosmetic).
+      placeholder: |
+        1. What I did: ...
+           Expected: ...
+           Happened: ...
+           How bad: ...
+    validations:
+      required: true
+  - type: textarea
+    id: crash
+    attributes:
+      label: Crash summary
+      description: If Wabcut crashed, paste the diagnostic summary from the "Wabcut closed unexpectedly" dialog.
+      render: text
+  - type: textarea
+    id: time
+    attributes:
+      label: Time taken
+      description: How long the edit took, and how long you would expect in the editor you normally use (and which one).
+  - type: textarea
+    id: liked
+    attributes:
+      label: Liked most / annoyed most
+      description: Up to three of each.

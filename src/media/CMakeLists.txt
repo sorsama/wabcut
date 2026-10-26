@@ -9,6 +9,7 @@ add_library(wabcut_media STATIC
     src/AudioDecoder.cpp
     src/Background.cpp
     src/CameraLog.cpp
+    src/Chapters.cpp # P0 round: OBS chapter markers on import
     src/ContainerTags.cpp
     src/DecoderPool.cpp
     src/FfmpegInfo.cpp

@@ -7,7 +7,7 @@ import QtQuick.Controls.Basic
 // (AudioMixer.strips: role, effect stack, sends, pan, mute / solo, fader and live meter, output), then the submix strips
 // (p02 audio: AudioMixer.submixes), scrolling sideways when they do not fit, and the master strip pinned on the right
 // (master effects with the limiter preset, master meter, the loudness of the mix against a target). Meters poll at
-// ~30 Hz only while the mixer is on screen.
+// ~30 Hz only while a meter is on screen (the mixer or the Audio Meters panel: a viewer count).
 // p02 audio: the AUDIO CLIP MIXER is the other tab (as Premiere groups the two): one strip per audio track for the clip
 // under the playhead (ClipMixer.strips: the clip's volume and pan, Write Keyframes).
 Panel {
@@ -51,12 +51,11 @@ Panel {
         }
     ]
 
-    // The meters run only while the mixer can be seen.
-    Binding {
-        target: AudioMixer
-        property: "metersActive"
-        value: root.visible && root.enabled
-    }
+    // The meters run only while a meter can be seen: the mixer counts as one viewer (0.5: the Audio Meters panel is
+    // another, AudioMixer.setMeterViewer).
+    readonly property bool metering: root.visible && root.enabled
+    onMeteringChanged: AudioMixer.setMeterViewer(root, root.metering)
+    Component.onCompleted: AudioMixer.setMeterViewer(root, root.metering)
 
     RowLayout {
         anchors.fill: parent

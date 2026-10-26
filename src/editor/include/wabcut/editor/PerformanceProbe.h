@@ -10,7 +10,7 @@
 //     encoders: hardware first for H.264 / HEVC, prores_ks for ProRes) decoded with the hardware backend
 //     media::VideoDecoder picks and in software - frames per second, and which backend took it;
 //   * export encoders: what an H.264 and an HEVC export would use (exporter::probeVideoEncoder: hardware or software);
-//   * the GPUs (media::gpuVendors) and the CPU threads;
+//   * the GPUs (media::gpuAdapters), which one Wabcut uses and why (media::selectedGpu, issue #10), and the CPU threads;
 //   * the audio output: whether a device is there, and the default one's name (audio::AudioEngine).
 // The app adds its graphics API and adapter (RendererInfo) to the report it shows.
 //
@@ -63,8 +63,16 @@ struct ReadinessRecommendation {
 struct PerformanceReport {
     std::vector<DecodeMeasurement> decode;
     std::vector<EncoderMeasurement> encoders;
-    std::vector<std::string> gpus; ///< vendors, primary first
+    std::vector<std::string> gpus; ///< vendors, the GPU Wabcut uses first
     std::string graphics;          ///< set by the app: "D3D11 · RTX 3060"
+    /// Issue #10: the GPU export encoders use (media::selectedGpu()) and why (media::gpuReasonKey: "highPerformance",
+    /// "userChoice", "windowsPowerSaving", ...); empty without one.
+    std::string gpuName;
+    std::string gpuReason;
+    /// The preview's and decoding's GPU in this run (media::previewGpu()) when it is another one: a new Graphics card
+    /// choice waits for the next start there.
+    std::string previewGpuName;
+    std::vector<std::string> gpuNames; ///< every hardware GPU, high performance first
     bool audioDevice = false;      ///< an output device is present
     std::string audioName;         ///< the default output's name
     std::string audioNote;

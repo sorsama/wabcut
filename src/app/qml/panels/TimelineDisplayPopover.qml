@@ -6,6 +6,7 @@ import QtQuick
 // (expand all, minimise all, presets). Choices apply at once and persist through Preferences. 0.2: the video and audio
 // fade handles, sequence label colours on the tabs and audio time units (kept by Monitors, shared with the Program
 // Monitor's menu). 0.4: clip speed, fx badges and clip tooltips, and the playback auto-scroll (No scroll, Page, Smooth).
+// 0.5: Show caption tracks (the caption lanes above the video tracks).
 Popover {
     id: root
     objectName: "timelineDisplayPopover"
@@ -118,6 +119,14 @@ Popover {
                 }
 
                 GroupLabel { text: qsTr("Show") }
+                // 0.5: Premiere's caption tracks at the top of the Timeline (rows only when the sequence has some).
+                Toggle {
+                    objectName: "captionTracksToggle"
+                    text: qsTr("Caption tracks")
+                    tooltip: qsTr("A row for each caption track above the video tracks: trim, move, split and delete captions there")
+                    checked: Preferences.timelineShowCaptionTracks
+                    onToggled: Preferences.timelineShowCaptionTracks = checked
+                }
                 Toggle {
                     objectName: "throughEditsToggle"
                     text: qsTr("Through edits")

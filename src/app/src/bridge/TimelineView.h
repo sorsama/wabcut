@@ -40,6 +40,10 @@
 // an edit, undo or cancel slide to their new place (rippleDuration, ease-out); razor cuts flash. Everything is
 // interpolated here in the scene graph, never in per-clip QML, and the durations come from Theme (0 under
 // reduce motion).
+//
+// 0.5 (P0 round): caption tracks are lanes above the video tracks (one mesh and pooled labels for every cue; selecting,
+// trimming, moving, splitting and deleting cues in TimelineViewCaptions.cpp), and audio clips of nested sequences,
+// multicam and merged clips draw an approximate waveform from the peaks of the clips they play (NestedPeaks.h).
 
 #include "FilmstripSource.h"
 #include "PeakSource.h"
@@ -72,6 +76,7 @@
 namespace wabcut::app {
 
 class MeshBuilder;
+class NestedMixPeaks;
 class TimelineRootNode;
 
 /// Measurements of the last updatePaintNode (for tests and profiling).
@@ -107,6 +112,17 @@ struct TimelineStats {
     /// 0.1.3: the dragged (or settling) clips as drawn, in view coordinates: a drag shows them where they will land.
     QHash<quint64, QRectF> liftedRects;
     QHash<quint64, QString> fxBadges; // 0.4: clip id -> "changed" | "effects" (the fx chips drawn)
+    // 0.5 (P0, stream A): caption lanes (captionKey(row, cue) keys) and the waveforms of nested audio clips.
+    int captionCues = 0;                  // cue blocks drawn (built range)
+    int dimmedCaptionCues = 0;            // of those, on a hidden (disabled) caption track
+    QHash<quint64, QString> captionTexts; // the label each cue shows
+    QHash<quint64, QRectF> captionRects;  // where each cue is drawn, in view coordinates (a drag: where it lands)
+    bool captionMeshBuilt = false;        // fix round 1 (QA #8): the cue blocks were rebuilt this frame
+    int captionLabelLayouts = 0;          // cue labels laid out (QTextLayout) this frame
+    int captionCuesVisited = 0;           // cues the caption passes looked at this frame
+    int nestedWaveforms = 0;              // nested / multicam / merged audio clips drawn with leaf peaks (rebuilt tracks)
+    int exactWaveforms = 0;               // phase 2: of those, drawn from their complete rendered mix
+    static quint64 captionKey(int row, int cue) { return (static_cast<quint64>(row) << 32) | static_cast<quint32>(cue); }
 };
 
 /// Visual tokens, parsed from the QML `style` map (keys match the member names).
@@ -194,6 +210,11 @@ struct TimelineStyle {
     // (Theme.accentFill); its ink is clipInk (markerInkColor).
     QColor fxChangedColor{0xFB, 0xBF, 0x24};
     QColor fxEffectsColor{0x8B, 0x5C, 0xFF};
+    // 0.5: caption lanes - one compact row per caption track above the video tracks, its cues solid blocks in the
+    // caption colour with their first line in the caption ink.
+    qreal captionTrackHeight = 28;
+    QColor captionColor{0xBF, 0xB6, 0xD9};
+    QColor captionInkColor{0x00, 0x00, 0x00};
 
     QColor clipBody(int index) const;
     QColor clipColor(int index) const;
@@ -209,6 +230,11 @@ struct TimelineNestInfo {
     QString name;
     bool multicam = false;
     std::vector<QString> angles;
+    /// 0.5: the media the waveforms of its audio clips read (NestedPeaks: its audio tracks' leaf clips, two levels
+    /// deep; sorted), so new peaks of one of them rebuild those tracks, and a stamp of the sequence and those it nests
+    /// (an edit inside them redraws the waveforms).
+    std::vector<std::uint64_t> audioMedia;
+    std::uint64_t audioStamp = 0;
     bool operator==(const TimelineNestInfo&) const = default;
 };
 /// 0.4: what a clip's fx chip says (TimelineLaneFacts::fx).
@@ -353,6 +379,19 @@ class TimelineView : public QQuickItem {
     /// In/Out and beats while `snapping` is on.
     Q_PROPERTY(bool snapPlayhead READ snapPlayhead WRITE setSnapPlayhead NOTIFY snappingChanged FINAL)
 
+    // ---- 0.5 (P0, stream A): caption tracks as lanes (TimelineViewCaptions.cpp) ----
+    /// Premiere's caption tracks at the top of the timeline (Timeline Display: Show caption tracks): one compact row per
+    /// caption track of the sequence above the top video track. On by default; there are no rows without caption tracks.
+    Q_PROPERTY(bool showCaptionTracks READ showCaptionTracks WRITE setShowCaptionTracks NOTIFY displayChanged FINAL)
+    /// The CaptionsBridge (QML: the Captions singleton). The selected cue lives there, so the Captions page shows and
+    /// scrolls to it. Null: the view keeps the cue selection itself.
+    Q_PROPERTY(QObject* captions READ captions WRITE setCaptions NOTIFY captionsChanged FINAL)
+    /// The caption rows for their headers, top first: [{ id ("k…"), label ("C1"), name, language, enabled, targeted,
+    /// y (content coordinates), height, cues (count) }].
+    Q_PROPERTY(QVariantList captionRows READ captionRowItems NOTIFY captionRowsChanged FINAL)
+    /// The selected caption cue: { track ("k…"), cue (index) }, or an empty map.
+    Q_PROPERTY(QVariantMap selectedCaption READ selectedCaptionItem NOTIFY captionSelectionChanged FINAL)
+
 public:
     explicit TimelineView(QQuickItem* parent = nullptr);
     ~TimelineView() override;
@@ -382,7 +421,7 @@ public:
     void setTool(const QString& tool);
     bool snapping() const { return m_snapping; }
     void setSnapping(bool snapping);
-    bool gestureActive() const { return m_gesture.active; }
+    bool gestureActive() const { return m_gesture.active || m_captionDrag.active; } // 0.5: a cue drag too
     QString gestureReadout() const { return m_gestureReadout; }
     QPointF gesturePoint() const { return m_gesturePoint; }
     double snapX() const;
@@ -484,6 +523,56 @@ public:
     /// The time quantum of drags of the material: an audio sample with audio time units on and only audio clips in
     /// `clips` (Premiere: sample edits never move video), else a frame.
     Rate editRate(std::span<const ClipId> clips) const;
+
+    // ---- 0.5 (P0, stream A): caption lanes (TimelineViewCaptions.cpp) ----
+    // A press on a caption row edits captions, never clips: a click selects the cue (the clip selection goes) and
+    // moves the playhead to its start; with the Selection tool, dragging an edge trims the cue and dragging its body
+    // moves it (frame by frame, snapping to clip edges, the playhead, marks, markers and the other cues; kept between
+    // the neighbouring cues unless the track's style allows overlaps), each drag one undo step; the Razor tool splits a
+    // cue where it clicks. A double-click asks QML to open the cue's text (captionDoubleClicked), a right click for the
+    // cue menu (captionContextMenuRequested). Caption rows are no target for clip drops, track targeting or marquee
+    // selection.
+    bool showCaptionTracks() const { return m_showCaptionTracks; }
+    void setShowCaptionTracks(bool on);
+    QObject* captions() const;
+    void setCaptions(QObject* captions);
+    QVariantList captionRowItems() const { return m_captionRowItems; }
+    QVariantMap selectedCaptionItem() const;
+    struct CaptionRow {
+        CaptionTrackId id;
+        qreal y = 0;
+        qreal height = 0;
+        bool enabled = true;
+    };
+    const std::vector<CaptionRow>& captionRows() const { return m_captionRows; }
+    /// The selected cue (track invalid: none).
+    struct CaptionSelection {
+        CaptionTrackId track;
+        int cue = -1;
+        bool valid() const { return track.isValid() && cue >= 0; }
+    };
+    CaptionSelection captionSelection() const;
+    /// The cue under (x, y): { track, cue, edge ("head", "tail" or "") }, or an empty map.
+    Q_INVOKABLE QVariantMap captionAt(double x, double y) const;
+    /// For the cue menu: { track, cue, label ("C1"), text (its first line), start, end, duration (timecodes),
+    /// splittable (the playhead is strictly inside it) }, or an empty map.
+    Q_INVOKABLE QVariantMap captionInfo(const QString& track, int cue) const;
+    /// Selects cue `cue` of caption track `track` (the clip selection goes), or nothing for an empty track key.
+    Q_INVOKABLE void selectCaption(const QString& track, int cue);
+    /// Caption track targeting (view state, like source patching): Add Edit (Ctrl+K) splits the cue under the playhead
+    /// on targeted caption rows. Off by default.
+    Q_INVOKABLE void setCaptionTargeted(const QString& track, bool targeted);
+    Q_INVOKABLE bool isCaptionTargeted(const QString& track) const;
+    /// Add Edit (Ctrl+K) where captions take part. As Premiere, a selection is cut alone: with clips selected, false
+    /// (ProjectController cuts them; captions stay whole); with a cue selected, it alone where the playhead is inside it
+    /// (else nothing, captionMessage() says why). With nothing selected, every cue under the playhead on the targeted
+    /// caption rows (each one where cues overlap) and the clips of the targeted tracks, in one undo step. False when no
+    /// caption takes part: ProjectController's Add Edit does the clips.
+    Q_INVOKABLE bool addEditAtPlayhead();
+    /// Why the last addEditAtPlayhead() cut nothing ("" when it did; for the panel's toast).
+    Q_INVOKABLE QString captionMessage() const { return m_captionMessage; }
+    /// Delete (and Ripple Delete) with a cue selected: removes it, one undo step. False when no cue is selected.
+    Q_INVOKABLE bool deleteSelectedCaption();
 
     /// The sequence marker under the ruler x (within a few px), or -1.
     Q_INVOKABLE int markerAt(double x) const;
@@ -592,6 +681,13 @@ public:
     void setFilmstripSource(std::shared_ptr<const FilmstripSource> source);
     /// Atlases arrived: rebuilds the video tracks.
     void filmstripsChanged();
+    /// 0.5 (phase 2): the exact waveforms of nested, multicam and merged audio clips, from their mixes rendered in the
+    /// background (NestedMixPeaks.h). By default one is made when the controller reads real media (its MediaPeakSource);
+    /// tests set their own (null: none, the approximation only).
+    void setNestedMixSource(std::shared_ptr<NestedMixPeaks> source);
+    NestedMixPeaks* nestedMixSource() const { return m_nestedMixes.get(); }
+    /// Mixes moved on: rebuilds the audio tracks holding clips of those sequences.
+    void refreshNestedMixes();
     const TimelineStyle& parsedStyle() const { return m_style; }
 
     struct Row {
@@ -669,6 +765,14 @@ signals:
     /// (TrimBridge). `type` is the tool's trim ("regular", "ripple", "roll"); Ctrl/⌘ makes a Selection-tool click a
     /// ripple (Premiere).
     void editPointClicked(const QString& clipId, const QString& edge, const QString& type, int modifiers);
+    // ---- 0.5: caption lanes ----
+    void captionsChanged();
+    void captionRowsChanged();
+    void captionSelectionChanged();
+    /// A double-click on cue `cue` of caption track `track` ("k…"): QML opens its text in the Captions page.
+    void captionDoubleClicked(const QString& track, int cue);
+    /// A right click on a cue (already selected): QML opens the cue menu at (x, y).
+    void captionContextMenuRequested(const QString& track, int cue, double x, double y);
 
 protected:
     QSGNode* updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData* data) override;
@@ -817,6 +921,9 @@ private:
     };
     RulerStep rulerStep() const;
     void updateRoot(TimelineRootNode* root);
+    /// 0.5: draws the caption lanes' cues and labels (TimelineView.cpp) when they, the rows, the cue selection, a cue
+    /// drag or the scroll changed. Returns true when some labels wait for the next frame.
+    bool updateCaptionLayer(TimelineRootNode* root, bool full, TimelineStats& stats);
 
     QPointer<ProjectController> m_controller;
     QVariantMap m_styleMap;
@@ -865,7 +972,8 @@ private:
     double m_hoverProgress = 0;
     QVariantAnimation* m_liftAnimation = nullptr;
 
-    enum class Drag { None, Click, Marquee, Pending, Gesture, Cancelled, TransitionEdge, VolumeKey, VolumeLine, Speed, Remix, Fade };
+    enum class Drag { None, Click, Marquee, Pending, Gesture, Cancelled, TransitionEdge, VolumeKey, VolumeLine, Speed, Remix, Fade,
+                      CaptionPending, Caption };
     /// M5m: the Remix tool's drag of a music clip's end (a proposed length; the model is not touched).
     struct RemixDrag {
         ClipId clip;
@@ -963,6 +1071,12 @@ private:
 
     std::shared_ptr<const PeakSource> m_peaks;
     std::shared_ptr<const FilmstripSource> m_filmstrips;
+    // 0.5 (phase 2): rendered nested mixes, the serial of their last look and the sequences whose mixes moved on.
+    std::shared_ptr<NestedMixPeaks> m_nestedMixes;
+    bool m_nestedMixesSet = false; ///< set from outside: the default one is never made
+    std::uint64_t m_mixSerial = 0;
+    std::unordered_set<std::uint64_t> m_pendingMixSequences;
+    void attachNestedMixes(std::shared_ptr<NestedMixPeaks> source);
     TimelineStats m_stats;
 
     // ---- M5i ----
@@ -1057,6 +1171,63 @@ private:
     std::optional<ZoomMemory> m_zoomBeforeFit;
     /// The fade handles of this clip show although it is not selected: the pointer is over it (Premiere 26).
     bool fadeHandlesShown(const Clip& clip, bool audio) const;
+
+    // ---- 0.5 (P0, stream A): caption lanes (TimelineViewCaptions.cpp) ----
+    /// The caption row under y, or -1.
+    int captionRowAt(double y) const;
+    const CaptionTrack* captionTrackOf(CaptionTrackId id) const;
+    struct CaptionHit {
+        int row = -1;
+        int cue = -1;
+        Zone zone = Zone::None; ///< Head / Tail within the trim handle of an edge, else Body
+    };
+    CaptionHit captionHit(double x, double y) const;
+    /// The caption rows and their header items from the sequence (relayoutRows); returns the height they take.
+    qreal layoutCaptionRows();
+    void refreshCaptionRowItems();
+    void setCaptionSelection(CaptionTrackId track, int cue);
+    /// A cue was clicked: it becomes the selection (clips, a gap and a transition stop being selected).
+    void selectCaptionCue(CaptionTrackId track, int cue);
+    void pressCaption(const CaptionHit& hit, Qt::MouseButton button);
+    void dragCaption(QPointF pos, Qt::KeyboardModifiers mods);
+    void releaseCaption();
+    void cancelCaptionDrag();
+    /// Splits cue `cue` of `track` at `at` (strictly inside it), one undo step "Split Caption"; the first half stays
+    /// selected. False (lastError) when it cannot.
+    bool splitCaptionCue(CaptionTrackId track, int cue, Ticks at);
+    QString captionCursorKey(const CaptionHit& hit) const;
+    /// The cue selection after an edit or undo: dropped when its cue is gone (the view's own selection).
+    void validateCaptionSelection();
+    void onCaptionsSelectionChanged();
+    QPointer<QObject> m_captionsBridge; ///< a CaptionsBridge
+    CaptionSelection m_localCaptionSelection;
+    std::vector<CaptionRow> m_captionRows;
+    QVariantList m_captionRowItems;
+    bool m_showCaptionTracks = true;
+    std::unordered_set<std::uint64_t> m_captionTargets; ///< targeted caption tracks (view state)
+    int m_captionRevision = 0; ///< selection, drag or hover changed: the caption layer is drawn again
+    int m_hoverCaptionRow = -1; ///< the caption row the razor previews its cut on
+    QString m_captionMessage;   ///< captionMessage()
+    /// The cue edge a Selection-tool press would trim, lit like a clip's (a bracket in the guides).
+    struct CaptionHoverEdge {
+        int row = -1;
+        int cue = -1;
+        bool head = false;
+        bool operator==(const CaptionHoverEdge&) const = default;
+    } m_captionHoverEdge;
+    void setCaptionHoverEdge(const CaptionHoverEdge& edge);
+    struct CaptionDrag {
+        CaptionTrackId track;
+        int row = -1;
+        int cue = -1;
+        Zone zone = Zone::Body;
+        bool editable = false;   ///< the Selection tool: the press may become a trim or a move
+        bool active = false;     ///< past the drag threshold
+        Ticks start, end;        ///< the cue at the press
+        Ticks previewStart, previewEnd;
+        std::vector<Ticks> targets; ///< sorted snap targets
+        std::optional<Ticks> snappedAt;
+    } m_captionDrag;
 
     // ---- External preview (TimelineViewPreview.cpp) ----
     friend class ExternalPreviewItem;

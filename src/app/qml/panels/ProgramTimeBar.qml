@@ -9,6 +9,8 @@ import QtQuick
 // a zoomed bar; the zoom bar under it (shown while zoomed) drags the window, a double-click shows the whole sequence.
 // Keys (while focused): Left/Right a frame (Shift: five), Home/End, Up/Down the previous/next edit, +/- zoom, 0 all.
 // UX rework (stream T): over a marker, the hover pill shows its name, comment, time and length (SequenceTimeBar.markerAt).
+// 0.5 (stream B): a press and drag is a scrub for Playback (Playback.beginScrub / endScrub): with audio scrubbing on, a
+// stopped transport plays a little of the mix at each new frame, as the timeline's ruler does.
 FocusScope {
     id: root
     objectName: "programTimeBar"
@@ -121,16 +123,32 @@ FocusScope {
         cursorShape: Qt.PointingHandCursor
 
         function barX(mx) { return Math.max(0, Math.min(bar.width, mx - bar.x)) }
+        /// 0.5: a press-and-drag is a scrub (Playback hears it: audio scrubbing).
+        property bool scrubbing: false
+        function finishScrub() {
+            if (pointer.scrubbing) {
+                pointer.scrubbing = false
+                Playback.endScrub()
+            }
+        }
 
         onPressed: mouse => {
             root.pointerFocus = true
             root.forceActiveFocus(Qt.MouseFocusReason)
+            if (!pointer.scrubbing) {
+                pointer.scrubbing = true
+                Playback.beginScrub()
+            }
             bar.seekToX(barX(mouse.x))
         }
         onPositionChanged: mouse => {
-            if (pressed)
+            if (pressed) {
+                Playback.scrubMoving() // the drag: a move back plays backwards (the press played forward)
                 bar.seekToX(barX(mouse.x))
+            }
         }
+        onReleased: pointer.finishScrub()
+        onCanceled: pointer.finishScrub()
         onWheel: wheel => {
             const delta = wheel.angleDelta.y !== 0 ? wheel.angleDelta.y : wheel.angleDelta.x
             if (delta === 0)

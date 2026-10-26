@@ -23,7 +23,8 @@ std::expected<MediaItem, Error> describeLayeredFile(const LayeredFileSpec& spec,
     return item;
 }
 
-std::shared_ptr<command::MediaFormatServices> mediaFormatServices(const std::filesystem::path& projectFile) {
+std::shared_ptr<command::MediaFormatServices> mediaFormatServices(const std::filesystem::path& projectFile,
+                                                                  bool readChapters) {
     command::MediaFormatServices::Readers readers;
     readers.readLayers = [](const std::filesystem::path& file)
         -> std::expected<command::MediaFormatServices::LayeredDocument, Error> {
@@ -67,16 +68,27 @@ std::shared_ptr<command::MediaFormatServices> mediaFormatServices(const std::fil
         }
         return out;
     };
-    readers.describeClip = [projectFile](const std::filesystem::path& firstFile) {
-        return describeCameraClip(cameraClipOf(firstFile), projectFile);
+    // P0 round: a clip's chapter markers come in with it, as with File > Import (the picture's file; a spanned clip's
+    // parts and a P2 clip's audio files have none to read).
+    const auto withChapters = [readChapters](std::expected<std::vector<MediaItem>, Error> items) {
+        if (items && readChapters) {
+            for (MediaItem& item : *items) {
+                addChapterMarkers(item);
+            }
+        }
+        return items;
     };
-    readers.ingestClip = [projectFile](const std::filesystem::path& firstFile, const std::filesystem::path& destination)
+    readers.describeClip = [projectFile, withChapters](const std::filesystem::path& firstFile) {
+        return withChapters(describeCameraClip(cameraClipOf(firstFile), projectFile));
+    };
+    readers.ingestClip = [projectFile, withChapters](const std::filesystem::path& firstFile,
+                                                     const std::filesystem::path& destination)
         -> std::expected<std::vector<MediaItem>, Error> {
         auto copied = copyCameraClip(cameraClipOf(firstFile), destination);
         if (!copied) {
             return std::unexpected(std::move(copied.error()));
         }
-        return describeCameraClip(*copied, projectFile);
+        return withChapters(describeCameraClip(*copied, projectFile));
     };
     return std::make_shared<command::MediaFormatServices>(std::move(readers));
 }

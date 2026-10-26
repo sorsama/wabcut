@@ -1,0 +1,48 @@
+name: Bug report
+description: Something in Wabcut does not work the way it should.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting. Do not attach private media or API keys. Screenshots and short screen recordings help most.
+  - type: input
+    id: version
+    attributes:
+      label: Wabcut version and package
+      description: Help > About Wabcut, and MSI, portable ZIP, AppImage, tar.gz or DMG.
+      placeholder: 0.5.0, portable ZIP
+    validations:
+      required: true
+  - type: textarea
+    id: system
+    attributes:
+      label: System
+      description: Operating system, CPU, RAM and graphics card(s). Settings > Media & cache > "Performance check" shows what Wabcut uses.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: What you did
+      description: Step by step, with the exact menu, button or shortcut.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened
+    validations:
+      required: true
+  - type: textarea
+    id: crash
+    attributes:
+      label: Crash summary
+      description: If Wabcut crashed, paste the diagnostic summary from the "Wabcut closed unexpectedly" dialog.
+      render: text

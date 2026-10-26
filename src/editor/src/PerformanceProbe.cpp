@@ -4,6 +4,7 @@
 #include <wabcut/export/Encoders.h>
 #include <wabcut/export/ExportJob.h>
 #include <wabcut/export/VideoFrameSource.h>
+#include <wabcut/media/GpuInfo.h>
 #include <wabcut/media/VideoDecoder.h>
 #include <wabcut/model/MediaLocator.h>
 #include <wabcut/model/ProjectOps.h>
@@ -13,9 +14,17 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <expected>
+#include <filesystem>
+#include <functional>
+#include <optional>
 #include <random>
+#include <stop_token>
 #include <system_error>
+#include <string>
+#include <string_view>
 #include <thread>
+#include <vector>
 
 namespace wabcut::editor {
 
@@ -136,6 +145,17 @@ PerformanceReport runPerformanceProbe(const ProbeOptions& options, std::stop_tok
 
     progress(0.0, "Graphics");
     report.gpus = media::gpuVendors();
+    // Issue #10: which GPU, and why (the Settings choice, the Windows Graphics setting, or the high-performance one).
+    if (const media::GpuSelection gpu = media::selectedGpu(); gpu.adapter) {
+        report.gpuName = gpu.adapter->name;
+        report.gpuReason = std::string(media::gpuReasonKey(gpu.reason));
+        if (const media::GpuSelection preview = media::previewGpu(); preview.adapter && preview.adapter->key != gpu.adapter->key) {
+            report.previewGpuName = preview.adapter->name;
+        }
+    }
+    for (const media::GpuAdapter& a : media::gpuAdapters()) {
+        report.gpuNames.push_back(a.name);
+    }
 
     if (options.audio && !stop.stop_requested()) {
         progress(0.04, "Audio output");
@@ -308,6 +328,10 @@ std::string toJson(const PerformanceReport& report) {
                      {"encoders", std::move(encoders)},
                      {"gpus", report.gpus},
                      {"graphics", report.graphics},
+                     {"gpuName", report.gpuName},
+                     {"gpuReason", report.gpuReason},
+                     {"previewGpuName", report.previewGpuName},
+                     {"gpuNames", report.gpuNames},
                      {"audioDevice", report.audioDevice},
                      {"audioName", report.audioName},
                      {"audioNote", report.audioNote},
@@ -343,6 +367,10 @@ std::optional<PerformanceReport> reportFromJson(std::string_view text) {
         }
         report.gpus = j.value("gpus", std::vector<std::string>{});
         report.graphics = j.value("graphics", "");
+        report.gpuName = j.value("gpuName", "");
+        report.gpuReason = j.value("gpuReason", "");
+        report.previewGpuName = j.value("previewGpuName", "");
+        report.gpuNames = j.value("gpuNames", std::vector<std::string>{});
         report.audioDevice = j.value("audioDevice", false);
         report.audioName = j.value("audioName", "");
         report.audioNote = j.value("audioNote", "");

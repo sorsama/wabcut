@@ -509,3 +509,22 @@ TEST_CASE("Transcript corrections replace the ones they overlap", "[model][capti
     CHECK_FALSE(edit::correctTranscript(tl.state, a, 0, WordCorrection{TimeRange{f(1), f(1)}, "x", "\xFF"}));
     CHECK_FALSE(edit::correctTranscript(tl.state, MediaId{999}, 0, WordCorrection{TimeRange{f(1), f(1)}, "x", "y"}));
 }
+
+// 0.5 P0 fix round (stream A, QA #11): Add Edit cuts every overlapping cue under the playhead; each split keeps the
+// cues in start order where overlaps are allowed.
+TEST_CASE("Caption cues: a split on a track with overlaps keeps the cues in start order", "[model][captions]") {
+    Timeline tl(R"(
+        V1 tgt |Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|
+    )");
+    CaptionStyle stacked;
+    stacked.allowOverlap = true;
+    const ProjectState s = withCaptions(tl.state, tl.seq, {{0, 10, "one two"}, {4, 14, "three four"}, {20, 24, "five"}}, stacked);
+    const CaptionTrackId id = trackId(s, tl.seq);
+    // The earlier cue cut inside the later one: its second half goes after the later one.
+    const auto r = ok(edit::splitCaptionCue(s, tl.seq, id, 0, f(6), std::nullopt, simpleLineBreaker()));
+    CHECK(cues(r.state, tl.seq) == "0-6 one | 4-14 three four | 6-10 two | 20-24 five");
+    // Both cut at one time (the later first): every half in start order.
+    const auto later = ok(edit::splitCaptionCue(s, tl.seq, id, 1, f(6), std::nullopt, simpleLineBreaker()));
+    const auto both = ok(edit::splitCaptionCue(later.state, tl.seq, id, 0, f(6), std::nullopt, simpleLineBreaker()));
+    CHECK(cues(both.state, tl.seq) == "0-6 one | 4-6 three | 6-14 four | 6-10 two | 20-24 five");
+}

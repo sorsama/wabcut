@@ -62,6 +62,8 @@ QtObject {
         { key: "frameInspector", label: qsTr("Explain This Frame"), icon: "search", browser: false, column: "right", hue: "blue" },
         { key: "captionStyle", label: qsTr("Caption Style"), icon: "type", browser: false, column: "right", hue: "pink" },
         { key: "mixer", label: qsTr("Audio Track Mixer"), icon: "volume-2", browser: false, column: "right", hue: "mint" },
+        // 0.5: Premiere's Audio Meters (the mix's level), along the timeline; the Edit preset docks it right of it.
+        { key: "audioMeters", label: qsTr("Audio Meters"), icon: "audio-lines", browser: false, column: "timeline", hue: "mint" },
         { key: "color", label: qsTr("Color"), icon: "contrast", browser: false, column: "right", hue: "orange" },
         { key: "export", label: qsTr("Export"), icon: "upload", browser: false, column: "right", hue: "lime" },
         { key: "timeline", label: qsTr("Timeline"), icon: "layers", browser: false, column: "timeline", hue: "violet" }
@@ -112,12 +114,14 @@ QtObject {
                 { split: "row", weights: [0.6, 0.4], children: [root.group("g1", ["program"]), root.group("g2", ["export"])] },
                 root.group("g3", ["timeline"])] }
         }
-        // Premiere's Editing workspace: the Library, Source and Program side by side, Effect Controls; the timeline.
+        // Premiere's Editing workspace: the Library, Source and Program side by side, Effect Controls; the timeline with the
+        // Audio Meters at its right (0.5; workspaces made or reset from the preset from then on).
         return { split: "column", weights: [0.5, 0.5], children: [
             { split: "row", weights: [0.22, 0.21, 0.21, 0.36],
               children: [root.group("g1", ["library"]), root.group("g2", ["source"]), root.group("g3", ["program"]),
                          root.group("g4", ["effectControls"])] },
-            root.group("g5", ["timeline"])] }
+            { split: "row", weights: [0.95, 0.05],
+              children: [root.group("g5", ["timeline"]), root.group("g6", ["audioMeters"])] }] }
     }
     function presetLabel(preset: string): string {
         switch (preset) {

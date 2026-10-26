@@ -39,6 +39,7 @@ using command::Json;
 namespace {
 
 const QString kScalingKey = QStringLiteral("media/defaultMediaScaling");
+const QString kChapterMarkersKey = QStringLiteral("media/chapterMarkersOnImport"); // P0 round
 const QString kStillKey = QStringLiteral("timeline/stillImageDuration");
 const QString kVideoTransitionKey = QStringLiteral("timeline/videoTransitionDuration");
 const QString kAudioTransitionKey = QStringLiteral("timeline/audioTransitionDuration");
@@ -203,6 +204,15 @@ bool EditingBridge::handlesCommand(const QString& id) {
 MediaScaling EditingBridge::defaultMediaScalingSetting() {
     const QString saved = QSettings().value(kScalingKey).toString();
     return mediaScalingFromString(saved.toStdString()).value_or(MediaScaling::None);
+}
+
+bool EditingBridge::chapterMarkersSetting() { return QSettings().value(kChapterMarkersKey, true).toBool(); }
+
+void EditingBridge::setChapterMarkersOnImport(bool on) {
+    if (on == chapterMarkersSetting())
+        return;
+    QSettings().setValue(kChapterMarkersKey, on);
+    emit preferencesChanged();
 }
 
 std::optional<Ticks> EditingBridge::stillDurationSetting() {

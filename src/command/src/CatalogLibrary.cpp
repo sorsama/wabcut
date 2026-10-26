@@ -18,7 +18,10 @@
 #include <wabcut/model/MediaLocator.h>
 #include <wabcut/model/ProjectOps.h>
 
+#include <algorithm>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -289,7 +292,9 @@ void registerMediaFormatCommands(CommandRegistry& registry) {
              "a spanned clip imports as ONE item playing its parts in turn, a P2 clip as a merged clip of its picture and "
              "its audio channel files (Merge Clips). Into \"bin\" (default the root). \"copyTo\": a folder - "
              "Premiere's Ingest (Copy): each clip's files are copied into <copyTo>/<clip name>/ first and the copies "
-             "imported, so the card can be taken out. One undo step.",
+             "imported, so the card can be taken out. Clip markers the host reads from the files (the app and the CLI: a "
+             "recording's chapter markers, as File > Import adds them) come in with the items; \"markers\" counts them. "
+             "One undo step.",
              Capability::EditProject,
              withSequence({{"files", schema::array(schema::string("A clip's first file (UTF-8 path)."), "The clips.", 1)},
                            {"bin", binParam("The bin they go in.")},
@@ -309,6 +314,7 @@ void registerMediaFormatCommands(CommandRegistry& registry) {
                  ProjectState state = c.state();
                  std::vector<std::uint64_t> created;
                  Json imported = Json::array();
+                 std::size_t markers = 0; // P0 round: the clip markers the items came in with (chapter markers)
                  for (const Json& f : c.params()["files"]) {
                      const std::string file = f.get<std::string>();
                      if (file.empty() || file.size() > 4096) {
@@ -318,14 +324,20 @@ void registerMediaFormatCommands(CommandRegistry& registry) {
                          c.take(copyTo.empty() ? readers.describeClip(pathFromUtf8(file))
                                                : readers.ingestClip(pathFromUtf8(file), pathFromUtf8(copyTo)));
                      std::vector<MediaId> ids;
+                     std::size_t clipMarkers = 0;
                      for (MediaItem& item : items) {
                          item.bin = bin;
+                         clipMarkers += item.markers.size();
                          auto added = c.take(edit::addMedia(state, std::move(item)));
                          state = std::move(added.state);
                          created.push_back(added.id.value);
                          ids.push_back(added.id);
                      }
                      Json entry{{"file", file}, {"media", ids.empty() ? 0 : ids.front().value}};
+                     if (clipMarkers > 0) {
+                         entry["markers"] = clipMarkers;
+                         markers += clipMarkers;
+                     }
                      if (ids.size() > 1) { // P2: the picture and its audio channels as one merged clip
                          edit::MergeSpec spec;
                          spec.name = state.findMedia(ids.front())->name;
@@ -340,7 +352,7 @@ void registerMediaFormatCommands(CommandRegistry& registry) {
                      }
                      imported.push_back(std::move(entry));
                  }
-                 return projectOutput(std::move(state), Json{{"imported", std::move(imported)}}, created);
+                 return projectOutput(std::move(state), Json{{"imported", std::move(imported)}, {"markers", markers}}, created);
              }},
             {"files", "copyTo"}));
 }

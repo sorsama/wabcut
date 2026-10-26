@@ -33,6 +33,11 @@ pointer. The audio thread brackets each block with two `seq_cst` increments of a
 released only once the counter shows the audio thread has left the block it may have used it in. Sources are
 therefore never destroyed (or freed) on the audio thread. See `RenderCore.cpp`.
 
+**Overlay (0.5).** `setOverlay()` installs a second source, handed over and released like the source, that the audio
+thread renders every block whatever the transport does (paused, prerolling, at any speed) and adds to the output after
+the de-click; its `startTime` is the device time. It never touches the transport map, so the clock does not move for
+it. Audio scrubbing (`playback::AudioScrubber`) plays its windows through it.
+
 ## Master clock
 
 `clock()` = source time of the sample being heard now. It is built from two independent pieces:

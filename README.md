@@ -9,7 +9,7 @@
 Premiere Pro's shortcuts and edit rules · round trips with Premiere, Resolve and Final Cut · AI that runs on your own machine
 
 [![Status: alpha](https://img.shields.io/badge/status-alpha-D6F54C)](#project-status)
-[![Version 0.4.0](https://img.shields.io/badge/version-0.4.0-9B6CFF)](docs/release-notes-0.4.md)
+[![Version 0.5.0](https://img.shields.io/badge/version-0.5.0-9B6CFF)](docs/release-notes-0.5.md)
 [![Platforms: Windows, with Linux and macOS previews](https://img.shields.io/badge/platforms-Windows%20%7C%20Linux%20%7C%20macOS%20%28preview%29-1D1D20)](#install)
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue)](LICENSE)
 [![C++23](https://img.shields.io/badge/C%2B%2B-23-00599C?logo=cplusplus&logoColor=white)](docs/building.md)
@@ -21,7 +21,7 @@ Premiere Pro's shortcuts and edit rules · round trips with Premiere, Resolve an
 </div>
 
 > [!WARNING]
-> **Wabcut is in development. This is an alpha version (0.4.0).**
+> **Wabcut is in development. This is an alpha version (0.5.0).**
 > Expect bugs, missing features and changes between versions, including to shortcuts, settings and the project format.
 > Keep backups of your projects and media, and don't rely on it yet for deadline work or sensitive material.
 
@@ -33,7 +33,8 @@ Premiere Pro's shortcuts and edit rules · round trips with Premiere, Resolve an
   your muscle memory carries over. Since 0.2, Premiere's transitions and effects, Optical Flow, Warp Stabilizer, a
   Media Encoder-style export queue and the Project panel's metadata, search bins and Media Browser are there too
   ([how it compares](docs/premiere-parity.md)). 0.3 adds Premiere's menu bar, its Window menu and the Effects panel's
-  folders, and 0.4 Alt-drag copy, Ctrl+Alt-drag rearrange and Premiere keys that did nothing before.
+  folders, 0.4 Alt-drag copy, Ctrl+Alt-drag rearrange and Premiere keys that did nothing before, and 0.5 caption
+  tracks on the timeline, the Audio Meters panel, audio scrubbing and Scene Edit Detection.
 - **Bring your edit with you.** Import timelines from Premiere Pro, DaVinci Resolve and Final Cut Pro (FCP7 XML,
   FCPXML, OpenTimelineIO, EDL) and send them back the same way.
 - **AI that stays yours.** Transcription, speech enhancement, smart search and object masks run locally. Cloud features
@@ -98,27 +99,29 @@ captured by the automated UI tests.</sub>
 
 ## Project status
 
-Wabcut is an **alpha**. The current release is **0.4.0**: Alt-drag copy and Ctrl+Alt-drag rearrange on the timeline,
-Premiere keys that did nothing before, clip speed and effects shown on the timeline, gaming Shorts and transcript work
-in fewer steps, and no more silent losses on quit, autosave or a failed export
-([release notes](docs/release-notes-0.4.md)). 0.3 brought a new Home, Premiere's menu bar and Window menu and the
-Effects panel in Premiere's folders ([0.3 release notes](docs/release-notes-0.3.md)); 0.2 most of what Premiere Pro has
-for gaming videos, video essays and documentaries ([0.2 release notes](docs/release-notes-0.2.md)). Most of the editor
-works, but it has only been tested on a small number of machines and projects. Known gaps in this version:
+Wabcut is an **alpha**. The current release is **0.5.0**: caption tracks you edit on the timeline, waveforms on
+nested and multicam clips, the Audio Meters panel and audio scrubbing, Scene Edit Detection, a dead-time review, OBS
+chapter markers and the source clip's transcript, the discrete GPU on hybrid laptops, and opt-in updates
+([release notes](docs/release-notes-0.5.md)). 0.4 brought Alt-drag copy and rearrange, Premiere keys that did nothing
+before and safe quitting ([0.4 release notes](docs/release-notes-0.4.md)); 0.3 a new Home, Premiere's menu bar and
+Window menu ([0.3 release notes](docs/release-notes-0.3.md)); 0.2 most of what Premiere Pro has for gaming videos,
+video essays and documentaries ([0.2 release notes](docs/release-notes-0.2.md)). Most of the editor works, but it has
+only been tested on a small number of machines and projects. Known gaps in this version:
 
 - **Made and tested on Windows.** Wabcut is built by a solo developer who works only on Windows 10 and 11. The Linux
   and macOS (Apple silicon) downloads are **previews**: GitHub's machines build, install, start and smoke-test them
   for every release, but nobody has edited real projects with them yet. Local transcription and audio plug-ins are
   Windows-only for now.
-- **Not code-signed and no auto-update.** Windows SmartScreen may warn on first run, and macOS asks you to allow the
-  first start.
+- **Not code-signed yet.** Windows SmartScreen may warn on first run, and macOS asks you to allow the first start.
+  Updates are opt-in (Settings > General > Updates); on Windows, a copy installed with the MSI can install them when
+  you quit.
 - **AI quality is not benchmarked yet.** Local models and live cloud providers have not been measured on real projects.
 - **The features since 0.2 are tested by automated tests only.** None has been through a release run with real
   projects yet, and AAF / OMF files have not yet been opened in Pro Tools.
 - **Not built yet:** OpenFX video plug-ins, VR / 360 video, and cloud collaboration (review links, shared projects).
 - **Privacy redaction:** check every redacted export by eye before you share it.
 
-The full list is in the [release notes](docs/release-notes-0.4.md#known-issues).
+The full list is in the [release notes](docs/release-notes-0.5.md#known-issues).
 
 Need something that isn't here? [Open an issue](../../issues) and say what you're trying to make.
 
@@ -193,6 +196,8 @@ cmake --preset core && cmake --build --preset core && ctest --preset core
 
 Wabcut is early, so feedback is the most useful contribution right now.
 
+- **Pilot:** edit one real project with Wabcut and report what you find; the [pilot](docs/pilot.md) has four
+  projects to pick from, each with a checklist.
 - **Bugs and ideas:** open an [issue](../../issues). Include the Wabcut version (shown in the title bar), your Windows
   version and GPU, and the steps that reproduce the problem.
 - **Security problems:** please report them privately, not as an issue; see [SECURITY.md](SECURITY.md).

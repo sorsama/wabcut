@@ -88,6 +88,9 @@ constexpr std::array kBuiltinCommands{
     // UX rework (T): Reveal in Project (Premiere's timeline clip menu; no default key, no verified .kys item). The
     // Editing bridge runs it on the primary selected clip.
     CommandInfo{"clip.revealInProject", Scope::Application, "Clip", "Reveal in Project", "Reveal in Project", "", "", false},
+    // 0.5 (stream C): Scene Edit Detection… (Premiere's timeline clip menu; no default key, no verified .kys item). Main.qml
+    // opens the dialog on the selected video clips (SceneDetect).
+    CommandInfo{"clip.sceneEditDetection", Scope::Application, "Clip", "Scene Edit Detection…", "Scene Edit Detection...", "", "", false},
     // M5o (gaming): the Moments presets on the clip at the playhead. Wabcut's, with no default key.
     CommandInfo{"moments.slowMo", Scope::Application, "Clip", "Slow-mo at Playhead", "", "", "", false},
     CommandInfo{"moments.punchIn", Scope::Application, "Clip", "Punch-in at Playhead", "", "", "", false},
@@ -211,6 +214,8 @@ constexpr std::array kBuiltinCommands{
     // P.2 (E5): Window > History (the undo steps).
     CommandInfo{"window.history", Scope::Application, "Window", "History", "History", "context.global", "uif.window.History", false},
     CommandInfo{"window.backgroundTasks", Scope::Application, "Window", "Background Tasks", "", "", "", false},
+    // 0.5 (stream B): Window > Audio Meters; no default key in either shipped key set (both list the item).
+    CommandInfo{"window.audioMeters", Scope::Application, "Window", "Audio Meters", "Audio Meters", "context.global", "uif.window.Audio Meter", false},
     // Tools
     CommandInfo{"tool.selection", Scope::Application, "Tools", "Selection Tool", "Selection Tool", "context.global", "cmd.tools.01pointer", false},
     CommandInfo{"tool.trackSelectForward", Scope::Application, "Tools", "Track Select Forward Tool", "Track Select Forward Tool", "context.global", "cmd.tools.02trackselectforward", false},
@@ -247,6 +252,8 @@ constexpr std::array kBuiltinCommands{
     CommandInfo{"transport.playInToOut", Scope::Application, "Playback", "Play In to Out", "Play In to Out", "context.global", "cmd.transport.playintoout", false},
     CommandInfo{"transport.playFromPlayheadToOut", Scope::Application, "Playback", "Play from Playhead to Out", "Play from Playhead to Out Point", "context.global", "cmd.transport.play.ctitoout", false},
     CommandInfo{"transport.playAround", Scope::Application, "Playback", "Play Around", "Play Around", "context.global", "cmd.transport.playedit", false},
+    // 0.5 (stream B): Toggle Audio Scrubbing, Shift+S in both shipped key sets (context.global).
+    CommandInfo{"transport.toggleAudioScrubbing", Scope::Application, "Playback", "Toggle Audio Scrubbing", "Toggle Audio Scrubbing", "context.global", "cmd.toggle.audio.scrubbing", false},
     // P.2 (E6): the monitors' Loop button (the focused monitor's; no default key in either shipped key set).
     CommandInfo{"monitor.loop", Scope::Application, "Playback", "Loop", "Loop", "context.global", "cmd.monitor.loop", false},
     // P.2 (E6): the Program Monitor full screen on its display (Ctrl+` in both shipped key sets) and Transmit (no key).

@@ -78,8 +78,9 @@ std::expected<DeviceToken, Error> setSharedD3D11Device(void* device, void* conte
 /// Token of the shared D3D11 device, or an invalid token ({0, 0}) when none is set.
 DeviceToken sharedD3D11Device();
 
-/// GPU vendors present ("NVIDIA", "AMD", "Intel", "Microsoft", "Apple" or a hex PCI id), the primary adapter
-/// first. Software adapters are not listed.
+/// GPU vendors present ("NVIDIA", "AMD", "Intel", "Microsoft", "Apple" or a hex PCI id), the vendor of the GPU Wabcut
+/// uses first (selectedGpu(), GpuInfo.h: the Settings choice, else the high-performance GPU), then the others in
+/// high-performance order. Software adapters are not listed.
 std::vector<std::string> gpuVendors();
 
 struct VideoDecoderStats {

@@ -11,6 +11,7 @@
 #include "MonitorBridge.h"
 #include "MulticamEditBridge.h"
 #include "ProjectController.h"
+#include "SceneDetectBridge.h"
 #include "Titles.h"
 
 #include <wabcut/keymap/CommandRegistry.h>
@@ -175,13 +176,16 @@ bool KeymapCommandProvider::viewHandles(const QString& id) {
         // bar's activity popover), all routed by Main.qml.
         QStringLiteral("file.importFolder"),         QStringLiteral("file.importFromMediaBrowser"),
         QStringLiteral("window.backgroundTasks"),
+        // 0.5 (P0 round, stream B): Window > Audio Meters and Toggle Audio Scrubbing (Shift+S), routed by Main.qml.
+        QStringLiteral("window.audioMeters"),        QStringLiteral("transport.toggleAudioScrubbing"),
     };
     // P.2: Premiere's editing and sequence commands (E5) and the monitors' commands (E6), which Main.qml routes to the
     // Editing and Monitors bridges; the Library's (Project panel) and Multi-Camera's keys, which it routes to them.
     // 0.4: Effect Controls' own commands (stream C: Remove Selected Effect) and the clip volume keys (ClipAudio).
     return kView.contains(id) || EditingBridge::handlesCommand(id) || MonitorBridge::handlesCommand(id) ||
            LibraryBridge::handlesCommand(id) || MulticamEditBridge::handlesCommand(id) ||
-           EffectControlsModel::handlesCommand(id) || ClipAudioBridge::handlesCommand(id);
+           EffectControlsModel::handlesCommand(id) || ClipAudioBridge::handlesCommand(id) ||
+           SceneDetectBridge::handlesCommand(id); // 0.5 (stream C): Scene Edit Detection… (the dialog)
 }
 
 std::shared_ptr<KeymapCommandProvider> KeymapCommandProvider::forApp(KeymapDispatcher* dispatcher,
@@ -402,6 +406,10 @@ CommandPalette* CommandPalette::create(QQmlEngine* qmlEngine, QJSEngine*) {
                 auto* clipAudio = engine->singletonInstance<ClipAudioBridge*>("Wabcut", "ClipAudio");
                 return clipAudio ? clipAudio->commandAvailability(id) : QVariantMap{};
             }
+            if (SceneDetectBridge::handlesCommand(id)) { // 0.5 (stream C): "Select a video clip first"
+                auto* scenes = engine->singletonInstance<SceneDetectBridge*>("Wabcut", "SceneDetect");
+                return scenes ? scenes->commandAvailability(id) : QVariantMap{};
+            }
             return {};
         };
         palette->addProvider(KeymapCommandProvider::forApp(keys, controller, bridgeAvailability));
@@ -452,6 +460,12 @@ CommandPalette* CommandPalette::create(QQmlEngine* qmlEngine, QJSEngine*) {
          {QStringLiteral("release notes"), QStringLiteral("changes"), QStringLiteral("news")},
          {},
          help("whatsNew")},
+        // P0 round: Help > Check for Updates… (Main.showHelp("updates")).
+        {QStringLiteral("help.checkForUpdates"), tr("Check for Updates"), tr("Help"),
+         tr("Ask for the latest Wabcut release and install it"),
+         {QStringLiteral("update"), QStringLiteral("upgrade"), QStringLiteral("new version"), QStringLiteral("download")},
+         {},
+         help("updates")},
     }));
     palette->addProvider(std::make_shared<AskAiProvider>([palette](const QString& q) { emit palette->aiRequested(q); }));
     QSettings settings;
