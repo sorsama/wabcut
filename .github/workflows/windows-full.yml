@@ -1,7 +1,8 @@
 # Full Windows build (win-msvc preset): app, CLI, AI helpers and every test suite except those needing a GPU or an audio
 # device (ctest preset win-msvc-ci), including the install tests (install.smoke; install.package builds the MSI and the
 # portable ZIP and installs, runs and uninstalls the MSI for the runner's user). The MSI and the ZIP are the artifacts.
-# See docs/building.md and docs/release.md.
+# The vcpkg packages and the compiler cache it saves on main are what pull requests and the release workflow's Windows
+# job restore (tools/ci-cache.py). See docs/building.md and docs/release.md.
 name: windows-full
 
 on:
@@ -35,6 +36,12 @@ jobs:
     runs-on: windows-2025
     # The first run builds FFmpeg, x264 and x265 from source; later runs restore them from the binary cache.
     timeout-minutes: 300
+    permissions:
+      contents: read
+      # A run that saves caches deletes its branch's older ones (tools/ci-cache.py delete-older).
+      actions: write
+    env:
+      CCACHE_KEY: ccache-win-msvc-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@v7
 
@@ -53,20 +60,37 @@ jobs:
           "VCPKG_ROOT=$root" >> $env:GITHUB_ENV
           "VCPKG_DEFAULT_BINARY_CACHE=$cache" >> $env:GITHUB_ENV
           "cache=$cache" >> $env:GITHUB_OUTPUT
-          # Package ABIs include the compiler version, so key the cache on the runner image too. The root CMakeLists.txt
-          # selects the vcpkg features (local AI, ONNX, keychain), so it is part of the key.
-          "key=vcpkg-$env:ImageOS-$env:ImageVersion-${{ hashFiles('vcpkg.json', 'cmake/triplets/**', 'cmake/ports/**', 'CMakeLists.txt') }}" >> $env:GITHUB_OUTPUT
-          # Any older cache of this image is a good start: vcpkg reuses the packages whose ABI still matches and builds
-          # the rest, so a version bump in CMakeLists.txt does not rebuild FFmpeg.
-          "prefix=vcpkg-$env:ImageOS-" >> $env:GITHUB_OUTPUT
+          # The cache is named by the packages it holds (tools/ci-cache.py vcpkg-key) and saved from main; pull requests
+          # and releases restore main's newest. Package ABIs include the compiler, so vcpkg reuses the packages that still
+          # match and builds the rest. The second prefix finds the caches named the old way (image version and file
+          # hashes).
+          "prefix=vcpkg-$env:ImageOS-win-msvc-" >> $env:GITHUB_OUTPUT
+          "legacy=vcpkg-$env:ImageOS-" >> $env:GITHUB_OUTPUT
 
       - name: Restore the vcpkg binary cache
         id: vcpkg-cache
         uses: actions/cache/restore@v6
         with:
           path: ${{ steps.vcpkg.outputs.cache }}
-          key: ${{ steps.vcpkg.outputs.key }}
-          restore-keys: ${{ steps.vcpkg.outputs.prefix }}
+          key: ${{ steps.vcpkg.outputs.prefix }}newest
+          restore-keys: |
+            ${{ steps.vcpkg.outputs.prefix }}
+            ${{ steps.vcpkg.outputs.legacy }}
+
+      # Wabcut's own objects: saved from main after a successful build, restored by everything else (tools/ci-cache.py).
+      - name: Restore the compiler cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: ${{ env.CCACHE_KEY }}
+          restore-keys: ccache-win-msvc-
+
+      # Without ccache (a failed download) the build runs as before, only slower.
+      - name: ccache
+        id: ccache
+        continue-on-error: true
+        shell: pwsh
+        run: python tools/ci-cache.py ccache-setup --max-size 2G ${{ github.ref != 'refs/heads/main' && '--read-only' || '' }}
 
       - name: Qt ${{ env.QT_VERSION }}
         uses: jurplel/install-qt-action@v4.4.1
@@ -85,22 +109,59 @@ jobs:
         run: ./cmake/packaging/Install-WixToolset.ps1
 
       - name: Configure and build
+        id: build
         shell: pwsh
         run: |
           $env:WABCUT_QT_DIR = $env:QT_ROOT_DIR
           . ./tools/dev-env.ps1
-          cmake --preset win-msvc -DWABCUT_BUILD_NUMBER=${{ github.run_number }}
+          $launcher = @()
+          if ($env:CCACHE_EXE) { $launcher = "-DCMAKE_C_COMPILER_LAUNCHER=$env:CCACHE_EXE", "-DCMAKE_CXX_COMPILER_LAUNCHER=$env:CCACHE_EXE" }
+          cmake --preset win-msvc -DWABCUT_BUILD_NUMBER=${{ github.run_number }} @launcher
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           cmake --build --preset win-msvc
           exit $LASTEXITCODE
 
-      # Saved even when a later step fails, so the next run does not rebuild FFmpeg.
+      - name: Compiler cache statistics
+        if: ${{ !cancelled() && steps.ccache.outcome == 'success' }}
+        shell: pwsh
+        run: python tools/ci-cache.py ccache-finish ${{ github.ref == 'refs/heads/main' && steps.build.outcome == 'success' && '--trim' || '' }}
+
+      # Saved straight after the build, not after the tests, so a release started meanwhile already finds it.
+      - name: Save the compiler cache
+        if: ${{ !cancelled() && github.ref == 'refs/heads/main' && steps.ccache.outcome == 'success' && steps.build.outcome == 'success' }}
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: ${{ env.CCACHE_KEY }}
+
+      - name: vcpkg cache key
+        id: vcpkg-key
+        if: always() && steps.vcpkg.outcome == 'success' && (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch')
+        shell: pwsh
+        run: python tools/ci-cache.py vcpkg-key --build-dir build/win-msvc --cache "${{ steps.vcpkg.outputs.cache }}" --prefix "${{ steps.vcpkg.outputs.prefix }}"
+
+      # Saved even when a later step fails, so the next run does not rebuild FFmpeg; not when nothing new was built. A run
+      # started by hand on another branch saves it for that branch (a branch that changes the dependencies).
       - name: Save the vcpkg binary cache
-        if: always() && steps.vcpkg.outcome == 'success' && steps.vcpkg-cache.outputs.cache-hit != 'true'
+        if: always() && (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch') && steps.vcpkg-key.outputs.key != '' && steps.vcpkg-key.outputs.key != steps.vcpkg-cache.outputs.cache-matched-key
         uses: actions/cache/save@v6
         with:
           path: ${{ steps.vcpkg.outputs.cache }}
-          key: ${{ steps.vcpkg.outputs.key }}
+          key: ${{ steps.vcpkg-key.outputs.key }}
+
+      # One cache of each kind per branch: older ones only take room from the repository's 10 GB.
+      - name: Delete older caches
+        if: ${{ !cancelled() && (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch') }}
+        continue-on-error: true
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VCPKG_KEY: ${{ steps.vcpkg-key.outputs.key }}
+        run: |
+          python tools/ci-cache.py delete-older --ref $env:GITHUB_REF --prefix ccache-win-msvc- --keep $env:CCACHE_KEY
+          if ($env:VCPKG_KEY) {
+            python tools/ci-cache.py delete-older --ref $env:GITHUB_REF --prefix "${{ steps.vcpkg.outputs.prefix }}" --keep $env:VCPKG_KEY
+          }
 
       - name: Test (without gpu and audio-device tests)
         shell: pwsh

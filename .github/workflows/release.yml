@@ -9,8 +9,10 @@
 # Windows (MSI + portable ZIP) must pass for a release to be published. Linux (AppImage + tar.gz) and macOS (DMG, Apple
 # silicon) are preview builds: attached when they pass, left out with a note in the release text when they do not.
 # Every package is installed and run on the runner first: the CLI renders a tiny project from the installed files, and
-# on Linux and macOS the app starts and draws its first frame. Each job restores the same vcpkg binary cache as the CI
-# job of its platform (windows-full, unix-full), so FFmpeg and the other ports are built once, not per release.
+# on Linux and macOS the app starts and draws its first frame. Each job restores the caches the CI job of its platform
+# (windows-full, unix-full) saves on main, and saves none itself (tools/ci-cache.py): the vcpkg packages, so FFmpeg and
+# the other ports are built once, not per release, and the compiler cache, so only what changed since main's last CI
+# build is compiled. A tag pushed once that build is done (its "Save the compiler cache" step) compiles almost nothing.
 name: release
 
 on:
@@ -105,17 +107,31 @@ jobs:
           "VCPKG_ROOT=$root" >> $env:GITHUB_ENV
           "VCPKG_DEFAULT_BINARY_CACHE=$cache" >> $env:GITHUB_ENV
           "cache=$cache" >> $env:GITHUB_OUTPUT
-          # The same key as windows-full, so either workflow's cache serves the other.
-          "key=vcpkg-$env:ImageOS-$env:ImageVersion-${{ hashFiles('vcpkg.json', 'cmake/triplets/**', 'cmake/ports/**', 'CMakeLists.txt') }}" >> $env:GITHUB_OUTPUT
-          "prefix=vcpkg-$env:ImageOS-" >> $env:GITHUB_OUTPUT
+          # windows-full's cache on main (the second prefix: caches named the old way).
+          "prefix=vcpkg-$env:ImageOS-win-msvc-" >> $env:GITHUB_OUTPUT
+          "legacy=vcpkg-$env:ImageOS-" >> $env:GITHUB_OUTPUT
 
       - name: Restore the vcpkg binary cache
-        id: vcpkg-cache
         uses: actions/cache/restore@v6
         with:
           path: ${{ steps.vcpkg.outputs.cache }}
-          key: ${{ steps.vcpkg.outputs.key }}
-          restore-keys: ${{ steps.vcpkg.outputs.prefix }}
+          key: ${{ steps.vcpkg.outputs.prefix }}newest
+          restore-keys: |
+            ${{ steps.vcpkg.outputs.prefix }}
+            ${{ steps.vcpkg.outputs.legacy }}
+
+      - name: Restore the compiler cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: ccache-win-msvc-newest
+          restore-keys: ccache-win-msvc-
+
+      - name: ccache
+        id: ccache
+        continue-on-error: true
+        shell: pwsh
+        run: python tools/ci-cache.py ccache-setup --max-size 2G --read-only
 
       - name: Qt ${{ env.QT_VERSION }}
         uses: jurplel/install-qt-action@v4.4.1
@@ -134,24 +150,25 @@ jobs:
         run: ./cmake/packaging/Install-WixToolset.ps1
 
       # The test suites run in windows-full for every commit on main, and the CI jobs hold the code to zero warnings;
-      # the release builds the shipped programs only, and a new compiler warning does not stop it.
+      # the release builds the shipped programs only, and a new compiler warning does not stop it (ccache leaves /WX out
+      # of its hash, so the objects windows-full compiled with it still match).
       - name: Configure and build
         shell: pwsh
         run: |
           $env:WABCUT_QT_DIR = $env:QT_ROOT_DIR
           . ./tools/dev-env.ps1
+          $launcher = @()
+          if ($env:CCACHE_EXE) { $launcher = "-DCMAKE_C_COMPILER_LAUNCHER=$env:CCACHE_EXE", "-DCMAKE_CXX_COMPILER_LAUNCHER=$env:CCACHE_EXE" }
           cmake --preset win-msvc -DWABCUT_BUILD_TESTS=OFF -DWABCUT_WARNINGS_AS_ERRORS=OFF `
-            -DWABCUT_BUILD_NUMBER=${{ github.run_number }}
+            -DWABCUT_BUILD_NUMBER=${{ github.run_number }} @launcher
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           cmake --build --preset win-msvc
           exit $LASTEXITCODE
 
-      - name: Save the vcpkg binary cache
-        if: always() && steps.vcpkg.outcome == 'success' && steps.vcpkg-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v6
-        with:
-          path: ${{ steps.vcpkg.outputs.cache }}
-          key: ${{ steps.vcpkg.outputs.key }}
+      - name: Compiler cache statistics
+        if: ${{ !cancelled() && steps.ccache.outcome == 'success' }}
+        shell: pwsh
+        run: python tools/ci-cache.py ccache-finish
 
       # Code signing, when the repository is set up for it (docs/release.md, "Code signing"): Azure Trusted Signing
       # (variables WABCUT_TRUSTED_SIGNING_ENDPOINT, WABCUT_TRUSTED_SIGNING_ACCOUNT, WABCUT_TRUSTED_SIGNING_PROFILE; secrets
@@ -313,17 +330,30 @@ jobs:
           echo "VCPKG_ROOT=$root" >> "$GITHUB_ENV"
           echo "VCPKG_DEFAULT_BINARY_CACHE=$cache" >> "$GITHUB_ENV"
           echo "cache=$cache" >> "$GITHUB_OUTPUT"
-          # The same key as unix-full, so either workflow's cache serves the other.
-          echo "key=vcpkg-$ImageOS-$ImageVersion-$PRESET-${{ hashFiles('vcpkg.json', 'cmake/ports/**', 'cmake/triplets/**', 'cmake/toolchains/**', 'CMakeLists.txt') }}" >> "$GITHUB_OUTPUT"
-          echo "prefix=vcpkg-$ImageOS-" >> "$GITHUB_OUTPUT"
+          # unix-full's cache on main (the second prefix: caches named the old way).
+          echo "prefix=vcpkg-$ImageOS-$PRESET-" >> "$GITHUB_OUTPUT"
+          echo "legacy=vcpkg-$ImageOS-" >> "$GITHUB_OUTPUT"
 
       - name: Restore the vcpkg binary cache
-        id: vcpkg-cache
         uses: actions/cache/restore@v6
         with:
           path: ${{ steps.vcpkg.outputs.cache }}
-          key: ${{ steps.vcpkg.outputs.key }}
-          restore-keys: ${{ steps.vcpkg.outputs.prefix }}
+          key: ${{ steps.vcpkg.outputs.prefix }}newest
+          restore-keys: |
+            ${{ steps.vcpkg.outputs.prefix }}
+            ${{ steps.vcpkg.outputs.legacy }}
+
+      - name: Restore the compiler cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: ccache-${{ env.PRESET }}-newest
+          restore-keys: ccache-${{ env.PRESET }}-
+
+      - name: ccache
+        id: ccache
+        continue-on-error: true
+        run: python3 tools/ci-cache.py ccache-setup --max-size 2500M --read-only
 
       - name: Qt ${{ env.QT_VERSION }}
         uses: jurplel/install-qt-action@v4.4.1
@@ -342,6 +372,7 @@ jobs:
           cmake --preset $PRESET -DCMAKE_C_COMPILER=gcc-14 -DCMAKE_CXX_COMPILER=g++-14 \
             -DWABCUT_WITH_LOCAL_AI=OFF -DWABCUT_WITH_ONNX=ON -DWABCUT_BUILD_TESTS=OFF -DWABCUT_WARNINGS_AS_ERRORS=OFF \
             -DCMAKE_OPTIMIZE_DEPENDENCIES=ON \
+            ${CCACHE_EXE:+-DCMAKE_C_COMPILER_LAUNCHER=$CCACHE_EXE -DCMAKE_CXX_COMPILER_LAUNCHER=$CCACHE_EXE} \
             -DWABCUT_BUILD_NUMBER=${{ github.run_number }}
           cmake --build --preset $PRESET -- -k 0
 
@@ -354,12 +385,9 @@ jobs:
           find "$VCPKG_ROOT/buildtrees" -maxdepth 2 \( -name '*-err.log' -o -name 'config-*-out.log' \) -size +0 2>/dev/null |
             while read -r f; do echo "::group::$f"; tail -n 80 "$f"; echo "::endgroup::"; done
 
-      - name: Save the vcpkg binary cache
-        if: always() && steps.vcpkg.outcome == 'success' && steps.vcpkg-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v6
-        with:
-          path: ${{ steps.vcpkg.outputs.cache }}
-          key: ${{ steps.vcpkg.outputs.key }}
+      - name: Compiler cache statistics
+        if: ${{ !cancelled() && steps.ccache.outcome == 'success' }}
+        run: python3 tools/ci-cache.py ccache-finish
 
       # Install into a scratch folder and run from it with a minimal environment: the CLI's version, the smart-search
       # helper, a headless render, Qt's deployment layout, the licenses (cmake/InstallSmokeTest.cmake).
@@ -448,17 +476,30 @@ jobs:
           echo "VCPKG_ROOT=$root" >> "$GITHUB_ENV"
           echo "VCPKG_DEFAULT_BINARY_CACHE=$cache" >> "$GITHUB_ENV"
           echo "cache=$cache" >> "$GITHUB_OUTPUT"
-          # The same key as unix-full, so either workflow's cache serves the other.
-          echo "key=vcpkg-$ImageOS-$ImageVersion-$PRESET-${{ hashFiles('vcpkg.json', 'cmake/ports/**', 'cmake/triplets/**', 'cmake/toolchains/**', 'CMakeLists.txt') }}" >> "$GITHUB_OUTPUT"
-          echo "prefix=vcpkg-$ImageOS-" >> "$GITHUB_OUTPUT"
+          # unix-full's cache on main (the second prefix: caches named the old way).
+          echo "prefix=vcpkg-$ImageOS-$PRESET-" >> "$GITHUB_OUTPUT"
+          echo "legacy=vcpkg-$ImageOS-" >> "$GITHUB_OUTPUT"
 
       - name: Restore the vcpkg binary cache
-        id: vcpkg-cache
         uses: actions/cache/restore@v6
         with:
           path: ${{ steps.vcpkg.outputs.cache }}
-          key: ${{ steps.vcpkg.outputs.key }}
-          restore-keys: ${{ steps.vcpkg.outputs.prefix }}
+          key: ${{ steps.vcpkg.outputs.prefix }}newest
+          restore-keys: |
+            ${{ steps.vcpkg.outputs.prefix }}
+            ${{ steps.vcpkg.outputs.legacy }}
+
+      - name: Restore the compiler cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: ccache-${{ env.PRESET }}-newest
+          restore-keys: ccache-${{ env.PRESET }}-
+
+      - name: ccache
+        id: ccache
+        continue-on-error: true
+        run: python3 tools/ci-cache.py ccache-setup --max-size 1500M --read-only
 
       - name: Qt ${{ env.QT_VERSION }}
         uses: jurplel/install-qt-action@v4.4.1
@@ -477,6 +518,7 @@ jobs:
             -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE="$GITHUB_WORKSPACE/cmake/toolchains/macos-llvm.cmake" \
             -DWABCUT_WITH_LOCAL_AI=OFF -DWABCUT_WITH_ONNX=ON -DWABCUT_BUILD_TESTS=OFF -DWABCUT_WARNINGS_AS_ERRORS=OFF \
             -DCMAKE_OPTIMIZE_DEPENDENCIES=ON \
+            ${CCACHE_EXE:+-DCMAKE_C_COMPILER_LAUNCHER=$CCACHE_EXE -DCMAKE_CXX_COMPILER_LAUNCHER=$CCACHE_EXE} \
             -DWABCUT_BUILD_NUMBER=${{ github.run_number }}
           cmake --build --preset $PRESET -- -k 0
 
@@ -489,12 +531,9 @@ jobs:
           find "$VCPKG_ROOT/buildtrees" -maxdepth 2 \( -name '*-err.log' -o -name 'config-*-out.log' \) -size +0 2>/dev/null |
             while read -r f; do echo "::group::$f"; tail -n 80 "$f"; echo "::endgroup::"; done
 
-      - name: Save the vcpkg binary cache
-        if: always() && steps.vcpkg.outcome == 'success' && steps.vcpkg-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v6
-        with:
-          path: ${{ steps.vcpkg.outputs.cache }}
-          key: ${{ steps.vcpkg.outputs.key }}
+      - name: Compiler cache statistics
+        if: ${{ !cancelled() && steps.ccache.outcome == 'success' }}
+        run: python3 tools/ci-cache.py ccache-finish
 
       - name: Install tree check
         run: |

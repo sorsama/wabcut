@@ -71,5 +71,6 @@ target_link_libraries(wabcut_interchange
     PUBLIC wabcut_model
     PRIVATE pugixml::pugixml ZLIB::ZLIB nlohmann_json::nlohmann_json)
 wabcut_target_defaults(wabcut_interchange)
-# AAF / OMF files name the product version that wrote them (Identification).
-target_compile_definitions(wabcut_interchange PRIVATE WABCUT_VERSION="${PROJECT_VERSION}")
+# AAF / OMF files name the product version that wrote them (Identification). Only the exporter sees it, so a version
+# bump rebuilds one file.
+set_property(SOURCE src/AafExporter.cpp APPEND PROPERTY COMPILE_DEFINITIONS "WABCUT_VERSION=\"${PROJECT_VERSION}\"")

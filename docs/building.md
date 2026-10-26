@@ -562,16 +562,15 @@ Both run as part of `ctest --preset win-msvc` and in CI.
 |---|---|---|
 | `.github/workflows/core.yml` | push to `main`, every PR | The `core` preset on `windows-2025` with MSVC and with clang-cl, `ubuntu-24.04` (GCC 14) and `macos-15` (Homebrew LLVM). The Windows jobs use `dev-env.ps1 -Core`. |
 | `.github/workflows/windows-full.yml` | push to `main`, every PR | See below. |
-| `.github/workflows/unix-full.yml` | weekly and on demand; **experimental** | `linux-gcc` (GCC 14) and `macos-clang` (Homebrew LLVM, `arm64-osx-llvm` triplet) with the same vcpkg manifest and Qt, local AI off, smart search on the prebuilt ONNX Runtime of each platform, no secrets; tests without `gpu` / `audio-device`, then the install tree and a TGZ as an "unverified" artifact. Marked `continue-on-error`, so it never blocks. |
+| `.github/workflows/unix-full.yml` | push to `main`, weekly and on demand; **experimental** | `linux-gcc` (GCC 14) and `macos-clang` (Homebrew LLVM, `arm64-osx-llvm` triplet) with the same vcpkg manifest and Qt, local AI off, smart search on the prebuilt ONNX Runtime of each platform, no secrets; tests without `gpu` / `audio-device`, then the install tree and a TGZ as an "unverified" artifact. Marked `continue-on-error`, so it never blocks. |
 
 `windows-full.yml` does the following:
 
 1. It clones vcpkg at the `vcpkg.json` baseline and bootstraps it.
-2. It restores the vcpkg binary cache with `actions/cache`. The key is the runner image plus the hashes of
-   `vcpkg.json` and the triplets. The cache is saved even when a later step fails.
+2. It restores main's vcpkg binary cache and compiler cache ([CI caches](#ci-caches)).
 3. It installs Qt 6.11.3 with `jurplel/install-qt-action` (aqtinstall from the pinned master commit, as above),
    plus `qtshadertools`.
-4. It builds with `dev-env.ps1` and the `win-msvc` preset.
+4. It builds with `dev-env.ps1` and the `win-msvc` preset, through ccache. On `main` it then saves both caches.
 5. It installs WiX 5.0.2 for the runner's user (`Install-WixToolset.ps1`).
 6. It runs `ctest --preset win-msvc-ci`, which skips the `gpu` and `audio-device` tests but includes the
    install tests (the MSI is installed and uninstalled for the runner's user).
@@ -580,6 +579,24 @@ Both run as part of `ctest --preset win-msvc` and in CI.
 
 Action versions are pinned to release tags. The first full run builds FFmpeg from source, which can take
 1–2 hours; later runs restore it from the cache.
+
+### CI caches
+
+Two caches keep the full builds (`windows-full`, `unix-full`, `release`) from compiling the same code again, both
+handled by `tools/ci-cache.py`:
+
+- **vcpkg packages** (vcpkg's binary cache, one zip per package ABI). The cache is named by the packages it holds, so a
+  run saves a new one only when it built a package, and before saving it drops the packages the build no longer
+  installs. Package ABIs include the compiler: after a runner image update vcpkg rebuilds what changed.
+- **Compiler cache** (ccache 4.14.2, pinned by SHA-256): Wabcut's own objects, about 2 GB per platform. ccache leaves
+  `/WX` and `-Werror` out of its hash, so the release build, which does not make warnings errors, reuses the objects CI
+  compiled with them. Before saving, the cache is trimmed to what that build used.
+
+GitHub gives a repository 10 GB of caches, and a cache saved by a pull request or a tag can only be restored by that
+pull request or tag. So the caches are saved from `main` (`windows-full` and `unix-full` on every push), restored by
+pull requests and by the release, and each save deletes main's older cache of the same kind. A run started by hand on
+another branch also saves its vcpkg packages for that branch, for a branch that changes the dependencies. Each build
+writes its hit rate to the job summary ("Compiler cache: ... hits").
 
 ## Updating the pins
 

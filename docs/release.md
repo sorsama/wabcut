@@ -93,9 +93,12 @@ the portable ZIP and the `install.package` test reports the MSI part as skipped.
    text quotes it, `cmake/packaging/release_notes.py`) and move the version to "Shipped" in `docs/roadmap.md`. Merge to
    `main`.
 2. Tag the commit: `git tag vX.Y.Z && git push origin vX.Y.Z`, or **Actions > release > Run workflow** with the tag,
-   which creates it on the chosen branch. A tag that does not match the version stops the run.
+   which creates it on the chosen branch. A tag that does not match the version stops the run. Tag once the merge's
+   windows-full and unix-full runs on `main` have passed their "Save the compiler cache" step (about an hour on Windows):
+   the release then compiles almost nothing. A tag pushed earlier works too, but compiles everything the merge changed.
 3. The workflow builds the shipped programs without the test suites (windows-full and unix-full run those for every
-   commit), from the same vcpkg binary caches as those jobs, and checks each package before anything is published:
+   commit), from the vcpkg packages and compiler cache those jobs saved on `main`
+   ([CI caches](building.md#ci-caches)), and checks each package before anything is published:
 
    | Platform | Build | Packages | Checked by |
    |---|---|---|---|
@@ -349,5 +352,5 @@ Code is written for all three platforms; only Windows is run. What is known (aud
 8. Check that the release run signed the Windows packages ([Code signing](#code-signing); needs the certificate
    set up) and that `wabcut-update.json` is attached ([Updates](#updates); needs `WABCUT_UPDATE_SIGNING_KEY`). Sign and
    notarize the macOS bundle with a Developer ID (not yet available: needs an Apple Developer account).
-9. Tag `vX.Y.Z` and push the tag: the release workflow builds, checks and publishes every package
-   ([Making a release](#making-a-release)).
+9. Once `main`'s CI has saved its caches for the merge, tag `vX.Y.Z` and push the tag: the release workflow builds,
+   checks and publishes every package ([Making a release](#making-a-release)).

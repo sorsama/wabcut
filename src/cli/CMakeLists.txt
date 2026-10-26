@@ -9,7 +9,8 @@ target_link_libraries(wabcut-cli PRIVATE wabcut_model wabcut_media wabcut_interc
     wabcut_ai_c2pa Qt6::Core)
 # Extensions (C.12): `ext run` starts the wabcut-scripthost helper next to the CLI.
 add_dependencies(wabcut-cli wabcut-scripthost)
-target_compile_definitions(wabcut-cli PRIVATE WABCUT_VERSION="${PROJECT_VERSION}")
+# Only main.cpp names the version, so a version bump rebuilds one file.
+set_property(SOURCE main.cpp APPEND PROPERTY COMPILE_DEFINITIONS "WABCUT_VERSION=\"${PROJECT_VERSION}\"")
 if(WIN32)
     target_link_libraries(wabcut-cli PRIVATE shell32) # CommandLineToArgvW: UTF-8 arguments for transcribe
 endif()

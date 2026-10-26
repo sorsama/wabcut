@@ -486,7 +486,10 @@ target_link_libraries(wabcut_ui PUBLIC
     wabcut_command    # typed edit commands for the command palette (CommandBridge)
     wabcut_playback   # ProgramMonitor: PlaybackController, CompositeMailbox, Compositor (wabcut_render)
 )
-target_compile_definitions(wabcut_ui PRIVATE WABCUT_VERSION="${PROJECT_VERSION}")
+# Only the files that name the version see it, so a version bump rebuilds two files instead of the whole module (and the
+# compiler caches keep the rest). UpdateBridge.cpp falls back to 0.0.0 without it: keep it in the list.
+set_property(SOURCE src/bridge/ExportController.cpp src/bridge/UpdateBridge.cpp APPEND PROPERTY COMPILE_DEFINITIONS
+    "WABCUT_VERSION=\"${PROJECT_VERSION}\"")
 wabcut_target_defaults(wabcut_ui)
 
 qt_add_executable(wabcut WIN32 MACOSX_BUNDLE

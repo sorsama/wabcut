@@ -1,7 +1,9 @@
 # EXPERIMENTAL full builds on Linux and macOS (linux-gcc / macos-clang presets): the app, the CLI, every test suite but
 # the GPU and audio-device ones, and the install tree. Windows is the verified platform; these jobs show how far the
-# other two are and never block (docs/release.md, "Platform status": CI-ready, unverified locally). Run weekly and on
-# demand: the first build of FFmpeg, x264 and x265 from source takes hours (the vcpkg binary cache keeps them).
+# other two are and never block (docs/release.md, "Platform status": CI-ready, unverified locally). Runs on every push to
+# main, weekly and on demand: the first build of FFmpeg, x264 and x265 from source takes hours (the vcpkg binary cache
+# keeps them). The caches it saves on main are the ones the release workflow's Linux and macOS jobs restore
+# (tools/ci-cache.py): the vcpkg packages and the compiler cache.
 #
 # Dependency set: the same vcpkg manifest as Windows, with local AI off (whisper.cpp / ggml are not measured on these
 # platforms yet: WABCUT_WITH_LOCAL_AI=OFF) and smart search on Microsoft's prebuilt ONNX Runtime for the platform
@@ -13,12 +15,20 @@
 name: unix-full (experimental)
 
 on:
+  push:
+    branches: [main]
   schedule:
     - cron: "0 3 * * 1"
   workflow_dispatch:
 
 permissions:
   contents: read
+
+# A push to main queues behind the running build instead of cancelling it, so every build that gets far enough saves its
+# caches.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
   # Shared runners are slower than a developer machine: wall-clock budgets in the tests get 4x headroom.
@@ -41,12 +51,20 @@ jobs:
             preset: linux-gcc
             # GCC 14 (the image's default is 13; both pass the toolchain check, 14 is what docs/building.md lists).
             configure: -DCMAKE_C_COMPILER=gcc-14 -DCMAKE_CXX_COMPILER=g++-14
+            ccache_size: 2500M
           - os: macos-15
             preset: macos-clang
             # An absolute path: CMake's compiler checks include the toolchain from their own scratch projects.
             configure: -DVCPKG_TARGET_TRIPLET=arm64-osx-llvm -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE=$GITHUB_WORKSPACE/cmake/toolchains/macos-llvm.cmake
+            ccache_size: 1500M
     runs-on: ${{ matrix.os }}
     timeout-minutes: 360
+    permissions:
+      contents: read
+      # A run that saves caches deletes its branch's older ones (tools/ci-cache.py delete-older).
+      actions: write
+    env:
+      CCACHE_KEY: ccache-${{ matrix.preset }}-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@v7
 
@@ -79,18 +97,35 @@ jobs:
           echo "VCPKG_ROOT=$root" >> "$GITHUB_ENV"
           echo "VCPKG_DEFAULT_BINARY_CACHE=$cache" >> "$GITHUB_ENV"
           echo "cache=$cache" >> "$GITHUB_OUTPUT"
-          echo "key=vcpkg-$ImageOS-$ImageVersion-${{ matrix.preset }}-${{ hashFiles('vcpkg.json', 'cmake/ports/**', 'cmake/triplets/**', 'cmake/toolchains/**', 'CMakeLists.txt') }}" >> "$GITHUB_OUTPUT"
-          # Any older cache of this OS is a good start: vcpkg reuses the packages whose ABI still matches and builds
-          # the rest, so a version bump in CMakeLists.txt does not rebuild FFmpeg.
-          echo "prefix=vcpkg-$ImageOS-" >> "$GITHUB_OUTPUT"
+          # The cache is named by the packages it holds (tools/ci-cache.py vcpkg-key) and saved from main; the release
+          # restores main's newest. Package ABIs include the compiler, so vcpkg reuses the packages that still match and
+          # builds the rest. The second prefix finds the caches named the old way (image version and file hashes).
+          echo "prefix=vcpkg-$ImageOS-${{ matrix.preset }}-" >> "$GITHUB_OUTPUT"
+          echo "legacy=vcpkg-$ImageOS-" >> "$GITHUB_OUTPUT"
 
       - name: Restore the vcpkg binary cache
         id: vcpkg-cache
         uses: actions/cache/restore@v6
         with:
           path: ${{ steps.vcpkg.outputs.cache }}
-          key: ${{ steps.vcpkg.outputs.key }}
-          restore-keys: ${{ steps.vcpkg.outputs.prefix }}
+          key: ${{ steps.vcpkg.outputs.prefix }}newest
+          restore-keys: |
+            ${{ steps.vcpkg.outputs.prefix }}
+            ${{ steps.vcpkg.outputs.legacy }}
+
+      # Wabcut's own objects: saved from main, restored by everything else (tools/ci-cache.py).
+      - name: Restore the compiler cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: ${{ env.CCACHE_KEY }}
+          restore-keys: ccache-${{ matrix.preset }}-
+
+      # Without ccache (a failed download) the build runs as before, only slower.
+      - name: ccache
+        id: ccache
+        continue-on-error: true
+        run: python3 tools/ci-cache.py ccache-setup --max-size ${{ matrix.ccache_size }} ${{ github.ref != 'refs/heads/main' && '--read-only' || '' }}
 
       - name: Qt ${{ env.QT_VERSION }}
         uses: jurplel/install-qt-action@v4.4.1
@@ -109,6 +144,7 @@ jobs:
           export VCPKG_KEEP_ENV_VARS="WABCUT_QT_DIR;LLVM_ROOT"
           cmake --preset ${{ matrix.preset }} ${{ matrix.configure }} \
             -DWABCUT_WITH_LOCAL_AI=OFF -DWABCUT_WITH_ONNX=ON -DWABCUT_BUILD_NUMBER=${{ github.run_number }} \
+            ${CCACHE_EXE:+-DCMAKE_C_COMPILER_LAUNCHER=$CCACHE_EXE -DCMAKE_CXX_COMPILER_LAUNCHER=$CCACHE_EXE} \
             -DCMAKE_OPTIMIZE_DEPENDENCIES=ON
           # -k 0: a failed build still compiles everything else, so one run shows every error.
           cmake --build --preset ${{ matrix.preset }} -- -k 0
@@ -122,12 +158,49 @@ jobs:
           find "$VCPKG_ROOT/buildtrees" -maxdepth 2 \( -name '*-err.log' -o -name 'config-*-out.log' \) -size +0 2>/dev/null |
             while read -r f; do echo "::group::$f"; tail -n 80 "$f"; echo "::endgroup::"; done
 
+      # A build with errors still compiled everything it could (-k 0), so its cache is worth keeping too; one that
+      # compiled nothing (a failed configure) is not saved.
+      - name: Compiler cache statistics
+        id: ccache-stats
+        if: ${{ !cancelled() && steps.ccache.outcome == 'success' }}
+        run: python3 tools/ci-cache.py ccache-finish ${{ github.ref == 'refs/heads/main' && '--trim' || '' }}
+
+      # Saved straight after the build, not after the tests, so a release started meanwhile already finds it.
+      - name: Save the compiler cache
+        if: ${{ !cancelled() && github.ref == 'refs/heads/main' && steps.ccache-stats.outputs.compiled != '' && steps.ccache-stats.outputs.compiled != '0' }}
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: ${{ env.CCACHE_KEY }}
+
+      - name: vcpkg cache key
+        id: vcpkg-key
+        if: always() && steps.vcpkg.outcome == 'success' && (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch')
+        run: |
+          python3 tools/ci-cache.py vcpkg-key --build-dir build/${{ matrix.preset }} --cache "${{ steps.vcpkg.outputs.cache }}" \
+            --prefix "${{ steps.vcpkg.outputs.prefix }}"
+
+      # Saved even when a later step fails, so the next run does not rebuild FFmpeg; not when nothing new was built. A run
+      # started by hand on another branch saves it for that branch (a branch that changes the dependencies).
       - name: Save the vcpkg binary cache
-        if: always() && steps.vcpkg.outcome == 'success' && steps.vcpkg-cache.outputs.cache-hit != 'true'
+        if: always() && (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch') && steps.vcpkg-key.outputs.key != '' && steps.vcpkg-key.outputs.key != steps.vcpkg-cache.outputs.cache-matched-key
         uses: actions/cache/save@v6
         with:
           path: ${{ steps.vcpkg.outputs.cache }}
-          key: ${{ steps.vcpkg.outputs.key }}
+          key: ${{ steps.vcpkg-key.outputs.key }}
+
+      # One cache of each kind per branch: older ones only take room from the repository's 10 GB.
+      - name: Delete older caches
+        if: ${{ !cancelled() && (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch') }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VCPKG_KEY: ${{ steps.vcpkg-key.outputs.key }}
+        run: |
+          python3 tools/ci-cache.py delete-older --ref "$GITHUB_REF" --prefix ccache-${{ matrix.preset }}- --keep "$CCACHE_KEY"
+          if [ -n "$VCPKG_KEY" ]; then
+            python3 tools/ci-cache.py delete-older --ref "$GITHUB_REF" --prefix "${{ steps.vcpkg.outputs.prefix }}" --keep "$VCPKG_KEY"
+          fi
 
       # Runs even when some targets failed to build (their tests show as Not Run), so one run reports everything.
       - name: Test (without gpu and audio-device tests)

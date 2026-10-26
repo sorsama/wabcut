@@ -67,6 +67,9 @@ project(Wabcut
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+# Wabcut has no C++ modules. Without the scan CMake does for them, every file is preprocessed once instead of twice
+# (about a tenth of the build's compile time, and a step no compiler cache can skip) and Ninja needs no dyndep files.
+set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
