@@ -1,9 +1,9 @@
-# Wabcut 0.4 and Premiere Pro: what matches, what doesn't
+# Wabcut 0.5 and Premiere Pro: what matches, what doesn't
 
-This compares Wabcut 0.4.0 (25 October 2026) with Premiere Pro on Windows. The 0.1 rows were measured against Wabcut
+This compares Wabcut 0.5.0 (26 October 2026) with Premiere Pro on Windows. The 0.1 rows were measured against Wabcut
 0.1.0 "First Cut" (tag `v0.1.0`) and 0.1.2; rows marked **(0.2)** were added or changed by the 0.2 parity work of
-15 to 22 October 2026, and rows marked **(0.4)** by the 0.4 work of 24 and 25 October 2026. The Premiere version is
-26.5, released September 2026, as listed on Adobe's
+15 to 22 October 2026, rows marked **(0.4)** by the 0.4 work of 24 and 25 October 2026, and rows marked **(0.5)** by
+the 0.5 work of 26 October 2026. The Premiere version is 26.5, released September 2026, as listed on Adobe's
 [What's new in Premiere](https://helpx.adobe.com/premiere/desktop/whats-new/whats-new.html) page. It covers Wabcut's
 three target uses: **gaming** videos (long-form and Shorts), **video essays** and **documentaries**.
 
@@ -18,9 +18,9 @@ How to read it:
 - **Partial** names what is missing. **Missing** means not in Wabcut yet.
 - In the AI rows, Equal means the feature exists and passes its tests. Real-footage quality has not been benchmarked
   against Premiere's.
-- 0.2 and 0.4 rows are verified by automated tests only. None of the 0.2 or 0.4 features has been through a release
-  run with real projects yet, and files exported for other applications (AAF, OMF, broadcast captions) have been
-  checked with open-source readers, not yet in Pro Tools, Media Composer or Resolve.
+- 0.2, 0.4 and 0.5 rows are verified by automated tests only. None of the 0.2, 0.4 or 0.5 features has been through
+  a release run with real projects yet, and files exported for other applications (AAF, OMF, broadcast captions) have
+  been checked with open-source readers, not yet in Pro Tools, Media Composer or Resolve.
 
 Adobe's help site refused automated page fetches (HTTP 403) on 2026-10-13 and 2026-10-15. The Premiere side was
 therefore taken from the same help pages as a search engine indexed them. Re-open a link before quoting it externally.
@@ -29,11 +29,11 @@ therefore taken from the same help pages as a search engine indexed them. Re-ope
 
 | Status | Count |
 |---|---|
-| Equal | 63 |
+| Equal | 65 |
 | Better | 9 |
-| Partial | 32 |
+| Partial | 34 |
 | Missing | 1 |
-| **Feature areas compared** | **105** |
+| **Feature areas compared** | **109** |
 
 | Use | Verdict |
 |---|---|

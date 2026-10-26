@@ -8,6 +8,21 @@ will change as people use the editor and tell us what matters to them.
 
 ## Shipped
 
+### 0.5.0 (26 October 2026)
+Every open top-priority item, and the right GPU on hybrid laptops (issue #10):
+- Caption tracks as rows on the timeline, where captions are trimmed, moved, split and deleted like clips; nested,
+  multicam and merged clips show the waveform of their mix.
+- The Audio Meters panel beside the timeline, and audio scrubbing (Shift+S) in the timeline, the Program Monitor and
+  the Source Monitor.
+- Scene Edit Detection… in the Clip menu; dead time reviewed stretch by stretch, with thumbnails, before it is cut.
+- OBS chapter markers become clip markers on import; the Transcript panel's Source mode picks a soundbite from a
+  source clip for Insert or Overwrite.
+- Hybrid laptops preview, decode and export on the discrete GPU, and Settings has a Graphics card choice.
+- Opt-in updates, signed and checked, installed when you quit; the release workflow can sign the packages (no
+  certificate yet); a [pilot](pilot.md) for editing real projects.
+
+The full list is in the [0.5 release notes](release-notes-0.5.md).
+
 ### 0.4.0 (25 October 2026)
 Premiere's muscle memory and quicker creator work:
 - Alt-drag copies clips and Ctrl+Alt-drag rearranges shots; clips show their speed, an fx badge and a tooltip with
@@ -98,10 +113,10 @@ The full list is in the [release notes](release-notes-0.1.md).
 ## Next: toward a beta
 
 Make Wabcut safe to trust with real projects:
-- Fix what people find in real projects. 0.1 to 0.4 were tested with a demo project and scripted test media, not yet
-  with real users' projects.
+- Fix what people find in real projects, starting with the [pilot](pilot.md). 0.1 to 0.5 were tested with a demo
+  project and scripted test media, not yet with real users' projects.
 - Check AAF, OMF and broadcast caption files in Pro Tools, Media Composer and Resolve.
-- Code-signed installers, so Windows SmartScreen stops warning, and automatic updates.
+- A code-signing certificate, so Windows SmartScreen stops warning (0.5 has the signing steps and opt-in updates).
 - Measure local AI quality and live cloud providers on real footage.
 - Manual screen-reader checks (NVDA) on top of the automated keyboard and accessibility tests.
 

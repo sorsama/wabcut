@@ -1,8 +1,8 @@
 # Release packages for Windows, Linux and macOS, and the GitHub release that carries them (docs/release.md,
 # "Making a release").
 #
-#   git tag v0.4.0 && git push origin v0.4.0        build every package from that commit and publish the release
-#   Actions > release > Run workflow (tag v0.4.0)   the same from the GitHub page: creates the tag on the chosen branch
+#   git tag v0.5.0 && git push origin v0.5.0        build every package from that commit and publish the release
+#   Actions > release > Run workflow (tag v0.5.0)   the same from the GitHub page: creates the tag on the chosen branch
 #   Run workflow with no tag, or a pull request     build and check the packages without publishing anything
 #                                                   ("platforms" picks one platform's packages)
 #
