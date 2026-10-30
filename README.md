@@ -134,8 +134,8 @@ Download the latest release from the [Releases page](../../releases/latest):
 | Platform | Download | First start |
 |---|---|---|
 | **Windows** 10 (22H2) or 11, x64 | per-user **MSI** (no administrator rights) or **portable ZIP** | Not code-signed yet: if SmartScreen stops it, choose **More info**, then **Run anyway**. |
-| **Linux** x64, preview (Ubuntu 24.04 or as new) | **AppImage** or **tar.gz** | `chmod +x` the AppImage and run it, or unpack the tar.gz and run `bin/wabcut`. |
-| **macOS** 13 or newer, Apple silicon, preview | **DMG** | Drag Wabcut to Applications. Not notarized yet: allow it once in **System Settings > Privacy & Security > Open Anyway**. |
+| **Linux** x64, preview (Ubuntu 24.04 or as new; X11 or Wayland) | **AppImage** or **tar.gz** | `chmod +x` the AppImage and run it, or unpack the tar.gz and run `bin/wabcut`. Nothing else to install: Qt and its libraries come with it. |
+| **macOS** 15 or newer, Apple silicon, preview | **DMG** | Drag Wabcut to Applications. Not notarized yet: allow it once in **System Settings > Privacy & Security > Open Anyway**. |
 
 You need a GPU with current drivers and 16 GB of RAM (8 GB minimum). Then follow
 **[Getting started](docs/getting-started.md)**. It walks through four example projects: a gaming video, a Short, a

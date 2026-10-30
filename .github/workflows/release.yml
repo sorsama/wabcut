@@ -305,8 +305,8 @@ jobs:
 
       - uses: lukka/get-cmake@v4.4.4
 
-      # Build dependencies (as unix-full), plus what the smoke run needs: a virtual X server and the libraries Qt's
-      # xcb platform plugin loads.
+      # Build dependencies (as unix-full), the xcb helpers Qt's xcb platform plugin links (bundled from here into the
+      # packages: cmake/packaging/linux/BundleLibraries.cmake), and what the smoke run needs: a virtual X server.
       - name: System packages
         run: |
           sudo apt-get update
@@ -314,8 +314,8 @@ jobs:
             libva-dev libdrm-dev libgl1-mesa-dev libegl1-mesa-dev libxkbcommon-dev libxkbcommon-x11-dev \
             libasound2-dev libpulse-dev libsecret-1-dev libfontconfig1-dev libvulkan-dev \
             xvfb xauth libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 \
-            libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libxcb-xkb1 libxkbcommon-x11-0 mesa-vulkan-drivers \
-            desktop-file-utils
+            libxcb-render-util0 libxcb-shape0 libxcb-util1 libxcb-xinerama0 libxcb-xkb1 libxkbcommon-x11-0 \
+            mesa-vulkan-drivers desktop-file-utils
 
       - name: vcpkg at the manifest baseline
         id: vcpkg
@@ -423,11 +423,17 @@ jobs:
           ls -l "$out"
 
       # The app itself: start the AppImage on a virtual display with a fresh profile, wait for the first drawn frame,
-      # quit (src/app/src/StartupProbe.cpp). Fails when a Qt library, plugin or QML module is missing.
+      # quit (src/app/src/StartupProbe.cpp). Fails when a Qt library, plugin or QML module is missing. Run as on a
+      # desktop: without the Qt kit's paths the Qt step exports (LD_LIBRARY_PATH, QT_PLUGIN_PATH, QML2_IMPORT_PATH; with
+      # them 0.5.2 started here but not on a desktop) and without the xcb helpers a stock desktop lacks, removed alone
+      # (the build is done).
       - name: Start the app from the AppImage
         run: |
+          sudo dpkg --remove --force-depends libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
+            libxcb-render-util0 libxcb-util1 libxcb-xkb1 libxkbcommon-x11-0
           report="$RUNNER_TEMP/startup.json"
-          APPIMAGE_EXTRACT_AND_RUN=1 WABCUT_PERF_STARTUP="$report" WABCUT_PERF_STARTUP_QUIT=1 \
+          env -u LD_LIBRARY_PATH -u QT_PLUGIN_PATH -u QML2_IMPORT_PATH -u QML_IMPORT_PATH \
+            APPIMAGE_EXTRACT_AND_RUN=1 WABCUT_PERF_STARTUP="$report" WABCUT_PERF_STARTUP_QUIT=1 \
             WABCUT_PERF_SETTINGS_DIR="$RUNNER_TEMP/profile" \
             timeout 300 xvfb-run -a -s "-screen 0 1600x960x24" "dist/wabcut-$VERSION-linux-x64.AppImage"
           cat "$report"
@@ -553,9 +559,11 @@ jobs:
 
       # Run the finished bundle with Homebrew's LLVM moved away, as on a Mac without it: the CLI's version and a
       # headless render, then the app until its first frame (best effort: the runner has no display GPU, and a
-      # failure to draw is reported as a warning).
+      # failure to draw is reported as a warning). Without the Qt kit's paths the Qt step exports, so the bundle's own
+      # plugins and QML modules are the ones loaded.
       - name: Run the bundle without Homebrew's LLVM
         run: |
+          unset QT_PLUGIN_PATH QML2_IMPORT_PATH QML_IMPORT_PATH DYLD_LIBRARY_PATH DYLD_FRAMEWORK_PATH
           keg=$(cd "$LLVM_ROOT" && pwd -P)
           sudo mv "$keg" "$keg.hidden"
           trap 'sudo mv "$keg.hidden" "$keg"' EXIT

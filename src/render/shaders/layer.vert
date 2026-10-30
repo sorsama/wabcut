@@ -8,6 +8,8 @@ layout(location = 0) in vec2 corner; // unit square, (0,0) = frame top-left
 layout(location = 0) out vec2 v_uv;  // luma-plane texture coordinate
 layout(location = 1) out vec2 v_src; // source pixel coordinate (edge coverage)
 
+// The whole block of layer.frag and layer_array.frag, member for member: OpenGL links the stages of a program only when
+// a uniform block they share is declared the same in each (Vulkan, D3D and Metal do not care).
 layout(std140, binding = 0) uniform LayerParams {
     mat4 cornerToClip; // unit corner -> clip space (fringe, layer transform, canvas projection, QRhi correction)
     mat4 sampleToRgb;  // rgb' = (sampleToRgb * vec4(samples, 1)).rgb
@@ -16,6 +18,7 @@ layout(std140, binding = 0) uniform LayerParams {
     vec4 srcRect;      // xy = frame size in source pixels, zw = fringe in source pixels
     vec4 params;       // x = opacity, y = alpha sample scale, zw = uv scale (display / texture size)
     ivec4 mode;        // x = plane layout, y = transfer, z = alpha mode
+    vec4 cm;           // fragment stage only (layer.frag)
 } p;
 
 out gl_PerVertex { vec4 gl_Position; };

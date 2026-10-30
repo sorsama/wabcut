@@ -16,7 +16,8 @@ layout(location = 1) in vec2 v_pos;
 layout(location = 0) out vec4 fragColor;
 
 // The fx passes' block (shaders/fx.frag): p0.x = t, p0.yz = the motion texture's size; mode.y = 1 when render targets
-// are stored bottom-up.
+// are stored bottom-up. Declared whole, as in fx.vert: OpenGL links the stages of a program only when a uniform block
+// they share is declared the same in each.
 layout(std140, binding = 0) uniform FxParams {
     mat4 cornerToClip;
     vec4 texel;
@@ -27,6 +28,11 @@ layout(std140, binding = 0) uniform FxParams {
     vec4 toFrame1;
     vec4 frame;
     ivec4 mode;
+    vec4 p3; // unused here
+    vec4 p4;
+    vec4 p5;
+    vec4 p6;
+    vec4 p7;
 } p;
 
 layout(binding = 1) uniform sampler2D tex0;   // A

@@ -26,8 +26,11 @@
     <string>${MACOSX_BUNDLE_BUNDLE_VERSION}</string>
     <key>NSHumanReadableCopyright</key>
     <string>${MACOSX_BUNDLE_COPYRIGHT}</string>
+    <!-- macOS 15: the code is built for 13.0, but the bundle carries Homebrew's libc++, built for the macOS of its bottle
+         (the release runner's, 15) and calling os_sync_wait_on_address (14.4+): on 13 and 14 it stopped at launch.
+         finish_bundle.py fails the release when a file in the bundle needs a newer macOS than this. -->
     <key>LSMinimumSystemVersion</key>
-    <string>13.0</string>
+    <string>15.0</string>
     <key>LSApplicationCategoryType</key>
     <string>public.app-category.video</string>
     <key>NSPrincipalClass</key>

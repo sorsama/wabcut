@@ -70,13 +70,17 @@ jobs:
 
       - uses: lukka/get-cmake@v4.4.4
 
+      # Plus the xcb helpers Qt's xcb platform plugin links: the install tree bundles them from here
+      # (cmake/packaging/linux/BundleLibraries.cmake), and install.smoke fails without them.
       - name: System packages (Linux)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc-14 g++-14 nasm autoconf automake autoconf-archive libtool pkg-config \
             libva-dev libdrm-dev libgl1-mesa-dev libegl1-mesa-dev libxkbcommon-dev libxkbcommon-x11-dev \
-            libasound2-dev libpulse-dev libsecret-1-dev libfontconfig1-dev libvulkan-dev
+            libasound2-dev libpulse-dev libsecret-1-dev libfontconfig1-dev libvulkan-dev \
+            libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-render-util0 libxcb-util1 libxcb-xkb1 \
+            libxkbcommon-x11-0
 
       - name: System packages (macOS)
         if: runner.os == 'macOS'

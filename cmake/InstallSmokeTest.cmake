@@ -2,7 +2,8 @@
 #   1. `cmake --install` the build tree into PREFIX (a scratch directory inside the build tree),
 #   2. with PATH reduced to the operating system's own directories (no Qt, vcpkg or build directories), run
 #      `wabcut-cli --version`, start the AI helpers, and resolve every DLL the GUI executable, the helpers and the
-#      modules they load need from the tree alone (the GUI is never launched),
+#      modules they load need from the tree alone (on Linux: every library of the executables, the Qt libraries, the
+#      platform plugins and the QML plugins from the tree or the operating system; the GUI is never launched),
 #   3. render a tiny project headlessly with the installed CLI (a title added with `wabcut-cli cmd`, then
 #      `wabcut-cli render` through the real renderer and encoder),
 #   4. check the licenses and notices, and report the tree's size.
@@ -194,6 +195,31 @@ elseif(EXPECT_APP)
             message(FATAL_ERROR "the install tree lacks ${path}")
         endif()
     endforeach()
+    if(NOT CMAKE_HOST_APPLE)
+        # The Wayland platform plugin, for sessions without XWayland (its name changed in Qt 6.10).
+        file(GLOB wayland_platform "${PREFIX}/plugins/platforms/libqwayland*.so")
+        if(NOT wayland_platform)
+            message(FATAL_ERROR "the install tree lacks the Wayland platform plugin (plugins/platforms/libqwayland*.so)")
+        endif()
+        # Every library the executables, the Qt libraries, the platform, image, TLS and input plugins and every QML
+        # plugin load comes from the tree or is part of the operating system - checked by name, not by what this machine
+        # happens to have installed (a Qt kit, libxcb-cursor0), which is how 0.5.2 shipped without the Qt libraries of its
+        # QML plugins (cmake/packaging/linux/BundleLibraries.cmake). The optional plugins (GTK theme, network
+        # information, EGLFS) load on demand and are left out.
+        include("${CMAKE_CURRENT_LIST_DIR}/packaging/linux/BundleLibraries.cmake")
+        set(checked "")
+        foreach(dir bin lib plugins/platforms plugins/xcbglintegrations plugins/wayland-decoration-client
+                    plugins/wayland-graphics-integration-client plugins/wayland-shell-integration plugins/imageformats
+                    plugins/iconengines plugins/tls plugins/platforminputcontexts qml)
+            if(IS_DIRECTORY "${PREFIX}/${dir}")
+                wabcut_linux_elf_files(files "${PREFIX}/${dir}")
+                list(APPEND checked ${files})
+            endif()
+        endforeach()
+        wabcut_linux_check_libraries(PREFIX "${PREFIX}" FILES ${checked})
+        list(LENGTH checked checked_count)
+        message(STATUS "${checked_count} ELF files load only libraries from the tree or the operating system")
+    endif()
 endif()
 
 # ---- 3. A headless render with the installed CLI -------------------------------------------------------------
