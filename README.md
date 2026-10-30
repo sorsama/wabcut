@@ -9,7 +9,7 @@
 Premiere Pro's shortcuts and edit rules · round trips with Premiere, Resolve and Final Cut · AI that runs on your own machine
 
 [![Status: alpha](https://img.shields.io/badge/status-alpha-D6F54C)](#project-status)
-[![Version 0.5.2](https://img.shields.io/badge/version-0.5.2-9B6CFF)](docs/release-notes-0.5.md)
+[![Version 0.5.3](https://img.shields.io/badge/version-0.5.3-9B6CFF)](docs/release-notes-0.5.md)
 [![Platforms: Windows, with Linux and macOS previews](https://img.shields.io/badge/platforms-Windows%20%7C%20Linux%20%7C%20macOS%20%28preview%29-1D1D20)](#install)
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue)](LICENSE)
 [![C++23](https://img.shields.io/badge/C%2B%2B-23-00599C?logo=cplusplus&logoColor=white)](docs/building.md)
@@ -21,7 +21,7 @@ Premiere Pro's shortcuts and edit rules · round trips with Premiere, Resolve an
 </div>
 
 > [!WARNING]
-> **Wabcut is in development. This is an alpha version (0.5.2).**
+> **Wabcut is in development. This is an alpha version (0.5.3).**
 > Expect bugs, missing features and changes between versions, including to shortcuts, settings and the project format.
 > Keep backups of your projects and media, and don't rely on it yet for deadline work or sensitive material.
 
@@ -99,8 +99,8 @@ captured by the automated UI tests.</sub>
 
 ## Project status
 
-Wabcut is an **alpha**. The current release is **0.5.2** (0.5.0 with a zoomable Effect Controls keyframe lane, update checks that work, and
-the launch intro on the desktop).
+Wabcut is an **alpha**. The current release is **0.5.3** (0.5.0 with a zoomable Effect Controls keyframe lane, update checks that work,
+the launch intro on the desktop, and Linux and macOS downloads that start).
 0.5 brought caption tracks you edit on the timeline, waveforms on
 nested and multicam clips, the Audio Meters panel and audio scrubbing, Scene Edit Detection, a dead-time review, OBS
 chapter markers and the source clip's transcript, the discrete GPU on hybrid laptops, and opt-in updates

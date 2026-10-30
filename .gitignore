@@ -28,3 +28,6 @@ compile_commands.json
 # OS
 Thumbs.db
 .DS_Store
+
+# Python bytecode (tools, packaging scripts)
+__pycache__/
