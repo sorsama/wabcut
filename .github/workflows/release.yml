@@ -592,12 +592,24 @@ jobs:
           pkill -P "$watcher" 2>/dev/null || true
           kill "$watcher" 2>/dev/null || true
 
+      # hdiutil sometimes fails with "Resource busy" on GitHub's macOS runners (a disk-image helper still holds the
+      # folder; it dropped the DMG from the first 0.5.3 run): up to five tries, a short wait between them.
       - name: Disk image
         run: |
           ln -s /Applications "$RUNNER_TEMP/dmg/Applications"
           mkdir -p dist
-          hdiutil create -volname "Wabcut $VERSION" -srcfolder "$RUNNER_TEMP/dmg" -fs HFS+ -format UDZO -ov \
-            "dist/wabcut-$VERSION-macos-arm64.dmg"
+          for attempt in 1 2 3 4 5; do
+            if hdiutil create -volname "Wabcut $VERSION" -srcfolder "$RUNNER_TEMP/dmg" -fs HFS+ -format UDZO -ov \
+                 "dist/wabcut-$VERSION-macos-arm64.dmg"; then
+              break
+            fi
+            if [ "$attempt" = 5 ]; then
+              echo "::error::hdiutil failed five times"
+              exit 1
+            fi
+            echo "hdiutil failed (attempt $attempt), trying again in $((attempt * 10)) s"
+            sleep $((attempt * 10))
+          done
           ls -l dist
 
       - uses: actions/upload-artifact@v7
