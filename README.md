@@ -9,7 +9,7 @@
 Premiere Pro's shortcuts and edit rules · round trips with Premiere, Resolve and Final Cut · AI that runs on your own machine
 
 [![Status: alpha](https://img.shields.io/badge/status-alpha-D6F54C)](#project-status)
-[![Version 0.5.2](https://img.shields.io/badge/version-0.5.2-9B6CFF)](docs/release-notes-0.5.md)
+[![Version 0.5.3](https://img.shields.io/badge/version-0.5.3-9B6CFF)](docs/release-notes-0.5.md)
 [![Platforms: Windows, with Linux and macOS previews](https://img.shields.io/badge/platforms-Windows%20%7C%20Linux%20%7C%20macOS%20%28preview%29-1D1D20)](#install)
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue)](LICENSE)
 [![C++23](https://img.shields.io/badge/C%2B%2B-23-00599C?logo=cplusplus&logoColor=white)](docs/building.md)
@@ -21,7 +21,7 @@ Premiere Pro's shortcuts and edit rules · round trips with Premiere, Resolve an
 </div>
 
 > [!WARNING]
-> **Wabcut is in development. This is an alpha version (0.5.2).**
+> **Wabcut is in development. This is an alpha version (0.5.3).**
 > Expect bugs, missing features and changes between versions, including to shortcuts, settings and the project format.
 > Keep backups of your projects and media, and don't rely on it yet for deadline work or sensitive material.
 
@@ -99,8 +99,8 @@ captured by the automated UI tests.</sub>
 
 ## Project status
 
-Wabcut is an **alpha**. The current release is **0.5.2** (0.5.0 with a zoomable Effect Controls keyframe lane, update checks that work, and
-the launch intro on the desktop).
+Wabcut is an **alpha**. The current release is **0.5.3** (0.5.0 with a zoomable Effect Controls keyframe lane, update checks that work,
+the launch intro on the desktop, and Linux and macOS downloads that start).
 0.5 brought caption tracks you edit on the timeline, waveforms on
 nested and multicam clips, the Audio Meters panel and audio scrubbing, Scene Edit Detection, a dead-time review, OBS
 chapter markers and the source clip's transcript, the discrete GPU on hybrid laptops, and opt-in updates
@@ -134,8 +134,8 @@ Download the latest release from the [Releases page](../../releases/latest):
 | Platform | Download | First start |
 |---|---|---|
 | **Windows** 10 (22H2) or 11, x64 | per-user **MSI** (no administrator rights) or **portable ZIP** | Not code-signed yet: if SmartScreen stops it, choose **More info**, then **Run anyway**. |
-| **Linux** x64, preview (Ubuntu 24.04 or as new) | **AppImage** or **tar.gz** | `chmod +x` the AppImage and run it, or unpack the tar.gz and run `bin/wabcut`. |
-| **macOS** 13 or newer, Apple silicon, preview | **DMG** | Drag Wabcut to Applications. Not notarized yet: allow it once in **System Settings > Privacy & Security > Open Anyway**. |
+| **Linux** x64, preview (Ubuntu 24.04 or as new; X11 or Wayland) | **AppImage** or **tar.gz** | `chmod +x` the AppImage and run it, or unpack the tar.gz and run `bin/wabcut`. Nothing else to install: Qt and its libraries come with it. |
+| **macOS** 15 or newer, Apple silicon, preview | **DMG** | Drag Wabcut to Applications. Not notarized yet: allow it once in **System Settings > Privacy & Security > Open Anyway**. |
 
 You need a GPU with current drivers and 16 GB of RAM (8 GB minimum). Then follow
 **[Getting started](docs/getting-started.md)**. It walks through four example projects: a gaming video, a Short, a

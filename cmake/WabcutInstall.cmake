@@ -250,8 +250,9 @@ elseif(TARGET wabcut)
     # need. Linux: lib/, plugins/, qml/ and bin/qt.conf (file(GET_RUNTIME_DEPENDENCIES); the OS's own libraries stay
     # out). macOS: macdeployqt fills Contents/Frameworks, PlugIns and Resources/qml and points every executable in
     # Contents/MacOS at them. ONNX Runtime is installed above, next to the helper that loads it. Linux deploys only the
-    # default platform plugin (xcb; Wayland sessions run it through XWayland), so the offscreen and minimal ones the
-    # CLI's headless renders use are named (macdeployqt ships its own set).
+    # default platform plugin (xcb; the app prefers it, Wayland sessions run it through XWayland), so the Wayland one
+    # (the fallback without XWayland; qwayland since Qt 6.10, qwayland-egl / qwayland-generic before) and the offscreen
+    # and minimal ones the CLI's headless renders use are named (macdeployqt ships its own set).
     # A string of quoted paths, not a list: a ";" would split the CONTENT argument below.
     set(wabcut_deploy_tools "")
     foreach(target IN LISTS wabcut_install_targets)
@@ -273,7 +274,7 @@ qt_deploy_runtime_dependencies(
     EXECUTABLE \"${wabcut_deploy_app}\"
     ADDITIONAL_EXECUTABLES${wabcut_deploy_tools}
     ADDITIONAL_MODULES \${plugins_found}
-    INCLUDE_PLUGINS qoffscreen qminimal
+    INCLUDE_PLUGINS qoffscreen qminimal qwayland qwayland-egl qwayland-generic
     PRE_EXCLUDE_REGEXES onnxruntime
     GENERATE_QT_CONF
     NO_TRANSLATIONS)
@@ -300,6 +301,15 @@ if(TARGET wabcut)
         install(CODE "set(ENV{WindowsSdkDir} \"${wabcut_sdk_native}\")")
     endif()
     install(SCRIPT ${wabcut_deploy_script})
+    if(UNIX AND NOT APPLE)
+        # What Qt's deployment leaves out: the Qt libraries of the QML plugins and the xcb helpers of the xcb platform
+        # plugin, from the Qt kit, vcpkg or this machine (cmake/packaging/linux/BundleLibraries.cmake).
+        install(CODE "
+include(\"${CMAKE_CURRENT_LIST_DIR}/packaging/linux/BundleLibraries.cmake\")
+wabcut_linux_bundle_libraries(PREFIX \"\${CMAKE_INSTALL_PREFIX}\" LIB_DIR \"${CMAKE_INSTALL_LIBDIR}\"
+    SEARCH_DIRS \"$<TARGET_FILE_DIR:Qt6::Core>\" \"${wabcut_vcpkg_prefix}/lib\")
+")
+    endif()
 endif()
 
 # ---- Licenses and third-party notices -----------------------------------------------------------------------

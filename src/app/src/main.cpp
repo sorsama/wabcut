@@ -52,6 +52,7 @@ __declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
 
 int main(int argc, char* argv[]) {
     wabcut::platform::hardenDllSearch(); // first: no DLL from the current directory or PATH (S5-P2-5)
+    wabcut::media::useSystemVaapiDrivers(); // Linux: hardware decoding with the distribution's VA-API drivers
     // P.1: startup milestones for the benchmarks; inert unless WABCUT_PERF_STARTUP is set (docs/performance.md).
     wabcut::app::StartupProbe startupProbe;
     // QtCore Settings (Preferences.qml) needs all three identifiers. They are set before the application exists so
@@ -95,6 +96,12 @@ int main(int argc, char* argv[]) {
         }
     }
     startupProbe.mark("crashHandler");
+#if defined(Q_OS_LINUX)
+    // X11 first, through XWayland on a Wayland desktop: the launch intro and the window placement position their windows,
+    // which Wayland does not let an application do. The Wayland platform plugin (shipped too) where there is no X server.
+    if (qEnvironmentVariableIsEmpty("QT_QPA_PLATFORM"))
+        qputenv("QT_QPA_PLATFORM", "xcb;wayland");
+#endif
     QGuiApplication app(argc, argv);
     QGuiApplication::setApplicationVersion(QStringLiteral(WABCUT_VERSION));
     startupProbe.mark("application");

@@ -47,7 +47,7 @@ def main():
             f" or [`{base}-linux-x64.tar.gz`]({URL}/releases/download/v{version}/{base}-linux-x64.tar.gz) | Preview |")
     if macos == "success":
         rows.append(
-            f"| **macOS** 13+, Apple silicon | [`{base}-macos-arm64.dmg`]"
+            f"| **macOS** 15+, Apple silicon | [`{base}-macos-arm64.dmg`]"
             f"({URL}/releases/download/v{version}/{base}-macos-arm64.dmg) | Preview |")
 
     out = [

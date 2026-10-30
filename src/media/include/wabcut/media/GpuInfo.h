@@ -148,6 +148,12 @@ int previewAdapterIndex();
 /// previewGpu()'s LUID, 0 = none.
 std::uint64_t previewAdapterLuid();
 
+/// Linux: points libva (FFmpeg's VAAPI decoders and encoders) at the distribution's VA-API drivers - LIBVA_DRIVERS_PATH,
+/// the usual dri folders that exist - unless it is already set. The libva the packages carry (vcpkg's) looks only in the
+/// build machine's folder, so without this no driver was ever found and Linux decoded in software. Sets the
+/// environment: call at the start of main(), before any thread. Does nothing elsewhere.
+void useSystemVaapiDrivers();
+
 struct GpuTestSetup {
     std::vector<GpuAdapter> adapters; ///< as an enumerator would list them (keys are assigned, the list is ranked)
     WindowsGpuSetting windows = WindowsGpuSetting::None;

@@ -642,4 +642,25 @@ std::vector<std::string> gpuVendors() {
     return vendors;
 }
 
+void useSystemVaapiDrivers() {
+#if defined(__linux__)
+    if (const char* set = std::getenv("LIBVA_DRIVERS_PATH"); set != nullptr && *set != '\0') {
+        return;
+    }
+    // Debian and Ubuntu (multiarch), Fedora and openSUSE, Arch, a local build.
+    std::string path;
+    std::error_code ec;
+    for (const char* dir : {"/usr/lib/x86_64-linux-gnu/dri", "/usr/lib/aarch64-linux-gnu/dri", "/usr/lib64/dri",
+                            "/usr/lib/dri", "/usr/local/lib/dri"}) {
+        if (std::filesystem::is_directory(dir, ec)) {
+            path += (path.empty() ? "" : ":");
+            path += dir;
+        }
+    }
+    if (!path.empty()) {
+        setenv("LIBVA_DRIVERS_PATH", path.c_str(), 0);
+    }
+#endif
+}
+
 } // namespace wabcut::media

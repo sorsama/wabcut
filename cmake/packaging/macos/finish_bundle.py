@@ -14,12 +14,15 @@ trip over:
    signed them: every Mach-O file is signed again ad hoc, the bundle last. (Not a Developer ID signature: Gatekeeper
    still asks the user to confirm the first start; docs/release.md.)
 
-Then it checks that every load command of every Mach-O file resolves inside the bundle or the OS, and that the
-signature verifies. Exits non-zero with the reasons otherwise. LLVM_ROOT (the Homebrew LLVM prefix) is searched for
-libraries an outside library loads through @rpath without an rpath of its own.
+Then it checks that every load command of every Mach-O file resolves inside the bundle or the OS, that no Mach-O file
+needs a newer macOS than the bundle's LSMinimumSystemVersion (Homebrew's libc++ is built for the macOS of its bottle:
+0.5.2 declared macOS 13 and crashed at launch on 13 and 14), and that the signature verifies. Exits non-zero with the
+reasons otherwise. LLVM_ROOT (the Homebrew LLVM prefix) is searched for libraries an outside library loads through
+@rpath without an rpath of its own.
 """
 
 import os
+import plistlib
 import shutil
 import struct
 import subprocess
@@ -66,6 +69,27 @@ def load_commands(path):
             if rpath not in rpaths:
                 rpaths.append(rpath)
     return deps, rpaths
+
+
+def version_tuple(text):
+    return tuple(int(part) for part in text.split("."))
+
+
+def required_macos(path):
+    """The newest macOS any architecture of a Mach-O file asks for (LC_BUILD_VERSION minos, LC_VERSION_MIN_MACOSX), or
+    None."""
+    newest = None
+    cmd = None
+    for line in run("otool", "-arch", "all", "-l", path).splitlines():
+        line = line.strip()
+        if line.startswith("cmd "):
+            cmd = line.split()[1]
+        elif (cmd == "LC_BUILD_VERSION" and line.startswith("minos ")) or \
+                (cmd == "LC_VERSION_MIN_MACOSX" and line.startswith("version ")):
+            version = version_tuple(line.split()[1])
+            if newest is None or version > newest:
+                newest = version
+    return newest
 
 
 class Bundle:
@@ -160,9 +184,15 @@ class Bundle:
         run("codesign", "--force", "--sign", "-", self.app)
 
     def check(self):
+        with open(os.path.join(self.app, "Contents", "Info.plist"), "rb") as f:
+            minimum = f"{plistlib.load(f)['LSMinimumSystemVersion']}"
         for macho in self.machos():
             deps, rpaths = load_commands(macho)
             rel = os.path.relpath(macho, self.app)
+            needs = required_macos(macho)
+            if needs and needs > version_tuple(minimum):
+                self.problems.append(f"{rel}: needs macOS {'.'.join(map(str, needs))}, newer than the bundle's "
+                                     f"LSMinimumSystemVersion {minimum} (cmake/packaging/macos/Info.plist.in)")
             for rpath in rpaths:
                 if not rpath.startswith("@"):
                     self.problems.append(f"{rel}: rpath into the build machine: {rpath}")

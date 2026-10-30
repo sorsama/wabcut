@@ -1,4 +1,4 @@
-# Wabcut 0.5: release notes (0.5.0, 0.5.1, 0.5.2)
+# Wabcut 0.5: release notes (0.5.0, 0.5.1, 0.5.2, 0.5.3)
 
 Windows 10/11 x64, with preview builds for Linux x64 and macOS on Apple silicon. Free and open source
 (GPL-3.0-or-later). No account, no subscription.
@@ -16,6 +16,26 @@ The project file format is still schema 18: Wabcut 0.5, 0.4, 0.3 and 0.2 open ea
 opens 0.1 projects. 0.5 adds nothing to the project file. Chapter markers are ordinary clip markers, which older
 versions show too, and the new choices (the caption rows, audio scrubbing, the Graphics card, updates, the Scene Edit
 Detection and dead-time options) are settings of Wabcut on your computer. Which caption rows are targeted is not saved.
+
+## 0.5.3 (30 October 2026)
+
+The Linux and macOS downloads did not start for most people. This release fixes them; Windows is unchanged apart from
+the preview's shaders (below).
+
+- **Linux: the AppImage and the tar.gz start.** They needed libraries a normal desktop does not have: the X11 helper
+  libraries Qt uses (`libxcb-cursor0` and seven others, so Wabcut stopped with "Could not load the Qt platform plugin
+  xcb") and 20 of Qt's own libraries (then it stopped with "Cannot load library ... libQt6QuickDialogs2.so.6"). Both are
+  now in the download, so there is nothing to install. Wayland desktops without XWayland are supported too: Wabcut uses
+  X11 (XWayland) when it is there and Wayland otherwise.
+- **Linux: the preview shows the picture without Vulkan.** On a computer without a Vulkan driver Wabcut draws with
+  OpenGL, which refused four of its shaders, so the Program Monitor stayed black.
+- **Linux: hardware video decoding (VA-API) works.** The bundled libva looked for GPU drivers only on the machine that
+  built it, so every video was decoded on the processor.
+- **macOS: the download says what it needs.** It asked for macOS 13 but stopped at launch on macOS 13 and 14 (a library
+  it carries needs macOS 15). It now asks for **macOS 15 or newer**, and macOS 13 and 14 say so instead of crashing.
+
+Projects: unchanged (schema 18). Updating: Windows as for 0.5.2 (Help > Check for Updates, or the new MSI over the old
+one); Linux and macOS: download the new AppImage, tar.gz or DMG.
 
 ## 0.5.2 (26 October 2026)
 
@@ -220,8 +240,10 @@ What is not done or not checked yet is under [Known issues](#known-issues).
 - Source transcript: the Sequence | Source switch is by hand (it does not follow the Source Monitor's focus), and Source
   mode has no word menu. `,` and `.` pressed on the keyboard use the Source Monitor's marks as they are; the
   transcript's Insert and Overwrite buttons set them from the selected words first. Counts may read "5 word(s)".
-- Linux and macOS are preview builds: nobody has tried 0.5 on a real Linux or macOS machine yet. The other
-  [0.4 known issues](release-notes-0.4.md#known-issues) still apply (0.5 adds the opt-in updates).
+- Linux and macOS are preview builds: nobody has edited with 0.5 on a real Linux or macOS machine yet (0.5.3's packages
+  are started on GitHub's machines, without a GPU). The macOS download needs macOS 15 or newer on Apple silicon (Intel
+  Macs are not supported). The other [0.4 known issues](release-notes-0.4.md#known-issues) still apply (0.5 adds the
+  opt-in updates).
 - Real local-AI quality and live cloud-provider runs are not benchmarked.
 
 ## Privacy

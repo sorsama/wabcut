@@ -8,6 +8,10 @@ will change as people use the editor and tell us what matters to them.
 
 ## Shipped
 
+### 0.5.3 (30 October 2026)
+- The Linux and macOS downloads start: the Linux packages carry every library they need (X11 or Wayland), the preview
+  draws with OpenGL, VA-API decoding finds the system's drivers, and the macOS DMG asks for macOS 15.
+
 ### 0.5.2 (26 October 2026)
 - Update checks work (the releases now carry their signed update information), and the launch intro plays on the
   desktop, see-through, while Wabcut starts.

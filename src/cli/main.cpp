@@ -34,6 +34,7 @@
 #include <wabcut/interchange/Import.h>
 #include <wabcut/interchange/ImportSummary.h>
 #include <wabcut/media/FfmpegInfo.h>
+#include <wabcut/media/GpuInfo.h>
 #include <wabcut/model/MediaLocator.h>
 #include <wabcut/model/ProjectIO.h>
 
@@ -1204,6 +1205,7 @@ int runCredentials(int argc, char** argv) {
 
 int main(int argc, char** argv) {
     wabcut::platform::hardenDllSearch(); // first: no DLL from the current directory or PATH (S5-P2-5)
+    wabcut::media::useSystemVaapiDrivers(); // Linux: hardware decoding and encoding with the distribution's VA-API drivers
     if (argc >= 2 && std::string_view(argv[1]) == "--version") {
         return printVersion();
     }

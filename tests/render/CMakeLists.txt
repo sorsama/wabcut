@@ -36,6 +36,12 @@ target_compile_definitions(wabcut_render_tests PRIVATE
     WABCUT_RENDER_GOLDENS="${CMAKE_CURRENT_SOURCE_DIR}/goldens"
     WABCUT_REFERENCE_GOLDENS="${CMAKE_SOURCE_DIR}/tests/render_reference/goldens")
 
+# The shaders' uniform blocks match from stage to stage, as OpenGL requires (no GPU needed).
+add_test(NAME render.shader_blocks
+    COMMAND "${CMAKE_COMMAND}" -DSHADER_DIR=${CMAKE_SOURCE_DIR}/src/render/shaders
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/ShaderBlocks.cmake)
+set_tests_properties(render.shader_blocks PROPERTIES LABELS render)
+
 # The program monitor on the real scene graph (QQuickRhiItem, offscreen window grab, the shell's QML module).
 if(TARGET wabcut_ui)
     wabcut_add_test_suite(monitor

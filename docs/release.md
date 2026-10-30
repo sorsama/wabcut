@@ -9,7 +9,7 @@ in [building.md](building.md); this page starts where a green `win-msvc` build e
 |---|---|---|---|---|
 | **Windows 10/11 x64** | `win-msvc` (MSVC 19.36+) | full suite, GPU and audio-device tests included | per-user MSI, portable ZIP | **Verified** on the development machine for every release candidate |
 | **Linux x64** (Ubuntu 24.04, GCC 14) | `linux-gcc` | `ctest --preset linux-gcc` (no GPU / audio-device tests) | AppImage, tar.gz | **Preview**: `unix-full.yml` builds and tests it, `release.yml` packages, installs and starts it; nobody has used it on a real machine |
-| **macOS 13+ arm64** (Homebrew LLVM 20) | `macos-clang` | `ctest --preset macos-clang` (no GPU / audio-device tests) | DMG (`Wabcut.app`) | **Preview**: as Linux |
+| **macOS 15+ arm64** (Homebrew LLVM 20) | `macos-clang` | `ctest --preset macos-clang` (no GPU / audio-device tests) | DMG (`Wabcut.app`) | **Preview**: as Linux |
 | Core (any OS, no Qt/FFmpeg) | `core` | `ctest --preset core` | — | Verified on Windows with MSVC and with clang-cl 21.1.8 (`/W4 /WX`, 678 tests); CI on all three |
 
 "Verified" means built, the whole test suite run and the packages installed and smoke-tested on that platform for the
@@ -333,7 +333,22 @@ Code is written for all three platforms; only Windows is run. What is known (aud
 - Toolchains: GCC 14 and LLVM 20 (libc++ 20) are what CI uses. Apple Clang from Xcode 16 lacks parts of C++20/23 the code
   uses (`std::jthread`, floating-point `std::from_chars`), so the macOS jobs use Homebrew LLVM; the configure step stops
   with a clear message on an older standard library. The macOS build finds LLVM's `libc++` through an rpath into the
-  Homebrew prefix; for the DMG, `cmake/packaging/macos/finish_bundle.py` copies it into the bundle.
+  Homebrew prefix; for the DMG, `cmake/packaging/macos/finish_bundle.py` copies it into the bundle. That `libc++` is
+  built for the macOS of Homebrew's bottle (the runner's, 15) and calls `os_sync_wait_on_address` (14.4+), so the bundle
+  asks for macOS 15 (`LSMinimumSystemVersion`) although the code targets 13.0; 0.5.2 asked for 13 and stopped at launch
+  on 13 and 14. `finish_bundle.py` fails the release when a file in the bundle needs a newer macOS than the bundle asks
+  for. A `libc++` built from LLVM's sources for 13.0 would bring 13 and 14 back.
+- Linux packages: Qt's generic deployment copies the QML plugins the app imports but not every Qt library they link,
+  and Qt's xcb platform plugin links xcb helpers a stock desktop lacks (`libxcb-cursor0` and others), so 0.5.2's AppImage
+  and tar.gz did not start on a desktop. `cmake/packaging/linux/BundleLibraries.cmake` bundles everything that is not
+  part of the operating system (its list: the C/C++ runtimes, the GPU drivers, X11, Wayland, fonts, GLib, GTK, D-Bus,
+  ALSA/PulseAudio) and `install.smoke` fails when a binary would load anything else from outside the tree. The release
+  starts the AppImage without the Qt kit's environment and without those xcb packages. The app prefers X11 (XWayland on a
+  Wayland desktop) and falls back to the bundled Wayland platform plugin. The bundled libva (vcpkg's) looks for VA-API
+  drivers only in the build machine's folder, so the app and the CLI set `LIBVA_DRIVERS_PATH` to the distribution's
+  `dri` folders at start, unless it is set (`media::useSystemVaapiDrivers()`).
+- OpenGL (Linux without a Vulkan driver) links the stages of a program only when the uniform blocks they share are
+  declared the same; Vulkan, D3D and Metal do not check. Every shader declares a block whole (`render.shader_blocks`).
 - Clang front end: the core builds with clang-cl 21 under `/W4 /WX` (building.md, "clang-cl"), which found a 128-bit
   division that needs compiler-rt and a few unused functions and fields. Off Windows the presets add `-Wshadow
   -Wconversion -Wpedantic`, which clang-cl's `/W4` does not enable: those builds are still unverified.
