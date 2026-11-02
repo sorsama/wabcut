@@ -13,6 +13,7 @@
 
 #include <wabcut/interchange/ImportReport.h>
 #include <wabcut/interchange/MediaRelinker.h>
+#include <wabcut/model/AudioChannels.h>
 #include <wabcut/model/Clip.h>
 #include <wabcut/model/Effects.h>
 #include <wabcut/model/Sequence.h>
@@ -37,9 +38,20 @@ struct IrMarker {
     SourceLocation location;
 };
 
+/// 0.6 (card #69): a synthetic item (Synthetic.h: colour matte, black / transparent video, bars and tone, counting
+/// leader) or an adjustment layer, in place of a media file: its GeneratorSpec::kind and parameters (constants by key).
+struct IrGenerator {
+    std::string kind;
+    std::vector<EffectParam> params;
+    /// Non-empty when the source's generator was not carried exactly (a foreign colour solid, an unknown parameter).
+    std::string approximation;
+};
+
 struct IrMedia {
     /// Document-unique key (file id, asset id, decoded path, clip name).
     std::string key;
+    /// 0.6 (card #69): set for generated media; `reference` is then empty and the builder makes a synthetic item.
+    std::optional<IrGenerator> generator;
     std::string name;
     MediaReference reference;
     bool hasVideo = false;
@@ -109,6 +121,9 @@ struct IrClip {
     bool enabled = true;
     /// Clips with the same non-negative group are linked (A/V link). Document-unique.
     std::int64_t linkGroup = -1;
+    /// 0.6 (AAF / OMF import): the master clip (MasterMob) the clip plays through; the importer links clips of one
+    /// master by it. Empty for other formats.
+    std::string masterKey;
     /// Static motion/opacity/audio values the parser could carry.
     std::optional<ClipProperties> properties;
     /// A constant speed other than 100% forward (nullopt: normal playback).
@@ -129,6 +144,13 @@ struct IrClip {
     /// Effects after the intrinsic ones (Motion, Opacity, Volume, Pan), in stack order. Export: the clip's stack, which
     /// the writers map to the format's effects where they can.
     std::vector<EffectInstance> effects;
+    /// 0.6 (card #74): an audition (a take stack, Auditions.h). The clip itself is the active take; `alternates` are the
+    /// other takes in take order without it, each a clip of the same track kind over the part of the audition's range it
+    /// has media for (its own start, duration, source In, name, speed and effects; no alternates of its own), and
+    /// `activeTake` is the clip's place in take order. Export: what the model's audition holds. Import (FCPXML
+    /// <audition>, OTIO metadata): the builder makes the stack from them.
+    std::vector<IrClip> alternates;
+    std::size_t activeTake = 0;
     SourceLocation location;
 };
 
@@ -163,6 +185,13 @@ struct IrTrack {
     /// Export: an audio track's mute and role (FCPXML roles).
     bool muted = false;
     TrackRole role = TrackRole::None;
+    /// 0.6 (AAF / OMF import), audio tracks: the channel format, and the track fader (ParamId::VolumeDb) and panner
+    /// (ParamId::Pan), constants or curves in timeline time. Unset: the defaults.
+    std::optional<ChannelFormat> format;
+    std::optional<ParamValue> volume;
+    std::optional<ParamValue> pan;
+    /// 0.6 (card #67): the track's effect stack (OTIO Effect objects on a Track), keyframes in timeline time.
+    std::vector<EffectInstance> effects;
     std::vector<IrClip> clips;
     std::vector<IrTransition> transitions;
     std::vector<IrGap> gaps;
@@ -202,6 +231,8 @@ struct IrSequence {
     std::optional<Ticks> duration;
     /// The timecode of the first frame (X.1: Sequence::startTimecode), when the format says.
     std::optional<Ticks> startTimecode;
+    /// 0.6 (AAF / OMF import): the master's channel format (5.1 when the file's tracks make a 5.1 layout).
+    std::optional<ChannelFormat> masterFormat;
     /// The bins the source keeps it in (X.1), outermost first; empty: the import bin.
     std::vector<std::string> bin;
     SourceLocation location;

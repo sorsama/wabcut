@@ -1,6 +1,8 @@
 #include <wabcut/model/ProjectIO.h>
 
+#include <wabcut/model/Auditions.h>
 #include <wabcut/model/FrameScaling.h>
+#include <wabcut/model/MasterClipEffects.h>
 #include <wabcut/model/Nesting.h>
 #include <wabcut/model/RedactionMedia.h>
 
@@ -379,6 +381,31 @@ json channelMapJson(const AudioChannelMap& m) {
     return json{{"format", std::string(toString(m.format))}, {"channels", std::move(channels)}};
 }
 
+json clipJson(const Clip& c);
+
+/// 0.6 (card #74): an audition's other takes, each as a clip object without the clip's own place, id and links (they
+/// play over the audition's range), the active take's place in take order and the range the active take leaves
+/// uncovered (only when it does).
+json auditionJson(const Clip& c, const Audition& a) {
+    json takes = json::array();
+    const TimeRange whole = auditionRange(c);
+    for (const AuditionTake& t : a.others) {
+        json take = clipJson(takeClip(t, whole));
+        for (const char* key : {"id", "start", "duration", "enabled", "linkGroup", "colorIndex"}) {
+            take.erase(key);
+        }
+        takes.push_back(std::move(take));
+    }
+    json out{{"active", a.active}, {"takes", std::move(takes)}};
+    if (a.headTrim.value != 0) {
+        out["headTrim"] = a.headTrim.value;
+    }
+    if (a.tailTrim.value != 0) {
+        out["tailTrim"] = a.tailTrim.value;
+    }
+    return out;
+}
+
 json clipJson(const Clip& c) {
     json out{{"id", c.id.value},
                 {"stream", json{{"kind", c.stream.kind == StreamKind::Video ? "video" : "audio"},
@@ -422,6 +449,9 @@ json clipJson(const Clip& c) {
     if (c.content().holdFilters) { // P.2 (schema 17): Frame Hold Options > Hold Filters, only when set
         out["holdFilters"] = true;
     }
+    if (c.content().masterEffectsOff) { // 0.6: plays without its media's Master Clip Effects, only when set
+        out["masterEffectsOff"] = true;
+    }
     if (c.timeInterpolation() != TimeInterpolation::FrameSampling) { // P.2 (schema 17): only when set
         out["timeInterpolation"] = std::string(toString(c.timeInterpolation()));
     }
@@ -437,6 +467,9 @@ json clipJson(const Clip& c) {
             options["processing"] = std::string(toString(fields.processing));
         }
         out["fieldOptions"] = std::move(options);
+    }
+    if (const Audition* audition = c.audition()) { // 0.6 (card #74): only on an audition
+        out["audition"] = auditionJson(c, *audition);
     }
     if (c.isNested() || c.hasUnknownSource()) {
         out["source"] = clipSourceJson(c); // instead of "media"
@@ -958,6 +991,9 @@ json projectJson(const ProjectState& state, const std::function<json(const Seque
         if (m->importSource) { // P.3 (schema 18): a copy from another project, only when set
             item["importSource"] = json{{"project", m->importSource->project}, {"id", m->importSource->id}};
         }
+        if (!m->masterEffects.empty()) { // 0.6: Master Clip Effects, only when there are any
+            item["masterEffects"] = effectStackJson(m->masterEffects);
+        }
         media.push_back(std::move(item));
     }
     json sequences = json::array();
@@ -1069,6 +1105,23 @@ json projectJson(const ProjectState& state, const std::function<json(const Seque
                                       {"referenceWhiteNits", cm.referenceWhiteNits}};
         if (!cm.autoDetectLog) { // only when off
             doc["colorManagement"]["autoDetectLog"] = false;
+        }
+        // 0.6 (#72): gamut compression, the output colour space and SDR Conform, each only when not the default.
+        if (cm.gamutCompression) {
+            doc["colorManagement"]["gamutCompression"] = true;
+        }
+        if (cm.gamutCompressionStrength != 1.0) {
+            doc["colorManagement"]["gamutCompressionStrength"] = cm.gamutCompressionStrength;
+        }
+        if (cm.outputSpace != OutputColorSpace::Automatic) {
+            doc["colorManagement"]["outputSpace"] = std::string(toString(cm.outputSpace));
+        }
+        if (cm.sdrConform != SdrConform{}) {
+            const SdrConform& c = cm.sdrConform;
+            doc["colorManagement"]["sdrConform"] =
+                json{{"enabled", c.enabled}, {"targetPeakNits", c.targetPeakNits}, {"paperWhiteNits", c.paperWhiteNits},
+                     {"toneMap", std::string(toString(c.toneMap))}, {"gamut", std::string(toString(c.gamut))},
+                     {"legalRange", c.legalRange}};
         }
     }
     if (!state.textStyles.empty()) {
@@ -1244,6 +1297,12 @@ void migrate16To17(json&) {}
 /// build ignores it (it never rippled markers).
 void migrate17To18(json&) {}
 
+/// Schema 19 (0.6) adds optional data only, each written only when used: a clip's "audition" (its takes), master
+/// clip effects on media, the new text layer properties (strokes, capitals, faux styles, background, Source Text keys)
+/// and the colour-management output keys. Nothing to convert: every schema 18 file is a valid schema 19 file. The
+/// number is bumped so that an older Wabcut refuses a 0.6 project instead of opening it and silently dropping that data.
+void migrate18To19(json&) {}
+
 void migrate7To8(json& doc) {
     if (!doc.contains("sequences") || !doc["sequences"].is_array()) {
         return;
@@ -1302,7 +1361,7 @@ constexpr std::array<Migration, kSchemaVersion - kOldestSchemaVersion> kMigratio
                                                                                     &migrate11To12, &migrate12To13,
                                                                                     &migrate13To14, &migrate14To15,
                                                                                     &migrate15To16, &migrate16To17,
-                                                                                    &migrate17To18};
+                                                                                    &migrate17To18, &migrate18To19};
 
 // --- Reading (current schema) -------------------------------------------------------------------------
 
@@ -1712,6 +1771,37 @@ EffectStack readEffectStack(const Reader& r) {
 }
 
 AudioChannelMap readChannelMap(const Reader& r); // A.9, below
+Clip readClip(const Reader& r, const ProjectState& state);
+
+/// 0.6 (card #74): an audition (auditionJson). The takes' sources are checked by validate() like the clip's.
+Audition readAudition(const Reader& r, const ProjectState& state) {
+    Audition a;
+    const Reader takes = r.child("takes");
+    const std::size_t n = takes.arraySize();
+    if (n == 0 || n + 1 > kMaxAuditionTakes) {
+        takes.fail("an audition holds 2 to " + std::to_string(kMaxAuditionTakes) + " takes");
+    }
+    a.active = static_cast<std::uint32_t>(r.int64In("active", 0, 0, static_cast<std::int64_t>(n)));
+    a.headTrim = r.nonNegativeTicks("headTrim", Ticks{});
+    a.tailTrim = r.nonNegativeTicks("tailTrim", Ticks{});
+    for (std::size_t i = 0; i < n; ++i) {
+        const Reader element = takes.element(i);
+        if (!element.value().is_object()) {
+            element.fail("expected an object");
+        }
+        if (element.has("audition")) {
+            element.fail("a take cannot be an audition itself");
+        }
+        // A take has no place, id or links of its own: give the clip reader neutral ones.
+        json take = element.value();
+        take["id"] = 0;
+        take["start"] = 0;
+        take["duration"] = 1;
+        const Clip v = readClip(Reader(take, element.path()), state);
+        a.others.push_back(takeFromClip(v));
+    }
+    return a;
+}
 
 Clip readClip(const Reader& r, const ProjectState& state) {
     Clip c;
@@ -1807,6 +1897,7 @@ Clip readClip(const Reader& r, const ProjectState& state) {
     }
     content.scaleToFrame = r.boolean("scaleToFrame", false); // P.2 (schema 17)
     content.holdFilters = r.boolean("holdFilters", false);   // P.2 (schema 17)
+    content.masterEffectsOff = r.boolean("masterEffectsOff", false); // 0.6
     if (r.has("timeInterpolation")) { // P.2 (schema 17)
         const std::string name = r.string("timeInterpolation");
         const auto mode = timeInterpolationFromString(name);
@@ -1835,6 +1926,9 @@ Clip readClip(const Reader& r, const ProjectState& state) {
         }
     }
     content.unknownSource = std::move(unknownSource);
+    if (r.has("audition")) { // 0.6 (card #74)
+        content.audition = std::make_shared<const Audition>(readAudition(r.child("audition"), state));
+    }
     // Clips that still carry their media's defaults share its block (cheap copies, less memory).
     const MediaItem* media = state.findMedia(c.media);
     if (media && media->clipDefaults && content == *media->clipDefaults) {
@@ -2503,6 +2597,9 @@ ProjectState readProject(const Reader& root) {
             if (m.has("importSource")) { // P.3 (schema 18)
                 item.importSource = readImportSource(m.child("importSource"));
             }
+            if (m.has("masterEffects")) { // 0.6: Master Clip Effects
+                item.masterEffects = readEffectStack(m.child("masterEffects"));
+            }
             if (m.has("posterFrame")) {
                 item.posterFrame = m.nonNegativeTicks("posterFrame", Ticks{});
             }
@@ -2751,6 +2848,44 @@ ProjectState readProject(const Reader& root) {
             out.referenceWhiteNits = cm.child("referenceWhiteNits").asDouble();
         }
         out.autoDetectLog = cm.boolean("autoDetectLog", true);
+        // 0.6 (#72): optional; absent = off, 1, Automatic and SDR Conform off.
+        out.gamutCompression = cm.boolean("gamutCompression", false);
+        if (cm.has("gamutCompressionStrength")) {
+            out.gamutCompressionStrength = cm.child("gamutCompressionStrength").asDouble();
+        }
+        if (cm.has("outputSpace")) {
+            const auto space = outputColorSpaceFromString(cm.child("outputSpace").asString());
+            if (!space) {
+                cm.child("outputSpace").fail("unknown output colour space");
+            }
+            out.outputSpace = *space;
+        }
+        if (cm.has("sdrConform")) {
+            const Reader c = cm.child("sdrConform");
+            SdrConform& conform = out.sdrConform;
+            conform.enabled = c.boolean("enabled", false);
+            if (c.has("targetPeakNits")) {
+                conform.targetPeakNits = c.child("targetPeakNits").asDouble();
+            }
+            if (c.has("paperWhiteNits")) {
+                conform.paperWhiteNits = c.child("paperWhiteNits").asDouble();
+            }
+            if (c.has("toneMap")) {
+                const auto op = toneMapOperatorFromString(c.child("toneMap").asString());
+                if (!op) {
+                    c.child("toneMap").fail("unknown tone-mapping operator");
+                }
+                conform.toneMap = *op;
+            }
+            if (c.has("gamut")) {
+                const auto mapping = gamutMappingFromString(c.child("gamut").asString());
+                if (!mapping) {
+                    c.child("gamut").fail("unknown gamut mapping");
+                }
+                conform.gamut = *mapping;
+            }
+            conform.legalRange = c.boolean("legalRange", false);
+        }
         if (const auto problem = colorManagementProblem(out)) {
             cm.fail(std::string(*problem));
         }
@@ -2817,6 +2952,7 @@ json clipRenderJson(const Clip& c, Ticks origin) {
     out.erase("colorIndex");
     out.erase("linkGroup");
     out.erase("group");
+    out.erase("audition"); // 0.6: an audition renders its active take only (the clip): the other takes are not seen
     out["start"] = (c.start() - origin).value;
     return out;
 }
@@ -2858,7 +2994,15 @@ void sequenceRenderJson(const ProjectState& state, const Sequence& seq, TimeRang
             if (!over && std::find(inTransitions.begin(), inTransitions.end(), c.id) == inTransitions.end()) {
                 continue;
             }
-            clips.push_back(clipRenderJson(c, range.start));
+            json clip = clipRenderJson(c, range.start);
+            if (!c.isNested() && playsMasterEffects(state, c)) {
+                // 0.6 (card #71, fix F1A): the Master Clip Effects it plays decide its pixels too (a subclip's master
+                // item's included), so a master effect edit makes its render previews stale like an edit of its own.
+                if (const EffectStack master = masterEffectsOf(state, c.media, EffectKind::Video); !master.empty()) {
+                    clip["masterEffects"] = effectStackJson(master);
+                }
+            }
+            clips.push_back(std::move(clip));
             if (c.isNested()) {
                 const std::string key = std::to_string(c.sequence.value);
                 const Sequence* nested = state.findSequence(c.sequence);

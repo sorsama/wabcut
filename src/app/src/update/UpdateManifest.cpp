@@ -9,6 +9,8 @@
 #include <QRegularExpression>
 #include <QVersionNumber>
 
+#include <algorithm>
+
 namespace wabcut::app::update {
 
 namespace {
@@ -129,7 +131,45 @@ QList<QByteArray> parsePublicKeys(const QString& list) {
 }
 
 int compareVersions(const QString& a, const QString& b) {
-    return QVersionNumber::compare(QVersionNumber::fromString(a), QVersionNumber::fromString(b));
+    // "v0.6.0-beta.2+build" -> core "0.6.0", pre-release ["beta", "2"].
+    struct Parsed {
+        QVersionNumber core;
+        QStringList pre;
+    };
+    const auto parse = [](QString text) {
+        text = text.trimmed();
+        if (text.startsWith(QLatin1Char('v')) || text.startsWith(QLatin1Char('V')))
+            text.remove(0, 1);
+        if (const qsizetype plus = text.indexOf(QLatin1Char('+')); plus >= 0)
+            text.truncate(plus);
+        Parsed out;
+        const qsizetype dash = text.indexOf(QLatin1Char('-'));
+        out.core = QVersionNumber::fromString(dash >= 0 ? text.left(dash) : text).normalized(); // 0.6 == 0.6.0
+        if (dash >= 0)
+            out.pre = text.mid(dash + 1).split(QLatin1Char('.'), Qt::SkipEmptyParts);
+        return out;
+    };
+    const Parsed x = parse(a);
+    const Parsed y = parse(b);
+    if (const int core = QVersionNumber::compare(x.core, y.core); core != 0)
+        return core;
+    if (x.pre.isEmpty() || y.pre.isEmpty())
+        return x.pre.isEmpty() == y.pre.isEmpty() ? 0 : (x.pre.isEmpty() ? 1 : -1); // a release beats its pre-release
+    for (qsizetype i = 0; i < std::min(x.pre.size(), y.pre.size()); ++i) {
+        bool xNumber = false;
+        bool yNumber = false;
+        const qulonglong xn = x.pre[i].toULongLong(&xNumber);
+        const qulonglong yn = y.pre[i].toULongLong(&yNumber);
+        if (xNumber && yNumber) {
+            if (xn != yn)
+                return xn < yn ? -1 : 1;
+        } else if (xNumber != yNumber) {
+            return xNumber ? -1 : 1; // numeric identifiers sort below alphanumeric ones
+        } else if (const int words = QString::compare(x.pre[i], y.pre[i]); words != 0) {
+            return words < 0 ? -1 : 1;
+        }
+    }
+    return x.pre.size() == y.pre.size() ? 0 : (x.pre.size() < y.pre.size() ? -1 : 1);
 }
 
 QUrl releasePage(const QString& releasesBase, const QString& version) {

@@ -216,6 +216,14 @@ TEST_CASE("Library bins: create, rename, nest, move and delete, each one undo st
     CHECK(r.controller.snapshot()->findMedia(r.media('C')) == nullptr);
     r.controller.undo();
     CHECK(r.controller.snapshot()->findMedia(r.media('C')) != nullptr);
+
+    // P1 round (#38): confirmed (the panel's question), the bin goes with A and A's clips in one undo step.
+    const auto beforeConfirmed = r.undo();
+    REQUIRE(r.library.deleteItems({footage}, true));
+    CHECK(r.undo() == beforeConfirmed + 1);
+    CHECK(r.controller.snapshot()->findMedia(r.media('A')) == nullptr);
+    r.controller.undo();
+    CHECK(r.controller.snapshot()->findMedia(r.media('A')) != nullptr);
 }
 
 TEST_CASE("Library bins: dropping cards on a bin card moves them", "[app][library][qml]") {
@@ -340,9 +348,10 @@ TEST_CASE("Library list: metadata columns, sorting, resizing, reordering and the
     LibraryModel& model = *r.library.items();
     const QString a = key(r.media('A'));
 
-    // The defaults: name, label, type, duration, fps, resolution, codec, audio, proxy, analysis, generated, date.
+    // The defaults: name, label, type, duration, fps, resolution, codec, audio, proxy, analysis, generated, date and
+    // (0.6) the file size.
     const QVariantList columns = r.library.columns();
-    REQUIRE(columns.size() == 12);
+    REQUIRE(columns.size() == 13);
     CHECK(columns.front().toMap().value(QStringLiteral("id")).toString() == QStringLiteral("name"));
     CHECK(r.cell(a, LibraryColumn::MediaType) == QStringLiteral("Video and audio"));
     CHECK(r.cell(a, LibraryColumn::Duration) == QStringLiteral("00:00:40:00")); // 1000 frames at 25 fps
@@ -353,7 +362,7 @@ TEST_CASE("Library list: metadata columns, sorting, resizing, reordering and the
     CHECK(r.cell(a, LibraryColumn::Analysis) == QStringLiteral("Transcribed · Indexed"));
     CHECK(r.cell(key(r.media('B')), LibraryColumn::Analysis) == QStringLiteral("Shots"));
     CHECK(r.cell(a, LibraryColumn::Label) == QStringLiteral("Violet"));
-    CHECK(model.columnCount() == 12);
+    CHECK(model.columnCount() == 13);
 
     // Sorting: by name descending, then by duration (C is made shorter).
     r.library.sortBy(QStringLiteral("name"));
@@ -376,7 +385,7 @@ TEST_CASE("Library list: metadata columns, sorting, resizing, reordering and the
     // The chooser, resizing and moving a column.
     r.library.setColumnVisible(QStringLiteral("path"), true);
     r.library.setColumnVisible(QStringLiteral("name"), false); // the name always shows
-    CHECK(r.library.columns().size() == 13);
+    CHECK(r.library.columns().size() == 14);
     r.library.setColumnWidth(QStringLiteral("codec"), 300);
     const auto widthOf = [&](const QString& id) {
         for (const QVariant& c : r.library.columns()) {
@@ -393,7 +402,7 @@ TEST_CASE("Library list: metadata columns, sorting, resizing, reordering and the
     CHECK(r.library.columns()[1].toMap().value(QStringLiteral("id")).toString() == QStringLiteral("label"));
     CHECK(model.headerData(3, Qt::Horizontal, Qt::DisplayRole).toString() == QStringLiteral("Codec"));
     r.library.resetColumns();
-    CHECK(r.library.columns().size() == 12);
+    CHECK(r.library.columns().size() == 13);
     CHECK(r.library.sortColumn() == QStringLiteral("name"));
 }
 

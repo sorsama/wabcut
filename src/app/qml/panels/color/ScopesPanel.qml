@@ -26,6 +26,7 @@ Panel {
             Layout.fillWidth: true
             compact: true
             model: [qsTr("Luma"), qsTr("RGB Parade"), qsTr("YCbCr")]
+            Accessible.name: qsTr("Waveform mode") // P1 #61
             currentIndex: Scopes.waveformMode
             onActivated: index => Scopes.waveformMode = index
         }
@@ -59,6 +60,7 @@ Panel {
                 Layout.preferredWidth: Theme.space(32)
                 compact: true
                 model: ["1x", "2x", "5x"]
+                Accessible.name: qsTr("Vectorscope zoom") // P1 #61
                 currentIndex: Scopes.vectorZoom === 5 ? 2 : Scopes.vectorZoom === 2 ? 1 : 0
                 onActivated: index => Scopes.vectorZoom = [1, 2, 5][index]
             }

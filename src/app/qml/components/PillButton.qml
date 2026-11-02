@@ -6,6 +6,8 @@ import QtQuick.Controls.Basic
 // "danger" (the confirm button of a destructive question - Delete, Remove: Theme.danger's fill with black or white text,
 // whichever reads better on it, ExtraBold), "secondary" (a raised pill, bold) or "ghost" (transparent with a hairline
 // outline). Optional `iconName` (an Icon name). Press = scale 0.98 over 90 ms (snap-out), no overshoot.
+// P1 round (#31): the tooltip also shows on keyboard focus (a key press hides it until the focus moves) and on a
+// disabled button, where it says why (`disabledReason`: by default the keymap command's reason).
 Button {
     id: control
 
@@ -15,6 +17,17 @@ Button {
     // Keymap command id (docs/keymap.md); the tooltip shows its current shortcut from KeymapDispatcher.
     property string command: ""
     property string shortcut: command !== "" && KeymapDispatcher.revision >= 0 ? KeymapDispatcher.shortcutText(command) : ""
+    /// Why the button cannot be used now, shown in its tooltip while it is disabled. By default the reason its keymap
+    /// `command` cannot run (CommandPalette.commandState: "Open a sequence first").
+    property string disabledReason: control.command !== "" && !control.enabled
+                                    ? (CommandPalette.commandState(control.command).reason ?? "") : ""
+    /// The tooltip's text: the reason while disabled (after the tooltip, when there is one), else `tooltip`.
+    readonly property string tipText: !control.enabled && control.disabledReason !== ""
+                                      ? (control.tooltip !== "" ? qsTr("%1: %2").arg(control.tooltip).arg(control.disabledReason)
+                                                                : control.disabledReason)
+                                      : control.tooltip
+    // A key pressed while the keyboard focus shows the tooltip hides it until the focus moves.
+    property bool focusTipDismissed: false
     property bool compact: false
     // v2's UV-beam line under a brand-moment primary button; v3 draws no beams, so it no longer changes the look.
     property bool beamAccent: false
@@ -55,7 +68,7 @@ Button {
     }
 
     Accessible.name: text !== "" ? text : tooltip
-    Accessible.description: tooltip
+    Accessible.description: !enabled && disabledReason !== "" ? disabledReason : tooltip
 
     contentItem: Item {
         implicitWidth: row.implicitWidth
@@ -109,14 +122,22 @@ Button {
         enabled: control.enabled
         cursorShape: Qt.PointingHandCursor
     }
+    // Sees the pointer on a disabled button too (handlers get hover there), for the tooltip; no cursor of its own.
+    HoverHandler {
+        id: hoverAll
+    }
+
+    Keys.onPressed: control.focusTipDismissed = true // the event goes on to the button
+    onActiveFocusChanged: control.focusTipDismissed = false
 
     Loader {
-        active: control.hovered && control.tooltip !== ""
+        objectName: "pillButtonTip"
+        active: control.tipText !== "" && (hoverAll.hovered || (control.visualFocus && !control.focusTipDismissed))
         sourceComponent: Tooltip {
             parent: control
             visible: true
-            text: control.tooltip
-            shortcut: control.shortcut
+            text: control.tipText
+            shortcut: control.enabled ? control.shortcut : ""
         }
     }
 }

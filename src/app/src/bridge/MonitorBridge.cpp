@@ -1,6 +1,9 @@
 #include "MonitorBridge.h"
+#include "BridgeIds.h"
 
+#include "CommandJob.h"
 #include "GraphicCanvasBridge.h"
+#include "MediaReadinessBridge.h"
 #include "MotionBridge.h"
 #include "PlaybackBridge.h"
 #include "ProjectController.h"
@@ -8,7 +11,10 @@
 
 #include <wabcut/command/Engine.h>
 #include <wabcut/editor/MediaImport.h>
+#include <wabcut/editor/SourceEdit.h>
 #include <wabcut/export/StillExport.h>
+#include <wabcut/model/EditOps.h>
+#include <wabcut/model/EditSession.h>
 #include <wabcut/model/MediaLocator.h>
 #include <wabcut/model/Timecode.h>
 
@@ -53,6 +59,90 @@ constexpr const char* kTemplatesKey = "monitor/guideTemplates";
 constexpr const char* kExportFolderKey = "monitor/exportFrameFolder";
 constexpr const char* kExportFormatKey = "monitor/exportFrameFormat";
 constexpr const char* kExportImportKey = "monitor/exportFrameImport";
+// P1 (#23): the size, crop, JPEG quality and 2 MB cap of Export Frame; the markers Export Frames at Markers takes.
+constexpr const char* kExportSizeKey = "monitor/exportFrameSize";
+constexpr const char* kExportWidthKey = "monitor/exportFrameWidth";
+constexpr const char* kExportHeightKey = "monitor/exportFrameHeight";
+constexpr const char* kExportFillKey = "monitor/exportFrameFill";
+constexpr const char* kExportQualityKey = "monitor/exportFrameQuality";
+constexpr const char* kExportKeepUnderKey = "monitor/exportFrameKeepUnder";
+constexpr const char* kExportMarkersKey = "monitor/exportFramesMarkers";
+/// YouTube's thumbnail limit ("2 MB"), in bytes.
+constexpr std::int64_t kThumbnailBytes = 2'000'000;
+
+/// The Export Frame sizes: Sequence size, YouTube thumbnail, Vertical, Custom.
+struct FrameSize {
+    const char* value;
+    const char* label;
+    int width;
+    int height;
+};
+constexpr std::array<FrameSize, 4> kFrameSizes{{
+    {"sequence", QT_TRANSLATE_NOOP("wabcut::app::MonitorBridge", "Sequence size"), 0, 0},
+    {"thumbnail", QT_TRANSLATE_NOOP("wabcut::app::MonitorBridge", "YouTube thumbnail 1280×720"), 1280, 720},
+    {"vertical", QT_TRANSLATE_NOOP("wabcut::app::MonitorBridge", "Vertical 1080×1920"), 1080, 1920},
+    {"custom", QT_TRANSLATE_NOOP("wabcut::app::MonitorBridge", "Custom"), 0, 0},
+}};
+
+/// A folder from a URL or a path ("" for neither).
+QString folderOf(const QVariant& value) {
+    if (value.typeId() == QMetaType::QUrl)
+        return value.toUrl().isLocalFile() ? value.toUrl().toLocalFile() : value.toUrl().toString();
+    const QString text = value.toString();
+    if (text.startsWith(QLatin1String("file:")))
+        return QUrl(text).toLocalFile();
+    return text;
+}
+
+/// The still options of Export Frame's `options` as command params (width, height, fit, quality, maxBytes); "" or why
+/// not (a custom size out of bounds).
+QString addStillOptions(const QVariantMap& options, bool jpeg, command::Json& params) {
+    const QString size = options.value(QStringLiteral("size"), QStringLiteral("sequence")).toString();
+    int width = 0;
+    int height = 0;
+    for (const FrameSize& f : kFrameSizes) {
+        if (size == QLatin1String(f.value)) {
+            width = f.width;
+            height = f.height;
+        }
+    }
+    if (size == QLatin1String("custom")) {
+        width = options.value(QStringLiteral("width")).toInt();
+        height = options.value(QStringLiteral("height")).toInt();
+        if (width < 16 || height < 16 || width > 16384 || height > 16384)
+            return QCoreApplication::translate("wabcut::app::MonitorBridge", "Give a custom size of 16 to 16384 pixels a side");
+    }
+    if (width > 0 && height > 0) {
+        params["width"] = width;
+        params["height"] = height;
+        params["fit"] = options.value(QStringLiteral("fill"), true).toBool() ? "fill" : "fit";
+    }
+    if (jpeg) {
+        const int quality = options.value(QStringLiteral("quality"), 100).toInt();
+        if (quality >= 1 && quality < 100)
+            params["quality"] = quality;
+        if (options.value(QStringLiteral("keepUnder"), false).toBool())
+            params["maxBytes"] = kThumbnailBytes;
+    }
+    return {};
+}
+
+/// Remembers Export Frame's size choices for next time.
+void rememberStillOptions(const QVariantMap& options) {
+    QSettings settings;
+    const QString size = options.value(QStringLiteral("size"), QStringLiteral("sequence")).toString();
+    settings.setValue(QLatin1String(kExportSizeKey), size);
+    if (size == QLatin1String("custom")) {
+        settings.setValue(QLatin1String(kExportWidthKey), options.value(QStringLiteral("width")).toInt());
+        settings.setValue(QLatin1String(kExportHeightKey), options.value(QStringLiteral("height")).toInt());
+    }
+    if (options.contains(QStringLiteral("fill")))
+        settings.setValue(QLatin1String(kExportFillKey), options.value(QStringLiteral("fill")).toBool());
+    if (options.contains(QStringLiteral("quality")))
+        settings.setValue(QLatin1String(kExportQualityKey), options.value(QStringLiteral("quality")).toInt());
+    if (options.contains(QStringLiteral("keepUnder")))
+        settings.setValue(QLatin1String(kExportKeepUnderKey), options.value(QStringLiteral("keepUnder")).toBool());
+}
 
 QString pathOf(const QUrl& url) { return url.isLocalFile() ? url.toLocalFile() : url.toString(); }
 
@@ -202,6 +292,8 @@ MonitorBridge* MonitorBridge::create(QQmlEngine* qmlEngine, QJSEngine*) {
         bridge->setMotion(qmlEngine->singletonInstance<MotionBridge*>("Wabcut", "ProgramMotion"));
         bridge->setGraphicCanvas(qmlEngine->singletonInstance<GraphicCanvasBridge*>("Wabcut", "GraphicCanvas"));
         bridge->setSourceMonitor(qmlEngine->singletonInstance<SourceMonitorBridge*>("Wabcut", "SourceMonitor"));
+        // P1 (#19): Toggle Proxies and Playback Resolution are the preview settings MediaReadiness owns.
+        bridge->setMediaReadiness(qmlEngine->singletonInstance<MediaReadinessBridge*>("Wabcut", "MediaReadiness"));
     }
     return bridge;
 }
@@ -209,6 +301,7 @@ MonitorBridge* MonitorBridge::create(QQmlEngine* qmlEngine, QJSEngine*) {
 void MonitorBridge::setPlayback(PlaybackBridge* playback) { m_playback = playback; }
 void MonitorBridge::setSourceMonitor(SourceMonitorBridge* source) { m_source = source; }
 void MonitorBridge::setGraphicCanvas(GraphicCanvasBridge* canvas) { m_canvas = canvas; }
+void MonitorBridge::setMediaReadiness(MediaReadinessBridge* readiness) { m_readiness = readiness; }
 
 void MonitorBridge::setMotion(MotionBridge* motion) {
     m_motion = motion;
@@ -252,10 +345,20 @@ bool MonitorBridge::handlesCommand(const QString& id) {
         QStringLiteral("programMonitor.transparencyGrid"),
         QStringLiteral("sourceMonitor.transparencyGrid"),
         QStringLiteral("file.exportFrame"),
+        QStringLiteral("marker.exportFrames"), // P1 (#23): Markers > Export Frames at Markers…
         QStringLiteral("programMonitor.droppedFrameIndicator"),
         QStringLiteral("programMonitor.overlays"),
         QStringLiteral("programMonitor.audioTimeUnits"),
         QStringLiteral("monitor.toggleFullScreen"),
+        QStringLiteral("monitor.toggleProxies"), // P1 (#19): View > Use Proxies
+        QStringLiteral("monitor.playbackResolutionAuto"),
+        QStringLiteral("monitor.playbackResolutionFull"),
+        QStringLiteral("monitor.playbackResolutionHalf"),
+        QStringLiteral("monitor.playbackResolutionQuarter"),
+        QStringLiteral("monitor.pausedResolutionSame"), // P1 (#16): View > Paused Resolution
+        QStringLiteral("monitor.pausedResolutionFull"),
+        QStringLiteral("monitor.pausedResolutionHalf"),
+        QStringLiteral("monitor.pausedResolutionQuarter"),
         QStringLiteral("monitor.toggleCropDirectManipulation"),
         QStringLiteral("monitor.enableTransmit"),
         QStringLiteral("transport.playInToOut"),
@@ -321,6 +424,10 @@ bool MonitorBridge::runCommand(const QString& id, bool sourceFocused) {
         requestExportFrame(sourceFocused);
         return true;
     }
+    if (id == QLatin1String("marker.exportFrames")) {
+        requestExportFramesAtMarkers(false);
+        return true;
+    }
     if (id == QLatin1String("programMonitor.clearGuides")) {
         clearGuides();
         return true;
@@ -344,6 +451,24 @@ bool MonitorBridge::runCommand(const QString& id, bool sourceFocused) {
     }
     if (id == QLatin1String("monitor.toggleFullScreen")) {
         setFullScreen(!m_fullScreen);
+        return true;
+    }
+    if (id == QLatin1String("monitor.toggleProxies")) {
+        // P1 (#19): Premiere's View > Use Proxies; the preview settings are MediaReadiness's.
+        if (m_readiness)
+            m_readiness->setUseProxies(!m_readiness->useProxies());
+        return true;
+    }
+    if (id.startsWith(QLatin1String("monitor.playbackResolution"))) {
+        // Playback Resolution: Auto / Full / 1/2 / 1/4 (MediaReadiness's preview quality).
+        if (m_readiness)
+            m_readiness->setPreviewQuality(id.mid(QStringLiteral("monitor.playbackResolution").size()).toLower());
+        return true;
+    }
+    if (id.startsWith(QLatin1String("monitor.pausedResolution"))) {
+        // P1 (#16): Paused Resolution: Same as playback / Full / 1/2 / 1/4 (MediaReadiness's paused quality).
+        if (m_readiness)
+            m_readiness->setPausedQuality(id.mid(QStringLiteral("monitor.pausedResolution").size()).toLower());
         return true;
     }
     if (id == QLatin1String("monitor.enableTransmit")) {
@@ -731,11 +856,24 @@ QVariantMap MonitorBridge::exportFrameDefaults(bool source) const {
     out.insert(QStringLiteral("importIntoProject"), settings.value(QLatin1String(kExportImportKey), false).toBool());
     out.insert(QStringLiteral("formats"), formats);
     out.insert(QStringLiteral("available"), available);
+    // P1 (#23): the size, crop, JPEG quality and 2 MB cap picked last.
+    QVariantList sizes;
+    for (const FrameSize& f : kFrameSizes)
+        sizes << QVariantMap{{QStringLiteral("value"), QString::fromLatin1(f.value)}, {QStringLiteral("label"), tr(f.label)},
+                             {QStringLiteral("width"), f.width}, {QStringLiteral("height"), f.height}};
+    out.insert(QStringLiteral("sizes"), sizes);
+    out.insert(QStringLiteral("size"), settings.value(QLatin1String(kExportSizeKey), QStringLiteral("sequence")).toString());
+    out.insert(QStringLiteral("width"), settings.value(QLatin1String(kExportWidthKey), 1280).toInt());
+    out.insert(QStringLiteral("height"), settings.value(QLatin1String(kExportHeightKey), 720).toInt());
+    out.insert(QStringLiteral("fill"), settings.value(QLatin1String(kExportFillKey), true).toBool());
+    out.insert(QStringLiteral("quality"), settings.value(QLatin1String(kExportQualityKey), 100).toInt());
+    out.insert(QStringLiteral("keepUnder"), settings.value(QLatin1String(kExportKeepUnderKey), true).toBool());
+    out.insert(QStringLiteral("markers"), settings.value(QLatin1String(kExportMarkersKey), QStringLiteral("all")).toString());
     return out;
 }
 
 QString MonitorBridge::exportFrame(bool source, const QString& rawName, const QString& format, const QUrl& folder,
-                                   bool importIntoProject) {
+                                   bool importIntoProject, const QVariantMap& options) {
     if (!m_controller) {
         setMessage(tr("No project"));
         return {};
@@ -758,6 +896,11 @@ QString MonitorBridge::exportFrame(bool source, const QString& rawName, const QS
     command::Json params{{"format", format.toStdString()},
                          {"path", pathToUtf8(pathFromUtf8(QDir(dir).filePath(name).toStdString()))},
                          {"importIntoProject", importIntoProject}};
+    // P1 (#23): a size (YouTube thumbnail, vertical, custom), JPEG quality and the 2 MB cap.
+    if (const QString problem = addStillOptions(options, *still == exporter::StillFormat::Jpeg, params); !problem.isEmpty()) {
+        setMessage(problem);
+        return {};
+    }
     command::CommandRequest request;
     if (source) {
         if (!m_source || !m_source->loaded()) {
@@ -792,9 +935,127 @@ QString MonitorBridge::exportFrame(bool source, const QString& rawName, const QS
     settings.setValue(QLatin1String(kExportFolderKey), dir);
     settings.setValue(QLatin1String(kExportFormatKey), format);
     settings.setValue(QLatin1String(kExportImportKey), importIntoProject);
+    rememberStillOptions(options);
     const QString written = QString::fromStdString(result.data.value("path", std::string()));
-    setMessage(tr("Frame saved: %1").arg(QFileInfo(written).fileName()));
+    if (result.data.value("overLimit", false))
+        setMessage(tr("Frame saved: %1, but it is over 2 MB even at the lowest quality: pick a smaller size")
+                       .arg(QFileInfo(written).fileName()));
+    else
+        setMessage(tr("Frame saved: %1").arg(QFileInfo(written).fileName()));
     return written;
+}
+
+MonitorBridge::~MonitorBridge() {
+    if (m_framesJob)
+        m_framesJob->stop();
+}
+
+QVariantMap MonitorBridge::markerFrameCounts() const {
+    int all = 0;
+    int chapters = 0;
+    int highlights = 0;
+    if (const SequencePtr seq = m_controller ? m_controller->currentSequence() : nullptr) {
+        for (const Marker& m : seq->markers) {
+            ++all;
+            chapters += m.type == MarkerType::Chapter ? 1 : 0;
+            highlights += m.highlight ? 1 : 0;
+        }
+    }
+    return {{QStringLiteral("all"), all}, {QStringLiteral("chapters"), chapters}, {QStringLiteral("highlights"), highlights}};
+}
+
+bool MonitorBridge::exportFramesAtMarkers(const QVariantMap& options) {
+    if (!m_controller || !m_controller->currentSequence()) {
+        setMessage(tr("Open a sequence first"));
+        return false;
+    }
+    if (m_framesBusy) {
+        setMessage(tr("Frames are being exported already"));
+        return false;
+    }
+    const QString dir = folderOf(options.value(QStringLiteral("folder")));
+    if (dir.isEmpty() || !QDir(dir).exists()) {
+        setMessage(tr("Choose a folder for the frames"));
+        return false;
+    }
+    const QString format = options.value(QStringLiteral("format"), QStringLiteral("jpeg")).toString();
+    const auto still = exporter::stillFormatFromName(format.toStdString());
+    if (!still) {
+        setMessage(tr("Choose a format"));
+        return false;
+    }
+    const QString markers = options.value(QStringLiteral("markers"), QStringLiteral("all")).toString();
+    const bool importIntoProject = options.value(QStringLiteral("importIntoProject"), false).toBool();
+    command::Json params{{"folder", pathToUtf8(pathFromUtf8(dir.toStdString()))},
+                         {"format", format.toStdString()},
+                         {"markers", markers == QLatin1String("chapters") || markers == QLatin1String("highlights")
+                                         ? markers.toStdString()
+                                         : std::string("all")},
+                         {"importIntoProject", importIntoProject}};
+    if (const QString problem = addStillOptions(options, *still == exporter::StillFormat::Jpeg, params); !problem.isEmpty()) {
+        setMessage(problem);
+        return false;
+    }
+    if (!m_framesJob)
+        m_framesJob = std::make_unique<CommandJob>();
+    m_framesJob->setSynchronous(m_framesSynchronous);
+    const std::filesystem::path projectFile = m_controller->projectFile();
+    auto services = exporter::stillExportServices(
+        [projectFile](const std::filesystem::path& file) { return editor::describeMediaFile(file, projectFile); });
+    m_framesBusy = true;
+    m_framesProgress = 0.0;
+    m_framesStatus = tr("Exporting frames…");
+    emit framesChanged();
+    const QVariantMap remembered = options;
+    const bool started = m_framesJob->start(
+        this, m_controller, std::move(services),
+        CommandJob::Request{"sequence.exportFramesAtMarkers", std::move(params), tr("Export Frames at Markers").toStdString()},
+        [this](const QString& text, double progress) {
+            m_framesStatus = text;
+            m_framesProgress = progress;
+            emit framesChanged();
+        },
+        [this, dir, remembered, markers](const command::CommandResult& result) {
+            m_framesBusy = false;
+            m_framesProgress = -1.0;
+            m_framesStatus.clear();
+            emit framesChanged();
+            QString text;
+            const bool ok = result.ok();
+            if (ok) {
+                QSettings settings;
+                settings.setValue(QLatin1String(kExportFolderKey), dir);
+                settings.setValue(QLatin1String(kExportFormatKey), remembered.value(QStringLiteral("format")).toString());
+                settings.setValue(QLatin1String(kExportImportKey), remembered.value(QStringLiteral("importIntoProject")).toBool());
+                settings.setValue(QLatin1String(kExportMarkersKey), markers);
+                rememberStillOptions(remembered);
+                const int count = result.data.value("count", 0);
+                const int over = result.data.value("overLimit", 0);
+                text = result.data.contains("media") ? tr("%n still(s) saved and imported into the Thumbnails bin", "", count)
+                                                     : tr("%n still(s) saved to %1", "", count).arg(QDir::toNativeSeparators(dir));
+                if (over > 0)
+                    text += tr(" (%n over 2 MB even at the lowest quality)", "", over);
+            } else if (result.error && result.error->code == command::ErrorCode::Cancelled) {
+                text = tr("Export Frames at Markers stopped: the stills written so far stay in the folder");
+            } else {
+                text = tr("Export Frames at Markers: %1").arg(commandErrorText(result));
+            }
+            setMessage(text);
+            emit framesFinished(ok, text);
+        });
+    if (!started) {
+        m_framesBusy = false;
+        m_framesProgress = -1.0;
+        m_framesStatus.clear();
+        emit framesChanged();
+        setMessage(tr("Frames are being exported already"));
+    }
+    return started;
+}
+
+void MonitorBridge::cancelFramesAtMarkers() {
+    if (m_framesJob)
+        m_framesJob->cancel();
 }
 
 void MonitorBridge::storeGuides() {
@@ -838,6 +1099,103 @@ bool MonitorBridge::nudge(double dx, double dy) {
     if (m_canvas && m_canvas->active() && m_canvas->selectedLayer() != 0)
         return m_canvas->nudge(dx, dy);
     return false;
+}
+
+// ---- P1 (#17): the Program Monitor's edit overlay -------------------------------------------------------------------
+
+QString MonitorBridge::overlayTrack(const QString& mediaKeyText, bool fromSource) const {
+    const ProjectSnapshot snap = m_controller ? m_controller->snapshot() : nullptr;
+    const SequencePtr seq = m_controller ? m_controller->currentSequence() : nullptr;
+    if (!snap || !seq)
+        return {};
+    // How long the clip the drop makes is: the drop itself, dry-run on a copy of the project (the item's marks, a
+    // subclip's range, a still's length, a nested sequence's length all count as the real drop counts them).
+    editor::MediaDrop drop;
+    if (fromSource) {
+        if (!m_source || !m_source->mediaId().isValid())
+            return {};
+        drop.media = m_source->mediaId();
+    } else if (const auto media = detail::parseId<MediaId>(QLatin1Char('m'), mediaKeyText)) {
+        drop.media = *media;
+    } else if (const auto nested = parseSequenceKey(mediaKeyText)) {
+        drop.sourceSequence = *nested;
+    } else {
+        return {};
+    }
+    drop.sequence = seq->id;
+    drop.at = m_controller->playhead();
+    drop.mode = editor::DropMode::Overwrite;
+    drop.useSourceMarks = true;
+    EditSession trial{ProjectState{*snap}};
+    const auto dropped = editor::dropMedia(trial, drop);
+    const ProjectSnapshot after = trial.snapshot();
+    const Sequence* landed = after ? after->findSequence(seq->id) : nullptr;
+    if (!dropped || !landed)
+        return {};
+    std::optional<TimeRange> range;
+    for (const ClipId clip : dropped->placed) {
+        if (const auto found = landed->findClip(clip)) {
+            const TimeRange r = found->clip().timelineRange;
+            range = range ? TimeRange::fromStartEnd(std::min(range->start, r.start), std::max(range->end(), r.end())) : r;
+        }
+    }
+    if (!range || range->isEmpty())
+        return {};
+    // From the topmost targeted video track (else V1) up: the first unlocked one with nothing there.
+    TrackId base;
+    for (const TrackId id : edit::targetedTracks(*seq)) {
+        const Track* t = seq->findTrack(id);
+        if (t && t->kind == TrackKind::Video && !t->locked) {
+            base = id;
+            break;
+        }
+    }
+    bool reached = !base.isValid();
+    for (const TrackPtr& t : seq->videoTracks) {
+        if (!t)
+            continue;
+        reached = reached || t->id == base;
+        if (!reached || t->locked)
+            continue;
+        const bool busy = std::any_of(t->clips.begin(), t->clips.end(),
+                                      [&](const Clip& c) { return c.timelineRange.overlaps(*range); });
+        if (!busy)
+            return trackKey(t->id);
+    }
+    return {};
+}
+
+QString MonitorBridge::sequenceEndText() const {
+    const SequencePtr seq = m_controller ? m_controller->currentSequence() : nullptr;
+    return seq ? m_controller->formatTimecode(seq->contentEnd()) : QString();
+}
+
+QString MonitorBridge::replaceTarget() const {
+    const SequencePtr seq = m_controller ? m_controller->currentSequence() : nullptr;
+    if (!seq)
+        return {};
+    const Ticks at = m_controller->playhead();
+    const auto clipOn = [&](const Track* t) -> QString {
+        if (!t || t->kind != TrackKind::Video || t->locked)
+            return {};
+        const auto index = t->clipIndexAt(at);
+        return index ? clipKey(t->clips[*index].id) : QString();
+    };
+    // The targeted video tracks, topmost first (Premiere replaces on the target track).
+    std::vector<const Track*> targeted;
+    for (const TrackId id : edit::targetedTracks(*seq))
+        targeted.push_back(seq->findTrack(id));
+    for (auto t = seq->videoTracks.rbegin(); t != seq->videoTracks.rend(); ++t) {
+        if (*t && std::find(targeted.begin(), targeted.end(), t->get()) != targeted.end()) {
+            if (const QString key = clipOn(t->get()); !key.isEmpty())
+                return key;
+        }
+    }
+    for (auto t = seq->videoTracks.rbegin(); t != seq->videoTracks.rend(); ++t) {
+        if (const QString key = clipOn(t->get()); !key.isEmpty())
+            return key;
+    }
+    return {};
 }
 
 } // namespace wabcut::app

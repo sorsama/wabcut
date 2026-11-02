@@ -427,7 +427,7 @@ TEST_CASE("Appearance: high contrast and the interface size from Settings", "[ap
     REQUIRE(QMetaObject::invokeMethod(toggle, "toggle"));
     REQUIRE(QMetaObject::invokeMethod(toggle, "toggled"));
     CHECK(shell.theme->property("highContrast").toBool());
-    REQUIRE(QMetaObject::invokeMethod(tabs, "activated", Q_ARG(int, 1)));
+    REQUIRE(QMetaObject::invokeMethod(tabs, "activated", Q_ARG(int, 2))); // P1 #47: 90 % comes first
     CHECK(shell.preferences->property("uiScale").toInt() == 125);
     CHECK(row->property("description").toString() != before); // "applies when Wabcut restarts"
     const QStringList messages = takeMessages();

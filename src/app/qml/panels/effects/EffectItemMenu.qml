@@ -82,6 +82,20 @@ Item {
             }
         }
         ContextMenuItem {
+            // 0.6 (card #71): Premiere's master clip effects - on the media of the selected clips, so every clip of it
+            // (and every new one) has the effect.
+            objectName: "applyToMasterItem"
+            text: qsTr("Apply to Master Clip")
+            iconName: "layers"
+            visible: !root.isTransition && !(root.row.plugin ?? false) && root.kind !== ""
+            height: visible ? implicitHeight : 0
+            enabled: root.usable
+            onTriggered: {
+                const result = ProjectController.effectControls.applyToSelectedClips("master:" + root.itemId)
+                root.status(result.message ?? result.error ?? "")
+            }
+        }
+        ContextMenuItem {
             objectName: "defaultTransitionItem"
             visible: root.isTransition
             height: visible ? implicitHeight : 0

@@ -3,11 +3,13 @@
 #include "AgentController.h"
 #include "BridgeIds.h"
 #include "ExportController.h"
+#include "LayoutBridge.h" // 0.6 (P1 #51): the facecam region stored per gameplay file
 #include "PlaybackBridge.h"
 #include "ProjectController.h"
 #include "ShortsBridge.h" // BridgeJob, setPreviewFrameContext, image://wabcut-frames
 
 #include <wabcut/ai/edit/TranscriptCommands.h>
+#include <wabcut/ai/highlights/HighlightCommands.h> // 0.6 (P1 #56): audioRolesFromTitles
 #include <wabcut/command/Engine.h>
 #include <wabcut/command/ExecutionContext.h>
 #include <wabcut/command/Registry.h>
@@ -20,8 +22,10 @@
 #include <QLocale>
 #include <QQmlEngine>
 #include <QRegularExpression>
+#include <QSettings>
 #include <QUrl>
 
+#include <wabcut/model/EditOps.h>
 #include <wabcut/model/ProjectState.h>
 #include <wabcut/model/Resolve.h>
 
@@ -424,7 +428,67 @@ QVariantMap HighlightsBridge::findParams(const QVariantMap& options) const {
         if (!words.isEmpty())
             p.insert(QStringLiteral("keywords"), words);
     }
+    // 0.6 (P1 #56): the user's corrections of the streams' roles, by stream; an unknown entry is "auto". Sent only when
+    // one is not "auto" (the trailing "auto" ones dropped), so the titles and the classifier decide the rest.
+    if (options.contains(QStringLiteral("audioRoles"))) {
+        QStringList roles;
+        for (const QVariant& v : options.value(QStringLiteral("audioRoles")).toList()) {
+            const QString role = v.toString();
+            const bool known = role == QLatin1String("game") || role == QLatin1String("mic") ||
+                               role == QLatin1String("mixed") || role == QLatin1String("ignore");
+            roles << (known ? role : QStringLiteral("auto"));
+            if (roles.size() >= 16)
+                break;
+        }
+        while (!roles.isEmpty() && roles.last() == QLatin1String("auto"))
+            roles.removeLast();
+        if (!roles.isEmpty())
+            p.insert(QStringLiteral("audioRoles"), roles);
+    }
     return p;
+}
+
+QVariantList HighlightsBridge::audioStreams() const {
+    QVariantList out;
+    const ProjectSnapshot snap = m_controller ? m_controller->snapshot() : ProjectSnapshot{};
+    const SequencePtr seq = m_controller ? m_controller->currentSequence() : SequencePtr{};
+    if (!snap || !seq)
+        return out;
+    // The recording: the video media of the sequence's clips with the most audio streams (the first one on a tie).
+    const MediaItem* recording = nullptr;
+    for (const TrackPtr& track : seq->videoTracks) {
+        for (const Clip& c : track->clips) {
+            const MediaItem* media = snap->findMedia(c.media);
+            if (media && !media->isGenerator() && !media->info.video.empty() &&
+                (!recording || media->info.audio.size() > recording->info.audio.size()))
+                recording = media;
+        }
+    }
+    if (!recording || recording->info.audio.empty())
+        return out;
+    // The roles the last find used for it, when that find was on this sequence.
+    QStringList found;
+    if (m_controller->currentSequenceId() == m_findSequence) {
+        for (const QVariant& r : m_recordings) {
+            const QVariantMap rec = r.toMap();
+            if (rec.value(QStringLiteral("media")).toULongLong() == recording->id.value) {
+                found = rec.value(QStringLiteral("audioRoles")).toStringList();
+                break;
+            }
+        }
+    }
+    const std::vector<wabcut::edit::SourceTrackName> names = wabcut::edit::sourceTrackNames(recording->info);
+    const std::vector<std::string> named = ai::highlights::audioRolesFromTitles(recording->info);
+    for (std::size_t i = 0; i < recording->info.audio.size(); ++i) {
+        const auto index = static_cast<qsizetype>(i);
+        out.append(QVariantMap{
+            {QStringLiteral("index"), static_cast<int>(i)},
+            {QStringLiteral("title"), QString::fromStdString(recording->info.audio[i].title).trimmed()},
+            {QStringLiteral("name"), i < names.size() ? QString::fromStdString(names[i].name) : QString()},
+            {QStringLiteral("named"), i < named.size() ? QString::fromStdString(named[i]) : QString()},
+            {QStringLiteral("found"), index < found.size() ? found.at(index) : QString()}});
+    }
+    return out;
 }
 
 QVariantList HighlightsBridge::reelMoments() const {
@@ -473,11 +537,16 @@ QVariantMap HighlightsBridge::shortParams(int rank, const QVariantMap& options) 
     const Moment* m = findMoment(rank);
     if (!m)
         return {};
+    return shortParamsFor(m_sequence, m->start, m->end, m->title, options);
+}
+
+QVariantMap HighlightsBridge::shortParamsFor(SequenceId sequence, double startSeconds, double endSeconds,
+                                            const QString& title, const QVariantMap& options) const {
     QVariantMap p;
-    p.insert(QStringLiteral("sequence"), static_cast<qulonglong>(m_sequence.value));
-    p.insert(QStringLiteral("start"), m->start);
-    p.insert(QStringLiteral("end"), m->end);
-    p.insert(QStringLiteral("title"), m->title);
+    p.insert(QStringLiteral("sequence"), static_cast<qulonglong>(sequence.value));
+    p.insert(QStringLiteral("start"), startSeconds);
+    p.insert(QStringLiteral("end"), endSeconds);
+    p.insert(QStringLiteral("title"), title);
     // The layout (layout.apply's names and ranges); auto picks the split when there is a facecam.
     const QString layout = options.value(QStringLiteral("layout")).toString();
     if (layout == QLatin1String("auto") || layout == QLatin1String("verticalSplit") ||
@@ -527,7 +596,7 @@ QVariantMap HighlightsBridge::shortParams(int rank, const QVariantMap& options) 
     const double minLength = options.contains(QStringLiteral("minLength"))
                                  ? clampTo(options.value(QStringLiteral("minLength")).toDouble(), 0, 180)
                                  : 0.0;
-    const double length = m->end - m->start;
+    const double length = endSeconds - startSeconds;
     if (const double missing = minLength - (length + before + after); missing > 0) {
         before += missing * 2.0 / 3.0;
         after += missing / 3.0;
@@ -543,12 +612,12 @@ QVariantMap HighlightsBridge::shortParams(int rank, const QVariantMap& options) 
     }
     double roomAfter = 30.0;
     if (const ProjectSnapshot snap = m_controller ? m_controller->snapshot() : ProjectSnapshot{}) {
-        if (const Sequence* seq = snap->findSequence(m_sequence)) {
+        if (const Sequence* seq = snap->findSequence(sequence)) {
             const Ticks end = std::max(seq->duration, seq->contentEnd());
-            roomAfter = std::max(0.0, end.toSeconds() - m->end);
+            roomAfter = std::max(0.0, end.toSeconds() - endSeconds);
         }
     }
-    const double roomBefore = std::max(0.0, m->start);
+    const double roomBefore = std::max(0.0, startSeconds);
     if (before > roomBefore) {
         after = std::min({30.0, roomAfter, after + (before - roomBefore)});
         before = roomBefore;
@@ -1310,6 +1379,144 @@ QString HighlightsBridge::makeShort(int rank, const QVariantMap& options) {
     if (!error.isEmpty())
         setMessage(error);
     return error;
+}
+
+// --- 0.6 (D2 #9): a Short of the In to Out range, without a find --------------------------------------------------------
+
+namespace {
+
+/// The Short options the user last set in the panel's popover (Preferences, QSettings "highlights/short*"), for a Short
+/// made from the menu or a key: the ones `options` does not give.
+QVariantMap withLastShortOptions(QVariantMap options, const MediaItem* gameplay) {
+    const QSettings settings;
+    // 0.6 (P1 #51): the Short options beyond the length (highlights/shortOptions: layout, split, facecamOnTop, zoom,
+    // captions, hookTitle, and useRegion: the facecam region drawn in the layout picker for the gameplay's file).
+    const QJsonDocument doc = QJsonDocument::fromJson(settings.value(QStringLiteral("highlights/shortOptions")).toString().toUtf8());
+    const QVariantMap saved = doc.isObject() ? doc.object().toVariantMap() : QVariantMap{};
+    if (!options.contains(QStringLiteral("layout")) && saved.contains(QStringLiteral("layout")))
+        options.insert(QStringLiteral("layout"), saved.value(QStringLiteral("layout")));
+    const QString layout = options.value(QStringLiteral("layout")).toString();
+    QStringList keys{QStringLiteral("captions"), QStringLiteral("hookTitle")};
+    if (layout != QLatin1String("verticalBlurFill"))
+        keys << QStringLiteral("split") << QStringLiteral("facecamOnTop");
+    if (layout != QLatin1String("verticalSplit"))
+        keys << QStringLiteral("zoom");
+    for (const QString& key : keys) {
+        if (!options.contains(key) && saved.contains(key))
+            options.insert(key, saved.value(key));
+    }
+    if (!options.contains(QStringLiteral("facecamRegion")) && saved.value(QStringLiteral("useRegion")).toBool() && gameplay) {
+        if (const QVariantMap region = LayoutBridge::storedRegionFor(*gameplay); !region.isEmpty())
+            options.insert(QStringLiteral("facecamRegion"), region);
+    }
+    if (!options.contains(QStringLiteral("handleBefore")))
+        options.insert(QStringLiteral("handleBefore"), settings.value(QStringLiteral("highlights/shortLeadIn"), 3.0));
+    if (!options.contains(QStringLiteral("handleAfter")))
+        options.insert(QStringLiteral("handleAfter"), settings.value(QStringLiteral("highlights/shortTail"), 1.0));
+    if (!options.contains(QStringLiteral("minLength")))
+        options.insert(QStringLiteral("minLength"), settings.value(QStringLiteral("highlights/shortMinLength"), 0));
+    if (!options.contains(QStringLiteral("captionPreset")))
+        options.insert(QStringLiteral("captionPreset"),
+                       settings.value(QStringLiteral("highlights/shortCaptionPreset"), QStringLiteral("Shorts")));
+    if (!options.contains(QStringLiteral("captions")))
+        options.insert(QStringLiteral("captions"), true);
+    if (!options.contains(QStringLiteral("hookTitle")))
+        options.insert(QStringLiteral("hookTitle"), true);
+    return options;
+}
+
+} // namespace
+
+QString HighlightsBridge::makeShortFromRange(double startSeconds, double endSeconds, const QVariantMap& options) {
+    if (!shortAvailable())
+        return tr("Shorts from highlights arrive with the next engine update");
+    if (!m_controller || !m_controller->currentSequence()) {
+        setMessage(tr("Open a sequence first"));
+        return tr("Open a sequence first");
+    }
+    const SequencePtr seq = m_controller->currentSequence();
+    // The range inside the sequence.
+    const double sequenceEnd = std::max(seq->duration, seq->contentEnd()).toSeconds();
+    const double end = std::min({std::isfinite(endSeconds) ? endSeconds : 0.0, sequenceEnd});
+    const double start = clampTo(std::isfinite(startSeconds) ? startSeconds : 0.0, 0.0, std::max(0.0, end));
+    if (!(end - start > 1e-6)) {
+        const QString why = tr("Set In and Out first");
+        setMessage(why);
+        return why;
+    }
+    // Its title: the first marker inside the range, else "<sequence> <In TC>".
+    QString title;
+    double markerAt = 0;
+    for (const Marker& marker : seq->markers) {
+        const double at = marker.start.toSeconds();
+        if (at < start - 1e-6 || at >= end - 1e-6 || marker.name.empty())
+            continue;
+        if (title.isEmpty() || at < markerAt) {
+            title = QString::fromStdString(marker.name).trimmed();
+            markerAt = at;
+        }
+    }
+    if (title.isEmpty()) {
+        const Ticks inTicks{static_cast<std::int64_t>(std::llround(start * static_cast<double>(kTicksPerSecond)))};
+        title = QStringLiteral("%1 %2").arg(QString::fromStdString(seq->name).trimmed(),
+                                            m_controller->formatTimecode(inTicks));
+    }
+    stopPreview();
+    const ProjectSnapshot snap = m_controller->snapshot();
+    QPointer<HighlightsBridge> self(this);
+    const QString error = runJob(QStringLiteral("short"), tr("Making the short"), "highlights.toShort",
+                                 shortParamsFor(m_controller->currentSequenceId(), start, end, title,
+                                                withLastShortOptions(options, LayoutBridge::gameplayMediaOf(*snap, *seq))),
+                                 true, [self](const command::CommandResult& result, bool) {
+                                     if (!self)
+                                         return;
+                                     if (!result.ok())
+                                         self->setMessage(errorText(result));
+                                     else
+                                         self->openCreated(result);
+                                 });
+    if (!error.isEmpty())
+        setMessage(error);
+    return error;
+}
+
+QString HighlightsBridge::makeShortFromInOut(const QVariantMap& options) {
+    if (!m_controller || !m_controller->currentSequence()) {
+        setMessage(tr("Open a sequence first"));
+        return tr("Open a sequence first");
+    }
+    const auto in = m_controller->markIn();
+    const auto out = m_controller->markOut();
+    if (!in || !out || *out <= *in) {
+        setMessage(tr("Set In and Out first"));
+        return tr("Set In and Out first");
+    }
+    return makeShortFromRange(in->toSeconds(), out->toSeconds(), options);
+}
+
+bool HighlightsBridge::handlesCommand(const QString& commandId) {
+    return commandId == QLatin1String("sequence.makeShortFromInOut");
+}
+
+QVariantMap HighlightsBridge::commandAvailability(const QString& commandId) const {
+    const auto state = [](bool handled, bool enabled, const QString& reason = {}) {
+        return QVariantMap{{QStringLiteral("handled"), handled},
+                           {QStringLiteral("enabled"), enabled},
+                           {QStringLiteral("reason"), reason}};
+    };
+    if (!handlesCommand(commandId))
+        return state(false, false);
+    if (!m_controller || !m_controller->currentSequence())
+        return state(true, false, tr("Open a sequence first"));
+    if (!shortAvailable())
+        return state(true, false, tr("Shorts from highlights arrive with the next engine update"));
+    const auto in = m_controller->markIn();
+    const auto out = m_controller->markOut();
+    if (!in || !out || *out <= *in)
+        return state(true, false, tr("Set In and Out first"));
+    if (busy())
+        return state(true, false, tr("Busy"));
+    return state(true, true);
 }
 
 // --- 0.4: Shorts of every chosen moment, and their exports ---------------------------------------------------------------

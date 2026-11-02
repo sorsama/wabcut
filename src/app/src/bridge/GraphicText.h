@@ -44,6 +44,8 @@ struct TextBlockRun {
     bool underline = false;
     double tracking = 0.0; ///< 1/1000 em
     double leading = 0.0;  ///< line height, pixels; 0 = automatic
+    bool kerning = true;   ///< 0.6
+    TextCaps caps = TextCaps::Normal;
 };
 
 class TextBlock {

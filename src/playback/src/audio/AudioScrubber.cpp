@@ -279,7 +279,7 @@ struct AudioScrubber::Impl {
     /// `reversed`, the window that ends at `at` played backwards (it starts at `at` and runs back in time). `start` is
     /// set to where the window starts in the sequence.
     std::unique_ptr<ScrubWindow> renderWindow(const EditSession& from, SequenceId id, Ticks at, bool reversed, Ticks& start) {
-        const ProjectSnapshot snapshot = from.snapshot();
+        const ProjectSnapshot snapshot = from.shown();
         const SequencePtr seq = snapshot ? snapshot->sequencePtr(id) : nullptr;
         if (!seq) {
             return nullptr;

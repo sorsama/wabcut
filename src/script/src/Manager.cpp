@@ -320,6 +320,9 @@ void ExtensionManager::attach(EditSession& session, const command::CommandRegist
     m_services = std::move(services);
     m_project = projectFile;
     m_listener = session.addListener([this](const ChangeEvent& change) {
+        if (change.kind == ChangeKind::Preview) {
+            return; // a preview (an audition's take playing) is not a command and leaves the project as it was
+        }
         const char* kind = change.kind == ChangeKind::Undo   ? "undo"
                            : change.kind == ChangeKind::Redo ? "redo"
                            : change.kind == ChangeKind::Edit ? "edit"

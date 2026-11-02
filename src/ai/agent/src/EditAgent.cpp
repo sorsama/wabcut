@@ -288,6 +288,7 @@ std::string_view toString(AgentStatus status) {
     case AgentStatus::NoChanges: return "NoChanges";
     case AgentStatus::VerificationFailed: return "VerificationFailed";
     case AgentStatus::StepLimit: return "StepLimit";
+    case AgentStatus::Stuck: return "Stuck";
     case AgentStatus::BudgetExceeded: return "BudgetExceeded";
     case AgentStatus::TimedOut: return "TimedOut";
     case AgentStatus::Cancelled: return "Cancelled";
@@ -669,6 +670,14 @@ AgentOutcome EditAgent::runUnguarded(IChatModel& model, const AgentRequest& requ
         }
     }
     int verificationsLeft = limits.verificationRetries;
+    // 0.6 (D6: 15 of 39 local-eval misses were one refused call repeated to the step limit): the calls the app refused,
+    // by tool and arguments, with the staged revision they were refused at (the same call after an edit may work).
+    struct Refusal {
+        int count = 0;
+        std::uint64_t revision = 0;
+        CommandError error{ErrorCode::InvalidRequest, {}, nullptr};
+    };
+    std::map<std::string, Refusal> refusals;
     std::optional<std::uint64_t> verifiedAt; // staging revision the report describes
     bool finished = false;
     int stepsThisRun = 0;
@@ -829,17 +838,20 @@ AgentOutcome EditAgent::runUnguarded(IChatModel& model, const AgentRequest& requ
             const ProjectSnapshot before = stagedNow();
             CommandError error{ErrorCode::InvalidRequest, {}, nullptr};
             bool failed = false;
+            std::string refusalKey; // the call as the refusal memory knows it: the tool and its arguments
             if (!spec) {
                 failed = true;
                 ++out.invalidToolCalls;
                 error = {ErrorCode::UnknownCommand, "There is no tool named " + call.name + ".", nullptr};
                 step.title = call.name;
+                refusalKey = "?" + call.name;
             } else if (!call.arguments.is_object()) {
                 failed = true;
                 ++out.invalidToolCalls;
                 error = {ErrorCode::InvalidParams, "The arguments are not a JSON object: " + call.argumentsText.substr(0, 200), nullptr};
                 step.title = spec->title;
                 step.tool = spec->name;
+                refusalKey = spec->name + "\n" + call.argumentsText;
             } else {
                 step.tool = spec->name;
                 Json params = withoutStrictNulls(call.arguments, spec->params);
@@ -848,6 +860,7 @@ AgentOutcome EditAgent::runUnguarded(IChatModel& model, const AgentRequest& requ
                     params["sequence"] = out.sequence.value;
                 }
                 step.params = params;
+                refusalKey = spec->name + "\n" + params.dump();
                 // The schema first (review wave 3, P1-2): descriptions and commands only ever see well-typed params.
                 const auto issues = command::validateAgainstSchema(spec->params, params);
                 if (!issues.empty()) {
@@ -883,6 +896,7 @@ AgentOutcome EditAgent::runUnguarded(IChatModel& model, const AgentRequest& requ
                     !permitted(*spec, m_options.allowed, m_options.additiveProjectCommands, m_options.analysisCommands)) {
                     failed = true;
                     error = {ErrorCode::PermissionDenied, "The assistant may not use " + spec->name + " here.", nullptr};
+                    refusalKey = spec->name; // refused whatever the arguments
                 }
                 if (!failed && spec->capability == command::Capability::EditProject && !m_options.allowed.has(spec->capability)) {
                     // An additive command: it may only add sequences, at most maxNewSequences per request (C.11: library
@@ -899,6 +913,12 @@ AgentOutcome EditAgent::runUnguarded(IChatModel& model, const AgentRequest& requ
                                      std::to_string(made) + " made so far).",
                                  nullptr};
                     }
+                }
+                // The same call the command refused at this same staged state: refused again without running it.
+                if (const auto seen = refusals.find(refusalKey);
+                    !failed && seen != refusals.end() && seen->second.revision == staging.revision()) {
+                    failed = true;
+                    error = seen->second.error;
                 }
                 if (!failed && spec->touchesFiles) {
                     // S5-P1-1: a model never makes the app read or write a file it picked. Put aside for the user, who
@@ -979,7 +999,40 @@ AgentOutcome EditAgent::runUnguarded(IChatModel& model, const AgentRequest& requ
                 step.kind = AgentStep::Kind::Error;
                 step.ok = false;
                 step.detail = error.message;
-                result.content = errorJson(error).dump();
+                Json content = errorJson(error);
+                if (error.code != ErrorCode::Cancelled && error.code != ErrorCode::TimedOut) {
+                    // A refusal: said plainly, so the model changes course. The identical call at the same staged state
+                    // is refused again without running (once), then the run ends honestly instead of looping to the
+                    // step limit.
+                    Refusal& seen = refusals[refusalKey];
+                    if (seen.count > 0 && seen.revision != staging.revision()) {
+                        seen.count = 0; // the staged project changed since: the call may work now
+                    }
+                    ++seen.count;
+                    seen.revision = staging.revision();
+                    seen.error = error;
+                    if (seen.count == 1) {
+                        // Recovery first: offering "or answer the user" here made the small local tier give up after one
+                        // refusal (F2AI eval run 1); most refusals are an id or value it guessed, which a read fixes.
+                        content["next"] = "The app refused this call. Fix it and call again: if the error names a clip, "
+                                          "track, cue, bin or media that does not exist, read the real ids first "
+                                          "(sequence_summary), then retry with them; if a value is out of range or a "
+                                          "parameter is wrong, correct it. Do not send the same call again unchanged.";
+                    } else if (seen.count == 2) {
+                        content["next"] = "Refused again: this exact call was already refused, so it was not run. Change "
+                                          "course now: different arguments, another tool, or answer the user and say what "
+                                          "could not be done. Sending it once more ends the request.";
+                        step.detail = "Refused again (not run): " + error.message;
+                    } else {
+                        stopped = true;
+                        out.status = AgentStatus::Stuck;
+                        out.error = "Stopped: the assistant kept repeating \"" + step.title + "\", which was refused: " +
+                                    error.message;
+                        content["next"] = "Not run: the request was stopped because this refused call was repeated.";
+                        step.detail = "Refused again (not run); the request was stopped: " + error.message;
+                    }
+                }
+                result.content = content.dump();
                 result.isError = true;
             }
             out.steps.push_back(step);

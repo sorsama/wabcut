@@ -101,6 +101,7 @@ struct DrawShadow {
     double angle = 0.0;
     double distance = 0.0;
     double softness = 0.0;
+    double size = 0.0; ///< 0.6: spread before the blur, pixels
 
     bool operator==(const DrawShadow&) const = default;
 };
@@ -133,6 +134,10 @@ struct DrawTextRun {
     double tracking = 0.0;
     double leading = 0.0;
     double baselineShift = 0.0;
+    bool kerning = true; ///< 0.6
+    TextCaps caps = TextCaps::Normal;
+    bool fauxBold = false;
+    bool fauxItalic = false;
 
     bool operator==(const DrawTextRun&) const = default;
 };
@@ -148,6 +153,15 @@ struct DrawCluster {
     double rotation = 0.0; ///< degrees, about the cluster's centre
 
     bool operator==(const DrawCluster&) const = default;
+};
+
+/// 0.6: a text stroke at the draw time (TextStroke).
+struct DrawTextStroke {
+    Rgba color{0.0, 0.0, 0.0, 1.0};
+    double width = 0.0;
+    StrokePosition position = StrokePosition::Outside;
+
+    bool operator==(const DrawTextStroke&) const = default;
 };
 
 struct DrawText {
@@ -173,6 +187,9 @@ struct DrawText {
     bool pathForceAlignment = false;
     double firstMargin = 0.0;
     double lastMargin = 0.0;
+    /// 0.6: the vertical alignment in a paragraph box, and the enabled strokes (widths at this time, colours resolved).
+    TextVerticalAlign verticalAlign = TextVerticalAlign::Top;
+    std::vector<DrawTextStroke> strokes;
 
     bool operator==(const DrawText&) const = default;
 };
@@ -274,6 +291,13 @@ DrawList resolveGraphicClip(const ProjectState& state, const Clip& clip, Ticks t
 
 /// The content box of `layer` in its own pixels at graphic time `time` (groups: their visible children's, transformed).
 Box layerBounds(const GraphicLayer& layer, Ticks time, const ResolveOptions& options = {});
+
+/// 0.6: what a text layer's text is at graphic time `time`: the runs of its Source Text key there (TextContent::sourceKey),
+/// with its size, tracking, leading and baseline keys applied to them (sizes in proportion to the first run's, the
+/// others by the same amount, each kept in its range); the result has no keys and no other versions.
+TextContent textAt(const TextContent& text, Ticks time);
+/// 0.6: the runs a text layer shows at graphic time `time` before its size and spacing keys (its Source Text version).
+const std::vector<TextRun>& sourceRunsAt(const TextContent& text, Ticks time);
 
 /// The units a text-range animator steps over in `text` (TextUnit): byte ranges in order.
 std::vector<std::pair<std::size_t, std::size_t>> textUnits(std::string_view text, TextUnit unit, std::string_view language,

@@ -10,6 +10,7 @@
 #include <wabcut/editor/CameraCards.h>
 #include <wabcut/editor/SourceEdit.h>
 #include <wabcut/model/ImageSequence.h>
+#include <wabcut/model/MasterClipEffects.h>
 #include <wabcut/model/MediaLocator.h>
 #include <wabcut/model/ProjectOps.h>
 #include <wabcut/model/RedactionMedia.h>
@@ -208,6 +209,12 @@ void SourceMonitorBridge::setProgramPlayback(PlaybackBridge* playback) {
         connect(playback, &PlaybackBridge::transportChanged, this, [this] {
             if (m_programPlayback && m_programPlayback->playing() && playing())
                 pause();
+        });
+        // P1 (#16): a new preview quality, paused resolution or proxy table reaches the loaded source too (it was
+        // only read when a source loaded).
+        connect(playback, &PlaybackBridge::previewSettingsChanged, this, [this] {
+            if (m_playback && m_programPlayback)
+                m_playback->video().scheduler().setPreview(m_programPlayback->previewSettings());
         });
     }
 }
@@ -424,6 +431,9 @@ bool SourceMonitorBridge::loadItem(const MediaItem& source, MediaId media, std::
     // A subclip plays its file in media time like any item (the monitor's positions and marks are media times); the
     // edits made from the monitor use the item itself, so a restricted subclip's range still bounds them.
     copy.subclip.reset();
+    // Fix F1A (card #71): its Master Clip Effects (a subclip's master item's too) come in with ids of the private
+    // project (syncMasterEffects below): the project's own would collide there.
+    copy.masterEffects.clear();
     auto withMedia = edit::addMedia(ProjectState{}, copy);
     if (!withMedia)
         return false;
@@ -448,8 +458,10 @@ bool SourceMonitorBridge::loadItem(const MediaItem& source, MediaId media, std::
     m_sourceSession = std::move(session);
     m_copyMedia = withMedia->id;
     m_redactionIds.clear();
+    m_masterEffectIds.clear();
     m_media = media;
     syncRedactions();
+    syncMasterEffects();
     m_playback = std::make_unique<editor::PlaybackSession>(*m_sourceSession, sessionOptions());
     m_playback->setSequence(decodable ? withSequence->id : SequenceId{});
     m_length = length.value > 0 ? std::optional<Ticks>(length) : std::nullopt; // applyLoop reads it
@@ -541,6 +553,7 @@ void SourceMonitorBridge::onProjectChanged() {
     }
     if (m_media) {
         syncRedactions();
+        syncMasterEffects(); // fix F1A: a master clip effect added, edited, reordered or removed follows here
     }
     const auto before = m_recent.size();
     std::erase_if(m_recent, [&](MediaId id) { return snap->findMedia(id) == nullptr; });
@@ -577,6 +590,45 @@ void SourceMonitorBridge::syncRedactions() {
     }
     next.redactions = std::move(mine);
     [[maybe_unused]] const auto committed = m_sourceSession->commit("Redactions", next);
+}
+
+void SourceMonitorBridge::syncMasterEffects() {
+    if (!m_controller || !m_sourceSession || !m_media) {
+        return;
+    }
+    const ProjectSnapshot snap = m_controller->snapshot();
+    const ProjectSnapshot current = m_sourceSession->snapshot();
+    const MediaItem* copy = current ? current->findMedia(m_copyMedia) : nullptr;
+    if (!snap || !copy) {
+        return;
+    }
+    ProjectState next = *current;
+    EffectStack mine = masterEffectsOf(*snap, m_media);
+    for (EffectInstance& e : mine) {
+        auto [it, fresh] = m_masterEffectIds.try_emplace(e.id.value);
+        if (fresh) {
+            it->second = next.ids.allocate<EffectInstanceId>();
+        }
+        e.id = it->second;
+    }
+    if (copy->masterEffects == mine) {
+        return;
+    }
+    MediaItem item = *copy;
+    item.masterEffects = std::move(mine);
+    for (MediaPtr& m : next.media) {
+        if (m && m->id == m_copyMedia) {
+            m = std::make_shared<const MediaItem>(std::move(item));
+            break;
+        }
+    }
+    [[maybe_unused]] const auto committed = m_sourceSession->commit("Master Clip Effects", next);
+}
+
+EffectStack SourceMonitorBridge::shownMasterEffects() const {
+    const ProjectSnapshot current = m_sourceSession ? m_sourceSession->snapshot() : nullptr;
+    const MediaItem* copy = current ? current->findMedia(m_copyMedia) : nullptr;
+    return copy ? copy->masterEffects : EffectStack{};
 }
 
 void SourceMonitorBridge::setMessage(const QString& message) {

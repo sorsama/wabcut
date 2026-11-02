@@ -86,6 +86,11 @@ struct ColorPipeline {
     /// HDR project), PQ or HLG (an HDR file). The display is always SDR here (an HDR project shows its tone-mapped
     /// preview). Ignored by the default pipeline.
     color::OutputTarget exportTarget = color::OutputTarget::Sdr;
+    /// 0.6 (#72): an export that reports what SDR Conform mapped: the output pass writes, in the alpha of an opaque export
+    /// output, (3 - flags) / 3 with flag 1 = the pixel was brighter than the SDR white (tone-mapped) and 2 = outside the
+    /// target's gamut (gamut-mapped); conformFlagsOf() reads them back. Only an export's own source sets it (frames are
+    /// opaque there); never the monitor.
+    bool conformStats = false;
 
     /// A managed working space (Wide Gamut or HDR; ColorManagement::managed). Direct Rec.709 and Disable Color
     /// Management keep the display-referred pipeline (Direct Rec.709 tone-maps HDR and log media on input).
@@ -105,6 +110,13 @@ inline OutputTransform outputTransformFor(const ColorPipeline& pipeline, OutputR
 /// A managed pipeline's output target for `role` (the display is SDR).
 inline color::OutputTarget outputTargetFor(const ColorPipeline& pipeline, OutputRole role) {
     return role == OutputRole::Display ? color::OutputTarget::Sdr : pipeline.exportTarget;
+}
+
+/// 0.6 (#72): the SDR Conform flags of an output pixel's alpha (ColorPipeline::conformStats): 1 tone-mapped, 2
+/// gamut-mapped. `alpha` in [0, 1] as read back (8-bit or 2-bit alpha).
+inline int conformFlagsOf(double alpha) {
+    const int level = static_cast<int>(alpha * 3.0 + 0.5);
+    return 3 - (level < 0 ? 0 : level > 3 ? 3 : level);
 }
 
 /// The pipeline of a project's colour management (display and export Rec.709, as the default pipeline has).

@@ -14,6 +14,35 @@ Flickable {
     signal activated(string key, string kind)
     signal menuRequested(string key, string kind, Item target, point position, real fraction)
     signal saveLayoutRequested()
+    /// P1 round (#40): a card's usage badge was clicked (the panel lists where the item is used).
+    signal usageRequested(string key, Item target, point position)
+    /// P1 round (#41): a bin card drags inside the Library only (LibraryCard.binDragMoved); on release the panel moves
+    /// it into the bin under the pointer, else by (`dx`, `dy`) on the canvas like any card.
+    signal binDragMoved(point scenePosition)
+    signal binDragFinished(point scenePosition, real dx, real dy)
+
+    /// P1 round (#41): the bin card a Library drag of bins would drop into ("none": none).
+    property string dropTarget: "none"
+    /// The key of the front card under the scene point ("" = none).
+    function keyAt(sceneX: real, sceneY: real): string {
+        const p = canvas.mapFromItem(null, sceneX, sceneY)
+        const inView = root.mapFromItem(null, sceneX, sceneY)
+        if (inView.x < 0 || inView.y < 0 || inView.x >= root.width || inView.y >= root.height)
+            return ""
+        let found = ""
+        let front = -Infinity
+        const places = Library.freeform
+        for (const key in places) {
+            const place = places[key]
+            const w = root.cardWidth * place.size
+            const h = Math.round(w * 9 / 16) + Theme.space(16)
+            if (p.x >= place.x && p.x < place.x + w && p.y >= place.y && p.y < place.y + h && place.z > front) {
+                found = key
+                front = place.z
+            }
+        }
+        return found
+    }
 
     /// Where the card being dragged was pressed, in canvas coordinates (the drop moves the selection by the difference).
     property point dragOrigin: Qt.point(-1, -1)
@@ -59,8 +88,11 @@ Flickable {
         }
         DragHandler {
             id: marquee
+            objectName: "libraryFreeformMarquee"
             target: null
             acceptedButtons: Qt.LeftButton
+            // P1 round (#41): a card's own drag (a pointer handler) keeps the pointer; the rectangle never takes it over.
+            grabPermissions: PointerHandler.CanTakeOverFromItems | PointerHandler.ApprovesTakeOverByAnything
             onActiveChanged: {
                 if (active)
                     return
@@ -143,6 +175,10 @@ Flickable {
                 required property string derivedFrom
                 required property bool searchBin
                 required property var marks // UX rework (stream T): the In/Out band
+                required property bool cut // P1 round (#41)
+                required property int uses // P1 round (#40)
+                required property bool unused
+                required property int masterEffects // 0.6 (#71): the fx badge
 
                 readonly property var place: Library.freeform[key] ?? ({ x: 0, y: 0, size: 1, z: 0 })
                 x: place.x
@@ -175,6 +211,12 @@ Flickable {
                     derivedFrom: cell.derivedFrom
                     searchBin: cell.searchBin
                     marks: cell.marks
+                    cut: cell.cut
+                    uses: cell.uses
+                    unused: cell.unused
+                    masterEffects: cell.masterEffects
+                    onUsageRequested: position => root.usageRequested(cell.key, card, position)
+                    dropHighlight: root.dropTarget === cell.key
                     metaLines: ProjectController.revision >= 0
                                ? Library.freeformLines.map(id => id !== "" ? Library.cellText(cell.key, id) : "") : []
                     onActivated: root.activated(cell.key, cell.kind)
@@ -182,6 +224,15 @@ Flickable {
                     onDragStarted: position => {
                         root.dragOrigin = Qt.point(cell.x + position.x, cell.y + position.y)
                         root.dragFromHere = true
+                    }
+                    onBinDragMoved: scenePosition => root.binDragMoved(scenePosition)
+                    onBinDragFinished: scenePosition => {
+                        const at = canvas.mapFromItem(null, scenePosition.x, scenePosition.y)
+                        const dx = root.dragOrigin.x < 0 ? 0 : at.x - root.dragOrigin.x
+                        const dy = root.dragOrigin.y < 0 ? 0 : at.y - root.dragOrigin.y
+                        root.dragFromHere = false
+                        root.dragOrigin = Qt.point(-1, -1)
+                        root.binDragFinished(scenePosition, dx, dy)
                     }
                 }
                 // Ctrl+wheel over a stack: its next card to the front.

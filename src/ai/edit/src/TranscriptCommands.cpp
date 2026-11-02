@@ -15,6 +15,7 @@
 #include <wabcut/ai/search/SearchCommands.h>
 #include <wabcut/ai/shorts/ShortsCommands.h>
 #include <wabcut/ai/stabilize/StabilizeCommands.h>
+#include <wabcut/ai/autopilot/AutopilotCommands.h>
 #include <wabcut/audio/edit/AudioCommands.h>
 #include <wabcut/color/ColorCommands.h>
 #include <wabcut/masks/MaskCommands.h>
@@ -1740,6 +1741,7 @@ const command::CommandRegistry& editingCommands() {
         segment::registerFaceRedactionCommands(r); // 0.2: redaction.detectFaces
         highlights::registerHighlightCommands(r); // G.2: highlights.find, highlights.toReel, highlights.toShort
         stabilize::registerStabilizeCommands(r);  // P.2: effect.analyzeStabilization, effect.analyzeRollingShutter
+        autopilot::registerAutopilotCommands(r);  // P1 #62: autopilot.broll, autopilot.publishKit, autopilot.pacing
         return r;
     }();
     return registry;

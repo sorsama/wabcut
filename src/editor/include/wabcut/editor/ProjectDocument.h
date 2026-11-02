@@ -77,6 +77,16 @@ struct RelinkCandidate {
     std::filesystem::path file;
     /// Same size and sample hash as the locator's fingerprint (always false when the item has none).
     bool fingerprintMatches = false;
+    /// P1 round (#42), findRelinkCandidates with `matchStem`: a file named like the item's without the extension that is
+    /// the same recording in another container (an OBS .mkv remuxed to .mp4): within a frame of the item's length, the
+    /// same picture size and frame rate, the same audio streams and channels. Its bytes differ: never a fingerprint match.
+    bool sameRecording = false;
+};
+
+/// P1 round (#42): an offline item and the file of its recording in another container.
+struct SameRecording {
+    MediaId media;
+    std::filesystem::path file;
 };
 
 struct RecoveryFile {
@@ -201,9 +211,24 @@ public:
     /// Re-checks every media file on disk; items whose state changed are updated in one undo step
     /// ("Refresh Media"). Returns how many changed.
     std::expected<int, Error> refreshMediaStatus();
-    /// Files named like `media`'s file under `folders` (recursive, case-insensitive), fingerprint matches first.
-    std::vector<RelinkCandidate> findRelinkCandidates(MediaId media,
-                                                      const std::vector<std::filesystem::path>& folders) const;
+    /// Files named like `media`'s file under `folders` (recursive, case-insensitive), fingerprint matches first. P1 round
+    /// (#42): with `matchStem`, files whose name matches without the extension too (probed: sameRecording), after them.
+    std::vector<RelinkCandidate> findRelinkCandidates(MediaId media, const std::vector<std::filesystem::path>& folders,
+                                                      bool matchStem = false) const;
+    /// P1 round (#42): whether `file` is `media`'s recording in another container (RelinkCandidate::sameRecording).
+    bool isSameRecording(MediaId media, const std::filesystem::path& file) const;
+    /// P1 round (#42), Locate... that relinks the rest: points `media` at `file` like relink() (a forced different file
+    /// must still have every stream a clip plays), then, in the same "Relink Media" undo step, every other offline item
+    /// whose file sits at the same place under the moved folder (the old root swapped for the new one, up to three
+    /// folders up) or under the located file's folder, when its fingerprint matches. Returns how many OTHER items.
+    std::expected<int, Error> relinkAfterLocate(MediaId media, const std::filesystem::path& file, bool force = false);
+    /// P1 round (#42): offline items with a file under `folders` named like theirs with another extension that is the
+    /// same recording (isSameRecording), one file per item.
+    std::vector<SameRecording> findSameRecordings(const std::vector<std::filesystem::path>& folders) const;
+    /// Relinks `offers` in one "Relink Media" undo step: each item (and its subclips on the same file) gets the new
+    /// file and its media info read again (stream indexes included). Refused when a clip plays a stream a new file
+    /// lacks. Returns how many items were relinked.
+    std::expected<int, Error> relinkSameRecordings(const std::vector<SameRecording>& offers);
     /// Points `media` at `file` (probed again; one undo step "Relink Media"). Refuses (InvalidArgument) a file
     /// whose fingerprint differs from the item's unless `force`.
     std::expected<void, Error> relink(MediaId media, const std::filesystem::path& file, bool force = false);

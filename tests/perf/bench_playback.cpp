@@ -753,6 +753,35 @@ void measureKind(const MediaKind& kind, render::OffscreenRenderer& renderer, per
     const int scrubSessions = p->player.video().scheduler().stats().activeSessions;
     const StepTimes stepped = frameSteps(*p);
 
+    // 5. P1 (#16, stream 3B), Paused Resolution, last so the measurements above run as before: parked at Full, played
+    // at 1/2 - the scheduler gets the playback divisor as play starts (MediaReadinessBridge on the transport's change),
+    // so its decoders reopen at the new size. Noted, not gated: the cost of a sharp parked frame on top of a warm start.
+    perf::Samples frameSwitch;
+    int noSwitchFrame = 0;
+    {
+        playback::PreviewSettings full = p->player.video().scheduler().preview();
+        full.decodeDivisor = 1;
+        playback::PreviewSettings half = full;
+        half.decodeDivisor = 2;
+        for (int run = 0; run < kWarmRuns; ++run) {
+            p->player.video().scheduler().setPreview(full);
+            if (!parkAt(*p, Ticks{}, 250ms)) {
+                ++noSwitchFrame;
+                continue;
+            }
+            const std::int64_t t0 = playback::steadyNowNs();
+            p->device->arm(t0);
+            p->player.video().scheduler().setPreview(half);
+            p->player.play();
+            const std::uint64_t epoch = p->mailbox().epoch();
+            const std::optional<Shown> shown =
+                p->monitor->waitFor([&](const Shown& c) { return c.epoch >= epoch && c.layers > 0; }, 5000ms);
+            p->player.pause();
+            addTo(frameSwitch, shown ? std::optional<double>(msBetween(t0, shown->ns)) : std::nullopt, noSwitchFrame);
+        }
+        p->player.video().scheduler().setPreview(full);
+    }
+
     const editor::PlaybackSessionStats stats = p->player.stats();
     info["decodeBackends"] = stats.video.decodeBackends; // "d3d11va x1"; "software x1" without hardware decoding
     info["transport"] = stats.video.transport;
@@ -785,6 +814,10 @@ void measureKind(const MediaKind& kind, render::OffscreenRenderer& renderer, per
     gated("first_sound_cold_p50_ms", soundCold, "p50");
     if (!soundWarm.empty()) {
         r.note("first_sound_warm_p50_ms" + suffix, "ms", soundWarm.p50());
+    }
+    if (!frameSwitch.empty()) { // P1 (#16): warm play from a Full parked frame to 1/2 playback
+        r.note("first_frame_warm_paused_full_play_half_p50_ms" + suffix, "ms", frameSwitch.p50());
+        r.note("first_frame_warm_paused_full_play_half_max_ms" + suffix, "ms", frameSwitch.max());
     }
     gated("shuttle_play_p50_ms", shuttlePlay, "p50");
     gated("shuttle_2x_p50_ms", shuttleFaster, "p50");

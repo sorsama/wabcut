@@ -22,6 +22,7 @@ add_library(wabcut_model STATIC
     src/Animations.cpp
     src/BeatGrid.cpp
     src/Blend.cpp
+    src/Auditions.cpp
     src/BuiltinTemplates.cpp
     ${embedded_templates}
     src/CaptionOps.cpp
@@ -84,6 +85,7 @@ add_library(wabcut_model STATIC
     src/SequenceEditor.cpp
     src/SourceMarkOps.cpp
     src/MarkerOps.cpp
+    src/MasterClipEffects.cpp
     src/SequenceEditor.h
     src/Snap.cpp
     src/SpannedClip.cpp

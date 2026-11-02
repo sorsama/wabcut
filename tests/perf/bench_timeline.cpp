@@ -269,6 +269,7 @@ struct MemoryPoint {
     std::size_t undoSteps = 0;
     double undoMb = 0.0;             ///< the undo history's own estimate of what it keeps alive
     int clips = 0;
+    perf::HeapUsage heaps;           ///< diagnostic: held vs kept by the heaps (PerfHarness.h)
 };
 
 /// Lets the shell settle (`settleMs` of event loop, deferred deletes), renders a frame, then reads the process.
@@ -285,13 +286,14 @@ MemoryPoint measurePoint(ShellRig& rig, int settleMs) {
     m.undoSteps = session.undoCount();
     m.undoMb = static_cast<double>(session.undoMemoryBytes()) / (1024.0 * 1024.0);
     m.clips = rig.controller->clipCount();
+    m.heaps = perf::heapUsage();
     return m;
 }
 
 perf::Json pointJson(const MemoryPoint& m) {
     return perf::Json{{"workingSetMb", m.workingSet}, {"privateMb", m.privateBytes},      {"gpuMb", m.gpu},
                       {"pendingReleases", m.pendingReleases}, {"undoSteps", m.undoSteps}, {"undoMb", m.undoMb},
-                      {"clips", m.clips}};
+                      {"clips", m.clips}, {"heaps", perf::toJson(m.heaps)}};
 }
 
 struct EditingRun {
@@ -644,6 +646,17 @@ TEST_CASE("Benchmark memory footprint of a one-hour project", "[perf][gpu][app]"
         const MemoryPoint drained = measurePoint(rig, 500);
         r.note("drained_private_mb", "MB", drained.privateBytes);
         r.note("retained_after_drain_mb", "MB", drained.privateBytes - shell.privateBytes);
+        // Diagnostic: what a full JS garbage collection, then giving the heaps' free memory back, would leave.
+        rig.shell.engine.collectGarbage();
+        const MemoryPoint collected = measurePoint(rig, 500);
+#if defined(_WIN32)
+        _heapmin();
+#endif
+        const MemoryPoint compacted = measurePoint(rig, 500);
+        r.note("retained_after_gc_mb", "MB", collected.privateBytes - shell.privateBytes);
+        r.note("retained_after_heapmin_mb", "MB", compacted.privateBytes - shell.privateBytes);
+        r.note("retained_heap_allocated_mb", "MB", closed.heaps.allocatedMb - shell.heaps.allocatedMb);
+        r.note("retained_heap_committed_mb", "MB", closed.heaps.committedMb - shell.heaps.committedMb);
 
         const QStringList messages = takeMessages();
         perf::Json warnings = perf::Json::array();
@@ -652,7 +665,8 @@ TEST_CASE("Benchmark memory footprint of a one-hour project", "[perf][gpu][app]"
         }
         r.details["points"] = perf::Json{{"shell", pointJson(shell)},   {"opened", pointJson(openedPoint)},
                                          {"edited", pointJson(edited)}, {"closed", pointJson(closed)},
-                                         {"drained", pointJson(drained)}};
+                                         {"drained", pointJson(drained)}, {"collected", pointJson(collected)},
+                                         {"compacted", pointJson(compacted)}};
         r.details["editing"] = perf::Json{
             {"scaling",
              "30 minutes of brisk editing at one action a second = 1,800 actions: 180 cycles of ten on a clip each "
@@ -672,9 +686,13 @@ TEST_CASE("Benchmark memory footprint of a one-hour project", "[perf][gpu][app]"
         r.details["releaseQueue"] = perf::Json{
             {"note",
              "EditSession (deferRelease) queues the snapshots it lets go (undo steps past the 500-step limit, dropped "
-             "redo branches, gesture intermediates, the previous project on open / new) for releasePending(), which "
-             "nothing in the app calls: they live until the ProjectController dies. Measured as found; "
-             "retained_after_drain_mb drains the queue after every gated value, as a diagnostic."},
+             "redo branches, gesture intermediates, the previous project on open / new); ProjectController's "
+             "SnapshotReleaser frees them on its own thread soon after each change, and 250 ms after a project closed "
+             "the controller runs the QML garbage collector and has the releaser give the freed heap pages back "
+             "(F2P, 0.6). retained_after_drain_mb drains the queue after every gated value, as a diagnostic; "
+             "retained_after_gc_mb / retained_after_heapmin_mb add another collection and _heapmin; "
+             "retained_heap_allocated_mb / retained_heap_committed_mb split what stayed between blocks still held "
+             "and freed pages the heaps keep."},
             {"pendingAfterOpen", openedPoint.pendingReleases},
             {"pendingAfterEditing", edited.pendingReleases},
             {"pendingAfterClose", closed.pendingReleases},

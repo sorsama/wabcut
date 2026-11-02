@@ -190,6 +190,7 @@ sizes in sequence pixels, as Premiere's Effect Controls shows them for a frame-s
 | Perspective | Bevel Edges | `wabcut.perspective.bevelEdges` | the frame's rectangle bevelled |
 | Perspective | Radial Shadow | `wabcut.perspective.radialShadow` | a point light's shadow, Regular or Glass Edge, Shadow Only, Resize Layer ignored; two passes and a blur |
 | Stylize | Alpha Glow | `wabcut.stylize.alphaGlow` | Glow, Brightness, Start / End Color, Fade Out; two passes |
+| Stylize | Glow (0.6) | `wabcut.stylize.glow` | Glow Based On (Color Channels: the bright parts; Alpha Channel: the layer's edge), Glow Threshold, Radius, Intensity, Composite Original (On Top / Behind / None), Glow Operation (Add, Screen, Lighten, Normal), Glow Colors (Original or A & B with their Midpoint), Glow Dimensions (both, Horizontal, Vertical), Blend With Original: the pixels above the threshold blurred (sigma = Radius / 2) and composited; two passes. Alpha Glow is not this effect: it glows only the alpha edge |
 | Stylize | Color Emboss, Emboss | `wabcut.stylize.colorEmboss`, `wabcut.stylize.emboss` | Direction, Relief, Contrast, Blend With Original |
 | Stylize | Find Edges | `wabcut.stylize.findEdges` | Invert, Blend With Original |
 | Stylize | Replicate | `wabcut.stylize.replicate` | Count (2 to 16 a side) |
@@ -204,6 +205,12 @@ sizes in sequence pixels, as Premiere's Effect Controls shows them for a frame-s
 | Generate | Circle | `wabcut.generate.circle` | Radius, Edge (none, thickness, ...), feathers, Invert, Color, Opacity, blending mode |
 | Generate | Lens Flare | `wabcut.generate.lensFlare` | Flare Center, Brightness, 50-300 mm Zoom / 35 mm Prime / 105 mm Prime, Blend With Original |
 | Generate | Ramp | `wabcut.generate.ramp` | Linear or Radial, Start / End and their colours, Ramp Scatter, Blend With Original |
+| Generate | Colorama (0.6) | `wabcut.generate.colorama` | Get Phase From (Intensity, Lightness, Hue, Saturation, Red, Green, Blue, Alpha), Phase Shift (animate it to cycle), Cycle Repetitions, Use Preset Palette (Custom, Ramp Grayscale, Ramp Color, Golden, Fire, Ice, Negative, Rainbow) or up to five Custom colours with their positions, Interpolate Palette, Blend With Original, Blending Mode. The palettes are Wabcut's own colours under After Effects' names; Colorama's Modify, Pixel Selection and Masking groups are not there |
+| Generate | Fractal Noise (0.6) | `wabcut.generate.fractalNoise` | Fractal Type (Basic, Turbulent Basic, Dynamic, Turbulent Smooth), Noise Type (Block, Linear, Soft Linear, Spline), Invert, Contrast, Brightness, Overflow (Clip, Soft Clamp, Wrap Back), Rotation, Scale, Offset Turbulence, Complexity (octaves), Sub Influence / Scaling / Rotation, Evolution (animate it), Cycle Evolution and its revolutions, Random Seed, Opacity, Blending Mode (None = the grey alone). Value noise on Wabcut's own lattice: the same picture for a seed and time in preview, export and on every machine (not After Effects' pixels) |
+| Generate | Cell Pattern (0.6) | `wabcut.generate.cellPattern` | Bubbles, Crystals, Plates, Static Plates, Crystallize, Pillow, Tubular (no separate "HQ" variants), Invert, Contrast, Overflow, Disperse, Size, Offset, Borders, Evolution (the cells drift), Cycle Evolution, Random Seed, Opacity, Blending Mode: cells round scattered points (Worley noise) |
+| Generate | Lightning (0.6) | `wabcut.generate.lightning` | Start / End Point, Segments, Amplitude, Detail Level and Amplitude, Branching, Rebranching, Branch Angle, Branch Seg. Length, Branch Segments, Branch Width, Speed (how fast it flickers), Stability, Fixed Endpoint, Width, Width Variation, Core Width, Outside / Inside Color, Decay, Random Seed, Blending Mode (Normal, Add, Screen): a branching bolt with a glowing outside and a bright core that animates by itself; the same bolt for a seed and time. Not there: Pull Force / Direction and Composite on Original |
+| Generate | Scribble (0.6) | `wabcut.generate.scribble` | Scribble (Single Mask: the effect's first mask; All Masks), Fill Type (Inside, Centered Edge, Inside Edge, Outside Edge), Edge Width, Color, Opacity, Angle, Stroke Width, Curvature, Spacing and its Variation, Path Overlap, Jitter, Start / End (animate them to draw it on), Wiggles/Second, Random Seed, Composite (On Original Image, On Transparent, Reveal Original Image). The paths are the effect's own masks (Effect Controls' mask tools); without a mask it scribbles the frame |
+| Generate | Paint Bucket (0.6) | `wabcut.generate.paintBucket` | Fill Point, Fill Selector (Color & Alpha, Straight Color, Transparency, Opacity, Alpha Channel), Tolerance (0-255), View Threshold, Stroke (Antialias, Feather, Spread, Choke, Stroke) with its width and Feather Softness, Color, Invert Fill, Opacity, Blending Mode (Normal, Behind, Add, Multiply, Screen, Fill Only): a flood fill from the point over the neighbouring pixels within the tolerance, on the GPU in a fixed number of passes (runs along rows and columns, then 24 jumps along them), so a very winding region (a maze) can stop short of its far corners |
 | Time | Echo | `wabcut.time.echo` | Echo Time (seconds; negative = earlier frames), Number of Echoes (up to 8 here), Starting Intensity, Decay, Echo Operator (Add, Maximum, Minimum, Screen, Composite In Back / In Front, Blend) |
 | Time | Posterize Time | `wabcut.time.posterizeTime` | Frame Rate: the clip held on its own rate (no pass) |
 | Transition | Block Dissolve | `wabcut.transition.blockDissolve` | Transition Completion, Block Width / Height (Feather and Soft Edges not drawn) |
@@ -221,7 +228,13 @@ picture; Timecode's Field Symbol is not drawn; Image Matte Key has no file picke
 it).
 
 **Cost.** Most effects are one pass over the layer. The two- and three-pass ones are Unsharp Mask, Alpha Glow, Bevel
-Alpha, Roughen Edges, Radial Shadow (a blur in between) and Color Key (matte, thin, feather). Echo adds one decoded
+Alpha, Roughen Edges, Radial Shadow (a blur in between) and Color Key (matte, thin, feather). 0.6: Glow is a bright
+pass, a blur and a composite; Paint Bucket runs its run-length and propagation passes (about 40) at the layer's size;
+Lightning and Scribble draw their strokes from a small data texture (a grid of the segments near each pixel), and
+Fractal Noise costs one noise lookup per Complexity octave. "Effect library: 1080p frame time of Fractal Noise Cell
+Pattern Glow and Paint Bucket (0.6)" holds them to a frame-time budget; every 0.6 effect matches its CPU reference
+within 40 dB PSNR on the GPU, reads 8- and 10-bit sources alike, and Fractal Noise, Cell Pattern and Lightning are the
+same for a seed and time. Echo adds one decoded
 picture per echo; the text effects add one caption raster per distinct text (kept while it shows). The heaviest single
 passes are Camera Blur, Median, Turbulent Displace and the Transform effect's motion blur; `[library][perf]` in
 `test_library_effects.cpp` reports their 1080p times.
@@ -250,7 +263,9 @@ the filter), so the list is virtualized and keeps its selection when the library
   description). A name cut short in a narrow panel shows whole in its tooltip in every view.
 - **Applying:** double-click an effect, transition, preset or plug-in, or press Enter, to put it on every selected clip
   in one undo step. A selected clip of the other kind stands for its linked partner, and a transition goes on both ends
-  of each selected clip at the default length. Or drag it onto a clip or an edit point in the timeline, onto Effect
+  of each selected clip at the default length; with edit points selected in the timeline (a click on a clip's edge, or
+  Shift+T) it goes on those edit points instead (0.6), as Ctrl+D and Ctrl+Shift+D do: a roll point centred on the cut,
+  a one-sided point starting or ending there. Or drag it onto a clip or an edit point in the timeline, onto Effect
   Controls or onto a mixer strip. The status line under the list says what happened and clears after a few seconds.
 - **Item menu** (right-click): Apply to Selected Clips, **Set as Default Transition** (transitions; DEFAULT marks the
   current video and audio defaults, which Ctrl+D, Ctrl+Shift+D and Shift+D use), Add to / Remove from Favorites, Add to
@@ -340,6 +355,11 @@ are fixed pixel values from SD days) and assume a frame-size clip.
 | Twirls | Twirl In, Twirl Out | Twirl (radius 50) unwinding a full turn over the first second, winding over the last |
 | Image Pans | Horizontal Image Pan Left to Right / Right to Left, Vertical Image Pan Top to Bottom / Bottom to Top; 0.4: Slow Push In, Slow Pull Out, Push In to Top / to Bottom, Push In Left to Right / Right to Left | Motion at 120 %, Position moving 10 % of the frame across the clip (Scale). The 0.4 Ken Burns moves for stills and archive run over the whole clip (Scale) with eased keys (Ease In and Out) you can edit in Effect Controls: Slow Push In Scale 100 % to 112 %, Slow Pull Out 112 % to 100 %; Push In to Top / Bottom Scale 100 % to 112 % with Position Y moving 5 % of the frame height; Push In Left to Right / Right to Left Scale 108 % to 112 % with Position X moving 3 % of the frame width each way. Position keys share the scale keys' times, so a frame edge never shows, and only the Motion parameters a move uses are set (Rotation and Anchor stay the clip's) |
 | Animations (0.2) | Fade In / Out; Pop In / Out; Spin In / Out; Pull In / Out; Travel In from Left / Right / Top / Bottom, Travel Out to Left / Right / Top / Bottom; Spring In / Out | Premiere 25.5's motion animations for any video clip, as editable keys over half a second at the In point (In) or the Out point (Out): Fade - Opacity 0 to 100 %; Pop - Scale from 0 past 110 % to 100 % with a quick fade; Spin - half a turn while Scale grows from 0; Pull - Scale from 160 % to 100 % while fading in; Travel - Position from a frame's width (height) off that side; Spring - up from below the frame with a damped bounce (0.66 s). Out animations run the In ones backwards. Only the parameters an animation moves are set (Pop leaves Position alone), with absolute values as every preset (a PiP at 25 % pops to 100 %) |
+| Glows (0.6) | Soft Glow, Neon Glow, Glow In | Glow at Threshold 60 % / Radius 25 / Intensity 0.8; a strong white-to-magenta A & B glow for titles and neon signs; a hot glow (Intensity 4 to 0) settling over the first second |
+| Backgrounds (0.6) | Fractal Clouds, Turbulent Smoke, Fire Background, Cell Bubbles, Rainbow Cycle | Fractal Noise evolving one turn over the clip (Smoke: two turns, turbulent); Fractal Noise coloured by Colorama's Fire palette; Cell Pattern bubbles drifting; Colorama's Rainbow cycling once over the clip (Scale) |
+| Lightning (0.6) | Lightning Strike, Electric Arc | a branching bolt from the top left, added on; a fast, fine arc across the middle (Screen) |
+| Scribbles (0.6) | Scribble Write-On | Scribble's End from 0 to 100 % over the first second (it draws on along its mask, or the frame) |
+| Paint Bucket (0.6) | Paint Bucket Outline | a red 4 px stroke round the area at the centre |
 | Convolution Kernel (0.2) | Blur, Blur More, Darken, Emboss, Find Edges, Gaussian Blur, Gaussian Sharpen, Lighten, Sharpen, Sharpen Edges, Sharpen More | Convolution Kernel with the classic 3 x 3 kernels under the names of Premiere's Convolution Kernel bin (the kernels are textbook ones, not read from Premiere): the blurs average (2 at the centre, all 1, Gaussian 1-2-1 / 16), the sharpens subtract the neighbours (Sharpen Edges at half strength, Gaussian Sharpen against a Gaussian), Emboss is a grey relief (Offset 128), Find Edges a Laplacian, Lighten / Darken scale the centre (120 % / 80 %) |
 | Lumetri Presets: Cinematic, Filmstock, Monochrome, Technical | Teal & Orange, Cool Night; Warm Film, Bleach Bypass; Mono Silver; Sony S-Log3 (S-Gamut3.Cine) to Rec.709, Panasonic V-Log (V-Gamut) to Rec.709 | Color Grade with the built-in look (Creative > Look) or input LUT (Basic > Input LUT) of [color.md](color.md) |
 
@@ -383,3 +403,69 @@ selected and moved between clips:
 Wabcut differs from Premiere in three ways: the effects clipboard is kept for the session apart from the clip clipboard
 (the newest copy wins, as in Premiere); Time Remapping is not a section here (it stays in the speed controls above the
 list); and Transform, Opacity and Audio have no Effect Enabled switch.
+
+### Effect Controls: copy and paste keyframes, several clips at once (0.6)
+
+- **Copy and paste keyframes** (Premiere: select keyframes, Ctrl+C, move the playhead or select another clip, Ctrl+V).
+  With keyframes selected in the lane, **Ctrl+C** copies them (**Ctrl+X** cuts them: one undo step "Cut Keyframes")
+  instead of the clip; **Ctrl+V** with Effect Controls focused pastes them at the playhead onto the clip it shows, to the
+  same parameters (an effect's to the same effect on that clip - the first Gaussian Blur's keys to its first Gaussian
+  Blur), keeping their spacing, values, interpolation and Bezier handles; a key already at a pasted time is replaced.
+  One undo step "Paste Keyframes". A parameter the clip does not have is named in the notice. The lane's key menu has
+  **Cut**, **Copy** and **Paste at Playhead** too. The newest copy wins: copying clips or effect sections afterwards
+  makes Ctrl+V paste those again; with no keyframes selected Ctrl+C falls through to the selected sections, then to the
+  timeline. Graphic text layers' keys (0.6 Text sections) and Source Text keys copy and paste the same way.
+- **Several clips** (Premiere's multi-clip Properties): with more than one clip selected (a clip with its linked
+  partners counts once) Effect Controls shows "N clips" and the **Transform** and **Opacity** rows (when video clips are
+  selected) and **Audio** (Volume, Pan; when audio clips are). A value the clips do not share shows as "—". Typing or
+  dragging a value sets it on every selected clip of that kind in one undo step (a drag stays one step); on a clip where
+  the parameter is animated it sets the key at the playhead. The notice says how many clips took it and how many were
+  skipped ("Scale set on 7 clips (2 audio skipped)"; clips on locked tracks are left out too). The stopwatches, the
+  keyframe lane and the effect sections are hidden while several clips are selected.
+
+### Master Clip Effects (0.6)
+
+Premiere's **Master Clip Effects**: effects on the master clip that every instance of the media plays before each clip's
+own effects, so one look (a grade, a LUT, a denoise, a mic's EQ) is set once for every clip of a recording, including
+the clips added later.
+
+- **Add them.** In the Effects panel, right-click an effect or a preset > **Apply to Master Clip**: it goes on the media
+  of the selected timeline clips (one master clip per media item, however many of its clips are selected), one undo step
+  "Add Master Clip Effect" (a preset: "Apply Preset to Master Clip", its keys kept). An audio effect goes on the media's
+  sound (the selected clips' linked audio). Or right-click an effect's header in Effect Controls > **Move to Master
+  Clip**: the clip's own effect, with its values, keys and masks, moves onto the master clip (the last of it).
+- **Effect Controls.** A clip whose media has master clip effects shows a **Master Clip: <name>** caption below its
+  Transform and Opacity (Audio for a sound clip) and above its own effects, then the master clip's sections. They edit
+  like any section (values, stopwatches, keys, masks, reset, remove, reorder, copy), but the change lands on the master
+  clip: every instance shows it at once, in one undo step labelled "Master Clip: <effect>: <parameter>". **Move to This
+  Clip** on a master section makes it the first of this clip's own effects (it still plays first) and takes it off the
+  other instances.
+- **One clip without them.** The caption's power switch turns the master clip effects off for that clip only ("Turn Off
+  Master Clip Effects", one undo step): the caption says "(off for this clip)", the sections grey out and the clip plays
+  its own stack. Switch it on again the same way. Premiere has no per-clip switch (its Show Master Clip Effects is a view
+  option); Wabcut adds one for the one shot that must stay untouched.
+- **Keys are media time.** A master clip key sits at a source frame, so it lands at the same moment of the recording in
+  every instance, wherever each clip sits and however long it is.
+- **Subclips** play their master item's effects first, then the subclip's own master clip effects, then the clip's.
+- **Keyframes copy and paste** on master sections like on a clip's own (Ctrl+C / Ctrl+X, Ctrl+V at the playhead): pasted
+  on an instance of the same media they land on the master clip again; on another clip, on the same effect of its own.
+- **Everything plays them**: render previews go stale when a master clip effect changes (and the render bar shows them),
+  Posterize Time, Warp Stabilizer, Rolling Shutter Repair, Track Matte Key and Enhance Speech work on the master clip,
+  AAF/OMF reports and renders them as clip effects (left out without Render Audio Clip Effects and on No FX copies), and
+  the Source Monitor shows the media with them, following each edit.
+- **The Library** shows an **fx N** tag on the card (and an **fx** chip in the list's Name cell) of an item with master
+  clip effects.
+- **Presets** saved from Effect Controls may include master sections (they come first in the preset); any preset goes on
+  a master clip with Apply to Master Clip.
+- **Not yet:** nested sequences and multicam clips have no master clip effects (Apply to Master Clip says so and skips
+  them); Motion, Opacity and Volume stay each clip's (a preset's are dropped when it goes on a master clip); an effect
+  dropped on a Library item or applied in the Source Monitor does not go on its master clip yet (select one of its clips
+  and use Apply to Master Clip); the Source Monitor and the timeline's fx chip have no fx badge for them yet; the
+  Analyze button of a Warp Stabilizer or Rolling Shutter Repair, Essential Sound and the colour tools work on a clip's
+  own effects (analyse on a clip, then Move to Master Clip).
+- **Saved** with the project (`masterEffects` on the media item, `masterEffectsOff` on a clip that turned them off, both
+  only when set). **Preview and export** play them through the same evaluator. **FCP7 XML, FCPXML and OTIO** have no
+  master clip effects: an export folds them onto every clip's own stack (before its own effects, as they play) and the
+  export report says "Master Clip Effects folded onto N clips"; importing such a file brings them back as each clip's own
+  effects where the format carries effects (FCP7 XML: blur, crop and drop shadow as FCP filters, the rest by Wabcut id).
+  A private block that would bring them back as one master stack is not written yet. `effects.savePreset` takes `master` (indices into the clip's master clip effects of its kind).

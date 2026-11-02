@@ -11,6 +11,7 @@
 #include "ProjectController.h"
 #include "ProjectLifecycle.h"
 #include "SearchBridge.h"
+#include "SequenceTabsBridge.h"
 #include "SourceMonitorBridge.h"
 
 #include <wabcut/ai/AnalysisCache.h>
@@ -27,6 +28,7 @@
 #include <wabcut/ai/search/FootageSearch.h>
 #include <wabcut/ai/search/SearchIndex.h>
 #include <wabcut/media/Fingerprint.h>
+#include <wabcut/model/Auditions.h>
 #include <wabcut/model/ChangeSet.h>
 #include <wabcut/model/EditOps.h>
 #include <wabcut/model/EditingOps.h>
@@ -35,12 +37,16 @@
 #include <wabcut/model/SequenceSettings.h>
 #include <wabcut/model/Timecode.h>
 
+#include <QClipboard>
 #include <QCoreApplication>
+#include <QCryptographicHash>
 #include <QDateTime>
 #include <QDesktopServices>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFileInfo>
+#include <QGuiApplication>
+#include <QLocale>
 #include <QPointer>
 #include <QProcess>
 #include <QRectF>
@@ -56,6 +62,7 @@
 #include <cmath>
 #include <limits>
 #include <map>
+#include <set>
 
 namespace wabcut::app {
 
@@ -130,6 +137,9 @@ LibraryBridge::LibraryBridge(QObject* parent)
       m_scanGeneration(std::make_shared<std::atomic<std::uint64_t>>(0)) {
     for (const LibraryColumnInfo& info : libraryColumns())
         m_columns.push_back({info.column, info.defaultVisible, info.defaultWidth});
+    // P1 round (#45): the footer's line follows what is listed and selected.
+    connect(this, &LibraryBridge::selectionChanged, this, &LibraryBridge::summaryChanged);
+    connect(this, &LibraryBridge::statsChanged, this, &LibraryBridge::summaryChanged);
 }
 
 LibraryBridge::~LibraryBridge() {
@@ -164,6 +174,12 @@ LibraryBridge* LibraryBridge::create(QQmlEngine* qmlEngine, QJSEngine*) {
         library->setSourceMonitor(qmlEngine->singletonInstance<SourceMonitorBridge*>("Wabcut", "SourceMonitor"));
         library->setExport(qmlEngine->singletonInstance<ExportController*>("Wabcut", "ExportController"));
         library->setController(qmlEngine->singletonInstance<ProjectController*>("Wabcut", "ProjectController"));
+        // P1 round (#40): Find in Timeline opens the sequence in its tab.
+        QPointer<QQmlEngine> tabsEngine(qmlEngine);
+        library->setSequenceOpener([tabsEngine](const QString& sequence) {
+            auto* tabs = tabsEngine ? tabsEngine->singletonInstance<SequenceTabsBridge*>("Wabcut", "SequenceTabs") : nullptr;
+            return tabs && tabs->open(sequence);
+        });
         // XMP written into a file (0.2, P.3): the item is relinked to it (its fingerprint changed).
         QPointer<QQmlEngine> engine(qmlEngine);
         library->setRelinker([engine](const QString& key, const std::filesystem::path& file) {
@@ -194,6 +210,7 @@ void LibraryBridge::setController(ProjectController* controller) {
                 m_bin = {};
                 m_tabs.clear();
                 m_selection.clear();
+                m_expansionLoaded = false; // P1 round (#46): the new project's twirl-down bins
                 emit binChanged();
                 emit tabsChanged();
                 emit selectionChanged();
@@ -337,10 +354,14 @@ void LibraryBridge::setView(const QString& view) {
     const QString next = view == QStringLiteral("list") || view == QStringLiteral("freeform") ? view : QStringLiteral("grid");
     if (next == m_view)
         return;
+    const bool treeChanged = (next == QStringLiteral("list")) != (m_view == QStringLiteral("list"));
     m_view = next;
     saveSettings();
     emit viewChanged();
-    refreshFreeform();
+    if (treeChanged)
+        refresh(true); // P1 round (#46): the list shows the twirl-down tree, the grid the bin alone
+    else
+        refreshFreeform();
 }
 
 void LibraryBridge::setScope(const QString& scope) {
@@ -484,18 +505,65 @@ void LibraryBridge::resetColumns() {
 
 // ---- Refresh ---------------------------------------------------------------------------------------------------------
 
-void LibraryBridge::recomputeStats(const ProjectState& state) {
-    std::unordered_set<std::uint64_t> used;
+namespace {
+
+/// P1 round (#40): every media item's and sequence's uses in `state`: clips on video / audio tracks, and placements (a
+/// linked video / audio pair of one item counts once). Nested and multi-camera clips count for their sequence.
+void computeUsage(const ProjectState& state, std::unordered_map<std::uint64_t, LibraryUsage>& media,
+                  std::unordered_map<std::uint64_t, LibraryUsage>& sequences) {
+    media.clear();
+    sequences.clear();
     for (const SequencePtr& seq : state.sequences) {
-        seq->forEachTrack([&](const Track& t) {
-            for (const Clip& c : t.clips)
-                used.insert(c.media.value);
-        });
+        std::set<std::pair<std::uint64_t, std::uint64_t>> groups; // (item, link group) placed in this sequence
+        const auto count = [&](const Clip& c, bool video) {
+            const bool nested = c.isNested();
+            const std::uint64_t id = nested ? c.sequence.value : c.media.value;
+            if (id == 0)
+                return;
+            LibraryUsage& u = (nested ? sequences : media)[id];
+            (video ? u.video : u.audio) += 1;
+            if (!c.linkGroup.isValid() || groups.insert({(nested ? (1ULL << 63) : 0ULL) | id, c.linkGroup.value}).second)
+                ++u.uses;
+            // 0.6 (card #74): the other takes of an audition use their media too (Remove Unused keeps them).
+            if (const Audition* audition = c.audition()) {
+                for (const AuditionTake& take : audition->others) {
+                    const bool takeNested = take.isNested();
+                    const std::uint64_t takeId = takeNested ? take.sequence.value : take.media.value;
+                    if (takeId == 0)
+                        continue;
+                    LibraryUsage& t = (takeNested ? sequences : media)[takeId];
+                    (video ? t.video : t.audio) += 1;
+                    if (!c.linkGroup.isValid()
+                        || groups.insert({(takeNested ? (1ULL << 63) : 0ULL) | takeId, c.linkGroup.value}).second)
+                        ++t.uses;
+                }
+            }
+        };
+        for (const TrackPtr& t : seq->videoTracks) {
+            if (t) {
+                for (const Clip& c : t->clips)
+                    count(c, true);
+            }
+        }
+        for (const TrackPtr& t : seq->audioTracks) {
+            if (t) {
+                for (const Clip& c : t->clips)
+                    count(c, false);
+            }
+        }
     }
-    m_used = used;
+}
+
+} // namespace
+
+void LibraryBridge::recomputeStats(const ProjectState& state) {
+    // P1 round (#40): what is used comes from the usage counts refresh() made.
+    m_used.clear();
+    for (const auto& [id, use] : m_usage)
+        m_used.insert(id);
     m_unused.clear();
     for (const MediaPtr& m : state.media) {
-        if (!used.contains(m->id.value))
+        if (!m_used.contains(m->id.value))
             m_unused.insert(m->id.value);
     }
     // Duplicates: the same file content (size and sample hash) imported more than once. Subclips share their
@@ -578,15 +646,17 @@ QString LibraryBridge::thumbnailFor(const MediaItem& item) const {
 void LibraryBridge::refresh(bool force) {
     const ProjectSnapshot snapshot = m_controller ? m_controller->snapshot() : nullptr;
     // Every edit (a trim on the timeline) gives a new snapshot; only what the panel shows makes it list again: media
-    // nodes, bins, the sequences' library columns, which media are used, and redactions (thumbnails).
-    std::unordered_set<std::uint64_t> used;
-    if (snapshot) {
-        for (const SequencePtr& seq : snapshot->sequences) {
-            seq->forEachTrack([&](const Track& t) {
-                for (const Clip& c : t.clips)
-                    used.insert(c.media.value);
-            });
-        }
+    // nodes, bins, the sequences' library columns, how the media are used (P1 round, #40: the counts), and redactions
+    // (thumbnails).
+    std::unordered_map<std::uint64_t, LibraryUsage> usage;
+    std::unordered_map<std::uint64_t, LibraryUsage> sequenceUsage;
+    if (snapshot)
+        computeUsage(*snapshot, usage, sequenceUsage);
+    // P1 round (#46): the twirl-down bins of this project.
+    const QString projectFile = m_controller ? QString::fromStdU16String(m_controller->projectFile().u16string()) : QString();
+    if (!m_expansionLoaded || projectFile != m_expansionFile) {
+        loadExpansion(projectFile);
+        force = true;
     }
     const ProjectSnapshot last = m_lastSnapshot;
     const bool mediaSame = last && snapshot && last->media.size() == snapshot->media.size() &&
@@ -599,8 +669,8 @@ void LibraryBridge::refresh(bool force) {
                               a->frameRate == b->frameRate && a->width == b->width && a->height == b->height &&
                               a->markIn == b->markIn && a->markOut == b->markOut;
                    });
-    if (!force && mediaSame && sequencesSame && last->bins == snapshot->bins && used == m_used &&
-        last->redactions == snapshot->redactions) {
+    if (!force && mediaSame && sequencesSame && last->bins == snapshot->bins && usage == m_usage &&
+        sequenceUsage == m_sequenceUsage && last->redactions == snapshot->redactions) {
         if (last->freeform != snapshot->freeform) { // 0.2 (P.3): only an arrangement changed
             m_lastSnapshot = snapshot;
             refreshFreeform();
@@ -613,6 +683,8 @@ void LibraryBridge::refresh(bool force) {
                                               return a->id == b->id && a->locator == b->locator;
                                           });
     m_lastSnapshot = snapshot;
+    m_usage = std::move(usage);
+    m_sequenceUsage = std::move(sequenceUsage);
     if (snapshot) {
         if (m_bin.isValid() && !snapshot->findBin(m_bin)) {
             m_bin = {};
@@ -655,8 +727,13 @@ void LibraryBridge::refresh(bool force) {
     context.status = &m_status;
     context.used = &m_used;
     context.duplicates = &m_duplicates;
+    context.usage = &m_usage;                  // P1 round (#40)
+    context.sequenceUsage = &m_sequenceUsage;
+    context.tree = m_view == QStringLiteral("list"); // P1 round (#46): twirl-down bins in the list
+    context.expanded = &m_expanded;
     m_model->refresh(snapshot, m_bin, filter, context);
     pruneSelection();
+    pruneCut();
     refreshFreeform();
     emit statsChanged();
     emit binChanged(); // the breadcrumb's names may have changed
@@ -990,6 +1067,259 @@ bool LibraryBridge::moveItems(const QStringList& keys, const QString& binText) {
     });
 }
 
+// ---- Move to Bin, Cut and Paste (P1 round, #41) ------------------------------------------------------------------
+
+QVariantList LibraryBridge::binTree(const QStringList& moving) const {
+    QVariantList out;
+    out.append(QVariantMap{{QStringLiteral("key"), QString()},
+                           {QStringLiteral("name"), tr("Project")},
+                           {QStringLiteral("depth"), 0},
+                           {QStringLiteral("disabled"), false},
+                           {QStringLiteral("reason"), QString()}});
+    const ProjectSnapshot snap = m_controller ? m_controller->snapshot() : nullptr;
+    if (!snap)
+        return out;
+    std::unordered_set<std::uint64_t> movingBins;
+    // Fix round 1 (ARGON-22): the bin all of `moving` are in now (0 = the root), when they share one: moving there does
+    // nothing, so its row is disabled ("Already in this bin").
+    std::optional<std::uint64_t> current;
+    bool shared = !moving.isEmpty();
+    for (const QString& key : moving) {
+        std::optional<std::uint64_t> in;
+        if (const auto b = parseBinKey(key)) {
+            movingBins.insert(b->value);
+            if (const Bin* bin = snap->findBin(*b))
+                in = bin->parent.value;
+        } else if (const auto m = parseMediaKey(key)) {
+            if (const MediaItem* item = snap->findMedia(*m))
+                in = item->bin.value;
+        } else if (const auto q = parseSequenceKey(key)) {
+            if (const Sequence* sequence = snap->findSequence(*q))
+                in = sequence->bin.value;
+        }
+        if (!in || (current && *current != *in))
+            shared = false;
+        current = in;
+    }
+    if (!shared)
+        current.reset();
+    const QString here = tr("Already in this bin");
+    if (current && *current == 0) {
+        QVariantMap root = out.front().toMap();
+        root.insert(QStringLiteral("disabled"), true);
+        root.insert(QStringLiteral("reason"), here);
+        root.insert(QStringLiteral("current"), true);
+        out[0] = root;
+    }
+    std::map<std::uint64_t, std::vector<const Bin*>> children; // parent (0 = the root) -> bins, by name
+    for (const Bin& b : snap->bins)
+        children[b.parent.value].push_back(&b);
+    for (auto& entry : children) {
+        std::stable_sort(entry.second.begin(), entry.second.end(), [](const Bin* a, const Bin* b) {
+            return QString::compare(text(a->name), text(b->name), Qt::CaseInsensitive) < 0;
+        });
+    }
+    // Depth first; a bin inside a moving one is disabled too (it would move into itself).
+    std::function<void(std::uint64_t, int, bool)> walk = [&](std::uint64_t parent, int depth, bool insideMoving) {
+        const auto found = children.find(parent);
+        if (found == children.end() || depth > 64)
+            return;
+        for (const Bin* b : found->second) {
+            const bool moved = insideMoving || movingBins.contains(b->id.value);
+            const bool isCurrent = current && *current == b->id.value;
+            const QString reason = moved           ? tr("A bin cannot move into itself")
+                                   : b->isSearch() ? tr("A search bin lists what it finds: nothing moves into it")
+                                   : isCurrent     ? here
+                                                   : QString();
+            out.append(QVariantMap{{QStringLiteral("key"), binKey(b->id)},
+                                   {QStringLiteral("name"), text(b->name)},
+                                   {QStringLiteral("depth"), depth},
+                                   {QStringLiteral("disabled"), !reason.isEmpty()},
+                                   {QStringLiteral("reason"), reason},
+                                   {QStringLiteral("current"), isCurrent}});
+            if (!b->isSearch())
+                walk(b->id.value, depth + 1, moved);
+        }
+    };
+    walk(0, 1, false);
+    return out;
+}
+
+QStringList LibraryBridge::cutKeys() const {
+    QStringList out(m_cut.begin(), m_cut.end());
+    out.sort();
+    return out;
+}
+
+bool LibraryBridge::cutItems(const QStringList& keys) {
+    const ProjectSnapshot snap = m_controller ? m_controller->snapshot() : nullptr;
+    QSet<QString> marked;
+    for (const QString& key : keys) {
+        const bool exists = snap && ((parseBinKey(key) && snap->findBin(*parseBinKey(key))) ||
+                                     (parseMediaKey(key) && snap->findMedia(*parseMediaKey(key))) ||
+                                     (parseSequenceKey(key) && snap->findSequence(*parseSequenceKey(key))));
+        if (exists)
+            marked.insert(key);
+    }
+    if (marked.isEmpty())
+        return false;
+    m_cut = marked;
+    m_model->setCut(m_cut);
+    emit cutChanged();
+    emit notice(m_cut.size() == 1
+                    ? tr("Cut 1 item: select a bin (or open one) and paste to move it there.")
+                    : tr("Cut %1 items: select a bin (or open one) and paste to move them there.").arg(m_cut.size()));
+    return true;
+}
+
+QString LibraryBridge::pasteTarget() const {
+    // The selected bin, when exactly one is selected (and it is not itself cut), else the bin shown.
+    if (m_selection.size() == 1) {
+        const QString only = *m_selection.begin();
+        const auto bin = parseBinKey(only);
+        const Bin* found = bin && m_lastSnapshot ? m_lastSnapshot->findBin(*bin) : nullptr;
+        if (found && !found->isSearch() && !m_cut.contains(only))
+            return only;
+    }
+    return binKey(targetBin());
+}
+
+bool LibraryBridge::pasteItems() {
+    pruneCut();
+    if (m_cut.isEmpty()) {
+        setMessage(tr("Nothing is cut: cut items in the Library first."));
+        return false;
+    }
+    const QString target = pasteTarget();
+    const QStringList keys = cutKeys();
+    if (keys == QStringList{target}) {
+        setMessage(tr("A bin cannot move into itself: select another bin, then paste."));
+        return false;
+    }
+    if (!moveItems(keys, target))
+        return false; // the reason is in `message`; the marks stay for another bin
+    const auto bin = parseBinKey(target);
+    const Bin* found = bin && m_lastSnapshot ? m_lastSnapshot->findBin(*bin) : nullptr;
+    emit notice((keys.size() == 1 ? tr("Moved 1 item into “%1”.") : tr("Moved %1 items into “%2”.").arg(keys.size()))
+                    .arg(found ? text(found->name) : tr("Project")));
+    clearCut();
+    return true;
+}
+
+void LibraryBridge::clearCut() {
+    if (m_cut.isEmpty())
+        return;
+    m_cut.clear();
+    m_model->setCut(m_cut);
+    emit cutChanged();
+}
+
+void LibraryBridge::pruneCut() {
+    if (m_cut.isEmpty())
+        return;
+    const ProjectSnapshot snap = m_lastSnapshot;
+    const auto before = m_cut.size();
+    m_cut.removeIf([&](const QString& key) {
+        if (!snap)
+            return true;
+        if (const auto b = parseBinKey(key))
+            return snap->findBin(*b) == nullptr;
+        if (const auto m = parseMediaKey(key))
+            return snap->findMedia(*m) == nullptr;
+        if (const auto q = parseSequenceKey(key))
+            return snap->findSequence(*q) == nullptr;
+        return true;
+    });
+    if (m_cut.size() != before) {
+        m_model->setCut(m_cut);
+        emit cutChanged();
+    }
+}
+
+void LibraryBridge::collectUnder(const QStringList& keys, std::vector<const MediaItem*>& media,
+                                 std::vector<const Sequence*>& sequences) const {
+    const ProjectSnapshot snap = m_controller ? m_controller->snapshot() : m_lastSnapshot;
+    if (!snap)
+        return;
+    std::unordered_set<std::uint64_t> bins;
+    std::unordered_set<std::uint64_t> seenMedia;
+    std::unordered_set<std::uint64_t> seenSequences;
+    for (const MediaItem* m : media)
+        seenMedia.insert(m->id.value);
+    for (const Sequence* s : sequences)
+        seenSequences.insert(s->id.value);
+    for (const QString& key : keys) {
+        if (const auto b = parseBinKey(key)) {
+            const Bin* found = snap->findBin(*b);
+            if (found && !found->isSearch()) // a search bin lists what it finds: it holds nothing
+                bins.insert(b->value);
+        } else if (const auto m = parseMediaKey(key)) {
+            const MediaItem* found = snap->findMedia(*m);
+            if (found && seenMedia.insert(m->value).second)
+                media.push_back(found);
+        } else if (const auto q = parseSequenceKey(key)) {
+            const Sequence* found = snap->findSequence(*q);
+            if (found && seenSequences.insert(q->value).second)
+                sequences.push_back(found);
+        }
+    }
+    if (bins.empty())
+        return;
+    for (bool grew = true; grew;) { // the bins inside them, at any depth
+        grew = false;
+        for (const Bin& b : snap->bins) {
+            if (b.parent.isValid() && bins.contains(b.parent.value) && !b.isSearch() && bins.insert(b.id.value).second)
+                grew = true;
+        }
+    }
+    for (const MediaPtr& m : snap->media) {
+        if (m->bin.isValid() && bins.contains(m->bin.value) && seenMedia.insert(m->id.value).second)
+            media.push_back(m.get());
+    }
+    for (const SequencePtr& s : snap->sequences) {
+        if (s->bin.isValid() && bins.contains(s->bin.value) && seenSequences.insert(s->id.value).second)
+            sequences.push_back(s.get());
+    }
+}
+
+QString LibraryBridge::summaryText() const {
+    const int listed = m_model->rowCount();
+    QStringList parts{listed == 1 ? tr("1 item") : tr("%1 items").arg(listed)};
+    QStringList keys;
+    if (!m_selection.isEmpty()) {
+        parts << tr("%n selected", nullptr, static_cast<int>(m_selection.size()));
+        keys = QStringList(m_selection.begin(), m_selection.end());
+    } else {
+        keys.reserve(listed);
+        for (int row = 0; row < listed; ++row)
+            keys << m_model->keyOf(row);
+    }
+    std::vector<const MediaItem*> media;
+    std::vector<const Sequence*> sequences;
+    collectUnder(keys, media, sequences);
+    std::int64_t bytes = 0;
+    double seconds = 0.0;
+    for (const MediaItem* m : media) {
+        bytes += libraryFileBytes(*m);
+        if (!m->isGenerator() && !m->info.isStillImage)
+            seconds += (m->subclip ? m->subclip->range.duration : m->info.duration).toSeconds();
+    }
+    for (const Sequence* s : sequences)
+        seconds += s->duration.toSeconds();
+    if (bytes > 0)
+        parts << librarySizeText(bytes);
+    if (seconds >= 0.5) {
+        const auto total = static_cast<long long>(std::llround(seconds));
+        const long long hours = total / 3600;
+        const long long minutes = total / 60 % 60;
+        const long long secs = total % 60;
+        parts << (hours > 0 ? QStringLiteral("%1:%2:%3").arg(hours).arg(minutes, 2, 10, QLatin1Char('0'))
+                                  .arg(secs, 2, 10, QLatin1Char('0'))
+                            : QStringLiteral("%1:%2").arg(minutes).arg(secs, 2, 10, QLatin1Char('0')));
+    }
+    return parts.join(QStringLiteral(" · "));
+}
+
 // ---- Metadata ---------------------------------------------------------------------------------------------------------
 
 bool LibraryBridge::rename(const QString& key, const QString& name) {
@@ -1102,10 +1432,11 @@ bool LibraryBridge::setPosterFrame(const QString& key, double fraction) {
     });
 }
 
-bool LibraryBridge::deleteItems(const QStringList& keys) {
-    std::vector<BinId> bins;
-    std::vector<MediaId> media;
-    std::vector<SequenceId> sequences;
+namespace {
+
+/// The bins, media and sequences `keys` name.
+void splitKeys(const QStringList& keys, std::vector<BinId>& bins, std::vector<MediaId>& media,
+               std::vector<SequenceId>& sequences) {
     for (const QString& key : keys) {
         if (const auto b = parseBinKey(key))
             bins.push_back(*b);
@@ -1114,35 +1445,221 @@ bool LibraryBridge::deleteItems(const QStringList& keys) {
         else if (const auto q = parseSequenceKey(key))
             sequences.push_back(*q);
     }
+}
+
+/// Whether bin `bin` is `root` or inside it.
+bool binInside(const ProjectState& state, BinId bin, BinId root) {
+    for (std::size_t guard = 0; bin.isValid() && guard <= state.bins.size(); ++guard) {
+        if (bin == root)
+            return true;
+        const Bin* b = state.findBin(bin);
+        bin = b ? b->parent : BinId{};
+    }
+    return false;
+}
+
+/// What deleting `bins`, `media` and `sequences` takes away: the media and sequences named and those inside the bins.
+void deletedItems(const ProjectState& state, std::span<const BinId> bins, std::span<const MediaId> media,
+                  std::span<const SequenceId> sequences, std::unordered_set<std::uint64_t>& deletedMedia,
+                  std::unordered_set<std::uint64_t>& deletedSequences) {
+    const auto inDeletedBin = [&](BinId bin) {
+        return bin.isValid() && std::any_of(bins.begin(), bins.end(), [&](BinId root) { return binInside(state, bin, root); });
+    };
+    for (const MediaId m : media)
+        deletedMedia.insert(m.value);
+    for (const SequenceId q : sequences)
+        deletedSequences.insert(q.value);
+    for (const MediaPtr& m : state.media) {
+        if (inDeletedBin(m->bin))
+            deletedMedia.insert(m->id.value);
+    }
+    for (const SequencePtr& q : state.sequences) {
+        if (inDeletedBin(q->bin))
+            deletedSequences.insert(q->id.value);
+    }
+}
+
+/// 0.6 (card #74): whether a take's source (Auditions.h forEachTakeSource: media, or a nested / multicam sequence) goes.
+bool sourceDeleted(MediaId m, SequenceId q, const std::unordered_set<std::uint64_t>& deletedMedia,
+                   const std::unordered_set<std::uint64_t>& deletedSequences) {
+    return q.isValid() ? deletedSequences.contains(q.value) : m.isValid() && deletedMedia.contains(m.value);
+}
+
+/// How many of a clip's takes play what goes, of how many (one for a clip that is not an audition).
+std::pair<std::size_t, std::size_t> deletedTakes(const Clip& c, const std::unordered_set<std::uint64_t>& deletedMedia,
+                                                 const std::unordered_set<std::uint64_t>& deletedSequences) {
+    std::size_t deleted = 0;
+    std::size_t total = 0;
+    forEachTakeSource(c, [&](MediaId m, SequenceId q) {
+        ++total;
+        deleted += sourceDeleted(m, q, deletedMedia, deletedSequences) ? 1 : 0;
+    });
+    return {deleted, total};
+}
+
+/// The clips of the sequences that stay that play what goes, by sequence. `lifted`: every take of the clip plays a
+/// deleted item (an ordinary clip: its source goes), with their linked partners (Delete follows links). `losingTakes`:
+/// auditions with other takes that stay - only the takes that play what goes leave them.
+struct DeletedUses {
+    std::map<std::uint64_t, std::vector<ClipId>> lifted;
+    std::map<std::uint64_t, std::vector<ClipId>> losingTakes;
+};
+
+DeletedUses deletedUses(const ProjectState& state, std::span<const BinId> bins, std::span<const MediaId> media,
+                        std::span<const SequenceId> sequences) {
+    std::unordered_set<std::uint64_t> deletedMedia;
+    std::unordered_set<std::uint64_t> deletedSequences;
+    deletedItems(state, bins, media, sequences, deletedMedia, deletedSequences);
+    DeletedUses out;
+    for (const SequencePtr& seq : state.sequences) {
+        if (deletedSequences.contains(seq->id.value))
+            continue; // its clips go with it
+        std::unordered_set<std::uint64_t> groups;
+        std::vector<ClipId> clips;
+        std::vector<ClipId> auditions;
+        seq->forEachTrack([&](const Track& t) {
+            for (const Clip& c : t.clips) {
+                const auto [deleted, total] = deletedTakes(c, deletedMedia, deletedSequences);
+                if (deleted == 0)
+                    continue;
+                if (deleted < total) {
+                    auditions.push_back(c.id);
+                    continue;
+                }
+                clips.push_back(c.id);
+                if (c.linkGroup.isValid())
+                    groups.insert(c.linkGroup.value);
+            }
+        });
+        if (!clips.empty()) {
+            // Their linked partners go too (Delete follows links).
+            seq->forEachTrack([&](const Track& t) {
+                for (const Clip& c : t.clips) {
+                    if (c.linkGroup.isValid() && groups.contains(c.linkGroup.value) &&
+                        std::find(clips.begin(), clips.end(), c.id) == clips.end())
+                        clips.push_back(c.id);
+                }
+            });
+            std::erase_if(auditions, [&](ClipId id) { return std::find(clips.begin(), clips.end(), id) != clips.end(); });
+            out.lifted.emplace(seq->id.value, std::move(clips));
+        }
+        if (!auditions.empty())
+            out.losingTakes.emplace(seq->id.value, std::move(auditions));
+    }
+    return out;
+}
+
+} // namespace
+
+std::map<std::uint64_t, std::vector<ClipId>> clipsUsingLibraryItems(const ProjectState& state, std::span<const BinId> bins,
+                                                                     std::span<const MediaId> media,
+                                                                     std::span<const SequenceId> sequences) {
+    return deletedUses(state, bins, media, sequences).lifted;
+}
+
+std::map<std::uint64_t, std::vector<ClipId>> auditionsLosingTakes(const ProjectState& state, std::span<const BinId> bins,
+                                                                  std::span<const MediaId> media,
+                                                                  std::span<const SequenceId> sequences) {
+    return deletedUses(state, bins, media, sequences).losingTakes;
+}
+
+std::expected<ProjectState, Error> removeLibraryItems(const ProjectState& s, std::span<const BinId> binsGiven,
+                                                      std::span<const MediaId> media, std::span<const SequenceId> sequences,
+                                                      bool removeClips) {
+    ProjectState state = s;
+    std::unordered_set<std::uint64_t> deletedMedia;
+    std::unordered_set<std::uint64_t> deletedSequences;
+    deletedItems(s, binsGiven, media, sequences, deletedMedia, deletedSequences);
+    if (removeClips) {
+        // 0.6 (card #74): an audition that keeps other takes loses only the takes that play what goes (its partners'
+        // same takes with it); the active take passes on as Remove Take passes it. The last such take first, so the
+        // take order of the others holds.
+        for (const auto& [sequence, clips] : auditionsLosingTakes(s, binsGiven, media, sequences)) {
+            for (const ClipId id : clips) {
+                for (std::size_t guard = 0; guard <= kMaxAuditionTakes; ++guard) {
+                    const Sequence* seq = state.findSequence(SequenceId{sequence});
+                    const auto location = seq ? seq->findClip(id) : std::nullopt;
+                    if (!location)
+                        break;
+                    const Clip& clip = location->clip();
+                    const auto [deleted, total] = deletedTakes(clip, deletedMedia, deletedSequences);
+                    if (deleted == 0 || deleted == total)
+                        break; // done, or every take goes: the clip is lifted below
+                    std::size_t index = 0;
+                    for (std::size_t i = 0; i < total; ++i) {
+                        const Clip take = auditionTakeClip(clip, i);
+                        if (sourceDeleted(take.media, take.sequence, deletedMedia, deletedSequences))
+                            index = i;
+                    }
+                    auto next = edit::removeAuditionTake(state, SequenceId{sequence}, id, index);
+                    if (!next)
+                        return std::unexpected(next.error());
+                    state = std::move(next->state);
+                }
+            }
+        }
+        // P1 round (#38): the clips that play what goes are lifted, in every sequence that stays (no ripple).
+        for (const auto& [sequence, clips] : clipsUsingLibraryItems(state, binsGiven, media, sequences)) {
+            auto next = edit::deleteClips(state, SequenceId{sequence}, clips, edit::LinkMode::FollowLinks);
+            if (!next)
+                return std::unexpected(next.error());
+            state = std::move(next->state);
+        }
+    }
+    // Every sequence that goes first - those named and those inside the deleted bins: they may play media that goes or
+    // nest each other. One that another sequence that goes still nests waits for that one (any order of selection).
+    std::vector<SequenceId> pending;
+    for (const SequencePtr& q : state.sequences) {
+        if (deletedSequences.contains(q->id.value))
+            pending.push_back(q->id);
+    }
+    while (!pending.empty()) {
+        std::optional<Error> refused;
+        const std::size_t before = pending.size();
+        std::erase_if(pending, [&](SequenceId q) {
+            auto next = edit::removeSequence(state, q);
+            if (!next) {
+                if (!refused)
+                    refused = next.error();
+                return false;
+            }
+            state = std::move(*next);
+            return true;
+        });
+        if (pending.size() == before)
+            return std::unexpected(*refused); // used by a sequence that stays
+    }
+    // Then media outside the deleted bins, then the bins with what is left in them.
+    for (const MediaId m : media) {
+        if (!state.findMedia(m))
+            continue;
+        auto next = edit::removeMedia(state, m);
+        if (!next)
+            return std::unexpected(next.error());
+        state = std::move(*next);
+    }
+    std::vector<BinId> bins(binsGiven.begin(), binsGiven.end());
+    std::erase_if(bins, [&](BinId b) { return !state.findBin(b); });
+    if (!bins.empty()) {
+        auto next = edit::removeBins(state, bins);
+        if (!next)
+            return std::unexpected(next.error());
+        state = std::move(*next);
+    }
+    return state;
+}
+
+bool LibraryBridge::deleteItems(const QStringList& keys, bool removeClips) {
+    std::vector<BinId> bins;
+    std::vector<MediaId> media;
+    std::vector<SequenceId> sequences;
+    splitKeys(keys, bins, media, sequences);
     if (bins.empty() && media.empty() && sequences.empty())
         return false;
-    const bool ok = apply(QT_TRANSLATE_NOOP("wabcut::app::LibraryBridge", "Delete"), [&](const ProjectState& s) {
-        ProjectState state = s;
-        // Sequences first (they may use the media), then media outside the deleted bins, then the bins.
-        for (const SequenceId q : sequences) {
-            if (!state.findSequence(q))
-                continue;
-            auto next = edit::removeSequence(state, q);
-            if (!next)
-                return std::expected<ProjectState, Error>(std::unexpected(next.error()));
-            state = std::move(*next);
-        }
-        for (const MediaId m : media) {
-            if (!state.findMedia(m))
-                continue;
-            auto next = edit::removeMedia(state, m);
-            if (!next)
-                return std::expected<ProjectState, Error>(std::unexpected(next.error()));
-            state = std::move(*next);
-        }
-        std::erase_if(bins, [&](BinId b) { return !state.findBin(b); });
-        if (!bins.empty()) {
-            auto next = edit::removeBins(state, bins);
-            if (!next)
-                return std::expected<ProjectState, Error>(std::unexpected(next.error()));
-            state = std::move(*next);
-        }
-        return std::expected<ProjectState, Error>(std::move(state));
+    const char* label = removeClips ? QT_TRANSLATE_NOOP("wabcut::app::LibraryBridge", "Delete and Remove Clips")
+                                    : QT_TRANSLATE_NOOP("wabcut::app::LibraryBridge", "Delete");
+    const bool ok = apply(label, [&](const ProjectState& s) {
+        return removeLibraryItems(s, bins, media, sequences, removeClips);
     });
     if (ok) {
         m_selection.clear();
@@ -1150,6 +1667,121 @@ bool LibraryBridge::deleteItems(const QStringList& keys) {
         m_model->setSelection(m_selection);
     }
     return ok;
+}
+
+QVariantMap LibraryBridge::deleteImpact(const QStringList& keys) const {
+    const ProjectSnapshot snap = m_controller ? m_controller->snapshot() : nullptr;
+    std::vector<BinId> bins;
+    std::vector<MediaId> media;
+    std::vector<SequenceId> sequences;
+    splitKeys(keys, bins, media, sequences);
+    int clips = 0;
+    QStringList names;
+    QString firstName;
+    int usedItems = 0;
+    int takes = 0;
+    QStringList unusedKeys;
+    if (snap) {
+        std::unordered_set<std::uint64_t> deletedMedia;
+        std::unordered_set<std::uint64_t> deletedSequences;
+        deletedItems(*snap, bins, media, sequences, deletedMedia, deletedSequences);
+        const DeletedUses uses = deletedUses(*snap, bins, media, sequences);
+        // The items being deleted that those clips play, keyed as media / sequence (a linked partner's own file is not
+        // one of them); 0.6: an audition's other takes count (card #74).
+        std::unordered_set<std::uint64_t> usedIds;
+        const auto note = [&](const Clip& c) {
+            forEachTakeSource(c, [&](MediaId m, SequenceId q) {
+                if (!sourceDeleted(m, q, deletedMedia, deletedSequences))
+                    return;
+                if (!usedIds.insert(q.isValid() ? (1ULL << 63) | q.value : m.value).second || !firstName.isEmpty())
+                    return;
+                if (q.isValid()) {
+                    if (const Sequence* nested = snap->findSequence(q))
+                        firstName = text(nested->name);
+                } else if (const MediaItem* item = snap->findMedia(m)) {
+                    firstName = text(item->name);
+                }
+            });
+        };
+        std::map<std::uint64_t, QString> touched; // the sequences that lose clips or takes, in id order
+        for (const auto* list : {&uses.lifted, &uses.losingTakes}) {
+            for (const auto& [sequence, ids] : *list) {
+                const Sequence* q = snap->findSequence(SequenceId{sequence});
+                if (!q)
+                    continue;
+                clips += static_cast<int>(ids.size());
+                touched.emplace(sequence, text(q->name));
+                for (const ClipId id : ids) {
+                    const auto loc = q->findClip(id);
+                    if (!loc)
+                        continue;
+                    note(loc->clip());
+                    if (list == &uses.losingTakes)
+                        takes += static_cast<int>(deletedTakes(loc->clip(), deletedMedia, deletedSequences).first);
+                }
+            }
+        }
+        for (const auto& [id, name] : touched)
+            names << name;
+        usedItems = static_cast<int>(usedIds.size());
+        // Fix round 1 (ARGON-12): the keys no sequence uses on their own (a bin: nothing inside it is used) - what
+        // Delete with Options deletes when "Remove their clips from sequences" is off; the used ones stay.
+        const auto none = [](const std::map<std::uint64_t, std::vector<ClipId>>& uses) {
+            return std::ranges::all_of(uses, [](const auto& entry) { return entry.second.empty(); });
+        };
+        for (const QString& key : keys) {
+            std::vector<BinId> oneBin;
+            std::vector<MediaId> oneMedia;
+            std::vector<SequenceId> oneSequence;
+            splitKeys(QStringList{key}, oneBin, oneMedia, oneSequence);
+            const DeletedUses one = deletedUses(*snap, oneBin, oneMedia, oneSequence);
+            if (none(one.lifted) && none(one.losingTakes))
+                unusedKeys << key;
+        }
+        // Fix round 3 (NEW-03): an item used only by another selected item that is itself unused goes with it (a nested
+        // sequence that only an unused sequence nests; media only that sequence plays). Grow the set until it holds: each
+        // pass ignores the uses of every key already in it, so the whole set is deleted together.
+        for (bool grew = true; grew;) {
+            grew = false;
+            std::vector<BinId> goneBins;
+            std::vector<MediaId> goneMedia;
+            std::vector<SequenceId> goneSequences;
+            splitKeys(unusedKeys, goneBins, goneMedia, goneSequences);
+            for (const QString& key : keys) {
+                if (unusedKeys.contains(key))
+                    continue;
+                std::vector<BinId> withBin = goneBins;
+                std::vector<MediaId> withMedia = goneMedia;
+                std::vector<SequenceId> withSequence = goneSequences;
+                splitKeys(QStringList{key}, withBin, withMedia, withSequence);
+                const DeletedUses widened = deletedUses(*snap, withBin, withMedia, withSequence);
+                if (none(widened.lifted) && none(widened.losingTakes)) {
+                    unusedKeys << key;
+                    grew = true;
+                }
+            }
+        }
+    }
+    return {{QStringLiteral("items"), static_cast<int>(keys.size())},
+            {QStringLiteral("clips"), clips},
+            // 0.6 (card #74): of those clips, auditions that keep other takes lose only these takes.
+            {QStringLiteral("takes"), takes},
+            {QStringLiteral("sequences"), static_cast<int>(names.size())},
+            {QStringLiteral("sequenceNames"), names},
+            {QStringLiteral("firstName"), firstName},
+            {QStringLiteral("usedItems"), usedItems},
+            {QStringLiteral("unusedKeys"), unusedKeys}};
+}
+
+bool LibraryBridge::requestDelete(const QStringList& keys, bool withOptions) {
+    if (keys.isEmpty())
+        return false;
+    const QVariantMap impact = deleteImpact(keys);
+    if (withOptions || impact.value(QStringLiteral("clips")).toInt() > 0) {
+        emit deleteConfirmRequested(keys, impact, withOptions);
+        return true;
+    }
+    return deleteItems(keys);
 }
 
 bool LibraryBridge::deleteSelection() { return deleteItems(selection()); }
@@ -2041,6 +2673,10 @@ QString LibraryBridge::importImageSequence(const QUrl& firstFrame, double fps) {
 
 namespace {
 
+// P1 round (#39): shared with Get Properties (defined there).
+QVariantMap audioMap(const AudioStreamInfo& a);
+QVariantMap infoMap(const MediaItem& item, int files, qint64 bytes);
+
 std::string localPathOf(const QUrl& url) {
     const QString local = url.isLocalFile() ? url.toLocalFile() : url.toString();
     return QDir::fromNativeSeparators(local).toStdString();
@@ -2254,50 +2890,15 @@ QVariantMap LibraryBridge::browserFileInfo(const QString& file) {
         return {};
     }
     const MediaItem& item = described->front();
-    const MediaInfo& info = item.info;
-    const Rate rate = info.hasVideo() && info.video.front().frameRate.num > 0 ? info.video.front().frameRate : Rate{30, 1};
-    QVariantMap out{{QStringLiteral("name"), text(item.name)},
-                    {QStringLiteral("path"), local},
-                    {QStringLiteral("card"), QString::fromUtf8(editor::displayName(clip.card))},
-                    {QStringLiteral("files"), static_cast<int>(clip.files.size())},
-                    {QStringLiteral("bytes"), QVariant::fromValue(static_cast<qint64>(clip.bytes()))},
-                    {QStringLiteral("container"), text(info.container)},
-                    {QStringLiteral("duration"), text(ticksToTimecode(info.duration, rate, false))},
-                    {QStringLiteral("seconds"), info.duration.toSeconds()},
-                    {QStringLiteral("still"), info.isStillImage}};
-    if (info.modifiedTime > 0)
-        out.insert(QStringLiteral("modified"), QDateTime::fromSecsSinceEpoch(info.modifiedTime).toString(Qt::ISODate));
-    if (info.startTimecode)
-        out.insert(QStringLiteral("startTimecode"), text(ticksToTimecode(*info.startTimecode, rate, false)));
-    if (info.hasVideo()) {
-        const VideoStreamInfo& v = info.video.front();
-        out.insert(QStringLiteral("video"),
-                   QVariantMap{{QStringLiteral("codec"), text(v.codec)},
-                               {QStringLiteral("profile"), text(v.profile)},
-                               {QStringLiteral("width"), v.width},
-                               {QStringLiteral("height"), v.height},
-                               {QStringLiteral("frameRate"), std::round(v.frameRate.toDouble() * 1000.0) / 1000.0},
-                               {QStringLiteral("variableFrameRate"), v.variableFrameRate},
-                               {QStringLiteral("pixelFormat"), text(v.pixelFormat)},
-                               {QStringLiteral("bitDepth"), v.bitDepth},
-                               {QStringLiteral("chroma"), text(v.chromaSubsampling)},
-                               {QStringLiteral("fieldOrder"), v.fieldOrder == FieldOrder::UpperFirst   ? QStringLiteral("upper")
-                                                              : v.fieldOrder == FieldOrder::LowerFirst ? QStringLiteral("lower")
-                                                                                                       : QStringLiteral("progressive")},
-                               {QStringLiteral("alpha"), v.alpha != AlphaMode::None},
-                               {QStringLiteral("rotation"), v.rotationDegrees},
-                               {QStringLiteral("frames"), QVariant::fromValue(static_cast<qint64>(v.frameCount))}});
-    }
+    // P1 round (#39): the fields Get Properties shows too (infoMap), plus where the clip is.
+    QVariantMap out = infoMap(item, static_cast<int>(clip.files.size()), static_cast<qint64>(clip.bytes()));
+    out.insert(QStringLiteral("path"), local);
+    out.insert(QStringLiteral("card"), QString::fromUtf8(editor::displayName(clip.card)));
     // A P2 clip's sound is in files of its own: each is an item of the clip.
     QVariantList audio;
     for (const MediaItem& part : *described) {
-        for (const AudioStreamInfo& a : part.info.audio) {
-            audio.push_back(QVariantMap{{QStringLiteral("codec"), text(a.codec)},
-                                        {QStringLiteral("channels"), a.channels},
-                                        {QStringLiteral("layout"), text(a.channelLayout)},
-                                        {QStringLiteral("sampleRate"), static_cast<int>(std::lround(a.sampleRate.toDouble()))},
-                                        {QStringLiteral("title"), text(a.title)}});
-        }
+        for (const AudioStreamInfo& a : part.info.audio)
+            audio.push_back(audioMap(a));
     }
     out.insert(QStringLiteral("audio"), audio);
     setMessage({});
@@ -2545,6 +3146,479 @@ bool LibraryBridge::editSubclip(const QString& key, const QString& inText, const
     });
 }
 
+// ---- Proxies for the selection or a bin (P1 round, #44) -----------------------------------------------------------
+
+namespace {
+
+/// What can have a proxy: video (not stills, titles, generators or sound alone), as ProxyManager makes them.
+bool proxyable(const MediaItem& m) { return !m.isGenerator() && !m.info.isStillImage && m.info.hasVideo(); }
+
+bool proxyBeingMade(const QString& state) {
+    return state == QLatin1String("generating") || state == QLatin1String("paused") || state == QLatin1String("queued");
+}
+
+} // namespace
+
+QStringList LibraryBridge::mediaInBin(const QString& bin, bool recursive) const {
+    QStringList out;
+    const ProjectSnapshot snap = m_controller ? m_controller->snapshot() : nullptr;
+    if (!snap)
+        return out;
+    BinId target;
+    if (!bin.isEmpty()) {
+        const auto parsed = parseBinKey(bin);
+        if (!parsed || !snap->findBin(*parsed))
+            return out;
+        target = *parsed;
+    }
+    std::unordered_set<std::uint64_t> bins{target.value}; // 0 = the root
+    for (bool grew = recursive; grew;) {
+        grew = false;
+        for (const Bin& b : snap->bins) {
+            if (bins.contains(b.parent.value) && !b.isSearch() && bins.insert(b.id.value).second)
+                grew = true;
+        }
+    }
+    for (const MediaPtr& m : snap->media) {
+        if (bins.contains(m->bin.value))
+            out << mediaKey(m->id);
+    }
+    return out;
+}
+
+QStringList LibraryBridge::proxyTargets(const QString& key) const {
+    const ProjectSnapshot snap = m_controller ? m_controller->snapshot() : nullptr;
+    if (!snap)
+        return {};
+    QStringList keys;
+    if (parseBinKey(key)) {
+        keys = mediaInBin(key, true);
+    } else if (m_selection.contains(key)) {
+        std::vector<const MediaItem*> media;
+        std::vector<const Sequence*> sequences;
+        collectUnder(selection(), media, sequences);
+        for (const MediaItem* m : media)
+            keys << mediaKey(m->id);
+    } else {
+        keys << key;
+    }
+    QStringList out;
+    for (const QString& k : keys) {
+        const auto id = parseMediaKey(k);
+        const MediaItem* m = id ? snap->findMedia(*id) : nullptr;
+        if (m && proxyable(*m))
+            out << k;
+    }
+    return out;
+}
+
+QVariantMap LibraryBridge::proxyPlan(const QString& key) const {
+    int create = 0;
+    int ready = 0;
+    int making = 0;
+    int deletable = 0;
+    const QStringList targets = proxyTargets(key);
+    for (const QString& k : targets) {
+        const auto id = parseMediaKey(k);
+        const auto it = id ? m_status.find(id->value) : m_status.end();
+        const QString state = it != m_status.end() ? it->second.proxyState : QString();
+        if (state == QLatin1String("ready"))
+            ++ready;
+        else if (proxyBeingMade(state))
+            ++making;
+        else
+            ++create; // none, failed or out of date
+        if (!state.isEmpty() && state != QLatin1String("failed"))
+            ++deletable;
+    }
+    return {{QStringLiteral("targets"), static_cast<int>(targets.size())},
+            {QStringLiteral("create"), create},
+            {QStringLiteral("ready"), ready},
+            {QStringLiteral("making"), making},
+            {QStringLiteral("deletable"), deletable}};
+}
+
+QString LibraryBridge::createProxies(const QString& key) {
+    const QStringList targets = proxyTargets(key);
+    if (targets.isEmpty())
+        return tr("Nothing here can have a proxy: proxies are made for video.");
+    QStringList wanted;
+    int ready = 0;
+    int making = 0;
+    for (const QString& k : targets) {
+        const auto it = m_status.find(parseMediaKey(k)->value);
+        const QString state = it != m_status.end() ? it->second.proxyState : QString();
+        if (state == QLatin1String("ready"))
+            ++ready;
+        else if (proxyBeingMade(state))
+            ++making;
+        else
+            wanted << k;
+    }
+    const int queued = wanted.isEmpty() || !m_readiness ? 0 : m_readiness->generateProxies(wanted);
+    QStringList parts{tr("%n queued", nullptr, queued)};
+    if (ready > 0)
+        parts << tr("%n already have proxies", nullptr, ready);
+    if (making > 0)
+        parts << tr("%n being made", nullptr, making);
+    if (wanted.size() > queued)
+        parts << tr("%n not queued (the Proxy column says why)", nullptr, static_cast<int>(wanted.size()) - queued);
+    const QString result = parts.join(QStringLiteral(", ")) + QLatin1Char('.');
+    emit notice(result);
+    return result;
+}
+
+QString LibraryBridge::remakeProxies(const QString& key) {
+    const QStringList targets = proxyTargets(key);
+    QStringList ready;
+    QStringList again;
+    for (const QString& k : targets) {
+        const auto it = m_status.find(parseMediaKey(k)->value);
+        const QString state = it != m_status.end() ? it->second.proxyState : QString();
+        if (proxyBeingMade(state))
+            continue;
+        if (state == QLatin1String("ready") || state == QLatin1String("stale"))
+            ready << k;
+        again << k;
+    }
+    if (!m_readiness || again.isEmpty())
+        return tr("Nothing to remake.");
+    if (!ready.isEmpty())
+        m_readiness->deleteProxies(ready);
+    const int queued = m_readiness->generateProxies(again);
+    const QString result = tr("Remaking %n proxies.", nullptr, queued);
+    emit notice(result);
+    return result;
+}
+
+QString LibraryBridge::deleteProxies(const QString& key) {
+    QStringList doomed;
+    for (const QString& k : proxyTargets(key)) {
+        const auto it = m_status.find(parseMediaKey(k)->value);
+        const QString state = it != m_status.end() ? it->second.proxyState : QString();
+        if (!state.isEmpty() && state != QLatin1String("failed"))
+            doomed << k;
+    }
+    if (!m_readiness || doomed.isEmpty())
+        return tr("No proxies to delete.");
+    const int deleted = m_readiness->deleteProxies(doomed);
+    const QString result = tr("Deleted or cancelled %n proxies.", nullptr, std::max(deleted, static_cast<int>(doomed.size())));
+    emit notice(result);
+    return result;
+}
+
+// ---- Get Properties (P1 round, #39) --------------------------------------------------------------------------------
+
+namespace {
+
+QVariantMap videoMap(const VideoStreamInfo& v) {
+    return {{QStringLiteral("codec"), text(v.codec)},
+            {QStringLiteral("profile"), text(v.profile)},
+            {QStringLiteral("width"), v.width},
+            {QStringLiteral("height"), v.height},
+            {QStringLiteral("frameRate"), std::round(v.frameRate.toDouble() * 1000.0) / 1000.0},
+            {QStringLiteral("variableFrameRate"), v.variableFrameRate},
+            {QStringLiteral("pixelFormat"), text(v.pixelFormat)},
+            {QStringLiteral("bitDepth"), v.bitDepth},
+            {QStringLiteral("chroma"), text(v.chromaSubsampling)},
+            {QStringLiteral("fieldOrder"), v.fieldOrder == FieldOrder::UpperFirst   ? QStringLiteral("upper")
+                                           : v.fieldOrder == FieldOrder::LowerFirst ? QStringLiteral("lower")
+                                                                                    : QStringLiteral("progressive")},
+            {QStringLiteral("alpha"), v.alpha != AlphaMode::None},
+            {QStringLiteral("rotation"), v.rotationDegrees},
+            {QStringLiteral("frames"), QVariant::fromValue(static_cast<qint64>(v.frameCount))}};
+}
+
+QVariantMap audioMap(const AudioStreamInfo& a) {
+    return {{QStringLiteral("codec"), text(a.codec)},
+            {QStringLiteral("channels"), a.channels},
+            {QStringLiteral("layout"), text(a.channelLayout)},
+            {QStringLiteral("sampleRate"), static_cast<int>(std::lround(a.sampleRate.toDouble()))},
+            {QStringLiteral("title"), text(a.title)}};
+}
+
+/// What browserFileInfo and mediaProperties share about one item: { name, container, duration (timecode), seconds,
+/// still, files, bytes, modified, startTimecode, video {...} (no picture: absent), audio [...] }.
+QVariantMap infoMap(const MediaItem& item, int files, qint64 bytes) {
+    const MediaInfo& info = item.info;
+    const Rate rate = info.hasVideo() && info.video.front().frameRate.num > 0 ? info.video.front().frameRate : Rate{30, 1};
+    const Ticks length = item.subclip ? item.subclip->range.duration : info.duration;
+    QVariantMap out{{QStringLiteral("name"), text(item.name)},
+                    {QStringLiteral("files"), files},
+                    {QStringLiteral("bytes"), QVariant::fromValue(bytes)},
+                    {QStringLiteral("container"), text(info.container)},
+                    {QStringLiteral("duration"), text(ticksToTimecode(length, rate, false))},
+                    {QStringLiteral("seconds"), length.toSeconds()},
+                    {QStringLiteral("still"), info.isStillImage}};
+    if (info.modifiedTime > 0)
+        out.insert(QStringLiteral("modified"), QDateTime::fromSecsSinceEpoch(info.modifiedTime).toString(Qt::ISODate));
+    if (info.startTimecode)
+        out.insert(QStringLiteral("startTimecode"), text(ticksToTimecode(*info.startTimecode, rate, false)));
+    if (info.hasVideo())
+        out.insert(QStringLiteral("video"), videoMap(info.video.front()));
+    QVariantList audio;
+    for (const AudioStreamInfo& a : info.audio)
+        audio.push_back(audioMap(a));
+    out.insert(QStringLiteral("audio"), audio);
+    return out;
+}
+
+QString numberText(double value) { return QString::number(value, 'g', 6); }
+
+} // namespace
+
+QVariantMap LibraryBridge::mediaProperties(const QString& key) const {
+    const ProjectSnapshot snap = m_controller ? m_controller->snapshot() : nullptr;
+    if (!snap)
+        return {};
+    if (const auto q = parseSequenceKey(key)) {
+        const Sequence* s = snap->findSequence(*q);
+        if (!s)
+            return {};
+        return {{QStringLiteral("key"), key},
+                {QStringLiteral("kind"), QStringLiteral("sequence")},
+                {QStringLiteral("name"), text(s->name)},
+                {QStringLiteral("width"), s->width},
+                {QStringLiteral("height"), s->height},
+                {QStringLiteral("frameRate"), std::round(s->frameRate.toDouble() * 1000.0) / 1000.0},
+                {QStringLiteral("duration"), text(ticksToTimecode(s->duration, s->frameRate, s->dropFrame))},
+                {QStringLiteral("seconds"), s->duration.toSeconds()},
+                {QStringLiteral("videoTracks"), static_cast<int>(s->videoTracks.size())},
+                {QStringLiteral("audioTracks"), static_cast<int>(s->audioTracks.size())}};
+    }
+    if (const auto b = parseBinKey(key)) {
+        const Bin* bin = snap->findBin(*b);
+        if (!bin)
+            return {};
+        std::vector<const MediaItem*> media;
+        std::vector<const Sequence*> sequences;
+        collectUnder({key}, media, sequences);
+        qint64 bytes = 0;
+        for (const MediaItem* m : media)
+            bytes += libraryFileBytes(*m);
+        return {{QStringLiteral("key"), key},
+                {QStringLiteral("kind"), QStringLiteral("bin")},
+                {QStringLiteral("name"), text(bin->name)},
+                {QStringLiteral("media"), static_cast<int>(media.size())},
+                {QStringLiteral("sequences"), static_cast<int>(sequences.size())},
+                {QStringLiteral("bytes"), QVariant::fromValue(bytes)}};
+    }
+    const auto id = parseMediaKey(key);
+    const MediaItem* m = id ? snap->findMedia(*id) : nullptr;
+    if (!m)
+        return {};
+    const qint64 bytes = libraryFileBytes(*m);
+    QVariantMap out = infoMap(*m, 1, bytes);
+    out.insert(QStringLiteral("key"), key);
+    out.insert(QStringLiteral("kind"), LibraryModel::kindOf(LibraryModel::Row{LibraryModel::Row::Kind::Media, id->value,
+                                                                                nullptr, nullptr, m}));
+    out.insert(QStringLiteral("offline"), !m->isGenerator() && m->locator.offline);
+    if (!m->isGenerator())
+        out.insert(QStringLiteral("path"), QDir::toNativeSeparators(text(m->locator.path)));
+    const double seconds = m->info.duration.toSeconds();
+    if (bytes > 0 && seconds > 0.0 && !m->info.isStillImage && !m->isGenerator())
+        out.insert(QStringLiteral("bitrate"), static_cast<double>(bytes) * 8.0 / seconds);
+    if (const auto it = m_status.find(id->value); it != m_status.end() && !it->second.proxyState.isEmpty())
+        out.insert(QStringLiteral("proxy"), it->second.proxyState);
+    int uses = 0;
+    for (const SequencePtr& s : snap->sequences) {
+        s->forEachTrack([&](const Track& t) {
+            for (const Clip& c : t.clips)
+                uses += clipUsesMedia(c, m->id) ? 1 : 0; // 0.6: an audition's other takes count (card #74)
+        });
+    }
+    out.insert(QStringLiteral("uses"), uses);
+    if (m->subclip) {
+        const QVariantMap d = details(key);
+        out.insert(QStringLiteral("master"), d.value(QStringLiteral("master")));
+        out.insert(QStringLiteral("inText"), d.value(QStringLiteral("inText")));
+        out.insert(QStringLiteral("outText"), d.value(QStringLiteral("outText")));
+    }
+    return out;
+}
+
+QVariantList LibraryBridge::propertyLines(const QVariantMap& info) const {
+    QVariantList lines;
+    const auto add = [&](const QString& label, const QString& value) {
+        if (!value.trimmed().isEmpty())
+            lines.append(QVariantMap{{QStringLiteral("label"), label}, {QStringLiteral("value"), value}});
+    };
+    if (info.isEmpty() || !info.contains(QStringLiteral("name")))
+        return lines;
+    const QString kind = info.value(QStringLiteral("kind")).toString();
+    const QString dot = QStringLiteral(" · ");
+    if (kind == QLatin1String("sequence")) {
+        add(tr("Type"), tr("Sequence"));
+        add(tr("Frame size"), QStringLiteral("%1 × %2").arg(info.value(QStringLiteral("width")).toInt())
+                                  .arg(info.value(QStringLiteral("height")).toInt()));
+        add(tr("Frame rate"), tr("%1 fps").arg(numberText(info.value(QStringLiteral("frameRate")).toDouble())));
+        add(tr("Duration"), info.value(QStringLiteral("duration")).toString());
+        add(tr("Tracks"), tr("%n video", nullptr, info.value(QStringLiteral("videoTracks")).toInt()) + QStringLiteral(", ") +
+                              tr("%n audio", nullptr, info.value(QStringLiteral("audioTracks")).toInt()));
+        return lines;
+    }
+    if (kind == QLatin1String("bin")) {
+        add(tr("Type"), tr("Bin"));
+        add(tr("Contents"), tr("%n media item(s)", nullptr, info.value(QStringLiteral("media")).toInt()) + QStringLiteral(", ") +
+                                tr("%n sequence(s)", nullptr, info.value(QStringLiteral("sequences")).toInt()));
+        add(tr("Size"), librarySizeText(info.value(QStringLiteral("bytes")).toLongLong()));
+        return lines;
+    }
+    if (kind == QLatin1String("title")) {
+        add(tr("Type"), tr("Title (made in Wabcut)"));
+        add(tr("Duration"), info.value(QStringLiteral("duration")).toString());
+        return lines;
+    }
+    const bool still = info.value(QStringLiteral("still")).toBool();
+    add(tr("Format"), info.value(QStringLiteral("container")).toString());
+    if (!still)
+        add(tr("Duration"), info.value(QStringLiteral("duration")).toString());
+    const QVariantMap v = info.value(QStringLiteral("video")).toMap();
+    if (!v.isEmpty()) {
+        const QString profile = v.value(QStringLiteral("profile")).toString();
+        QStringList video{v.value(QStringLiteral("codec")).toString() + (profile.isEmpty() ? QString() : QLatin1Char(' ') + profile),
+                          QStringLiteral("%1 × %2").arg(v.value(QStringLiteral("width")).toInt())
+                              .arg(v.value(QStringLiteral("height")).toInt())};
+        if (!still) {
+            video << tr("%1 fps").arg(numberText(v.value(QStringLiteral("frameRate")).toDouble())) +
+                         (v.value(QStringLiteral("variableFrameRate")).toBool() ? tr(" (variable)") : QString());
+        }
+        video.removeAll(QString());
+        add(tr("Video"), video.join(dot));
+        QStringList pixels{v.value(QStringLiteral("pixelFormat")).toString(),
+                           v.value(QStringLiteral("bitDepth")).toInt() > 0
+                               ? tr("%1-bit").arg(v.value(QStringLiteral("bitDepth")).toInt()) : QString(),
+                           v.value(QStringLiteral("chroma")).toString(),
+                           v.value(QStringLiteral("alpha")).toBool() ? tr("alpha") : QString()};
+        pixels.removeAll(QString());
+        add(tr("Pixels"), pixels.join(dot));
+        if (!still) {
+            const QString order = v.value(QStringLiteral("fieldOrder")).toString();
+            add(tr("Fields"), order == QLatin1String("upper")   ? tr("Upper field first")
+                              : order == QLatin1String("lower") ? tr("Lower field first")
+                                                                : tr("Progressive"));
+        }
+        if (const int rotation = v.value(QStringLiteral("rotation")).toInt(); rotation != 0)
+            add(tr("Rotation"), tr("%1°").arg(rotation));
+    }
+    const QVariantList audio = info.value(QStringLiteral("audio")).toList();
+    for (int i = 0; i < audio.size(); ++i) {
+        const QVariantMap a = audio[i].toMap();
+        QStringList parts{a.value(QStringLiteral("codec")).toString(),
+                          tr("%n channel(s)", nullptr, a.value(QStringLiteral("channels")).toInt()),
+                          tr("%1 Hz").arg(a.value(QStringLiteral("sampleRate")).toInt()),
+                          a.value(QStringLiteral("title")).toString()};
+        parts.removeAll(QString());
+        add(audio.size() > 1 ? tr("Audio %1").arg(i + 1) : tr("Audio"), parts.join(dot));
+    }
+    add(tr("Start timecode"), info.value(QStringLiteral("startTimecode")).toString());
+    const int files = info.value(QStringLiteral("files")).toInt();
+    const QString size = librarySizeText(info.value(QStringLiteral("bytes")).toLongLong());
+    if (!size.isEmpty())
+        add(tr("Size"), (files > 1 ? tr("%1 files, ").arg(files) : QString()) + size);
+    if (const double bitrate = info.value(QStringLiteral("bitrate")).toDouble(); bitrate > 0.0) {
+        add(tr("Data rate"), bitrate >= 1.0e6 ? tr("%1 Mbps").arg(QLocale().toString(bitrate / 1.0e6, 'f', 1))
+                                              : tr("%1 kbps").arg(QLocale().toString(std::round(bitrate / 1.0e3), 'f', 0)));
+    }
+    add(tr("Camera card"), info.value(QStringLiteral("card")).toString());
+    add(tr("Modified"), info.value(QStringLiteral("modified")).toString().replace(QLatin1Char('T'), QLatin1Char(' ')));
+    if (info.contains(QStringLiteral("master"))) {
+        add(tr("Subclip of"), info.value(QStringLiteral("master")).toString());
+        add(tr("Subclip range"), tr("%1 to %2").arg(info.value(QStringLiteral("inText")).toString(),
+                                                   info.value(QStringLiteral("outText")).toString()));
+    }
+    if (info.contains(QStringLiteral("key"))) { // a Library item (the Media Browser's file has its own path line)
+        const QString proxy = info.value(QStringLiteral("proxy")).toString();
+        add(tr("Proxy"), proxy == QLatin1String("ready")        ? tr("Ready")
+                         : proxyBeingMade(proxy)                 ? tr("Being made")
+                         : proxy == QLatin1String("stale")       ? tr("Out of date")
+                         : proxy == QLatin1String("failed")      ? tr("Failed")
+                                                                 : tr("None"));
+        const int uses = info.value(QStringLiteral("uses")).toInt();
+        add(tr("Used"), uses > 0 ? tr("%n clip(s) in sequences", nullptr, uses) : tr("Not used in a sequence"));
+        add(tr("Location"), info.value(QStringLiteral("path")).toString() +
+                                (info.value(QStringLiteral("offline")).toBool() ? tr(" (offline: the file cannot be found)")
+                                                                                 : QString()));
+    }
+    return lines;
+}
+
+QString LibraryBridge::propertiesText(const QString& key) const {
+    const QVariantMap info = mediaProperties(key);
+    if (info.isEmpty())
+        return {};
+    QStringList out{info.value(QStringLiteral("name")).toString()};
+    for (const QVariant& line : propertyLines(info)) {
+        const QVariantMap l = line.toMap();
+        out << l.value(QStringLiteral("label")).toString() + QStringLiteral(": ") + l.value(QStringLiteral("value")).toString();
+    }
+    return out.join(QLatin1Char('\n'));
+}
+
+bool LibraryBridge::copyProperties(const QString& key) const {
+    const QString textOut = propertiesText(key);
+    QClipboard* clipboard = qobject_cast<QGuiApplication*>(QCoreApplication::instance()) ? QGuiApplication::clipboard() : nullptr;
+    if (textOut.isEmpty() || !clipboard)
+        return false;
+    clipboard->setText(textOut);
+    return true;
+}
+
+QString LibraryBridge::propertiesTarget(bool libraryFocused) const {
+    const auto librarySelection = [this]() -> QString {
+        for (const QString& k : selection()) {
+            if (parseMediaKey(k) || parseSequenceKey(k) || parseBinKey(k))
+                return k;
+        }
+        return {};
+    };
+    if (libraryFocused) {
+        if (const QString k = librarySelection(); !k.isEmpty())
+            return k;
+    }
+    if (m_source && m_source->loaded()) {
+        if (const QString k = m_source->mediaKeyText(); parseMediaKey(k))
+            return k;
+    }
+    if (m_controller) {
+        const SequencePtr sequence = m_controller->currentSequence();
+        for (const QString& c : m_controller->selectedClips()) {
+            const auto clipId = parseClipKey(c);
+            const auto at = clipId && sequence ? sequence->findClip(*clipId) : std::nullopt;
+            if (!at)
+                continue;
+            const Clip& clip = at->clip();
+            if (clip.isNested())
+                return sequenceKey(clip.sequence);
+            if (clip.media.isValid())
+                return mediaKey(clip.media);
+        }
+    }
+    return libraryFocused ? QString() : librarySelection();
+}
+
+void LibraryBridge::requestProperties(const QString& key) {
+    if (!mediaProperties(key).isEmpty())
+        emit propertiesRequested(key);
+}
+
+void LibraryBridge::requestLinkMedia(const QStringList& keys) {
+    // Only items that are offline (a title or a linked item has nothing to relink).
+    const ProjectSnapshot snap = m_controller ? m_controller->snapshot() : nullptr;
+    QStringList offline;
+    for (const QString& key : keys) {
+        const auto id = parseMediaKey(key);
+        const MediaItem* m = id && snap ? snap->findMedia(*id) : nullptr;
+        if (m && !m->isGenerator() && m->locator.offline && !offline.contains(key))
+            offline << key;
+    }
+    if (offline.isEmpty()) {
+        setMessage(tr("These items are not offline: nothing to link."));
+        return;
+    }
+    emit linkMediaRequested(offline);
+}
+
 // ---- Housekeeping ----------------------------------------------------------------------------------------------------
 
 bool LibraryBridge::reveal(const QString& key) {
@@ -2762,6 +3836,257 @@ void LibraryBridge::pruneSelection() {
         emit selectionChanged();
 }
 
+// ---- Usage and Find in Timeline (P1 round, #40) ---------------------------------------------------------------------
+
+QVariantList LibraryBridge::usages(const QString& key) const {
+    QVariantList out;
+    const ProjectSnapshot snap = m_controller ? m_controller->snapshot() : nullptr;
+    const auto media = parseMediaKey(key);
+    const auto sequence = parseSequenceKey(key);
+    if (!snap || (!media && !sequence))
+        return out;
+    struct Use {
+        const Sequence* sequence = nullptr;
+        ClipId clip;
+        std::string clipName;
+        Ticks start;
+        QStringList tracks;
+        std::string takeName; ///< 0.6: the audition take that plays it when that is not the active one
+    };
+    std::vector<Use> uses;
+    for (const SequencePtr& seq : snap->sequences) {
+        std::map<std::uint64_t, std::size_t> byGroup; // link group -> its use in `uses`
+        const auto visit = [&](const std::vector<TrackPtr>& tracks, QChar letter) {
+            for (std::size_t i = 0; i < tracks.size(); ++i) {
+                if (!tracks[i])
+                    continue;
+                const QString label = QStringLiteral("%1%2").arg(letter).arg(i + 1);
+                for (const Clip& c : tracks[i]->clips) {
+                    const auto plays = [&](const Clip& take) {
+                        return media ? (!take.isNested() && take.media == *media)
+                                     : (take.isNested() && take.sequence == *sequence);
+                    };
+                    // 0.6 (card #74): an audition whose other take plays it is a use too (Find in Timeline shows the
+                    // audition and names the take).
+                    std::string viaTake;
+                    bool match = plays(c);
+                    for (std::size_t k = 0; !match && c.audition() && k < takeCount(c); ++k) {
+                        if (k != c.audition()->active && plays(auditionTakeClip(c, k))) {
+                            match = true;
+                            viaTake = takeName(c, k);
+                        }
+                    }
+                    if (!match)
+                        continue;
+                    if (c.linkGroup.isValid()) {
+                        if (const auto it = byGroup.find(c.linkGroup.value); it != byGroup.end()) {
+                            Use& use = uses[it->second];
+                            if (!use.tracks.contains(label))
+                                use.tracks << label;
+                            use.start = std::min(use.start, c.start());
+                            continue;
+                        }
+                        byGroup.emplace(c.linkGroup.value, uses.size());
+                    }
+                    uses.push_back({seq.get(), c.id, c.name(), c.start(), {label}, std::move(viaTake)});
+                }
+            }
+        };
+        visit(seq->videoTracks, QLatin1Char('V'));
+        visit(seq->audioTracks, QLatin1Char('A'));
+    }
+    std::stable_sort(uses.begin(), uses.end(), [](const Use& a, const Use& b) {
+        if (a.sequence != b.sequence) {
+            const int c = QString::compare(text(a.sequence->name), text(b.sequence->name), Qt::CaseInsensitive);
+            if (c != 0)
+                return c < 0;
+            return a.sequence->id.value < b.sequence->id.value;
+        }
+        return a.start < b.start;
+    });
+    for (const Use& use : uses) {
+        const Sequence& seq = *use.sequence;
+        //: Find in Timeline: an audition clip whose other (not active) take uses the item, e.g. "Hero (take “Alt 2”)"
+        const QString clipName = use.takeName.empty() ? text(use.clipName)
+                                                      : tr("%1 (take “%2”)").arg(text(use.clipName), text(use.takeName));
+        out.append(QVariantMap{
+            {QStringLiteral("sequenceKey"), sequenceKey(seq.id)},
+            {QStringLiteral("sequenceName"), text(seq.name)},
+            {QStringLiteral("clipId"), clipKey(use.clip)},
+            {QStringLiteral("clipName"), clipName},
+            {QStringLiteral("takeName"), text(use.takeName)},
+            {QStringLiteral("timecode"), text(ticksToTimecode(use.start + seq.startTimecode, seq.frameRate, seq.dropFrame))},
+            {QStringLiteral("tracks"), use.tracks.join(QStringLiteral(", "))},
+            {QStringLiteral("seconds"), use.start.toSeconds()},
+        });
+    }
+    return out;
+}
+
+QString LibraryBridge::usageText(const QString& key) const {
+    const ProjectSnapshot snap = m_controller ? m_controller->snapshot() : nullptr;
+    LibraryUsage use;
+    if (const auto media = parseMediaKey(key)) {
+        if (const auto it = m_usage.find(media->value); it != m_usage.end())
+            use = it->second;
+    } else if (const auto sequence = parseSequenceKey(key)) {
+        if (const auto it = m_sequenceUsage.find(sequence->value); it != m_sequenceUsage.end())
+            use = it->second;
+    } else {
+        return {};
+    }
+    if (use.uses == 0)
+        return tr("Not used in any sequence");
+    QSet<QString> sequences;
+    for (const QVariant& v : usages(key))
+        sequences.insert(v.toMap().value(QStringLiteral("sequenceKey")).toString());
+    // Whole English words (no "time(s)"): the tooltip is read at a glance.
+    const QString used = use.uses == 1 ? tr("Used once") : tr("Used %1 times").arg(use.uses);
+    const QString where = sequences.size() == 1 ? tr("in 1 sequence") : tr("in %1 sequences").arg(sequences.size());
+    //: The Library's usage badge, e.g. "Used 3 times in 2 sequences (video 3, audio 3)"
+    return tr("%1 %2 (video %3, audio %4)").arg(used, where).arg(use.video).arg(use.audio);
+}
+
+bool LibraryBridge::findInTimeline(const QString& sequenceKeyText, const QString& clipId) {
+    const ProjectSnapshot snap = m_controller ? m_controller->snapshot() : nullptr;
+    const auto sequence = parseSequenceKey(sequenceKeyText);
+    const auto clip = parseClipKey(clipId);
+    const Sequence* seq = snap && sequence ? snap->findSequence(*sequence) : nullptr;
+    if (!seq || !clip) {
+        setMessage(tr("That sequence is no longer in the project"));
+        return false;
+    }
+    const auto location = seq->findClip(*clip);
+    if (!location) {
+        setMessage(tr("That clip is no longer in %1").arg(text(seq->name)));
+        return false;
+    }
+    const Ticks start = location->clip().start();
+    // Its tab (SequenceTabs keeps the tabs), else the controller's current sequence.
+    if (m_controller->currentSequenceId() != *sequence && !(m_openSequence && m_openSequence(sequenceKeyText))) {
+        for (std::size_t i = 0; i < snap->sequences.size(); ++i) {
+            if (snap->sequences[i]->id == *sequence)
+                m_controller->setCurrentSequenceIndex(static_cast<int>(i));
+        }
+    }
+    if (m_controller->currentSequenceId() != *sequence)
+        return false;
+    m_controller->setPlayhead(start);
+    m_controller->selectClip(clipId, ProjectController::Replace, true);
+    emit revealInTimelineRequested(clipId);
+    return true;
+}
+
+// ---- Twirl-down bins (P1 round, #46) ---------------------------------------------------------------------------------
+
+namespace {
+
+/// QSettings key of a project file's twirl-down bins ("library/expanded/<hash of its path>").
+QString expansionKey(const QString& projectFile) {
+    QString path = QDir::cleanPath(projectFile);
+#if defined(Q_OS_WIN)
+    path = path.toLower();
+#endif
+    return QStringLiteral("library/expanded/") +
+           QString::fromLatin1(QCryptographicHash::hash(path.toUtf8(), QCryptographicHash::Sha1).toHex().left(20));
+}
+
+} // namespace
+
+void LibraryBridge::loadExpansion(const QString& projectFile) {
+    m_expanded.clear();
+    m_expansionFile = projectFile;
+    m_expansionLoaded = true;
+    if (projectFile.isEmpty() || !m_persistent)
+        return;
+    for (const QString& key : QSettings().value(expansionKey(projectFile)).toStringList()) {
+        if (const auto bin = parseBinKey(key))
+            m_expanded.insert(bin->value);
+    }
+}
+
+void LibraryBridge::saveExpansion() const {
+    if (m_expansionFile.isEmpty() || !m_persistent)
+        return;
+    QStringList keys;
+    for (const std::uint64_t bin : m_expanded) {
+        if (!m_lastSnapshot || m_lastSnapshot->findBin(BinId{bin}))
+            keys << binKey(BinId{bin});
+    }
+    keys.sort();
+    QSettings settings;
+    if (keys.isEmpty())
+        settings.remove(expansionKey(m_expansionFile));
+    else
+        settings.setValue(expansionKey(m_expansionFile), keys);
+}
+
+void LibraryBridge::setExpanded(const QString& key, bool expanded, bool recursive) {
+    const ProjectSnapshot snap = m_controller ? m_controller->snapshot() : nullptr;
+    const auto id = parseBinKey(key);
+    const Bin* bin = snap && id ? snap->findBin(*id) : nullptr;
+    if (!bin || bin->isSearch())
+        return;
+    std::vector<BinId> bins{*id};
+    if (recursive) { // Alt+click: every bin inside it too
+        for (std::size_t i = 0; i < bins.size(); ++i) {
+            for (const Bin& b : snap->bins) {
+                if (b.parent == bins[i] && !b.isSearch())
+                    bins.push_back(b.id);
+            }
+        }
+    }
+    bool changed = false;
+    for (const BinId b : bins)
+        changed = (expanded ? m_expanded.insert(b.value).second : m_expanded.erase(b.value) > 0) || changed;
+    if (!changed)
+        return;
+    if (!expanded) {
+        // What a collapse hides is no longer selected (Delete never acts on rows nobody sees): the bin is, instead.
+        const qsizetype before = m_selection.size();
+        m_selection.removeIf([&](const QString& k) {
+            const QString parent = parentOf(k);
+            const auto p = parseBinKey(parent);
+            return p && binInside(*snap, *p, *id);
+        });
+        if (m_selection.size() != before) {
+            m_selection.insert(key);
+            m_anchor = key;
+            m_model->setSelection(m_selection);
+            emit selectionChanged();
+        }
+    }
+    saveExpansion();
+    refresh(true);
+    emit expandedChanged();
+}
+
+bool LibraryBridge::isExpanded(const QString& key) const {
+    const auto id = parseBinKey(key);
+    return id && m_expanded.contains(id->value);
+}
+
+QString LibraryBridge::parentOf(const QString& key) const {
+    const ProjectSnapshot snap = m_controller ? m_controller->snapshot() : nullptr;
+    if (!snap)
+        return {};
+    if (const auto b = parseBinKey(key)) {
+        const Bin* bin = snap->findBin(*b);
+        return bin ? binKey(bin->parent) : QString();
+    }
+    if (const auto m = parseMediaKey(key)) {
+        const MediaItem* item = snap->findMedia(*m);
+        return item ? binKey(item->bin) : QString();
+    }
+    if (const auto q = parseSequenceKey(key)) {
+        const Sequence* seq = snap->findSequence(*q);
+        return seq ? binKey(seq->bin) : QString();
+    }
+    return {};
+}
+
+bool LibraryBridge::treeShown() const { return m_model->tree(); }
+
 // ---- Commands ---------------------------------------------------------------------------------------------------------
 
 namespace {
@@ -2811,15 +4136,27 @@ bool LibraryBridge::handlesCommand(const QString& id) {
         QStringLiteral("project.newBin"),   QStringLiteral("project.delete"),     QStringLiteral("project.listView"),
         QStringLiteral("project.iconView"), QStringLiteral("project.toggleView"), QStringLiteral("project.hoverScrub"),
         QStringLiteral("project.openInSourceMonitor"), QStringLiteral("clip.makeSubclip"), QStringLiteral("edit.find"),
+        QStringLiteral("file.getProperties"), // P1 round (#39): Main.qml opens the Properties dialog
+        QStringLiteral("project.deleteWithOptions"), // P1 round (#38): Ctrl/Cmd+Delete, the delete confirmation
     };
     return kCommands.contains(id) || thumbnailStepOf(id) != 0 || selectionMoveOf(id) != nullptr;
 }
 
 QVariantMap LibraryBridge::commandAvailability(const QString& id) const {
+    // P1 round (#41): Cut and Paste of Library items (the Library has the focus: Main.qml and the menu bar ask). Without
+    // a selection or anything cut they are not the Library's: the timeline's Cut and Paste apply.
+    if (id == QStringLiteral("edit.cut") && !m_selection.isEmpty())
+        return {{QStringLiteral("handled"), true}, {QStringLiteral("enabled"), true}, {QStringLiteral("reason"), QString()}};
+    if (id == QStringLiteral("edit.paste") && !m_cut.isEmpty())
+        return {{QStringLiteral("handled"), true}, {QStringLiteral("enabled"), true}, {QStringLiteral("reason"), QString()}};
     if (!handlesCommand(id))
         return {{QStringLiteral("handled"), false}};
     bool enabled = true;
     QString reason;
+    if (id == QStringLiteral("file.getProperties") && propertiesTarget(true).isEmpty() && propertiesTarget(false).isEmpty()) {
+        enabled = false;
+        reason = tr("Select a clip in the Library, the Source Monitor or the Timeline first");
+    }
     const int zoom = thumbnailStepOf(id);
     if (zoom > 0 && m_thumbnailScale >= kThumbnailScaleMax) {
         enabled = false;
@@ -2830,7 +4167,8 @@ QVariantMap LibraryBridge::commandAvailability(const QString& id) const {
     } else if (selectionMoveOf(id) && m_model->rowCount() == 0) {
         enabled = false;
         reason = tr("Nothing is listed in the Library");
-    } else if (id == QStringLiteral("project.delete") && m_selection.isEmpty()) {
+    } else if ((id == QStringLiteral("project.delete") || id == QStringLiteral("project.deleteWithOptions")) &&
+               m_selection.isEmpty()) {
         enabled = false;
         reason = tr("Select items in the Library first");
     } else if (id == QStringLiteral("project.openInSourceMonitor") && !mediaSelected()) {
@@ -2844,10 +4182,22 @@ QVariantMap LibraryBridge::commandAvailability(const QString& id) const {
 }
 
 bool LibraryBridge::runCommand(const QString& id) {
+    // P1 round (#41): Edit > Cut and Paste while the Library has the focus (Main.qml asks only then).
+    if (id == QStringLiteral("edit.cut"))
+        return !m_selection.isEmpty() && cutItems(selection());
+    if (id == QStringLiteral("edit.paste")) {
+        if (m_cut.isEmpty())
+            return false; // nothing cut here: the timeline's Paste
+        pasteItems();     // a refusal says why (message); the key was the Library's either way
+        return true;
+    }
     if (id == QStringLiteral("project.newBin"))
         return !newBin().isEmpty();
+    // P1 round (#38): items sequences use are asked about first (the panel's confirmation); Ctrl/Cmd+Delete always asks.
     if (id == QStringLiteral("project.delete"))
-        return deleteSelection();
+        return requestDelete(selection(), false);
+    if (id == QStringLiteral("project.deleteWithOptions"))
+        return requestDelete(selection(), true);
     if (id == QStringLiteral("project.listView")) {
         setView(QStringLiteral("list"));
         return true;

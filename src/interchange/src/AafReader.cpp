@@ -5,6 +5,7 @@
 #include <array>
 #include <cstdio>
 #include <cstring>
+#include <map>
 
 namespace wabcut::interchange::detail::aaf {
 
@@ -21,6 +22,7 @@ Error bad(std::string message) { return Error{ErrorCode::ParseError, "AAF: " + s
 
 struct Context {
     const cfb::Reader& cfb;
+    ReadOptions options;
     std::size_t objects = 0;
 };
 
@@ -168,14 +170,24 @@ std::expected<ReadObject, Error> readObject(Context& ctx, std::size_t storage, s
             p.keys.push_back(p.data.substr(5));
             break;
         case 0x42: {
-            if (p.data.empty() || p.data[0] != '\x55') {
+            // The stream's byte order mark (Unspecified, Little or Big), then its name.
+            if (p.data.empty() || (p.data[0] != '\x55' && p.data[0] != '\x4C' && p.data[0] != '\x42')) {
                 return std::unexpected(bad("stream property without a name in " + entry.name));
             }
-            auto stream = readStreamNamed(ctx, storage, utf8FromUtf16le(std::string_view(p.data).substr(1)));
-            if (!stream) {
-                return std::unexpected(stream.error());
+            const std::string streamName = utf8FromUtf16le(std::string_view(p.data).substr(1));
+            const auto streamEntry = ctx.cfb.child(storage, streamName);
+            if (!streamEntry || ctx.cfb.entries()[*streamEntry].type != cfb::EntryType::Stream) {
+                return std::unexpected(bad("missing stream \"" + streamName + "\""));
             }
-            p.stream = std::move(*stream);
+            p.streamEntry = *streamEntry;
+            p.streamSize = ctx.cfb.entries()[*streamEntry].size;
+            if (ctx.options.loadStreams) {
+                auto stream = ctx.cfb.read(*streamEntry);
+                if (!stream) {
+                    return std::unexpected(stream.error());
+                }
+                p.stream = std::move(*stream);
+            }
             break;
         }
         default:
@@ -240,14 +252,63 @@ std::string utf8FromUtf16le(std::string_view bytes) {
     return out;
 }
 
-std::expected<ReadFile, Error> readAaf(std::string bytes) {
-    auto cfb = cfb::Reader::open(std::move(bytes));
-    if (!cfb) {
-        return std::unexpected(cfb.error());
+namespace {
+
+/// Extension classes (Avid's, Pro Tools'): each object of a class the model does not know takes the nearest baseline
+/// class its file's MetaDictionary derives it from (ClassDefinition ParentClass), so it reads as that class.
+void resolveExtensionClasses(ReadFile& file) {
+    std::map<Auid, Auid> parents;
+    if (const ReadObject::Property* meta = file.root.find(std::uint16_t{0x0001}); meta && !meta->objects.empty()) {
+        if (const ReadObject::Property* defs = meta->objects.front().find(std::uint16_t{0x0003})) {
+            for (const ReadObject& def : defs->objects) {
+                const ReadObject::Property* id = def.find(std::uint16_t{0x0005});
+                const ReadObject::Property* parent = def.find(std::uint16_t{0x0008});
+                if (!id || id->data.size() != 16 || !parent || parent->keys.empty() || parent->keys.front().size() != 16) {
+                    continue;
+                }
+                std::array<std::uint8_t, 16> a{};
+                std::array<std::uint8_t, 16> b{};
+                std::memcpy(a.data(), id->data.data(), 16);
+                std::memcpy(b.data(), parent->keys.front().data(), 16);
+                parents.emplace(Auid::fromBytes(a), Auid::fromBytes(b));
+            }
+        }
     }
+    auto baseline = [&](Auid id) {
+        for (int guard = 0; guard < 32; ++guard) {
+            if (const int index = findClass(id); index >= 0) {
+                return index;
+            }
+            const auto it = parents.find(id);
+            if (it == parents.end() || it->second == id) {
+                break;
+            }
+            id = it->second;
+        }
+        return -1;
+    };
+    // Iterative: objects nest up to kMaxReadDepth.
+    std::vector<ReadObject*> todo{&file.root};
+    while (!todo.empty()) {
+        ReadObject* o = todo.back();
+        todo.pop_back();
+        if (o->classIndex < 0) {
+            o->classIndex = baseline(o->classId);
+            o->extensionClass = true;
+        }
+        for (ReadObject::Property& p : o->properties) {
+            for (ReadObject& child : p.objects) {
+                todo.push_back(&child);
+            }
+        }
+    }
+}
+
+std::expected<ReadFile, Error> readFrom(std::shared_ptr<const cfb::Reader> cfb, const ReadOptions& options) {
     ReadFile file;
     file.headerClsid = cfb->headerClsid();
-    Context ctx{*cfb};
+    file.container = cfb;
+    Context ctx{*cfb, options};
     auto root = readObject(ctx, 0, 0);
     if (!root) {
         return std::unexpected(root.error());
@@ -282,7 +343,26 @@ std::expected<ReadFile, Error> readAaf(std::string bytes) {
             return std::unexpected(bad("referenced properties count mismatch"));
         }
     }
+    resolveExtensionClasses(file);
     return file;
+}
+
+} // namespace
+
+std::expected<ReadFile, Error> readAaf(std::string bytes, const ReadOptions& options) {
+    auto cfb = cfb::Reader::open(std::move(bytes));
+    if (!cfb) {
+        return std::unexpected(cfb.error());
+    }
+    return readFrom(std::make_shared<const cfb::Reader>(std::move(*cfb)), options);
+}
+
+std::expected<ReadFile, Error> readAafFile(const std::filesystem::path& file, const ReadOptions& options) {
+    auto cfb = cfb::Reader::openFile(file);
+    if (!cfb) {
+        return std::unexpected(cfb.error());
+    }
+    return readFrom(std::make_shared<const cfb::Reader>(std::move(*cfb)), options);
 }
 
 // --- ReadObject accessors ----------------------------------------------------------------------------------------

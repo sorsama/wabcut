@@ -1,5 +1,6 @@
 // Fuzz harness: a timeline from another editor (Import.h) - built once per format, WABCUT_FUZZ_FORMAT naming it:
-// Fcp7Xml, FcpXml, Otio, Edl or PremiereProject (gzip + XML). The importer promises a project that passes
+// Fcp7Xml, FcpXml, Otio, Edl, PremiereProject (gzip + XML), and (0.6) Aaf and Omf (in memory: their embedded audio is
+// never written anywhere). The importer promises a project that passes
 // validate(Strict) or an error, never a crash; what it imports must also survive a .wabcut round trip, and (X.1) export
 // to this format again and import back into a valid project. Media paths in the file are never looked up on disk
 // (ImportOptions::fileExists).
@@ -38,8 +39,10 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
     // Through a variable: with WABCUT_FUZZ_FORMAT = PremiereProject the comparison would compare an enumerator with
     // itself, which clang rejects (-Wtautological-compare).
     constexpr interchange::Format kFormat = interchange::Format::WABCUT_FUZZ_FORMAT;
-    constexpr interchange::Format kBack =
-        kFormat == interchange::Format::PremiereProject ? interchange::Format::Fcp7Xml : kFormat;
+    constexpr interchange::Format kBack = kFormat == interchange::Format::PremiereProject || kFormat == interchange::Format::Aaf ||
+                                                  kFormat == interchange::Format::Omf
+                                              ? interchange::Format::Fcp7Xml
+                                              : kFormat;
     for (const SequenceId seq : result->sequences) {
         const auto written = interchange::exportSequence(result->project, seq, kBack);
         WABCUT_FUZZ_CHECK(written, written ? std::string() : written.error().message);

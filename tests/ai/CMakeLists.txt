@@ -227,6 +227,7 @@ wabcut_add_test_suite(ai_creator
         creator/test_autozoom.cpp
         creator/test_creator_agent.cpp
         creator/test_roughcut.cpp
+        creator/test_script_corrections.cpp
         creator/test_takes.cpp
         creator/test_text_match.cpp
     LIBS wabcut_ai_roughcut wabcut_ai_autozoom wabcut_ai_agent wabcut_ai_edit)

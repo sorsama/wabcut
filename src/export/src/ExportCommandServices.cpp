@@ -1,4 +1,5 @@
 #include <wabcut/export/ExportCommandServices.h>
+#include <wabcut/export/Stems.h>
 
 #include <wabcut/model/MediaLocator.h>
 #include <wabcut/model/ProjectIO.h>
@@ -72,6 +73,22 @@ Json statusJson(const std::string& job, const ExportJobStatus& s) {
         }
         if (s.result->copiedFrames > 0) {
             j["copiedFrames"] = s.result->copiedFrames;
+        }
+        // 0.6 (#73): what a broadcast delivery wrote.
+        if (!s.result->operationalPattern.empty()) {
+            j["operationalPattern"] = s.result->operationalPattern;
+            j["startTimecode"] = s.result->startTimecode;
+            j["materialUmid"] = s.result->materialUmid;
+            j["audioLayout"] = s.result->audioLayout;
+            Json files = Json::array();
+            for (const std::filesystem::path& f : s.result->extraFiles) {
+                files.push_back(pathToUtf8(f));
+            }
+            j["extraFiles"] = std::move(files);
+        }
+        if (!s.result->embeddedCaptions.empty()) {
+            j["embeddedCaptions"] = s.result->embeddedCaptions;
+            j["embeddedCaptionCues"] = s.result->embeddedCaptionCues;
         }
     } else if (s.error) {
         j["detail"] = s.error->message;
@@ -266,15 +283,38 @@ ExportCommandServices::requestFor(std::shared_ptr<const ProjectState> state, Seq
     if (!resolved) {
         return std::unexpected(commandError(resolved.error()));
     }
+    auto defaultOutput = [&](const ExportSettings& settings) {
+        return m_host.defaultOutput ? m_host.defaultOutput(*sequence, settings)
+                                    : defaultOutputFor(m_host.projectFile, *sequence, settings);
+    };
+    // 0.6 (#52): a stem of an export ("stemOnly", Stems.h): audio only, of a copy of the project with that role's tracks
+    // soloed; without an output it is named after the master's default file.
+    std::optional<TrackRole> stemRole;
+    std::filesystem::path out = output.output.empty() ? std::filesystem::path() : pathFromUtf8(output.output);
+    if (output.overrides.is_object() && output.overrides.contains("stemOnly")) {
+        const Json& only = output.overrides.at("stemOnly");
+        stemRole = only.is_string() ? stemRoleFromKey(only.get<std::string>()) : std::nullopt;
+        if (!stemRole) {
+            return std::unexpected(command::CommandError{
+                command::ErrorCode::InvalidParams, "\"stemOnly\" is \"dialogue\", \"music\", \"effects\" or \"other\"", nullptr});
+        }
+        const Json* fx = output.overrides.contains("stemsMasterEffects") ? &output.overrides.at("stemsMasterEffects") : nullptr;
+        const bool masterEffects = !(fx && fx->is_boolean() && !fx->get<bool>());
+        if (out.empty()) {
+            out = stemOutput(defaultOutput(resolved->second), *stemRole);
+        }
+        resolved->second = stemSettings(resolved->second);
+        state = std::make_shared<const ProjectState>(stemProject(*state, sequenceId, *stemRole, masterEffects));
+        sequence = state->findSequence(sequenceId);
+    }
     if (auto r = resolve(resolved->second, *sequence, state->colorManagement); !r) {
         return std::unexpected(commandError(r.error()));
     }
     ExportRequest request;
     request.settings = std::move(resolved->second);
-    std::filesystem::path out = output.output.empty()
-                                    ? (m_host.defaultOutput ? m_host.defaultOutput(*sequence, request.settings)
-                                                            : defaultOutputFor(m_host.projectFile, *sequence, request.settings))
-                                    : pathFromUtf8(output.output);
+    if (out.empty()) {
+        out = defaultOutput(request.settings);
+    }
     out.replace_extension(std::string(outputExtension(request.settings))); // the format decides
     request.output = std::move(out);
     request.snapshot = std::move(state);
@@ -285,7 +325,7 @@ ExportCommandServices::requestFor(std::shared_ptr<const ProjectState> state, Seq
         request.previews = m_host.previews;
     }
     if (presetName) {
-        *presetName = resolved->first.name;
+        *presetName = stemRole ? stemRoleInfo(*stemRole).name + " stem" : resolved->first.name;
     }
     return request;
 }
@@ -322,6 +362,30 @@ std::expected<Json, command::CommandError> ExportCommandServices::describe(const
         d["audioSamples"] = r->audioSamples;
     }
     return d;
+}
+
+std::vector<command::ExportServices::Output> ExportCommandServices::stemExports(const ProjectState& state, SequenceId sequence,
+                                                                               const Output& master,
+                                                                               const std::string& masterOutput,
+                                                                               bool masterEffects) const {
+    std::vector<Output> out;
+    const Sequence* seq = state.findSequence(sequence);
+    if (!seq || masterOutput.empty()) {
+        return out;
+    }
+    for (const StemRole& role : stemRoles(*seq)) {
+        Output stem = master;
+        if (!stem.overrides.is_object()) {
+            stem.overrides = Json::object();
+        }
+        stem.overrides.erase("stems");
+        stem.overrides.erase("output");
+        stem.overrides["stemOnly"] = role.key;
+        stem.overrides["stemsMasterEffects"] = masterEffects;
+        stem.output = pathToUtf8(stemOutput(pathFromUtf8(masterOutput), role.role));
+        out.push_back(std::move(stem));
+    }
+    return out;
 }
 
 std::vector<std::string> ExportCommandServices::reserveJobs(std::size_t count) {

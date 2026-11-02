@@ -1,9 +1,11 @@
 #include <wabcut/audio/edit/Loudness.h>
 
+#include <wabcut/audio/edit/AudioAnalysis.h>
 #include <wabcut/audio/edit/EssentialSound.h>
 
 #include <algorithm>
 #include <array>
+#include <optional>
 
 namespace wabcut::audio::edit {
 
@@ -54,6 +56,45 @@ double nextNormalizationGainDb(double currentDb, double deltaDb) {
     const double lo = info != nullptr ? info->minValue : -96.0;
     const double hi = info != nullptr ? info->maxValue : 24.0;
     return std::clamp(currentDb + deltaDb, lo, hi);
+}
+
+// ---- 0.6 (P1 round, #54): true-peak overs ------------------------------------------------------------------------
+
+std::vector<TruePeakOver> truePeakOvers(const LoudnessStats& stats, double ceilingDbtp, std::size_t maxOvers, std::size_t* total) {
+    const double ceiling = std::max(ceilingDbtp, stats.peakFloorDbtp);
+    std::vector<TruePeakOver> out;
+    std::size_t count = 0;
+    std::optional<TruePeakOver> open;
+    Ticks lastLength{};
+    const auto close = [&] {
+        if (open) {
+            ++count;
+            if (out.size() < maxOvers) {
+                out.push_back(*open);
+            }
+            open.reset();
+        }
+    };
+    for (const LoudnessStats::PeakBlock& b : stats.peakBlocks) {
+        if (b.truePeakDbtp <= ceiling) {
+            continue;
+        }
+        const TimeRange block{stats.start + b.at, b.duration};
+        // A gap of a block or less (a beat between two hot hits) does not split an over.
+        if (open && block.start <= open->range.end() + std::max(lastLength, b.duration)) {
+            open->range = TimeRange::fromStartEnd(open->range.start, std::max(open->range.end(), block.end()));
+            open->truePeakDbtp = std::max(open->truePeakDbtp, b.truePeakDbtp);
+        } else {
+            close();
+            open = TruePeakOver{block, b.truePeakDbtp};
+        }
+        lastLength = b.duration;
+    }
+    close();
+    if (total) {
+        *total = count;
+    }
+    return out;
 }
 
 } // namespace wabcut::audio::edit

@@ -2,6 +2,7 @@
 // (C.11) runs the model's clipboard.* commands.
 
 #include "ProjectController.h"
+#include "EditingBridge.h"
 #include "EffectControls.h"
 
 #include <wabcut/command/Engine.h>
@@ -777,6 +778,22 @@ QVariantMap ProjectController::commandAvailability(const QString& id) const {
     };
     if (!handlesCommand(id))
         return state(false, false);
+    // 0.6 (1A): selected edit points take E, Ctrl+D and Ctrl+Shift+D (Trim runs them; no clip or target needed).
+    if (!m_trimEditPoints.empty()
+        && (id == QLatin1String("sequence.extendEditToPlayhead") || id == QLatin1String("sequence.applyVideoTransition")
+            || id == QLatin1String("sequence.applyAudioTransition")))
+        return state(true, true);
+    if (id == QLatin1String("clip.moveIntoSync") || id == QLatin1String("clip.slipIntoSync")) {
+        const SequencePtr seq = currentSequence();
+        const std::vector<ClipId> clips = selectedClipIds();
+        if (clips.empty())
+            return state(true, false, tr("Select a clip first"));
+        const bool offSync = seq && std::ranges::any_of(clips, [&](ClipId c) {
+            const auto offset = edit::syncOffset(*seq, c);
+            return offset && offset->value != 0;
+        });
+        return offSync ? state(true, true) : state(true, false, tr("No selected clip is out of sync"));
+    }
     const bool hasSelection = !selectedClipIds().empty();
     const bool transitionSelected = static_cast<bool>(m_selectedTransition);
     static const QStringList kDeletes{QStringLiteral("edit.clear"), QStringLiteral("timeline.clearSelection"),
@@ -814,12 +831,250 @@ QVariantMap ProjectController::commandAvailability(const QString& id) const {
     if (id == QLatin1String("marker.clearInAndOut") && !markIn() && !markOut())
         return state(true, false, tr("No In or Out mark is set"));
     if (id == QLatin1String("sequence.rippleTrimPreviousToPlayhead") || id == QLatin1String("sequence.rippleTrimNextToPlayhead")
-        || id == QLatin1String("sequence.applyVideoTransition") || id == QLatin1String("sequence.applyAudioTransition")) {
+        || id == QLatin1String("sequence.applyVideoTransition") || id == QLatin1String("sequence.applyAudioTransition")
+        || id == QLatin1String("sequence.trimPreviousToPlayhead") || id == QLatin1String("sequence.trimNextToPlayhead")
+        || id == QLatin1String("sequence.extendPreviousToPlayhead") || id == QLatin1String("sequence.extendNextToPlayhead")) {
         const SequencePtr seq = currentSequence();
         if (!seq || edit::targetedTracks(*seq).empty())
             return state(true, false, tr("No track is targeted"));
     }
     return state(true, true);
+}
+
+// ---- 0.6 (P1 round, stream 1A) ----------------------------------------------------------------------------------
+
+void ProjectController::setTrimEditPoints(std::vector<edit::EdgePoint> points) {
+    m_trimEditPoints = std::move(points);
+}
+
+int ProjectController::applyTransitionAtEditPoints(bool audio, const std::string& effect, const char* label) {
+    if (m_trimEditPoints.empty()) {
+        setError(tr("No edit point is selected"));
+        return 0;
+    }
+    const SequenceId seq = m_sequence;
+    const std::vector<edit::EdgePoint> points = m_trimEditPoints;
+    const TrackKind kind = audio ? TrackKind::Audio : TrackKind::Video;
+    std::size_t created = 0;
+    const char* name = label ? label
+                       : audio ? QT_TRANSLATE_NOOP("wabcut::app::ProjectController", "Apply Audio Transition")
+                               : QT_TRANSLATE_NOOP("wabcut::app::ProjectController", "Apply Video Transition");
+    const bool ok = applyEditFn(name, [&](const ProjectState& state) {
+        auto result = edit::applyTransitionsAtEdges(state, seq, points, kind, EditingBridge::defaultTransitionsSetting(),
+                                                    effect);
+        if (result)
+            created = result->createdTransitions.size();
+        return result;
+    });
+    return ok ? static_cast<int>(created) : 0;
+}
+
+bool ProjectController::trimPreviousToPlayhead() {
+    const SequenceId seq = m_sequence;
+    const Ticks at = m_playhead;
+    return applyResult(QT_TRANSLATE_NOOP("wabcut::app::ProjectController", "Trim Previous Edit"),
+                       [=](const ProjectState& s) { return edit::trimPreviousEditToPlayhead(s, seq, at); });
+}
+
+bool ProjectController::trimNextToPlayhead() {
+    const SequenceId seq = m_sequence;
+    const Ticks at = m_playhead;
+    return applyResult(QT_TRANSLATE_NOOP("wabcut::app::ProjectController", "Trim Next Edit"),
+                       [=](const ProjectState& s) { return edit::trimNextEditToPlayhead(s, seq, at); });
+}
+
+bool ProjectController::extendPreviousToPlayhead() {
+    const SequenceId seq = m_sequence;
+    const Ticks at = m_playhead;
+    return applyResult(QT_TRANSLATE_NOOP("wabcut::app::ProjectController", "Extend Previous Edit"),
+                       [=](const ProjectState& s) { return edit::extendPreviousEditToPlayhead(s, seq, at); });
+}
+
+bool ProjectController::extendNextToPlayhead() {
+    const SequenceId seq = m_sequence;
+    const Ticks at = m_playhead;
+    return applyResult(QT_TRANSLATE_NOOP("wabcut::app::ProjectController", "Extend Next Edit"),
+                       [=](const ProjectState& s) { return edit::extendNextEditToPlayhead(s, seq, at); });
+}
+
+namespace {
+
+/// The TrackStateChange for a header toggle `flag`, or nullopt for an unknown one.
+std::optional<edit::TrackStateChange> trackFlagChange(const QString& flag, bool value) {
+    edit::TrackStateChange change;
+    if (flag == QLatin1String("enabled"))
+        change.enabled = value;
+    else if (flag == QLatin1String("locked"))
+        change.locked = value;
+    else if (flag == QLatin1String("muted"))
+        change.muted = value;
+    else if (flag == QLatin1String("solo"))
+        change.solo = value;
+    else if (flag == QLatin1String("syncLocked"))
+        change.syncLocked = value;
+    else if (flag == QLatin1String("targeted"))
+        change.targeted = value;
+    else
+        return std::nullopt;
+    return change;
+}
+
+bool trackHasFlag(const Track& t, const QString& flag) {
+    return flag == QLatin1String("enabled")      ? t.enabled
+           : flag == QLatin1String("locked")     ? t.locked
+           : flag == QLatin1String("muted")      ? t.muted
+           : flag == QLatin1String("solo")       ? t.solo
+           : flag == QLatin1String("syncLocked") ? t.syncLocked
+                                                 : t.targeted;
+}
+
+} // namespace
+
+bool ProjectController::setTrackFlagAll(const QString& kind, const QString& flag, bool value) {
+    const SequencePtr current = currentSequence();
+    const auto change = trackFlagChange(flag, value);
+    if (!current || !change || (kind != QLatin1String("video") && kind != QLatin1String("audio")))
+        return false;
+    const bool video = kind == QLatin1String("video");
+    std::vector<TrackId> tracks;
+    for (const TrackPtr& t : video ? current->videoTracks : current->audioTracks)
+        tracks.push_back(t->id);
+    if (tracks.empty())
+        return false;
+    const char* label = flag == QLatin1String("enabled")  ? QT_TRANSLATE_NOOP("wabcut::app::ProjectController", "Toggle Output of All Tracks")
+                        : flag == QLatin1String("locked") ? (value ? QT_TRANSLATE_NOOP("wabcut::app::ProjectController", "Lock All Tracks")
+                                                                   : QT_TRANSLATE_NOOP("wabcut::app::ProjectController", "Unlock All Tracks"))
+                        : flag == QLatin1String("muted")  ? QT_TRANSLATE_NOOP("wabcut::app::ProjectController", "Mute All Tracks")
+                        : flag == QLatin1String("solo")   ? QT_TRANSLATE_NOOP("wabcut::app::ProjectController", "Solo All Tracks")
+                        : flag == QLatin1String("syncLocked") ? QT_TRANSLATE_NOOP("wabcut::app::ProjectController", "Toggle Sync Lock of All Tracks")
+                                                              : QT_TRANSLATE_NOOP("wabcut::app::ProjectController", "Target All Tracks");
+    const SequenceId seq = m_sequence;
+    const edit::TrackStateChange each = *change;
+    return applyEditFn(label, [&](const ProjectState& state) -> edit::EditOutcome {
+        ProjectState next = state;
+        for (const TrackId id : tracks) {
+            auto step = edit::setTrackState(next, seq, id, each);
+            if (!step)
+                return std::unexpected(step.error());
+            next = std::move(step->state);
+        }
+        edit::EditResult result;
+        result.changes = diff(state, next);
+        result.state = std::move(next);
+        return result;
+    });
+}
+
+bool ProjectController::toggleTrackFlagAll(const QString& kind, const QString& flag) {
+    const SequencePtr current = currentSequence();
+    if (!current)
+        return false;
+    const auto& tracks = kind == QLatin1String("audio") ? current->audioTracks : current->videoTracks;
+    const bool all = std::ranges::all_of(tracks, [&](const TrackPtr& t) { return trackHasFlag(*t, flag); });
+    return setTrackFlagAll(kind, flag, !all);
+}
+
+int ProjectController::syncOffsetFrames(const QString& clipId) const {
+    const SequencePtr seq = currentSequence();
+    const auto clip = parseClipKey(clipId);
+    if (!seq || !clip)
+        return 0;
+    const auto offset = edit::syncOffset(*seq, *clip);
+    return offset ? static_cast<int>(ticksToFrames(*offset, seq->frameRate)) : 0;
+}
+
+namespace {
+
+/// The selected clips Move / Slip into Sync act on: the out-of-sync ones, except a picture whose own sound is also
+/// selected and out of sync (the picture is the reference: its sound moves to it).
+std::vector<ClipId> clipsToSync(const Sequence& seq, std::span<const ClipId> selection) {
+    std::vector<std::pair<const Clip*, StreamKind>> off;
+    for (const ClipId id : selection) {
+        const auto offset = edit::syncOffset(seq, id);
+        const auto loc = seq.findClip(id);
+        if (offset && offset->value != 0 && loc)
+            off.emplace_back(&loc->clip(), loc->clip().stream.kind);
+    }
+    std::vector<ClipId> out;
+    for (const auto& entry : off) {
+        const Clip* clip = entry.first;
+        const bool soundToo = entry.second == StreamKind::Video && std::ranges::any_of(off, [clip](const auto& other) {
+            return other.second != StreamKind::Video && other.first->linkGroup == clip->linkGroup;
+        });
+        if (!soundToo)
+            out.push_back(clip->id);
+    }
+    return out;
+}
+
+} // namespace
+
+bool ProjectController::moveIntoSync() {
+    const SequencePtr current = currentSequence();
+    if (!current)
+        return false;
+    const std::vector<ClipId> clips = clipsToSync(*current, selectedClipIds());
+    if (clips.empty()) {
+        setError(tr("No selected clip is out of sync"));
+        return false;
+    }
+    const SequenceId seq = m_sequence;
+    return applyEditFn(QT_TRANSLATE_NOOP("wabcut::app::ProjectController", "Move into Sync"),
+                     [&](const ProjectState& state) -> edit::EditOutcome {
+                         ProjectState next = state;
+                         for (const ClipId id : clips) {
+                             const Sequence* s = next.findSequence(seq);
+                             const auto offset = s ? edit::syncOffset(*s, id) : std::nullopt;
+                             if (!offset || offset->value == 0)
+                                 continue;
+                             const ClipId one[] = {id};
+                             auto step = edit::moveClips(next, seq, one, Ticks{-offset->value}, {}, edit::MoveMode::Overwrite,
+                                                         edit::LinkMode::IgnoreLinks);
+                             if (!step)
+                                 return std::unexpected(step.error());
+                             next = std::move(step->state);
+                         }
+                         edit::EditResult result;
+                         result.changes = diff(state, next);
+                         result.state = std::move(next);
+                         return result;
+                     });
+}
+
+bool ProjectController::slipIntoSync() {
+    const SequencePtr current = currentSequence();
+    if (!current)
+        return false;
+    const std::vector<ClipId> clips = clipsToSync(*current, selectedClipIds());
+    if (clips.empty()) {
+        setError(tr("No selected clip is out of sync"));
+        return false;
+    }
+    const SequenceId seq = m_sequence;
+    return applyEditFn(QT_TRANSLATE_NOOP("wabcut::app::ProjectController", "Slip into Sync"),
+                     [&](const ProjectState& state) -> edit::EditOutcome {
+                         ProjectState next = state;
+                         for (const ClipId id : clips) {
+                             const Sequence* s = next.findSequence(seq);
+                             const auto offset = s ? edit::syncOffset(*s, id) : std::nullopt;
+                             const auto loc = s ? s->findClip(id) : std::nullopt;
+                             if (!offset || offset->value == 0 || !loc)
+                                 continue;
+                             // Forward clips show later source to catch up; reversed ones earlier (their Out moves).
+                             const Clip& c = loc->clip();
+                             const Ticks source = toSourceTicks(*offset, c.speed);
+                             const ClipId one[] = {id};
+                             auto step = edit::slip(next, seq, one, c.reversed ? Ticks{-source.value} : source,
+                                                    edit::LinkMode::IgnoreLinks);
+                             if (!step)
+                                 return std::unexpected(step.error());
+                             next = std::move(step->state);
+                         }
+                         edit::EditResult result;
+                         result.changes = diff(state, next);
+                         result.state = std::move(next);
+                         return result;
+                     });
 }
 
 } // namespace wabcut::app

@@ -1,4 +1,5 @@
 pragma ComponentBehavior: Bound
+import QtCore
 import QtQuick
 import QtQuick.Dialogs
 import QtQuick.Layouts
@@ -9,6 +10,9 @@ import QtQuick.Layouts
 // P.2: AAF and OMF for audio post (Premiere's File > Export > AAF / OMF), with their settings (AudioPostOptions).
 // 0.2: several sequences at once - tick more than one in the Sequence menu and choose a folder: one file each, named
 // after the sequence (ProjectFile.exportTimelines), and one combined report.
+// 0.6 (#57): no timeline format carries caption tracks (the report lists them as dropped); Captions > Sidecar files
+// writes each caption track with cues next to the timeline file as "<name> - <track>[.<language>].<ext>" in the
+// chosen caption format (remembered), so a multi-language delivery is one export.
 WabcutDialog {
     id: dialog
     objectName: "exportTimelineDialog"
@@ -31,6 +35,16 @@ WabcutDialog {
     property url file: ""
     property bool running: false
     property string errorText: ""
+    /// 0.6 (#57): caption tracks as caption files next to the timeline (remembered with their format).
+    readonly property bool captionSidecars: remembered.captionSidecars
+    readonly property string captionFormat: remembered.captionFormat
+
+    Settings {
+        id: remembered
+        category: "exportTimeline"
+        property bool captionSidecars: false
+        property string captionFormat: "srt"
+    }
 
     /// The export report (ProjectFile.timelineExported) once the file is written.
     signal exported(var report)
@@ -52,7 +66,16 @@ WabcutDialog {
         file = suggestedFile()
         errorText = ""
         running = false
+        captionTabs.currentIndex = captionSidecars ? 1 : 0
         open()
+    }
+    /// 0.6 (#57): Captions > Off / Sidecar files.
+    function setCaptionSidecars(on: bool) {
+        remembered.captionSidecars = on
+        captionTabs.currentIndex = on ? 1 : 0
+    }
+    function setCaptionFormat(format: string) {
+        remembered.captionFormat = format
     }
     /// Ticks or unticks a sequence (at least one stays ticked).
     function toggleSequence(index) {
@@ -78,6 +101,8 @@ WabcutDialog {
     function exportNow() {
         errorText = ""
         const options = format.audioPost === true ? audioPostOptions.values() : ({})
+        if (captionSidecars)
+            options.captionSidecars = captionFormat // 0.6 (#57)
         const started = several ? ProjectFile.exportTimelines(format.id, sequenceIndices, folder, options)
                                 : ProjectFile.exportTimeline(format.id, sequenceIndex, file, options)
         if (started)
@@ -130,6 +155,7 @@ WabcutDialog {
         Label { text: qsTr("Format") }
         PillTabs {
             id: formatTabs
+            Accessible.name: qsTr("Format") // P1 #61
             objectName: "exportTimelineFormat"
             Layout.fillWidth: true
             compact: true
@@ -228,6 +254,51 @@ WabcutDialog {
                 compact: true
                 text: qsTr("Choose…")
                 onClicked: fileDialog.open()
+            }
+        }
+
+        // 0.6 (#57): the caption tracks as caption files next to the timeline (none of these formats carries them).
+        Label { text: qsTr("Captions") }
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: Theme.space(2)
+            PillTabs {
+                id: captionTabs
+                objectName: "exportTimelineCaptions"
+                Layout.fillWidth: true
+                compact: true
+                model: [qsTr("Off"), qsTr("Sidecar files")]
+                Accessible.name: qsTr("Captions")
+                Accessible.description: qsTr("Write each caption track as a caption file next to the timeline file")
+                onActivated: index => dialog.setCaptionSidecars(index === 1)
+            }
+            CaptionFormatButton {
+                objectName: "exportTimelineCaptionFormat"
+                visible: dialog.captionSidecars
+                format: dialog.captionFormat
+                onPicked: id => dialog.setCaptionFormat(id)
+            }
+        }
+        Item {
+            visible: dialog.captionSidecars
+            implicitWidth: 1
+            implicitHeight: 1
+        }
+        Text {
+            objectName: "exportTimelineCaptionsHint"
+            visible: dialog.captionSidecars
+            textFormat: Text.PlainText
+            Layout.fillWidth: true
+            text: qsTr("Each caption track with captions is saved next to the timeline as “%1 - <track name>.<language>.%2”, with bleeped words replaced.")
+                  .arg(dialog.several ? qsTr("<sequence>") : String(dialog.file).replace(/^.*[\\/]/, "").replace(/\.[^.]*$/, "") || qsTr("<name>"))
+                  .arg(captionExtension(dialog.captionFormat))
+            color: Theme.textTertiary
+            font.family: Theme.fontSans
+            font.pixelSize: Theme.textSm
+            wrapMode: Text.Wrap
+
+            function captionExtension(id: string): string {
+                return id === "ttml" || id === "smpte-tt" ? "xml" : id
             }
         }
     }

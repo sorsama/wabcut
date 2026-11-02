@@ -71,7 +71,9 @@ TEST_CASE("QML labels are sentence case: all caps only for acronyms and micro-ta
                                  // P.2: Premiere's pixel aspect ratio names (Sequence Settings, Interpret Footage).
                                  QStringLiteral("NTSC"),  QStringLiteral("DVCPRO"),
                                  // 0.2 export: loudness standards (EBU R 128, ATSC A/85).
-                                 QStringLiteral("ATSC")};
+                                 QStringLiteral("ATSC"),
+                                 // 0.6: colour-management operators and Sony's MXF codec family.
+                                 QStringLiteral("ACES"), QStringLiteral("XDCAM")};
     const QRegularExpression label(QStringLiteral(R"(qsTr\("([^"]+)\")"));
     const QRegularExpression capsWord(QStringLiteral(R"(\b[A-Z]{4,}\b)"));
     const QRegularExpression lower(QStringLiteral("[a-z]"));

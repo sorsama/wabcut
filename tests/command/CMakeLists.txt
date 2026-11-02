@@ -35,6 +35,7 @@ wabcut_add_test_suite(command
         test_query_commands.cpp
         test_registry.cpp
         test_nesting_commands.cpp
+        test_audition_commands.cpp # 0.6 (card #74)
         test_remap_commands.cpp
         test_requests.cpp
         test_rhythm_commands.cpp
@@ -58,3 +59,7 @@ endif()
 
 # P.2 (E6): the Source and Program Monitors' commands (clip.setMotion, ...).
 target_sources(wabcut_command_tests PRIVATE test_monitor_commands.cpp)
+# P1 round (#25, stream 2C): sequence.mediaUsage, the media usage report.
+target_sources(wabcut_command_tests PRIVATE test_media_usage_commands.cpp)
+# P1 round (#57, stream 3C): caption tracks in timeline hand-offs (report rows, interchange.export captionSidecars).
+target_sources(wabcut_command_tests PRIVATE test_caption_handoffs.cpp)

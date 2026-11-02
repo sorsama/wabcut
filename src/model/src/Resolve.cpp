@@ -2,6 +2,7 @@
 
 #include <wabcut/model/Resolve.h>
 
+#include <wabcut/model/MasterClipEffects.h>
 #include <wabcut/model/RedactionMedia.h>
 #include <wabcut/model/Synthetic.h>
 
@@ -265,10 +266,29 @@ struct PlanContext {
     bool truncated = false;
 };
 
-/// The clip's first enabled, evaluable Track Matte Key.
-const EffectInstance* trackMatteOf(const Clip& clip) {
+bool isTrackMatteKey(const EffectInstance& e) {
+    return e.enabled && e.effect == kTrackMatteEffect && isEvaluable(e, EffectKind::Video);
+}
+
+/// The clip's first enabled, evaluable Track Matte Key. 0.6 (card #71, fix F1A): its media's Master Clip Effects play
+/// first, so one there counts first (the pointer is into the media item, which the state keeps alive like the clip).
+const EffectInstance* trackMatteOf(const ProjectState& state, const Clip& clip) {
+    if (playsMasterEffects(state, clip)) {
+        for (const EffectInstance& played : masterEffectsOf(state, clip.media, EffectKind::Video)) {
+            if (!isTrackMatteKey(played)) {
+                continue;
+            }
+            if (const MediaItem* holder = masterEffectHolder(state, clip.media, played.id)) {
+                for (const EffectInstance& e : holder->masterEffects) {
+                    if (e.id == played.id) {
+                        return &e;
+                    }
+                }
+            }
+        }
+    }
     for (const EffectInstance& e : clip.effects()) {
-        if (e.enabled && e.effect == kTrackMatteEffect && isEvaluable(e, EffectKind::Video)) {
+        if (isTrackMatteKey(e)) {
             return &e;
         }
     }
@@ -325,7 +345,7 @@ void planClip(PlanContext& ctx, const Sequence& seq, const Track& track, std::si
         leaf.path = path;
         step.redactions = redactionsFor(ctx.state, leaf);
     }
-    if (const EffectInstance* key = mattes ? trackMatteOf(clip) : nullptr) {
+    if (const EffectInstance* key = mattes ? trackMatteOf(ctx.state, clip) : nullptr) {
         MatteUse m;
         m.effect = key;
         const double number = effectParameterAt(*key, "matteTrack", step.curveTime, 0.0);

@@ -14,6 +14,10 @@ import QtQuick.Controls.Basic
 //                       Marker, Lift, Delete, Keep Only, Fix…, Find All (also the Menu key and Shift+F10)
 //   follow              (0.4) the word under the playhead stays in view while playing or scrubbing, with its paragraph
 //                       when that fits (the crosshair button; scrolling pauses it for 3 s)
+//   speaker             (0.6, #36) a paragraph's speaker (the project's name and colour) is a button: Rename or
+//                       recolour…, This paragraph is ▸ (a speaker or New speaker…), Merge into ▸; selected words get a
+//                       Speaker ▸ button in the actions bar
+//   correct from script (0.6, #37) the spell-check button opens Correct from Script (Sequence > Captions too)
 // The word under the playhead is filled with the accent. Thai and other unspaced languages sit word unit by word unit
 // with no spaces (the model's word boundaries), so lines only break between units.
 // Without a transcript: choose a transcriber (this computer or a cloud model from Preferences > AI, with the consent
@@ -33,6 +37,11 @@ FocusScope {
     /// What the word menu runs once it has closed ("fix", "find"): a row that moves the focus waits for the menu.
     property string pendingMenuAction: ""
 
+    /// P1 round (#30): Edit > Find (Ctrl+F) - the Find field, its text selected.
+    function focusFind() {
+        search.forceActiveFocus(Qt.ShortcutFocusReason)
+        search.selectAll()
+    }
     function tracksSummary(chosen: int, total: int): string {
         return total === 1 ? qsTr("%1 of 1 audio track").arg(chosen) : qsTr("%1 of %2 audio tracks").arg(chosen).arg(total)
     }
@@ -95,6 +104,33 @@ FocusScope {
         fixRow.visible = true
         fixField.forceActiveFocus()
         fixField.selectAll()
+    }
+
+    // 0.6 (P1 round, #36): the paragraph whose speaker name row is open (-1: none) and what it does: "rename" (its speaker's
+    // name and colour) or "new" (a new speaker for its words).
+    property int speakerEditParagraph: -1
+    property string speakerEditMode: ""
+    function openSpeakerEdit(paragraph: int, mode: string) {
+        speakerEditMode = mode
+        speakerEditParagraph = paragraph
+    }
+    function closeSpeakerEdit() {
+        speakerEditParagraph = -1
+        speakerEditMode = ""
+    }
+    function applySpeakerEdit(paragraph: int, name: string) {
+        if (name.trim() === "")
+            return
+        const why = speakerEditMode === "new" ? Transcript.assignParagraph(paragraph, "", name)
+                                              : Transcript.renameParagraphSpeaker(paragraph, name, "")
+        if (why === "")
+            closeSpeakerEdit()
+    }
+    // The selected words' Speaker menu: New speaker… opens a name field in the actions bar.
+    function openSelectionSpeaker() {
+        selectionSpeakerName.text = ""
+        selectionSpeakerRow.visible = true
+        selectionSpeakerName.forceActiveFocus()
     }
 
     // Follow the playhead (0.4): the word under it comes into view (showWord: its paragraph, or its line in a paragraph
@@ -537,6 +573,16 @@ FocusScope {
                     checked = Qt.binding(() => Preferences.transcriptFollowPlayhead)
                 }
             }
+            // 0.6 (P1 round, #37): Correct from script… (Sequence > Captions too): the sheet fixes misheard names and
+            // jargon from the script the narration was read from.
+            IconButton {
+                objectName: "transcriptCorrectFromScript"
+                compact: true
+                iconName: "spell-check"
+                tooltip: qsTr("Correct from script…")
+                command: "transcript.correctFromScript"
+                onClicked: KeymapDispatcher.trigger("transcript.correctFromScript")
+            }
         }
 
         JobRow { Layout.fillWidth: true }
@@ -619,6 +665,8 @@ FocusScope {
                     required property int index
                     required property string speaker
                     required property int speakerIndex
+                    required property string speakerKey   // 0.6 (#36): "v…", "" while the label has no speaker
+                    required property string speakerColor // 0.6 (#36): "#RRGGBB", "" while the label has no speaker
                     required property string timeText
                     required property int first
                     required property int last
@@ -731,13 +779,41 @@ FocusScope {
                                     }
                                 }
                             }
-                            Text {
+                            // 0.6 (P1 round, #36): the speaker (the project's name and colour, else "Speaker N") is a
+                            // button: its menu renames or recolours it, says who speaks this paragraph, or merges it.
+                            AbstractButton {
+                                id: speakerButton
+                                objectName: "transcriptSpeaker_" + para.index
                                 visible: para.speaker !== ""
-                                text: para.speaker
-                                color: Theme.clipColor(Math.max(0, para.speakerIndex) + 1)
-                                font.family: Theme.fontSans
-                                font.pixelSize: Theme.textSm
-                                font.weight: Font.DemiBold
+                                implicitWidth: speakerLabel.implicitWidth + Theme.space(3)
+                                implicitHeight: speakerLabel.implicitHeight + Theme.space(1)
+                                focusPolicy: Qt.TabFocus
+                                Accessible.role: Accessible.ButtonMenu
+                                Accessible.name: qsTr("Speaker: %1").arg(para.speaker)
+                                Accessible.description: qsTr("Rename, recolour, reassign or merge this speaker")
+                                onClicked: speakerMenu.openFor(speakerButton, para.index, para.speakerKey, para.speaker)
+                                background: Rectangle {
+                                    radius: Theme.radiusBadge
+                                    color: speakerButton.hovered || speakerButton.down ? Theme.hover : "transparent"
+                                }
+                                contentItem: Text {
+                                    id: speakerLabel
+                                    leftPadding: Theme.space(1.5)
+                                    rightPadding: Theme.space(1.5)
+                                    text: para.speaker
+                                    color: para.speakerColor !== "" ? para.speakerColor
+                                                                    : Theme.clipColor(Math.max(0, para.speakerIndex) + 1)
+                                    font.family: Theme.fontSans
+                                    font.pixelSize: Theme.textSm
+                                    font.weight: Font.DemiBold
+                                }
+                                HoverHandler {
+                                    cursorShape: Qt.PointingHandCursor
+                                }
+                                FocusRing {
+                                    targetRadius: Theme.radiusBadge
+                                    visible: speakerButton.visualFocus
+                                }
                             }
                             Text {
                                 text: para.timeText
@@ -746,6 +822,56 @@ FocusScope {
                                 font.pixelSize: Theme.textXs
                             }
                             Item { Layout.fillWidth: true; Layout.preferredHeight: 1 }
+                        }
+
+                        // 0.6 (P1 round, #36): the speaker menu's Rename or recolour… (a name and a colour) and New
+                        // speaker… (a name; the paragraph's words become theirs). Enter applies, Esc closes.
+                        RowLayout {
+                            objectName: "transcriptSpeakerEdit"
+                            width: column.width
+                            visible: root.speakerEditParagraph === para.index
+                            spacing: Theme.space(1)
+                            FieldInput {
+                                id: speakerNameField
+                                objectName: "transcriptSpeakerName"
+                                Layout.fillWidth: true
+                                Accessible.name: root.speakerEditMode === "new" ? qsTr("New speaker's name") : qsTr("Speaker name")
+                                placeholderText: root.speakerEditMode === "new" ? qsTr("New speaker's name") : para.speaker
+                                onVisibleChanged: {
+                                    if (visible) {
+                                        text = root.speakerEditMode === "rename" ? para.speaker : ""
+                                        forceActiveFocus()
+                                        selectAll()
+                                    }
+                                }
+                                onAccepted: root.applySpeakerEdit(para.index, text)
+                                Keys.onEscapePressed: root.closeSpeakerEdit()
+                            }
+                            Repeater {
+                                model: root.speakerEditMode === "rename" ? Theme.clipColors.slice(0, 6) : []
+                                delegate: Swatch {
+                                    required property var modelData
+                                    swatchColor: modelData
+                                    checkable: false
+                                    tooltip: qsTr("Speaker colour")
+                                    onClicked: Transcript.renameParagraphSpeaker(para.index,
+                                                                                 speakerNameField.text.trim() !== para.speaker ? speakerNameField.text : "",
+                                                                                 String(modelData))
+                                }
+                            }
+                            PillButton {
+                                objectName: "transcriptSpeakerOk"
+                                compact: true
+                                variant: "primary"
+                                text: root.speakerEditMode === "new" ? qsTr("Add") : qsTr("Rename")
+                                enabled: speakerNameField.text.trim() !== ""
+                                onClicked: root.applySpeakerEdit(para.index, speakerNameField.text)
+                            }
+                            PillButton {
+                                compact: true
+                                text: qsTr("Cancel")
+                                onClicked: root.closeSpeakerEdit()
+                            }
                         }
 
                         Flow {
@@ -837,6 +963,40 @@ FocusScope {
                         onClicked: fixRow.visible = false
                     }
                 }
+                // 0.6 (P1 round, #36): the Speaker menu's New speaker… for the selected words.
+                RowLayout {
+                    id: selectionSpeakerRow
+                    objectName: "transcriptSelectionSpeakerRow"
+                    Layout.fillWidth: true
+                    visible: false
+                    spacing: Theme.space(1)
+                    FieldInput {
+                        id: selectionSpeakerName
+                        objectName: "transcriptSelectionSpeakerName"
+                        Layout.fillWidth: true
+                        placeholderText: qsTr("New speaker's name")
+                        Accessible.name: qsTr("New speaker's name")
+                        onAccepted: selectionSpeakerOk.clicked()
+                        Keys.onEscapePressed: selectionSpeakerRow.visible = false
+                    }
+                    PillButton {
+                        id: selectionSpeakerOk
+                        objectName: "transcriptSelectionSpeakerOk"
+                        compact: true
+                        variant: "primary"
+                        text: qsTr("Add")
+                        enabled: selectionSpeakerName.text.trim() !== ""
+                        onClicked: {
+                            if (Transcript.assignSelection("", selectionSpeakerName.text) === "")
+                                selectionSpeakerRow.visible = false
+                        }
+                    }
+                    PillButton {
+                        compact: true
+                        text: qsTr("Cancel")
+                        onClicked: selectionSpeakerRow.visible = false
+                    }
+                }
                 Flow {
                     Layout.fillWidth: true
                     spacing: Theme.space(1)
@@ -868,6 +1028,17 @@ FocusScope {
                         text: qsTr("Fix…")
                         tooltip: qsTr("Correct a transcription mistake")
                         onClicked: root.openFixRow()
+                    }
+                    // 0.6 (P1 round, #36): who says the selected words (a project speaker, or a new one).
+                    PillButton {
+                        id: selectionSpeakerButton
+                        objectName: "transcriptSelectionSpeaker"
+                        visible: !Transcript.previewing && !selectionSpeakerRow.visible
+                        compact: true
+                        iconName: "mic"
+                        text: qsTr("Speaker")
+                        tooltip: qsTr("Who says the selected words")
+                        onClicked: selectionSpeakerMenu.popup(selectionSpeakerButton, 0, selectionSpeakerButton.height + Theme.space(1))
                     }
                     PillButton {
                         objectName: "transcriptApply"
@@ -984,6 +1155,26 @@ FocusScope {
             iconName: "search"
             enabled: !Transcript.previewing
             onTriggered: root.pendingMenuAction = "find"
+        }
+    }
+
+    // 0.6 (P1 round, #36): a paragraph's speaker menu (its Rename or recolour… and New speaker… open the paragraph's name
+    // row once it has closed) and the selected words' Speaker menu.
+    TranscriptSpeakerMenu {
+        id: speakerMenu
+        onEditRequested: (paragraph, mode) => root.openSpeakerEdit(paragraph, mode)
+    }
+    SpeakerChoiceMenu {
+        id: selectionSpeakerMenu
+        objectName: "transcriptSelectionSpeakerMenu"
+        property bool pendingNew: false
+        onChosen: key => Transcript.assignSelection(key, "")
+        onNewRequested: selectionSpeakerMenu.pendingNew = true
+        onClosed: {
+            if (selectionSpeakerMenu.pendingNew) {
+                selectionSpeakerMenu.pendingNew = false
+                root.openSelectionSpeaker()
+            }
         }
     }
 

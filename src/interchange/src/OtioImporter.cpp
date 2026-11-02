@@ -21,15 +21,24 @@
 // object moved or trimmed in another editor keeps its OTIO times. Names, comments and clip enabled flags are read from
 // OTIO, which holds them exactly (renames in another editor survive). A nested sequence is defined by the copy of its
 // stack that has a "sequence" section; its other copies refer to it by key. Files without it import as before.
+// 0.6: Effect objects on clips, nested stacks and tracks become effects (card #67): Wabcut's own exactly (their
+// metadata.wabcut.effect), well-known names mapped onto Wabcut's effects, the rest kept as disabled placeholders that an
+// export writes back. GeneratorReferences become synthetic items (card #69): Wabcut's exactly (metadata.wabcut.
+// generator), SolidColor as a colour matte (black / transparent video), SMPTEBars as Bars and Tone.
 
 #include "ImporterCommon.h"
 #include "Importers.h"
+#include "InterchangeEffects.h"
 #include "TimeMath.h"
 
+#include <wabcut/model/Auditions.h>
 #include <wabcut/model/Nesting.h>
+#include <wabcut/model/Synthetic.h>
 #include <wabcut/model/TimeRemap.h>
 
 #include <algorithm>
+#include <array>
+#include <cstdlib>
 #include <cctype>
 #include <cmath>
 #include <limits>
@@ -610,6 +619,12 @@ private:
     /// True when the clip's times came from its Wabcut metadata.
     bool parseClip(const Json& clip, const std::string& pointer, IrTrack& track, Ticks position,
                    Ticks duration, std::optional<OtioRange> sourceRange);
+    /// A nested Stack item (C.8) as a nested clip on `track`; true when its exact times came from Wabcut metadata.
+    bool parseStack(const Json& item, const std::string& pointer, IrTrack& track, Ticks position, Ticks duration,
+                    std::optional<OtioRange> range);
+    /// 0.6 (card #74): the other takes of an audition (Wabcut metadata "audition") as the alternates of the clip just
+    /// parsed onto `track`.
+    void parseAuditionTakes(const Json& item, const std::string& pointer, IrTrack& track, Ticks position);
     std::size_t mediaFor(const Json& clip, const std::string& pointer, const std::string& clipName,
                          std::optional<Ticks>& availableStart, std::string& unsupportedWhy);
     void parseMarkers(const Json& owner, const std::string& pointer, Ticks offset,
@@ -617,7 +632,13 @@ private:
     /// Reports the item's effects; a clip's constant time effect (LinearTimeWarp, FreezeFrame) is returned
     /// instead, for the builder to retime the clip. Time effects on tracks and stacks are reported.
     std::optional<IrSpeed> parseEffects(const Json& item, const std::string& pointer, const std::string& itemName,
-                                        bool clip = false);
+                                        bool clip = false, std::vector<EffectInstance>* stack = nullptr,
+                                        EffectKind kind = EffectKind::Video);
+    /// 0.6 (card #67): an Effect object as an effect instance (nullopt: reported).
+    std::optional<EffectInstance> effectObjectFrom(const Json& e, EffectKind kind, const std::string& pointer,
+                                                   const std::string& itemName);
+    /// 0.6 (card #69): a GeneratorReference as a synthetic item (nullopt: not one Wabcut makes).
+    std::optional<IrGenerator> generatorFrom(const Json& ref, const std::string& pointer);
     std::optional<Ticks> itemDuration(const Json& item, std::optional<OtioRange>& range, int depth = 0);
 
     // metadata.wabcut (see the file comment).
@@ -772,9 +793,22 @@ std::size_t OtioParser::mediaFor(const Json& clip, const std::string& pointer, c
         media.reference.original = media.name;
         media.key = "missing:" + media.name;
     } else if (schema == "GeneratorReference") {
-        unsupportedWhy =
-            "generated media (" + stringMember(*ref, "generator_kind") + ") is not supported yet";
-        return kNoMedia;
+        auto generator = generatorFrom(*ref, refPointer);
+        if (!generator) {
+            unsupportedWhy =
+                "generated media (" + stringMember(*ref, "generator_kind") + ") is not supported yet";
+            return kNoMedia;
+        }
+        std::string name = stringMember(*ref, "name");
+        if (const Json* meta = wabcutSection(*ref, "generator")) {
+            name = stringMember(*meta, "name");
+        }
+        if (name.empty() || iequals(name, stringMember(*ref, "generator_kind"))) {
+            name.clear(); // the generator's own name
+        }
+        IrMedia generated = generatorMedia(std::move(*generator), name);
+        generated.location = media.location;
+        return m_media.add(std::move(generated));
     } else if (schema == "ImageSequenceReference") {
         unsupportedWhy = "image sequences are not supported yet";
         return kNoMedia;
@@ -798,7 +832,8 @@ std::size_t OtioParser::mediaFor(const Json& clip, const std::string& pointer, c
 }
 
 std::optional<IrSpeed> OtioParser::parseEffects(const Json& item, const std::string& pointer,
-                                                const std::string& itemName, bool clip) {
+                                                const std::string& itemName, bool clip,
+                                                std::vector<EffectInstance>* stack, EffectKind kind) {
     std::optional<IrSpeed> speed;
     const Json* effects = member(item, "effects");
     if (!effects || !effects->is_array()) {
@@ -846,6 +881,17 @@ std::optional<IrSpeed> OtioParser::parseEffects(const Json& item, const std::str
                    "'" + itemName + "' has a non-linear time effect" + (name.empty() ? "" : " '" + name + "'") +
                        " that OTIO does not describe; it plays at 100%",
                    p);
+        } else if (stack && e.is_object()) {
+            if (stack->size() >= kMaxClipEffects) {
+                report(ReportOutcome::Dropped, ReportCategory::Effect,
+                       "'" + itemName + "' has more than " + std::to_string(kMaxClipEffects) +
+                           " effects; the rest were not imported",
+                       p);
+                continue;
+            }
+            if (auto effect = effectObjectFrom(e, kind, p, itemName)) {
+                stack->push_back(std::move(*effect));
+            }
         } else {
             std::string name = stringMember(e, "effect_name");
             if (name.empty()) {
@@ -858,6 +904,180 @@ std::optional<IrSpeed> OtioParser::parseEffects(const Json& item, const std::str
         }
     }
     return speed;
+}
+
+std::optional<EffectInstance> OtioParser::effectObjectFrom(const Json& e, EffectKind kind, const std::string& pointer,
+                                                       const std::string& itemName) {
+    const std::string effectName = stringMember(e, "effect_name");
+    const std::string objectName = stringMember(e, "name");
+    const bool enabled = boolMember(e, "enabled").value_or(true);
+    const std::string label = !effectName.empty() ? effectName : !objectName.empty() ? objectName : std::string(schemaName(e));
+    if (const Json* section = wabcutSection(e, "effect")) {
+        // Wabcut's own: the instance exactly; OTIO's enabled flag wins (switched in another editor).
+        std::string why;
+        auto effect = effectFrom(*section, kind, why);
+        if (!effect) {
+            report(ReportOutcome::Dropped, ReportCategory::Effect,
+                   "effect '" + label + "' on '" + itemName + "' was not imported: " + why, pointer);
+            return std::nullopt;
+        }
+        if (!isForeignPlaceholder(*effect)) {
+            effect->enabled = enabled;
+        }
+        report(ReportOutcome::Carried, ReportCategory::Effect, "effect '" + effectLabel(*effect) + "' on '" + itemName + "'",
+               pointer);
+        return effect;
+    }
+    // Another tool's effect: its metadata is kept (when it fits) so an export writes it back.
+    std::string metadata;
+    if (const Json* meta = member(e, "metadata"); meta && meta->is_object() && !meta->empty()) {
+        metadata = meta->dump();
+    }
+    EffectInstance effect;
+    effect.enabled = enabled;
+    // By effect_name only: `name` is the user's label for the instance ("glow" need not be Wabcut's Glow).
+    const std::string id = wabcutEffectNamed(effectName, {}, kind);
+    std::vector<std::string> notes;
+    if (!id.empty()) {
+        effect.effect = id;
+        addDataText(effect, std::string(kSourceName), effectName);
+    } else {
+        effect.effect = std::string(kOtioPlaceholder) + label;
+        effect.enabled = false;
+        addDataText(effect, std::string(kSourceName), objectName);
+        addDataText(effect, std::string(kSourceEnabled), enabled ? "1" : "0");
+        if (const std::string_view schema = schemaName(e); schema != "Effect") {
+            addDataText(effect, "source.schema", stringMember(e, "OTIO_SCHEMA"));
+        }
+    }
+    if (!metadata.empty() && !addDataText(effect, std::string(kSourceMetadata), metadata)) {
+        notes.push_back("its metadata is too large to keep");
+    }
+    std::string reason = id.empty() ? "effect '" + label + "' on '" + itemName +
+                                          "' kept as a placeholder: Wabcut does not render it, and an export writes it back"
+                                    : "effect '" + label + "' on '" + itemName + "' as Wabcut's '" + effectLabel(effect) +
+                                          "' (its settings were not translated: Wabcut's defaults)";
+    for (const std::string& n : notes) {
+        reason += "; " + n;
+    }
+    report(ReportOutcome::Approximated, ReportCategory::Effect, reason, pointer);
+    return effect;
+}
+
+std::optional<IrGenerator> OtioParser::generatorFrom(const Json& ref, const std::string& pointer) {
+    IrGenerator g;
+    if (const Json* meta = wabcutSection(ref, "generator")) {
+        g.kind = stringMember(*meta, "kind");
+        if (const Json* params = member(*meta, "params"); params && params->is_object()) {
+            for (const auto& entry : params->items()) {
+                if (entry.value().is_number()) {
+                    g.params.push_back(EffectParam{entry.key(), ParamValue(entry.value().get<double>())});
+                }
+            }
+        }
+        if (!generatorDisplayName(g.kind).empty()) {
+            std::sort(g.params.begin(), g.params.end(), [](const EffectParam& a, const EffectParam& b) { return a.key < b.key; });
+            return g;
+        }
+        badMetadata(ReportCategory::Media, "the generator", pointer);
+        g = IrGenerator{};
+    }
+    const std::string kind = toLowerAscii(stringMember(ref, "generator_kind"));
+    const Json* params = member(ref, "parameters");
+    if (kind == "solidcolor" || kind == "solid color" || kind == "solid" || kind == "color" || kind == "colormatte" ||
+        kind == "color matte" || kind == "black") {
+        // A colour as [r, g, b(, a)] (0..1, or 0..255), {"r", "g", "b"(, "a")} or "#rrggbb".
+        std::optional<std::array<double, 4>> rgba;
+        const Json* color = params ? member(*params, "color") : nullptr;
+        if (kind == "black") {
+            rgba = std::array<double, 4>{0.0, 0.0, 0.0, 1.0};
+        } else if (color && color->is_array() && color->size() >= 3) {
+            std::array<double, 4> v{0.0, 0.0, 0.0, 1.0};
+            bool ok = true;
+            for (std::size_t i = 0; i < 4 && i < color->size(); ++i) {
+                ok = ok && (*color)[i].is_number();
+                v[i] = ok ? (*color)[i].get<double>() : 0.0;
+            }
+            if (ok) {
+                rgba = v;
+            }
+        } else if (color && color->is_object()) {
+            std::array<double, 4> v{0.0, 0.0, 0.0, 1.0};
+            const char* keys[] = {"r", "g", "b", "a"};
+            bool ok = true;
+            for (std::size_t i = 0; i < 4; ++i) {
+                const auto x = numberMember(*color, keys[i]);
+                ok = ok && (x || i == 3);
+                v[i] = x.value_or(i == 3 ? 1.0 : 0.0);
+            }
+            if (ok) {
+                rgba = v;
+            }
+        } else if (color && color->is_string()) {
+            const std::string text = color->get<std::string>();
+            if (text.size() == 7 && text[0] == '#') {
+                std::array<double, 4> v{0.0, 0.0, 0.0, 1.0};
+                bool ok = true;
+                for (std::size_t i = 0; i < 3; ++i) {
+                    const std::string hex = text.substr(1 + 2 * i, 2);
+                    char* end = nullptr;
+                    const long n = std::strtol(hex.c_str(), &end, 16);
+                    ok = ok && end && *end == '\0';
+                    v[i] = static_cast<double>(n) / 255.0;
+                }
+                if (ok) {
+                    rgba = v;
+                }
+            }
+        }
+        const std::array<double, 4> c = rgba.value_or(std::array<double, 4>{0.0, 0.0, 0.0, 1.0});
+        const bool bytes = c[0] > 1.0 || c[1] > 1.0 || c[2] > 1.0;
+        const auto unit = [&](double x) { return std::clamp(bytes ? x / 255.0 : x, 0.0, 1.0); };
+        const double alpha = std::clamp(c[3] > 1.0 ? c[3] / 255.0 : c[3], 0.0, 1.0);
+        if (alpha == 0.0) {
+            g.kind = std::string(kTransparentVideoGenerator);
+        } else {
+            g.kind = std::string(kColorMatteGenerator);
+            g.params = {EffectParam{"color.b", ParamValue(unit(c[2]))}, EffectParam{"color.g", ParamValue(unit(c[1]))},
+                        EffectParam{"color.r", ParamValue(unit(c[0]))}};
+            std::sort(g.params.begin(), g.params.end(), [](const EffectParam& a, const EffectParam& b) { return a.key < b.key; });
+            if (!rgba) {
+                g.approximation = "its colour was not readable (black was used)";
+            } else if (alpha < 1.0) {
+                g.approximation = "its transparency was not carried (a colour matte is opaque)";
+            }
+        }
+        return g;
+    }
+    if (kind == "smptebars" || kind == "smpte bars" || kind == "bars" || kind == "colorbars" || kind == "color bars" ||
+        kind == "barsandtone") {
+        g.kind = std::string(kBarsAndToneGenerator);
+        if (params) {
+            if (const std::string pattern = toLowerAscii(stringMember(*params, "pattern")); pattern == "sd") {
+                g.params.push_back(EffectParam{"pattern", ParamValue(1.0)});
+            }
+            if (const auto f = numberMember(*params, "tone_frequency")) {
+                g.params.push_back(EffectParam{"tone.frequency", ParamValue(*f)});
+            }
+            if (const auto l = numberMember(*params, "tone_level_db")) {
+                g.params.push_back(EffectParam{"tone.level", ParamValue(*l)});
+            }
+            std::sort(g.params.begin(), g.params.end(), [](const EffectParam& a, const EffectParam& b) { return a.key < b.key; });
+        }
+        if (g.params.empty()) {
+            g.approximation = "SMPTE bars (HD) and a 1 kHz tone at -20 dBFS";
+        }
+        return g;
+    }
+    if (kind == "countingleader" || kind == "counting leader") {
+        g.kind = std::string(kCountingLeaderGenerator);
+        return g;
+    }
+    if (kind == "adjustmentlayer" || kind == "adjustment layer") {
+        g.kind = std::string(kAdjustmentGenerator);
+        return g;
+    }
+    return std::nullopt;
 }
 
 void OtioParser::parseMarkers(const Json& owner, const std::string& pointer, Ticks offset,
@@ -962,13 +1182,102 @@ bool OtioParser::parseClip(const Json& clip, const std::string& pointer, IrTrack
     } else if (m_doc.media[media].audioChannels.empty()) {
         m_doc.media[media].audioChannels.push_back(0);
     }
-    c.speed = parseEffects(clip, pointer, name, true);
+    c.speed = parseEffects(clip, pointer, name, true, &c.effects,
+                           track.kind == TrackKind::Video ? EffectKind::Video : EffectKind::Audio);
     const bool exact = meta && applyClipMetadata(*meta, c, track.kind, pointer);
     // Clip markers are in the clip's source time.
     parseMarkers(clip, pointer, position - sourceStart, TimeRange{sourceStart, duration},
                  "clip marker on '" + name + "' became a sequence marker (it no longer moves with the clip)");
     track.clips.push_back(std::move(c));
     return exact;
+}
+
+bool OtioParser::parseStack(const Json& item, const std::string& p, IrTrack& track, Ticks position, Ticks duration,
+                            std::optional<OtioRange> range) {
+    // C.8: a nested stack is a compound clip: a nested clip of a sequence made from its tracks.
+    const std::string itemName = stringMember(item, "name");
+    IrClip c;
+    c.name = itemName.empty() ? std::string("Nested stack") : itemName;
+    PendingStack nested{&item, p, "stack:" + p};
+    bool queue = true;
+    bool exact = false;
+    const Json* meta = wabcutSection(item, "clip");
+    if (meta) {
+        // Wabcut writes a nested sequence wherever a clip plays it: the copy with a "sequence" section
+        // defines it, the others name it by key.
+        if (const std::string key = stringMember(*meta, "sequence"); !key.empty()) {
+            nested.key = "wabcut:" + key;
+            if (wabcutSection(item, "sequence")) {
+                queue = m_definedStacks.insert(nested.key).second;
+            } else {
+                queue = false;
+                m_referenceStacks.try_emplace(nested.key, nested);
+            }
+        }
+        c.enabled = boolMember(item, "enabled").value_or(true);
+    }
+    c.sequenceKey = nested.key;
+    c.stream = {track.kind == TrackKind::Video ? StreamKind::Video : StreamKind::Audio, 0};
+    c.start = position;
+    c.duration = duration;
+    c.sourceIn = range ? range->start : Ticks{};
+    c.speed = parseEffects(item, p, c.name, true, &c.effects,
+                           track.kind == TrackKind::Video ? EffectKind::Video : EffectKind::Audio);
+    c.location = at(p);
+    if (meta && applyClipMetadata(*meta, c, track.kind, p)) {
+        exact = true;
+    }
+    track.clips.push_back(std::move(c));
+    if (queue) {
+        m_pendingStacks.push_back(std::move(nested));
+    }
+    return exact;
+}
+
+void OtioParser::parseAuditionTakes(const Json& item, const std::string& pointer, IrTrack& track, Ticks position) {
+    const Json* audition = wabcutSection(item, "audition");
+    if (!audition || track.clips.empty()) {
+        return;
+    }
+    const std::string activeName = track.clips.back().name;
+    const Json* takes = member(*audition, "takes");
+    if (!takes || !takes->is_array() || takes->empty() || takes->size() + 1 > kMaxAuditionTakes) {
+        badMetadata(ReportCategory::Clip, "audition '" + activeName + "'", pointer);
+        return;
+    }
+    IrTrack scratch;
+    scratch.kind = track.kind;
+    for (std::size_t i = 0; i < takes->size(); ++i) {
+        const Json& take = (*takes)[i];
+        const std::string p = pointer + "/metadata/wabcut/audition/takes/" + std::to_string(i);
+        const std::string_view schema = schemaName(take);
+        if (schema != "Clip" && schema != "Stack") {
+            report(ReportOutcome::Dropped, ReportCategory::Clip,
+                   "take " + std::to_string(i + 2) + " of audition '" + activeName + "' is not a clip", p);
+            continue;
+        }
+        const bool wasInexact = m_inexact;
+        std::optional<OtioRange> range;
+        const auto duration = itemDuration(take, range);
+        if (!duration || duration->value <= 0) {
+            report(ReportOutcome::Dropped, ReportCategory::Clip,
+                   "take " + std::to_string(i + 2) + " of audition '" + activeName + "' has no usable duration", p);
+            continue;
+        }
+        const bool exact = schema == "Clip" ? parseClip(take, p, scratch, position, *duration, range)
+                                            : parseStack(take, p, scratch, position, *duration, range);
+        if (exact) {
+            m_inexact = wasInexact;
+        }
+    }
+    IrClip& clip = track.clips.back(); // parsing the takes did not touch `track`
+    for (IrClip& c : scratch.clips) {
+        c.alternates.clear();
+        clip.alternates.push_back(std::move(c));
+    }
+    const std::int64_t activeTake = intMember(*audition, "active").value_or(0);
+    clip.activeTake = static_cast<std::size_t>(
+        std::clamp<std::int64_t>(activeTake, 0, static_cast<std::int64_t>(clip.alternates.size())));
 }
 
 void OtioParser::parseTrack(const Json& trackJson, const std::string& pointer, std::size_t indexInStack) {
@@ -995,7 +1304,8 @@ void OtioParser::parseTrack(const Json& trackJson, const std::string& pointer, s
         report(ReportOutcome::Approximated, ReportCategory::Track,
                "track '" + track.name + "' has a source range; the whole track was imported", pointer);
     }
-    parseEffects(trackJson, pointer, track.name.empty() ? "track" : track.name);
+    parseEffects(trackJson, pointer, track.name.empty() ? "track" : track.name, false, &track.effects,
+                 track.kind == TrackKind::Video ? EffectKind::Video : EffectKind::Audio);
 
     const Json* children = member(trackJson, "children");
     Ticks position{};
@@ -1051,44 +1361,18 @@ void OtioParser::parseTrack(const Json& trackJson, const std::string& pointer, s
                     m_inexact = wasInexact;
                 }
             } else if (schema == "Clip") {
+                const std::size_t count = track.clips.size();
                 if (parseClip(item, p, track, position, *duration, range)) {
                     m_inexact = wasInexact;
                 }
-            } else if (schema == "Stack") {
-                // C.8: a nested stack is a compound clip: a nested clip of a sequence made from its tracks.
-                IrClip c;
-                c.name = itemName.empty() ? std::string("Nested stack") : itemName;
-                PendingStack nested{&item, p, "stack:" + p};
-                bool queue = true;
-                const Json* meta = wabcutSection(item, "clip");
-                if (meta) {
-                    // Wabcut writes a nested sequence wherever a clip plays it: the copy with a "sequence" section
-                    // defines it, the others name it by key.
-                    if (const std::string key = stringMember(*meta, "sequence"); !key.empty()) {
-                        nested.key = "wabcut:" + key;
-                        if (wabcutSection(item, "sequence")) {
-                            queue = m_definedStacks.insert(nested.key).second;
-                        } else {
-                            queue = false;
-                            m_referenceStacks.try_emplace(nested.key, nested);
-                        }
-                    }
-                    c.enabled = boolMember(item, "enabled").value_or(true);
+                if (track.clips.size() > count) {
+                    parseAuditionTakes(item, p, track, position);
                 }
-                c.sequenceKey = nested.key;
-                c.stream = {track.kind == TrackKind::Video ? StreamKind::Video : StreamKind::Audio, 0};
-                c.start = position;
-                c.duration = *duration;
-                c.sourceIn = range ? range->start : Ticks{};
-                c.speed = parseEffects(item, p, c.name, true);
-                c.location = at(p);
-                if (meta && applyClipMetadata(*meta, c, track.kind, p)) {
+            } else if (schema == "Stack") {
+                if (parseStack(item, p, track, position, *duration, range)) {
                     m_inexact = wasInexact;
                 }
-                track.clips.push_back(std::move(c));
-                if (queue) {
-                    m_pendingStacks.push_back(std::move(nested));
-                }
+                parseAuditionTakes(item, p, track, position);
             } else if (schema == "Track") {
                 report(ReportOutcome::Dropped, ReportCategory::Clip,
                        "nested track '" + itemName + "' is not supported yet; its time is left as a gap", p);
@@ -1621,6 +1905,7 @@ void OtioParser::applyEffects(const Json& list, IrClip& clip, TrackKind kind, co
         return;
     }
     const EffectKind effectKind = kind == TrackKind::Video ? EffectKind::Video : EffectKind::Audio;
+    clip.effects.clear(); // a file before 0.6: its clip section has the stack
     for (std::size_t i = 0; i < list.size(); ++i) {
         if (i == kMaxClipEffects) {
             report(ReportOutcome::Dropped, ReportCategory::Effect,

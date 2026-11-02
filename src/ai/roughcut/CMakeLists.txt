@@ -13,6 +13,7 @@ add_library(wabcut_ai_roughcut STATIC
     src/RoughCut.cpp
     src/RoughCutCommands.cpp
     src/Script.cpp
+    src/ScriptCorrections.cpp
     src/Speech.cpp
     src/Takes.cpp
     src/TextMatch.cpp)

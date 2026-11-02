@@ -41,6 +41,7 @@
 #include <QUrl>
 
 #include <filesystem>
+#include <fstream>
 #include <memory>
 
 using namespace wabcut;
@@ -430,6 +431,10 @@ TEST_CASE("Media Browser Ingest: Transcode imports the original and switches it 
     r.library.setExport(&queue);
     QTemporaryDir to;
     REQUIRE(to.isValid());
+    // A file of that name is there already: the transcode is numbered "interview (2).mov" like every other export's
+    // file (fix round 1, ARGON-25), and that file stays as it was.
+    const std::filesystem::path taken = std::filesystem::path(to.path().toStdWString()) / "interview.mov";
+    { std::ofstream(taken, std::ios::binary) << "taken"; }
     r.library.setIngest(true);
     r.library.setIngestAction(QStringLiteral("transcode"));
     r.library.setIngestFolder(to.path());
@@ -444,8 +449,9 @@ TEST_CASE("Media Browser Ingest: Transcode imports the original and switches it 
     CHECK(pathFromUtf8(r.item(key)->locator.path).filename() == std::filesystem::path("interview.mp4"));
     REQUIRE(waitFor([&] { return r.library.pendingTranscodes() == 0; }, 120000));
     INFO(r.library.message().toStdString());
-    const std::filesystem::path made = std::filesystem::path(to.path().toStdWString()) / "interview.mov";
+    const std::filesystem::path made = std::filesystem::path(to.path().toStdWString()) / "interview (2).mov";
     CHECK(std::filesystem::is_regular_file(made));
+    CHECK(std::filesystem::file_size(taken) == 5);
     CHECK(pathFromUtf8(r.item(key)->locator.path).lexically_normal() == made.lexically_normal());
     CHECK(r.item(key)->info.video.front().codec == "prores");
     CHECK(r.undo() == before + 2); // Use Transcoded Media

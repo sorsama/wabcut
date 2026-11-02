@@ -680,19 +680,25 @@ interchange::MediaInspector probeInspector() {
     };
 }
 
-std::expected<interchange::ImportResult, Error> importTimelineFile(EditSession& session,
-                                                                   const std::filesystem::path& file,
-                                                                   const TimelineImportOptions& options) {
+std::expected<interchange::ImportResult, Error> prepareTimelineImport(ProjectState target,
+                                                                      const std::filesystem::path& file,
+                                                                      const TimelineImportOptions& options) {
     interchange::ImportOptions importOptions;
     importOptions.mediaSearchRoots = options.mediaSearchRoots;
     importOptions.mediaInspector = probeInspector();
     importOptions.projectFile = options.projectFile;
     importOptions.experimentalPremiereProject = options.experimentalPremiereProject;
-    importOptions.targetProject = session.stateForSave();
+    importOptions.embeddedMediaFolder = options.embeddedMediaFolder;
+    importOptions.targetProject = std::move(target);
     for (const SequenceId sequence : options.dropSequences) {
         if (auto without = edit::removeSequence(*importOptions.targetProject, sequence)) {
             importOptions.targetProject = std::move(*without);
         }
+    }
+    // Writing the embedded media is the long part (90 %); probing the media found, the rest.
+    const auto& progress = options.progress;
+    if (progress) {
+        importOptions.progress = [&progress](double share) { return progress(0.9 * share); };
     }
 
     auto imported = interchange::ImportRouter::importFile(file, importOptions);
@@ -704,7 +710,13 @@ std::expected<interchange::ImportResult, Error> importTimelineFile(EditSession& 
     // timeline still fits the real files (Strict validation), else the declared info stays.
     ProjectState refreshed = imported->project;
     bool changed = false;
+    const double count = static_cast<double>(std::max<std::size_t>(1, refreshed.media.size()));
+    double done = 0;
     for (MediaPtr& media : refreshed.media) {
+        if (progress && !progress(0.9 + 0.1 * (done / count))) {
+            return std::unexpected(Error{ErrorCode::Cancelled, "Import cancelled"});
+        }
+        done += 1;
         if (media->locator.offline || std::ranges::find(imported->media, media->id) == imported->media.end()) {
             continue;
         }
@@ -721,15 +733,71 @@ std::expected<interchange::ImportResult, Error> importTimelineFile(EditSession& 
         media = std::move(item);
         changed = true;
     }
-    const std::string label = "Import " + pathToUtf8(file.filename());
-    if (changed && validate(refreshed, Validation::Strict) && session.commit(label, refreshed)) {
+    if (changed && validate(refreshed, Validation::Strict)) {
         imported->project = std::move(refreshed);
-        return imported;
     }
-    if (auto committed = session.commit(label, imported->project); !committed) {
+    if (progress) {
+        progress(1.0);
+    }
+    return imported;
+}
+
+std::expected<void, Error> commitTimelineImport(EditSession& session, const std::filesystem::path& file,
+                                                const interchange::ImportResult& prepared) {
+    const std::string label = "Import " + pathToUtf8(file.filename());
+    if (auto committed = session.commit(label, prepared.project); !committed) {
+        return std::unexpected(std::move(committed.error()));
+    }
+    return {};
+}
+
+std::expected<interchange::ImportResult, Error> importTimelineFile(EditSession& session,
+                                                                   const std::filesystem::path& file,
+                                                                   const TimelineImportOptions& options) {
+    auto imported = prepareTimelineImport(session.stateForSave(), file, options);
+    if (!imported) {
+        return std::unexpected(std::move(imported.error()));
+    }
+    if (auto committed = commitTimelineImport(session, file, *imported); !committed) {
         return std::unexpected(std::move(committed.error()));
     }
     return imported;
+}
+
+namespace {
+
+/// An existing folder files can be created in (a probe file is written and removed).
+bool writableFolder(const fs::path& folder) {
+    std::error_code ec;
+    if (folder.empty() || !fs::is_directory(folder, ec)) {
+        return false;
+    }
+    const fs::path probe = folder / ".wabcut-write-test";
+    bool ok = false;
+    {
+        std::ofstream out(probe, std::ios::binary | std::ios::trunc);
+        if (out) {
+            out << 'w';
+            ok = static_cast<bool>(out);
+        }
+    }
+    fs::remove(probe, ec);
+    return ok;
+}
+
+} // namespace
+
+std::filesystem::path embeddedMediaFolderFor(const std::filesystem::path& file, const std::filesystem::path& projectFile,
+                                             const std::filesystem::path& fallback) {
+    const std::string stem = file.stem().empty() ? std::string("Imported") : pathToUtf8(file.stem());
+    const fs::path name = pathFromUtf8(stem + " Media");
+    const fs::path candidates[] = {projectFile.empty() ? fs::path() : projectFile.parent_path(), file.parent_path()};
+    for (const fs::path& home : candidates) {
+        if (writableFolder(home)) {
+            return home / name;
+        }
+    }
+    return fallback.empty() ? fs::path() : fallback / name;
 }
 
 } // namespace wabcut::editor

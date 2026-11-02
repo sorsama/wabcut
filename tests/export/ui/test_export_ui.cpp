@@ -182,8 +182,9 @@ TEST_CASE("ExportController maps presets and overrides and explains errors in pl
     ExportController::setUserPresetFolder(freshDir("no_user_presets")); // nothing of the user's
     ExportController controller;
     const QVariantList presets = controller.presets();
-    // The six general ones, the gaming presets, the four HDR ones (I.9, 0.2), then the sixteen formats of 0.2.
-    REQUIRE(presets.size() == 38);
+    // The six general ones, the gaming presets, the four HDR ones (I.9, 0.2), then the sixteen formats of 0.2 and the
+    // five MXF deliveries of 0.6 (#73, in the formats group too).
+    REQUIRE(presets.size() == 43);
     QStringList ids;
     QStringList names;
     for (const QVariant& p : presets) {
@@ -203,6 +204,8 @@ TEST_CASE("ExportController maps presets and overrides and explains errors in pl
     CHECK(ids.mid(18, 4) == QStringList{QStringLiteral("youtube-hdr-pq"), QStringLiteral("youtube-hdr-pq-av1"),
                                         QStringLiteral("hdr-hlg"), QStringLiteral("prores-hdr-pq")});
     CHECK(presets[22].toMap().value(QStringLiteral("category")) == QStringLiteral("formats"));
+    CHECK(presets[38].toMap().value(QStringLiteral("id")) == QStringLiteral("mxf-op1a-xdcam-hd422"));
+    CHECK(presets[42].toMap().value(QStringLiteral("category")) == QStringLiteral("formats"));
 
     // Overrides on top of a preset, with the dependent defaults following the codec / container.
     auto s = ExportController::settingsFor(QStringLiteral("match-source"),
@@ -851,6 +854,11 @@ TEST_CASE("Export workspace 0.2: Send to Media Encoder queues the export held an
     INFO(join(shell.errors));
     auto* controller = shell.engine.singletonInstance<ExportController*>("Wabcut", "ExportController");
     REQUIRE(controller != nullptr);
+    // 0.6 (P1 #27): an export waits while media it reads is offline (the shell's sample timeline's files are made up):
+    // a project of its own, with nothing offline.
+    auto* project = shell.engine.singletonInstance<ProjectController*>("Wabcut", "ProjectController");
+    REQUIRE(project != nullptr);
+    project->resetProject(makeProject(seconds(2)));
     const int before = controller->jobs()->rowCount();
     QMetaObject::invokeMethod(shell.window.get(), "runCommand", Q_ARG(QVariant, QVariant(QStringLiteral("file.sendToMediaEncoder"))));
     REQUIRE(waitFor([&] { return controller->jobs()->rowCount() == before + 1; }, 10'000));

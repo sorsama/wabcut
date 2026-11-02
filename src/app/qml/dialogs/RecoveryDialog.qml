@@ -10,29 +10,55 @@ import QtQuick.Layouts
 // now, its autosaves and its backups (.bak1-5) - and untitled autosaves (ProjectFile.recoveryVersions), each with a
 // poster frame, its sequences, clips and duration, and what differs from the saved version. "Open as copy" opens a
 // version untitled, so the project file is only replaced when the user saves over it.
+// P1 round (#49): the dashboard of any project (`file`): one that failed to open ("Recover a version…" on the problem)
+// and Home's Versions…; "Open as copy" asks the window (openCopyRequested), which asks about unsaved changes first.
 WabcutDialog {
     id: dialog
     objectName: "recoveryDialog"
 
     /// The "All versions" tab is shown.
     property bool dashboard: false
+    /// P1 round (#49): the project whose versions are listed; empty: the open (else the last) project.
+    property url file: ""
+    readonly property string fileName: dialog.file.toString() === "" ? ""
+                                       : decodeURIComponent(dialog.file.toString().split("/").pop()).replace(/\.wabcut$/i, "")
+
+    /// "Open as copy" of version `version` (Main opens it after the unsaved-changes prompt).
+    signal openCopyRequested(url version)
+    /// Recover of the unsaved work in autosave `autosave` (Main recovers it after the unsaved-changes prompt and closes
+    /// Home; fix round 1, ARGON-10).
+    signal recoverRequested(url autosave)
 
     function openUnsaved() {
         dashboard = false
+        file = ""
         open()
     }
     function openDashboard() {
         dashboard = true
+        file = ""
         ProjectFile.scanRecoveryVersions()
         open()
     }
+    /// The dashboard of project `project` (a project that failed to open, Home's Versions…).
+    function openDashboardFor(project: url) {
+        dashboard = true
+        file = project
+        ProjectFile.scanRecoveryVersions(project)
+        open()
+    }
 
-    title: dashboard ? qsTr("Recover a version") : qsTr("Recover unsaved work?")
+    title: !dashboard ? qsTr("Recover unsaved work?")
+           : dialog.fileName !== "" ? qsTr("Versions of %1").arg(dialog.fileName) : qsTr("Recover a version")
     width: Math.min(parent ? parent.width - Theme.space(16) : Theme.space(150), dashboard ? Theme.space(230) : Theme.space(150))
 
     PillTabs {
         id: modeTabs
         objectName: "recoveryTabs"
+        Accessible.name: qsTr("Show") // P1 #61
+        // The versions of one project (Home's Versions…, a project that failed to open) are about that project only:
+        // the unsaved work of whatever else crashed is not a tab there (fix round 1, ARGON-10).
+        visible: dialog.file.toString() === ""
         Layout.fillWidth: true
         compact: true
         model: [qsTr("Unsaved work"), qsTr("All versions")]
@@ -40,7 +66,7 @@ WabcutDialog {
         onActivated: index => {
             dialog.dashboard = index === 1
             if (dialog.dashboard)
-                ProjectFile.scanRecoveryVersions()
+                ProjectFile.scanRecoveryVersions(dialog.file)
             currentIndex = Qt.binding(() => dialog.dashboard ? 1 : 0)
         }
     }
@@ -139,8 +165,12 @@ WabcutDialog {
                 Text {
                     width: parent.width
                     text: version.modelData.loadable
-                          ? qsTr("%1 · %n sequence(s)", "", version.modelData.sequences).arg(version.modelData.sequence)
-                            + " · " + qsTr("%n clip(s)", "", version.modelData.clips) + " · " + version.modelData.duration
+                          ? qsTr("%1 · %2").arg(version.modelData.sequence)
+                                             .arg(version.modelData.sequences === 1 ? qsTr("1 sequence")
+                                                                                    : qsTr("%1 sequences").arg(version.modelData.sequences))
+                            + " · " + (version.modelData.clips === 1 ? qsTr("1 clip")
+                                                                     : qsTr("%1 clips").arg(version.modelData.clips))
+                            + " · " + version.modelData.duration
                           : qsTr("Cannot be opened: %1").arg(version.modelData.error)
                     color: version.modelData.loadable ? Theme.textSecondary : Theme.warning
                     font.family: Theme.fontSans
@@ -173,13 +203,15 @@ WabcutDialog {
                 spacing: Theme.space(1)
 
                 PillButton {
+                    objectName: "recoveryOpenCopy"
                     compact: true
                     variant: version.modelData.kind === "current" ? "secondary" : "primary"
                     enabled: version.modelData.loadable
                     text: qsTr("Open as copy")
                     onClicked: {
-                        if (ProjectFile.openRecoveryCopy(version.modelData.url))
-                            dialog.close()
+                        const url = version.modelData.url
+                        dialog.close()
+                        dialog.openCopyRequested(url)
                     }
                 }
             }
@@ -245,12 +277,14 @@ WabcutDialog {
                     onClicked: ProjectFile.discardRecovery(row.modelData.url)
                 }
                 PillButton {
+                    objectName: "recoveryRecover"
                     compact: true
                     variant: "primary"
                     text: qsTr("Recover")
                     onClicked: {
-                        if (ProjectFile.recover(row.modelData.url))
-                            dialog.close()
+                        const url = row.modelData.url
+                        dialog.close()
+                        dialog.recoverRequested(url)
                     }
                 }
             }

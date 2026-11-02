@@ -33,6 +33,20 @@ Item {
     Accessible.role: Accessible.Slider
     Accessible.name: qsTr("Timeline ruler")
 
+    /// 0.6 (Edit Marker…, M on a marker): the marker editor for sequence marker `index`, under its flag (under the
+    /// playhead when the flag is off screen).
+    function editMarker(index: int) {
+        Markers.scope = "sequence"
+        const item = root.view.markerItems.find(m => m.index === index)
+        const x = item && item.x >= 0 && item.x <= root.width ? item.x : root.view.playheadX
+        markerEditor.openFor(index, root, Qt.point(x, root.height))
+    }
+    /// 0.6: the marker editor for clip marker `index` (the selected clip's, M in the Timeline), under the playhead.
+    function editClipMarker(index: int) {
+        Markers.scope = "clip"
+        markerEditor.openFor(index, root, Qt.point(root.view.playheadX, root.height))
+    }
+
     Rectangle {
         anchors.left: parent.left
         anchors.right: parent.right
@@ -133,6 +147,28 @@ Item {
         height: Theme.space(2)
         radius: Theme.space(1)
         color: Qt.alpha(Theme.accentFill, 0.4)
+    }
+
+    // 0.6 (P1 round, D9 #8): the sequence's beat grid as thin ticks (Timeline Display > Beat grid, Sequence > Beat Grid).
+    // Downbeats are taller and in the accent; the grid is TimelineView.beatTicks (visible beats only, culled when dense).
+    Item {
+        id: beatTicks
+        objectName: "rulerBeatTicks"
+        anchors.fill: parent
+
+        Repeater {
+            model: root.view.beatTicks
+
+            delegate: Rectangle {
+                required property var modelData
+                objectName: modelData.downbeat ? "rulerBeatDownbeat" : "rulerBeatTick"
+                x: Math.round(modelData.x)
+                y: root.height - height - Theme.hairline
+                width: Theme.hairline
+                height: Math.round(root.height * (modelData.downbeat ? 0.34 : 0.2))
+                color: modelData.downbeat ? Theme.accentStroke : Theme.borderStrong
+            }
+        }
     }
 
     // The markers' name pills (each marker delegate below puts its pill here): under the playhead knob, which stays

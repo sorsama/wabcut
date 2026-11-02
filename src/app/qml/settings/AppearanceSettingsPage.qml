@@ -301,20 +301,67 @@ SettingsPage {
             }
         }
 
+        // P1 #47 (stream 3E): 90 % for small screens; a size whose screen would be smaller than the window's minimum
+        // (1100 x 700) is greyed with a tooltip; Restart now applies a new size.
         SettingsRow {
+            id: uiScaleRow
             objectName: "uiScaleRow"
             rowKey: "uiScale"
             label: qsTr("Interface size")
             description: Preferences.effectiveUiScale !== Theme.uiScale ? qsTr("The new size applies when Wabcut restarts.")
                                                                         : qsTr("Applies when Wabcut starts.")
+            readonly property var sizes: [90, 100, 125, 150]
+            // The window this page is in sits on the screen the sizes are fitted to (re-read when screens change).
+            readonly property var fitting: {
+                const out = []
+                const host = page.Window.window
+                for (const percent of uiScaleRow.sizes)
+                    out.push(UiScaleInfo.screenRevision < 0 || percent <= 90 || percent === Theme.uiScale
+                             || UiScaleInfo.fits(percent, host))
+                return out
+            }
+            Row {
+                spacing: Theme.space(2)
+
+                PillButton {
+                    objectName: "uiScaleRestart"
+                    anchors.verticalCenter: parent.verticalCenter
+                    visible: Preferences.effectiveUiScale !== Theme.uiScale
+                    compact: true
+                    variant: "primary"
+                    text: qsTr("Restart now")
+                    tooltip: qsTr("Close and reopen Wabcut at the new size (it asks about unsaved changes first)")
+                    onClicked: AppShell.requestRestart()
+                }
+                PillTabs {
+                    objectName: "uiScaleTabs"
+                    width: Theme.space(72)
+                    compact: true
+                    model: uiScaleRow.sizes.map((percent, i) => ({
+                        label: qsTr("%1%").arg(percent),
+                        enabled: uiScaleRow.fitting[i] === true,
+                        tooltip: uiScaleRow.fitting[i] === true ? "" : qsTr("Too large for this screen")
+                    }))
+                    currentIndex: uiScaleRow.sizes.indexOf(Preferences.effectiveUiScale)
+                    onActivated: index => Preferences.uiScale = uiScaleRow.sizes[index]
+                    Accessible.name: qsTr("Interface size")
+                }
+            }
+        }
+        // 0.6 (stream 1A): rounded timeline clips and lanes (the Echo look) or square ones (Premiere's); applies at once.
+        SettingsRow {
+            objectName: "timelineCornersRow"
+            rowKey: "timelineCorners"
+            label: qsTr("Timeline corners")
+            description: qsTr("Square gives clips, transitions, lanes, caption cues and track headers sharp corners, as in Premiere.")
             PillTabs {
-                objectName: "uiScaleTabs"
+                objectName: "timelineCornersTabs"
                 width: Theme.space(56)
                 compact: true
-                model: [{ label: qsTr("100%") }, { label: qsTr("125%") }, { label: qsTr("150%") }]
-                currentIndex: [100, 125, 150].indexOf(Preferences.effectiveUiScale)
-                onActivated: index => Preferences.uiScale = [100, 125, 150][index]
-                Accessible.name: qsTr("Interface size")
+                model: [{ label: qsTr("Rounded") }, { label: qsTr("Square") }]
+                currentIndex: Preferences.timelineCorners === "square" ? 1 : 0
+                onActivated: index => Preferences.timelineCorners = index === 1 ? "square" : "rounded"
+                Accessible.name: qsTr("Timeline corners")
             }
         }
     }

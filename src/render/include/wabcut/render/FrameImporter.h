@@ -130,6 +130,14 @@ public:
     /// generation; slots get new serials.
     void releaseResources();
 
+    /// F2P (0.6): for a frame that imported no media (a black or title-only picture, e.g. the monitor once a project
+    /// closed): forgets the views of decoder surfaces the GPU is done with. A view keeps its decoder's whole surface
+    /// array alive, and with nothing playing the kNativeIdleFrames frames it would otherwise wait may never come.
+    void dropIdleNativeViews();
+    /// Whether the importer still keeps media memory alive: upload sources or decoder surfaces in flight, or views of
+    /// decoder surfaces. A caller that draws no media can draw a few more frames until it is false.
+    bool holdsFrames() const;
+
     std::uint64_t deviceGeneration() const { return m_deviceGeneration; }
     FrameImporterStats stats() const;
 

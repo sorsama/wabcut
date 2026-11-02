@@ -243,6 +243,58 @@ Image stylize(const Image& in, LibraryEffect op, const LibraryParams& q) {
                         c[2] + color[2] * a * (1.0 - c[3]), c[3] + a * (1.0 - c[3])};
         });
     }
+    case E::Glow: {
+        // Pass 1: the bright pass (Glow Based On: luma of the encoded colour, or alpha) above Glow Threshold, ramped up
+        // to 1; then the blur (sigma = Glow Radius / 2, one axis for Horizontal or Vertical); pass 2 composites it.
+        const double threshold = clamp01(q[1]);
+        const Image bright = perPixel(in, [&](int, int, double, double, const Rgba& c) {
+            const double m = q[0] > 0.5 ? clamp01(c[3]) : luma(encoded(c));
+            const double k = clamp01((m - threshold) / std::max(1.0 - threshold, 1e-3));
+            return Rgba{c[0] * k, c[1] * k, c[2] * k, c[3] * k};
+        });
+        const double sigma = std::max(q[2], 0.0) / 2.0;
+        const int dims = static_cast<int>(std::floor(q[14] + 0.5));
+        const Image b = dims == 0 ? gaussianBlurSigma(bright, sigma, false)
+                                  : gaussianBlurSigmaAxis(bright, sigma, dims == 1, false);
+        const Rgb colorA = srgb3(q[8], q[9], q[10]);
+        const Rgb colorB = srgb3(q[11], q[12], q[13]);
+        return perPixel(in, [&](int x, int y, double, double, const Rgba& c) {
+            const Rgba g = b.atD(x, y);
+            const double s = clamp01(g[3]);
+            const double intensity = std::max(q[3], 0.0);
+            Rgba glow{g[0] * intensity, g[1] * intensity, g[2] * intensity, clamp01(s * intensity)};
+            if (q[6] > 0.5) {
+                const double mid = clamp01(q[7]);
+                const double u = s < mid ? 0.5 * s / std::max(mid, 1e-3) : 0.5 + 0.5 * (s - mid) / std::max(1.0 - mid, 1e-3);
+                const Rgb col = mix3(colorB, colorA, clamp01(u));
+                glow = {col[0] * s * intensity, col[1] * s * intensity, col[2] * s * intensity, glow[3]};
+            }
+            const int composite = static_cast<int>(std::floor(q[4] + 0.5));
+            const int operation = static_cast<int>(std::floor(q[5] + 0.5));
+            Rgba out{};
+            if (composite == 0) { // On Top: the picture over its glow
+                for (std::size_t i = 0; i < 4; ++i) {
+                    out[i] = c[i] + glow[i] * (1.0 - c[3]);
+                }
+            } else if (composite == 2) { // None: the glow alone
+                out = glow;
+            } else { // Behind: the glow over the picture, by Glow Operation
+                const double a = c[3] + glow[3] * (1.0 - c[3]);
+                for (std::size_t i = 0; i < 3; ++i) {
+                    out[i] = operation == 0   ? c[i] + glow[i]
+                             : operation == 1 ? c[i] + glow[i] - c[i] * glow[i]
+                             : operation == 2 ? std::max(c[i], glow[i])
+                                              : glow[i] + c[i] * (1.0 - glow[3]);
+                }
+                out[3] = a;
+            }
+            const double blend = clamp01(q[15]);
+            for (std::size_t i = 0; i < 4; ++i) {
+                out[i] = out[i] + (c[i] - out[i]) * blend;
+            }
+            return out;
+        });
+    }
     case E::BevelAlpha: {
         const Image b = gaussianBlurSigma(in, std::max(q[0], 0.0), false);
         const Rgb light = srgb3(q[2], q[3], q[4]);

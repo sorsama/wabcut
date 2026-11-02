@@ -71,6 +71,9 @@ Ticks seekPointIn(const TimeRange& range, Rate rate);
 
 /// Paragraphs of the transcript: [{ speaker, timeText, first, last, words: [{ i, text }] }]. Word text carries the
 /// space that follows it in space-delimited languages (none in Thai: word units sit side by side).
+/// 0.6 (P1 round, #36): `speaker` is the project speaker's name (else "Speaker N" from the diarization label),
+/// `speakerKey` its key ("v…", "" while the label has no project speaker) and `speakerColor` its colour ("#RRGGBB" or
+/// ""); a new paragraph starts where that speaker changes.
 class TranscriptParagraphModel : public QAbstractListModel {
     Q_OBJECT
     QML_ELEMENT
@@ -78,9 +81,11 @@ class TranscriptParagraphModel : public QAbstractListModel {
     Q_PROPERTY(int count READ rowCount NOTIFY countChanged FINAL)
 
 public:
-    enum Role { SpeakerRole = Qt::UserRole + 1, TimeRole, FirstRole, LastRole, WordsRole, SpeakerIndexRole };
+    enum Role { SpeakerRole = Qt::UserRole + 1, TimeRole, FirstRole, LastRole, WordsRole, SpeakerIndexRole, SpeakerKeyRole,
+                SpeakerColorRole };
     struct Paragraph {
         QString speaker, timeText;
+        QString speakerKey, speakerColor; // 0.6 (#36)
         int speakerIndex = -1;
         int first = 0, last = -1;
         QVariantList words;
@@ -283,6 +288,24 @@ public:
     /// Chooses whether audio track `index` (0 = A1) is transcribed; remembered by track name for every project.
     Q_INVOKABLE void setTrackChosen(int index, bool chosen);
 
+    // ---- 0.6 (P1 round, #36): speakers on the Transcript tab ----
+    /// Renames and/or recolours ("#RRGGBB"; "" keeps it) the speaker of paragraph `paragraph` (a row of `paragraphs`):
+    /// its project speaker, or - a diarization label with no project speaker yet ("Speaker 2") - a new speaker for
+    /// that label of the paragraph's media (transcript.renameSpeaker by media and label), so every paragraph of the
+    /// label follows. One undo step. "" or why not (also `message`).
+    Q_INVOKABLE QString renameParagraphSpeaker(int paragraph, const QString& name, const QString& color = {});
+    /// "This paragraph is": its words belong to `speaker` ("v…"), or to a new speaker called `newName` (one of the two;
+    /// transcript.assignSpeaker over the words' timeline range, on their audio track when they share one). One undo
+    /// step. "" or why not.
+    Q_INVOKABLE QString assignParagraph(int paragraph, const QString& speaker, const QString& newName = {});
+    /// The same for the selected words (the actions bar's Speaker menu): first to last selected word.
+    Q_INVOKABLE QString assignSelection(const QString& speaker, const QString& newName = {});
+    /// "Merge into": paragraph `paragraph`'s speaker becomes `into` ("v…") wherever it speaks, and goes
+    /// (transcript.mergeSpeakers; a label with no speaker yet joins `into` in the same undo step). "" or why not.
+    Q_INVOKABLE QString mergeParagraphSpeaker(int paragraph, const QString& into);
+    // 0.6 (P1 round, #37): Correct from Script is the `ScriptCorrection` singleton (ScriptCorrectionBridge, on a worker);
+    // it emits corrected() after applying.
+
 signals:
     void reviewProgressChanged();
     void transcriptChanged();
@@ -336,6 +359,8 @@ private:
     void rebuildAudioTracks();
     /// The first..last selected words' span on the timeline (frame-snapped outward), or nullopt.
     std::optional<TimeRange> selectionSpan() const;
+    /// 0.6 (#36): words first..last belong to `speaker` ("v…") or a new speaker `newName` (transcript.assignSpeaker).
+    QString assignWords(std::size_t first, std::size_t last, const QString& speaker, const QString& newName);
 
     QPointer<ProjectController> m_controller;
     QPointer<AiController> m_ai;

@@ -61,4 +61,19 @@ MenuBarMenu {
         text: qsTr("Select Previous Layer")
         command: "graphics.selectPreviousLayer"
     }
+    // P1 round (#50): template files. The window's file dialog imports a .mogrt (Premiere's, approximately) or a
+    // .wabcut-template.json into This project or My templates; it opens after the menu closed.
+    ContextMenuSeparator {}
+    BarMenuItem {
+        objectName: "installTemplateMenuItem"
+        text: qsTr("Install Motion Graphics Template…")
+        runsCommand: false
+        onTriggered: root.run(() => Graphics.openInstallDialog("project"))
+    }
+    BarMenuItem {
+        objectName: "installTemplateUserMenuItem"
+        text: qsTr("Install Motion Graphics Template into My Templates…")
+        runsCommand: false
+        onTriggered: root.run(() => Graphics.openInstallDialog("user"))
+    }
 }

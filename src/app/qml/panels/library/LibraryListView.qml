@@ -12,6 +12,9 @@ import QtQuick.Controls.Basic
 //     Monitor, a sequence in its timeline tab); a click on the name of a selected item, F2 or Enter renames inline;
 //     double-click a Comment or Description cell to edit it. Every edit is one undo step (Library);
 //   * drag rows onto a bin row, a crumb or a bin tab to move them; media rows drag onto the timeline too.
+//   * P1 round (#46), Premiere's twirl-down bins: a bin's chevron (or Right / Left) shows its contents under it,
+//     indented, sorted within each level; Alt+click (Alt+Right) opens every level inside it; Left on a row inside a bin
+//     goes to that bin. Find and search bins list flat, as before. Which bins are open is kept per project.
 FocusScope {
     id: root
     objectName: "libraryList"
@@ -19,8 +22,62 @@ FocusScope {
 
     signal activated(string key, string kind)
     signal menuRequested(string key, Item target, point position)
+    /// P1 round (#41): a bin row drags inside the Library only (LibraryCard.binDragMoved): the panel follows it.
+    signal binDragMoved(point scenePosition)
+    signal binDragFinished(point scenePosition)
+
+    /// P1 round (#41): the bin row a Library drag of bins would drop into ("none": none).
+    property string dropTarget: "none"
+    /// The key of the row under the scene point `sceneX`, `sceneY` ("" outside the rows).
+    function keyAt(sceneX: real, sceneY: real): string {
+        const inView = table.mapFromItem(null, sceneX, sceneY)
+        if (inView.x < 0 || inView.y < 0 || inView.x >= table.width || inView.y >= table.height)
+            return ""
+        const p = table.contentItem.mapFromItem(null, sceneX, sceneY)
+        const row = Math.floor(p.y / Theme.rowHeight)
+        return row >= 0 && row < table.rows ? Library.items.keyOf(row) : ""
+    }
 
     readonly property var columns: Library.columns
+    /// P1 round (#46): the rows are the twirl-down tree (the model's: list view, no Find, not a search bin).
+    readonly property bool tree: Library.view === "list" && !Library.filtering && !Library.searchBinOpen
+    /// Expands or collapses bin `key` (`recursive`: every bin inside it too), keeping the scroll where it was.
+    function toggleBin(key: string, expanded: bool, recursive: bool) {
+        const y = table.contentY
+        Library.setExpanded(key, expanded, recursive)
+        table.forceLayout()
+        table.contentY = Math.max(0, Math.min(y, table.contentHeight - table.height))
+    }
+    /// Right / Left on the selection's last row: a closed bin opens (Alt: every level), an open one goes to its first
+    /// row; Left closes an open bin, else goes to the bin the row is in.
+    function twirlKey(right: bool, all: bool) {
+        const keys = Library.selection
+        if (keys.length === 0)
+            return
+        const key = keys[keys.length - 1]
+        const row = Library.items.rowOf(key)
+        if (row < 0)
+            return
+        const bin = key.startsWith("b")
+        const open = bin && Library.isExpanded(key)
+        if (right) {
+            if (bin && (!open || all))
+                root.toggleBin(key, true, all)
+            else if (open)
+                root.stepRequested(1, false)
+            return
+        }
+        if (open) {
+            root.toggleBin(key, false, all)
+            return
+        }
+        const parent = Library.parentOf(key)
+        const parentRow = parent !== "" ? Library.items.rowOf(parent) : -1
+        if (parentRow >= 0) {
+            Library.select(parent, Library.Replace)
+            root.showRow(parentRow)
+        }
+    }
     /// Rows in view (Page Up / Page Down move by this many: LibraryPanel.moveSelection).
     readonly property int pageRows: Math.max(1, Math.floor(table.height / Theme.rowHeight))
     property string editingKey: ""
@@ -83,11 +140,17 @@ FocusScope {
         } else if (event.key === Qt.Key_F2 && Library.selection.length === 1) {
             root.startEdit(Library.selection[0], "name")
             event.accepted = true
+        } else if (root.tree && (event.key === Qt.Key_Right || event.key === Qt.Key_Left)) {
+            root.twirlKey(event.key === Qt.Key_Right, (event.modifiers & Qt.AltModifier) !== 0)
+            event.accepted = true
         }
     }
     // The arrows, Return and F2 belong to the list while it has focus (Delete stays project.delete).
-    Keys.onShortcutOverride: event => event.accepted = (event.modifiers & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier)) === 0
-                                                        && [Qt.Key_Up, Qt.Key_Down, Qt.Key_Return, Qt.Key_Enter, Qt.Key_F2].includes(event.key)
+    // P1 round (#46): Right / Left (Alt: every level) twirl bins while the list shows the tree.
+    Keys.onShortcutOverride: event => event.accepted = ((event.modifiers & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier)) === 0
+                                                         && [Qt.Key_Up, Qt.Key_Down, Qt.Key_Return, Qt.Key_Enter, Qt.Key_F2].includes(event.key))
+                                                        || (root.tree && (event.modifiers & (Qt.ControlModifier | Qt.MetaModifier | Qt.ShiftModifier)) === 0
+                                                            && [Qt.Key_Left, Qt.Key_Right].includes(event.key))
 
     // ---- Header ----
     Rectangle {
@@ -272,23 +335,55 @@ FocusScope {
             required property string binPath
             required property bool good
             required property bool searchBin
+            required property bool cut // P1 round (#41): dimmed until Paste moves it
+            required property int depth // P1 round (#46): the level under the bin shown
+            required property bool expandable
+            required property bool expanded
+            required property int masterEffects // 0.6 (#71): the Name cell's fx chip
 
             readonly property bool editing: root.editingKey === key && root.editingColumn === columnId
             readonly property bool isName: columnId === "name"
             readonly property bool isGood: columnId === "good"
+            /// P1 round (#46): where the Name cell's chevron sits (the tree indents each level).
+            readonly property real indent: isName && root.tree ? Theme.space(1) + depth * Theme.space(4) : 0
 
             implicitWidth: 120
             implicitHeight: Theme.rowHeight
             color: selected ? Theme.accentWash : (row % 2 === 1 ? Theme.sunken : "transparent")
 
             Accessible.role: Accessible.Cell
-            Accessible.name: display
+            Accessible.name: !cell.isName || !cell.expandable ? cell.display
+                             : cell.expanded ? qsTr("%1, expanded").arg(cell.display) : qsTr("%1, collapsed").arg(cell.display)
 
+            // P1 round (#46): a bin's twirl-down - the one chevron of a Name cell that has contents (Alt+click opens every
+            // level inside). A Loader, so the cells of every other column and of media rows (the cells TableView keeps
+            // alive) cost one bare item, not an icon.
+            Loader {
+                id: chevron
+                objectName: cell.isName ? "libraryTwirl_" + cell.key : ""
+                active: cell.isName && cell.expandable
+                x: cell.indent
+                anchors.verticalCenter: parent.verticalCenter
+                width: Theme.iconXs
+                height: Theme.iconXs
+                sourceComponent: Icon {
+                    size: Theme.iconXs
+                    name: "chevron-right"
+                    rotation: cell.expanded ? 90 : 0
+                    color: Theme.textTertiary
+                    TapHandler {
+                        id: chevronTap
+                        margin: Theme.space(1.5)
+                        gesturePolicy: TapHandler.WithinBounds
+                        onTapped: root.toggleBin(cell.key, !cell.expanded, (chevronTap.point.modifiers & Qt.AltModifier) !== 0)
+                    }
+                }
+            }
             // Name: the kind's icon; Label: the colour.
             Icon {
                 id: kindIcon
                 visible: cell.isName
-                x: Theme.space(2)
+                x: root.tree ? cell.indent + Theme.iconXs + Theme.space(1) : Theme.space(2)
                 anchors.verticalCenter: parent.verticalCenter
                 size: Theme.iconXs
                 name: cell.searchBin ? "folder-search" : cell.kind === "bin" ? "folder" : cell.kind === "sequence" ? "film"
@@ -306,13 +401,39 @@ FocusScope {
                 radius: Theme.radiusBadge
                 color: Theme.clipColor(Math.max(0, cell.label))
             }
-            Text {
-                anchors.left: cell.isName ? kindIcon.right : labelChip.visible ? labelChip.right : parent.left
-                anchors.leftMargin: Theme.space(2)
+            // 0.6 (card #71): the item has Master Clip Effects (every clip of it plays them).
+            Rectangle {
+                id: masterFxChip
+                objectName: cell.isName ? "libraryMasterFx_" + cell.key : ""
+                visible: cell.isName && cell.masterEffects > 0
                 anchors.right: parent.right
                 anchors.rightMargin: Theme.space(2)
                 anchors.verticalCenter: parent.verticalCenter
+                width: masterFxLabel.implicitWidth + Theme.space(2)
+                height: masterFxLabel.implicitHeight + Theme.space(0.5)
+                radius: Theme.radiusBadge
+                color: Theme.accentFill
+                Accessible.role: Accessible.StaticText
+                Accessible.name: qsTr("Master Clip Effects: %1").arg(cell.masterEffects)
+                Text {
+                    id: masterFxLabel
+                    anchors.centerIn: parent
+                    //: Chip in the Library list's Name cell of media with Master Clip Effects
+                    text: qsTr("fx")
+                    color: Theme.accentOnFill
+                    font.family: Theme.fontSans
+                    font.pixelSize: Theme.textMicro
+                    font.weight: Font.DemiBold
+                }
+            }
+            Text {
+                anchors.left: cell.isName ? kindIcon.right : labelChip.visible ? labelChip.right : parent.left
+                anchors.leftMargin: Theme.space(2)
+                anchors.right: masterFxChip.visible ? masterFxChip.left : parent.right
+                anchors.rightMargin: Theme.space(2)
+                anchors.verticalCenter: parent.verticalCenter
                 visible: !cell.editing && !cell.isGood
+                opacity: cell.cut ? 0.45 : 1
                 text: cell.isName && cell.binPath !== "" ? cell.display + "  ·  " + cell.binPath : cell.display
                 elide: Text.ElideRight
                 color: cell.isName ? (cell.offline ? Theme.warning : Theme.textPrimary) : Theme.textSecondary
@@ -417,21 +538,38 @@ FocusScope {
                 Drag.supportedActions: Qt.MoveAction | Qt.CopyAction
                 DragHandler {
                     id: rowDrag
+                    objectName: "libraryRowDragHandler"
+                    /// Where a bin's drag last was (the release lands there).
+                    property point lastScenePosition: Qt.point(0, 0)
                     target: null
                     enabled: !cell.editing && !cell.offline
                     // The drag's data is made when it starts, after the row is selected (no cell binds the selection).
+                    // P1 round (#41): a bin row's drag is the Library's own (binDragMoved), not a system drag.
                     onActiveChanged: {
                         if (active) {
                             if (!cell.selected)
                                 Library.select(cell.key, Library.Replace)
+                            if (cell.kind === "bin") {
+                                rowDrag.lastScenePosition = rowDrag.centroid.scenePosition
+                                root.binDragMoved(rowDrag.lastScenePosition)
+                                return
+                            }
                             const keys = Library.selection.join(",")
                             // A sequence goes onto the timeline too, nested there (ProjectFile.dropMedia).
-                            dragProxy.Drag.mimeData = cell.kind === "bin"
-                                                      ? { "application/x-wabcut-library": keys }
-                                                      : { "application/x-wabcut-library": keys,
-                                                          "application/x-wabcut-media": cell.key }
+                            dragProxy.Drag.mimeData = { "application/x-wabcut-library": keys, "application/x-wabcut-media": cell.key }
+                            dragProxy.Drag.active = true
+                            return
                         }
-                        dragProxy.Drag.active = active
+                        if (cell.kind === "bin")
+                            root.binDragFinished(rowDrag.lastScenePosition)
+                        else
+                            dragProxy.Drag.active = false
+                    }
+                    onCentroidChanged: {
+                        if (!rowDrag.active || cell.kind !== "bin")
+                            return
+                        rowDrag.lastScenePosition = rowDrag.centroid.scenePosition
+                        root.binDragMoved(rowDrag.lastScenePosition)
                     }
                 }
             }
@@ -445,7 +583,7 @@ FocusScope {
                 }
                 Rectangle {
                     anchors.fill: parent
-                    visible: parent.containsDrag
+                    visible: parent.containsDrag || (cell.kind === "bin" && root.dropTarget === cell.key)
                     color: "transparent"
                     border.width: Theme.selectionWidth
                     border.color: Theme.accentStroke

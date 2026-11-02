@@ -22,6 +22,10 @@
 //     video file). `recent` lists the newest `recentLimit` (default kMaxRecent) and every starred one. Files that are
 //     gone are flagged `missing`. Remove, Clear Unstarred, Undo, Locate (a moved project), Show in Explorer and Copy
 //     Path.
+//   * P1 round (0.6, #49): a project's files from Home's project menu - Rename… and Move to Recycle Bin… (the project
+//     with its autosaves, backups and "<name> Preview Files"; refused while the project is open here or another live
+//     session holds its lock; the Recycle Bin, never a permanent delete, and Undo brings the files back), Duplicate…
+//     (the project read and saved again as "<name> copy" next to it). Versions… is the recovery dashboard for it.
 //   * Learn and Help: `links` to the website's User Guide (https://wabcut.zyphite.com/guide/...), guideUrl(page).
 //   * showAtLaunch: set by main() for the real app only, so the shell tests start on the editor as before.
 //
@@ -182,6 +186,9 @@ public:
     ///                  `tracks` are given.
     ///   proxies        "auto" (default: when the first video is 4K, above 60 fps or 20 minutes or longer), "on"
     ///                  (for the first video), "off"
+    ///   folders        P1 round (#63): the folders the files came from (classifyImport's folderUrls): files inside
+    ///                  them go into bins as File > Import Folder makes them (the folder's bin, subfolders nested), in
+    ///                  the import's one undo step ("Import Folder")
     /// Returns { ok, error (ok false: nothing was created), warning (ok true: a step after the project was made went
     /// wrong, one line each; the project is open), project (url; empty when its first save failed - the media are still
     /// imported and placed, the project is open untitled and the warning says to save it with File > Save As), added,
@@ -205,7 +212,9 @@ public:
     ///   format, formatName, sizeText }], lottie and layered: [{ url, path, name, sizeText }],
     ///   firstVideo (url of the first video file, empty when none), hasVideo, suggestedName (the first file's base
     ///   name), notes: [text] (what was left out and why), message (route "unsupported" / "none": what to tell),
-    ///   folders (how many were expanded), skipped (files in them left out), truncated (the folder cap was hit) }
+    ///   folders (how many were expanded), skipped (files in them left out), truncated (the folder cap was hit),
+    ///   folderUrls (P1 round, #63: the folders expanded; createFromMedia's `folders`) }. Folders are read like File >
+    ///   Import Folder reads them: hidden files and folders, links and camera cards are left out (notes say so).
     Q_INVOKABLE QVariantMap classifyImport(const QList<QUrl>& files) const;
 
     // ---- Recent projects ----
@@ -238,6 +247,38 @@ public:
     /// Copy Path: the project's path (native separators) on the clipboard; returns it.
     Q_INVOKABLE QString copyPath(const QUrl& file) const;
 
+    // ---- The project's files (P1 round, #49) ----
+    /// Why Rename… / Move to Recycle Bin… cannot act on `file` ("" when they can): it is missing, open in this window
+    /// (ProjectFile.indexOfProject), or another live Wabcut session holds its lock.
+    Q_INVOKABLE QString projectBlocker(const QUrl& file) const;
+    /// Why `file` cannot be renamed to `newName` ("" when it can): projectBlocker, an empty or unusable name, a file of
+    /// that name already in its folder (its sidecars too).
+    Q_INVOKABLE QString validateRename(const QUrl& file, const QString& newName) const;
+    /// Renames the project file and its sidecars (autosaves, backups, "<name> Preview Files") in its folder; the recent
+    /// entry follows (as Locate does: QML moves the star). Returns { ok, error, url, path, name, oldPath, warning (a
+    /// sidecar that could not follow) }.
+    Q_INVOKABLE QVariantMap renameProject(const QUrl& file, const QString& newName);
+    /// A free name for a copy of `file` in its folder: "<name> copy", "<name> copy 2", ...
+    Q_INVOKABLE QString duplicateName(const QUrl& file) const;
+    /// Duplicate…: the project read and saved again as <newName>.wabcut in its folder (no backups, autosaves, lock or
+    /// previews come along), remembered as a recent project. Returns { ok, error, url, path, name }.
+    Q_INVOKABLE QVariantMap duplicateProject(const QUrl& file, const QString& newName);
+    /// Move to Recycle Bin…: the project and its sidecars go to the platform's recycle bin / Trash (never deleted for
+    /// good: where there is no trash the move is refused); its entry leaves the list. Returns { ok, error, name,
+    /// moved (files and folders moved), warning (a sidecar that stayed) }. undoTrash brings them back.
+    Q_INVOKABLE QVariantMap trashProject(const QUrl& file);
+    /// Moves what the last trashProject put in the recycle bin back where it was and puts the entry back in the list.
+    /// False (nothing to undo, or the files cannot come back: `trashError`) otherwise.
+    Q_INVOKABLE bool undoTrash();
+    Q_INVOKABLE QString trashError() const { return m_trashError; }
+    /// The project's sidecar files and folders that exist (autosaves, backups, its lock, "<stem> Preview Files"), for
+    /// rename and trash.
+    static QStringList sidecarsOf(const QString& projectPath);
+    /// How a file or folder goes to the recycle bin (tests replace it; default QFile::moveToTrash). Returns success and
+    /// where it went (`inTrash`, may stay empty).
+    using Trasher = std::function<bool(const QString& path, QString* inTrash)>;
+    static void setTrasher(Trasher trasher);
+
     // ---- Learn and Help ----
     /// The website page of the User Guide: "" or "guide" -> https://wabcut.zyphite.com/guide, "first-run" ->
     /// .../guide/first-run, "/guide/install" -> .../guide/install; an http(s) URL is returned as it is.
@@ -267,6 +308,9 @@ private:
     QString m_lastPath;
     /// What the last removal took out: (index in the stored list, stored entry), in index order.
     QList<QPair<int, QVariant>> m_removed;
+    /// P1 round (#49): what the last trashProject moved: (where it was, where it went).
+    QList<QPair<QString, QString>> m_trashed;
+    QString m_trashError;
 };
 
 /// QML: the singleton `Home` (created with the engine's ProjectFile and ProjectController).

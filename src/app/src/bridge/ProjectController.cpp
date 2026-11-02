@@ -3,6 +3,7 @@
 #include "PosterFrames.h"
 #include "RedactedPictures.h"
 
+#include "CacheFolders.h"
 #include "ClipAccessModel.h"
 #include "DemoProject.h"
 #include "EffectControls.h"
@@ -24,6 +25,7 @@
 #include <QHash>
 #include <QQmlEngine>
 #include <QStandardPaths>
+#include <QTimer>
 
 #include <algorithm>
 #include <array>
@@ -184,7 +186,8 @@ ProjectController::ProjectController(QObject* parent)
       m_tracks(new TrackListModel(this)),
       m_clipList(new ClipAccessModel(this)), m_effectControls(new EffectControlsModel(this)) {
     connect(this, &ProjectController::selectionChanged, m_clipList, &ClipAccessModel::updateSelection);
-    setMediaCacheDirectory(QStandardPaths::writableLocation(QStandardPaths::CacheLocation) + QStringLiteral("/media"));
+    // P1 (#48): Settings > Media & cache > Media cache folder (cache/mediaFolder), else <app cache>/media.
+    setMediaCacheDirectory(cachefolders::mediaCacheFolder());
     m_listener = m_session->addListener([this](const ChangeEvent& event) { onSessionChanged(event); });
     m_releaser = std::make_unique<SnapshotReleaser>(*m_session);
     DemoProject demo = buildDemoProject();
@@ -333,9 +336,43 @@ void ProjectController::resetProject(ProjectState state, SequenceId sequence, st
     m_session->reset(std::move(state)); // its Reset event resyncs everything
 }
 
+namespace {
+
+/// F2P (0.6): once a project was closed or replaced (a burst of resets: one pass, 250 ms after the last), the QML
+/// engine collects what the old project's models left behind and the releaser frees the old project, then gives the
+/// freed heap memory back to the system (SnapshotReleaser::trimFreedMemory). Without it closing a 1-hour project kept
+/// the app about as big as while it was open (the heaps kept 90+ MB of freed pages committed).
+void releaseClosedProjectMemory(QObject* owner, SnapshotReleaser& releaser) {
+    auto* timer = owner->findChild<QTimer*>(QStringLiteral("closedProjectMemoryTimer"), Qt::FindDirectChildrenOnly);
+    if (!timer) {
+        timer = new QTimer(owner);
+        timer->setObjectName(QStringLiteral("closedProjectMemoryTimer"));
+        timer->setSingleShot(true);
+        timer->setInterval(250);
+        QObject::connect(timer, &QTimer::timeout, owner, [owner, &releaser] {
+            if (QQmlEngine* engine = qmlEngine(owner)) {
+                engine->collectGarbage();
+            }
+            releaser.releaseAndTrim();
+        });
+    }
+    timer->start();
+}
+
+} // namespace
+
 void ProjectController::onSessionChanged(const ChangeEvent& event) {
-    // A reset replaces the project: treat it as "everything changed" whatever its ChangeSet says.
-    syncAfterChange(event.kind == ChangeKind::Reset ? nullptr : &event.changes, event.kind, event.label);
+    // A reset replaces the project: treat it as "everything changed" whatever its ChangeSet says. A preview (an
+    // audition's take playing in place) changes only what plays (EditSession::shown): the project, the timeline and
+    // the selection stay the committed ones, so it changes nothing here.
+    static const ChangeSet kNothing;
+    const ChangeSet* changes = event.kind == ChangeKind::Reset     ? nullptr
+                               : event.kind == ChangeKind::Preview ? &kNothing
+                                                                   : &event.changes;
+    syncAfterChange(changes, event.kind, event.label);
+    if (event.kind == ChangeKind::Reset && m_releaser) {
+        releaseClosedProjectMemory(this, *m_releaser);
+    }
 }
 
 void ProjectController::ensureValidSequence() {
@@ -520,7 +557,7 @@ void ProjectController::syncAfterChange(const ChangeSet* changes, ChangeKind kin
         emit playheadChanged(); // timecode format / marker index may differ
     emit revisionChanged();
 
-    static constexpr std::array<const char*, 5> kKinds{"edit", "undo", "redo", "reset", "cancel"};
+    static constexpr std::array<const char*, 6> kKinds{"edit", "undo", "redo", "reset", "cancel", "preview"};
     emit changed({
         {QStringLiteral("kind"), QString::fromLatin1(kKinds[static_cast<std::size_t>(kind)])},
         {QStringLiteral("label"), QString::fromUtf8(label.data(), static_cast<qsizetype>(label.size()))},
@@ -530,6 +567,11 @@ void ProjectController::syncAfterChange(const ChangeSet* changes, ChangeKind kin
         {QStringLiteral("markers"), m_lastChange.markersChanged},
         {QStringLiteral("marks"), m_lastChange.marksChanged},
     });
+    // F2P (0.6): after a reset `before` is the previous project - once it was closed, all of it. Listeners compared it
+    // while the signals above ran (TimelineView, TranscriptBridge: a missing one means "redo it all", which a reset
+    // does anyway); kept until the next edit, it held the closed project alive for as long as nothing was edited.
+    if (kind == ChangeKind::Reset)
+        m_lastChange.before.reset();
 }
 
 void ProjectController::setError(const QString& message) {
@@ -611,6 +653,22 @@ void ProjectController::setCurrentSequenceIndex(int index) {
 QString ProjectController::sequenceName() const {
     const SequencePtr seq = currentSequence();
     return seq ? QString::fromStdString(seq->name) : QString();
+}
+
+QVariantMap ProjectController::beatGridInfo() const {
+    const SequencePtr seq = currentSequence();
+    if (!seq || !seq->beatGrid)
+        return {};
+    const BeatGrid& grid = *seq->beatGrid;
+    return {{QStringLiteral("bpm"), grid.bpm()},
+            {QStringLiteral("beats"), static_cast<int>(grid.beats.size())},
+            {QStringLiteral("beatsPerBar"), grid.beatsPerBar},
+            {QStringLiteral("phase"), formatTimecode(grid.phase)}};
+}
+
+bool ProjectController::hasBeatGrid() const {
+    const SequencePtr seq = currentSequence();
+    return seq && seq->beatGrid.has_value();
 }
 
 QString ProjectController::frameRateText() const {
@@ -1107,6 +1165,15 @@ const QHash<QString, CommandAction>& commandActions() {
         {QStringLiteral("sequence.applyVideoTransition"), [](ProjectController& c) { c.applyDefaultTransition(false); }},
         {QStringLiteral("sequence.applyAudioTransition"), [](ProjectController& c) { c.applyDefaultTransition(true); }},
         {QStringLiteral("sequence.applyDefaultTransitions"), [](ProjectController& c) { c.applyDefaultTransitionsToSelection(); }},
+        // 0.6 (stream 1A, ProjectControllerEditing.cpp): the non-ripple Q / W, the target-all keys and sync.
+        {QStringLiteral("sequence.trimPreviousToPlayhead"), [](ProjectController& c) { c.trimPreviousToPlayhead(); }},
+        {QStringLiteral("sequence.trimNextToPlayhead"), [](ProjectController& c) { c.trimNextToPlayhead(); }},
+        {QStringLiteral("sequence.extendPreviousToPlayhead"), [](ProjectController& c) { c.extendPreviousToPlayhead(); }},
+        {QStringLiteral("sequence.extendNextToPlayhead"), [](ProjectController& c) { c.extendNextToPlayhead(); }},
+        {QStringLiteral("timeline.toggleAllVideoTargets"), [](ProjectController& c) { c.toggleTrackFlagAll(QStringLiteral("video"), QStringLiteral("targeted")); }},
+        {QStringLiteral("timeline.toggleAllAudioTargets"), [](ProjectController& c) { c.toggleTrackFlagAll(QStringLiteral("audio"), QStringLiteral("targeted")); }},
+        {QStringLiteral("clip.moveIntoSync"), [](ProjectController& c) { c.moveIntoSync(); }},
+        {QStringLiteral("clip.slipIntoSync"), [](ProjectController& c) { c.slipIntoSync(); }},
     };
     return kActions;
 }

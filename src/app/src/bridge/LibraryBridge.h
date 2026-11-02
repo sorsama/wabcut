@@ -22,6 +22,13 @@
 //     the Metadata panel (setMetadata, one undo step), XMP read from and written next to the files (readXmp /
 //     writeXmp / fileMetadata); Search Bins (createSearchBin from the Find bar, editSearchBin); the Freeform view
 //     (view "freeform": places, stacks, clip size, Reset / Align to Grid, saved layouts; all saved in the project).
+//   * P1 round (0.6): Move to Bin (binTree), Cut and Paste of items between bins (cutItems / pasteItems), proxies for
+//     the selection or a whole bin (proxyPlan, createProxies...), the File Size and Data Rate columns with the footer's
+//     summaryText, and Get Properties (mediaProperties / propertyLines / copyProperties, file.getProperties).
+//   * P1 round (0.6, stream 2D): usage (#40: the Video / Audio Usage columns, usages() and Find in Timeline), deleting
+//     items whose media sequences use (#38: deleteImpact, a confirmation, then their clips go too in the same undo
+//     step; Ctrl/Cmd+Delete is Delete with Options), and the list view's twirl-down bins (#46: setExpanded, kept per
+//     project in the settings).
 //
 // Principle 9: QML sees keys ("b4" bins, "s2" sequences, "m7" media), display text and colour indices; times go in as
 // timecode text or fractions.
@@ -51,6 +58,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -156,6 +164,13 @@ class LibraryBridge : public QObject {
     /// family) instead of a sidecar next to them. Off by default; per user.
     Q_PROPERTY(bool embedXmp READ embedXmp WRITE setEmbedXmp NOTIFY embedXmpChanged FINAL)
 
+    // ---- P1 round (0.6) ----
+    /// #41: the items Cut marked (Ctrl/Cmd+X in the Library): they dim until Paste moves them or Escape forgets them.
+    Q_PROPERTY(QStringList cutKeys READ cutKeys NOTIFY cutChanged FINAL)
+    /// #45: the footer line, "48 items · 3 selected · 12.4 GB · 1:22:10": what is listed, how much is selected, and the
+    /// file size and length of the selection (with what its bins hold), or of everything listed when nothing is.
+    Q_PROPERTY(QString summaryText READ summaryText NOTIFY summaryChanged FINAL)
+
 public:
     enum SelectMode { Replace = 0, Add = 1, Toggle = 2, Range = 3 };
     Q_ENUM(SelectMode)
@@ -245,6 +260,8 @@ public:
     qreal freeformCellWidth() const;
     qreal freeformCellHeight() const;
     qreal freeformCardWidth() const;
+    QStringList cutKeys() const;
+    QString summaryText() const;
 
     // ---- Bins ----
     Q_INVOKABLE void openBin(const QString& key);
@@ -261,6 +278,23 @@ public:
     /// Moves items (bins, sequences, media) into a bin ("" = root): one undo step.
     Q_INVOKABLE bool moveItems(const QStringList& keys, const QString& bin);
 
+    // ---- Move to Bin, Cut and Paste (P1 round, #41) ----
+    /// The bins Move to Bin offers, depth first and by name: [{ key ("" = the project's root), name, depth (0 = the
+    /// root), disabled, reason }]. A bin is disabled when it is one of `moving` or inside one of them (a bin cannot move
+    /// into itself) or a search bin (it lists what it finds); `reason` says why. Fix round 1 (ARGON-22): the bin every one
+    /// of `moving` is in already is disabled too, with `current` set ("Already in this bin").
+    Q_INVOKABLE QVariantList binTree(const QStringList& moving = {}) const;
+    /// Cut: marks `keys` (bins, sequences, media) for the next Paste; nothing moves yet. False for nothing to mark.
+    Q_INVOKABLE bool cutItems(const QStringList& keys);
+    /// Paste: moves the cut items into pasteTarget() in one undo step ("Move to Bin") and forgets the marks. False with
+    /// `message` when nothing is cut or the move is refused (a bin into itself, a search bin).
+    Q_INVOKABLE bool pasteItems();
+    /// Where Paste puts the items: the selected bin when exactly one bin is selected, else the bin shown (the parent of
+    /// a search bin shown). "" = the project's root.
+    Q_INVOKABLE QString pasteTarget() const;
+    /// Forgets the cut marks (Escape).
+    Q_INVOKABLE void clearCut();
+
     // ---- Metadata (one undo step each) ----
     /// Renames a bin or a media item.
     Q_INVOKABLE bool rename(const QString& key, const QString& name);
@@ -269,9 +303,44 @@ public:
     Q_INVOKABLE bool setDescription(const QString& key, const QString& text);
     /// The poster frame at `fraction` of the item (its subclip range for a subclip), or cleared (fraction < 0).
     Q_INVOKABLE bool setPosterFrame(const QString& key, double fraction);
-    /// Deletes items: bins with their contents, media not used by a sequence, sequences. One undo step.
-    Q_INVOKABLE bool deleteItems(const QStringList& keys);
+    /// Deletes items: bins with their contents, media not used by a sequence, sequences. One undo step. P1 round (#38):
+    /// with `removeClips`, media and sequences that sequences use (directly or inside deleted bins) go too, with every
+    /// clip that plays them and those clips' linked partners, lifted without a ripple ("Delete and Remove Clips"); else
+    /// such a delete is refused with `message`, as before.
+    Q_INVOKABLE bool deleteItems(const QStringList& keys, bool removeClips = false);
     Q_INVOKABLE bool deleteSelection();
+    /// P1 round (#38): what deleting `keys` would take out of sequences: { items, clips (clips removed, linked partners
+    /// included, and 0.6 auditions losing takes), takes (0.6: audition takes removed from auditions that stay),
+    /// sequences (how many sequences lose clips or takes), sequenceNames, firstName (the first used item's name),
+    /// usedItems (how many of the items deleted are used, an inactive audition take counting), unusedKeys (fix round 1:
+    /// the keys no sequence uses on their own - what Delete with Options deletes when the clips stay) }.
+    Q_INVOKABLE QVariantMap deleteImpact(const QStringList& keys) const;
+    /// Delete (project.delete) and Delete with Options (Ctrl/Cmd+Delete, `withOptions`): when sequences use what goes,
+    /// or always with options, deleteConfirmRequested asks first (the panel's confirmation calls deleteItems); else the
+    /// items are deleted at once. True when something was deleted or asked about.
+    Q_INVOKABLE bool requestDelete(const QStringList& keys, bool withOptions = false);
+
+    // ---- Usage and Find in Timeline (P1 round, #40) ----
+    /// Where item `key` (media, a subclip, or a sequence nested in others) is used, one row per placement (a linked
+    /// video / audio pair is one): [{ sequenceKey, sequenceName, clipId (its video clip when it has one), clipName,
+    /// timecode (its start in the sequence's timecode), tracks ("V1, A1"), seconds }], by sequence name then start.
+    Q_INVOKABLE QVariantList usages(const QString& key) const;
+    /// The usage badge's tooltip: "Used 3 times in 2 sequences (video 3, audio 3)", "Not used in any sequence".
+    Q_INVOKABLE QString usageText(const QString& key) const;
+    /// Find in Timeline: opens sequence `sequenceKey` (its tab), puts the playhead at the clip's start, selects it (with
+    /// its linked partners) and asks the window to scroll the timeline to it (revealInTimelineRequested). False with
+    /// `message` when the clip is gone.
+    Q_INVOKABLE bool findInTimeline(const QString& sequenceKey, const QString& clipId);
+
+    // ---- Twirl-down bins in the list view (P1 round, #46) ----
+    /// Expands (shows the contents of) or collapses bin `binKey` in the list view; `recursive` (Alt+click) does the
+    /// same to every bin inside it. Kept per project file in the settings.
+    Q_INVOKABLE void setExpanded(const QString& binKey, bool expanded, bool recursive = false);
+    Q_INVOKABLE bool isExpanded(const QString& binKey) const;
+    /// The bin item `key` is in ("" = the project's root).
+    Q_INVOKABLE QString parentOf(const QString& key) const;
+    /// The list view shows the twirl-down tree (list view, no Find, not a search bin).
+    Q_INVOKABLE bool treeShown() const;
     /// The details of one item for the editing popovers: { key, kind, name, comment, description, label, inText,
     /// outText, restricted, master, posterText, path, offline } (empty map when it does not exist).
     Q_INVOKABLE QVariantMap details(const QString& key) const;
@@ -376,6 +445,42 @@ public:
     /// Edit Subclip: new In / Out (timecode in the media's rate; Out = its last frame) and restriction.
     Q_INVOKABLE bool editSubclip(const QString& key, const QString& inText, const QString& outText, bool restricted);
 
+    // ---- Proxies for the selection or a bin (P1 round, #44) ----
+    /// The media keys in bin `bin` ("" = the root), with what the bins inside it hold when `recursive`.
+    Q_INVOKABLE QStringList mediaInBin(const QString& bin, bool recursive) const;
+    /// What a Proxy menu row on `key` acts on: a bin's media (with its bins'), the selection's media when `key` is
+    /// selected, else `key` itself; only media that can have a proxy (video: not stills, titles or audio).
+    Q_INVOKABLE QStringList proxyTargets(const QString& key) const;
+    /// The Proxy menu's counts for `key`: { targets, create (no proxy and none being made), ready, making, deletable }.
+    Q_INVOKABLE QVariantMap proxyPlan(const QString& key) const;
+    /// Create / Remake / Delete (or cancel) the proxies of proxyTargets(key). Create skips media whose proxy is ready
+    /// or being made. Each returns the toast's line ("27 queued, 3 already have proxies.").
+    Q_INVOKABLE QString createProxies(const QString& key);
+    Q_INVOKABLE QString remakeProxies(const QString& key);
+    Q_INVOKABLE QString deleteProxies(const QString& key);
+
+    // ---- Get Properties (P1 round, #39) ----
+    /// Everything the Properties dialog shows of a Library item, from what the project stored (nothing is probed
+    /// again): browserFileInfo's fields (name, path, container, duration, video { codec, profile, frameRate,
+    /// variableFrameRate, pixelFormat, bitDepth, chroma, fieldOrder, alpha, rotation, ... }, audio [...], bytes, files)
+    /// plus kind, bitrate (bits per second), proxy (its state), uses (clips in sequences) and offline. A sequence's key
+    /// gives its settings ({ kind: "sequence", name, width, height, frameRate, duration, tracks }). Empty: not found.
+    Q_INVOKABLE QVariantMap mediaProperties(const QString& key) const;
+    /// The rows of a mediaProperties (or browserFileInfo) map: [{ label, value }], translated. The Media Browser's
+    /// metadata view shows the same rows.
+    Q_INVOKABLE QVariantList propertyLines(const QVariantMap& info) const;
+    /// "Label: value" lines of `key`'s properties (Copy all), and that copy onto the clipboard.
+    Q_INVOKABLE QString propertiesText(const QString& key) const;
+    Q_INVOKABLE bool copyProperties(const QString& key) const;
+    /// What Get Properties for Selection (file.getProperties) shows: the Library's selected item when the Library has
+    /// the focus, else the Source Monitor's clip, else the media of the selected timeline clip ("" = nothing).
+    Q_INVOKABLE QString propertiesTarget(bool libraryFocused) const;
+    /// Asks the window to show the Properties dialog of `key` (propertiesRequested): Properties… in the item menu.
+    Q_INVOKABLE void requestProperties(const QString& key);
+    /// P1 round (#43): asks the window to relink the offline items `keys` (linkMediaRequested: the Relink dialog for
+    /// them): Link Media… on Library items and timeline clips, a double-click on an offline Library item.
+    Q_INVOKABLE void requestLinkMedia(const QStringList& keys);
+
     // ---- Housekeeping ----
     Q_INVOKABLE bool reveal(const QString& key);
     Q_INVOKABLE void selectUnused();
@@ -403,7 +508,8 @@ public:
     /// Out: thumbnailScale one step up or down) and the selection keys (project.moveSelection* and
     /// project.extendSelection*: selectionMoveRequested, which the panel answers in the view it shows).
     static bool handlesCommand(const QString& id);
-    /// { handled, enabled, reason } for the command palette.
+    /// { handled, enabled, reason } for the command palette. P1 round (#41): also Edit > Cut and Paste ("edit.cut",
+    /// "edit.paste"), which Main.qml gives the Library only while it has the focus (handlesCommand leaves them out).
     Q_INVOKABLE QVariantMap commandAvailability(const QString& id) const;
     Q_INVOKABLE bool runCommand(const QString& id);
 
@@ -426,6 +532,12 @@ public:
     void transcodeFinished(const QString& jobId, bool succeeded, const QString& message);
     /// The transcodes waiting for the export queue (tests).
     std::size_t pendingTranscodes() const { return m_transcodes.size(); }
+    /// P1 round (#40): how Find in Timeline opens a sequence's tab (QML builds: SequenceTabs.open; unset: the
+    /// controller's current sequence).
+    void setSequenceOpener(std::function<bool(const QString& sequenceKey)> opener) { m_openSequence = std::move(opener); }
+    /// P1 round (#40): every media item's / sequence's uses (C++, tests).
+    const std::unordered_map<std::uint64_t, LibraryUsage>& usage() const { return m_usage; }
+    const std::unordered_map<std::uint64_t, LibraryUsage>& sequenceUsage() const { return m_sequenceUsage; }
 
 signals:
     void viewChanged();
@@ -462,6 +574,18 @@ signals:
     void embedXmpChanged();
     /// The XMP of `key`'s file changed (the File section reads it again).
     void fileMetadataChanged(const QString& key);
+    void cutChanged();
+    void summaryChanged();
+    /// QML (the window): show the Properties dialog of `key` / the Relink dialog for the offline items `keys`.
+    void propertiesRequested(const QString& key);
+    void linkMediaRequested(const QStringList& keys);
+    /// P1 round (#38): the panel asks before deleting `keys` (deleteImpact's `impact`; `withOptions`: Delete with
+    /// Options, which offers to remove the clips even when none would go).
+    void deleteConfirmRequested(const QStringList& keys, const QVariantMap& impact, bool withOptions);
+    /// P1 round (#40): the window scrolls the timeline to clip `clipId` (Find in Timeline).
+    void revealInTimelineRequested(const QString& clipId);
+    /// P1 round (#46): a bin was expanded or collapsed.
+    void expandedChanged();
 
 private:
     /// Re-lists the items when what the panel shows changed (or always with `force`).
@@ -538,6 +662,22 @@ private:
     QStringList m_freeformLines;
     bool m_embedXmp = false;
     std::function<bool(const QString&, const std::filesystem::path&)> m_relinker;
+    // P1 round (#41): the items Cut marked; pruneCut() drops the ones that no longer exist.
+    QSet<QString> m_cut;
+    void pruneCut();
+    /// The media and sequences `keys` stand for (bins: everything inside them, recursively), each once.
+    void collectUnder(const QStringList& keys, std::vector<const MediaItem*>& media,
+                      std::vector<const Sequence*>& sequences) const;
+    // P1 round (#40): uses per media item and per sequence (nested), from the last snapshot.
+    std::unordered_map<std::uint64_t, LibraryUsage> m_usage;
+    std::unordered_map<std::uint64_t, LibraryUsage> m_sequenceUsage;
+    std::function<bool(const QString&)> m_openSequence;
+    // P1 round (#46): the bins expanded in the list view, kept per project file (QSettings "library/expanded").
+    std::unordered_set<std::uint64_t> m_expanded;
+    QString m_expansionFile; // the project file m_expanded belongs to ("" = untitled: not kept)
+    bool m_expansionLoaded = false;
+    void loadExpansion(const QString& projectFile);
+    void saveExpansion() const;
 
     // Analysis scan: one job at a time; a newer snapshot cancels the running one.
     AnalysisProbe m_probe;
@@ -559,5 +699,26 @@ public:
 /// The default analysis probe: a transcript and shot analysis in the analysis cache, an entry in the smart-search
 /// index (opened through `searchIndexOf`, may be null). Runs on a worker thread.
 LibraryBridge::AnalysisProbe defaultAnalysisProbe(std::function<bool(std::uint64_t fingerprint)> indexed);
+
+/// P1 round (#38): the clips that deleting `bins` (with everything inside them), `media` and `sequences` takes out of
+/// the sequences that stay: every clip playing such media or nesting such a sequence, plus their linked partners; by
+/// sequence. Clips of sequences deleted with them are not listed. 0.6 (card #74): an audition is listed when every
+/// one of its takes plays what goes (auditionsLosingTakes lists the others).
+std::map<std::uint64_t, std::vector<ClipId>> clipsUsingLibraryItems(const ProjectState& state, std::span<const BinId> bins,
+                                                                     std::span<const MediaId> media,
+                                                                     std::span<const SequenceId> sequences);
+/// 0.6 (card #74): the auditions in the sequences that stay with some takes, not all, playing what goes (an inactive
+/// take counts): they lose just those takes. By sequence.
+std::map<std::uint64_t, std::vector<ClipId>> auditionsLosingTakes(const ProjectState& state, std::span<const BinId> bins,
+                                                                  std::span<const MediaId> media,
+                                                                  std::span<const SequenceId> sequences);
+/// Deletes Library items as one edit: every sequence that goes (named or inside a deleted bin, the nesting ones before
+/// those they nest, in any selection order), then media outside the deleted bins, then the bins with their contents.
+/// With `removeClips` the auditionsLosingTakes lose those takes (edit::removeAuditionTake) and the clips
+/// clipsUsingLibraryItems lists are deleted first (gaps stay: no ripple); without it, items in use are refused
+/// (edit::removeMedia / removeSequence / removeBins).
+std::expected<ProjectState, Error> removeLibraryItems(const ProjectState& state, std::span<const BinId> bins,
+                                                      std::span<const MediaId> media, std::span<const SequenceId> sequences,
+                                                      bool removeClips);
 
 } // namespace wabcut::app

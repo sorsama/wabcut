@@ -74,6 +74,11 @@ struct TextRunSpec {
     double leading = 0.0;
     double baselineShift = 0.0;
     Rgba fill{1.0, 1.0, 1.0, 1.0};
+    // 0.6
+    bool kerning = true;
+    TextCaps caps = TextCaps::Normal;
+    bool fauxBold = false;
+    bool fauxItalic = false;
 };
 
 struct TextSpec {
@@ -81,7 +86,16 @@ struct TextSpec {
     TextAlign align = TextAlign::Left;
     double boxWidth = 0.0;
     double boxHeight = 0.0;
+    TextVerticalAlign verticalAlign = TextVerticalAlign::Top; ///< 0.6
 };
+
+/// 0.6: the faux styles ride on each run's character format (addGlyphs reads them): the faux bold outline's width in
+/// pixels (0: none) and the faux italic slant.
+constexpr int kFauxBoldProperty = QTextFormat::UserProperty + 1;
+constexpr int kFauxItalicProperty = QTextFormat::UserProperty + 2;
+/// Faux italic's slant: tan(12 degrees). Faux bold: an outline 3 % of the size wide (1.5 % each side).
+constexpr double kFauxItalicShear = 0.2126;
+constexpr double kFauxBoldWidth = 0.03;
 
 QFont fontOf(const TextRunSpec& run) {
     QFont font;
@@ -101,6 +115,11 @@ QFont fontOf(const TextRunSpec& run) {
     font.setUnderline(false); // drawn as a rectangle under the glyphs (it follows clusters and transforms)
     if (run.tracking != 0.0) {
         font.setLetterSpacing(QFont::AbsoluteSpacing, run.tracking / 1000.0 * run.size);
+    }
+    // 0.6: kerning pairs and capitals.
+    font.setKerning(run.kerning);
+    if (run.caps != TextCaps::Normal) {
+        font.setCapitalization(run.caps == TextCaps::AllCaps ? QFont::AllUppercase : QFont::SmallCaps);
     }
     // Outlines without hinting: the same shapes at every size and on every machine with the same fonts (as titles).
     font.setHintingPreference(QFont::PreferNoHinting);
@@ -148,6 +167,12 @@ TextBlock layoutText(const TextSpec& spec) {
         if (r.baselineShift != 0.0 && r.size > 0.0) {
             format.setBaselineOffset(100.0 * r.baselineShift / r.size); // percent of the font height, up
         }
+        if (r.fauxBold) {
+            format.setProperty(kFauxBoldProperty, kFauxBoldWidth * r.size);
+        }
+        if (r.fauxItalic) {
+            format.setProperty(kFauxItalicProperty, true);
+        }
         block.formats.append(QTextLayout::FormatRange{from, to - from, format});
     }
     if (maxSize <= 0.0) {
@@ -178,7 +203,12 @@ TextBlock layoutText(const TextSpec& spec) {
         natural = std::max(natural, line.naturalTextWidth());
     }
     block.width = paragraph ? spec.boxWidth : natural;
-    block.height = spec.boxHeight > 0.0 && paragraph ? spec.boxHeight : lineHeight * static_cast<double>(lines.size());
+    const double content = lineHeight * static_cast<double>(lines.size());
+    block.height = spec.boxHeight > 0.0 && paragraph ? spec.boxHeight : content;
+    // 0.6: paragraph text in a taller box sits at its top, centre or bottom.
+    const double drop = spec.boxHeight > 0.0 && paragraph && spec.verticalAlign != TextVerticalAlign::Top
+                            ? (block.height - content) * (spec.verticalAlign == TextVerticalAlign::Center ? 0.5 : 1.0)
+                            : 0.0;
     // Lines: baseline i at i * lineHeight plus the font's ascent and descent centred in the line box; each line placed
     // inside the block by the alignment (justified lines fill it themselves).
     for (std::size_t i = 0; i < lines.size(); ++i) {
@@ -189,7 +219,7 @@ TextBlock layoutText(const TextSpec& spec) {
         } else if (spec.align == TextAlign::Right) {
             x = block.width - line.naturalTextWidth();
         }
-        const double top = static_cast<double>(i) * lineHeight + (lineHeight - line.ascent() - line.descent()) / 2.0;
+        const double top = drop + static_cast<double>(i) * lineHeight + (lineHeight - line.ascent() - line.descent()) / 2.0;
         line.setPosition(QPointF(x, top));
     }
     block.origin = spec.align == TextAlign::Center  ? QPointF(-block.width / 2.0, 0.0)
@@ -202,8 +232,10 @@ TextSpec specOf(const DrawText& text) {
     TextSpec spec;
     for (const DrawTextRun& r : text.runs) {
         spec.runs.push_back(TextRunSpec{r.byteStart, r.text, r.fontFamily, r.fontStyle, r.fontWeight, r.fontSize, r.italic,
-                                        r.underline, r.tracking, r.leading, r.baselineShift, r.fill});
+                                        r.underline, r.tracking, r.leading, r.baselineShift, r.fill, r.kerning, r.caps,
+                                        r.fauxBold, r.fauxItalic});
     }
+    spec.verticalAlign = text.verticalAlign;
     spec.align = text.path.empty() ? text.align : TextAlign::Left; // on a path: aligned along it (placeOnPath)
     spec.boxWidth = text.boxWidth;
     spec.boxHeight = text.boxHeight;
@@ -218,7 +250,7 @@ TextSpec specOf(const TextContent& text, const std::vector<std::string>& fonts) 
         const TextStyle& s = r.style;
         spec.runs.push_back(TextRunSpec{at, r.text, i < fonts.size() ? fonts[i] : s.fontFamily, s.fontStyle, s.fontWeight,
                                         s.fontSize, s.italic, s.underline, s.tracking, s.leading, s.baselineShift,
-                                        Rgba{1.0, 1.0, 1.0, 1.0}});
+                                        Rgba{1.0, 1.0, 1.0, 1.0}, s.kerning, s.caps, s.fauxBold, s.fauxItalic});
         at += r.text.size();
     }
     spec.align = text.align;
@@ -268,6 +300,7 @@ public:
 struct GlyphPiece {
     QPainterPath path;
     QColor color;
+    double bold = 0.0; ///< 0.6: faux bold outline width, pixels
 };
 
 QRectF addGlyphs(const TextBlock& block, int from, int length, std::vector<GlyphPiece>& pieces) {
@@ -280,6 +313,8 @@ QRectF addGlyphs(const TextBlock& block, int from, int length, std::vector<Glyph
         }
         GlyphPiece piece;
         piece.color = f.format.foreground().color();
+        piece.bold = f.format.doubleProperty(kFauxBoldProperty);
+        const bool slant = f.format.boolProperty(kFauxItalicProperty);
         const bool underline = f.format.fontUnderline();
         for (const QGlyphRun& run : block.layout->glyphRuns(a, b - a)) {
             const QRawFont raw = run.rawFont();
@@ -290,6 +325,9 @@ QRectF addGlyphs(const TextBlock& block, int from, int length, std::vector<Glyph
                     continue; // no font has it
                 }
                 QPainterPath glyph = raw.pathForGlyph(indexes[i]);
+                if (slant) { // 0.6: faux italic, slanted about the baseline
+                    glyph = QTransform(1.0, 0.0, -kFauxItalicShear, 1.0, 0.0, 0.0).map(glyph);
+                }
                 glyph.translate(block.origin + positions[i]);
                 piece.path.addPath(glyph);
             }
@@ -309,6 +347,60 @@ QRectF addGlyphs(const TextBlock& block, int from, int length, std::vector<Glyph
         }
     }
     return bounds;
+}
+
+/// 0.6: glyph outlines painted with the text's strokes: Outside strokes under the fill (the last one lowest, so each
+/// next stroke frames the ones before it), the fill (with its faux bold outline), then Center strokes and Inside strokes
+/// (clipped to the glyphs) over it.
+void paintGlyphs(QPainter& painter, const std::vector<GlyphPiece>& pieces, const std::vector<DrawTextStroke>& strokes) {
+    const auto pen = [](const QColor& color, double width) {
+        QPen p(color, width);
+        p.setJoinStyle(Qt::RoundJoin);
+        p.setCapStyle(Qt::RoundCap);
+        return p;
+    };
+    for (auto it = strokes.rbegin(); it != strokes.rend(); ++it) {
+        if (it->position == StrokePosition::Outside) {
+            for (const GlyphPiece& g : pieces) {
+                painter.strokePath(g.path, pen(colorOf(it->color), 2.0 * it->width + g.bold));
+            }
+        }
+    }
+    for (const GlyphPiece& g : pieces) {
+        painter.fillPath(g.path, g.color);
+        if (g.bold > 0.0) {
+            painter.strokePath(g.path, pen(g.color, g.bold));
+        }
+    }
+    for (auto it = strokes.rbegin(); it != strokes.rend(); ++it) {
+        if (it->position == StrokePosition::Outside) {
+            continue;
+        }
+        for (const GlyphPiece& g : pieces) {
+            if (it->position == StrokePosition::Center) {
+                painter.strokePath(g.path, pen(colorOf(it->color), it->width));
+                continue;
+            }
+            painter.save();
+            painter.setClipPath(g.path, Qt::IntersectClip);
+            painter.strokePath(g.path, pen(colorOf(it->color), 2.0 * it->width));
+            painter.restore();
+        }
+    }
+}
+
+/// How far the strokes and faux bold reach past the glyph outlines, pixels.
+double strokeReach(const DrawText& t) {
+    double reach = 0.0;
+    for (const DrawTextStroke& st : t.strokes) {
+        reach = std::max(reach, st.position == StrokePosition::Outside ? st.width : st.position == StrokePosition::Center ? st.width / 2.0 : 0.0);
+    }
+    for (const DrawTextRun& r : t.runs) {
+        if (r.fauxBold) {
+            reach = std::max(reach, kFauxBoldWidth * r.fontSize / 2.0);
+        }
+    }
+    return reach;
 }
 
 /// 0.2, type on a path: a cluster's glyph outlines (item pixels as laid out) and the transform that puts them on the
@@ -592,6 +684,42 @@ void blur(std::vector<float>& a, int w, int h, double sigma) {
     }
 }
 
+/// 0.6, a shadow's Size: every value becomes the largest within `radius` pixels (a square: two passes of running
+/// maxima, rows then columns; the blur rounds its corners off).
+void dilate(std::vector<float>& a, int w, int h, int radius) {
+    if (radius <= 0 || w <= 0 || h <= 0) {
+        return;
+    }
+    std::vector<float> line;
+    std::vector<int> queue;
+    const auto pass = [&](int count, int length, auto at) {
+        line.resize(static_cast<std::size_t>(length));
+        for (int n = 0; n < count; ++n) {
+            for (int i = 0; i < length; ++i) {
+                line[static_cast<std::size_t>(i)] = at(n, i);
+            }
+            // Running maximum over [i - radius, i + radius] with a monotonic queue of indices.
+            queue.clear();
+            std::size_t head = 0;
+            int next = 0;
+            for (int i = 0; i < length; ++i) {
+                for (; next < length && next <= i + radius; ++next) {
+                    while (queue.size() > head && line[static_cast<std::size_t>(queue.back())] <= line[static_cast<std::size_t>(next)]) {
+                        queue.pop_back();
+                    }
+                    queue.push_back(next);
+                }
+                while (queue[head] < i - radius) {
+                    ++head;
+                }
+                at(n, i) = line[static_cast<std::size_t>(queue[head])];
+            }
+        }
+    };
+    pass(h, w, [&](int y, int x) -> float& { return a[static_cast<std::size_t>(y) * w + x]; });
+    pass(w, h, [&](int x, int y) -> float& { return a[static_cast<std::size_t>(y) * w + x]; });
+}
+
 /// The matte of an item's masks over `rect` (device pixels): each owner's masks combined in order (the I.6 coverage,
 /// render/Mask.h), owners multiplied. `toDevice` maps canvas pixels to device pixels (uniform scale `scale`).
 std::vector<float> matteOf(const std::vector<DrawMask>& masks, const QRect& rect, const QTransform& toDevice, double scale) {
@@ -671,9 +799,7 @@ void drawContent(QPainter& painter, const DrawItem& item, const TextBlock* text,
                 painter.save();
                 painter.setTransform(p.transform * painter.transform());
                 painter.setOpacity(painter.opacity() * p.opacity);
-                for (const GlyphPiece& g : p.pieces) {
-                    painter.fillPath(g.path, g.color);
-                }
+                paintGlyphs(painter, p.pieces, t.strokes);
                 painter.restore();
                 ++info.animatedClusters;
             }
@@ -693,9 +819,7 @@ void drawContent(QPainter& painter, const DrawItem& item, const TextBlock* text,
         if (t.clusters.empty()) {
             std::vector<GlyphPiece> pieces;
             addGlyphs(*text, 0, static_cast<int>(text->text.size()), pieces);
-            for (const GlyphPiece& p : pieces) {
-                painter.fillPath(p.path, p.color);
-            }
+            paintGlyphs(painter, pieces, t.strokes);
         } else {
             // Each cluster on its own, after layout: faded, then moved, scaled and rotated about its own centre.
             for (const DrawCluster& c : t.clusters) {
@@ -720,9 +844,7 @@ void drawContent(QPainter& painter, const DrawItem& item, const TextBlock* text,
                 painter.save();
                 painter.setTransform(local * painter.transform());
                 painter.setOpacity(painter.opacity() * std::clamp(c.opacity, 0.0, 1.0));
-                for (const GlyphPiece& p : pieces) {
-                    painter.fillPath(p.path, p.color);
-                }
+                paintGlyphs(painter, pieces, t.strokes);
                 painter.restore();
                 ++info.animatedClusters;
             }
@@ -778,12 +900,15 @@ QRectF deviceBounds(const DrawItem& item, const TextBlock* text, const QTransfor
     }
     case DrawKind::Text:
         if (text && !item.text.path.empty()) {
+            const double reach = strokeReach(item.text);
             for (const PlacedCluster& p : placeOnPath(*text, item.text)) {
-                local = local.united(p.transform.mapRect(p.bounds));
+                local = local.united(p.transform.mapRect(p.bounds.adjusted(-reach, -reach, reach, reach)));
             }
         } else if (text) {
             std::vector<GlyphPiece> pieces;
             local = addGlyphs(*text, 0, static_cast<int>(text->text.size()), pieces);
+            const double reach = strokeReach(item.text); // 0.6
+            local.adjust(-reach, -reach, reach, reach);
             local = local.united(QRectF(text->origin, QSizeF(text->width, text->height)));
             const double pad = item.text.background ? std::max(item.text.backgroundPadding, 0.0) : 0.0;
             double move = 0.0;
@@ -821,13 +946,19 @@ void drawItem(QImage& canvas, const DrawItem& item, const Fit& fit, const Graphi
     }
     QRectF bounds = deviceBounds(item, text ? &*text : nullptr, toItem);
     double shadowSigma = 0.0;
+    double shadowSpread = 0.0;
     QPointF shadowOffset;
     if (item.shadow.enabled && item.shadow.opacity > 0.0) {
         shadowSigma = std::max(item.shadow.softness, 0.0) / 3.0 * fit.scale;
+        shadowSpread = std::clamp(item.shadow.size, 0.0, 1000.0) * fit.scale; // 0.6: Size
         const double angle = item.shadow.angle * kPi / 180.0;
         shadowOffset = QPointF(std::cos(angle), std::sin(angle)) * item.shadow.distance * fit.scale;
-        const double reach = 3.0 * shadowSigma + 2.0;
+        const double reach = 3.0 * shadowSigma + 2.0 + shadowSpread;
         const QRectF shadowRect = bounds.translated(shadowOffset).adjusted(-reach, -reach, reach, reach);
+        if (shadowSpread > 0.0) {
+            // The grown shape needs room round the item itself before it is moved by the offset.
+            bounds = bounds.adjusted(-reach, -reach, reach, reach);
+        }
         bounds = bounds.united(shadowRect);
     }
     const QRect rect = bounds.toAlignedRect().intersected(canvas.rect());
@@ -868,6 +999,9 @@ void drawItem(QImage& canvas, const DrawItem& item, const Fit& fit, const Graphi
             for (int x = 0; x < w; ++x) {
                 alpha[static_cast<std::size_t>(y) * w + x] = row[x * 4 + 3] / 255.0f;
             }
+        }
+        if (shadowSpread >= 0.5) {
+            dilate(alpha, w, h, static_cast<int>(std::lround(shadowSpread)));
         }
         blur(alpha, w, h, shadowSigma);
         const QColor sc = colorOf(item.shadow.color, item.shadow.opacity);

@@ -1,5 +1,6 @@
 #include <wabcut/model/Clip.h>
 
+#include <wabcut/model/Auditions.h>
 #include <wabcut/model/Graphics.h>
 
 #include <algorithm>
@@ -12,7 +13,8 @@ bool ClipContent::operator==(const ClipContent& o) const {
            unknownSource == o.unknownSource && channels == o.channels && sameGraphic && blendMode == o.blendMode &&
            scaleToFrame == o.scaleToFrame && holdFilters == o.holdFilters &&
            timeInterpolation == o.timeInterpolation && inputColorSpace == o.inputColorSpace &&
-           fieldOptions == o.fieldOptions;
+           fieldOptions == o.fieldOptions && masterEffectsOff == o.masterEffectsOff &&
+           (audition == o.audition || (audition && o.audition && *audition == *o.audition));
 }
 
 // Direction-aware source bookkeeping. A forward clip shows [sourceIn, sourceOut) from its head to its tail;
@@ -82,6 +84,20 @@ std::optional<Ticks> Clip::tailRoom(Ticks start, std::optional<Ticks> end) const
 }
 
 void Clip::moveHead(Ticks d) {
+    if (const Audition* a = audition()) {
+        // 0.6: the audition now starts at the new In; every other take keeps its source under the rest of the range.
+        const TimeRange whole = auditionRange(*this);
+        Audition next = *a;
+        for (AuditionTake& t : next.others) {
+            Clip v = takeClip(t, whole);
+            v.moveHead((start() + d) - whole.start);
+            t.sourceIn = v.sourceIn;
+        }
+        next.headTrim = Ticks{};
+        ClipContent block = content();
+        block.audition = std::make_shared<const Audition>(std::move(next));
+        setContent(std::move(block));
+    }
     if (!reversed && !isFreeze()) {
         sourceIn += toSourceTicks(d, speed);
     }
@@ -91,6 +107,20 @@ void Clip::moveHead(Ticks d) {
 }
 
 void Clip::moveTail(Ticks d) {
+    if (const Audition* a = audition()) {
+        // 0.6: the audition now ends at the new Out (a reversed take keeps the source under its head).
+        const TimeRange whole = auditionRange(*this);
+        Audition next = *a;
+        for (AuditionTake& t : next.others) {
+            Clip v = takeClip(t, whole);
+            v.moveTail((end() + d) - whole.end());
+            t.sourceIn = v.sourceIn;
+        }
+        next.tailTrim = Ticks{};
+        ClipContent block = content();
+        block.audition = std::make_shared<const Audition>(std::move(next));
+        setContent(std::move(block));
+    }
     if (reversed && !isFreeze()) {
         // The tail shows the bottom of the source range: keep the top (sourceOut) where it is.
         const Ticks top = sourceOut();
@@ -103,6 +133,26 @@ void Clip::moveTail(Ticks d) {
 
 Clip Clip::splitOff(Ticks at) {
     Clip right = *this;
+    if (const Audition* a = audition()) {
+        // 0.6: both pieces keep every take: the left one over [audition start, at), the right one over [at, end).
+        const TimeRange whole = auditionRange(*this);
+        Audition left = *a;
+        Audition rest = *a;
+        for (std::size_t i = 0; i < a->others.size(); ++i) {
+            Clip v = takeClip(a->others[i], whole);
+            const Clip r = v.splitOff(at);
+            left.others[i].sourceIn = v.sourceIn;
+            rest.others[i].sourceIn = r.sourceIn;
+        }
+        left.tailTrim = Ticks{};
+        rest.headTrim = Ticks{};
+        ClipContent leftContent = content();
+        leftContent.audition = std::make_shared<const Audition>(std::move(left));
+        ClipContent rightContent = content();
+        rightContent.audition = std::make_shared<const Audition>(std::move(rest));
+        setContent(std::move(leftContent));
+        right.setContent(std::move(rightContent));
+    }
     const Ticks leftDuration = at - start();
     right.timelineRange = TimeRange::fromStartEnd(at, end());
     if (!isFreeze()) {

@@ -21,9 +21,12 @@
 
 #include <QCoreApplication>
 #include <QDir>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QMouseEvent>
 #include <QQmlComponent>
 #include <QQuickItem>
+#include <QSettings>
 #include <QUrl>
 
 #include <algorithm>
@@ -565,6 +568,209 @@ TEST_CASE("Layout picker in the window: cards and options per layout; the region
     CHECK(controller->session().undoCount() == before + 1);
     REQUIRE(waitFor([&] { return !picker->property("visible").toBool(); }, 3000));
     CHECK_FALSE(layouts->previewShown());
+    layouts->setRegistry(nullptr);
+    const QStringList messages = takeMessages();
+    INFO(join(messages));
+    CHECK(messages.isEmpty());
+}
+
+// ---- 0.6 (P1 round, stream 3A, #51): the facecam region per gameplay file, the picker's last options ----------------
+
+TEST_CASE("Layout picker: the facecam region is remembered per gameplay file and never leaks into another",
+          "[app][layout]") {
+    resetSettings();
+    // Two recordings on V1: G, then H; the webcam clip F over G.
+    constexpr std::string_view twoGames = R"(
+        V2     |.....Ffffffffff...............|
+        V1 tgt |GggggggggggggggHhhhhhhhhhhhhhh|
+    )";
+    Timeline tl{twoGames};
+    ProjectController controller;
+    LayoutBridge layouts;
+    controller.resetProject(tl.state, tl.seq);
+    layouts.setRegistry(&catalog());
+    layouts.setSynchronous(true);
+    layouts.setController(&controller);
+    controller.setSelection({tl.clip("V1@0")});
+    REQUIRE(layouts.gameplay() == clipKey(tl.clip("V1@0")));
+    CHECK(layouts.facecamRegion().isEmpty());
+
+    // Drawn on G: stored for G's file.
+    layouts.setFacecamRegion(opts({{QStringLiteral("x"), 0.7}, {QStringLiteral("y"), 0.05},
+                                   {QStringLiteral("width"), 0.25}, {QStringLiteral("height"), 0.3}}));
+    const QVariantMap stored = layouts.regionForMedia(mediaKey(tl.media('G')));
+    CHECK(stored.value(QStringLiteral("x")).toDouble() == Approx(0.7));
+    CHECK(stored.value(QStringLiteral("height")).toDouble() == Approx(0.3));
+    CHECK(layouts.regionForMedia(mediaKey(tl.media('H'))).isEmpty());
+    // H has none of its own: the region goes; back on G it comes back.
+    controller.setSelection({tl.clip("V1@15")});
+    REQUIRE(layouts.gameplay() == clipKey(tl.clip("V1@15")));
+    CHECK(layouts.facecamRegion().isEmpty());
+    CHECK_FALSE(layouts.params(opts({{QStringLiteral("preset"), QStringLiteral("pip")},
+                                     {QStringLiteral("facecamSource"), QStringLiteral("region")}}))
+                    .contains(QStringLiteral("facecamRegion")));
+    controller.setSelection({tl.clip("V1@0")});
+    CHECK(layouts.facecamRegion().value(QStringLiteral("x")).toDouble() == Approx(0.7));
+
+    // Another project with the same recording finds it; one with another recording does not (no cross-project leak).
+    {
+        Timeline same{kGame}; // G again: the same file
+        ProjectController other;
+        LayoutBridge again;
+        other.resetProject(same.state, same.seq);
+        again.setRegistry(&catalog());
+        again.setController(&other);
+        other.setSelection({same.clip("V1@0")});
+        CHECK(again.facecamRegion().value(QStringLiteral("x")).toDouble() == Approx(0.7));
+    }
+    {
+        Timeline elsewhere{"V1 tgt |Kkkkkkkkkkkkkkkkkkkk|\n"};
+        controller.resetProject(elsewhere.state, elsewhere.seq);
+        controller.setSelection({elsewhere.clip("V1@0")});
+        CHECK(layouts.gameplay() == clipKey(elsewhere.clip("V1@0")));
+        CHECK(layouts.facecamRegion().isEmpty());
+        controller.resetProject(tl.state, tl.seq);
+        controller.setSelection({tl.clip("V1@0")});
+        CHECK(layouts.facecamRegion().value(QStringLiteral("x")).toDouble() == Approx(0.7));
+    }
+    // Clearing it forgets it for the file.
+    layouts.clearRegion();
+    CHECK(layouts.facecamRegion().isEmpty());
+    CHECK(layouts.regionForMedia(mediaKey(tl.media('G'))).isEmpty());
+    controller.setSelection({tl.clip("V1@15")});
+    controller.setSelection({tl.clip("V1@0")});
+    CHECK(layouts.facecamRegion().isEmpty());
+}
+
+TEST_CASE("Layout picker: stored regions are keyed by the file's fingerprint and the newest 200 are kept", "[app][layout]") {
+    resetSettings();
+    const QVariantMap region{{QStringLiteral("x"), 0.1}, {QStringLiteral("y"), 0.1}, {QStringLiteral("width"), 0.2},
+                             {QStringLiteral("height"), 0.2}};
+    // A fingerprinted file: moved or relinked, it keeps its region (the fingerprint, not the path, is the key).
+    MediaItem recording;
+    recording.locator.path = "D:/rec/match.mkv";
+    recording.locator.fingerprint.size = 123456;
+    recording.locator.fingerprint.sampleHash = "0123456789abcdef";
+    CHECK(LayoutBridge::regionKey(recording) == QStringLiteral("fp:123456:0123456789abcdef"));
+    LayoutBridge::storeRegionFor(recording, region);
+    MediaItem moved = recording;
+    moved.locator.path = "E:/archive/match.mkv";
+    CHECK(LayoutBridge::storedRegionFor(moved).value(QStringLiteral("width")).toDouble() == Approx(0.2));
+    // Without a fingerprint, the path; an item with neither keeps nothing.
+    MediaItem plain;
+    plain.locator.path = "D:/rec/plain.mkv";
+    CHECK(LayoutBridge::regionKey(plain) == QStringLiteral("path:D:/rec/plain.mkv"));
+    CHECK(LayoutBridge::regionKey(MediaItem{}).isEmpty());
+    // A region too small to be one is not kept.
+    LayoutBridge::storeRegionFor(plain, opts({{QStringLiteral("x"), 0.5}, {QStringLiteral("y"), 0.5},
+                                              {QStringLiteral("width"), 0.001}, {QStringLiteral("height"), 0.001}}));
+    CHECK(LayoutBridge::storedRegionFor(plain).isEmpty());
+
+    // 205 more files: the oldest go, the newest 200 stay.
+    for (int i = 0; i < 205; ++i) {
+        MediaItem m;
+        m.locator.path = "D:/rec/" + std::to_string(i) + ".mkv";
+        LayoutBridge::storeRegionFor(m, region);
+    }
+    const QJsonDocument doc =
+        QJsonDocument::fromJson(QSettings().value(QStringLiteral("layout/facecamRegions")).toString().toUtf8());
+    REQUIRE(doc.isObject());
+    CHECK(doc.object().size() == 200);
+    CHECK(LayoutBridge::storedRegionFor(recording).isEmpty()); // the oldest
+    MediaItem first;
+    first.locator.path = "D:/rec/0.mkv";
+    CHECK(LayoutBridge::storedRegionFor(first).isEmpty());
+    MediaItem last;
+    last.locator.path = "D:/rec/204.mkv";
+    CHECK_FALSE(LayoutBridge::storedRegionFor(last).isEmpty());
+}
+
+TEST_CASE("Layout picker in the window: it opens with the options last applied; Reset; screenshots",
+          "[app][layout][qml][screenshot]") {
+    resetSettings();
+    clearMessages();
+    Shell shell;
+    REQUIRE(shell.window);
+    shell.resize(kShotWidth, kShotHeight);
+    shell.theme->setProperty("reduceMotion", true);
+    shell.setAppearance(true, "ultraviolet");
+    auto* controller = shell.engine.singletonInstance<ProjectController*>("Wabcut", "ProjectController");
+    auto* layouts = shell.engine.singletonInstance<LayoutBridge*>("Wabcut", "Layouts");
+    REQUIRE(controller);
+    REQUIRE(layouts);
+    layouts->setRegistry(&catalog());
+    layouts->setSynchronous(true);
+    Timeline tl{kGame};
+    controller->resetProject(tl.state, tl.seq);
+    controller->setSelection({tl.clip("V1@0")});
+    REQUIRE_FALSE(shell.grab().isNull());
+    // What the last Apply saved: a vertical split at 70 %, the facecam on top, from a region.
+    shell.preferences->setProperty(
+        "layoutLastOptions",
+        QStringLiteral(R"({"preset":"verticalSplit","split":0.7,"facecamOnTop":true,"facecamSource":"region","bogus":1})"));
+    QQuickItem* monitor = findNamed(shell.window->contentItem(), QStringLiteral("monitorPanel"));
+    REQUIRE(monitor);
+    const auto host = makeItem(shell, "import QtQuick\nimport Wabcut\nItem {\n    property alias picker: p\n    LayoutPicker { id: p }\n}\n",
+                               QRectF(0, 0, kShotWidth, kShotHeight));
+    auto* picker = host->property("picker").value<QObject*>();
+    REQUIRE(picker);
+    const auto openPicker = [&] {
+        REQUIRE(QMetaObject::invokeMethod(picker, "openFor", Q_ARG(QVariant, QVariant::fromValue<QObject*>(host.get())),
+                                          Q_ARG(QVariant, QVariant::fromValue<QObject*>(monitor))));
+        REQUIRE(waitFor([&] { return picker->property("opened").toBool(); }, 5000));
+    };
+    const auto closePicker = [&] {
+        QMetaObject::invokeMethod(picker, "close");
+        REQUIRE(waitFor([&] { return !picker->property("visible").toBool(); }, 3000));
+    };
+    const auto option = [&](const char* key) { return picker->property("options").toMap().value(QString::fromLatin1(key)); };
+    openPicker();
+    CHECK(picker->property("preset").toString() == QStringLiteral("verticalSplit"));
+    CHECK(option("split").toDouble() == Approx(0.7));
+    CHECK(option("facecamOnTop").toBool());
+    CHECK_FALSE(picker->property("options").toMap().contains(QStringLiteral("bogus")));
+    // No region drawn for this gameplay: the facecam source falls back to auto (the webcam clip).
+    CHECK(option("facecamSource").toString() == QStringLiteral("auto"));
+    closePicker();
+    // With a region drawn for the gameplay's file, the saved "region" source stays.
+    layouts->setFacecamRegion(opts({{QStringLiteral("x"), 0.7}, {QStringLiteral("y"), 0.05},
+                                    {QStringLiteral("width"), 0.25}, {QStringLiteral("height"), 0.3}}));
+    openPicker();
+    CHECK(option("facecamSource").toString() == QStringLiteral("region"));
+    auto* content = picker->property("contentItem").value<QQuickItem*>();
+    REQUIRE(content);
+    QQuickItem* reset = findNamed(content, QStringLiteral("layoutReset"));
+    REQUIRE(reset);
+    CHECK(reset->isVisible());
+    CHECK(reset->property("text").toString() == QStringLiteral("Reset"));
+    {
+        spin(50);
+        const QImage dark = shell.grab();
+        REQUIRE_FALSE(dark.isNull());
+        REQUIRE(dark.save(QDir(outputDir()).filePath(QStringLiteral("layout-picker-remembered-dark.png"))));
+        shell.setAppearance(false, "ultraviolet");
+        spin(50);
+        const QImage light = shell.grab();
+        REQUIRE_FALSE(light.isNull());
+        REQUIRE(light.save(QDir(outputDir()).filePath(QStringLiteral("layout-picker-remembered-light.png"))));
+        shell.setAppearance(true, "ultraviolet");
+    }
+    // Reset: the defaults again.
+    REQUIRE(QMetaObject::invokeMethod(reset, "clicked"));
+    CHECK(picker->property("preset").toString() == QStringLiteral("pip"));
+    CHECK(option("split").toDouble() == Approx(layouts->defaults().value(QStringLiteral("split")).toDouble()));
+    CHECK(option("facecamSource").toString() == QStringLiteral("auto"));
+    // Apply saves what it applied; the next open starts from it.
+    REQUIRE(QMetaObject::invokeMethod(findNamed(content, QStringLiteral("layoutApply")), "clicked"));
+    REQUIRE(waitFor([&] { return !picker->property("visible").toBool(); }, 3000));
+    const QJsonDocument saved =
+        QJsonDocument::fromJson(shell.preferences->property("layoutLastOptions").toString().toUtf8());
+    REQUIRE(saved.isObject());
+    CHECK(saved.object().value(QStringLiteral("preset")).toString() == QStringLiteral("pip"));
+    // QtCore Settings writes a moment later: Make Shorts version reads the same key (LayoutBridge::lastOptions).
+    CHECK(waitFor([] { return LayoutBridge::lastOptions().value(QStringLiteral("preset")).toString() == QStringLiteral("pip"); },
+                  5000));
+    layouts->clearRegion();
     layouts->setRegistry(nullptr);
     const QStringList messages = takeMessages();
     INFO(join(messages));

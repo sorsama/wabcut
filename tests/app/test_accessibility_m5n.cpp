@@ -615,7 +615,10 @@ TEST_CASE("Keyboard Trainer M5n: clipboard, markers, trim and multicam rounds on
                        "edit.selectAll", "edit.deselectAll"}},
         {"trim", {"sequence.trimEdit", "sequence.toggleTrimType", "sequence.trimBackward", "sequence.trimForward",
                   "sequence.trimBackwardMany", "sequence.trimForwardMany", "sequence.rippleTrimPreviousToPlayhead",
-                  "sequence.rippleTrimNextToPlayhead"}},
+                  "sequence.rippleTrimNextToPlayhead",
+                  // 0.6: Shift+Q / Shift+W and Ctrl+Alt+Q / Ctrl+Alt+W
+                  "sequence.extendPreviousToPlayhead", "sequence.extendNextToPlayhead",
+                  "sequence.trimPreviousToPlayhead", "sequence.trimNextToPlayhead"}},
     };
     for (const km::Platform platform : {km::Platform::Windows, km::Platform::MacOS}) {
         INFO("platform " << static_cast<int>(platform));
@@ -636,20 +639,23 @@ TEST_CASE("Keyboard Trainer M5n: clipboard, markers, trim and multicam rounds on
         // Every prompt of the new rounds has a key the trainer can take (Cut to Camera 9 has none: not asked).
         CHECK(counts[QStringLiteral("clipboard")] == 8);
         CHECK(counts[QStringLiteral("marks")] == 14);
-        CHECK(counts[QStringLiteral("trim")] == 8);
+        CHECK(counts[QStringLiteral("trim")] == 12);
         CHECK(counts[QStringLiteral("multicam")] == 18);
         CHECK(counts[QStringLiteral("all")] >= 80);
 
         for (const auto& [category, commands] : expected) {
             INFO(category);
             REQUIRE(trainer.start(QString::fromStdString(category)));
-            CHECK(trainer.roundLength() == static_cast<int>(commands.size()));
+            // A round asks at most ten prompts (the trim round has twelve since 0.6): ten different ones of the category.
+            const int length = std::min(static_cast<int>(commands.size()), 10);
+            CHECK(trainer.roundLength() == length);
             std::set<std::string> asked;
             for (int i = 0; i < trainer.roundLength(); ++i) {
                 asked.insert(trainer.promptCommand().toStdString());
                 trainer.next();
             }
-            CHECK(asked == commands);
+            CHECK(static_cast<int>(asked.size()) == length);
+            CHECK(std::includes(commands.begin(), commands.end(), asked.begin(), asked.end()));
         }
     }
     // A multicam round answered with Premiere's Windows keys, Paste Attributes too.
@@ -739,7 +745,12 @@ TEST_CASE("What's new M5n: this build's highlights, each one spoken; screenshot"
         CHECK_FALSE(h.toMap().value(QStringLiteral("title")).toString().isEmpty());
         CHECK_FALSE(h.toMap().value(QStringLiteral("text")).toString().isEmpty());
     }
-    CHECK(keys == QStringList{QStringLiteral("captionLanes"), QStringLiteral("audioMeters"),
+    CHECK(keys == QStringList{QStringLiteral("textEffectControls"), QStringLiteral("auditions"),
+                              QStringLiteral("hdrFinishing"), QStringLiteral("masterClipEffects"),
+                              QStringLiteral("exportQueueKept"), QStringLiteral("mxfCaptions"),
+                              QStringLiteral("creatorAutopilot"), QStringLiteral("captionKeys"),
+                              QStringLiteral("scriptTranscript"), QStringLiteral("workspacesHistory"),
+                              QStringLiteral("captionLanes"), QStringLiteral("audioMeters"),
                               QStringLiteral("sceneDeadTime"), QStringLiteral("chaptersSource"),
                               QStringLiteral("gpuUpdates"), QStringLiteral("timelineCopy"),
                               QStringLiteral("premiereKeys"),
@@ -760,12 +771,12 @@ TEST_CASE("What's new M5n: this build's highlights, each one spoken; screenshot"
     QQuickItem* list = findNamed(popupItem(dialog), QStringLiteral("whatsNewList"));
     REQUIRE(list);
     CHECK(list->property("count").toInt() == highlights.size());
-    QQuickItem* first = findNamed(popupItem(dialog), QStringLiteral("whatsNew_captionLanes"));
+    QQuickItem* first = findNamed(popupItem(dialog), QStringLiteral("whatsNew_textEffectControls"));
     REQUIRE(first);
     QAccessibleInterface* iface = QAccessible::queryAccessibleInterface(first);
     REQUIRE(iface);
     CHECK(iface->role() == QAccessible::ListItem);
-    CHECK(iface->text(QAccessible::Name).startsWith(QStringLiteral("Captions on the timeline. ")));
+    CHECK(iface->text(QAccessible::Name).startsWith(QStringLiteral("Text in Effect Controls. ")));
     CHECK_ACCESSIBLE(popupItem(dialog));
     spin(150);
     const QImage image = shell.grab();

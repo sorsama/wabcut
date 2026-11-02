@@ -326,9 +326,21 @@ Json level(double v) { return std::isfinite(v) ? Json(v) : Json(nullptr); }
 double level(const Json& j) { return j.is_number() ? j.get<double>() : -std::numeric_limits<double>::infinity(); }
 
 Json toJson(const LoudnessStats& s) {
-    return Json{{"integratedLufs", level(s.integratedLufs)}, {"rangeLu", s.rangeLu}, {"truePeakDbtp", level(s.truePeakDbtp)},
-                {"samplePeakDbfs", level(s.samplePeakDbfs)}, {"maxMomentaryLufs", level(s.maxMomentaryLufs)},
-                {"maxShortTermLufs", level(s.maxShortTermLufs)}, {"durationTicks", s.duration.value}};
+    Json j{{"integratedLufs", level(s.integratedLufs)}, {"rangeLu", s.rangeLu}, {"truePeakDbtp", level(s.truePeakDbtp)},
+           {"samplePeakDbfs", level(s.samplePeakDbfs)}, {"maxMomentaryLufs", level(s.maxMomentaryLufs)},
+           {"maxShortTermLufs", level(s.maxShortTermLufs)}, {"durationTicks", s.duration.value}};
+    // 0.6 (#54): where, as offsets from the measured range's start; the hot blocks as [at, length, centi-dB].
+    const auto at = [](const std::optional<Ticks>& t) { return t ? Json(t->value) : Json(nullptr); };
+    j["maxMomentaryAt"] = at(s.maxMomentaryAt);
+    j["maxShortTermAt"] = at(s.maxShortTermAt);
+    j["truePeakAt"] = at(s.truePeakAt);
+    j["peakFloorDbtp"] = s.peakFloorDbtp;
+    Json blocks = Json::array();
+    for (const LoudnessStats::PeakBlock& b : s.peakBlocks) {
+        blocks.push_back(Json::array({b.at.value, b.duration.value, std::llround(b.truePeakDbtp * 100.0)}));
+    }
+    j["peakBlocks"] = std::move(blocks);
+    return j;
 }
 
 std::optional<LoudnessStats> fromJson(std::string_view text) {
@@ -344,6 +356,20 @@ std::optional<LoudnessStats> fromJson(std::string_view text) {
     s.maxMomentaryLufs = level(j.value("maxMomentaryLufs", Json()));
     s.maxShortTermLufs = level(j.value("maxShortTermLufs", Json()));
     s.duration = Ticks{j.value("durationTicks", std::int64_t{0})};
+    // 0.6 (#54)
+    const auto at = [&](const char* key) -> std::optional<Ticks> {
+        const Json& v = j.value(key, Json());
+        return v.is_number_integer() ? std::optional<Ticks>(Ticks{v.get<std::int64_t>()}) : std::nullopt;
+    };
+    s.maxMomentaryAt = at("maxMomentaryAt");
+    s.maxShortTermAt = at("maxShortTermAt");
+    s.truePeakAt = at("truePeakAt");
+    s.peakFloorDbtp = j.value("peakFloorDbtp", -6.0);
+    for (const Json& b : j.value("peakBlocks", Json::array())) {
+        if (b.is_array() && b.size() == 3 && b[0].is_number_integer() && b[1].is_number_integer() && b[2].is_number()) {
+            s.peakBlocks.push_back({Ticks{b[0].get<std::int64_t>()}, Ticks{b[1].get<std::int64_t>()}, b[2].get<double>() / 100.0});
+        }
+    }
     return s;
 }
 
@@ -426,16 +452,19 @@ std::expected<LoudnessStats, Error> RenderLoudnessAnalyzer::measure(const Projec
     if (m_options.cache) {
         static constexpr std::string_view kScopes[] = {"loudness.clip", "loudness.track", "loudness.mix"};
         key = ai::AnalysisKey{fingerprintOf(state, *scoped, target, channels, rate), 0,
-                              std::string(kScopes[static_cast<int>(target.scope)]), std::string(kModelVersion), "v1"};
+                              std::string(kScopes[static_cast<int>(target.scope)]), std::string(kModelVersion), "v2"};
+        // 0.6 (#54): "v2" adds where the maxima and the true-peak overs are; older entries are measured again.
         if (const auto hit = m_options.cache->get(*key); hit && *hit) {
-            if (const auto stats = fromJson(**hit)) {
+            if (auto stats = fromJson(**hit)) {
                 m_hits.fetch_add(1);
+                stats->start = scoped->range.start;
                 return *stats;
             }
         }
     }
     LoudnessStats stats;
     stats.duration = scoped->range.duration;
+    stats.start = scoped->range.start;
     if (scoped->range.duration.value > 0) {
         const auto feed = m_feeds(state);
         dsp::LoudnessMeter meter(channels, rate);
@@ -453,6 +482,17 @@ std::expected<LoudnessStats, Error> RenderLoudnessAnalyzer::measure(const Projec
         stats.samplePeakDbfs = r.samplePeakDbfs;
         stats.maxMomentaryLufs = r.maxMomentaryLufs;
         stats.maxShortTermLufs = r.maxShortTermLufs;
+        // 0.6 (#54): where, as offsets from the range's start.
+        const std::int64_t tpf = Rate{rate, 1}.ticksPerUnit();
+        const auto at = [&](std::int64_t frame) { return frame >= 0 ? std::optional<Ticks>(Ticks{frame * tpf}) : std::nullopt; };
+        stats.maxMomentaryAt = at(r.maxMomentaryFrame);
+        stats.maxShortTermAt = at(r.maxShortTermFrame);
+        stats.truePeakAt = at(r.truePeakFrame);
+        stats.peakFloorDbtp = dsp::kPeakBlockFloorDbtp;
+        stats.peakBlocks.reserve(r.peakBlocks.size());
+        for (const dsp::PeakBlock& b : r.peakBlocks) {
+            stats.peakBlocks.push_back({Ticks{b.frame * tpf}, Ticks{b.frames * tpf}, b.truePeakDbtp});
+        }
     }
     if (key) {
         [[maybe_unused]] const auto stored = m_options.cache->put(*key, toJson(stats).dump());

@@ -50,7 +50,8 @@ public:
     bool readFiles = false;
 };
 
-/// Adds roughcut.fromScript, roughcut.swapTake, takes.find and takes.use.
+/// Adds roughcut.fromScript, roughcut.swapTake, takes.find and takes.use (and 0.6's transcript.correctFromScript,
+/// ScriptCorrections.h).
 void registerRoughCutCommands(command::CommandRegistry& registry);
 
 /// The alignment report as the commands return it. `ranges` (optional) holds each beat's place on the timeline.

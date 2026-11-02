@@ -139,3 +139,75 @@ TEST_CASE("sequence.exportMarkers is a read command a read-only client may run",
     CHECK(h.errorOf("marker.clearAll") == "PermissionDenied");
     CHECK(h.errorOf("marker.update", {{"index", 0}}) == "PermissionDenied");
 }
+
+// P1 round (stream 1C, #24): YouTube chapters from In to Out (times counted from the In mark) and chapter markers only.
+TEST_CASE("sequence.exportMarkers counts YouTube chapters from the In mark and keeps chapter markers only when asked",
+          "[command][markers][p1]") {
+    Timeline tl(kBase);
+    Sequence s = tl.sequence();
+    s.duration = Ticks::fromSeconds(120);
+    s.markIn = Ticks::fromSeconds(10);
+    s.markOut = Ticks::fromSeconds(70);
+    tl.state = tl.state.withSequence(std::make_shared<const Sequence>(std::move(s)));
+    CommandHarness h(std::move(tl));
+    const auto at = [](int seconds) { return Ticks::fromSeconds(seconds).value; };
+    h.ok("marker.add", {{"time", at(5)}, {"name", "Pre-roll"}, {"type", "chapter"}});
+    h.ok("marker.add", {{"time", at(10)}, {"name", "Intro"}, {"type", "chapter"}});
+    h.ok("marker.add", {{"time", at(15)}, {"name", "todo: fix the mix"}});
+    h.ok("marker.add", {{"time", at(40)}, {"name", "Part 2"}, {"type", "chapter"}});
+    h.ok("marker.add", {{"time", at(100)}, {"name", "Outro"}, {"type", "chapter"}});
+
+    // In to Out: the chapters inside, from 0:00 at the In mark; the last runs to the Out mark.
+    auto r = h.ok("sequence.exportMarkers", {{"format", "youtube"}, {"range", "inOut"}, {"chaptersOnly", true}});
+    CHECK(r.data["text"] == "0:00 Intro\n0:30 Part 2\n");
+    CHECK(r.data["count"] == 2);
+    CHECK(r.data["warnings"] == Json::array({"YouTube needs at least 3 chapters"}));
+    CHECK(r.data["rangeStart"]["ticks"] == at(10));
+    // The whole sequence, as before (times from its start).
+    r = h.ok("sequence.exportMarkers", {{"format", "youtube"}});
+    CHECK(r.data["text"] == "0:05 Pre-roll\n0:10 Intro\n0:40 Part 2\n1:40 Outro\n");
+    // CSV from In to Out: the markers inside, in sequence time; chapters only drops the to-do.
+    r = h.ok("sequence.exportMarkers", {{"format", "csv"}, {"range", "inOut"}});
+    CHECK(r.data["count"] == 3);
+    r = h.ok("sequence.exportMarkers", {{"format", "csv"}, {"range", "inOut"}, {"chaptersOnly", true}});
+    CHECK(r.data["count"] == 2);
+
+    // Chapters only without a chapter marker: nothing, and why (never every marker, so to-dos stay out).
+    CommandHarness plain(kBase);
+    plain.ok("marker.add", {{"time", tc(1)}, {"name", "todo"}});
+    r = plain.ok("sequence.exportMarkers", {{"format", "youtube"}, {"chaptersOnly", true}});
+    CHECK(r.data["text"] == "");
+    CHECK(r.data["count"] == 0);
+    CHECK(r.data["warnings"] == Json::array({"no chapter markers"}));
+    // From In to Out without marks: refused.
+    CHECK(plain.errorOf("sequence.exportMarkers", {{"format", "youtube"}, {"range", "inOut"}}) == "InvalidParams");
+}
+
+// D7: a marker start that falls between two frames is snapped onto the frame that contains it, so the command never
+// reports success while placing a marker where nothing can show it (nor quietly at 0). A range marker's length is a
+// measured span (the loudness QC overs are sub-frame) and is kept exactly as asked.
+TEST_CASE("marker.add and marker.update snap a start between frames onto the frame grid", "[command][markers]") {
+    CommandHarness h(kBase); // 25 fps, 10,160,640,000 ticks a frame
+    const Ticks halfFrame{f(1).value / 2};
+    // Five and a half frames: the marker starts on frame 5; its two-and-a-half-frame length is kept.
+    h.ok("marker.add", {{"time", (f(5) + halfFrame).value}, {"duration", (f(2) + halfFrame).value}, {"name", "between"}});
+    const auto& markers = h.sequence(h.state()).markers;
+    REQUIRE(markers.size() == 1);
+    CHECK(markers[0].start == f(5));
+    CHECK(markers[0].duration == f(2) + halfFrame);
+    // What the command reports afterwards is what it stored.
+    const auto listed = h.ok("marker.list");
+    CHECK(listed.data["markers"][0]["start"]["ticks"] == f(5).value);
+    CHECK(listed.data["markers"][0]["duration"]["ticks"] == (f(2) + halfFrame).value);
+    CHECK(listed.data["markers"][0]["start"]["timecode"] == tc(5));
+    // A start already on a frame is left alone.
+    h.ok("marker.add", {{"time", tc(9)}, {"name", "aligned"}});
+    CHECK(h.sequence(h.state()).markers[1].start == f(9));
+    // marker.update snaps its own start the same way.
+    h.ok("marker.update", {{"index", 0}, {"time", (f(7) + halfFrame).value}, {"duration", (f(3) + halfFrame).value}});
+    const auto& moved = h.sequence(h.state()).markers;
+    REQUIRE(moved.size() == 2);
+    CHECK(moved[0].name == "between");
+    CHECK(moved[0].start == f(7));
+    CHECK(moved[0].duration == f(3) + halfFrame);
+}

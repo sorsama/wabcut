@@ -738,7 +738,21 @@ void UpdateBridge::cancelInstall() {
 void UpdateBridge::skipThisVersion() {
     if (m_release) {
         QSettings().setValue(kSkippedKey, m_release->version);
+        emit stateChanged(); // updateNotice
     }
+}
+
+bool UpdateBridge::updateNotice() const {
+    if (!m_release || (m_state != QLatin1String("available") && m_state != QLatin1String("downloading") &&
+                       m_state != QLatin1String("ready"))) {
+        return false;
+    }
+    return update::compareVersions(m_release->version, m_config.currentVersion) > 0 &&
+           QSettings().value(kSkippedKey).toString() != m_release->version;
+}
+
+int UpdateBridge::compareVersions(const QString& a, const QString& b) const {
+    return update::compareVersions(a, b);
 }
 
 void UpdateBridge::openReleasePage() {

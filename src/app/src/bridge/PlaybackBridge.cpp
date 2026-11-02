@@ -224,6 +224,7 @@ void PlaybackBridge::setPreviewSettings(playback::PreviewSettings preview) {
     if (m_mirror) {
         m_mirror->scheduler().setPreview(m_preview);
     }
+    emit previewSettingsChanged();
 }
 
 void PlaybackBridge::setColorPreview(playback::ColorPreview preview) {
@@ -782,6 +783,21 @@ void PlaybackBridge::playAround(double prerollSeconds, double postrollSeconds) {
     m_session->pause();
     m_session->setLoop(std::nullopt); // plays once, whatever Loop says (applyLoop puts it back at the end)
     m_controller->setPlayhead(from);
+    m_stopAt = to;
+    m_returnTo = here;
+    startAudio();
+    m_session->play();
+    tick();
+}
+
+void PlaybackBridge::playRange(Ticks from, Ticks to) {
+    if (!m_session || !m_controller || m_sourceVideo || to <= from) {
+        return;
+    }
+    const Ticks here = m_controller->playhead();
+    m_session->pause();
+    m_session->setLoop(std::nullopt); // plays once, whatever Loop says (applyLoop puts it back at the end)
+    m_controller->setPlayhead(std::max(Ticks{}, from));
     m_stopAt = to;
     m_returnTo = here;
     startAudio();

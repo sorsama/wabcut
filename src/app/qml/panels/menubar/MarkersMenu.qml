@@ -6,6 +6,7 @@ import QtQuick
 // it back first): Mark In in the Source Monitor marks the source, Add Marker in the Timeline marks the clip under the
 // playhead. Their state follows that panel as well (AppMenuBar.commandState): with the Source Monitor focused, Go to /
 // Clear In and Out go by the source's marks, not the sequence's.
+// 0.6: Add Chapter Marker… and Edit Marker… (the marker at the playhead) open the marker editor.
 // 0.4: Ripple Sequence Markers (checked while on, the default): the sequence's markers move with insert, extract, ripple
 // delete and ripple trims, in the edit's undo step. Toggling it is one undo step; the choice is saved per sequence.
 MenuBarMenu {
@@ -58,6 +59,17 @@ MenuBarMenu {
         text: qsTr("Add Marker")
         command: "marker.add"
     }
+    // 0.6 (stream 1A): a chapter marker at the playhead (its editor opens), and the marker at the playhead's editor.
+    BarMenuItem {
+        objectName: "markersMenuAddChapter"
+        text: qsTr("Add Chapter Marker…")
+        command: "marker.addChapter"
+    }
+    BarMenuItem {
+        objectName: "markersMenuEdit"
+        text: qsTr("Edit Marker…")
+        command: "marker.edit"
+    }
     BarMenuItem {
         text: qsTr("Go to Next Marker")
         command: "marker.goToNext"
@@ -74,6 +86,12 @@ MenuBarMenu {
     BarMenuItem {
         text: qsTr("Clear All Markers")
         command: "marker.clearAll"
+    }
+    // P1 (#23, stream 1C): a still at each marker (thumbnail candidates; the Export Frame dialog in its markers mode).
+    BarMenuItem {
+        objectName: "markersMenuExportFrames"
+        text: qsTr("Export Frames at Markers…")
+        command: "marker.exportFrames"
     }
     ContextMenuSeparator {}
     BarMenuItem {

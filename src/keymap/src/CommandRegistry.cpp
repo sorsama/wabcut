@@ -91,11 +91,37 @@ constexpr std::array kBuiltinCommands{
     // 0.5 (stream C): Scene Edit Detection… (Premiere's timeline clip menu; no default key, no verified .kys item). Main.qml
     // opens the dialog on the selected video clips (SceneDetect).
     CommandInfo{"clip.sceneEditDetection", Scope::Application, "Clip", "Scene Edit Detection…", "Scene Edit Detection...", "", "", false},
+    // 0.6 (stream 1A): the out-of-sync tag's Move into Sync / Slip into Sync (Premiere's right-click on the tag; no key).
+    CommandInfo{"clip.moveIntoSync", Scope::Application, "Clip", "Move into Sync", "Move into Sync", "", "", false},
+    CommandInfo{"clip.slipIntoSync", Scope::Application, "Clip", "Slip into Sync", "Slip into Sync", "", "", false},
+    // 0.6 (card #74): Clip > Auditions (Final Cut's auditions; Premiere has none, so no .kys item and no default key).
+    // The Auditions bridge runs them (Main.qml opens the Take Selector panel).
+    CommandInfo{"audition.create", Scope::Application, "Clip", "New Audition", "", "", "", false},
+    CommandInfo{"audition.addSelected", Scope::Application, "Clip", "Add Selected Clips to Audition", "", "", "", false},
+    CommandInfo{"audition.addSource", Scope::Application, "Clip", "Add Source Monitor Clip to Audition", "", "", "", false},
+    CommandInfo{"audition.duplicateTake", Scope::Application, "Clip", "Duplicate Take", "", "", "", false},
+    CommandInfo{"audition.nextTake", Scope::Application, "Clip", "Next Take", "", "", "", true},
+    CommandInfo{"audition.previousTake", Scope::Application, "Clip", "Previous Take", "", "", "", true},
+    CommandInfo{"audition.flatten", Scope::Application, "Clip", "Flatten Audition", "", "", "", false},
+    CommandInfo{"audition.toggleOverlay", Scope::Application, "Clip", "Show Takes in Program Monitor", "", "", "", false},
+    CommandInfo{"audition.showTakeSelector", Scope::Application, "Clip", "Take Selector", "", "", "", false},
     // M5o (gaming): the Moments presets on the clip at the playhead. Wabcut's, with no default key.
     CommandInfo{"moments.slowMo", Scope::Application, "Clip", "Slow-mo at Playhead", "", "", "", false},
     CommandInfo{"moments.punchIn", Scope::Application, "Clip", "Punch-in at Playhead", "", "", "", false},
+    // 0.6 (P1 round, D2 #34): the rest of the Moments presets, so every one is bindable in Keyboard Shortcuts and has
+    // its own row in the Clip menu and the palette. Wabcut's, with no default key (Premiere has no counterpart).
+    CommandInfo{"moments.rampIn", Scope::Application, "Clip", "Speed Ramp In", "", "", "", false},
+    CommandInfo{"moments.freezeReplay", Scope::Application, "Clip", "Freeze and Replay", "", "", "", false},
+    CommandInfo{"moments.fastForward", Scope::Application, "Clip", "Fast Forward 300 %", "", "", "", false},
+    CommandInfo{"moments.punchInHold", Scope::Application, "Clip", "Punch In and Hold", "", "", "", false},
+    CommandInfo{"moments.shake", Scope::Application, "Clip", "Shake", "", "", "", false},
+    CommandInfo{"moments.instantReplay", Scope::Application, "Clip", "Instant Replay", "", "", "", false},
     // Sequence
     CommandInfo{"sequence.renderInToOut", Scope::Application, "Sequence", "Render Effects In to Out", "Render Effects In to Out", "context.global", "cmd.sequence.preview", false},
+    // 0.6 (P1 round, 2A #7 #58): no default key in Premiere and no verified .kys name.
+    CommandInfo{"sequence.renderSelection", Scope::Application, "Sequence", "Render Selection", "Render Selection", "", "", false},
+    CommandInfo{"sequence.deleteRenderFiles", Scope::Application, "Sequence", "Delete Render Files", "Delete Render Files", "", "", false},
+    CommandInfo{"sequence.deleteRenderFilesInToOut", Scope::Application, "Sequence", "Delete Render Files In to Out", "Delete Render Files In to Out", "", "", false},
     CommandInfo{"sequence.matchFrame", Scope::Application, "Sequence", "Match Frame", "Match Frame", "context.global", "cmd.sequence.matchframe", false},
     CommandInfo{"sequence.reverseMatchFrame", Scope::Application, "Sequence", "Reverse Match Frame", "Reverse Match Frame", "context.global", "cmd.sequence.reversematchframe", false},
     CommandInfo{"sequence.addEdit", Scope::Application, "Sequence", "Add Edit", "Add Edit", "context.global", "cmd.sequence.razorateditline", false},
@@ -122,6 +148,16 @@ constexpr std::array kBuiltinCommands{
     // P.2 (E5): Sequence Settings, Replace With Clip, Make Subsequence from In to Out, Join Through Edits, Go to Gap > in
     // Track, Close Gap. No default keys in Premiere; the .kys names are from its shipped macOS key set.
     CommandInfo{"sequence.makeSubsequenceFromInToOut", Scope::Application, "Sequence", "Make Subsequence from In to Out", "Make Subsequence from In to Out", "context.global", "cmd.sequence.makesubsequencefromintoout", false},
+    // 0.6 (P1 round, D2 #9): the same In to Out range made into a 1080x1920 Short with the Highlights Short options
+    // (no highlight find needed). Wabcut's, with no default key.
+    CommandInfo{"sequence.makeShortFromInOut", Scope::Application, "Sequence", "Make a Short from In to Out", "", "", "", false},
+    // 0.6 (P1 round, D2 #34): the gaming sequence actions. moments.* keeps Main.qml's prefix route to Moments;
+    // Auto Reframe Sequence is Premiere's own command (no default key, no verified .kys item) and opens Reframe.
+    CommandInfo{"moments.shortsVersion", Scope::Application, "Sequence", "Make Shorts Version", "", "", "", false},
+    CommandInfo{"moments.squareVersion", Scope::Application, "Sequence", "Make Square Version", "", "", "", false},
+    CommandInfo{"moments.findDeadTime", Scope::Application, "Sequence", "Find Dead Time…", "", "", "", false},
+    CommandInfo{"moments.findHighlights", Scope::Application, "Sequence", "Find Highlights…", "", "", "", false},
+    CommandInfo{"sequence.autoReframe", Scope::Application, "Sequence", "Auto Reframe Sequence…", "Auto Reframe Sequence...", "", "", false},
     CommandInfo{"sequence.settings", Scope::Application, "Sequence", "Sequence Settings…", "Sequence Settings...", "context.global", "cmd.sequence.sequencesettingsgeneral", false},
     CommandInfo{"sequence.replaceFromSourceMonitor", Scope::Application, "Sequence", "Replace With Clip: From Source Monitor", "From Source Monitor", "context.global", "clip.replaceclip.fromsourcemonitor", false},
     CommandInfo{"sequence.replaceFromSourceMonitorMatchFrame", Scope::Application, "Sequence", "Replace With Clip: From Source Monitor, Match Frame", "From Source Monitor, Match Frame", "context.global", "clip.replaceclip.fromsourcemonitor.matchframe", false},
@@ -134,8 +170,29 @@ constexpr std::array kBuiltinCommands{
     CommandInfo{"sequence.addCaptionAtPlayhead", Scope::Application, "Sequence", "Add Caption at Playhead", "Add caption at playhead", "context.global", "cmd.caption.add.trackitem", false},
     CommandInfo{"sequence.nextCaptionSegment", Scope::Application, "Sequence", "Go to Next Caption Segment", "Go to the next caption segment", "context.timeline", "cmd.timeline.goto.next.caption.trackitem", true},
     CommandInfo{"sequence.previousCaptionSegment", Scope::Application, "Sequence", "Go to Previous Caption Segment", "Go to the previous caption segment", "context.timeline", "cmd.timeline.goto.prev.caption.trackitem", true},
+    // 0.6 (P1 round, stream 2E #37): Sequence > Captions > Correct Transcript from Script… (the sheet). Wabcut's own, no key.
+    CommandInfo{"transcript.correctFromScript", Scope::Application, "Sequence", "Correct Transcript from Script…", "", "", "", false},
+    // 0.6 (P1 round, 3A #62): Sequence > Creator Autopilot… (auto B-roll, publishing kit, pacing match). Wabcut's own, no key.
+    CommandInfo{"sequence.creatorAutopilot", Scope::Application, "Sequence", "Creator Autopilot…", "", "", "", false},
+    // 0.6 (P1 round, D9 #8): the beat tools (Sequence > Beat Grid, Clip > Detect Beats...). Premiere has no beat
+    // detection, so all four are Wabcut's own with no default key; edit.snapToBeats and sequence.cutToBeats share their
+    // names with the catalog commands of the same work (the palette lists the keymap row once).
+    CommandInfo{"sequence.detectBeats", Scope::Application, "Sequence", "Detect Beats", "", "", "", false},
+    CommandInfo{"edit.snapToBeats", Scope::Application, "Sequence", "Snap to Beats", "", "", "", false},
+    CommandInfo{"sequence.cutToBeats", Scope::Application, "Sequence", "Cut to Beats", "", "", "", false},
+    CommandInfo{"sequence.clearBeatGrid", Scope::Application, "Sequence", "Clear Beat Grid", "", "", "", false},
     CommandInfo{"sequence.rippleTrimPreviousToPlayhead", Scope::Application, "Sequence", "Ripple Trim Previous Edit to Playhead", "Ripple Trim Previous Edit To Playhead", "context.global", "cmd.sequence.rippletrimpreviousedittoplayhead", false},
     CommandInfo{"sequence.rippleTrimNextToPlayhead", Scope::Application, "Sequence", "Ripple Trim Next Edit to Playhead", "Ripple Trim Next Edit To Playhead", "context.global", "cmd.sequence.rippletrimnextedittoplayhead", false},
+    // 0.6 (stream 1A): the non-ripple companions of Q / W (.kys names verified in Premiere's macOS key set).
+    CommandInfo{"sequence.extendPreviousToPlayhead", Scope::Application, "Sequence", "Extend Previous Edit to Playhead", "Extend Previous Edit To Playhead", "context.global", "cmd.sequence.extendpreviousedittoplayhead", false},
+    CommandInfo{"sequence.extendNextToPlayhead", Scope::Application, "Sequence", "Extend Next Edit to Playhead", "Extend Next Edit To Playhead", "context.global", "cmd.sequence.extendnextedittoplayhead", false},
+    CommandInfo{"sequence.trimPreviousToPlayhead", Scope::Application, "Sequence", "Trim Previous Edit to Playhead", "Trim Previous Edit to Playhead", "context.global", "cmd.tlnav.trim.in.to.cti", false},
+    CommandInfo{"sequence.trimNextToPlayhead", Scope::Application, "Sequence", "Trim Next Edit to Playhead", "Trim Next Edit to Playhead", "context.global", "cmd.tlnav.trim.out.to.cti", false},
+    // 0.6 (stream 1A): Toggle All Video / Audio Targets and Sources (the track headers' target chips and source patches).
+    CommandInfo{"timeline.toggleAllVideoTargets", Scope::Application, "Timeline", "Toggle All Video Targets", "Toggle All Video Targets", "context.global", "cmd.tlnav.toggle.all.target.video", false},
+    CommandInfo{"timeline.toggleAllAudioTargets", Scope::Application, "Timeline", "Toggle All Audio Targets", "Toggle All Audio Targets", "context.global", "cmd.tlnav.toggle.all.target.audio", false},
+    CommandInfo{"timeline.toggleAllVideoSources", Scope::Application, "Timeline", "Toggle All Source Video", "Toggle All Source Video", "context.global", "cmd.tlnav.toggle.all.source.video", false},
+    CommandInfo{"timeline.toggleAllAudioSources", Scope::Application, "Timeline", "Toggle All Source Audio", "Toggle All Source Audio", "context.global", "cmd.tlnav.toggle.all.source.audio", false},
     CommandInfo{"sequence.selectClipAtPlayhead", Scope::Application, "Sequence", "Select Clip at Playhead", "Select Clip at Playhead", "context.global", "cmd.tlnav.select.clip.at.playhead", false},
     // 0.2: Sequence > Selection Follows Playhead (a toggle). No default key in Premiere's key sets; its .kys name is not
     // verified, so a custom key set does not carry one over.
@@ -175,11 +232,16 @@ constexpr std::array kBuiltinCommands{
     CommandInfo{"marker.clearOut", Scope::Application, "Markers", "Clear Out", "Clear Out", "context.global", "cmd.clear.out", false},
     CommandInfo{"marker.clearInAndOut", Scope::Application, "Markers", "Clear In and Out", "Clear In and Out", "context.global", "cmd.clear.inandout", false},
     CommandInfo{"marker.add", Scope::Application, "Markers", "Add Marker", "Add Marker", "context.global", "cmd.set.marker", false},
+    // 0.6 (stream 1A): Markers > Edit Marker... and Add Chapter Marker... (no default keys in Premiere).
+    CommandInfo{"marker.edit", Scope::Application, "Markers", "Edit Marker…", "Edit Marker...", "context.global", "cmd.marker.edit", false},
+    CommandInfo{"marker.addChapter", Scope::Application, "Markers", "Add Chapter Marker…", "Add Chapter Marker...", "context.global", "cmd.marker.setchaptermarkerdialog", false},
     CommandInfo{"marker.goToNext", Scope::Application, "Markers", "Go to Next Marker", "Go to Next Marker", "context.global", "cmd.marker.gotomarker.next", false},
     CommandInfo{"marker.goToPrevious", Scope::Application, "Markers", "Go to Previous Marker", "Go to Previous Marker", "context.global", "cmd.marker.gotomarker.previous", false},
     CommandInfo{"marker.clearSelected", Scope::Application, "Markers", "Clear Selected Marker", "Clear Selected Marker", "context.global", "cmd.marker.clearmarker.current", false},
     CommandInfo{"marker.clearAll", Scope::Application, "Markers", "Clear All Markers", "Clear All Markers", "context.global", "cmd.marker.clearmarker.all", false},
     CommandInfo{"marker.toggleRipple", Scope::Application, "Markers", "Ripple Sequence Markers", "Ripple Sequence Markers", "context.global", "cmd.marker.style.ripplesequencemarkers", false},
+    // 0.6 (P1 round, stream 1C #23): a still at each marker (no Premiere equivalent).
+    CommandInfo{"marker.exportFrames", Scope::Application, "Markers", "Export Frames at Markers…", "", "", "", false},
     // Graphics and Titles
     CommandInfo{"graphics.newTextLayer", Scope::Application, "Graphics and Titles", "New Layer: Text", "Text", "context.global", "cmd.graphics.add.text", false},
     CommandInfo{"graphics.newRectangleLayer", Scope::Application, "Graphics and Titles", "New Layer: Rectangle", "Rectangle", "context.global", "cmd.graphics.add.shape.rectangle", false},
@@ -216,6 +278,9 @@ constexpr std::array kBuiltinCommands{
     CommandInfo{"window.backgroundTasks", Scope::Application, "Window", "Background Tasks", "", "", "", false},
     // 0.5 (stream B): Window > Audio Meters; no default key in either shipped key set (both list the item).
     CommandInfo{"window.audioMeters", Scope::Application, "Window", "Audio Meters", "Audio Meters", "context.global", "uif.window.Audio Meter", false},
+    // P1 round (#30): move the focus to the next / previous panel group (Ctrl+F6 / Ctrl+Shift+F6, Wabcut keys).
+    CommandInfo{"window.nextPanelGroup", Scope::Application, "Window", "Next Panel Group", "", "", "", false},
+    CommandInfo{"window.previousPanelGroup", Scope::Application, "Window", "Previous Panel Group", "", "", "", false},
     // Tools
     CommandInfo{"tool.selection", Scope::Application, "Tools", "Selection Tool", "Selection Tool", "context.global", "cmd.tools.01pointer", false},
     CommandInfo{"tool.trackSelectForward", Scope::Application, "Tools", "Track Select Forward Tool", "Track Select Forward Tool", "context.global", "cmd.tools.02trackselectforward", false},
@@ -256,6 +321,18 @@ constexpr std::array kBuiltinCommands{
     CommandInfo{"transport.toggleAudioScrubbing", Scope::Application, "Playback", "Toggle Audio Scrubbing", "Toggle Audio Scrubbing", "context.global", "cmd.toggle.audio.scrubbing", false},
     // P.2 (E6): the monitors' Loop button (the focused monitor's; no default key in either shipped key set).
     CommandInfo{"monitor.loop", Scope::Application, "Playback", "Loop", "Loop", "context.global", "cmd.monitor.loop", false},
+    // P1 (#19): Toggle Proxies and the playback resolution (View menu; Premiere's names, no default key in either shipped
+    // key set and no verified .kys item, so a custom key set carries none over).
+    CommandInfo{"monitor.toggleProxies", Scope::Application, "Playback", "Toggle Proxies", "Toggle Proxies", "", "", false},
+    CommandInfo{"monitor.playbackResolutionAuto", Scope::Application, "Playback", "Playback Resolution: Auto", "Playback Resolution: Auto", "", "", false},
+    CommandInfo{"monitor.playbackResolutionFull", Scope::Application, "Playback", "Playback Resolution: Full", "Playback Resolution: Full", "", "", false},
+    CommandInfo{"monitor.playbackResolutionHalf", Scope::Application, "Playback", "Playback Resolution: 1/2", "Playback Resolution: 1/2", "", "", false},
+    CommandInfo{"monitor.playbackResolutionQuarter", Scope::Application, "Playback", "Playback Resolution: 1/4", "Playback Resolution: 1/4", "", "", false},
+    // P1 (#16): Premiere's Paused Resolution (no default key, no verified .kys name).
+    CommandInfo{"monitor.pausedResolutionSame", Scope::Application, "Playback", "Paused Resolution: Same as Playback", "", "", "", false},
+    CommandInfo{"monitor.pausedResolutionFull", Scope::Application, "Playback", "Paused Resolution: Full", "Paused Resolution: Full", "", "", false},
+    CommandInfo{"monitor.pausedResolutionHalf", Scope::Application, "Playback", "Paused Resolution: 1/2", "Paused Resolution: 1/2", "", "", false},
+    CommandInfo{"monitor.pausedResolutionQuarter", Scope::Application, "Playback", "Paused Resolution: 1/4", "Paused Resolution: 1/4", "", "", false},
     // P.2 (E6): the Program Monitor full screen on its display (Ctrl+` in both shipped key sets) and Transmit (no key).
     CommandInfo{"monitor.toggleFullScreen", Scope::Application, "Window", "Toggle Full Screen", "Toggle Full Screen", "context.global", "cmd.toggle.fullscreen.monitor", false},
     CommandInfo{"monitor.enableTransmit", Scope::Application, "Playback", "Enable Transmit", "Enable Transmit", "context.global", "cmd.toggletransmit", false},
@@ -282,6 +359,8 @@ constexpr std::array kBuiltinCommands{
     CommandInfo{"history.stepBackward", Scope::History, "History", "Step Backward", "Step Backward", "context.history", "cmd.history.step.backward", true},
     CommandInfo{"history.stepForward", Scope::History, "History", "Step Forward", "Step Forward", "context.history", "cmd.history.step.forward", true},
     CommandInfo{"history.delete", Scope::History, "History", "Delete", "Delete", "context.history", "cmd.edit.clear", false},
+    // P1 round (#4): the History panel menu's Clear History (no default key; asks first).
+    CommandInfo{"history.clear", Scope::History, "History", "Clear History", "Clear History", "", "", false},
     // Media Browser
     CommandInfo{"mediaBrowser.openInSourceMonitor", Scope::MediaBrowser, "Media Browser", "Open in Source Monitor", "Open in Source Monitor", "context.mediabrowser", "cmd.mediabrowser.openinsourcemonitor", false},
     CommandInfo{"mediaBrowser.selectDirectoryList", Scope::MediaBrowser, "Media Browser", "Select Directory List", "Select Directory List", "context.mediabrowser", "cmd.mediabrowser.selectdirectorylist", false},

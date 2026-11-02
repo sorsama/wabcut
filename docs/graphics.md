@@ -64,6 +64,34 @@ files. Rendering: `docs/internal/c13-graphics-handoff.md`. Commands: [commands.m
   its look and how many layers follow it - click it to apply it to every text layer of the graphic clips selected on the
   timeline, or drag it onto a graphic clip on the timeline to style that clip's text layers, groups' included (one undo
   step either way; the drop target lights up, other clips refuse it), right-click to rename, duplicate or delete it.
+- **Text in Effect Controls** (0.6, Premiere's Text in Effect Controls): selecting a graphic clip shows one
+  **Text (<layer>)** section per text layer in Effect Controls (the top layer first, above the clip's Transform), so a
+  text can be written and styled there without opening another panel:
+  - **Source Text**: the text (several lines; applied when the box loses focus or with Ctrl+Enter), **Font** (every
+    installed family, filtered as you type), **Font Style**, **Font Size**, **Alignment** (left, centre, right, justify),
+    **Vertical Alignment** (paragraph text in a box taller than it: top, centre, bottom), **Tracking**, **Kerning**
+    (the font's own kerning pairs, Premiere's Metrics; off spaces the letters by their advances alone - Qt's text engine
+    has no optical or per-pair manual kerning, so tracking is the way to space letters by hand), **Leading** (0 =
+    automatic), **Baseline Shift**, **Capitals** (Normal, All Caps, Small Caps), **Faux Bold**, **Faux Italic** (a 12
+    degree slant) and **Underline**.
+  - **Appearance**: **Fill**; any number of **Strokes** (up to 8; the + button adds one) with colour, width and
+    position - **Outside** (under the fill), **Center** or **Inside** (over it, clipped to the glyphs); the first hugs the
+    glyphs and each next one frames the ones before it; a **Background** box (colour, opacity, padding, corner radius)
+    and a **Shadow** (colour, opacity, angle, distance, **Size** - Premiere's spread: the shape grows before the blur -
+    and blur).
+  - **Transform** of the layer: position, scale (Scale Width and Height when they differ), rotation, opacity, anchor.
+  - Size, tracking, leading, baseline shift, stroke widths and the transform are **keyframable** like any Effect
+    Controls row (stopwatch, keys in the lane, graph, interpolation menu, copy and paste). A text with several runs
+    follows the keys as a whole: sizes in proportion to the first run's, the others by the same amount. **Source Text**
+    has a stopwatch too: with it on, changing the text (or its font, style, capitals, faux styles, underline or kerning)
+    at a time without a key adds a hold key there, so the text switches at that frame (Premiere's Source Text
+    keyframes). Keys of a graphic with responsive time are in its design time; the lane shows them where they play.
+  - Every change is one undo step. The Essential Graphics panel edits the same layer (its text controls show the text
+    as it is at the playhead, and have the new faux styles, capitals, kerning, vertical alignment, strokes and shadow
+    size too). A **title** clip (the Library's Text tab) shows its Title Style as its **Text (<name>)** section: the
+    title's text, font and style, and its style values with one colour row per colour.
+  - Preview and export draw the same text (one rasteriser). Interchange: FCPXML, OTIO and the other timeline exports
+    still leave motion graphics out (reported as dropped, as before); a title exports its text, font and style values.
 - **Bounds.** A graphic holds at most 256 layers, nested 8 deep, 16 KiB of text per layer, 1024 vertices per path; every
   value is range-checked. Graphics come from project files, templates and Lottie files: untrusted input.
 
@@ -127,7 +155,7 @@ graphic inside template files. Keys at their default are left out; readers accep
 - **Layer**: `id` (unique, not 0), `kind` (`text`, `shape`, `image`, `group`), `name`, `visible`, `transform`
   (`x`, `y`, `anchorX`, `anchorY`, `scaleX`, `scaleY` %, `rotation`, `opacity` %), `blend` (`normal`, `multiply`, `screen`,
   `overlay`, `add`, `darken`, `lighten`, `difference`), `shadow` (`enabled`, `color`, `opacity` 0..1, `angle`,
-  `distance`, `softness`), `masks` (the project file's masks, [masks.md](masks.md): the layer's space normalised by the
+  `distance`, `softness`, 0.6: `size`), `masks` (the project file's masks, [masks.md](masks.md): the layer's space normalised by the
   canvas), `in` / `out` (ticks: when it shows), `pin` (`to` - a sibling's id, or `"frame"` for the video frame -, `edges`,
   `offsets` left/top/right/bottom), `textStyle` (the project text style it follows), and one of `text`, `shape`,
   `image`, `children` (a group's layers, bottom to top).
@@ -136,7 +164,12 @@ graphic inside template files. Keys at their default are left out; readers accep
 - **Text**: `runs` (`text`; `font`, `style`, `brandFont` (a kit font role), `weight` 100..900, `size`, `fill`, `italic`,
   `underline`, `tracking` 1/1000 em, `leading` px, `baselineShift`), `align` (`left`, `center`, `right`, `justify`),
   `boxWidth` / `boxHeight` (paragraph text; 0 = point text), `language` (`"th"`), `background` (`enabled`, `color`,
-  `padding`, `radius`), `animators`.
+  `padding`, `radius`), `animators`. 0.6: a run's `kerning` (default true), `caps` (`normal`, `allCaps`, `smallCaps`),
+  `fauxBold`, `fauxItalic`; the text's `verticalAlign` (`top`, `center`, `bottom`), `strokes` (`[{"enabled", "color",
+  "width" (animatable), "position": "outside" | "center" | "inside"}]`), `sizeKeys` / `trackingKeys` / `leadingKeys` /
+  `baselineKeys` (curves of the first run's value; the runs follow), and Source Text keys: `sourceKey` (a curve of hold
+  keys, each the version shown from it on: 0 the `runs`, i `sources[i - 1]`) with `sources` (lists of runs). Graphics
+  without them write none of these keys.
 - **Text animators** (After Effects' range selector): `unit` (`character` - grapheme clusters, so a Thai consonant with
   its marks is one -, `word` - the line breaker's words, `line`), `start`, `end`, `offset` (% of the units), `shape`
   (`square`, or `ramp` with `softness` units), and what fully selected units get: `opacity` %, `offsetX`, `offsetY`,
@@ -197,6 +230,15 @@ A `.mogrt` is untrusted: at most 64 MiB, read by a bounded ZIP reader (`wabcut/i
 multi-disk or encrypted archives; at most 4096 entries, 16 MiB an entry and 64 MiB in all, declared sizes and CRCs
 checked, absolute paths, drive letters and `..` refused), `definition.json` at most 4 MiB; `tests/fuzz/fuzz_mogrt.cpp`
 fuzzes it.
+
+**In the app (0.6).** **Graphics > Install Motion Graphics Template…** (and **Install Motion Graphics Template into My
+Templates…**) opens a file dialog for a `.mogrt` or `.wabcut-template.json` and adds it to This project or My templates;
+Callouts > Browse has an **Install template…** button for the project's library. A template file dropped on the Library
+or the Timeline, or a `.mogrt` picked in File > Import..., installs the same way (one undo step each) instead of becoming
+media: a `.wabcut-template.json` says 'Template "X" added to This project', and a `.mogrt` that was only approximated
+opens the import report with what was read and what was dropped. A template's right-click menu (built-in templates
+included) has **Export template…**, which writes `<id>.wabcut-template.json` wherever the save dialog points; the
+`.mogrt` itself cannot be written out, as Wabcut reads a part of it.
 
 **Caption Track Styles (0.2).** A caption track can follow a caption preset (Premiere's Track Style menu,
 `captions.setTrackStyle`; `"trackStyle"` on the caption track in the project file): it takes the preset's style, and

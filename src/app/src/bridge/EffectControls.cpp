@@ -6,11 +6,17 @@
 #include "ProjectController.h"
 
 #include <wabcut/model/Animations.h>
+#include <wabcut/model/ChangeSet.h>
 #include <wabcut/model/Clipboard.h>
 #include <wabcut/model/EditOps.h>
+#include <wabcut/model/GraphicOps.h>
+#include <wabcut/model/GraphicResolve.h>
+#include <wabcut/model/MasterClipEffects.h>
 #include <wabcut/model/TitleOps.h>
 
+#include <QColor>
 #include <QCoreApplication>
+#include <QFontDatabase>
 #include <QRandomGenerator>
 
 #include <algorithm>
@@ -39,6 +45,49 @@ QString interpolationName(Interpolation i) {
 
 bool isTransitionKind(EffectKind kind) {
     return kind == EffectKind::VideoTransition || kind == EffectKind::AudioTransition;
+}
+
+/// 0.6 (card #71): a parameter's value as the clip plays it: ProjectController::parameterValue, or, for an effect of the
+/// clip's media's Master Clip Effects (not in the clip's own stack), the value there.
+ParamValue paramValueOf(const ProjectController* controller, const Clip& clip, const edit::ParamRef& ref) {
+    if (!ref.intrinsic && ref.layer == 0 && controller &&
+        std::none_of(clip.effects().begin(), clip.effects().end(), [&](const EffectInstance& e) { return e.id == ref.effect; })) {
+        const ProjectSnapshot snapshot = controller->snapshot();
+        if (const MediaItem* holder = snapshot ? masterEffectHolder(*snapshot, clip.media, ref.effect) : nullptr) {
+            for (const EffectInstance& e : holder->masterEffects) {
+                if (e.id != ref.effect)
+                    continue;
+                if (const ParamValue* value = e.find(ref.key))
+                    return *value;
+                if (const EffectDescriptor* d = EffectRegistry::builtin().find(e.effect)) {
+                    if (const EffectParamInfo* info = d->param(ref.key))
+                        return ParamValue(info->defaultValue);
+                }
+            }
+        }
+    }
+    return ProjectController::parameterValue(clip, ref);
+}
+
+/// Runs edit steps one after the other on the evolving state, as one edit (changes against the first state).
+edit::EditOutcome chainedEdit(const ProjectState& state, const std::vector<std::function<edit::EditOutcome(const ProjectState&)>>& steps) {
+    std::optional<edit::EditResult> last;
+    for (const auto& step : steps) {
+        auto next = step(last ? last->state : state);
+        if (!next)
+            return next;
+        std::vector<EffectInstanceId> created = last ? last->createdEffects : std::vector<EffectInstanceId>{};
+        created.insert(created.end(), next->createdEffects.begin(), next->createdEffects.end());
+        last = std::move(*next);
+        last->createdEffects = std::move(created);
+    }
+    if (!last) {
+        edit::EditResult unchanged;
+        unchanged.state = state;
+        return unchanged;
+    }
+    last->changes = diff(state, last->state);
+    return std::move(*last);
 }
 
 /// Icon of a library category.
@@ -96,6 +145,28 @@ std::vector<ClipId> clipsOfKind(const Sequence& seq, const std::vector<ClipId>& 
     return out;
 }
 
+/// 0.6: the selected clips (in `seq`) each with its linked partners, once each: several of them is Effect Controls'
+/// multi mode.
+std::vector<std::vector<ClipId>> multiUnits(const Sequence& seq, const std::vector<ClipId>& selection) {
+    std::vector<std::vector<ClipId>> units;
+    std::set<ClipId> seen;
+    for (const ClipId id : selection) {
+        if (seen.contains(id) || !seq.findClip(id))
+            continue;
+        std::vector<ClipId> unit{id};
+        seen.insert(id);
+        const ClipId ids[] = {id};
+        for (const ClipId partner : edit::withLinkedClips(seq, ids)) {
+            if (!seen.contains(partner) && seq.findClip(partner)) {
+                seen.insert(partner);
+                unit.push_back(partner);
+            }
+        }
+        units.push_back(std::move(unit));
+    }
+    return units;
+}
+
 /// Runs several edits on one state (one undo step): each sees the previous one's result.
 edit::EditOutcome chain(const ProjectState& state,
                         const std::vector<std::function<edit::EditOutcome(const ProjectState&)>>& steps) {
@@ -138,7 +209,7 @@ bool EffectControlsModel::Row::sameData(const Row& o) const {
         && effectEnabled == o.effectEnabled && collapsed == o.collapsed && removable == o.removable
         && movable == o.movable && resettable == o.resettable && known == o.known && stackIndex == o.stackIndex
         && keys == o.keys && options == o.options && graphOpen == o.graphOpen && graph == o.graph
-        && sectionSelected == o.sectionSelected;
+        && sectionSelected == o.sectionSelected && mixed == o.mixed;
 }
 
 /// 0.4: what Copy / Cut put on the effects clipboard - a snapshot of the shown video and audio clips (their sections
@@ -156,7 +227,10 @@ EffectControlsModel::EffectControlsModel(ProjectController* controller)
     connect(controller, &ProjectController::selectedTransitionChanged, this, &EffectControlsModel::refresh);
     connect(controller, &ProjectController::playheadChanged, this, &EffectControlsModel::refresh);
     // 0.4: a clip copy after an effects copy is the newest copy: Paste pastes clips again.
-    connect(controller, &ProjectController::clipboardChanged, this, [this] { setEffectsPending(false); });
+    connect(controller, &ProjectController::clipboardChanged, this, [this] {
+        setEffectsPending(false);
+        setKeysPending(false); // 0.6: the newest copy wins
+    });
 }
 
 int EffectControlsModel::rowCount(const QModelIndex& parent) const {
@@ -182,6 +256,7 @@ QHash<int, QByteArray> EffectControlsModel::roleNames() const {
         {OptionsRole, "options"},     {DescriptionRole, "description"},
         {KnownRole, "known"},         {GraphOpenRole, "graphOpen"},
         {GraphRole, "graph"},         {SectionSelectedRole, "sectionSelected"},
+        {MixedRole, "mixed"},
     };
 }
 
@@ -224,6 +299,7 @@ QVariant EffectControlsModel::data(const QModelIndex& index, int role) const {
     case GraphOpenRole: return r.graphOpen;
     case GraphRole: return r.graph;
     case SectionSelectedRole: return r.sectionSelected;
+    case MixedRole: return r.mixed;
     default: return {};
     }
 }
@@ -299,14 +375,54 @@ std::optional<Ticks> EffectControlsModel::keyTimelineTime(const Clip& clip, Tick
     return t;
 }
 
-std::vector<std::pair<std::size_t, Ticks>> EffectControlsModel::visibleKeys(const Row&, const Curve& curve,
+std::vector<std::pair<std::size_t, Ticks>> EffectControlsModel::visibleKeys(const Row& row, const Curve& curve,
                                                                              const Clip& clip) const {
     std::vector<std::pair<std::size_t, Ticks>> out;
     for (std::size_t i = 0; i < curve.keys.size(); ++i) {
-        if (const auto t = keyTimelineTime(clip, curve.keys[i].time))
-            out.emplace_back(i, *t);
+        if (row.ref.layer == 0) {
+            if (const auto t = keyTimelineTime(clip, curve.keys[i].time))
+                out.emplace_back(i, *t);
+        } else if (const auto t = rowTimelineTime(row, clip, curve.keys[i].time);
+                   t && *t >= m_lane.start && *t < m_lane.end()) {
+            out.emplace_back(i, *t); // 0.6: a graphic layer's key (graphic time)
+        }
     }
     return out;
+}
+
+// ---- 0.6: graphic time ------------------------------------------------------------------------------
+
+Ticks EffectControlsModel::rowCurveTime(const Row& row, const Clip& clip, Ticks t) const {
+    const Graphic* graphic = row.ref.layer != 0 ? clip.graphic() : nullptr;
+    if (graphic && graphic->responsive)
+        return graphicTimeAt(clip, *graphic, std::clamp(t, clip.start(), std::max(clip.start(), clip.end() - Ticks{1})));
+    return clip.curveTimeAt(t);
+}
+
+Ticks EffectControlsModel::rowCurveTimeAtPlayhead(const Row& row, const Clip& clip) const {
+    const Graphic* graphic = row.ref.layer != 0 ? clip.graphic() : nullptr;
+    if (graphic && graphic->responsive)
+        return rowCurveTime(row, clip, m_controller->playhead());
+    return m_controller->curveTimeAtPlayhead(clip);
+}
+
+std::optional<Ticks> EffectControlsModel::rowTimelineTime(const Row& row, const Clip& clip, Ticks curveTime) const {
+    const Graphic* graphic = row.ref.layer != 0 ? clip.graphic() : nullptr;
+    if (!graphic || !graphic->responsive)
+        return clip.timelineTimeOfCurveTime(curveTime);
+    // Responsive time: design time never runs backwards along the clip, so the first timeline tick that reaches it.
+    Ticks lo = clip.start();
+    Ticks hi = clip.end() - Ticks{1};
+    if (hi < lo || graphicTimeAt(clip, *graphic, lo) > curveTime || graphicTimeAt(clip, *graphic, hi) < curveTime)
+        return std::nullopt;
+    while (lo < hi) {
+        const Ticks mid{lo.value + (hi.value - lo.value) / 2};
+        if (graphicTimeAt(clip, *graphic, mid) < curveTime)
+            lo = Ticks{mid.value + 1};
+        else
+            hi = mid;
+    }
+    return lo;
 }
 
 void EffectControlsModel::addParamRow(std::vector<Row>& rows, const Clip& clip, const QString& key,
@@ -329,8 +445,9 @@ void EffectControlsModel::addParamRow(std::vector<Row>& rows, const Clip& clip, 
     r.step = range.step;
     r.decimals = range.decimals;
     r.origin = range.bipolar ? 0.0 : r.from;
-    const ParamValue value = ProjectController::parameterValue(clip, ref);
-    const Ticks curveTime = m_controller->curveTimeAtPlayhead(clip);
+    r.ref = ref;
+    const ParamValue value = paramValueOf(m_controller, clip, ref);
+    const Ticks curveTime = rowCurveTimeAtPlayhead(r, clip);
     r.value = range.toUi(value.valueAt(curveTime), r.frame);
     r.defaultValue = range.toUi(defaultModel, r.frame);
     r.animatable = animatable;
@@ -368,7 +485,7 @@ QVariantMap EffectControlsModel::graphOf(const Row& r, const Curve& curve, const
     const double laneLength = static_cast<double>(std::max<std::int64_t>(1, m_lane.duration.value));
     const auto ui = [&](double model) { return r.range.toUi(model, r.frame); };
     const auto xOf = [&](Ticks curveTime) -> std::optional<double> {
-        const auto t = clip.timelineTimeOfCurveTime(curveTime);
+        const auto t = rowTimelineTime(r, clip, curveTime);
         if (!t)
             return std::nullopt;
         return static_cast<double>((*t - m_lane.start).value) / laneLength;
@@ -386,7 +503,7 @@ QVariantMap EffectControlsModel::graphOf(const Row& r, const Curve& curve, const
         for (int i = 0; i <= kSamples; ++i) {
             const double x = from + (to - from) * static_cast<double>(i) / kSamples;
             const Ticks t{m_lane.start.value + static_cast<std::int64_t>(std::llround(x * laneLength))};
-            out.emplace_back(x, ui(curve.valueAt(clip.curveTimeAt(t))));
+            out.emplace_back(x, ui(curve.valueAt(rowCurveTime(r, clip, t))));
         }
         return out;
     };
@@ -496,7 +613,7 @@ void EffectControlsModel::makeChoice(Row& r, const EffectParamInfo& p) {
 
 bool EffectControlsModel::isValueRow(const Row& r) {
     return r.kind == QLatin1String("param") || r.kind == QLatin1String("toggle") ||
-           (r.kind == QLatin1String("choice") && !r.ref.key.empty());
+           (r.kind == QLatin1String("choice") && (!r.ref.key.empty() || !r.textProp.isEmpty()));
 }
 
 void EffectControlsModel::addClipSections(std::vector<Row>& rows, const Clip& clip, bool video) {
@@ -529,6 +646,7 @@ void EffectControlsModel::addClipSections(std::vector<Row>& rows, const Clip& cl
         }
     };
     if (video) {
+        addTextSections(rows, clip); // 0.6: a graphic's text layers, above its Transform
         header(QStringLiteral("motion"), QStringLiteral("intrinsic"), tx("Transform"), QStringLiteral("scaling"));
         intrinsic(QStringLiteral("motion"), PropertyRole::Motion);
         header(QStringLiteral("opacity"), QStringLiteral("intrinsic"), tx("Opacity"), QStringLiteral("blend"));
@@ -538,17 +656,71 @@ void EffectControlsModel::addClipSections(std::vector<Row>& rows, const Clip& cl
         intrinsic(QStringLiteral("audio"), PropertyRole::Audio);
     }
 
+    // 0.6 (card #71): the media's Master Clip Effects, under a "Master Clip" caption above the clip's own effects (they
+    // play first). Edits go through the clip's operations, which act on the master stack (FinishingOps.h).
+    const ProjectSnapshot snapshot = m_controller ? m_controller->snapshot() : nullptr;
+    const MediaItem* masterItem = snapshot && !clip.isNested() && clip.angles.empty() ? snapshot->findMedia(clip.media) : nullptr;
+    if (masterItem) {
+        const EffectKind kind = video ? EffectKind::Video : EffectKind::Audio;
+        const EffectStack master = masterEffectsOf(*snapshot, clip.media, kind);
+        if (!master.empty()) {
+            const bool off = clip.content().masterEffectsOff;
+            Row g;
+            g.key = QStringLiteral("master:") + QString::number(clip.id.value);
+            g.kind = QStringLiteral("group");
+            g.section = QStringLiteral("master");
+            g.sectionKind = QStringLiteral("master");
+            g.title = off ? tx("Master Clip: %1 (off for this clip)").arg(QString::fromStdString(masterItem->name))
+                          : tx("Master Clip: %1").arg(QString::fromStdString(masterItem->name));
+            g.text = off ? QStringLiteral("masterOn") : QStringLiteral("masterOff");
+            g.description = tx("Effects on the master clip play on every clip of %1, before the clip's own effects.")
+                                .arg(QString::fromStdString(masterItem->name));
+            g.clip = clip.id;
+            g.effectEnabled = !off;
+            rows.push_back(std::move(g));
+            for (std::size_t i = 0; i < master.size(); ++i) {
+                const EffectInstance& instance = master[i];
+                const EffectDescriptor* d = descriptor(instance.effect);
+                const QString section = effectKey(instance.id);
+                Row& h = header(section, QStringLiteral("effect"), d ? tx(d->displayName.data()) : QString::fromStdString(instance.effect),
+                                d ? categoryIcon(d->category, d->kind) : QStringLiteral("sparkles"));
+                h.effectEnabled = instance.enabled && !off;
+                h.removable = true;
+                h.movable = true;
+                h.resettable = d != nullptr;
+                h.stackIndex = static_cast<int>(i);
+                h.stackKind = QStringLiteral("master");
+                h.known = isEvaluable(instance, kind);
+                h.description = tx("Master clip effect: every clip of %1 has it.").arg(QString::fromStdString(masterItem->name));
+                if (!d || m_collapsed.contains(section))
+                    continue;
+                for (const EffectParamInfo& p : d->params) {
+                    addParamRow(rows, clip, section + QLatin1Char(':') + fromView(p.key), section, QStringLiteral("effect"),
+                                edit::ParamRef::ofEffect(instance.id, std::string(p.key)), tx(p.displayName.data()), QString(),
+                                uiRange(p), p.defaultValue, p.animatable, instance.enabled && !off,
+                                std::string("Master Clip: ") + std::string(d->displayName) + ": " + std::string(p.displayName));
+                    if (p.isChoice())
+                        makeChoice(rows.back(), p);
+                }
+            }
+        }
+    }
+
     const EffectStack& stack = clip.effects();
     for (std::size_t i = 0; i < stack.size(); ++i) {
         const EffectInstance& instance = stack[i];
         const EffectDescriptor* d = descriptor(instance.effect);
         const QString section = effectKey(instance.id);
         const EffectKind kind = video ? EffectKind::Video : EffectKind::Audio;
+        // 0.6: a title's style is its Text section (Premiere's Text in Effect Controls), with the title's text and font.
+        const bool titleStyle = instance.effect == edit::kTitleStyleEffect;
         Row& h = header(section, QStringLiteral("effect"),
-                        d ? tx(d->displayName.data()) : QString::fromStdString(instance.effect),
-                        d ? categoryIcon(d->category, d->kind) : QStringLiteral("sparkles"));
+                        titleStyle ? tx("Text (%1)").arg(QString::fromStdString(clip.name()))
+                        : d        ? tx(d->displayName.data())
+                                   : QString::fromStdString(instance.effect),
+                        titleStyle ? QStringLiteral("type") : d ? categoryIcon(d->category, d->kind) : QStringLiteral("sparkles"));
         h.effectEnabled = instance.enabled;
-        h.removable = true;
+        h.removable = !titleStyle; // the title's look: without it the text would draw in the default style
         h.movable = true;
         h.resettable = d != nullptr;
         h.stackIndex = static_cast<int>(i);
@@ -557,6 +729,10 @@ void EffectControlsModel::addClipSections(std::vector<Row>& rows, const Clip& cl
         h.description = d ? fromView(d->description) : tx("This effect is not available in this version; it is kept as it is.");
         if (!d || m_collapsed.contains(section))
             continue;
+        if (titleStyle) {
+            addTitleRows(rows, clip, section);
+            continue;
+        }
         const bool enabled = instance.enabled;
         for (const EffectParamInfo& p : d->params) {
             addParamRow(rows, clip, section + QLatin1Char(':') + fromView(p.key), section, QStringLiteral("effect"),
@@ -685,6 +861,7 @@ std::vector<EffectControlsModel::Row> EffectControlsModel::buildRows() {
     std::vector<Row> rows;
     QString mode, title, subtitle, trackName;
     int colorIndex = 0;
+    int multiCount = 0;
     TimeRange lane;
     const SequencePtr seq = m_controller ? m_controller->currentSequence() : nullptr;
     if (seq) {
@@ -706,6 +883,21 @@ std::vector<EffectControlsModel::Row> EffectControlsModel::buildRows() {
                               + QString::number(pos->index + 1);
                 addTransitionRows(rows, *loc->track, t);
             }
+        } else if (m_controller->primaryClip() && multiUnits(*seq, m_controller->selection()).size() > 1) {
+            // 0.6: several clips (each with its linked partners): their Transform, Opacity and Audio rows together.
+            m_multiUnits = multiUnits(*seq, m_controller->selection());
+            multiCount = static_cast<int>(m_multiUnits.size());
+            mode = QStringLiteral("multi");
+            title = tx("%1 clips").arg(multiCount);
+            int videoCount = 0, audioCount = 0;
+            for (const std::vector<ClipId>& unit : m_multiUnits) {
+                for (const ClipId id : unit) {
+                    if (const auto loc = seq->findClip(id))
+                        ++(loc->clip().stream.kind == StreamKind::Video ? videoCount : audioCount);
+                }
+            }
+            subtitle = tx("%1 video · %2 audio").arg(videoCount).arg(audioCount);
+            addMultiRows(rows);
         } else if (const ClipId primary = m_controller->primaryClip()) {
             const auto video = m_controller->propertyTarget(StreamKind::Video);
             const auto audio = m_controller->propertyTarget(StreamKind::Audio);
@@ -747,8 +939,11 @@ std::vector<EffectControlsModel::Row> EffectControlsModel::buildRows() {
         }
     }
     m_lane = lane;
+    if (multiCount == 0)
+        m_multiUnits.clear();
     if (mode != m_mode || title != m_title || subtitle != m_subtitle || trackName != m_trackName
-        || colorIndex != m_colorIndex) {
+        || colorIndex != m_colorIndex || multiCount != m_multiCount) {
+        m_multiCount = multiCount;
         m_mode = mode;
         m_title = title;
         m_subtitle = subtitle;
@@ -831,7 +1026,7 @@ void EffectControlsModel::onRevision() {
         return;
     const TimelineChange& change = m_controller->lastChange();
     const SequenceChange* s = change.sequenceChange();
-    bool relevant = change.structural || !change.changes || (s && s->settingsChanged);
+    bool relevant = change.structural || !change.changes || (s && s->settingsChanged) || m_mode == QLatin1String("multi");
     if (!relevant && m_controller->selectedTransitionId()) {
         // A transition's rows read its track and the clips around it: any change to that track.
         const auto loc = m_controller->findTransition(m_controller->selectedTransitionId());
@@ -940,9 +1135,21 @@ void EffectControlsModel::setValue(const QString& rowKey, double value) {
             [&](const ProjectState& state) { return edit::setTransition(state, seq, id, change); }, mergeKey);
         return;
     }
+    if (r->sectionKind == QLatin1String("multi")) {
+        setMultiValue(*r, std::clamp(value, std::min(r->from, r->to), std::max(r->from, r->to))); // 0.6
+        return;
+    }
     if (!r->clip)
         return;
     const std::string mergeKey = "fx:" + std::to_string(r->clip.value) + ":" + rowKey.toStdString();
+    if (r->ref.layer != 0) { // 0.6: a graphic layer's number
+        setLayerParamAtPlayhead(*r, model, mergeKey);
+        return;
+    }
+    if (!r->textProp.isEmpty()) { // 0.6: a text property that is not keyframable
+        setTextProperty(*r, model, mergeKey);
+        return;
+    }
     const std::string label = r->undoLabel;
     m_controller->setParameterAtPlayhead(r->clip, r->ref, model, label.c_str(), mergeKey);
 }
@@ -954,7 +1161,64 @@ void EffectControlsModel::endEdit() {
 
 void EffectControlsModel::setEffectText(const QString& rowKey, const QString& text) {
     const Row* r = findRow(rowKey);
-    if (!r || !m_controller || r->kind != QLatin1String("text") || !r->clip || text == r->text)
+    if (!r || !m_controller || !r->clip || text == r->text)
+        return;
+    if (r->kind == QLatin1String("textarea") || r->kind == QLatin1String("font")) {
+        // 0.6: Source Text and Font of a text layer (at the playhead: Source Text keys) or of a title.
+        const QByteArray utf8 = text.toUtf8();
+        if (static_cast<std::size_t>(utf8.size()) > kMaxGraphicTextBytes) {
+            setNotice(tx("The text is longer than %1 bytes.").arg(static_cast<qulonglong>(kMaxGraphicTextBytes)));
+            return;
+        }
+        const std::string value = utf8.toStdString();
+        const bool font = r->kind == QLatin1String("font");
+        if (font && text.trimmed().isEmpty())
+            return;
+        if (r->layer == 0) {
+            const Clip* clip = clipOf(*r);
+            if (!clip)
+                return;
+            const MediaId media = clip->media;
+            setNotice({});
+            const bool ok = font ? m_controller->applyEditFn(LABEL("Title Font"), [&](const ProjectState& state) {
+                return edit::setTitleFont(state, media, value, std::nullopt);
+            })
+                                 : m_controller->applyEditFn(LABEL("Title Text"), [&](const ProjectState& state) {
+                                       return edit::setTitleText(state, media, value);
+                                   });
+            if (!ok)
+                setNotice(m_controller->lastError());
+            return;
+        }
+        const QStringList styles = font ? QFontDatabase::styles(text) : QStringList();
+        editTextLayer(*r, font ? LABEL("Font") : LABEL("Source Text"), [&](GraphicLayer& l, Ticks t) {
+            return edit::editSourceRunsAt(l.text, t, [&](std::vector<TextRun>& runs) {
+                if (font) {
+                    bool changed = false;
+                    for (TextRun& run : runs) {
+                        const TextStyle before = run.style;
+                        run.style.fontFamily = value;
+                        run.style.brandFont.clear();
+                        if (!run.style.fontStyle.empty() && !styles.contains(QString::fromStdString(run.style.fontStyle)))
+                            run.style.fontStyle.clear();
+                        changed = changed || !(before == run.style);
+                    }
+                    return changed;
+                }
+                std::string joined;
+                for (const TextRun& run : runs)
+                    joined += run.text;
+                if (joined == value)
+                    return false;
+                // The new text in the first run's style (Effect Controls edits the layer's text as a whole).
+                const TextStyle style = runs.empty() ? TextStyle{} : runs.front().style;
+                runs = {TextRun{value, style}};
+                return true;
+            });
+        });
+        return;
+    }
+    if (r->kind != QLatin1String("text"))
         return;
     const auto effect = parseEffectKey(r->section);
     if (!effect)
@@ -990,7 +1254,7 @@ void EffectControlsModel::setAnimated(const QString& rowKey, bool animated) {
     const SequenceId seq = m_controller->currentSequenceId();
     const ClipId id = clip->id;
     const edit::ParamRef ref = r->ref;
-    const Ticks at = m_controller->curveTimeAtPlayhead(*clip);
+    const Ticks at = rowCurveTimeAtPlayhead(*r, *clip);
     m_controller->applyEditFn(LABEL("Toggle Animation"), [&](const ProjectState& state) {
         return edit::setAnimated(state, seq, id, ref, animated, at);
     });
@@ -1004,8 +1268,8 @@ void EffectControlsModel::toggleKeyAtPlayhead(const QString& rowKey) {
     const SequenceId seq = m_controller->currentSequenceId();
     const ClipId id = clip->id;
     const edit::ParamRef ref = r->ref;
-    const Ticks at = m_controller->curveTimeAtPlayhead(*clip);
-    const ParamValue value = ProjectController::parameterValue(*clip, ref);
+    const Ticks at = rowCurveTimeAtPlayhead(*r, *clip);
+    const ParamValue value = paramValueOf(m_controller, *clip, ref);
     const Curve* curve = value.curve();
     if (!curve) {
         m_controller->applyEditFn(LABEL("Add Keyframe"), [&](const ProjectState& state) {
@@ -1033,7 +1297,7 @@ void EffectControlsModel::goToKey(const QString& rowKey, int direction) {
     const Clip* clip = r ? clipOf(*r) : nullptr;
     if (!clip)
         return;
-    const ParamValue value = ProjectController::parameterValue(*clip, r->ref);
+    const ParamValue value = paramValueOf(m_controller, *clip, r->ref);
     const Curve* curve = value.curve();
     if (!curve)
         return;
@@ -1150,7 +1414,13 @@ void EffectControlsModel::resetSection(const QString& section) {
         const auto loc = sequence->findClip(clip);
         if (!loc)
             return;
-        const EffectStack& stack = loc->clip().effects();
+        // 0.6: a master clip effect too (the clip's own stack, then its media's master clip effects).
+        const ProjectSnapshot snapshot = m_controller->snapshot();
+        EffectStack stack = loc->clip().effects();
+        if (snapshot) {
+            const EffectStack master = masterEffectsOf(*snapshot, loc->clip().media);
+            stack.insert(stack.end(), master.begin(), master.end());
+        }
         const auto it = std::find_if(stack.begin(), stack.end(), [&](const EffectInstance& e) { return e.id == *effect; });
         const EffectDescriptor* d = it != stack.end() ? descriptor(it->effect) : nullptr;
         if (!d)
@@ -1187,7 +1457,8 @@ QStringList EffectControlsModel::selectableSections() const {
     if (m_mode != QLatin1String("clip"))
         return out;
     for (const Row& r : m_rows) {
-        if (r.kind == QLatin1String("header") && r.sectionKind != QLatin1String("transition") && r.clip.isValid())
+        if (r.kind == QLatin1String("header") && r.sectionKind != QLatin1String("transition")
+            && r.sectionKind != QLatin1String("text") && r.clip.isValid())
             out << r.section;
     }
     return out;
@@ -1326,8 +1597,17 @@ std::shared_ptr<const EffectControlsModel::EffectsClipboard> EffectControlsModel
         const bool video = clip.stream.kind == StreamKind::Video;
         std::optional<Clip>& snapshot = video ? board->video : board->audio;
         AttributeSet& attributes = video ? board->videoAttributes : board->audioAttributes;
-        if (!snapshot)
+        // 0.6: the clip as it plays, its master clip effects first, so master sections copy too.
+        const ProjectSnapshot state = m_controller->snapshot();
+        const std::size_t masterCount =
+            state && playsMasterEffects(*state, clip)
+                ? masterEffectsOf(*state, clip.media, video ? EffectKind::Video : EffectKind::Audio).size()
+                : 0;
+        if (!snapshot) {
             snapshot = clip;
+            if (masterCount > 0)
+                snapshot->setEffects(playedEffects(*state, clip, video ? EffectKind::Video : EffectKind::Audio));
+        }
         if (section == QLatin1String("motion")) {
             attributes.motion = true;
         } else if (section == QLatin1String("opacity")) {
@@ -1336,7 +1616,8 @@ std::shared_ptr<const EffectControlsModel::EffectsClipboard> EffectControlsModel
             attributes.volume = true;
             attributes.panner = true;
         } else if (h->stackIndex >= 0) {
-            attributes.effects.push_back(static_cast<std::size_t>(h->stackIndex));
+            const bool masterSection = h->stackKind == QLatin1String("master");
+            attributes.effects.push_back(static_cast<std::size_t>(h->stackIndex) + (masterSection ? 0 : masterCount));
         } else {
             continue;
         }
@@ -1373,6 +1654,7 @@ int EffectControlsModel::copySelectedSections(bool cut) {
     m_effects = std::move(board);
     m_effectsPending = true;
     emit effectsClipboardChanged(); // a new copy (even when one was already pending)
+    setKeysPending(false);          // 0.6: the newest copy wins
     if (cut)
         clearSectionSelection();
     return count;
@@ -1515,9 +1797,21 @@ bool EffectControlsModel::runCommand(const QString& commandId) {
         return true;
     }
     if (commandId == QLatin1String("edit.copy") || commandId == QLatin1String("edit.cut")) {
+        // 0.6: selected keys first, then sections, then the timeline.
+        if (!m_selectedKeys.empty()) {
+            copySelectedKeys(commandId == QLatin1String("edit.cut"));
+            return true;
+        }
         if (!sections)
             return false;
         copySelectedSections(commandId == QLatin1String("edit.cut"));
+        return true;
+    }
+    if (commandId == QLatin1String("edit.paste")) {
+        // 0.6: copied keyframes (the newest copy) go onto the clip shown; else the effects or clips paste as usual.
+        if (!canPasteKeys() || m_mode != QLatin1String("clip"))
+            return false;
+        pasteKeys();
         return true;
     }
     if (commandId == QLatin1String("edit.selectAll")) {
@@ -1746,8 +2040,81 @@ QVariantMap EffectControlsModel::applyToSelectedClips(const QString& itemId) {
     }
     const SequenceId seqId = m_controller->currentSequenceId();
     QString id = itemId.trimmed();
+    // 0.6 (card #71): "master:<item>" puts an effect (or a preset's stack effects) on the master clips of the selected
+    // clips' media, one undo step.
+    const bool toMaster = id.startsWith(QLatin1String("master:"));
+    if (toMaster)
+        id = id.mid(7);
     if (id.startsWith(QLatin1String("effect:")))
         id = id.mid(7);
+    if (toMaster) {
+        const ProjectSnapshot state = m_controller->snapshot();
+        if (selection.empty() || !state)
+            return failed(tx("Select a clip first"));
+        const auto preset = id.startsWith(QLatin1String("preset:")) ? effectPresetForItem(m_controller, id) : std::nullopt;
+        const EffectDescriptor* d = preset ? nullptr : descriptor(id.toStdString());
+        if (!preset && (!d || !isListedEffect(*d) || isTransitionKind(d->kind) || d->id.starts_with(kPluginEffectPrefix)))
+            return failed(tx("Only effects and presets go on a master clip"));
+        const bool video = preset ? preset->kind() == EffectKind::Video : d->kind == EffectKind::Video;
+        const std::vector<ClipId> clips = clipsOfKind(*seq, selection, video ? StreamKind::Video : StreamKind::Audio);
+        // One representative clip per media item (nested and multicam clips have no master clip).
+        std::vector<ClipId> representatives;
+        std::vector<MediaId> seen;
+        int skipped = 0;
+        for (const ClipId c : clips) {
+            const auto loc = seq->findClip(c);
+            if (!loc || loc->clip().isNested() || !loc->clip().angles.empty() || !state->findMedia(loc->clip().media)) {
+                ++skipped;
+                continue;
+            }
+            if (std::find(seen.begin(), seen.end(), loc->clip().media) != seen.end())
+                continue;
+            seen.push_back(loc->clip().media);
+            representatives.push_back(c);
+        }
+        if (representatives.empty())
+            return failed(skipped > 0 ? tx("Nested sequences and multicam clips have no master clip effects yet")
+                                      : video ? tx("Select a video clip") : tx("Select an audio clip"));
+        std::vector<std::function<edit::EditOutcome(const ProjectState&)>> steps;
+        if (preset) {
+            // The preset's stack effects (keys timed on the representative clip, media time), moved onto its master clip.
+            EffectPreset stackOnly = *preset;
+            std::erase_if(stackOnly.effects, [](const EffectInstance& e) {
+                return e.effect == kMotionEffect || e.effect == kOpacityEffect || e.effect == kVolumeEffect || e.effect == kPannerEffect;
+            });
+            if (stackOnly.effects.empty())
+                return failed(tx("%1 has only Motion, Opacity or Volume: those stay each clip's").arg(id.mid(7)));
+            for (const ClipId c : representatives) {
+                steps.push_back([=](const ProjectState& s) -> edit::EditOutcome {
+                    auto applied = edit::applyEffectPreset(s, seqId, std::vector<ClipId>{c}, stackOnly);
+                    if (!applied)
+                        return std::unexpected(applied.error());
+                    std::vector<std::function<edit::EditOutcome(const ProjectState&)>> moves;
+                    for (const EffectInstanceId e : applied->edit.createdEffects)
+                        moves.push_back([=](const ProjectState& t) { return edit::moveEffectToMaster(t, seqId, c, e); });
+                    auto moved = chainedEdit(applied->edit.state, moves);
+                    if (!moved)
+                        return moved;
+                    moved->changes = diff(s, moved->state);
+                    return moved;
+                });
+            }
+        } else {
+            const std::string effect(d->id);
+            for (const MediaId m : seen) {
+                steps.push_back([=](const ProjectState& s) {
+                    return edit::addEffect(s, seqId, edit::EffectTarget::ofMedia(m), effect);
+                });
+            }
+        }
+        const bool ok = m_controller->applyEditFn(preset ? LABEL("Apply Preset to Master Clip") : LABEL("Add Master Clip Effect"),
+                                                  [&](const ProjectState& s) { return chainedEdit(s, steps); });
+        if (!ok)
+            return failed(m_controller->lastError());
+        const int n = static_cast<int>(seen.size());
+        const QString name = preset ? id.mid(7) : tx(d->displayName.data());
+        return done(n == 1 ? tx("Added %1 to the master clip").arg(name) : tx("Added %1 to %2 master clips").arg(name).arg(n), n);
+    }
 
     // A preset: one "Apply Preset" step over every clip of its kind.
     if (id.startsWith(QLatin1String("preset:"))) {
@@ -1778,6 +2145,13 @@ QVariantMap EffectControlsModel::applyToSelectedClips(const QString& itemId) {
     // A transition: on both ends of each selected clip of its kind (Apply Default Transitions to Selection with it).
     if (isTransitionKind(d->kind)) {
         const bool video = d->kind == EffectKind::VideoTransition;
+        // 0.6 (stream 1A): selected edit points (Trim) take it instead of the clips' ends, as in Premiere.
+        if (!m_controller->trimEditPoints().empty()) {
+            const int n = m_controller->applyTransitionAtEditPoints(!video, std::string(d->id), LABEL("Apply Transition"));
+            if (n == 0)
+                return failed(m_controller->lastError());
+            return done(n == 1 ? tx("Added %1 to the edit point").arg(name) : tx("Added %1 to %2 edit points").arg(name).arg(n), n);
+        }
         if (selection.empty())
             return failed(tx("Select clips, or drag %1 onto an edit point in the timeline").arg(name));
         const std::vector<ClipId> clips = clipsOfKind(*seq, selection, video ? StreamKind::Video : StreamKind::Audio);
@@ -1824,7 +2198,7 @@ QString EffectControlsModel::selectedKeyInterpolation() const {
         const Clip* clip = r ? clipOf(*r) : nullptr;
         if (!clip)
             continue;
-        const ParamValue value = ProjectController::parameterValue(*clip, r->ref);
+        const ParamValue value = paramValueOf(m_controller, *clip, r->ref);
         const Curve* curve = value.curve();
         const auto at = curve ? curve->keyAt(Ticks{k.curveTime}) : std::nullopt;
         if (!at)
@@ -1844,7 +2218,7 @@ bool EffectControlsModel::pressKey(const QString& rowKey, double x, double toler
     const bool toggle = mods(modifiers).testAnyFlags(Qt::ControlModifier | Qt::MetaModifier);
     std::optional<KeyRef> hit;
     if (clip) {
-        const ParamValue value = ProjectController::parameterValue(*clip, r->ref);
+        const ParamValue value = paramValueOf(m_controller, *clip, r->ref);
         if (const Curve* curve = value.curve()) {
             double best = tolerance;
             const double laneLength = static_cast<double>(std::max<std::int64_t>(1, m_lane.duration.value));
@@ -1890,7 +2264,7 @@ void EffectControlsModel::selectKeysInRange(const QStringList& rows, double x0, 
         const Clip* clip = r ? clipOf(*r) : nullptr;
         if (!clip)
             continue;
-        const ParamValue value = ProjectController::parameterValue(*clip, r->ref);
+        const ParamValue value = paramValueOf(m_controller, *clip, r->ref);
         if (const Curve* curve = value.curve()) {
             for (const auto& [i, t] : visibleKeys(*r, *curve, *clip)) {
                 const double kx = static_cast<double>((t - m_lane.start).value) / laneLength;
@@ -1923,7 +2297,7 @@ bool EffectControlsModel::beginKeyDrag(bool duplicate) {
         const Clip* clip = r ? clipOf(*r) : nullptr;
         if (!clip)
             continue;
-        const ParamValue value = ProjectController::parameterValue(*clip, r->ref);
+        const ParamValue value = paramValueOf(m_controller, *clip, r->ref);
         const Curve* curve = value.curve();
         if (!curve || !curve->keyAt(Ticks{k.curveTime}))
             continue;
@@ -1960,11 +2334,12 @@ void EffectControlsModel::dragKeys(double dx) {
     Ticks lo = Ticks::min(), hi = Ticks::max();
     for (const DragGroup& g : m_drag.groups) {
         const auto loc = seq->findClip(g.clip);
-        if (!loc)
+        const Row* row = findRow(g.row);
+        if (!loc || !row)
             return;
         const Clip& clip = loc->clip();
         for (Ticks t : g.moving) {
-            const auto tl = clip.timelineTimeOfCurveTime(t);
+            const auto tl = rowTimelineTime(*row, clip, t);
             if (!tl)
                 continue;
             lo = std::max(lo, clip.start() - *tl);
@@ -1981,6 +2356,7 @@ void EffectControlsModel::dragKeys(double dx) {
     std::vector<Result> results;
     for (const DragGroup& g : m_drag.groups) {
         const Clip& clip = seq->findClip(g.clip)->clip();
+        const Row& row = *findRow(g.row);
         Result res{&g, g.original, {}};
         if (delta == Ticks{} && m_drag.duplicate) {
             res.times = g.moving; // back to the originals: no copies yet
@@ -1998,10 +2374,10 @@ void EffectControlsModel::dragKeys(double dx) {
             });
         }
         for (Keyframe k : moved) {
-            const auto tl = clip.timelineTimeOfCurveTime(k.time);
+            const auto tl = rowTimelineTime(row, clip, k.time);
             if (!tl)
                 continue;
-            k.time = clip.curveTimeAt(*tl + delta);
+            k.time = rowCurveTime(row, clip, *tl + delta);
             if (res.curve.keyAt(k.time))
                 return; // onto another key: the keys stay where they were last
             res.curve.keys.insert(res.curve.keys.begin() + static_cast<std::ptrdiff_t>(res.curve.insertionIndex(k.time)), k);
@@ -2055,7 +2431,7 @@ void EffectControlsModel::setKeyInterpolation(const QString& interpolation) {
             continue;
         auto it = curves.find(k.row);
         if (it == curves.end()) {
-            const ParamValue v = ProjectController::parameterValue(*clip, r->ref);
+            const ParamValue v = paramValueOf(m_controller, *clip, r->ref);
             if (!v.curve())
                 continue;
             it = curves.emplace(k.row, std::make_pair(r, *v.curve())).first;
@@ -2087,6 +2463,10 @@ void EffectControlsModel::setKeyInterpolation(const QString& interpolation) {
 }
 
 void EffectControlsModel::deleteSelectedKeys() {
+    deleteKeys(LABEL("Delete Keyframes"));
+}
+
+void EffectControlsModel::deleteKeys(const char* label) {
     if (m_selectedKeys.empty() || !m_controller)
         return;
     const SequenceId seq = m_controller->currentSequenceId();
@@ -2099,14 +2479,14 @@ void EffectControlsModel::deleteSelectedKeys() {
         const Clip* clip = r ? clipOf(*r) : nullptr;
         if (!clip)
             continue;
-        const ParamValue v = ProjectController::parameterValue(*clip, r->ref);
+        const ParamValue v = paramValueOf(m_controller, *clip, r->ref);
         const Curve* curve = v.curve();
         if (!curve)
             continue;
         Curve rest = *curve;
         std::erase_if(rest.keys, [&](const Keyframe& k) { return std::find(times.begin(), times.end(), k.time) != times.end(); });
         // No key left: the parameter keeps the value it has at the playhead (Premiere).
-        const ParamValue next = rest.keys.empty() ? ParamValue(v.valueAt(m_controller->curveTimeAtPlayhead(*clip)))
+        const ParamValue next = rest.keys.empty() ? ParamValue(v.valueAt(rowCurveTimeAtPlayhead(*r, *clip)))
                                                   : ParamValue(rest);
         const ClipId id = clip->id;
         const edit::ParamRef ref = r->ref;
@@ -2114,7 +2494,7 @@ void EffectControlsModel::deleteSelectedKeys() {
     }
     m_selectedKeys.clear();
     if (!steps.empty())
-        m_controller->applyEditFn(LABEL("Delete Keyframes"), [&](const ProjectState& state) { return chain(state, steps); });
+        m_controller->applyEditFn(label, [&](const ProjectState& state) { return chain(state, steps); });
     emit keySelectionChanged();
 }
 
@@ -2231,7 +2611,7 @@ void EffectControlsModel::dragHandle(double x, double y, bool broken) {
     const Clip* clip = r ? clipOf(*r) : nullptr;
     if (!clip)
         return;
-    const ParamValue value = ProjectController::parameterValue(*clip, r->ref);
+    const ParamValue value = paramValueOf(m_controller, *clip, r->ref);
     const Curve* curve = value.curve();
     const std::size_t i = m_handleDrag.index;
     if (!curve || i >= curve->keys.size())
@@ -2242,7 +2622,7 @@ void EffectControlsModel::dragHandle(double x, double y, bool broken) {
         return;
     const double laneLength = static_cast<double>(std::max<std::int64_t>(1, m_lane.duration.value));
     const Ticks t{m_lane.start.value + static_cast<std::int64_t>(std::llround(x * laneLength))};
-    const Ticks curveTime = clip->curveTimeAt(std::clamp(t, clip->start(), clip->end()));
+    const Ticks curveTime = rowCurveTime(*r, *clip, std::clamp(t, clip->start(), clip->end()));
     const double v = r->range.toModel(m_handleDrag.max - y * (m_handleDrag.max - m_handleDrag.min), r->frame);
     // The handle's time along its segment is the influence (at least 1 %), its height over that time the slope.
     const double segment = out ? (curve->keys[i + 1].time - k.time).toSeconds() : (k.time - curve->keys[i - 1].time).toSeconds();
@@ -2367,6 +2747,963 @@ void EffectControlsModel::setTransitionEffect(const QString& effectId) {
             return edit::setTransition(state, seq, id, change);
         }))
         setNotice(m_controller->lastError());
+}
+
+
+// ---- Text sections (0.6) ----------------------------------------------------------------------------
+
+namespace {
+
+UiRange uiOf(double from, double to, double step, int decimals, const char* unit, bool bipolar = false) {
+    UiRange r;
+    r.from = from;
+    r.to = to;
+    r.step = step;
+    r.decimals = decimals;
+    r.unit = unit;
+    r.bipolar = bipolar;
+    return r;
+}
+
+QString hexOf(const std::array<double, 4>& rgba) {
+    return QColor::fromRgbF(static_cast<float>(std::clamp(rgba[0], 0.0, 1.0)), static_cast<float>(std::clamp(rgba[1], 0.0, 1.0)),
+                            static_cast<float>(std::clamp(rgba[2], 0.0, 1.0)))
+        .name(QColor::HexRgb)
+        .toUpper();
+}
+
+/// "stroke2.width" -> 2 (-1: not a stroke row).
+int strokeIndexOf(const QString& prop) {
+    if (!prop.startsWith(QLatin1String("stroke")))
+        return -1;
+    const qsizetype dot = prop.indexOf(QLatin1Char('.'));
+    bool ok = false;
+    const int i = prop.mid(6, dot < 0 ? -1 : dot - 6).toInt(&ok);
+    return ok ? i : -1;
+}
+
+/// The font styles of a family for the Font Style row ("Regular" when the database knows none), `current` among them.
+QStringList stylesOf(const QString& family, const QString& current) {
+    QStringList styles = QFontDatabase::styles(family);
+    if (styles.isEmpty())
+        styles << QStringLiteral("Regular");
+    if (!current.isEmpty() && !styles.contains(current))
+        styles.prepend(current);
+    return styles;
+}
+
+QString defaultFamily() {
+    return QFontDatabase::systemFont(QFontDatabase::GeneralFont).family();
+}
+
+} // namespace
+
+void EffectControlsModel::addTextSections(std::vector<Row>& rows, const Clip& clip) {
+    const Graphic* graphic = clip.graphic();
+    if (!graphic || !m_controller)
+        return;
+    std::vector<std::uint32_t> ids = edit::textLayerIds(*graphic);
+    std::reverse(ids.begin(), ids.end()); // the top layer first, as the Essential Graphics panel lists them
+    const Ticks playhead = std::clamp(m_controller->playhead(), clip.start(), std::max(clip.start(), clip.end() - Ticks{1}));
+    const Ticks time = graphicTimeAt(clip, *graphic, playhead);
+    const ProjectSnapshot state = m_controller->snapshot();
+    const BrandKit* kit = state && state->brandKit ? &*state->brandKit : nullptr;
+    const PropertyFrame frame = m_controller->propertyFrame(clip);
+    for (const std::uint32_t id : ids) {
+        const GraphicLayer* layer = graphic->findLayer(id);
+        if (!layer)
+            continue;
+        const QString section = QStringLiteral("g") + QString::number(id);
+        Row h;
+        h.key = QStringLiteral("h:") + section;
+        h.kind = QStringLiteral("header");
+        h.section = section;
+        h.sectionKind = QStringLiteral("text");
+        h.title = tx("Text (%1)").arg(layer->name.empty() ? tx("Text") : QString::fromStdString(layer->name));
+        h.icon = QStringLiteral("type");
+        h.collapsed = m_collapsed.contains(section);
+        h.clip = clip.id;
+        h.layer = id;
+        h.effectEnabled = layer->visible;
+        h.description = tx("The text layer's text, look and transform (the Essential Graphics panel edits the same layer)");
+        const bool collapsed = h.collapsed;
+        rows.push_back(std::move(h));
+        if (collapsed)
+            continue;
+
+        const TextContent shown = textAt(layer->text, time); // Source Text and size keys at the playhead
+        const TextStyle style = shown.runs.empty() ? TextStyle{} : shown.runs.front().style;
+        const auto add = [&](const QString& key, const QString& kind, const QString& title) -> Row& {
+            Row r;
+            r.key = section + QLatin1Char(':') + key;
+            r.kind = kind;
+            r.section = section;
+            r.sectionKind = QStringLiteral("text");
+            r.title = title;
+            r.clip = clip.id;
+            r.layer = id;
+            r.textProp = key;
+            r.effectEnabled = layer->visible;
+            r.frame = frame;
+            rows.push_back(std::move(r));
+            return rows.back();
+        };
+        const auto number = [&](const QString& key, const std::string& path, const QString& title, const UiRange& range,
+                                 const char* undo) {
+            const auto info = edit::layerParamInfo(*layer, path);
+            addParamRow(rows, clip, section + QLatin1Char(':') + key, section, QStringLiteral("text"),
+                        edit::ParamRef::ofLayer(id, path), title, QString(), range, info ? info->defaultValue : 0.0, true,
+                        layer->visible, undo);
+            rows.back().layer = id;
+            rows.back().textProp = key;
+        };
+        const auto plain = [&](const QString& key, const QString& title, const UiRange& range, double value, double fallback) {
+            Row& r = add(key, QStringLiteral("param"), title);
+            r.range = range;
+            r.unit = unitText(range);
+            r.from = range.from;
+            r.to = range.to;
+            r.step = range.step;
+            r.decimals = range.decimals;
+            r.origin = range.bipolar ? 0.0 : r.from;
+            r.value = value;
+            r.defaultValue = fallback;
+            r.resettable = true;
+        };
+        const auto toggle = [&](const QString& key, const QString& title, bool on) {
+            Row& r = add(key, QStringLiteral("toggle"), title);
+            r.range = uiOf(0.0, 1.0, 1.0, 0, "");
+            r.from = 0.0;
+            r.to = 1.0;
+            r.value = on ? 1.0 : 0.0;
+        };
+        const auto choice = [&](const QString& key, const QString& title, const QStringList& labels, int current) {
+            Row& r = add(key, QStringLiteral("choice"), title);
+            for (qsizetype i = 0; i < labels.size(); ++i)
+                r.options.append(QVariantMap{{QStringLiteral("value"), QString::number(i)}, {QStringLiteral("label"), labels[i]}});
+            r.range = uiOf(0.0, std::max<double>(0.0, static_cast<double>(labels.size() - 1)), 1.0, 0, "");
+            r.from = r.range.from;
+            r.to = r.range.to;
+            r.value = current;
+            r.text = QString::number(current);
+        };
+        const auto color = [&](const QString& key, const QString& title, const GraphicColor& c) -> Row& {
+            Row& r = add(key, QStringLiteral("color"), title);
+            r.text = hexOf(resolveColor(c, kit));
+            r.description = c.brand.empty() ? QString() : tx("Brand colour %1").arg(QString::fromStdString(c.brand));
+            return r;
+        };
+        const auto group = [&](const QString& key, const QString& title, const QString& action = {}) {
+            add(key, QStringLiteral("group"), title).text = action;
+        };
+
+        // ---- Source Text ----
+        addParamRow(rows, clip, section + QStringLiteral(":text"), section, QStringLiteral("text"),
+                    edit::ParamRef::ofLayer(id, "text.source"), tx("Source Text"), QString(),
+                    uiOf(0.0, std::max(1.0, static_cast<double>(layer->text.sources.size())), 1.0, 0, ""), 0.0, true,
+                    layer->visible, LABEL("Source Text"));
+        {
+            Row& r = rows.back();
+            r.kind = QStringLiteral("textarea");
+            r.layer = id;
+            r.textProp = QStringLiteral("text");
+            r.text = QString::fromStdString(shown.text());
+            r.resettable = false;
+            r.description = tx("Turn on the stopwatch to change the text over time (hold keyframes)");
+        }
+        QString family = QString::fromStdString(style.fontFamily);
+        if (!style.brandFont.empty() && kit) {
+            if (const BrandFont* f = kit->font(style.brandFont))
+                family = QString::fromStdString(f->family);
+        }
+        if (family.isEmpty())
+            family = defaultFamily();
+        add(QStringLiteral("font"), QStringLiteral("font"), tx("Font")).text = family;
+        const QStringList styles = stylesOf(family, QString::fromStdString(style.fontStyle));
+        const QString currentStyle = style.fontStyle.empty() ? (styles.contains(QStringLiteral("Regular")) ? QStringLiteral("Regular") : styles.front())
+                                                             : QString::fromStdString(style.fontStyle);
+        choice(QStringLiteral("fontStyle"), tx("Font Style"), styles, static_cast<int>(std::max<qsizetype>(0, styles.indexOf(currentStyle))));
+        number(QStringLiteral("size"), "text.fontSize", tx("Font Size"), uiOf(1.0, 2000.0, 1.0, 0, "px"), LABEL("Font Size"));
+        choice(QStringLiteral("align"), tx("Alignment"), {tx("Left"), tx("Center"), tx("Right"), tx("Justify")},
+               static_cast<int>(shown.align));
+        if (shown.boxWidth > 0.0 && shown.boxHeight > 0.0 && !shown.path)
+            choice(QStringLiteral("valign"), tx("Vertical Alignment"), {tx("Top"), tx("Center"), tx("Bottom")},
+                   static_cast<int>(shown.verticalAlign));
+        number(QStringLiteral("tracking"), "text.tracking", tx("Tracking"), uiOf(-1000.0, 2000.0, 1.0, 0, ""), LABEL("Tracking"));
+        toggle(QStringLiteral("kerning"), tx("Kerning"), style.kerning);
+        number(QStringLiteral("leading"), "text.leading", tx("Leading"), uiOf(0.0, 1000.0, 1.0, 0, "px"), LABEL("Leading"));
+        number(QStringLiteral("baselineShift"), "text.baselineShift", tx("Baseline Shift"), uiOf(-500.0, 500.0, 1.0, 0, "px", true),
+               LABEL("Baseline Shift"));
+        choice(QStringLiteral("caps"), tx("Capitals"), {tx("Normal"), tx("All Caps"), tx("Small Caps")}, static_cast<int>(style.caps));
+        toggle(QStringLiteral("fauxBold"), tx("Faux Bold"), style.fauxBold);
+        toggle(QStringLiteral("fauxItalic"), tx("Faux Italic"), style.fauxItalic);
+        toggle(QStringLiteral("underline"), tx("Underline"), style.underline);
+
+        // ---- Appearance ----
+        group(QStringLiteral("appearanceGroup"), tx("Appearance"));
+        color(QStringLiteral("fill"), tx("Fill"), style.fill);
+        group(QStringLiteral("strokes"), tx("Strokes"),
+              layer->text.strokes.size() < kMaxTextStrokes ? QStringLiteral("addStroke") : QString());
+        for (std::size_t i = 0; i < layer->text.strokes.size(); ++i) {
+            const TextStroke& st = layer->text.strokes[i];
+            const QString n = QString::number(i);
+            Row& c = color(QStringLiteral("stroke") + n,
+                           i == 0 ? tx("Stroke") : tx("Stroke %1").arg(static_cast<int>(i) + 1), st.color);
+            c.removable = true;
+            if (!st.enabled)
+                c.title = tx("%1 (off)").arg(c.title);
+            number(QStringLiteral("stroke") + n + QStringLiteral(".width"), "text.stroke" + std::to_string(i) + ".width",
+                   tx("Stroke Width"), uiOf(0.0, 200.0, 0.5, 1, "px"), LABEL("Stroke Width"));
+            choice(QStringLiteral("stroke") + n + QStringLiteral(".position"), tx("Stroke Position"),
+                   {tx("Outside"), tx("Center"), tx("Inside")}, static_cast<int>(st.position));
+        }
+        const TextBackground& bg = layer->text.background;
+        toggle(QStringLiteral("background"), tx("Background"), bg.enabled);
+        if (bg.enabled) {
+            color(QStringLiteral("background.color"), tx("Background Color"), bg.color);
+            plain(QStringLiteral("background.opacity"), tx("Background Opacity"), uiOf(0.0, 100.0, 1.0, 0, "%"),
+                  bg.color.rgba[3] * 100.0, 60.0);
+            plain(QStringLiteral("background.padding"), tx("Background Padding"), uiOf(0.0, 500.0, 1.0, 0, "px"), bg.padding, 12.0);
+            plain(QStringLiteral("background.radius"), tx("Corner Radius"), uiOf(0.0, 500.0, 1.0, 0, "px"), bg.radius, 0.0);
+        }
+        const DropShadow& sh = layer->shadow;
+        toggle(QStringLiteral("shadow"), tx("Shadow"), sh.enabled);
+        if (sh.enabled) {
+            color(QStringLiteral("shadow.color"), tx("Shadow Color"), sh.color);
+            plain(QStringLiteral("shadow.opacity"), tx("Shadow Opacity"), uiOf(0.0, 100.0, 1.0, 0, "%"), sh.opacity * 100.0, 75.0);
+            plain(QStringLiteral("shadow.angle"), tx("Shadow Angle"), uiOf(-360.0, 360.0, 1.0, 0, "°", true), sh.angle, 135.0);
+            plain(QStringLiteral("shadow.distance"), tx("Shadow Distance"), uiOf(0.0, 500.0, 0.5, 1, "px"), sh.distance, 6.0);
+            plain(QStringLiteral("shadow.size"), tx("Shadow Size"), uiOf(0.0, 200.0, 0.5, 1, "px"), sh.size, 0.0);
+            plain(QStringLiteral("shadow.softness"), tx("Shadow Blur"), uiOf(0.0, 500.0, 0.5, 1, "px"), sh.softness, 8.0);
+        }
+
+        // ---- Transform (the layer's, in the graphic's pixels) ----
+        group(QStringLiteral("transformGroup"), tx("Transform"));
+        number(QStringLiteral("x"), "transform.x", tx("Position X"), uiOf(-10000.0, 10000.0, 1.0, 0, "px", true), LABEL("Position"));
+        number(QStringLiteral("y"), "transform.y", tx("Position Y"), uiOf(-10000.0, 10000.0, 1.0, 0, "px", true), LABEL("Position"));
+        if (layer->transform.scaleX == layer->transform.scaleY) {
+            number(QStringLiteral("scale"), "transform.scale", tx("Scale"), uiOf(0.0, 1000.0, 0.1, 1, "%"), LABEL("Scale"));
+        } else {
+            number(QStringLiteral("scaleX"), "transform.scaleX", tx("Scale Width"), uiOf(-1000.0, 1000.0, 0.1, 1, "%"), LABEL("Scale"));
+            number(QStringLiteral("scaleY"), "transform.scaleY", tx("Scale Height"), uiOf(-1000.0, 1000.0, 0.1, 1, "%"), LABEL("Scale"));
+        }
+        number(QStringLiteral("rotation"), "transform.rotation", tx("Rotation"), uiOf(-360.0, 360.0, 0.1, 1, "°", true), LABEL("Rotation"));
+        number(QStringLiteral("opacity"), "transform.opacity", tx("Opacity"), uiOf(0.0, 100.0, 0.1, 1, "%"), LABEL("Opacity"));
+        number(QStringLiteral("anchorX"), "transform.anchorX", tx("Anchor X"), uiOf(-10000.0, 10000.0, 1.0, 0, "px", true), LABEL("Anchor Point"));
+        number(QStringLiteral("anchorY"), "transform.anchorY", tx("Anchor Y"), uiOf(-10000.0, 10000.0, 1.0, 0, "px", true), LABEL("Anchor Point"));
+    }
+}
+
+void EffectControlsModel::addTitleRows(std::vector<Row>& rows, const Clip& clip, const QString& section) {
+    const auto effect = parseEffectKey(section);
+    const EffectStack& stack = clip.effects();
+    const auto it = std::find_if(stack.begin(), stack.end(), [&](const EffectInstance& e) { return effect && e.id == *effect; });
+    const EffectDescriptor* d = descriptor(edit::kTitleStyleEffect);
+    const ProjectSnapshot state = m_controller ? m_controller->snapshot() : nullptr;
+    const MediaItem* media = state ? state->findMedia(clip.media) : nullptr;
+    if (it == stack.end() || !d || !media || !media->generator)
+        return;
+    const EffectInstance& instance = *it;
+    const bool enabled = instance.enabled;
+    const auto add = [&](const QString& key, const QString& kind, const QString& title) -> Row& {
+        Row r;
+        r.key = section + QLatin1Char(':') + key;
+        r.kind = kind;
+        r.section = section;
+        r.sectionKind = QStringLiteral("effect");
+        r.title = title;
+        r.clip = clip.id;
+        r.textProp = key;
+        r.effectEnabled = enabled;
+        rows.push_back(std::move(r));
+        return rows.back();
+    };
+    const auto param = [&](std::string_view key) {
+        const EffectParamInfo* p = d->param(key);
+        if (!p)
+            return;
+        addParamRow(rows, clip, section + QLatin1Char(':') + fromView(key), section, QStringLiteral("effect"),
+                    edit::ParamRef::ofEffect(instance.id, std::string(key)), tx(p->displayName.data()), QString(), uiRange(*p),
+                    p->defaultValue, p->animatable, enabled, std::string(d->displayName) + ": " + std::string(p->displayName));
+        if (p->isChoice())
+            makeChoice(rows.back(), *p);
+    };
+    // A colour from three constant parameters is one colour row; animated ones keep their own rows (their keys).
+    const auto colorRow = [&](const std::string& prefix, const QString& title) {
+        std::array<double, 4> rgba{0.0, 0.0, 0.0, 1.0};
+        bool constant = true;
+        const char* const parts[] = {".red", ".green", ".blue"};
+        for (int i = 0; i < 3; ++i) {
+            const ParamValue v = paramValueOf(m_controller, clip, edit::ParamRef::ofEffect(instance.id, prefix + parts[i]));
+            constant = constant && v.isConstant();
+            rgba[static_cast<std::size_t>(i)] = v.constant();
+        }
+        if (!constant) {
+            for (const char* part : parts)
+                param(prefix + part);
+            return;
+        }
+        Row& r = add(QStringLiteral("color:") + QString::fromStdString(prefix), QStringLiteral("color"), title);
+        r.text = hexOf(rgba);
+    };
+    const GeneratorSpec& g = *media->generator;
+    Row& text = add(QStringLiteral("titleText"), QStringLiteral("textarea"), tx("Source Text"));
+    text.text = QString::fromStdString(g.text);
+    text.description = tx("Every clip of this title shows the text");
+    const QString family = g.fontFamily.empty() ? defaultFamily() : QString::fromStdString(g.fontFamily);
+    add(QStringLiteral("titleFont"), QStringLiteral("font"), tx("Font")).text = family;
+    const QStringList styles = stylesOf(family, QString::fromStdString(g.fontStyle));
+    const QString currentStyle = g.fontStyle.empty() ? styles.front() : QString::fromStdString(g.fontStyle);
+    Row& styleRow = add(QStringLiteral("titleFontStyle"), QStringLiteral("choice"), tx("Font Style"));
+    for (qsizetype i = 0; i < styles.size(); ++i)
+        styleRow.options.append(QVariantMap{{QStringLiteral("value"), QString::number(i)}, {QStringLiteral("label"), styles[i]}});
+    styleRow.range = uiOf(0.0, static_cast<double>(std::max<qsizetype>(0, styles.size() - 1)), 1.0, 0, "");
+    styleRow.from = 0.0;
+    styleRow.to = styleRow.range.to;
+    styleRow.value = static_cast<double>(std::max<qsizetype>(0, styles.indexOf(currentStyle)));
+    styleRow.text = QString::number(static_cast<int>(styleRow.value));
+
+    param("size");
+    param("alignment");
+    {
+        // Left / Center / Right as a choice (the parameter's whole numbers).
+        Row& a = rows.back();
+        if (a.ref.key == "alignment" && a.kind != QLatin1String("choice")) {
+            a.kind = QStringLiteral("choice");
+            a.options.clear();
+            const QString labels[] = {tx("Left"), tx("Center"), tx("Right")};
+            for (int i = 0; i < 3; ++i)
+                a.options.append(QVariantMap{{QStringLiteral("value"), QString::number(a.range.toUi(i, a.frame))},
+                                             {QStringLiteral("label"), labels[i]}});
+            a.text = QString::number(std::round(a.value));
+        }
+    }
+    param("lineSpacing");
+    param("tracking");
+    colorRow("fill", tx("Fill"));
+    param("fill.alpha");
+    colorRow("stroke", tx("Stroke"));
+    param("stroke.width");
+    param("stroke.alpha");
+    colorRow("shadow", tx("Shadow Color"));
+    for (const char* key : {"shadow.opacity", "shadow.angle", "shadow.distance", "shadow.softness"})
+        param(key);
+}
+
+bool EffectControlsModel::editTextLayer(const Row& row, const char* label,
+                                        const std::function<bool(GraphicLayer&, Ticks)>& change, const std::string& mergeKey) {
+    const Clip* clip = clipOf(row);
+    const Graphic* graphic = clip ? clip->graphic() : nullptr;
+    const GraphicLayer* layer = graphic ? graphic->findLayer(row.layer) : nullptr;
+    if (!layer)
+        return false;
+    GraphicLayer next = *layer;
+    const Ticks playhead = std::clamp(m_controller->playhead(), clip->start(), std::max(clip->start(), clip->end() - Ticks{1}));
+    if (!change(next, graphicTimeAt(*clip, *graphic, playhead)) || next == *layer)
+        return false;
+    const SequenceId seq = m_controller->currentSequenceId();
+    const ClipId id = clip->id;
+    const std::uint32_t layerId = row.layer;
+    setNotice({});
+    if (!m_controller->applyEditFn(
+            label, [&](const ProjectState& state) { return edit::updateGraphicLayer(state, seq, id, layerId, next); }, mergeKey)) {
+        setNotice(m_controller->lastError());
+        return false;
+    }
+    return true;
+}
+
+void EffectControlsModel::setLayerParamAtPlayhead(const Row& row, double model, const std::string& mergeKey) {
+    const Clip* clip = clipOf(row);
+    if (!clip)
+        return;
+    const ParamValue current = paramValueOf(m_controller, *clip, row.ref);
+    ParamValue next(model);
+    if (const Curve* curve = current.curve()) {
+        // Animated: the value goes into the key at the playhead (its graphic time), as for any parameter.
+        const Ticks t = rowCurveTimeAtPlayhead(row, *clip);
+        Curve keys = *curve;
+        if (const auto at = keys.keyAt(t)) {
+            if (keys.keys[*at].value == model)
+                return;
+            keys.keys[*at].value = model;
+        } else {
+            const std::size_t insertAt = keys.insertionIndex(t);
+            Keyframe key{t, model};
+            if (insertAt > 0)
+                key.interpolation = keys.keys[insertAt - 1].interpolation;
+            keys.keys.insert(keys.keys.begin() + static_cast<std::ptrdiff_t>(insertAt), key);
+        }
+        next = ParamValue(std::move(keys));
+    } else if (current.constant() == model) {
+        return;
+    }
+    const SequenceId seq = m_controller->currentSequenceId();
+    const ClipId id = clip->id;
+    const edit::ParamRef ref = row.ref;
+    setNotice({});
+    if (!m_controller->applyEditFn(
+            row.undoLabel.c_str(), [&](const ProjectState& state) { return edit::setParameter(state, seq, id, ref, next); },
+            mergeKey))
+        setNotice(m_controller->lastError());
+}
+
+void EffectControlsModel::setTextProperty(const Row& row, double value, const std::string& mergeKey) {
+    const bool on = value >= 0.5;
+    const int index = static_cast<int>(std::lround(value));
+    const QString& p = row.textProp;
+    const auto optionLabel = [&]() -> QString {
+        return index >= 0 && index < row.options.size() ? row.options[index].toMap().value(QStringLiteral("label")).toString() : QString();
+    };
+    if (row.layer == 0) {
+        // A title clip's Font Style.
+        const Clip* clip = clipOf(row);
+        const QString style = optionLabel();
+        if (!clip || p != QLatin1String("titleFontStyle") || style.isEmpty() || index == static_cast<int>(row.value))
+            return;
+        const MediaId media = clip->media;
+        const std::string name = style.toStdString();
+        setNotice({});
+        if (!m_controller->applyEditFn(LABEL("Title Font"), [&](const ProjectState& state) {
+                return edit::setTitleFont(state, media, std::nullopt, name);
+            }))
+            setNotice(m_controller->lastError());
+        return;
+    }
+    // Run styles follow Source Text (the version at the playhead); the rest is the layer's.
+    const auto runs = [&](const char* label, const std::function<void(TextStyle&)>& set) {
+        editTextLayer(row, label, [&](GraphicLayer& l, Ticks t) {
+            return edit::editSourceRunsAt(l.text, t, [&](std::vector<TextRun>& list) {
+                bool changed = false;
+                for (TextRun& r : list) {
+                    const TextStyle before = r.style;
+                    set(r.style);
+                    changed = changed || !(before == r.style);
+                }
+                return changed;
+            });
+        }, mergeKey);
+    };
+    if (p == QLatin1String("kerning")) {
+        runs(LABEL("Kerning"), [&](TextStyle& s) { s.kerning = on; });
+    } else if (p == QLatin1String("caps")) {
+        runs(LABEL("Capitals"), [&](TextStyle& s) { s.caps = static_cast<TextCaps>(std::clamp(index, 0, 2)); });
+    } else if (p == QLatin1String("fauxBold")) {
+        runs(LABEL("Faux Bold"), [&](TextStyle& s) { s.fauxBold = on; });
+    } else if (p == QLatin1String("fauxItalic")) {
+        runs(LABEL("Faux Italic"), [&](TextStyle& s) { s.fauxItalic = on; });
+    } else if (p == QLatin1String("underline")) {
+        runs(LABEL("Underline"), [&](TextStyle& s) { s.underline = on; });
+    } else if (p == QLatin1String("fontStyle")) {
+        const std::string style = optionLabel().toStdString();
+        if (!style.empty())
+            runs(LABEL("Font Style"), [&](TextStyle& s) { s.fontStyle = style; });
+    } else {
+        const int stroke = strokeIndexOf(p);
+        editTextLayer(row, LABEL("Text Property"), [&](GraphicLayer& l, Ticks) {
+            TextContent& t = l.text;
+            if (p == QLatin1String("align"))
+                t.align = static_cast<TextAlign>(std::clamp(index, 0, 3));
+            else if (p == QLatin1String("valign"))
+                t.verticalAlign = static_cast<TextVerticalAlign>(std::clamp(index, 0, 2));
+            else if (p == QLatin1String("background"))
+                t.background.enabled = on;
+            else if (p == QLatin1String("background.opacity"))
+                t.background.color.rgba[3] = std::clamp(value / 100.0, 0.0, 1.0);
+            else if (p == QLatin1String("background.padding"))
+                t.background.padding = std::clamp(value, 0.0, 10000.0);
+            else if (p == QLatin1String("background.radius"))
+                t.background.radius = std::clamp(value, 0.0, 10000.0);
+            else if (p == QLatin1String("shadow"))
+                l.shadow.enabled = on;
+            else if (p == QLatin1String("shadow.opacity"))
+                l.shadow.opacity = std::clamp(value / 100.0, 0.0, 1.0);
+            else if (p == QLatin1String("shadow.angle"))
+                l.shadow.angle = value;
+            else if (p == QLatin1String("shadow.distance"))
+                l.shadow.distance = std::clamp(value, 0.0, 10000.0);
+            else if (p == QLatin1String("shadow.size"))
+                l.shadow.size = std::clamp(value, 0.0, 1000.0);
+            else if (p == QLatin1String("shadow.softness"))
+                l.shadow.softness = std::clamp(value, 0.0, 10000.0);
+            else if (stroke >= 0 && static_cast<std::size_t>(stroke) < t.strokes.size() && p.endsWith(QLatin1String(".position"))) {
+                t.strokes[static_cast<std::size_t>(stroke)].position = static_cast<StrokePosition>(std::clamp(index, 0, 2));
+                t.strokes[static_cast<std::size_t>(stroke)].enabled = true;
+            } else
+                return false;
+            return true;
+        }, mergeKey);
+    }
+}
+
+void EffectControlsModel::setColor(const QString& rowKey, const QString& color) {
+    const Row* r = findRow(rowKey);
+    const QColor c = QColor::fromString(color.trimmed());
+    if (!r || !m_controller || r->kind != QLatin1String("color") || !c.isValid())
+        return;
+    const std::array<double, 3> rgb{c.redF(), c.greenF(), c.blueF()};
+    const std::string mergeKey = "color:" + std::to_string(r->clip.value) + ":" + rowKey.toStdString();
+    const QString& p = r->textProp;
+    if (r->layer == 0) {
+        // A title: the style effect's red, green and blue as one step.
+        const auto effect = parseEffectKey(r->section);
+        const Clip* clip = clipOf(*r);
+        if (!effect || !clip || !p.startsWith(QLatin1String("color:")))
+            return;
+        const std::string prefix = p.mid(6).toStdString();
+        const SequenceId seq = m_controller->currentSequenceId();
+        const ClipId id = clip->id;
+        const EffectInstanceId instance = *effect;
+        std::vector<std::function<edit::EditOutcome(const ProjectState&)>> steps;
+        const char* const parts[] = {".red", ".green", ".blue"};
+        for (int i = 0; i < 3; ++i) {
+            const edit::ParamRef ref = edit::ParamRef::ofEffect(instance, prefix + parts[i]);
+            const double v = rgb[static_cast<std::size_t>(i)];
+            steps.push_back([=](const ProjectState& state) { return edit::setParameter(state, seq, id, ref, ParamValue(v)); });
+        }
+        setNotice({});
+        if (!m_controller->applyEditFn(LABEL("Title Color"), [&](const ProjectState& state) { return chain(state, steps); }, mergeKey))
+            setNotice(m_controller->lastError());
+        return;
+    }
+    const auto paint = [&](GraphicColor& g) {
+        const GraphicColor before = g;
+        g.rgba = {rgb[0], rgb[1], rgb[2], g.rgba[3]};
+        g.brand.clear();
+        return !(before == g);
+    };
+    const int stroke = strokeIndexOf(p);
+    editTextLayer(*r, LABEL("Text Color"), [&](GraphicLayer& l, Ticks) {
+        if (p == QLatin1String("fill")) {
+            bool changed = false;
+            edit::editAllRuns(l.text, [&](TextRun& run) { changed = paint(run.style.fill) || changed; });
+            return changed;
+        }
+        if (p == QLatin1String("background.color"))
+            return paint(l.text.background.color);
+        if (p == QLatin1String("shadow.color"))
+            return paint(l.shadow.color);
+        if (stroke >= 0 && static_cast<std::size_t>(stroke) < l.text.strokes.size()) {
+            TextStroke& st = l.text.strokes[static_cast<std::size_t>(stroke)];
+            const bool enabling = !st.enabled;
+            st.enabled = true;
+            return paint(st.color) || enabling;
+        }
+        return false;
+    }, mergeKey);
+}
+
+QStringList EffectControlsModel::fontFamilies() const {
+    static const QStringList families = QFontDatabase::families();
+    return families;
+}
+
+void EffectControlsModel::rowAction(const QString& rowKey, const QString& action) {
+    const Row* r = findRow(rowKey);
+    if (!r || !m_controller)
+        return;
+    // 0.6 (card #71): Master Clip Effects.
+    if (action == QLatin1String("masterOff") || action == QLatin1String("masterOn")) {
+        const SequenceId seq = m_controller->currentSequenceId();
+        const ClipId clip = r->clip;
+        const bool off = action == QLatin1String("masterOff");
+        m_controller->applyEditFn(off ? LABEL("Turn Off Master Clip Effects") : LABEL("Turn On Master Clip Effects"),
+                                  [&](const ProjectState& state) {
+                                      return edit::setMasterEffectsOff(state, seq, std::span<const ClipId>(&clip, 1), off);
+                                  });
+        return;
+    }
+    if (action == QLatin1String("toMaster") || action == QLatin1String("toClip")) {
+        const auto effect = parseEffectKey(r->section);
+        if (!effect || !r->clip)
+            return;
+        const SequenceId seq = m_controller->currentSequenceId();
+        const ClipId clip = r->clip;
+        const bool toMaster = action == QLatin1String("toMaster");
+        const bool ok = m_controller->applyEditFn(toMaster ? LABEL("Move to Master Clip") : LABEL("Move to Clip"),
+                                                  [&](const ProjectState& state) {
+                                                      return toMaster ? edit::moveEffectToMaster(state, seq, clip, *effect)
+                                                                      : edit::moveEffectToClip(state, seq, clip, *effect);
+                                                  });
+        if (!ok)
+            setNotice(m_controller->lastError());
+        return;
+    }
+    if (r->layer == 0)
+        return;
+    if (action == QLatin1String("addStroke")) {
+        editTextLayer(*r, LABEL("Add Stroke"), [](GraphicLayer& l, Ticks) {
+            if (l.text.strokes.size() >= kMaxTextStrokes)
+                return false;
+            TextStroke st;
+            if (!l.text.strokes.empty()) {
+                // A next stroke frames the ones before it: wider, in white.
+                st.width = ParamValue(l.text.strokes.back().width.constant() + 4.0);
+                st.color = GraphicColor{{1.0, 1.0, 1.0, 1.0}, {}};
+            }
+            l.text.strokes.push_back(std::move(st));
+            return true;
+        });
+    } else if (action == QLatin1String("remove")) {
+        const int stroke = strokeIndexOf(r->textProp);
+        if (stroke < 0)
+            return;
+        editTextLayer(*r, LABEL("Remove Stroke"), [&](GraphicLayer& l, Ticks) {
+            if (static_cast<std::size_t>(stroke) >= l.text.strokes.size())
+                return false;
+            l.text.strokes.erase(l.text.strokes.begin() + stroke);
+            return true;
+        });
+    }
+}
+
+// ---- Multi-clip editing (0.6) -----------------------------------------------------------------------
+
+void EffectControlsModel::addMultiRows(std::vector<Row>& rows) {
+    const SequencePtr seq = m_controller ? m_controller->currentSequence() : nullptr;
+    if (!seq)
+        return;
+    std::vector<const Clip*> video, audio;
+    for (const std::vector<ClipId>& unit : m_multiUnits) {
+        for (const ClipId id : unit) {
+            if (const auto loc = seq->findClip(id))
+                (loc->clip().stream.kind == StreamKind::Video ? video : audio).push_back(&loc->clip());
+        }
+    }
+    const auto section = [&](const QString& key, const QString& title, const QString& icon, PropertyRole role,
+                             const std::vector<const Clip*>& of) {
+        if (of.empty())
+            return;
+        Row h;
+        h.key = QStringLiteral("h:") + key;
+        h.kind = QStringLiteral("header");
+        h.section = key;
+        h.sectionKind = QStringLiteral("multi");
+        h.title = title;
+        h.icon = icon;
+        h.collapsed = m_collapsed.contains(key);
+        h.clip = of.front()->id;
+        const bool collapsed = h.collapsed;
+        rows.push_back(std::move(h));
+        if (collapsed)
+            return;
+        for (const UiParameter& p : uiParameters()) {
+            const ParameterInfo& info = parameterInfo(p.id);
+            if (info.role != role)
+                continue;
+            addParamRow(rows, *of.front(), QStringLiteral("m:") + QLatin1String(p.key), key, QStringLiteral("multi"),
+                        edit::ParamRef::of(p.id), QCoreApplication::translate("wabcut::app::ParameterUi", p.label),
+                        QLatin1String(p.icon), p.range, info.defaultValue, false, true, p.undoLabel);
+            Row& r = rows.back();
+            // No keys or lane here; the value is the first clip's, "mixed" when another clip's differs.
+            r.animated = false;
+            r.keyAtPlayhead = r.hasPrev = r.hasNext = false;
+            r.keys.clear();
+            r.graphOpen = false;
+            r.graph.clear();
+            const double tolerance = std::pow(10.0, -r.decimals) / 2.0;
+            for (const Clip* c : of) {
+                const double v = r.range.toUi(paramValueOf(m_controller, *c, r.ref).valueAt(m_controller->curveTimeAtPlayhead(*c)),
+                                              m_controller->propertyFrame(*c));
+                if (std::abs(v - r.value) > tolerance)
+                    r.mixed = true;
+            }
+        }
+    };
+    section(QStringLiteral("multi-motion"), tx("Transform"), QStringLiteral("scaling"), PropertyRole::Motion, video);
+    section(QStringLiteral("multi-opacity"), tx("Opacity"), QStringLiteral("blend"), PropertyRole::Opacity, video);
+    section(QStringLiteral("multi-audio"), tx("Audio"), QStringLiteral("volume-2"), PropertyRole::Audio, audio);
+}
+
+void EffectControlsModel::setMultiValue(const Row& row, double uiValue) {
+    const SequencePtr seq = m_controller ? m_controller->currentSequence() : nullptr;
+    if (!seq || !row.ref.intrinsic)
+        return;
+    const PropertyRole role = parameterInfo(*row.ref.intrinsic).role;
+    const StreamKind kind = role == PropertyRole::Audio ? StreamKind::Audio : StreamKind::Video;
+    std::vector<std::function<edit::EditOutcome(const ProjectState&)>> steps;
+    int set = 0, otherKind = 0, locked = 0;
+    const SequenceId seqId = seq->id;
+    const edit::ParamRef ref = row.ref;
+    for (const std::vector<ClipId>& unit : m_multiUnits) {
+        bool any = false;
+        for (const ClipId id : unit) {
+            const auto loc = seq->findClip(id);
+            if (!loc || loc->clip().stream.kind != kind)
+                continue;
+            any = true;
+            if (loc->track->locked) {
+                ++locked;
+                continue;
+            }
+            const Clip& c = loc->clip();
+            const double model = row.range.toModel(uiValue, m_controller->propertyFrame(c));
+            const ParamValue current = paramValueOf(m_controller, c, ref);
+            ParamValue next(model);
+            if (const Curve* curve = current.curve()) {
+                // Animated on this clip: a key at the playhead (as Effect Controls does for one clip).
+                const Ticks t = m_controller->curveTimeAtPlayhead(c);
+                Curve keys = *curve;
+                if (const auto at = keys.keyAt(t)) {
+                    keys.keys[*at].value = model;
+                } else {
+                    const std::size_t insertAt = keys.insertionIndex(t);
+                    Keyframe key{t, model};
+                    if (insertAt > 0)
+                        key.interpolation = keys.keys[insertAt - 1].interpolation;
+                    keys.keys.insert(keys.keys.begin() + static_cast<std::ptrdiff_t>(insertAt), key);
+                }
+                next = ParamValue(std::move(keys));
+            }
+            ++set;
+            if (next == current)
+                continue;
+            steps.push_back([=](const ProjectState& state) { return edit::setParameter(state, seqId, id, ref, next); });
+        }
+        if (!any)
+            ++otherKind;
+    }
+    QString notice = set == 1 ? tx("%1 set on 1 clip").arg(row.title) : tx("%1 set on %2 clips").arg(row.title).arg(set);
+    QStringList skipped;
+    if (otherKind > 0)
+        skipped << (kind == StreamKind::Video ? tx("%1 audio skipped").arg(otherKind) : tx("%1 video skipped").arg(otherKind));
+    if (locked > 0)
+        skipped << tx("%1 on locked tracks skipped").arg(locked);
+    if (!skipped.isEmpty())
+        notice += QStringLiteral(" (") + skipped.join(QStringLiteral(", ")) + QLatin1Char(')');
+    if (!steps.empty()
+        && !m_controller->applyEditFn(row.undoLabel.c_str(), [&](const ProjectState& state) { return chain(state, steps); },
+                                      "multi:" + row.key.toStdString())) {
+        setNotice(m_controller->lastError());
+        return;
+    }
+    setNotice(notice);
+}
+
+// ---- Keyframe clipboard (0.6) -----------------------------------------------------------------------
+
+/// What Copy put on the keyframe clipboard: per parameter, its keys with their times after the earliest copied key
+/// (timeline ticks, so keys of graphic layers and of clips paste alike).
+struct EffectControlsModel::KeyClipboard {
+    struct Entry {
+        edit::ParamRef ref;
+        std::string effect; ///< an effect parameter: the effect's id and which of that effect's instances it was
+        int effectIndex = 0;
+        QString title;
+        std::vector<Keyframe> keys;
+        /// Fix F1A: Source Text keys (text.source) hold an index into their layer's text versions; each key's text goes
+        /// with it (texts[i] for keys[i]), so it pastes as that text on any layer.
+        std::vector<std::vector<TextRun>> texts;
+    };
+    std::vector<Entry> entries;
+    int count = 0;
+};
+
+namespace {
+
+constexpr std::string_view kSourceTextKey = "text.source";
+
+/// Fix F1A (card #71): the effects Effect Controls lists for a clip - its media's Master Clip Effects (a subclip's master
+/// item's first), then its own - where the keyframe clipboard counts "the n-th instance of an effect".
+EffectStack listedEffects(const ProjectController* controller, const Clip& clip) {
+    const ProjectSnapshot snapshot = controller ? controller->snapshot() : nullptr;
+    EffectStack out = snapshot && clip.media.isValid() ? masterEffectsOf(*snapshot, clip.media) : EffectStack{};
+    out.insert(out.end(), clip.effects().begin(), clip.effects().end());
+    return out;
+}
+
+} // namespace
+
+void EffectControlsModel::setKeysPending(bool pending) {
+    const bool before = canPasteKeys();
+    m_keysPending = pending && m_keyClipboard != nullptr;
+    if (canPasteKeys() != before)
+        emit keyClipboardChanged();
+}
+
+int EffectControlsModel::copySelectedKeys(bool cut) {
+    if (m_selectedKeys.empty() || !m_controller)
+        return 0;
+    auto board = std::make_shared<KeyClipboard>();
+    std::map<QString, std::size_t> byRow;
+    std::optional<Ticks> earliest;
+    for (const KeyRef& k : m_selectedKeys) {
+        const Row* r = findRow(k.row);
+        const Clip* clip = r ? clipOf(*r) : nullptr;
+        if (!clip)
+            continue;
+        const ParamValue value = paramValueOf(m_controller, *clip, r->ref);
+        const Curve* curve = value.curve();
+        const auto at = curve ? curve->keyAt(Ticks{k.curveTime}) : std::nullopt;
+        const auto timeline = at ? rowTimelineTime(*r, *clip, Ticks{k.curveTime}) : std::nullopt;
+        if (!timeline)
+            continue;
+        auto found = byRow.find(k.row);
+        if (found == byRow.end()) {
+            KeyClipboard::Entry e;
+            e.ref = r->ref;
+            e.title = r->title;
+            if (!r->ref.intrinsic && r->ref.layer == 0) {
+                // Which instance of its effect it is (the first Gaussian Blur, the second ...), Master Clip Effects first.
+                const EffectStack stack = listedEffects(m_controller, *clip);
+                const auto self = std::find_if(stack.begin(), stack.end(),
+                                               [&](const EffectInstance& instance) { return instance.id == r->ref.effect; });
+                if (self != stack.end()) {
+                    e.effect = self->effect;
+                    e.effectIndex = static_cast<int>(std::count_if(stack.begin(), self, [&](const EffectInstance& instance) {
+                        return instance.effect == e.effect;
+                    }));
+                }
+            }
+            board->entries.push_back(std::move(e));
+            found = byRow.emplace(k.row, board->entries.size() - 1).first;
+        }
+        Keyframe key = curve->keys[*at];
+        key.time = *timeline;
+        board->entries[found->second].keys.push_back(key);
+        if (r->ref.layer != 0 && r->ref.key == kSourceTextKey) {
+            // Fix F1A: the text this Source Text key shows.
+            const GraphicLayer* layer = clip->graphic() ? clip->graphic()->findLayer(r->ref.layer) : nullptr;
+            board->entries[found->second].texts.push_back(layer ? sourceRunsAt(layer->text, Ticks{k.curveTime})
+                                                                : std::vector<TextRun>{});
+        }
+        earliest = earliest ? std::min(*earliest, *timeline) : *timeline;
+        ++board->count;
+    }
+    if (board->count == 0)
+        return 0;
+    for (KeyClipboard::Entry& e : board->entries) {
+        for (Keyframe& key : e.keys)
+            key.time = key.time - *earliest;
+        // In time order; a Source Text key's text stays with it.
+        std::vector<std::size_t> order(e.keys.size());
+        for (std::size_t i = 0; i < order.size(); ++i)
+            order[i] = i;
+        std::stable_sort(order.begin(), order.end(), [&](std::size_t a, std::size_t b) { return e.keys[a].time < e.keys[b].time; });
+        std::vector<Keyframe> keys;
+        std::vector<std::vector<TextRun>> texts;
+        for (const std::size_t i : order) {
+            keys.push_back(e.keys[i]);
+            if (i < e.texts.size())
+                texts.push_back(std::move(e.texts[i]));
+        }
+        e.keys = std::move(keys);
+        e.texts = texts.size() == e.keys.size() ? std::move(texts) : std::vector<std::vector<TextRun>>{};
+    }
+    const int count = board->count;
+    if (cut)
+        deleteKeys(LABEL("Cut Keyframes"));
+    m_keyClipboard = std::move(board);
+    m_keysPending = true;
+    emit keyClipboardChanged(); // a new copy (even when one was already pending)
+    setEffectsPending(false);   // the newest copy wins
+    emit m_controller->clipboardNotice(count == 1 ? tx("Copied 1 keyframe") : tx("Copied %1 keyframes").arg(count));
+    return count;
+}
+
+QString EffectControlsModel::pasteKeys() {
+    if (!m_controller)
+        return tx("No project");
+    const auto fail = [&](const QString& text) {
+        setNotice(text);
+        return text;
+    };
+    if (!m_keyClipboard)
+        return fail(tx("Copy keyframes in Effect Controls first"));
+    const SequencePtr seq = m_controller->currentSequence();
+    if (!seq || m_mode != QLatin1String("clip"))
+        return fail(tx("Select a clip to paste the keyframes onto"));
+    const Ticks playhead = m_controller->playhead();
+    const SequenceId seqId = seq->id;
+    std::vector<std::function<edit::EditOutcome(const ProjectState&)>> steps;
+    int pasted = 0;
+    QStringList missing;
+    for (const KeyClipboard::Entry& e : m_keyClipboard->entries) {
+        // The same parameter on the clip shown (its video or audio part).
+        const Clip* target = nullptr;
+        edit::ParamRef ref = e.ref;
+        for (const StreamKind kind : {StreamKind::Video, StreamKind::Audio}) {
+            const auto id = m_controller->propertyTarget(kind);
+            const auto loc = id ? seq->findClip(*id) : std::nullopt;
+            if (!loc || target)
+                continue;
+            const Clip& c = loc->clip();
+            if (e.ref.layer != 0) {
+                const GraphicLayer* layer = c.graphic() ? c.graphic()->findLayer(e.ref.layer) : nullptr;
+                if (layer && edit::layerParamInfo(*layer, e.ref.key))
+                    target = &c;
+            } else if (e.ref.intrinsic) {
+                const PropertyRole role = parameterInfo(*e.ref.intrinsic).role;
+                if ((role == PropertyRole::Audio) == (kind == StreamKind::Audio))
+                    target = &c;
+            } else {
+                int nth = 0;
+                for (const EffectInstance& instance : listedEffects(m_controller, c)) { // fix F1A: master ones first
+                    if (instance.effect != e.effect)
+                        continue;
+                    if (nth++ == e.effectIndex) {
+                        ref = edit::ParamRef::ofEffect(instance.id, e.ref.key);
+                        target = &c;
+                        break;
+                    }
+                }
+            }
+        }
+        if (!target) {
+            missing << e.title;
+            continue;
+        }
+        Row probe;
+        probe.ref = ref;
+        if (ref.layer != 0 && ref.key == kSourceTextKey && e.texts.size() == e.keys.size()) {
+            // Fix F1A: Source Text keys paste as the text they showed (versions of the target layer), never as bare
+            // indices into the target's own versions.
+            std::vector<Keyframe> keys;
+            for (Keyframe key : e.keys) {
+                key.time = rowCurveTime(probe, *target, playhead + key.time);
+                keys.push_back(key);
+            }
+            pasted += static_cast<int>(keys.size());
+            const ClipId clip = target->id;
+            const std::uint32_t layerId = ref.layer;
+            steps.push_back([=, texts = e.texts](const ProjectState& state) -> edit::EditOutcome {
+                const Sequence* sequence = state.findSequence(seqId);
+                const auto loc = sequence ? sequence->findClip(clip) : std::nullopt;
+                const Graphic* graphic = loc ? loc->clip().graphic() : nullptr;
+                const GraphicLayer* layer = graphic ? graphic->findLayer(layerId) : nullptr;
+                if (!layer)
+                    return std::unexpected(Error{ErrorCode::NotFound, "the text layer is not on this clip"});
+                GraphicLayer changed = *layer;
+                if (!edit::pasteSourceTextKeys(changed.text, keys, texts))
+                    return std::unexpected(Error{ErrorCode::InvalidArgument, "the text layer has too many Source Text versions"});
+                return edit::updateGraphicLayer(state, seqId, clip, layerId, std::move(changed));
+            });
+            continue;
+        }
+        const ParamValue current = paramValueOf(m_controller, *target, ref);
+        Curve curve = current.curve() ? *current.curve() : Curve{};
+        for (Keyframe key : e.keys) {
+            key.time = rowCurveTime(probe, *target, playhead + key.time);
+            if (const auto at = curve.keyAt(key.time))
+                curve.keys[*at] = key; // a key at the same time is replaced
+            else
+                curve.keys.insert(curve.keys.begin() + static_cast<std::ptrdiff_t>(curve.insertionIndex(key.time)), key);
+            ++pasted;
+        }
+        const ClipId clip = target->id;
+        steps.push_back([=](const ProjectState& state) { return edit::setParameter(state, seqId, clip, ref, ParamValue(curve)); });
+    }
+    if (steps.empty())
+        return fail(tx("This clip has none of the copied parameters (%1)").arg(missing.join(QStringLiteral(", "))));
+    if (!m_controller->applyEditFn(LABEL("Paste Keyframes"), [&](const ProjectState& state) { return chain(state, steps); }))
+        return fail(m_controller->lastError());
+    clearKeySelection();
+    QString message = pasted == 1 ? tx("Pasted 1 keyframe") : tx("Pasted %1 keyframes").arg(pasted);
+    if (!missing.isEmpty())
+        message += QStringLiteral(" · ") + tx("not on this clip: %1").arg(missing.join(QStringLiteral(", ")));
+    setNotice(missing.isEmpty() ? QString() : message);
+    emit m_controller->clipboardNotice(message);
+    return {};
 }
 
 } // namespace wabcut::app

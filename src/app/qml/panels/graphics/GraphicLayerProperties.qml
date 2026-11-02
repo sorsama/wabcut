@@ -337,6 +337,49 @@ ColumnLayout {
             }
             Item { Layout.fillWidth: true }
         }
+        // 0.6: faux styles, underline, kerning and capitals of the run (Effect Controls' Text section edits them too).
+        Flow {
+            objectName: "graphicTextStyles"
+            Layout.fillWidth: true
+            spacing: Theme.space(1)
+            Repeater {
+                model: [{ key: "fauxBold", label: qsTr("Faux Bold") }, { key: "fauxItalic", label: qsTr("Faux Italic") },
+                    { key: "underline", label: qsTr("Underline") }, { key: "kerning", label: qsTr("Kerning") }]
+                delegate: PillButton {
+                    id: styleToggle
+                    required property var modelData
+                    readonly property bool styleOn: root.run[styleToggle.modelData.key] === true
+                    objectName: "graphicTextStyle_" + modelData.key
+                    compact: true
+                    variant: styleOn ? "primary" : "ghost"
+                    text: modelData.label
+                    Accessible.checkable: true
+                    Accessible.checked: styleOn
+                    onClicked: {
+                        Graphics.setRun(root.layerId, root.runIndex, styleToggle.modelData.key, !styleToggle.styleOn)
+                        Graphics.endEdit()
+                    }
+                }
+            }
+            Repeater {
+                model: [{ key: "allCaps", label: qsTr("All Caps") }, { key: "smallCaps", label: qsTr("Small Caps") }]
+                delegate: PillButton {
+                    id: capsToggle
+                    required property var modelData
+                    readonly property bool styleOn: (root.run.caps ?? "normal") === capsToggle.modelData.key
+                    objectName: "graphicTextCaps_" + modelData.key
+                    compact: true
+                    variant: styleOn ? "primary" : "ghost"
+                    text: modelData.label
+                    Accessible.checkable: true
+                    Accessible.checked: styleOn
+                    onClicked: {
+                        Graphics.setRun(root.layerId, root.runIndex, "caps", capsToggle.styleOn ? "normal" : capsToggle.modelData.key)
+                        Graphics.endEdit()
+                    }
+                }
+            }
+        }
         Toggle {
             objectName: "graphicParagraph"
             text: qsTr("Paragraph box")
@@ -376,6 +419,31 @@ ColumnLayout {
                 Accessible.name: qsTr("Box height")
                 onValueModified: v => Graphics.updateLayer(root.layerId, { text: { boxHeight: Math.round(v) } }, "boxHeight")
                 onScrubFinished: Graphics.endEdit()
+            }
+        }
+        // 0.6: where the lines sit in a box taller than them.
+        RowLayout {
+            Layout.fillWidth: true
+            visible: Number(root.text.boxWidth ?? 0) > 0 && Number(root.text.boxHeight ?? 0) > 0
+            spacing: Theme.space(1)
+            Text {
+                Layout.fillWidth: true
+                text: qsTr("Vertical alignment")
+                color: Theme.textSecondary
+                font.family: Theme.fontSans
+                font.pixelSize: Theme.textSm
+            }
+            Repeater {
+                model: [{ id: "top", name: qsTr("Top") }, { id: "center", name: qsTr("Centre") }, { id: "bottom", name: qsTr("Bottom") }]
+                delegate: PillButton {
+                    id: vAlign
+                    required property var modelData
+                    objectName: "graphicVAlign_" + modelData.id
+                    compact: true
+                    variant: (root.text.verticalAlign ?? "top") === vAlign.modelData.id ? "primary" : "ghost"
+                    text: modelData.name
+                    onClicked: Graphics.updateLayer(root.layerId, { text: { verticalAlign: vAlign.modelData.id } })
+                }
             }
         }
         Toggle {
@@ -420,6 +488,77 @@ ColumnLayout {
                 value: Number((root.text.background ?? {}).radius ?? 0)
                 onValueModified: v => Graphics.updateLayer(root.layerId, { text: { background: { radius: v } } }, "radius")
                 onGestureEnded: Graphics.endEdit()
+            }
+        }
+        // 0.6: strokes round the glyphs; the first hugs them, each next one frames the ones before it.
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: Theme.space(1)
+            Text {
+                Layout.fillWidth: true
+                text: qsTr("Strokes")
+                color: Theme.textSecondary
+                font.family: Theme.fontSans
+                font.pixelSize: Theme.textSm
+            }
+            IconButton {
+                objectName: "graphicTextStrokeAdd"
+                compact: true
+                iconName: "plus"
+                enabled: (root.text.strokes ?? []).length < 8
+                tooltip: qsTr("Add a stroke")
+                onClicked: Graphics.setTextStroke(root.layerId, -1, "add")
+            }
+        }
+        Repeater {
+            model: (root.text.strokes ?? []).length
+            delegate: ColumnLayout {
+                id: strokeRow
+                required property int index
+                readonly property var stroke: (root.text.strokes ?? [])[strokeRow.index] ?? ({})
+                Layout.fillWidth: true
+                spacing: Theme.space(1)
+                GraphicColorRow {
+                    label: strokeRow.index === 0 ? qsTr("Stroke") : qsTr("Stroke %1").arg(strokeRow.index + 1)
+                    key: "textStroke" + strokeRow.index
+                    value: strokeRow.stroke.color ?? ({ color: String(Theme.videoBlack).toUpperCase(), alpha: 1, brand: "" })
+                    onPicked: color => {
+                        Graphics.setColor(root.layerId, "textStroke:" + strokeRow.index, color)
+                        Graphics.endEdit()
+                    }
+                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: Theme.space(1)
+                    PropSlider {
+                        objectName: "graphicTextStrokeWidth" + strokeRow.index
+                        Layout.fillWidth: true
+                        label: qsTr("Width")
+                        unit: qsTr("px")
+                        from: 0
+                        to: 100
+                        defaultValue: 4
+                        value: Number((strokeRow.stroke.width ?? {}).value ?? 4)
+                        Accessible.name: qsTr("Stroke %1 width").arg(strokeRow.index + 1)
+                        onValueModified: v => Graphics.setValue(root.layerId, "text.stroke" + strokeRow.index + ".width", v)
+                        onGestureEnded: Graphics.endEdit()
+                    }
+                    GraphicChoicePill {
+                        objectName: "graphicTextStrokePosition" + strokeRow.index
+                        options: [{ id: "outside", name: qsTr("Outside") }, { id: "center", name: qsTr("Center") },
+                            { id: "inside", name: qsTr("Inside") }]
+                        current: strokeRow.stroke.position ?? "outside"
+                        Accessible.name: qsTr("Stroke %1 position").arg(strokeRow.index + 1)
+                        onChosen: id => Graphics.setTextStroke(root.layerId, strokeRow.index, "position", id)
+                    }
+                    IconButton {
+                        objectName: "graphicTextStrokeRemove" + strokeRow.index
+                        compact: true
+                        iconName: "trash-2"
+                        tooltip: qsTr("Remove stroke %1").arg(strokeRow.index + 1)
+                        onClicked: Graphics.setTextStroke(root.layerId, strokeRow.index, "remove")
+                    }
+                }
             }
         }
     }
@@ -921,6 +1060,19 @@ ColumnLayout {
             defaultValue: 8
             value: Number(root.shadow.softness ?? 8)
             onValueModified: v => Graphics.updateLayer(root.layerId, { shadow: { softness: v } }, "shadowSoftness")
+            onGestureEnded: Graphics.endEdit()
+        }
+        // 0.6: Premiere's shadow Size: the shape grows before the blur.
+        PropSlider {
+            objectName: "graphicShadowSize"
+            Layout.fillWidth: true
+            label: qsTr("Size")
+            unit: qsTr("px")
+            from: 0
+            to: 100
+            defaultValue: 0
+            value: Number(root.shadow.size ?? 0)
+            onValueModified: v => Graphics.updateLayer(root.layerId, { shadow: { size: v } }, "shadowSize")
             onGestureEnded: Graphics.endEdit()
         }
     }

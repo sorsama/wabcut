@@ -10,6 +10,7 @@
 #include "SequenceEditor.h"
 
 #include <algorithm>
+#include <cmath>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -59,6 +60,93 @@ std::vector<ClipId> withLinkedClips(const Sequence& sequence, std::span<const Cl
             }
         }
     });
+    return out;
+}
+
+// --- Sync (0.6) -----------------------------------------------------------------------------------------
+
+namespace {
+
+/// A linked clip whose source time can be compared with its partners' (plain media at a steady speed).
+bool syncComparable(const Clip& c) {
+    return c.linkGroup.isValid() && c.media.isValid() && !c.isNested() && !c.hasUnknownSource() && !c.isRemapped() &&
+           !c.isFreeze() && c.speed.isValid() && c.speed.num > 0;
+}
+
+/// `clip` against `partner` (both syncComparable, same media, speed and direction), in whole frames of `rate`.
+Ticks offsetAgainst(const Clip& clip, const Clip& partner, Rate rate) {
+    // Forward: the source time T shows at start + (T - sourceIn) / speed; reversed: at start + (sourceOut - T) / speed.
+    const Ticks timeline = clip.start() - partner.start();
+    const Ticks source = clip.reversed ? partner.sourceOut() - clip.sourceOut() : clip.sourceIn - partner.sourceIn;
+    const double ticks = static_cast<double>((timeline - toTimelineTicks(source, clip.speed)).value);
+    const double frame = static_cast<double>(framesToTicks(1, rate).value);
+    return framesToTicks(static_cast<std::int64_t>(std::llround(ticks / frame)), rate);
+}
+
+/// The partner `clip` is measured against among `group` (see syncOffset), or null.
+const Clip* syncPartner(const Clip& clip, const std::vector<const Clip*>& group) {
+    const Clip* same = nullptr;
+    for (const Clip* p : group) {
+        if (p->id == clip.id || p->media != clip.media || !syncComparable(*p) || p->speed != clip.speed ||
+            p->reversed != clip.reversed) {
+            continue;
+        }
+        if (p->stream.kind != clip.stream.kind) {
+            return p;
+        }
+        if (!same) {
+            same = p;
+        }
+    }
+    return same;
+}
+
+} // namespace
+
+std::optional<Ticks> syncOffset(const Sequence& sequence, ClipId clipId) {
+    const auto loc = sequence.findClip(clipId);
+    if (!loc || !syncComparable(loc->clip())) {
+        return std::nullopt;
+    }
+    const Clip& clip = loc->clip();
+    std::vector<const Clip*> group;
+    sequence.forEachTrack([&](const Track& t) {
+        for (const Clip& c : t.clips) {
+            if (c.linkGroup == clip.linkGroup) {
+                group.push_back(&c);
+            }
+        }
+    });
+    const Clip* partner = syncPartner(clip, group);
+    if (!partner) {
+        return std::nullopt;
+    }
+    return offsetAgainst(clip, *partner, sequence.frameRate);
+}
+
+std::vector<std::pair<ClipId, Ticks>> outOfSyncClips(const Sequence& sequence) {
+    std::unordered_map<LinkGroupId, std::vector<const Clip*>> groups;
+    std::vector<const Clip*> order;
+    sequence.forEachTrack([&](const Track& t) {
+        for (const Clip& c : t.clips) {
+            if (syncComparable(c)) {
+                groups[c.linkGroup].push_back(&c);
+                order.push_back(&c);
+            }
+        }
+    });
+    std::vector<std::pair<ClipId, Ticks>> out;
+    for (const Clip* c : order) {
+        const std::vector<const Clip*>& group = groups[c->linkGroup];
+        if (group.size() < 2) {
+            continue;
+        }
+        if (const Clip* partner = syncPartner(*c, group)) {
+            if (const Ticks offset = offsetAgainst(*c, *partner, sequence.frameRate); offset.value != 0) {
+                out.emplace_back(c->id, offset);
+            }
+        }
+    }
     return out;
 }
 

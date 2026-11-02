@@ -99,6 +99,15 @@ Image gaussianBlurSigma(const Image& picture, double sigma, bool repeatEdges) {
     return fromBuffer(picture.width, picture.height, vertical);
 }
 
+Image gaussianBlurSigmaAxis(const Image& picture, double sigma, bool horizontal, bool repeatEdges) {
+    if (picture.empty() || !std::isfinite(sigma) || sigma < 0.05) {
+        return picture;
+    }
+    return fromBuffer(picture.width, picture.height,
+                      blurPass(toBuffer(picture), picture.width, picture.height, horizontal ? 1 : 0, horizontal ? 0 : 1, sigma,
+                               repeatEdges));
+}
+
 Image gaussianBlur(const Image& picture, double radius, bool repeatEdges) {
     return gaussianBlurSigma(picture, std::max(0.0, radius) / 3.0, repeatEdges);
 }

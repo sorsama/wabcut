@@ -15,6 +15,12 @@ Item {
     property string query: ""
     signal saveRequested()
 
+    /// P1 round (#30, stream 1E): Edit > Find (Ctrl+F) - the search, its text selected.
+    function focusFind() {
+        searchField.forceActiveFocus(Qt.ShortcutFocusReason)
+        searchField.selectAll()
+    }
+
     /// The built-in templates' names in the UI language (the catalog's are English).
     readonly property var builtinNames: ({
         "wabcut.gaming.subscribe": qsTr("Subscribe"),
@@ -110,6 +116,7 @@ Item {
             Layout.fillWidth: true
             spacing: Theme.space(1)
             FieldInput {
+                id: searchField
                 objectName: "graphicsSearch"
                 Layout.fillWidth: true
                 iconName: "search"
@@ -208,6 +215,17 @@ Item {
                     tooltip: Graphics.clip !== "" ? qsTr("Keep the selected graphic as a template, with the fields you choose")
                                                   : qsTr("Select a graphic clip on the timeline first")
                     onClicked: root.saveRequested()
+                }
+                // P1 round (#50): bring a .mogrt / .wabcut-template.json in as a project template.
+                PillButton {
+                    objectName: "graphicsInstallTemplate"
+                    Layout.fillWidth: true
+                    compact: true
+                    variant: "ghost"
+                    iconName: "download"
+                    text: qsTr("Install template…")
+                    tooltip: qsTr("Add a Motion Graphics template (.mogrt) or a Wabcut template file to this project")
+                    onClicked: Graphics.openInstallDialog("project")
                 }
 
                 TemplateGroup {

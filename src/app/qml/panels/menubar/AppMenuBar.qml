@@ -123,6 +123,12 @@ Item {
             if (source !== null)
                 return source
         }
+        // 0.6 (1D, #41): Edit > Cut / Paste move the Library's items while it has the focus (Main.runCommand).
+        if (root.focusScope === "project" && (command === "edit.cut" || command === "edit.paste")) {
+            const library = Library.commandAvailability(command)
+            if (library.handled === true)
+                return { enabled: library.enabled === true, reason: library.reason ?? "" }
+        }
         return CommandPalette.commandState(command)
     }
     function textState(editor: Item, command: string): var {
@@ -169,6 +175,8 @@ Item {
         case "marker.markClip":
         case "marker.add":
         case "sequence.reverseMatchFrame":
+        case "transport.playInToOut": // P1 round (#33): its clip, not the sequence behind it
+        case "file.exportFrame":
             return SourceMonitor.loaded ? ready : { enabled: false, reason: qsTr("No clip is open in the Source Monitor") }
         case "marker.goToIn":
         case "marker.clearIn":
@@ -362,6 +370,7 @@ Item {
                 required property int index
                 objectName: "menuBar_" + title.modelData.key
                 text: title.modelData.title
+                badge: title.modelData.badge // P1 round (#5)
                 open: root.openMenu === title.modelData && title.modelData.visible
                 onClicked: root.toggle(title.index, title.visualFocus)
                 onKeyboardOpenRequested: root.open(title.index, true)
@@ -387,6 +396,7 @@ Item {
         visible: root.collapsed
         text: qsTr("Menu")
         iconName: "chevron-down"
+        badge: root.menus.some(m => m.badge) // P1 round (#5)
         open: root.collapsed && (collapsedLoader.item as MenuBarMenu)?.visible === true
         onClicked: {
             const menu = collapsedLoader.item as MenuBarMenu

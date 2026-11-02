@@ -246,3 +246,22 @@ TEST_CASE("Assistant: a failed check is reported, not hidden (screenshot)", "[ai
     CHECK(s.agent->state() == QStringLiteral("idle"));
     CHECK(s.view->externalPreview() == nullptr);
 }
+
+// Fix round 3 (NEW-04, ARGON-14): a run that stops puts the reason in the message once - a short status above it, not
+// the same sentence twice - and the usage line counts model calls in whole words ("3 calls", not "3 call(s)").
+TEST_CASE("Assistant: a stopped run says the reason once and counts model calls in whole words", "[ai][ui][agent]") {
+    Scene s;
+    // A call the app refuses (no time for the marker): three identical refusals end the run as Stuck.
+    for (int i = 0; i < 8; ++i)
+        s.model->tool("marker_add", Json{{"name", "Intro"}});
+    s.model->text("never reached");
+    s.agent->ask(QStringLiteral("Add a marker called Intro"));
+    REQUIRE(s.agent->waitForIdle(15'000));
+    REQUIRE(s.agent->state() == QStringLiteral("result"));
+    CHECK(s.agent->status() == QStringLiteral("Stuck"));
+    CHECK(s.agent->statusText() == QStringLiteral("Stopped: a step was refused again and again"));
+    CHECK(s.agent->message().contains(QStringLiteral("kept repeating")));
+    CHECK(s.agent->message() != s.agent->statusText());
+    CHECK_FALSE(s.agent->usageText().contains(QStringLiteral("(s)")));
+    CHECK(s.agent->usageText().endsWith(QStringLiteral("3 calls")));
+}

@@ -1,3 +1,4 @@
+pragma ComponentBehavior: Bound
 import QtQuick
 
 // A docked panel's grip, pop-out and close buttons (0.1.3 panel docking, at the end of the panel's header). Drag the
@@ -11,14 +12,21 @@ Row {
     required property DockSlot host
     /// Being dragged or focused (a header-less panel keeps the handle shown meanwhile).
     readonly property bool busy: drag.active || toggle.activeFocus || close.activeFocus
+    /// P1 round (#32): the workspace is locked - no grip, no pop-out (a floating group still docks back), no close.
+    readonly property bool locked: root.host.manager?.locked ?? false
 
     spacing: 0
 
     Item {
         id: grip
         objectName: "dockGrip_" + root.host.currentPanel
+        visible: !root.locked
         width: Theme.iconSm + Theme.space(2)
         height: Theme.controlHeightSmall
+        // P1 round (#31): a name and a tooltip for the grip.
+        Accessible.role: Accessible.Grip
+        Accessible.name: qsTr("Move %1").arg(Workspaces.panelLabel(root.host.currentPanel))
+        Accessible.description: qsTr("Drag to move this panel group")
 
         Icon {
             anchors.centerIn: parent
@@ -29,6 +37,15 @@ Row {
         HoverHandler {
             id: gripHover
             cursorShape: drag.active ? Qt.ClosedHandCursor : Qt.OpenHandCursor
+        }
+        Loader {
+            objectName: "dockGripTip"
+            active: gripHover.hovered && !drag.active
+            sourceComponent: Tooltip {
+                parent: grip
+                visible: true
+                text: qsTr("Drag to move this panel group")
+            }
         }
         DragHandler {
             id: drag
@@ -49,6 +66,7 @@ Row {
     IconButton {
         id: toggle
         objectName: "dockToggle_" + root.host.currentPanel
+        visible: !root.locked || root.host.floating
         anchors.verticalCenter: parent.verticalCenter
         compact: true
         iconName: root.host.floating ? "minimize-2" : "external-link"
@@ -64,6 +82,7 @@ Row {
     IconButton {
         id: close
         objectName: "dockClose_" + root.host.currentPanel
+        visible: !root.locked
         anchors.verticalCenter: parent.verticalCenter
         compact: true
         iconName: "x"

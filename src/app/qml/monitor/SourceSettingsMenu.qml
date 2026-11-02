@@ -12,6 +12,38 @@ ContextMenu {
 
     objectName: namePrefix + "sourceMonitorSettingsMenu"
 
+    // P1 (#19): the preview settings (MediaReadiness), as in the Program Monitor and the View menu.
+    component ResolutionItem: ContextMenuItem {
+        id: resolution
+        required property string level
+        checkable: true
+        checked: MediaReadiness.previewQuality === resolution.level
+        onTriggered: {
+            MediaReadiness.previewQuality = resolution.level
+            resolution.checked = Qt.binding(() => MediaReadiness.previewQuality === resolution.level)
+        }
+    }
+
+    ContextMenu {
+        objectName: menu.namePrefix + "sourcePlaybackResolutionMenu"
+        title: qsTr("Playback Resolution")
+
+        ResolutionItem { text: qsTr("Auto (fit the monitor)"); level: "auto"; command: "monitor.playbackResolutionAuto" }
+        ResolutionItem { text: qsTr("Full"); level: "full"; command: "monitor.playbackResolutionFull" }
+        ResolutionItem { text: qsTr("1/2"); level: "half"; command: "monitor.playbackResolutionHalf" }
+        ResolutionItem { text: qsTr("1/4"); level: "quarter"; command: "monitor.playbackResolutionQuarter" }
+    }
+    // P1 (#16): the resolution while parked (the same setting as the Program Monitor's).
+    PausedResolutionMenu { namePrefix: menu.namePrefix + "source_" }
+    ContextMenuItem {
+        objectName: menu.namePrefix + "sourceUseProxiesItem"
+        text: qsTr("Use Proxies")
+        checkable: true
+        checked: MediaReadiness.useProxies
+        command: "monitor.toggleProxies"
+        onTriggered: MediaReadiness.useProxies = !MediaReadiness.useProxies
+    }
+    ContextMenuSeparator {}
     ContextMenuItem {
         objectName: menu.namePrefix + "sourceLoopItem"
         text: qsTr("Loop")

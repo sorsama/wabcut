@@ -54,10 +54,10 @@ TEST_CASE("interchange: summary: JSON has every clip, media item and report entr
     CHECK(v1["clips"][1]["startTicks"] == 150 * 8'475'667'200LL);
     CHECK(v1["clips"][1]["start"] == "00:00:05;00");
     CHECK(v1["clips"][2]["enabled"] == false);
-    CHECK(j["media"].size() == 6);
+    CHECK(j["media"].size() == 7); // 0.6 (card #69): with the Black Video generator
     CHECK(j["unresolvedMedia"].size() == 6);
     CHECK(j["report"]["entries"].size() == r.report.size());
-    CHECK(j["report"]["counts"]["dropped"] == 1); // C.8: the nested sequence is carried; X.1: the Gaussian Blur too
+    CHECK(j["report"]["counts"]["dropped"] == 0); // C.8: the nested sequence is carried; X.1: the Gaussian Blur too; 0.6: Black Video
     const Json& first = j["report"]["entries"][0];
     CHECK(first.contains("outcome"));
     CHECK(first.contains("category"));

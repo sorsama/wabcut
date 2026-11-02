@@ -1,4 +1,5 @@
 #include "Encode.h"
+#include "Delivery.h"
 #include "FrameEffects.h"
 
 #include <wabcut/export/Encoders.h>
@@ -166,6 +167,10 @@ AVCodecID codecIdOf(VideoCodec c) {
         return AV_CODEC_ID_QTRLE;
     case VideoCodec::CineForm:
         return AV_CODEC_ID_CFHD;
+    case VideoCodec::Xdcam: // 0.6 (#73)
+        return AV_CODEC_ID_MPEG2VIDEO;
+    case VideoCodec::AvcIntra:
+        return AV_CODEC_ID_H264;
     }
     return AV_CODEC_ID_H264;
 }
@@ -244,7 +249,32 @@ void configureVideoOptions(const std::string& name, const VideoSettings& v, AVCo
         ctx->rc_buffer_size = static_cast<int>(std::min<std::int64_t>(2 * maxRate, INT32_MAX));
     };
 
-    if (name == "libx264" || name == "libx265") {
+    if (name == "libx264" && v.codec == VideoCodec::AvcIntra) {
+        // 0.6 (#73): AVC-Intra 100 (SMPTE RP 2027 class 100): x264 sets the profile, intra-only coding, the fixed frame
+        // size and its SEI itself; no rate control of ours.
+        setOption(opts, "avcintra-class", 100);
+        setOption(opts, "preset", "medium");
+    } else if (name == "mpeg2video" && v.codec == VideoCodec::Xdcam) {
+        // 0.6 (#73): XDCAM HD422 - MPEG-2 4:2:2P@HL long GOP (N = 12 / 15, M = 3, closed), 50 Mb/s constant bit rate
+        // with Sony's VBV buffer, the intra VLC table, a non-linear quantiser and 10-bit DC precision.
+        constexpr std::int64_t kRate = 50'000'000;
+        ctx->bit_rate = kRate;
+        ctx->rc_min_rate = kRate;
+        ctx->rc_max_rate = kRate;
+        ctx->rc_buffer_size = 17'825'792;
+        ctx->rc_initial_buffer_occupancy = 17'825'792;
+        ctx->gop_size = xdcamGopLength(Rate{ctx->framerate.num, ctx->framerate.den});
+        ctx->max_b_frames = 2;
+        ctx->flags |= AV_CODEC_FLAG_CLOSED_GOP;
+        ctx->profile = AV_PROFILE_MPEG2_422;
+        ctx->qmin = 1;
+        ctx->qmax = 28; // the non-linear quantiser's limit
+        setOption(opts, "intra_vlc", 1);
+        setOption(opts, "non_linear_quant", 1);
+        setOption(opts, "intra_dc_precision", 2);
+        setOption(opts, "sc_threshold", 1'000'000'000); // a fixed GOP: no scene-change I-frames
+        setOption(opts, "mpv_flags", "+strict_gop");
+    } else if (name == "libx264" || name == "libx265") {
         setOption(opts, "preset", "medium");
         if (quality) {
             setOption(opts, "crf", v.quality);
@@ -437,6 +467,8 @@ std::expected<Muxer, Error> Muxer::create(Container container, const std::filesy
                          : container == Container::M4a  ? "ipod" // MPEG-4 audio (.m4a)
                          : container == Container::Aiff ? "aiff"
                          : container == Container::Image ? "image2"
+                         : container == Container::Mxf ? "mxf" // 0.6 (#73)
+                         : container == Container::MxfOpAtom ? "mxf_opatom"
                                                          : "wav";
     const int r = avformat_alloc_output_context2(&m.m_ctx, nullptr, format, m.m_path.c_str());
     if (r < 0 || m.m_ctx == nullptr) {
@@ -448,7 +480,7 @@ std::expected<Muxer, Error> Muxer::create(Container container, const std::filesy
 Muxer::Muxer(Muxer&& other) noexcept
     : m_ctx(std::exchange(other.m_ctx, nullptr)), m_container(other.m_container),
       m_path(std::move(other.m_path)), m_open(std::exchange(other.m_open, false)), m_bext(other.m_bext),
-      m_writeMutex(std::move(other.m_writeMutex)) {}
+      m_writeMutex(std::move(other.m_writeMutex)), m_formatOptions(std::move(other.m_formatOptions)) {}
 
 Muxer& Muxer::operator=(Muxer&& other) noexcept {
     if (this != &other) {
@@ -460,6 +492,7 @@ Muxer& Muxer::operator=(Muxer&& other) noexcept {
         m_open = std::exchange(other.m_open, false);
         m_bext = other.m_bext;
         m_writeMutex = std::move(other.m_writeMutex);
+        m_formatOptions = std::move(other.m_formatOptions);
     }
     return *this;
 }
@@ -492,6 +525,21 @@ void Muxer::addChapter(std::int64_t startMs, std::int64_t endMs, const std::stri
     }
     m_ctx->chapters = static_cast<AVChapter**>(grown);
     m_ctx->chapters[m_ctx->nb_chapters++] = chapter;
+}
+
+void Muxer::setFormatOption(const char* key, const std::string& value) {
+    m_formatOptions.emplace_back(key, value);
+}
+
+std::expected<AVStream*, Error> Muxer::addCaptionStream(AVRational frameTimeBase) {
+    AVStream* st = avformat_new_stream(m_ctx, nullptr);
+    if (!st) {
+        return std::unexpected(Error{ErrorCode::EncoderError, "Cannot add the caption track"});
+    }
+    st->codecpar->codec_type = AVMEDIA_TYPE_SUBTITLE;
+    st->codecpar->codec_id = AV_CODEC_ID_EIA_608;
+    st->time_base = frameTimeBase;
+    return st;
 }
 
 void Muxer::setLanguage(AVStream* stream, const std::string& language) {
@@ -548,6 +596,9 @@ std::expected<void, Error> Muxer::open() {
         }
     } else if (m_container == Container::Image) {
         setOption(&opts.dict, "start_number", 0); // 0.2: frame k -> file k
+    }
+    for (const auto& [key, value] : m_formatOptions) { // 0.6 (#73)
+        setOption(&opts.dict, key.c_str(), value);
     }
     const int r = avformat_write_header(m_ctx, &opts.dict);
     if (r < 0) {
@@ -631,6 +682,20 @@ ColorTags colorTagsFor(DynamicRange range, VideoCodec codec, OutputPixelFormat f
         break;
     }
     return tags;
+}
+
+void applyOutputSpace(ColorTags& tags, OutputColorSpace space) {
+    const bool rgb = tags.matrix == AVCOL_SPC_RGB;
+    if (space == OutputColorSpace::Rec2020) {
+        tags.primaries = AVCOL_PRI_BT2020;
+        tags.transfer = AVCOL_TRC_BT709;
+        if (!rgb && tags.matrix != AVCOL_SPC_BT470BG) {
+            tags.matrix = AVCOL_SPC_BT2020_NCL;
+        }
+    } else if (space == OutputColorSpace::P3D65) {
+        tags.primaries = AVCOL_PRI_SMPTE432;
+        tags.transfer = AVCOL_TRC_UNSPECIFIED;
+    }
 }
 
 AVMasteringDisplayMetadata masteringDisplayFor(double peakNits) {
@@ -787,7 +852,7 @@ std::expected<VideoEncoder, Error> openVideoEncoder(const std::string& name, con
 
 bool supportsA53Captions(std::string_view name) {
     return name == "libx264" || name == "libx265" || endsWith(name, "_nvenc") || name == "h264_qsv" ||
-           endsWith(name, "_vaapi") || endsWith(name, "_videotoolbox");
+           endsWith(name, "_vaapi") || endsWith(name, "_videotoolbox") || name == "mpeg2video";
 }
 
 std::expected<VideoEncoderChoice, Error> chooseVideoEncoder(const VideoEncodeParams& params) {

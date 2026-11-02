@@ -116,39 +116,11 @@ Panel {
         const found = ExportController.presets.find(p => p.id === id)
         return found ? found.name : id
     }
+    // 0.6 (1D, #39): the rows the Properties dialog shows too (Library.propertyLines: one builder for both).
     function metadataLines(info) {
         if (!info || info.name === undefined)
             return []
-        const lines = [{ label: qsTr("Format"), value: info.container }, { label: qsTr("Duration"), value: info.duration }]
-        if (info.video !== undefined) {
-            const v = info.video
-            lines.push({ label: qsTr("Video"), value: [v.codec + (v.profile !== "" ? " " + v.profile : ""),
-                                                        v.width + " × " + v.height,
-                                                        info.still ? "" : qsTr("%1 fps").arg(v.frameRate) + (v.variableFrameRate ? qsTr(" (variable)") : "")]
-                                                       .filter(s => s !== "").join(" · ") })
-            lines.push({ label: qsTr("Pixels"), value: [v.pixelFormat, qsTr("%1-bit").arg(v.bitDepth), v.chroma,
-                                                         v.alpha ? qsTr("alpha") : ""].filter(s => s !== "").join(" · ") })
-            if (!info.still)
-                lines.push({ label: qsTr("Fields"), value: v.fieldOrder === "upper" ? qsTr("Upper field first")
-                                                           : v.fieldOrder === "lower" ? qsTr("Lower field first")
-                                                                                      : qsTr("Progressive") })
-        }
-        const audio = info.audio ?? []
-        for (let i = 0; i < audio.length; ++i) {
-            const a = audio[i]
-            lines.push({ label: audio.length > 1 ? qsTr("Audio %1").arg(i + 1) : qsTr("Audio"),
-                         value: [a.codec, qsTr("%n channel(s)", "", a.channels), qsTr("%1 Hz").arg(a.sampleRate), a.title]
-                                    .filter(s => s !== "").join(" · ") })
-        }
-        if (info.startTimecode !== undefined)
-            lines.push({ label: qsTr("Start timecode"), value: info.startTimecode })
-        lines.push({ label: qsTr("Size"), value: (info.files > 1 ? qsTr("%1 files, ").arg(info.files) : "")
-                                                 + qsTr("%1 MB").arg(Math.round(info.bytes / 1048576)) })
-        if (info.card !== "")
-            lines.push({ label: qsTr("Camera card"), value: info.card })
-        if (info.modified !== undefined)
-            lines.push({ label: qsTr("Modified"), value: info.modified.replace("T", " ") })
-        return lines
+        return Library.propertyLines(info)
     }
 
     // 0.4: the folder shown last when it still opens, else the first place (Videos); read once the panel shows (fix

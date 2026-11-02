@@ -37,6 +37,12 @@ enum class Container : std::uint8_t {
     M4a,   ///< audio only: AAC in an MPEG-4 audio file
     Aiff,  ///< audio only: big-endian PCM
     Image, ///< stills: one per frame with VideoSettings::exportAsSequence (numbered files), else the range's first frame
+    // 0.6 (#73, broadcast and Avid delivery): MXF, PCM audio at 48 kHz, frame rates 23.976 / 24 / 25 / 29.97 / 30 / 50 /
+    // 59.94 / 60.
+    Mxf,       ///< MXF OP1a: one file - DNxHD / DNxHR, XDCAM HD422 or AVC-Intra 100 video, PCM tracks, a timecode track,
+               ///< and the embedded captions as an SMPTE 436M ANC track (MxfSettings)
+    MxfOpAtom, ///< MXF OP-Atom (Avid MediaFiles): one file per essence - "<name>.mxf" holds the DNxHD / DNxHR video,
+               ///< "<name>_A1.mxf".. one mono PCM channel each; every file shares one material package UMID
 };
 
 enum class VideoCodec : std::uint8_t {
@@ -56,6 +62,11 @@ enum class VideoCodec : std::uint8_t {
     Exr,       ///< OpenEXR, half float RGB(A), ZIP compression
     Animation, ///< QuickTime Animation (qtrle): 8-bit RGB(A), lossless; MOV
     CineForm,  ///< GoPro CineForm (cfhd): 4:2:2 10-bit, or 12-bit RGB(A); MOV
+    // 0.6 (#73): broadcast codecs for MXF (also in MOV).
+    Xdcam,    ///< XDCAM HD422: MPEG-2 4:2:2P@HL long GOP at 50 Mb/s CBR (mpeg2video), 8-bit 4:2:2; 1920x1080 at up to
+              ///< 30 fps or 1280x720 at up to 60 fps
+    AvcIntra, ///< AVC-Intra 100 (libx264, SMPTE RP 2027 class 100): 10-bit 4:2:2 intra; 1920x1080 at 25 / 29.97 or
+              ///< 1280x720 at 50 / 59.94
 };
 
 /// A.9: Ac3 is FFmpeg's native AC-3 encoder (up to 5.1).
@@ -165,6 +176,10 @@ struct VideoSettings {
     Ticks keyframeInterval = Ticks::fromSeconds(2);
     /// I.9: SDR, PQ or HLG (Auto: the project's own).
     DynamicRange dynamicRange = DynamicRange::Auto;
+    /// 0.6 (#72): the output colour space (Automatic: the sequence's colour setup's, ColorManagement::outputSpace) and
+    /// SDR Conform (nullopt: the sequence's) of this export.
+    OutputColorSpace outputSpace = OutputColorSpace::Automatic;
+    std::optional<SdrConform> sdrConform;
     /// 0.2, Container::Image: Premiere's Export As Sequence - one numbered still per frame ("<name>000.png", ...);
     /// off, a single still of the range's first frame.
     bool exportAsSequence = true;
@@ -194,9 +209,30 @@ enum class CaptionExport : std::uint8_t {
     Dfxp,    ///< DFXP (".dfxp")
     SmpteTt, ///< SMPTE-TT (".xml")
     Itt,     ///< iTunes Timed Text (".itt")
-    /// CEA-608 closed captions inside the H.264 / HEVC stream (ATSC A/53 caption SEI; Premiere: Embed In Output File).
+    /// Closed captions inside the output file (Premiere: Embed In Output File): CEA-608 and / or CEA-708
+    /// (CaptionExportSettings::standard) in the H.264 / HEVC / MPEG-2 stream (ATSC A/53 caption data) and / or a
+    /// caption track (MXF: SMPTE 436M ANC; QuickTime: c608) - CaptionExportSettings::carriage.
     Embed,
 };
+
+/// 0.6 (#73): which closed caption standards Embed writes. 608 is the analog line-21 format every decoder reads (CC1-CC4);
+/// 708 the digital one (services 1-63, windows, pen attributes). "608 and 708" writes both, so older decoders keep the
+/// 608 fallback.
+enum class CaptionStandard : std::uint8_t { Cea608And708, Cea608, Cea708 };
+/// 0.6 (#73): where Embed puts the captions. Auto: MXF -> its SMPTE 436M track; QuickTime -> the H.264 / HEVC stream
+/// and (608 on CC1 / CC2) a c608 track, other codecs the c608 track alone; MP4 / MKV -> the video stream.
+enum class CaptionCarriage : std::uint8_t {
+    Auto,
+    VideoStream,  ///< ATSC A/53 caption data in the picture stream (H.264 / HEVC SEI, MPEG-2 user data)
+    CaptionTrack, ///< a track of their own (MXF: SMPTE 436M ANC, 608 and 708; QuickTime: c608, 608 CC1 / CC2)
+    Both,
+};
+/// "608+708", "608", "708".
+std::string_view captionStandardName(CaptionStandard standard);
+std::optional<CaptionStandard> captionStandardFromName(std::string_view name);
+/// "auto", "video", "track", "both".
+std::string_view captionCarriageName(CaptionCarriage carriage);
+std::optional<CaptionCarriage> captionCarriageFromName(std::string_view name);
 
 /// The default replacement for a redacted word in exported captions (= playback::kRedactedWordToken).
 inline constexpr std::string_view kRedactedWordToken = "[bleep]";
@@ -219,8 +255,33 @@ struct CaptionExportSettings {
     /// SCC, MCC and Embed: how the 608 captions appear (interchange::Cea608Display: 0 pop-on, 1-3 roll-up 2/3/4 rows,
     /// 4 paint-on).
     std::uint8_t display608 = 0;
+    /// 0.6 (#73), Embed: the standards, the 608 channel (1-4: CC1 / CC2 on field 1, CC3 / CC4 on field 2), the 708
+    /// service (1-63) and where they go. 708 uses display608 too (pop-on: two windows that take turns; roll-up; paint-on).
+    CaptionStandard standard = CaptionStandard::Cea608And708;
+    std::uint8_t channel608 = 1;
+    std::uint8_t service708 = 1;
+    CaptionCarriage carriage = CaptionCarriage::Auto;
 
     bool operator==(const CaptionExportSettings&) const = default;
+};
+
+/// 0.6 (#73): how MXF OP1a lays out the audio channels. OP-Atom always writes one file per channel.
+enum class MxfAudioLayout : std::uint8_t {
+    MonoTracks,   ///< one mono PCM track per channel (AS-11 / DPP delivery, Avid)
+    OneTrack,     ///< one multichannel PCM track
+};
+/// "mono", "multichannel".
+std::string_view mxfAudioLayoutName(MxfAudioLayout layout);
+std::optional<MxfAudioLayout> mxfAudioLayoutFromName(std::string_view name);
+
+/// 0.6 (#73): MXF delivery options (Container::Mxf / ::MxfOpAtom).
+struct MxfSettings {
+    MxfAudioLayout audioLayout = MxfAudioLayout::MonoTracks;
+    /// The tape / reel name written as the file's physical (tape) source package (Avid's Tape column); empty = none.
+    /// At most 64 bytes.
+    std::string reelName;
+
+    bool operator==(const MxfSettings&) const = default;
 };
 
 /// "none", "burnIn", "srt", "vtt", "scc", "mcc", "stl", "ttml", "dfxp", "smpte-tt", "itt", "embed".
@@ -243,6 +304,7 @@ struct ExportSettings {
     ExportMetadata metadata;
     SubtitleTrackExport subtitles;
     ExportRenderOptions render;
+    MxfSettings mxf; ///< 0.6 (#73): MXF only
 };
 
 struct Preset {
@@ -290,6 +352,11 @@ struct ResolvedExport {
     /// I.9: rendered and read back at 10 bits per channel (a colour-managed project into a 10-bit format). Exports of
     /// display-referred projects keep the 8-bit path they always had.
     bool tenBitRender = false;
+    /// 0.6 (#72): the colour space written (never Automatic: Rec.709, Rec.2020 or P3-D65 for SDR; Rec.2100 PQ / HLG
+    /// with those dynamic ranges), and SDR Conform when it applies (an SDR export of an HDR or Wide Gamut (No / Minimal
+    /// Tone Mapping) setup with it on).
+    OutputColorSpace outputSpace = OutputColorSpace::Rec709;
+    std::optional<SdrConform> sdrConform;
     /// RateControl::TargetSize: the video bitrate (bits/s) that lands the file under VideoSettings::targetBytes.
     std::int64_t targetVideoBitrate = 0;
     /// 0.2: what the video source renders: the render size, or (Use Maximum Render Quality, an output smaller than the
@@ -311,14 +378,15 @@ inline constexpr std::int64_t kTargetSizeMinVideoBitrate = 150'000;
 std::expected<ResolvedExport, Error> resolve(const ExportSettings& settings, const Sequence& sequence,
                                              const ColorManagement& management = {});
 
-std::string_view containerName(Container container); ///< "mp4", "mov", "mkv", "wav", "gif", "webm", "mp3", "m4a", "aiff", "image"
-/// ".mp4", ".mov", ".mkv", ".wav", ".gif", ".webm", ".mp3", ".m4a", ".aif", ".png" (Image: see outputExtension).
+/// "mp4", "mov", "mkv", "wav", "gif", "webm", "mp3", "m4a", "aiff", "image"; 0.6: "mxf" (OP1a), "mxf-opatom".
+std::string_view containerName(Container container);
+/// ".mp4", ".mov", ".mkv", ".wav", ".gif", ".webm", ".mp3", ".m4a", ".aif", ".png" (Image: see outputExtension), ".mxf".
 std::string_view fileExtension(Container container);
 /// 0.2: the extension of what `settings` write: fileExtension(container), or the still format's for Container::Image
 /// (".png", ".tif", ".dpx", ".jpg", ".tga", ".exr").
 std::string_view outputExtension(const ExportSettings& settings);
 /// "h264", "hevc", "prores", "dnxhr", "av1", "gif", "vp9", "png", "tiff", "dpx", "jpeg", "targa", "exr", "animation",
-/// "cineform".
+/// "cineform"; 0.6: "xdcam-hd422", "avc-intra-100".
 std::string_view videoCodecName(VideoCodec codec);
 std::optional<Container> containerFromName(std::string_view name);
 std::optional<VideoCodec> videoCodecFromName(std::string_view name);
@@ -328,6 +396,21 @@ std::string_view audioCodecKey(AudioCodec codec);
 std::optional<AudioCodec> audioCodecFromKey(std::string_view key);
 /// 0.2: the container holds audio only (WAV, MP3, M4A, AIFF).
 bool isAudioOnly(Container container);
+/// 0.6 (#73): MXF OP1a or OP-Atom.
+bool isMxf(Container container);
+/// 0.6 (#73): where an Embed export of `settings` puts its captions (CaptionExportSettings::carriage resolved for the
+/// format), and what it writes there.
+struct EmbeddedCaptionPlan {
+    bool cea608 = false;
+    bool cea708 = false;
+    bool inVideo = false; ///< ATSC A/53 caption data in the picture stream
+    bool track = false;   ///< a caption track: SMPTE 436M ANC (MXF) or c608 (QuickTime)
+};
+/// Errors: InvalidArgument naming why the format cannot carry what is asked (e.g. 708 in a QuickTime caption track,
+/// captions in ProRes video, OP-Atom).
+std::expected<EmbeddedCaptionPlan, Error> embeddedCaptionPlan(const ExportSettings& settings);
+/// "CEA-608 CC1 + CEA-708 service 1 in the H.264 stream and an SMPTE 436M track" (the export details).
+std::string describeEmbeddedCaptions(const ExportSettings& settings, const EmbeddedCaptionPlan& plan);
 /// A.9: the channels an export of a sequence with this master format encodes (AudioSettings::channels resolved).
 int exportAudioChannels(const AudioSettings& audio, ChannelFormat masterFormat);   ///< "aac", "pcm_s16le", "pcm_s24le"
 

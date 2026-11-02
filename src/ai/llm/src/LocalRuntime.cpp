@@ -5,6 +5,7 @@
 #include <wabcut/ai/Sha256.h>
 #include <fstream>
 #include <algorithm>
+#include <cctype>
 #include <random>
 #ifdef _WIN32
 #include <winsock2.h>
@@ -60,6 +61,94 @@ int randomPort() {
 #endif
     return port;
 }
+/// "nvidia geforce rtx 3060" from "NVIDIA GeForce(R) RTX  3060": lower case, no (R) / (TM), single spaces.
+std::string deviceKey(std::string_view name) {
+    std::string lower;
+    for (const char c : name) lower.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+    for (const std::string_view mark : {"(r)", "(tm)"}) {
+        for (auto at = lower.find(mark); at != std::string::npos; at = lower.find(mark)) lower.replace(at, mark.size(), " ");
+    }
+    std::string out;
+    for (const char c : lower) {
+        if (std::isspace(static_cast<unsigned char>(c))) {
+            if (!out.empty() && out.back() != ' ') out.push_back(' ');
+        } else {
+            out.push_back(c);
+        }
+    }
+    while (!out.empty() && out.back() == ' ') out.pop_back();
+    return out;
+}
+/// `llama-server --list-devices` (stdout only; at most 20 s): what llama.cpp's backends see in this build.
+std::string listLlamaDevices(const std::filesystem::path& executable, std::stop_token token) {
+    ChildProcessOptions options;
+    options.executable = executable; options.workingDirectory = executable.parent_path();
+    options.lowPriority = true; options.aiHelper = true;
+    options.arguments = {"--list-devices"};
+    auto child = ChildProcess::spawn(options);
+    if (!child) return {};
+    std::string out, line;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+    while (std::chrono::steady_clock::now() < deadline && !token.stop_requested()) {
+        const auto status = (*child)->readLine(line, std::chrono::milliseconds(250));
+        if (status == ChildProcess::ReadStatus::Line) { out += line; out += '\n'; }
+        else if (status != ChildProcess::ReadStatus::Timeout) break;
+    }
+    return out; // a child that still runs is killed with its object
+}
+}
+LaunchPlan launchPlanFor(const Admission& a) {
+    LaunchPlan p;
+    p.runtimeId = a.runtimeId;
+    p.ramNeeded = a.ramNeeded;
+    p.vramNeeded = a.vramNeeded;
+    p.threads = a.threads;
+    p.gpu = a.gpu;
+    p.reason = a.reason;
+    p.context = a.context;
+    p.reasoningOff = a.tier && a.tier->hybridThinking;
+    p.gpuName = a.gpuName;
+    p.gpuFreeBytes = a.gpuFreeBytes;
+    return p;
+}
+std::optional<std::string> pickLlamaDevice(std::string_view output, std::string_view gpuName, std::uint64_t gpuFreeBytes) {
+    const std::string wanted = deviceKey(gpuName);
+    if (wanted.empty()) return std::nullopt;
+    std::optional<std::string> best;
+    std::uint64_t bestDistance = 0;
+    std::size_t start = 0;
+    while (start < output.size()) {
+        auto end = output.find('\n', start);
+        if (end == std::string_view::npos) end = output.size();
+        std::string_view line = output.substr(start, end - start);
+        start = end + 1;
+        while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.remove_suffix(1);
+        while (!line.empty() && line.front() == ' ') line.remove_prefix(1);
+        // "Vulkan1: NVIDIA GeForce RTX 3060 (12329 MiB, 11551 MiB free)"
+        const auto colon = line.find(": ");
+        const auto paren = line.rfind(" (");
+        if (colon == std::string_view::npos || colon == 0 || paren == std::string_view::npos || paren <= colon ||
+            !line.ends_with(" MiB free)"))
+            continue;
+        const std::string_view device = line.substr(0, colon);
+        if (device.find(' ') != std::string_view::npos) continue;
+        if (deviceKey(line.substr(colon + 2, paren - colon - 2)) != wanted) continue;
+        // The free MiB: the number before " MiB free)".
+        std::uint64_t freeMiB = 0;
+        const std::string_view tail = line.substr(0, line.size() - std::string_view(" MiB free)").size());
+        const auto space = tail.find_last_of(" ,");
+        for (const char c : tail.substr(space == std::string_view::npos ? 0 : space + 1)) {
+            if (c < '0' || c > '9') { freeMiB = 0; break; }
+            freeMiB = freeMiB * 10 + static_cast<std::uint64_t>(c - '0');
+        }
+        const std::uint64_t freeBytes = freeMiB << 20;
+        const std::uint64_t distance = freeBytes > gpuFreeBytes ? freeBytes - gpuFreeBytes : gpuFreeBytes - freeBytes;
+        if (!best || distance < bestDistance) {
+            best = std::string(device);
+            bestDistance = distance;
+        }
+    }
+    return best;
 }
 #ifdef _WIN32
 /// The process listening on 127.0.0.1:`port` (or 0.0.0.0:`port`), if any.
@@ -88,16 +177,7 @@ std::expected<LaunchPlan, AiError> planLaunch(const ModelInfo& model, const Syst
     options.allowLargeOnCpu = true;
     const Admission a = admit(tier ? *tier : kOther, model, probe, options);
     if (!a.fits) return std::unexpected(failure(a.reason));
-    LaunchPlan p;
-    p.runtimeId = a.runtimeId;
-    p.ramNeeded = a.ramNeeded;
-    p.vramNeeded = a.vramNeeded;
-    p.threads = a.threads;
-    p.gpu = a.gpu;
-    p.reason = a.reason;
-    p.context = a.context;
-    p.reasoningOff = tier && tier->hybridThinking;
-    return p;
+    return launchPlanFor(a);
 }
 LocalRuntime::LocalRuntime(IHttpTransport& t) : m_transport(t) {}
 LocalRuntime::~LocalRuntime() { stop(); }
@@ -128,6 +208,14 @@ void LocalRuntime::tick() {
 std::expected<void, AiError> LocalRuntime::start(const std::filesystem::path& executable,
     const std::filesystem::path& weights, const ModelInfo& model, const LaunchPlan& plan,
     std::stop_token token, Options options) {
+    // 0.6: the GPU admission measured, by name (hybrid graphics: llama.cpp also sees the integrated GPU; two cards).
+    // Listed before the lock: it runs llama-server once (about a second), never a GPU API in the editor's process.
+    std::optional<std::string> device;
+    if (plan.gpu && !plan.gpuName.empty()) {
+        std::error_code exists;
+        if (std::filesystem::is_regular_file(executable, exists))
+            device = pickLlamaDevice(listLlamaDevices(executable, token), plan.gpuName, plan.gpuFreeBytes);
+    }
     std::unique_lock lock(m_mutex);
     if (m_pressure || m_child) return std::unexpected(failure("local assistant is busy or suspended"));
     // Called from worker threads that do not catch (review wave 4, P2-6): file checks report errors, never throw.
@@ -149,6 +237,8 @@ std::expected<void, AiError> LocalRuntime::start(const std::filesystem::path& ex
     // No prompt cache beyond the one slot (llama-server keeps up to 8 GiB of RAM for it by default), and Qwen3's hybrid
     // models answer without a thinking block (Tiers.h).
     if (plan.reasoningOff) child.arguments.insert(child.arguments.end(), {"--reasoning", "off"});
+    if (device) child.arguments.insert(child.arguments.end(), {"--device", *device});
+    m_status.device = device.value_or(std::string());
     auto spawned = ChildProcess::spawn(child);
     std::fill(child.arguments[9].begin(), child.arguments[9].end(), '\0');
     if (!spawned) { stopLocked(); return std::unexpected(failure("could not start local assistant")); }

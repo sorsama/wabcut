@@ -1,5 +1,6 @@
 #include "GpuBridge.h"
 
+#include <wabcut/ai/llm/SystemProbe.h>
 #include <wabcut/media/GpuInfo.h>
 
 #include <QDesktopServices>
@@ -26,12 +27,20 @@ QString gigabytes(std::uint64_t bytes) {
     return QLocale().toString(gb, 'f', gb >= 10.0 || gb == std::floor(gb) ? 0 : 1);
 }
 
+/// 0.6: the local assistant offloads to the GPU Wabcut uses (ai::llm::SystemProbe::bestGpu()), not to whichever
+/// adapter Windows lists first: on a hybrid machine that would be the integrated one, or no GPU at all.
+void shareWithLocalAssistant() {
+    const media::GpuSelection selection = media::selectedGpu();
+    ai::llm::setPreferredGpuLuid(selection.adapter ? selection.adapter->luid : 0);
+}
+
 } // namespace
 
 GpuBridge::GpuBridge(QObject* parent) : QObject(parent) {}
 
 void GpuBridge::applySavedChoice() {
     media::setGpuChoice(QSettings().value(kChoiceKey).toString().toStdString());
+    shareWithLocalAssistant();
 }
 
 QString GpuBridge::reasonText(const QString& reasonKey) {
@@ -95,6 +104,7 @@ void GpuBridge::setChoice(const QString& key) {
         return;
     }
     media::setGpuChoice(key.toStdString());
+    shareWithLocalAssistant();
     QSettings settings;
     if (key.isEmpty()) {
         settings.remove(kChoiceKey);

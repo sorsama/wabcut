@@ -9,13 +9,17 @@ import QtQuick.Layouts
 // shows its plain-language error under the pill.
 // 0.4: a done job also has "Open" (the file in its default app; a double-click on the pill does the same) before "Show";
 // `notice` (set by the owner, e.g. "The file was moved or deleted.") shows in the danger colour under the pill.
+// P1 (#27): a failed or cancelled job queued from a preset has Retry (the same export on the project as it is now, a
+// numbered file when the name is taken), and one that stopped on offline media has Relink… (the Relink dialog) first.
+// They act on ExportController themselves, so every queue that shows the pill (Export panel, queue dialog, Background
+// tasks) has them.
 Item {
     id: root
 
     required property string jobId
     required property string title
     required property string presetName
-    required property string jobState // "held" | "queued" | "running" | "paused" | "done" | "failed" | "cancelled"
+    required property string jobState // "held" | "queued" | "running" | "paused" | "done" | "failed" | "cancelled" | "interrupted" (P1 #20)
     required property string phaseText
     required property real progress
     required property string fpsText
@@ -23,6 +27,9 @@ Item {
     required property string encoder
     required property string detail
     required property bool finished
+    /// 0.4 / P1 (#27): what stopped a failed job ("offline", "space", ...), and whether retry() can queue it again.
+    required property string errorKind
+    required property bool retryable
     /// 0.4: a problem to show under the pill instead of its usual line ("" for none).
     property string notice: ""
 
@@ -36,8 +43,14 @@ Item {
     signal openRequested()
 
     readonly property bool running: jobState === "running"
+    /// A finished job with buttons at its end (Open / Show, Relink… / Retry).
+    /// P1 (#20): an export that was running when Wabcut closed (kept across the restart): Retry exports it again.
+    readonly property bool interrupted: jobState === "interrupted"
+    readonly property bool trailingButtons: jobState === "done" || (jobState === "failed" && errorKind === "offline")
+                                            || (retryable && (jobState === "failed" || jobState === "cancelled" || interrupted))
     readonly property color stateColor: jobState === "done" ? Theme.success
                                       : jobState === "failed" ? Theme.danger
+                                      : interrupted ? Theme.warning
                                       : running ? Theme.accentStroke
                                       : Theme.textTertiary
 
@@ -95,7 +108,7 @@ Item {
                 anchors.fill: parent
                 anchors.leftMargin: Theme.space(3)
                 // A trailing button (cancel / show) brings its own padding; plain text needs the pill's.
-                anchors.rightMargin: root.finished && root.jobState !== "done" ? Theme.space(4) : Theme.space(1)
+                anchors.rightMargin: root.finished && !root.trailingButtons ? Theme.space(4) : Theme.space(1)
                 spacing: Theme.space(2)
 
                 Rectangle {
@@ -161,6 +174,31 @@ Item {
                     onClicked: root.cancelRequested()
                 }
 
+                // P1 (#27): the offline files a failed job stopped on, then the job again.
+                PillButton {
+                    objectName: "exportJobRelink"
+                    visible: root.jobState === "failed" && root.errorKind === "offline"
+                    compact: true
+                    variant: "ghost"
+                    iconName: "link"
+                    text: qsTr("Relink…")
+                    tooltip: qsTr("Find the offline files this export needs")
+                    onClicked: ExportController.relinkRequested()
+                }
+                PillButton {
+                    objectName: "exportJobRetry"
+                    visible: root.retryable && (root.jobState === "failed" || root.jobState === "cancelled" || root.interrupted)
+                    compact: true
+                    variant: "ghost"
+                    iconName: "rotate-cw"
+                    text: qsTr("Retry")
+                    tooltip: qsTr("Export %1 again").arg(root.title)
+                    onClicked: {
+                        if (ExportController.retry(root.jobId) === "")
+                            root.notice = ExportController.lastError
+                    }
+                }
+
                 // 0.4: the finished file in its default app.
                 PillButton {
                     objectName: "exportJobOpen"
@@ -188,7 +226,7 @@ Item {
             Layout.fillWidth: true
             Layout.leftMargin: Theme.space(3)
             text: root.notice !== "" ? root.notice
-                  : root.jobState === "failed" || root.jobState === "cancelled" ? root.detail
+                  : root.jobState === "failed" || root.jobState === "cancelled" || root.interrupted ? root.detail
                   : root.encoder !== "" ? qsTr("%1 · %2").arg(root.presetName).arg(root.encoder)
                   : root.presetName
             wrapMode: Text.WordWrap

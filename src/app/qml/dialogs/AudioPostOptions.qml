@@ -58,6 +58,7 @@ GridLayout {
     Label { text: qsTr("Sample rate") }
     PillTabs {
         id: rateTabs
+        Accessible.name: qsTr("Sample rate") // P1 #61
         objectName: "audioPostSampleRate"
         Layout.fillWidth: true
         compact: true
@@ -67,6 +68,7 @@ GridLayout {
     Label { text: qsTr("Bits per sample") }
     PillTabs {
         id: bitsTabs
+        Accessible.name: qsTr("Bits per sample") // P1 #61
         objectName: "audioPostBits"
         Layout.fillWidth: true
         compact: true
@@ -77,6 +79,7 @@ GridLayout {
     Label { text: qsTr("Files") }
     PillTabs {
         id: filesTabs
+        Accessible.name: qsTr("Files") // P1 #61
         objectName: "audioPostFiles"
         Layout.fillWidth: true
         compact: true
@@ -86,6 +89,7 @@ GridLayout {
     Label { text: qsTr("Format") }
     PillTabs {
         id: formatTabs
+        Accessible.name: qsTr("Format") // P1 #61
         objectName: "audioPostFormat"
         Layout.fillWidth: true
         compact: true
@@ -98,6 +102,7 @@ GridLayout {
         spacing: Theme.space(2)
         PillTabs {
             id: renderTabs
+            Accessible.name: qsTr("Render") // P1 #61
             objectName: "audioPostRender"
             Layout.fillWidth: true
             compact: true

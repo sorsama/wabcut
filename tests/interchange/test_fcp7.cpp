@@ -45,7 +45,7 @@ TEST_CASE("interchange: FCP7 XML from Premiere: the whole timeline", "[interchan
     CHECK(clips(seq, "V1") == Strings{"0+150 A001_C002.mov @30", "150+150 A002_C010.mov @100",
                                       "330+90 A001_C002.mov @500 off", "420+60 B001_C001.mov @10"});
     CHECK(clips(seq, "V2") == Strings{"30+90 Title_Card.png @0", "200+60 Logo Sting @0"}); // C.8: a nested clip
-    CHECK(clips(seq, "V3") == Strings{"350+50 A002_C010.mov @10"});
+    CHECK(clips(seq, "V3") == Strings{"0+30 Black Video @0", "350+50 A002_C010.mov @10"}); // 0.6: a synthetic item
     CHECK(clips(seq, "A1") == Strings{"0+150 A001_C002.mov @30", "150+150 A002_C010.mov @100"});
     CHECK(clips(seq, "A2") == Strings{"0+480 Music_Bed.wav @0"});
     CHECK(clips(seq, "A3") == Strings{"60+180 VO_Take3.wav @0"});
@@ -92,7 +92,7 @@ TEST_CASE("interchange: FCP7 XML from Premiere: the whole timeline", "[interchan
     CHECK(clips(nest, "V1") == Strings{"0+60 A002_C010.mov @0"});
 
     // Media: decoded Windows and UNC paths, declared streams and durations.
-    CHECK(mediaNames(r) == Strings{"A001_C002.mov", "A002_C010.mov", "B001_C001.mov", "Title_Card.png",
+    CHECK(mediaNames(r) == Strings{"A001_C002.mov", "A002_C010.mov", "B001_C001.mov", "Title_Card.png", "Black Video",
                                    "Music_Bed.wav", "VO_Take3.wav"});
     const MediaItem& a001 = mediaNamed(r, "A001_C002.mov");
     CHECK(a001.locator.path == "C:/Projects/Wabcut Demo/Footage/A001_C002.mov");
@@ -121,7 +121,8 @@ TEST_CASE("interchange: FCP7 XML from Premiere: the import report", "[interchang
                    "'Dip to Black' (15 frames, ending at the cut at 00:00:16;00) on V1 -> dipToBlack"));
     CHECK(hasEntry(rep, O, ReportCategory::Speed, "'B001_C001.mov' on V1 plays at 50%"));
     CHECK(hasEntry(rep, O, ReportCategory::Clip, "nested sequence 'Logo Sting' on V2 at 00:00:06;20 (60 frames)"));
-    CHECK(hasEntry(rep, D, ReportCategory::Clip, "generated clip 'Black Video' on V3"));
+    // 0.6 (card #69): Premiere's Black Video is a synthetic item now.
+    CHECK(hasEntry(rep, O, ReportCategory::Media, "generated 'Black Video' (Black Video, no file)"));
     CHECK(hasEntry(rep, O, ReportCategory::Effect, "'Gaussian Blur' on")); // X.1: an effect of the clip's stack
     CHECK(hasEntry(rep, O, ReportCategory::Effect, "'Opacity' on 'Title_Card.png'"));
     CHECK(hasEntry(rep, O, ReportCategory::SequenceSetting, "start timecode 01:00:00;00")); // X.1: kept
@@ -135,9 +136,9 @@ TEST_CASE("interchange: FCP7 XML from Premiere: the import report", "[interchang
     const Clip& oneChannel = track(sequenceAt(r, 0), "A4").clips[0];
     REQUIRE(oneChannel.channelMap());
     CHECK(*oneChannel.channelMap() == AudioChannelMap::mono(0));
-    CHECK(rep.count(O, ReportCategory::Clip) == 13); // 11 in Main Edit + the nested clip + 1 in Logo Sting
+    CHECK(rep.count(O, ReportCategory::Clip) == 14); // 12 in Main Edit (0.6: Black Video) + the nested clip + 1 in Logo Sting
     CHECK(rep.count(A, ReportCategory::Media) == 6); // all offline: no search folders given
-    CHECK(rep.count(D) == 1);
+    CHECK(rep.count(D) == 0); // 0.6: Black Video was the one drop
 }
 
 TEST_CASE("interchange: FCP7 XML: media found under a search folder", "[interchange][fcp7][relink]") {
@@ -544,7 +545,7 @@ TEST_CASE("interchange: FCP7 XML: Text and Outline Text generators become titles
     const auto r = importText(xmeml(text + outline + slug), Format::Fcp7Xml);
     const Sequence& seq = sequenceAt(r, 0);
     const Track& v1 = track(seq, "V1");
-    REQUIRE(v1.clips.size() == 2);
+    REQUIRE(v1.clips.size() == 3); // 0.6 (card #69): the Slug is black video
 
     const Clip& hello = v1.clips[0];
     CHECK(hello.start() == frames(10, kRate25));
@@ -572,10 +573,12 @@ TEST_CASE("interchange: FCP7 XML: Text and Outline Text generators become titles
     CHECK(effectParameterAt(lower.effects()[0], "stroke.width", Ticks{}) == 4.0);
     CHECK(effectParameterAt(lower.effects()[0], "stroke.blue", Ticks{}) == 1.0);
     CHECK(hasEntry(r.report, O, ReportCategory::Clip, "title 'Outlined' on V1"));
-    CHECK(hasEntry(r.report, D, ReportCategory::Clip, "generated clip 'Slug' on V1"));
-    // Titles have no file: nothing to relink, never offline, listed as generated in the summary.
+    const MediaItem* slugItem = r.project.findMedia(v1.clips[2].media);
+    REQUIRE(slugItem);
+    CHECK(slugItem->generator->kind == "wabcut.synthetic.blackVideo");
+    // Titles and generators have no file: nothing to relink, never offline, listed as generated in the summary.
     CHECK(r.unresolvedMedia.empty());
-    CHECK(r.media.size() == 2);
+    CHECK(r.media.size() == 3);
     CHECK(formatSummary(r).find("'Hello'                  (wabcut.title, no file)") != std::string::npos);
 }
 

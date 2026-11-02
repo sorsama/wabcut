@@ -9,6 +9,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <format>
 #include <fstream>
@@ -136,6 +137,43 @@ void writeIndex(const std::filesystem::path& folder, const std::vector<IndexEntr
 }
 
 } // namespace
+
+bool isProxyFileName(std::string_view name) {
+    // queueFor: <stem> + ".<hex8>.g<generation>.mov" (the extension in any case: a file system may change it).
+    constexpr std::string_view kExt = ".mov";
+    if (name.size() <= kExt.size() || !paths::isPlainName(name)) {
+        return false;
+    }
+    for (std::size_t i = 0; i < kExt.size(); ++i) {
+        if (std::tolower(static_cast<unsigned char>(name[name.size() - kExt.size() + i])) != kExt[i]) {
+            return false;
+        }
+    }
+    const std::string_view rest = name.substr(0, name.size() - kExt.size()); // <stem>.<hex8>.g<generation>
+    const std::size_t g = rest.rfind(".g");
+    if (g == std::string_view::npos || g + 2 == rest.size() ||
+        !std::ranges::all_of(rest.substr(g + 2), [](char c) { return c >= '0' && c <= '9'; })) {
+        return false;
+    }
+    const std::string_view head = rest.substr(0, g); // <stem>.<hex8>
+    if (head.size() < 9 || head[head.size() - 9] != '.') {
+        return false;
+    }
+    return std::ranges::all_of(head.substr(head.size() - 8), [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); });
+}
+
+std::vector<std::string> indexedProxyFiles(const std::filesystem::path& folder) {
+    // Any version of Wabcut's generator ("wabcut-proxy <n>"): proxies an older version made are Wabcut's too.
+    constexpr std::string_view kGeneratorFamily = "wabcut-proxy ";
+    static_assert(exporter::kProxyGenerator.starts_with(kGeneratorFamily));
+    std::vector<std::string> out;
+    for (const IndexEntry& e : readIndex(folder)) {
+        if (e.provenance.generator.starts_with(kGeneratorFamily) && paths::isPlainName(e.file) && isProxyFileName(e.file)) {
+            out.push_back(e.file);
+        }
+    }
+    return out;
+}
 
 // ---- Policy -------------------------------------------------------------------------------------------------
 
@@ -607,8 +645,20 @@ void ProxyManager::setSettings(const exporter::ProxySettings& settings) {
     m_options.settings = settings;
 }
 
+void ProxyManager::setProxyRoot(std::filesystem::path root) {
+    m_options.proxyRoot = std::move(root);
+}
+
 std::filesystem::path ProxyManager::proxyFolder() const {
     const std::filesystem::path& file = m_document.file();
+    if (!m_options.proxyRoot.empty()) { // P1 (#48): Settings > Media & cache > Proxies: In this folder
+        if (file.empty()) {
+            return m_options.proxyRoot / "Untitled Proxies";
+        }
+        std::filesystem::path name = file.stem();
+        name += " Proxies";
+        return m_options.proxyRoot / name;
+    }
     if (!file.empty()) {
         std::filesystem::path name = file.stem();
         name += " Proxies";
@@ -618,7 +668,23 @@ std::filesystem::path ProxyManager::proxyFolder() const {
 }
 
 std::vector<std::filesystem::path> ProxyManager::managedFolders() const {
-    return {proxyFolder(), untitledProxyFolder(m_options)};
+    // P1 (#48): moving the proxy folder leaves the proxies made before where they were; they stay Wabcut's own.
+    std::vector<std::filesystem::path> folders{proxyFolder()};
+    const auto add = [&](std::filesystem::path folder) {
+        if (std::ranges::none_of(folders, [&](const std::filesystem::path& f) { return paths::foldName(pathToUtf8(f)) == paths::foldName(pathToUtf8(folder)); })) {
+            folders.push_back(std::move(folder));
+        }
+    };
+    if (const std::filesystem::path& file = m_document.file(); !file.empty()) {
+        std::filesystem::path name = file.stem();
+        name += " Proxies";
+        add(file.parent_path() / name);
+    }
+    if (!m_options.proxyRoot.empty()) {
+        add(m_options.proxyRoot / "Untitled Proxies");
+    }
+    add(untitledProxyFolder(m_options));
+    return folders;
 }
 
 bool ProxyManager::isOriginal(const std::filesystem::path& file, const ProjectState& state) {
@@ -724,19 +790,30 @@ void ProxyManager::adoptFromIndex(const MediaItem& item, const ProjectState& sta
     if (!item.locator.fingerprint.isKnown()) {
         return;
     }
-    const std::filesystem::path folder = proxyFolder();
-    const IndexEntry* best = nullptr;
-    const std::vector<IndexEntry> entries = m_refreshCache != nullptr ? m_refreshCache->index(folder) : readIndex(folder);
-    for (const IndexEntry& e : entries) {
-        // The index is untrusted too: a bare file name inside the folder, a file Wabcut owns, never the original.
-        if (e.provenance.source.sameContentAs(item.locator.fingerprint) && paths::isPlainName(e.file) &&
-            (!best || e.provenance.generation > best->provenance.generation) &&
-            owns(folder / pathFromUtf8(e.file), state)) {
-            best = &e;
+    // The proxy folder, and (P1 #48) with the folder override set, the one next to the project: proxies made there
+    // before the move are still found.
+    std::vector<std::filesystem::path> folders{proxyFolder()};
+    if (!m_options.proxyRoot.empty() && !m_document.file().empty()) {
+        std::filesystem::path name = m_document.file().stem();
+        name += " Proxies";
+        folders.push_back(m_document.file().parent_path() / name);
+    }
+    std::optional<IndexEntry> best;
+    std::filesystem::path bestFolder;
+    for (const std::filesystem::path& folder : folders) {
+        const std::vector<IndexEntry> entries = m_refreshCache != nullptr ? m_refreshCache->index(folder) : readIndex(folder);
+        for (const IndexEntry& e : entries) {
+            // The index is untrusted too: a bare file name inside the folder, a file Wabcut owns, never the original.
+            if (e.provenance.source.sameContentAs(item.locator.fingerprint) && paths::isPlainName(e.file) &&
+                (!best || e.provenance.generation > best->provenance.generation) &&
+                owns(folder / pathFromUtf8(e.file), state)) {
+                best = e;
+                bestFolder = folder;
+            }
         }
     }
     if (best) {
-        m_registry[item.id.value] = {ProxyMedia{pathToUtf8(folder / pathFromUtf8(best->file)), best->provenance}, false, true};
+        m_registry[item.id.value] = {ProxyMedia{pathToUtf8(bestFolder / pathFromUtf8(best->file)), best->provenance}, false, true};
     }
 }
 

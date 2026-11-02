@@ -13,6 +13,7 @@
 #include "TimelineFixture.h"
 
 #include <wabcut/model/FinishingOps.h>
+#include <wabcut/model/MasterClipEffects.h>
 #include <wabcut/model/MotionOps.h>
 #include <wabcut/model/Synthetic.h>
 
@@ -192,6 +193,82 @@ TEST_CASE("Motion UI: Warp Stabilizer's Analyze runs as a job and keys the effec
     REQUIRE(controller->undo());
     CHECK(stabilizer->effectInfo(section).value(QStringLiteral("status")).toString().isEmpty());
     CHECK(controller->currentSequence()->findClip(clip)->clip().effects().front().find("corner.tl.x") == nullptr);
+
+    const QStringList messages = takeMessages();
+    INFO(join(messages));
+    CHECK(messages.isEmpty());
+}
+
+// Fix round 3 (NEW-01): Analyze on a Warp Stabilizer in the Master Clip Effects (Effect Controls shows it with the
+// selected clip) keys the media item's instance, for every clip of the media, in one undo step.
+TEST_CASE("Motion UI: Analyze keys a Warp Stabilizer in the Master Clip Effects", "[app][motion][stabilize]") {
+    resetSettings();
+    clearMessages();
+    Shell shell;
+    REQUIRE(shell.window != nullptr);
+    shell.theme->setProperty("reduceMotion", true);
+    shell.resize(kShotWidth, kShotHeight);
+    auto* controller = shell.engine.singletonInstance<ProjectController*>("Wabcut", "ProjectController");
+    auto* stabilizer = shell.engine.singletonInstance<StabilizerBridge*>("Wabcut", "Stabilizer");
+    REQUIRE(controller);
+    REQUIRE(stabilizer);
+    Timeline tl("V1 |Aaaaaaaaaaaa......A30aaaaaaaaaaa|");
+    controller->resetProject(tl.state, tl.seq);
+    const ClipId clip = clipAt(*controller->snapshot(), tl.seq, "V1@0");
+    const ClipId other = clipAt(*controller->snapshot(), tl.seq, "V1@18");
+    const SequenceId seq = tl.seq;
+    const MediaId media = tl.media('A');
+    const auto added = controller->session().apply("Add Master Clip Effect", [&](const ProjectState& s) {
+        return edit::addEffect(s, seq, edit::EffectTarget::ofMedia(media), std::string(kWarpStabilizerEffect));
+    });
+    REQUIRE(added);
+    const EffectInstanceId id = added->createdEffects.front();
+    const QString section = QStringLiteral("e%1").arg(id.value);
+    const auto masterWarp = [&]() -> const EffectInstance* {
+        for (const EffectInstance& e : controller->snapshot()->findMedia(media)->masterEffects) {
+            if (e.id == id)
+                return &e;
+        }
+        return nullptr;
+    };
+    controller->selectClipById(other, ProjectController::Replace);
+    controller->setPlayhead(Ticks{});
+    // Effect Controls lists it under the clip's Master Clip group; its header asks the Stabilizer.
+    REQUIRE_FALSE(shell.grab().isNull());
+    REQUIRE(controller->effectControls()->rowOf(QStringLiteral("h:") + section) >= 0);
+    QVariantMap info = stabilizer->effectInfo(section);
+    CHECK(info.value(QStringLiteral("stabilizer")).toBool());
+    CHECK(info.value(QStringLiteral("kind")).toString() == QStringLiteral("warp"));
+    CHECK(info.value(QStringLiteral("status")).toString().isEmpty());
+
+    stabilizer->setTrackingServices(std::make_shared<ShakyPictures>());
+    stabilizer->setSynchronous(true);
+    const std::filesystem::path cache = std::filesystem::path(outputDir().toStdString()) / "stabilizer-master-cache";
+    std::error_code ec;
+    std::filesystem::remove_all(cache, ec);
+    stabilizer->setCacheRoot(cache);
+    REQUIRE(stabilizer->analyze(section));
+    INFO(stabilizer->message().toStdString());
+    CHECK_FALSE(stabilizer->busy());
+    CHECK(stabilizer->message().startsWith(QStringLiteral("Analysis complete")));
+    CHECK(stabilizer->effectInfo(section).value(QStringLiteral("status")).toString() == QStringLiteral("analyzed"));
+    const EffectInstance* warp = masterWarp();
+    REQUIRE(warp);
+    REQUIRE(warp->find("corner.tl.x"));
+    CHECK(warp->find("corner.tl.x")->isCurve());
+    // Keyed over both clips' frames (0 to 41), on the media item: no clip got an effect of its own.
+    const Curve* curve = std::get_if<Curve>(&warp->find("corner.tl.x")->data);
+    REQUIRE(curve);
+    REQUIRE_FALSE(curve->keys.empty());
+    CHECK(curve->keys.front().time <= framesToTicks(0, kRate25));
+    CHECK(curve->keys.back().time >= framesToTicks(40, kRate25));
+    CHECK(controller->currentSequence()->findClip(clip)->clip().effects().empty());
+    CHECK(controller->currentSequence()->findClip(other)->clip().effects().empty());
+    CHECK(controller->undoText() == QStringLiteral("Undo Analyze Stabilization"));
+    REQUIRE(controller->undo());
+    CHECK(stabilizer->effectInfo(section).value(QStringLiteral("status")).toString().isEmpty());
+    REQUIRE(masterWarp());
+    CHECK(masterWarp()->find("corner.tl.x") == nullptr);
 
     const QStringList messages = takeMessages();
     INFO(join(messages));

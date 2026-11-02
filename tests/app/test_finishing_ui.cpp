@@ -1853,3 +1853,61 @@ TEST_CASE("Effect Controls section menu in the shell: select by click and Backsp
     INFO(join(messages));
     CHECK(messages.isEmpty());
 }
+
+TEST_CASE("Effect Controls: Glow and the 0.6 generators show their rows and edit and keyframe in one undo step",
+          "[app][effects]") {
+    ProjectController controller;
+    EffectControlsModel& fx = *controller.effectControls();
+    const ClipId city = controller.primaryClip();
+    REQUIRE(city);
+    const Clip clip = controller.currentSequence()->findClip(city)->clip();
+    const Ticks frame = controller.frameTicks();
+    for (const char* id : {"wabcut.stylize.glow", "wabcut.generate.colorama", "wabcut.generate.fractalNoise",
+                           "wabcut.generate.cellPattern", "wabcut.generate.lightning", "wabcut.generate.scribble",
+                           "wabcut.generate.paintBucket"}) {
+        INFO(id);
+        const std::size_t before = stackOf(controller, city).size();
+        REQUIRE(fx.addEffect(QString::fromLatin1(id)).isEmpty());
+        REQUIRE(stackOf(controller, city).size() == before + 1);
+        CHECK(stackOf(controller, city).back().effect == id);
+        const QString section = effectKey(stackOf(controller, city).back().id);
+        const EffectDescriptor* d = EffectRegistry::builtin().find(id);
+        REQUIRE(d);
+        const QStringList keys = rowKeys(fx);
+        for (const EffectParamInfo& p : d->params) {
+            const QString row = section + QLatin1Char(':') + QString::fromLatin1(p.key.data(), static_cast<qsizetype>(p.key.size()));
+            INFO(row.toStdString());
+            CHECK(keys.contains(row)); // every parameter has its row (Premiere's popups as menus)
+            if (p.isChoice() && keys.contains(row))
+                CHECK(fx.row(row).value(QStringLiteral("kind")).toString() == QStringLiteral("choice"));
+        }
+    }
+    // Lightning's Segments: one undo step, and undo restores it.
+    const auto lightning = std::ranges::find_if(stackOf(controller, city),
+                                                [](const EffectInstance& e) { return e.effect == "wabcut.generate.lightning"; });
+    REQUIRE(lightning != stackOf(controller, city).end());
+    const EffectInstanceId lightningId = lightning->id;
+    const QString segments = effectKey(lightningId) + QStringLiteral(":segments");
+    fx.setValue(segments, 12.0);
+    fx.endEdit();
+    const auto lightningNow = [&] {
+        return *std::ranges::find_if(stackOf(controller, city), [&](const EffectInstance& e) { return e.id == lightningId; });
+    };
+    CHECK(lightningNow().find("segments")->constant() == 12.0);
+    REQUIRE(controller.undo());
+    CHECK((!lightningNow().find("segments") || lightningNow().find("segments")->constant() == 7.0));
+    // Fractal Noise's Evolution keyframed: two keys, interpolated between them.
+    const auto noise = std::ranges::find_if(stackOf(controller, city),
+                                            [](const EffectInstance& e) { return e.effect == "wabcut.generate.fractalNoise"; });
+    REQUIRE(noise != stackOf(controller, city).end());
+    const QString evolution = effectKey(noise->id) + QStringLiteral(":evolution");
+    controller.setPlayhead(clip.start() + frame * 10);
+    fx.setAnimated(evolution, true);
+    controller.setPlayhead(clip.start() + frame * 40);
+    fx.setValue(evolution, 360.0);
+    fx.endEdit();
+    controller.setPlayhead(clip.start() + frame * 25);
+    CHECK(fx.row(evolution).value(QStringLiteral("animated")).toBool());
+    CHECK(keysOf(fx, evolution).size() == 2);
+    CHECK(fx.row(evolution).value(QStringLiteral("value")).toDouble() == Approx(180.0));
+}

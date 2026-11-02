@@ -111,19 +111,42 @@ FindOptions findOptions(ExecutionContext& c) {
     return o;
 }
 
-/// The audio roles asked for ("audioRoles": by MediaInfo::audio index; "ignore" leaves a stream out), else the
-/// classified ones.
-std::vector<std::optional<AudioRole>> rolesFor(ExecutionContext& c, const Measurement& m) {
+/// The audio roles of `item`'s streams (by MediaInfo::audio index). 0.6 (P1 #56): with two or more streams, the titles
+/// OBS and the other recorders write come first (audioRolesFromTitles: a friend on Discord is not "your voice", music
+/// and alerts are not game spikes); a stream without a recognised title keeps the classified role (the most
+/// voice-like is the mic), except that once a title named the mic, an untitled stream the classifier took for the
+/// voice counts as game. "audioRoles" overrides both, by stream ("auto" keeps the stream's role, "ignore" leaves it
+/// out).
+std::vector<std::optional<AudioRole>> rolesFor(ExecutionContext& c, const MediaItem& item, const Measurement& m) {
     std::vector<const AudioFeatures*> streams;
     for (const AudioFeatures& f : m.audio) {
         streams.push_back(&f);
     }
     const std::vector<AudioRole> classified = classifyStreams(streams);
     std::vector<std::optional<AudioRole>> roles(classified.begin(), classified.end());
+    if (roles.size() >= 2) {
+        const std::vector<std::string> named = audioRolesFromTitles(item.info);
+        bool namedMic = false;
+        for (std::size_t i = 0; i < roles.size() && i < named.size(); ++i) {
+            if (named[i].empty()) {
+                continue;
+            }
+            roles[i] = named[i] == "ignore" ? std::nullopt : audioRoleFromString(named[i]);
+            namedMic = namedMic || named[i] == "mic";
+        }
+        for (std::size_t i = 0; namedMic && i < roles.size(); ++i) {
+            if ((i >= named.size() || named[i].empty()) && roles[i] == AudioRole::Mic) {
+                roles[i] = AudioRole::Game;
+            }
+        }
+    }
     if (c.has("audioRoles")) {
         const Json& list = c.params()["audioRoles"];
         for (std::size_t i = 0; i < roles.size() && i < list.size(); ++i) {
             const std::string name = list[i].get<std::string>();
+            if (name == "auto") {
+                continue;
+            }
             roles[i] = name == "ignore" ? std::nullopt : audioRoleFromString(name);
         }
     }
@@ -322,7 +345,7 @@ CommandOutput findCommand(ExecutionContext& c) {
             continue;
         }
         MediaSignals& s = signalsByMedia[item.id.value];
-        const std::vector<std::optional<AudioRole>> roles = rolesFor(c, *measured);
+        const std::vector<std::optional<AudioRole>> roles = rolesFor(c, item, *measured);
         Json roleNames = Json::array();
         for (std::size_t i = 0; i < measured->audio.size(); ++i) {
             const std::optional<AudioRole> role = roles[i];
@@ -1192,10 +1215,12 @@ void registerHighlightCommands(command::CommandRegistry& registry) {
          withSequence({{"media", mediaParam("Analyse this media item instead of the sequence.")},
                        {"signals", schema::array(schema::enumeration({"game", "mic", "visual", "chat", "markers"}, "A signal."),
                                                  "The signals to use. Default all (\"visual\" decodes the picture: the slow part).")},
-                       {"audioRoles", schema::array(schema::enumeration({"game", "mic", "mixed", "ignore"}, "Role."),
-                                                    "What each audio stream of the recordings carries, by stream (OBS track 1, 2, ...). "
-                                                    "Default: the most voice-like of several streams is the mic, the others game; "
-                                                    "a single stream is mixed.")},
+                       {"audioRoles", schema::array(schema::enumeration({"auto", "game", "mic", "mixed", "ignore"}, "Role."),
+                                                    "What each audio stream of the recordings carries, by stream (OBS track 1, 2, ...): "
+                                                    "\"auto\" keeps the stream's own role. Default: with several streams, a stream "
+                                                    "titled like OBS's Mic/Aux is the mic, Game/Desktop Audio and Alerts are game, "
+                                                    "Discord and Music are left out; streams without such a title: the most voice-like "
+                                                    "is the mic (unless a title named it), the others game. A single stream is mixed.")},
                        {"chatOffset", schema::number("Chat time + this = recording time, seconds (default: as imported).", -86400.0, 86400.0)},
                        {"chatDelay", schema::number("How late chat reacts, seconds (default 6).", 0.0, 120.0)},
                        {"keywords", schema::array(schema::string("A word or emote."), "Words and emotes that count as reactions, besides the usual ones.")},
@@ -1280,6 +1305,35 @@ void registerHighlightCommands(command::CommandRegistry& registry) {
                              {"maxLength", 64}}},
                        {"normalize", schema::boolean("Loudness for Shorts. Default true.", true)}}),
          Json{{"moment", 1}}, {}, toShortCommand});
+}
+
+std::vector<std::string> audioRolesFromTitles(const MediaInfo& media) {
+    std::vector<std::string> out(media.audio.size());
+    if (media.audio.size() < 2) {
+        return out;
+    }
+    const std::vector<wabcut::edit::SourceTrackName> names = wabcut::edit::sourceTrackNames(media);
+    for (std::size_t i = 0; i < out.size() && i < names.size(); ++i) {
+        if (names[i].origin != wabcut::edit::SourceTrackName::Origin::Recognised) {
+            continue;
+        }
+        std::string_view name = names[i].name;
+        // A number after the canonical name ("Mic 2") is the same source.
+        if (const auto space = name.find(' '); space != std::string_view::npos) {
+            const std::string_view rest = name.substr(space + 1);
+            if (!rest.empty() && std::all_of(rest.begin(), rest.end(), [](char ch) { return ch >= '0' && ch <= '9'; })) {
+                name = name.substr(0, space);
+            }
+        }
+        if (name == "Mic") {
+            out[i] = "mic";
+        } else if (name == "Game" || name == "Alerts") {
+            out[i] = "game";
+        } else if (name == "Discord" || name == "Music") {
+            out[i] = "ignore";
+        }
+    }
+    return out;
 }
 
 } // namespace wabcut::ai::highlights

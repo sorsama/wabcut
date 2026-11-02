@@ -98,6 +98,27 @@ def multitrack_recipe(frequencies: list[int], tags: list[dict[str, str]]) -> lis
     ]]
 
 
+def long_recording_recipe(seconds: int, frequencies: list[int], titles: list[str]) -> list[list[str]]:
+    """A long game recording in miniature (F2P, 0.6: seeking audio in a long OBS MKV): H.264 320x180 10 fps with
+    OBS's GOP of 2 s and 2 B-frames, `seconds` long, plus one AAC stereo 48 kHz stream per frequency titled like OBS's
+    tracks (0.5 sin(2 pi f_k t) on both channels). Low bitrates keep it small; its Cues index the video track only, as
+    in every Matroska file FFmpeg or OBS writes."""
+    graph = [video_source("320x180", "10", str(seconds), "yuv420p")]
+    maps = ["-map", "[v]"]
+    for k, frequency in enumerate(frequencies):
+        graph.append(f"aevalsrc=exprs='0.5*sin(2*PI*{frequency}*t)|0.5*sin(2*PI*{frequency}*t)':s=48000:d={seconds}"
+                     f"[a{k}]")
+        maps += ["-map", f"[a{k}]"]
+    metadata = []
+    for k, title in enumerate(titles):
+        metadata += [f"-metadata:s:a:{k}", f"title={title}"]
+    return [[
+        "-filter_complex", ";".join(graph), *maps,
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "32", "-g", "20", "-bf", "2", *BT709,
+        "-c:a", "aac", "-b:a", "48k", *BITEXACT, *metadata, "{out}",
+    ]]
+
+
 def chapters_recipe(seconds: int) -> list[list[str]]:
     """A recording with chapter markers (P0 round: OBS "Add Chapter Marker" -> clip markers on import): H.264 320x180
     10 fps + one AAC stereo stream (440 Hz), `seconds` long, and the chapters of the clip's "ffmetadata" (an FFMETADATA
@@ -364,6 +385,14 @@ CLIPS: list[dict] = [
         "expect": {"codec_name": "h264"},
         "ffmetadata": ffmetadata_chapters([(0, 2000, b"Chapter 1")]),
         "recipes": [chapters_recipe(2)],
+    },
+    {
+        # F2P (0.6): an audio seek into the middle of a long MKV must not read the file from its start.
+        "name": "obs_long_recording.mkv",
+        "what": "OBS-style MKV, 5 minutes: H.264 320x180 10 fps (GOP 2 s, 2 B-frames) + 2 AAC stereo 48 kHz streams "
+                "titled Game (220 Hz) and Mic (440 Hz); Cues on the video track only",
+        "expect": {"codec_name": "h264"},
+        "recipes": [long_recording_recipe(300, [220, 440], ["Game", "Mic"])],
     },
     {
         "name": "untitled_three_track.mkv",

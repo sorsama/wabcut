@@ -81,6 +81,9 @@ qt_add_qml_module(wabcut_ui
         src/bridge/NestedPictures.cpp
         src/bridge/MarkersBridge.h
         src/bridge/MarkersBridge.cpp
+        # 0.6 (card #74): auditions - the Take Selector, the Program Monitor's take strip, Clip > Auditions
+        src/bridge/AuditionsBridge.h
+        src/bridge/AuditionsBridge.cpp
         src/bridge/SequenceTabsBridge.h
         src/bridge/SequenceTabsBridge.cpp
         src/bridge/StillFrame.h
@@ -206,6 +209,7 @@ qt_add_qml_module(wabcut_ui
         qml/home/ProjectCard.qml
         qml/home/ProjectGrid.qml
         qml/home/ProjectMenu.qml
+        qml/home/ProjectNameDialog.qml # 0.6 (2D): Rename… / Duplicate… a project from Home
         qml/home/ProjectRow.qml
         qml/home/ProjectsHeaderMenu.qml
         qml/home/StarButton.qml
@@ -233,6 +237,7 @@ qt_add_qml_module(wabcut_ui
         qml/panels/library/LibraryListView.qml
         qml/panels/library/SubclipPopover.qml
         qml/panels/library/LibraryToolsMenu.qml
+        qml/panels/library/UsageMenu.qml # 0.6 (2D): Find in Timeline from the usage badge
         # 0.2 (P.3): the Freeform view, Search Bins, the Metadata and Production panels
         qml/panels/library/FreeformMenu.qml
         qml/panels/library/LibraryFreeformView.qml
@@ -458,6 +463,7 @@ qt_add_qml_module(wabcut_ui
         resources/icons/folders.svg
         resources/icons/shapes.svg
         resources/icons/tag.svg
+        resources/icons/sync-lock.svg
 )
 
 # The QML files and resources of the feature blocks below are collected by wabcut_ui_qml_sources() and added to the
@@ -580,6 +586,7 @@ wabcut_ui_qml_sources(
         qml/dialogs/MediaCacheSettings.qml
         qml/dialogs/RecoveryDialog.qml
         qml/dialogs/RelinkDialog.qml
+        qml/dialogs/PropertiesDialog.qml
         qml/dialogs/UnsavedChangesDialog.qml
         qml/dialogs/WabcutDialog.qml)
 target_link_libraries(wabcut_ui PUBLIC wabcut_editor)
@@ -634,10 +641,17 @@ target_link_libraries(wabcut_ui PUBLIC wabcut_ai_segment_media)
 # Export bridge (owner: Export): the ExportController singleton and its job model over wabcut_export, and the
 # Export workspace's sub-panels. See docs/export.md, "App integration".
 target_sources(wabcut_ui PRIVATE src/bridge/ExportController.h src/bridge/ExportController.cpp)
+# P1 (#29): the free-space lookup behind the low disk space warnings (export, previews, proxies).
+target_sources(wabcut_ui PRIVATE src/bridge/DiskSpace.h src/bridge/DiskSpace.cpp)
+# P1 (#48, stream 3E): the app-wide media cache, AI cache and proxy folder settings.
+target_sources(wabcut_ui PRIVATE src/bridge/CacheFolders.h src/bridge/CacheFolders.cpp)
+# P1 round (2C): batch exports (#22 sequences, #26 ranges, #25 media usage) and the queue kept across restarts (#20).
+target_sources(wabcut_ui PRIVATE src/bridge/ExportInternal.h src/bridge/ExportBatches.cpp src/bridge/ExportQueueKeeper.cpp)
 wabcut_ui_qml_sources(
     QML_FILES
         qml/panels/export/ExportJobPill.qml
         qml/panels/export/CaptionExportChooser.qml
+        qml/panels/export/CaptionFormatButton.qml # 0.6 (#57)
         qml/panels/export/ExportSettingsDrawer.qml
         qml/panels/export/PresetCard.qml
         qml/panels/export/ExportGroupLabel.qml
@@ -649,6 +663,10 @@ wabcut_ui_qml_sources(
         qml/panels/export/ExportPresetMenu.qml
         qml/panels/export/ExportQueueDialog.qml
         qml/panels/export/QuickExportButton.qml
+        # P1 round (2C): several sequences (#22), each range as a file (#26), the media usage report (#25).
+        qml/panels/export/SequencesExportDialog.qml
+        qml/panels/export/ExportRangesDialog.qml
+        qml/panels/export/MediaUsageReportDialog.qml
 )
 target_link_libraries(wabcut_ui PUBLIC wabcut_export)
 
@@ -1085,6 +1103,7 @@ wabcut_ui_qml_sources(
         qml/editing/FieldOptionsDialog.qml
         qml/editing/FrameHoldOptionsDialog.qml
         qml/editing/HistoryPanel.qml
+        qml/editing/HistoryPanelMenu.qml
         qml/editing/InterpretFootageDialog.qml
         qml/editing/MergeClipsDialog.qml
         qml/editing/RawSourceSettingsDialog.qml
@@ -1225,6 +1244,14 @@ wabcut_ui_qml_sources(
 target_sources(wabcut_ui PRIVATE src/bridge/TimelineViewCaptions.cpp src/bridge/NestedPeaks.h src/bridge/NestedPeaks.cpp
                                  src/bridge/NestedMixPeaks.h src/bridge/NestedMixPeaks.cpp) # phase 2: rendered mixes
 wabcut_ui_qml_sources(QML_FILES qml/panels/timeline/CaptionTrackHeader.qml qml/panels/timeline/CaptionCueMenu.qml)
+# 0.6 (P1 round, stream 1A): the marker right-click menu and its Colour / Type submenus (ruler, Program time bar,
+# Markers panel) and the Clip Mismatch Warning.
+wabcut_ui_qml_sources(QML_FILES qml/panels/timeline/MarkerContextMenu.qml qml/panels/timeline/MarkerColorSubmenu.qml
+                                qml/panels/timeline/MarkerTypeSubmenu.qml qml/panels/timeline/ClipMismatchDialog.qml)
+# 0.6 (card #74): auditions - the Take Selector panel (its take menu), the clip menu's Audition submenu and the Program
+# Monitor's take strip (AuditionsBridge: `Auditions`).
+wabcut_ui_qml_sources(QML_FILES qml/panels/TakeSelectorPanel.qml qml/panels/auditions/TakeContextMenu.qml
+                                qml/panels/auditions/AuditionSubmenu.qml qml/monitor/TakeStripOverlay.qml)
 
 # 0.5 (p0 round, stream D): the source clip transcript - the Transcript panel's Source mode (`SourceTranscript`: the
 # Source Monitor clip's words, a selection sets the source marks, Insert / Overwrite / Copy).
@@ -1262,6 +1289,31 @@ if(WIN32)
     target_link_libraries(wabcut_ui PRIVATE bcrypt wintrust crypt32)
 endif()
 wabcut_ui_qml_sources(QML_FILES qml/dialogs/UpdateDialog.qml)
+
+# 0.6 (P1 round, stream 2E): the Transcript tab's speaker menus (#36) and Correct from Script (#37).
+wabcut_ui_qml_sources(QML_FILES qml/panels/captions/SpeakerChoiceMenu.qml qml/panels/captions/TranscriptSpeakerMenu.qml
+    qml/panels/captions/ScriptCorrectionSheet.qml)
+# #37: the sheet's `ScriptCorrection` singleton (transcript.correctFromScript on a worker, applied as one undo step).
+target_sources(wabcut_ui PRIVATE src/bridge/ScriptCorrectionBridge.h src/bridge/ScriptCorrectionBridge.cpp)
+# 0.6 (P1 round, stream 2E, #54): the loudness QC block of the master strip and the Audio Tools card, and its time link.
+wabcut_ui_qml_sources(QML_FILES qml/audio/LoudnessQc.qml qml/audio/TimecodeLink.qml)
+# 0.6 (P1 round, stream 2E, #53): Settings > Audio's script prompter section (open or paste a script, size, mirror).
+wabcut_ui_qml_sources(QML_FILES qml/dialogs/ScriptPrompterSection.qml)
+
+# 0.6 (P1 round, stream 3B): the monitors' Paused Resolution submenu (#16) and the Program Monitor's edit overlay (#17).
+wabcut_ui_qml_sources(QML_FILES qml/monitor/PausedResolutionMenu.qml qml/monitor/EditOverlay.qml)
+
+# 0.6 (P1 round, stream 3A, #62): the creator autopilot - the `Autopilot` singleton (auto B-roll, the publishing kit,
+# pacing match over the autopilot.* commands) and its sheet (Sequence > Creator Autopilot...).
+target_sources(wabcut_ui PRIVATE src/bridge/AutopilotBridge.h src/bridge/AutopilotBridge.cpp)
+wabcut_ui_qml_sources(QML_FILES qml/panels/creator/AutopilotSheet.qml qml/panels/creator/AutopilotBrollPage.qml
+    qml/panels/creator/AutopilotKitPage.qml qml/panels/creator/AutopilotPacingPage.qml)
+
+# 0.6 (P1 round, D9 #8): the beat tools - the `Beats` singleton (Detect Beats on a command job with the analysis
+# services, Snap to Beats, Cut to Beats and Clear Beat Grid, each one undo step) and their two dialogs (Sequence >
+# Beat Grid, Clip > Detect Beats...).
+target_sources(wabcut_ui PRIVATE src/bridge/BeatBridge.h src/bridge/BeatBridge.cpp)
+wabcut_ui_qml_sources(QML_FILES qml/dialogs/DetectBeatsDialog.qml qml/dialogs/CutToBeatsDialog.qml)
 
 # Every block's QML files and resources (wabcut_ui_qml_sources above), in one call.
 get_property(wabcut_ui_qml_files GLOBAL PROPERTY WABCUT_UI_QML_FILES)

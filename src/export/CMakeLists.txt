@@ -50,3 +50,9 @@ wabcut_target_defaults(wabcut_export)
 # P.2 (E6): Export Frame - a sequence frame rendered as an export and written as DPX, JPEG, PNG, TIFF, Targa, BMP, GIF or
 # OpenEXR (StillExport.h), and the command services behind sequence.exportFrame / source.exportFrame.
 target_sources(wabcut_export PRIVATE src/StillExport.cpp)
+# 0.6 (#73): broadcast delivery - MXF OP1a / OP-Atom, XDCAM HD422 and AVC-Intra 100, embedded CEA-608 / 708 captions in
+# the picture stream, an SMPTE 436M track or a QuickTime c608 track (ClosedCaptions.h).
+target_sources(wabcut_export PRIVATE src/ClosedCaptions.cpp src/Delivery.cpp src/Delivery.h src/MxfDelivery.cpp
+                                     src/MxfDelivery.h)
+# 0.6 (#52): dialogue / music / effects stems with the master, by track role (Stems.h).
+target_sources(wabcut_export PRIVATE src/Stems.cpp)

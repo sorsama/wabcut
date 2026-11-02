@@ -718,7 +718,7 @@ void Scheduler::Impl::pass() {
     std::optional<TimeRange> loop;
     {
         std::lock_guard lock(mutex);
-        snapshot = session ? session->snapshot() : fixedSnapshot; // acquired once per pass
+        snapshot = session ? session->shown() : fixedSnapshot; // acquired once per pass
         sequenceId = sequence;
         transport = clock;
         wantedEpoch = requestedEpoch;

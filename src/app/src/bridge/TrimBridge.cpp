@@ -48,6 +48,7 @@ void TrimBridge::setController(ProjectController* controller) {
         disconnect(m_controller, nullptr, this, nullptr);
     m_controller = controller;
     m_points.clear();
+    syncControllerPoints();
     if (controller) {
         connect(controller, &ProjectController::revisionChanged, this, &TrimBridge::onModelChanged);
         m_sequence = controller->currentSequenceId();
@@ -100,6 +101,7 @@ void TrimBridge::setType(const QString& type) {
     if (t == m_type)
         return;
     m_type = t;
+    syncControllerPoints();
     emit pointsChanged();
 }
 
@@ -202,6 +204,7 @@ void TrimBridge::setPoints(std::vector<Point> points) {
         m_outOffset = 0;
         m_inOffset = 0;
     }
+    syncControllerPoints();
     if (!active()) {
         m_viewOpen = false;
         if (m_dynamic) {
@@ -304,7 +307,21 @@ void TrimBridge::toggleType() {
         return;
     }
     m_type = m_type == Type::Roll ? Type::Ripple : m_type == Type::Ripple ? Type::Regular : Type::Roll;
+    syncControllerPoints();
     emit pointsChanged();
+}
+
+void TrimBridge::syncControllerPoints() {
+    if (!m_controller)
+        return;
+    // A roll holds both sides of the cut (the defaults' alignment); one side ends at the cut (a tail) or starts there.
+    std::vector<edit::EdgePoint> points;
+    for (const Point& p : m_points)
+        points.push_back({p.clip, p.head ? edit::Edge::Head : edit::Edge::Tail,
+                          m_type == Type::Roll ? std::nullopt
+                          : p.head             ? std::optional(TransitionAlignment::StartAtCut)
+                                               : std::optional(TransitionAlignment::EndAtCut)});
+    m_controller->setTrimEditPoints(std::move(points));
 }
 
 void TrimBridge::selectEditPoint(const QString& clipId, const QString& edge, const QString& type, int modifiers) {
@@ -412,6 +429,11 @@ bool TrimBridge::trim(int frames) {
     m_selecting = false;
     if (!ok)
         return false;
+    addOffsets(applied);
+    return true;
+}
+
+void TrimBridge::addOffsets(Ticks applied) {
     const int n = static_cast<int>(ticksToFrames(applied, m_controller->currentSequence()->frameRate));
     const bool head = m_points.front().head;
     if (m_type == Type::Roll) {
@@ -424,6 +446,23 @@ bool TrimBridge::trim(int frames) {
     }
     emit detailsChanged();
     refreshFrames();
+}
+
+bool TrimBridge::extendToPlayhead() {
+    const auto cut = editTime();
+    if (!cut || !m_controller)
+        return false;
+    const Ticks delta = m_controller->playhead() - *cut;
+    if (delta.value == 0)
+        return false;
+    Ticks applied;
+    m_selecting = true;
+    const bool ok = m_controller->applyEditFn(QT_TRANSLATE_NOOP("wabcut::app::TrimBridge", "Extend Edit"),
+                                              [&](const ProjectState& s) { return applyTrim(s, delta, &applied); });
+    m_selecting = false;
+    if (!ok)
+        return false;
+    addOffsets(applied);
     return true;
 }
 
@@ -434,6 +473,14 @@ bool TrimBridge::runCommand(const QString& commandId) {
     }
     if (commandId == QLatin1String("sequence.toggleTrimType")) {
         toggleType();
+        return true;
+    }
+    // 0.6 (1A): E with edit points selected moves them to the playhead with the current trim type (the first point's
+    // clamped delta for all, as the other trims). Ctrl+D / Ctrl+Shift+D read the points in ProjectController itself.
+    if (commandId == QLatin1String("sequence.extendEditToPlayhead")) {
+        if (!active())
+            return false;
+        extendToPlayhead();
         return true;
     }
     const int step = commandId == QLatin1String("sequence.trimBackward")       ? -1

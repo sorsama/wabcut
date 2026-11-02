@@ -302,9 +302,20 @@ TEST_CASE("Window placement: a saved window comes back where it was or centred w
     CHECK(placeOnScreens(QRect(1880, 100, 1600, 900), screens) == QRect(160, 70, 1600, 900));
     // Larger than its screen (it was on a 4K monitor): cut to the screen and moved inside it.
     CHECK(placeOnScreens(QRect(50, 20, 3000, 2000), screens) == QRect(0, 0, 1920, 1040));
-    // Never smaller than the window's minimum, even on a small screen.
+    // Never smaller than the window's minimum...
+    CHECK(placeOnScreens(QRect(4000, 0, 800, 500), screens, QSize(900, 600)) == QRect(510, 220, 900, 600));
+    // ... but P1 #47: never larger than a small screen's work area either (the minimum is cut to it).
     CHECK(placeOnScreens(QRect(4000, 0, 800, 500), {QRect(0, 0, 640, 480)}, QSize(900, 600)) ==
-          QRect(-130, -60, 900, 600));
+          QRect(0, 0, 640, 480));
+    // A 1080p laptop at 150 %: about 1280 x 680 logical pixels above the taskbar, the 1100 x 700 minimum.
+    CHECK(placeOnScreens(QRect(0, 0, 1600, 960), {QRect(0, 0, 1280, 680)}, QSize(1100, 700)) ==
+          QRect(0, 0, 1280, 680));
+    // P1 #47, the first run: the default size when it fits, else cut to the work area and maximized.
+    CHECK(firstRunPlacement(primary, QSize(1600, 960)).normal == QRect(160, 40, 1600, 960));
+    CHECK_FALSE(firstRunPlacement(primary, QSize(1600, 960)).maximized);
+    const FirstRunPlacement small = firstRunPlacement(QRect(0, 0, 1280, 680), QSize(1600, 960));
+    CHECK(small.normal == QRect(0, 0, 1280, 680));
+    CHECK(small.maximized);
     // Nothing to place, or nowhere.
     CHECK_FALSE(placeOnScreens(QRect(), screens).has_value());
     CHECK_FALSE(placeOnScreens(QRect(0, 0, 800, 600), {}).has_value());

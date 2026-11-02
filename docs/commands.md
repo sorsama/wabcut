@@ -106,6 +106,19 @@ wabcut-cli mcp --project <file.wabcut> [--allow-edit] [--allow-analysis] [--save
 | [`audio.setMediaChannels`](#audio.setMediaChannels-v1) | EditProject | Modify Media Audio Channels |  |
 | [`audio.splitToMono`](#audio.splitToMono-v1) | EditSequence | Split to Mono |  |
 | [`audio.syncClips`](#audio.syncClips-v1) | EditSequence | Synchronize by Audio |  |
+| [`audition.addSource`](#audition.addSource-v1) | EditSequence | Add Source to Audition |  |
+| [`audition.addTakes`](#audition.addTakes-v1) | EditSequence | Add to Audition |  |
+| [`audition.create`](#audition.create-v1) | EditSequence | New Audition |  |
+| [`audition.describe`](#audition.describe-v1) | Read | Describe Audition |  |
+| [`audition.duplicateTake`](#audition.duplicateTake-v1) | EditSequence | Duplicate Take |  |
+| [`audition.flatten`](#audition.flatten-v1) | EditSequence | Flatten Audition |  |
+| [`audition.moveTake`](#audition.moveTake-v1) | EditSequence | Move Take |  |
+| [`audition.removeTake`](#audition.removeTake-v1) | EditSequence | Remove Take |  |
+| [`audition.renameTake`](#audition.renameTake-v1) | EditSequence | Rename Take |  |
+| [`audition.setActive`](#audition.setActive-v1) | EditSequence | Use Take |  |
+| [`autopilot.broll`](#autopilot.broll-v1) | EditSequence | Auto B-roll |  |
+| [`autopilot.pacing`](#autopilot.pacing-v1) | EditSequence | Pacing Match |  |
+| [`autopilot.publishKit`](#autopilot.publishKit-v1) | Read | Publishing Kit |  |
 | [`autozoom.apply`](#autozoom.apply-v1) | EditSequence | Auto Zoom |  |
 | [`bin.create`](#bin.create-v1) | EditProject | New Bin |  |
 | [`bin.createSearch`](#bin.createSearch-v1) | EditProject | Create Search Bin |  |
@@ -376,7 +389,10 @@ wabcut-cli mcp --project <file.wabcut> [--allow-edit] [--allow-analysis] [--save
 | [`sequence.create`](#sequence.create-v1) | EditProject | New Sequence |  |
 | [`sequence.duplicate`](#sequence.duplicate-v1) | EditProject | Duplicate Sequence |  |
 | [`sequence.exportFrame`](#sequence.exportFrame-v1) | EditProject | Export Frame | `frame.export` |
+| [`sequence.exportFramesAtMarkers`](#sequence.exportFramesAtMarkers-v1) | EditProject | Export Frames at Markers |  |
 | [`sequence.exportMarkers`](#sequence.exportMarkers-v1) | Read | Export Markers |  |
+| [`sequence.extendNextToPlayhead`](#sequence.extendNextToPlayhead-v1) | EditSequence | Extend Next Edit to Playhead |  |
+| [`sequence.extendPreviousToPlayhead`](#sequence.extendPreviousToPlayhead-v1) | EditSequence | Extend Previous Edit to Playhead |  |
 | [`sequence.extract`](#sequence.extract-v1) | EditSequence | Extract |  |
 | [`sequence.goToGap`](#sequence.goToGap-v1) | Read | Go to Gap |  |
 | [`sequence.joinThroughEdits`](#sequence.joinThroughEdits-v1) | EditSequence | Join Through Edits |  |
@@ -384,6 +400,7 @@ wabcut-cli mcp --project <file.wabcut> [--allow-edit] [--allow-analysis] [--save
 | [`sequence.makeSubsequence`](#sequence.makeSubsequence-v1) | EditProject | Make Subsequence |  |
 | [`sequence.makeVersion`](#sequence.makeVersion-v1) | EditProject | Make Vertical or Square Version |  |
 | [`sequence.matchFrame`](#sequence.matchFrame-v1) | EditProject | Match Frame |  |
+| [`sequence.mediaUsage`](#sequence.mediaUsage-v1) | Read | Media Usage Report |  |
 | [`sequence.nest`](#sequence.nest-v1) | EditProject | Nest |  |
 | [`sequence.newFromClip`](#sequence.newFromClip-v1) | EditProject | New Sequence From Clip |  |
 | [`sequence.presets`](#sequence.presets-v1) | Read | Sequence Presets |  |
@@ -400,6 +417,8 @@ wabcut-cli mcp --project <file.wabcut> [--allow-edit] [--allow-analysis] [--save
 | [`sequence.setTargets`](#sequence.setTargets-v1) | EditSequence | Set Track Targets |  |
 | [`sequence.settings`](#sequence.settings-v1) | Read | Sequence Settings Info |  |
 | [`sequence.summary`](#sequence.summary-v1) | Read | Sequence Summary |  |
+| [`sequence.trimNextToPlayhead`](#sequence.trimNextToPlayhead-v1) | EditSequence | Trim Next Edit to Playhead |  |
+| [`sequence.trimPreviousToPlayhead`](#sequence.trimPreviousToPlayhead-v1) | EditSequence | Trim Previous Edit to Playhead |  |
 | [`sequence.unnest`](#sequence.unnest-v1) | EditSequence | Unnest |  |
 | [`shorts.create`](#shorts.create-v1) | EditProject | Create Shorts |  |
 | [`shorts.find`](#shorts.find-v1) | Read | Find Shorts |  |
@@ -456,6 +475,7 @@ wabcut-cli mcp --project <file.wabcut> [--allow-edit] [--allow-analysis] [--save
 | [`transcript.addSpeaker`](#transcript.addSpeaker-v1) | EditProject | New Speaker |  |
 | [`transcript.assignSpeaker`](#transcript.assignSpeaker-v1) | EditProject | Assign Speaker |  |
 | [`transcript.cleanup`](#transcript.cleanup-v1) | EditSequence | Remove Fillers and Silences |  |
+| [`transcript.correctFromScript`](#transcript.correctFromScript-v1) | EditProject | Correct from Script |  |
 | [`transcript.correctRange`](#transcript.correctRange-v1) | EditProject | Correct Words |  |
 | [`transcript.correctWord`](#transcript.correctWord-v1) | EditProject | Correct Word |  |
 | [`transcript.corrections`](#transcript.corrections-v1) | Read | Transcript Corrections |  |
@@ -839,13 +859,14 @@ Capability `EditSequence`. Tool name `audio_fillChannel`.
 
 ### `audio.loudness` v1: Measure Loudness
 
-EBU R128 / ITU-R BS.1770 loudness as it renders: integrated LUFS, loudness range (LU), true peak (dBTP), sample peak, loudest momentary and short-term LUFS. Targets: the mix (with mute/solo and the master effects: what export writes), a track (its clips and track effects) or a clip on its own.
+EBU R128 / ITU-R BS.1770 loudness as it renders: integrated LUFS, loudness range (LU), true peak (dBTP), sample peak, loudest momentary and short-term LUFS, and where they are (maxMomentaryAt, maxShortTermAt: where the loudest 400 ms / 3 s window starts; truePeakAt: the 100 ms block of the true peak; each a timecode and ticks on the timeline) with the true-peak overs above "oversAbove" (default -1 dBTP; at most 200 listed, overCount counts them all). Targets: the mix (with mute/solo and the master effects: what export writes), a track (its clips and track effects) or a clip on its own.
 
 Capability `MediaAnalysis`. Tool name `audio_loudness`.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `from` | integer \| string |  | Only from this time (default: the start). Timecode in the sequence's rate ("00:01:02:03") or ticks. |
+| `oversAbove` | number (-6.0..0.0) |  | List true-peak overs above this ceiling in dBTP (default -1; -6..0). |
 | `sequence` | integer (1..) |  | Sequence id; only needed when the project has several. |
 | `targets` | (string \| object)[], min 1 |  | What to measure (default: the mix). |
 | `to` | integer \| string |  | Only up to this time (default: the end). Timecode in the sequence's rate ("00:01:02:03") or ticks. |
@@ -1188,6 +1209,266 @@ Capability `EditSequence`. Tool name `audio_syncClips`.
 
 ```json
 {"command":"audio.syncClips","params":{"apply":true,"clips":[12,18]}}
+```
+
+<a id="audition.addSource-v1"></a>
+
+### `audition.addSource` v1: Add Source to Audition
+
+A media item (its picture and sound streams, in order, for the audition's picture and sound) or a sequence becomes a take after the last one, its "in" at the audition's start (default: the source's start).
+
+Capability `EditSequence`. Tool name `audition_addSource`.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `clip` | integer \| object (1..) | yes | The audition. A clip id, or {"track", "time"} for the clip there. |
+| `in` | integer \| string \| null |  | Source time at the audition's start. Ticks, or a timecode in the media's frame rate ("00:00:02:10"). |
+| `media` | integer \| string (1..) |  | The media item to add (or give "source"). A media id or exact name. |
+| `name` | string |  | The take's name (default: the source's). |
+| `sequence` | integer (1..) |  | Sequence id; only needed when the project has several. |
+| `source` | integer (1..) |  | A sequence to add as a nested take instead of media. |
+
+```json
+{"command":"audition.addSource","params":{"clip":42,"in":"00:00:12:00","media":7,"name":"Take 3 (wide)"}}
+```
+
+<a id="audition.addTakes-v1"></a>
+
+### `audition.addTakes` v1: Add to Audition
+
+Final Cut's Add to Audition: the clips (with their linked partners) become takes after the audition's last take, lined up with its start at their own In points, and leave the timeline. The active take stays. A clip that is not an audition yet becomes one.
+
+Capability `EditSequence`. Tool name `audition_addTakes`.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `clip` | integer \| object (1..) | yes | The audition. A clip id, or {"track", "time"} for the clip there. |
+| `clips` | (integer \| object (1..))[], min 1 | yes | The clips to add as takes. |
+| `sequence` | integer (1..) |  | Sequence id; only needed when the project has several. |
+
+```json
+{"command":"audition.addTakes","params":{"clip":42,"clips":[70]}}
+```
+
+<a id="audition.create-v1"></a>
+
+### `audition.create` v1: New Audition
+
+Final Cut's Create Audition: the clips (with their linked partners) become the takes of one audition at the place of the earliest of them (take 1, active); the others follow in timeline order, lined up with its start at their own In points, and leave the timeline (no ripple). Every take must have as many picture and sound clips as the first. One clip alone becomes an audition with a copy of itself, the copy active (Duplicate as Audition). The audition moves, trims, ripples, razors and copies like a clip; playback and export show only its active take.
+
+Capability `EditSequence`. Tool name `audition_create`.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `clips` | (integer \| object (1..))[], min 1 | yes | The clips that become the takes. |
+| `sequence` | integer (1..) |  | Sequence id; only needed when the project has several. |
+
+```json
+{"command":"audition.create","params":{"clips":[42,57,63]}}
+```
+
+<a id="audition.describe-v1"></a>
+
+### `audition.describe` v1: Describe Audition
+
+The takes of an audition in take order: name, source (media or sequence), source In at the audition's start, effect count, how far each is short of the audition's range at its head and tail, and which one is active. A clip that is not an audition answers with its one take.
+
+Capability `Read`. Tool name `audition_describe`.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `clip` | integer \| object (1..) | yes | The audition. A clip id, or {"track", "time"} for the clip there. |
+| `sequence` | integer (1..) |  | Sequence id; only needed when the project has several. |
+
+```json
+{"command":"audition.describe","params":{"clip":42}}
+```
+
+<a id="audition.duplicateTake-v1"></a>
+
+### `audition.duplicateTake` v1: Duplicate Take
+
+Final Cut's Duplicate as Audition: a copy of a take (default: the active one), named "<name> copy", goes right after it and becomes the active take - to try other effects on it.
+
+Capability `EditSequence`. Tool name `audition_duplicateTake`.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `clip` | integer \| object (1..) | yes | The audition (or a clip: it becomes one). A clip id, or {"track", "time"} for the clip there. |
+| `sequence` | integer (1..) |  | Sequence id; only needed when the project has several. |
+| `take` | integer (1..32) |  | The take to copy (default: the active one). Takes are numbered from 1 in take order. |
+
+```json
+{"command":"audition.duplicateTake","params":{"clip":42}}
+```
+
+<a id="audition.flatten-v1"></a>
+
+### `audition.flatten` v1: Flatten Audition
+
+Final Cut's Finalize Audition: the auditions among the clips (with their linked picture or sound) keep only their active take and become plain clips.
+
+Capability `EditSequence`. Tool name `audition_flatten`.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `clips` | (integer \| object (1..))[], min 1 | yes | The auditions. |
+| `sequence` | integer (1..) |  | Sequence id; only needed when the project has several. |
+
+```json
+{"command":"audition.flatten","params":{"clips":[42]}}
+```
+
+<a id="audition.moveTake-v1"></a>
+
+### `audition.moveTake` v1: Move Take
+
+Moves a take to another place in take order; the active take stays active.
+
+Capability `EditSequence`. Tool name `audition_moveTake`.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `clip` | integer \| object (1..) | yes | The audition. A clip id, or {"track", "time"} for the clip there. |
+| `sequence` | integer (1..) |  | Sequence id; only needed when the project has several. |
+| `take` | integer (1..32) | yes | The take to move. Takes are numbered from 1 in take order. |
+| `to` | integer (1..32) | yes | Its new place. Takes are numbered from 1 in take order. |
+
+```json
+{"command":"audition.moveTake","params":{"clip":42,"take":3,"to":1}}
+```
+
+<a id="audition.removeTake-v1"></a>
+
+### `audition.removeTake` v1: Remove Take
+
+Removes a take. The active take passes to the next one (the previous one for the last); an audition left with one take becomes a plain clip of it.
+
+Capability `EditSequence`. Tool name `audition_removeTake`.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `clip` | integer \| object (1..) | yes | The audition. A clip id, or {"track", "time"} for the clip there. |
+| `sequence` | integer (1..) |  | Sequence id; only needed when the project has several. |
+| `take` | integer (1..32) | yes | The take to remove. Takes are numbered from 1 in take order. |
+
+```json
+{"command":"audition.removeTake","params":{"clip":42,"take":3}}
+```
+
+<a id="audition.renameTake-v1"></a>
+
+### `audition.renameTake` v1: Rename Take
+
+Renames a take (of the picture and the sound together; the clip's name for the active take).
+
+Capability `EditSequence`. Tool name `audition_renameTake`.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `clip` | integer \| object (1..) | yes | The audition. A clip id, or {"track", "time"} for the clip there. |
+| `name` | string | yes | The take's new name. |
+| `sequence` | integer (1..) |  | Sequence id; only needed when the project has several. |
+| `take` | integer (1..32) | yes | The take. Takes are numbered from 1 in take order. |
+
+```json
+{"command":"audition.renameTake","params":{"clip":42,"name":"Angry read","take":2}}
+```
+
+<a id="audition.setActive-v1"></a>
+
+### `audition.setActive` v1: Use Take
+
+Makes a take of the audition (and of its linked picture or sound) the active take: the clip keeps its place and links and plays that take over the audition's range, as far as the take has media there (a shorter take leaves the rest empty, and a longer take used later fills it again). The playhead does not move.
+
+Capability `EditSequence`. Tool name `audition_setActive`.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `clip` | integer \| object (1..) | yes | The audition. A clip id, or {"track", "time"} for the clip there. |
+| `sequence` | integer (1..) |  | Sequence id; only needed when the project has several. |
+| `take` | integer (1..32) | yes | The take to use. Takes are numbered from 1 in take order. |
+
+```json
+{"command":"audition.setActive","params":{"clip":42,"take":2}}
+```
+
+<a id="autopilot.broll-v1"></a>
+
+### `autopilot.broll` v1: Auto B-roll
+
+Reads what is said in a sequence (its transcript, line by line) and puts matching B-roll from the library on a free video track: video items the sequence does not use yet, matched by picture (the smart search, when its model is installed) and by words (the item's name, bin, Description, Comment, clip markers and transcript). Each clip lasts as long as its line (2 to 6 s), at most 4 per minute, 4 s apart, never over the first 3 s; the same shot is never used twice. The track is the lowest free video track above the A-roll, else a new "B-roll" track. Returns the suggestions and the lines nothing matched (with a prompt for generating B-roll). With "placements" it places exactly those instead. Needs transcripts. One undo step; dryRun previews it.
+
+Capability `EditSequence`. Tool name `autopilot_broll`. Runs an AI model (extensions need MediaAnalysis for it too).
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `gapSeconds` | number (0.0..120.0) |  | Seconds between two B-roll clips at least (default 4). |
+| `introSeconds` | number (0.0..600.0) |  | No B-roll over the first seconds (default 3). |
+| `maxSeconds` | number (0.5..60.0) |  | The longest B-roll clip, in seconds (default 6). |
+| `minScore` | number (0.0..1.0) |  | How well a match must fit, 0..1 (default 0.35). |
+| `minSeconds` | number (0.5..30.0) |  | The shortest B-roll clip, in seconds (default 2). |
+| `perMinute` | number (0.5..30.0) |  | At most this many B-roll clips per minute (default 4). |
+| `placements` | object[], min 1 |  | Place exactly these (the preview's chosen suggestions) instead of searching. |
+| `placements[].at` | number (0.0..) |  | Where it starts on the timeline, in seconds. |
+| `placements[].atTicks` | integer (0..) |  | Or exactly, in ticks. |
+| `placements[].duration` | number (0.0..) |  | How long, in seconds. |
+| `placements[].durationTicks` | integer (1..) |  | Or exactly, in ticks. |
+| `placements[].line` | integer (1..) |  | The line of the transcript it is for (1-based, as the suggestions number them). |
+| `placements[].media` | integer \| string (1..) | yes | The B-roll's media item. A media id or exact name. |
+| `placements[].sourceIn` | number (0.0..) |  | The first moment of the media to show, in seconds. |
+| `placements[].sourceInTicks` | integer (0..) |  | Or exactly, in ticks. |
+| `sequence` | integer (1..) |  | The sequence; only needed when the project has several. |
+| `visual` | boolean |  | Match by picture too when the visual search model is installed (default true). |
+
+```json
+{"command":"autopilot.broll","params":{"perMinute":3}}
+```
+
+<a id="autopilot.pacing-v1"></a>
+
+### `autopilot.pacing` v1: Pacing Match
+
+Compares the cut rhythm of a reference video (its shot cuts, found by shot detection and cached per file) with the sequence's (where the picture changes) - cuts per minute, the median and average shot length, the shot length over the running time - and suggests cuts so the sequence's long shots get about as long as the reference's at the same point: each moved to the best nearby place (a sentence end, a pause, a beat of the beat grid; never inside a word). Shots already shorter are left alone: it never removes footage. "apply": "markers" adds a marker at each suggestion, "cuts" adds an edit on all tracks there (one undo step); "only" applies the chosen suggestions (1-based). "referenceCuts" (seconds) with "referenceLength" gives a rhythm instead of a video.
+
+Capability `EditSequence`. Tool name `autopilot_pacing`.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `apply` | `none` \| `markers` \| `cuts` |  | What to do with the suggestions: list them (default), add markers, or cut there. |
+| `only` | (integer (1..))[] |  | Apply only these suggestions (1-based). |
+| `reference` | integer \| string (1..) |  | The reference video (a media item of the project). A media id or exact name. |
+| `referenceCuts` | (number (0..))[] |  | Or the reference's cuts, in seconds. |
+| `referenceLength` | number (0.1..) |  | With referenceCuts: the reference's length in seconds. |
+| `sequence` | integer (1..) |  | The sequence; only needed when the project has several. |
+| `strength` | number (0.0..1.0) |  | 1 = the reference's shot lengths (default); 0.5 = halfway between the sequence's and the reference's. |
+| `tolerance` | number (1.0..5.0) |  | A shot longer than this times the target gets cuts (default 1.35). |
+
+```json
+{"command":"autopilot.pacing","params":{"apply":"markers","referenceCuts":[2.5,5.0,7.0,9.5],"referenceLength":12.0}}
+```
+
+<a id="autopilot.publishKit-v1"></a>
+
+### `autopilot.publishKit` v1: Publishing Kit
+
+Prepares a sequence's upload: title ideas (its most telling lines, the hook counting extra), a description (a short lead, the chapters, hashtags), chapters (the sequence's chapter markers, else its transcript's topics; the first at 0:00, with warnings when YouTube would not show them), tags (the most specific words and repeated phrases, at most 15 and 500 characters) and thumbnail candidates (highlight markers, chapter starts, shot middles and telling lines, scored for sharpness, contrast, colour and exposure, 5 s apart). With "folder" it writes them into a "<sequence> - publishing kit" folder there: title.txt, description.txt, chapters.txt, tags.txt, thumbnail-N.jpg (1280 x 720, under 2 MB), publishing-kit.md and publishing-kit.json. Nothing is uploaded and the project does not change. "title", "description" and "tags" replace what it would write. With "cloud" the user's chat model writes the title ideas, description and tags from the transcript text (needs a chat model; never the video).
+
+Capability `Read`. Tool name `autopilot_publishKit`. Runs an AI model (extensions need MediaAnalysis for it too). Reads or writes the files its parameters name (extensions never run it).
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `chapters` | `auto` \| `markers` \| `topics` \| `none` |  | Chapters from the chapter markers, from the transcript's topics, either ("auto", the default: markers when there are any) or none. |
+| `cloud` | boolean |  | Let the user's chat model write the title ideas, description and tags from the transcript text (default false). |
+| `description` | string |  | The description to write (default: the one made). |
+| `folder` | string |  | Write the kit into a new folder inside this one. |
+| `sequence` | integer (1..) |  | The sequence; only needed when the project has several. |
+| `tags` | string[] |  | The tags to write (default: the ones found). |
+| `thumbnails` | integer (0..12) |  | Thumbnail candidates (default 4). |
+| `title` | string |  | The title to write (default: the first idea). |
+
+```json
+{"command":"autopilot.publishKit","params":{"chapters":"auto","thumbnails":4}}
 ```
 
 <a id="autozoom.apply-v1"></a>
@@ -2109,7 +2390,7 @@ Capability `EditSequence`. Tool name `clip_addEffect`.
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `clips` | (integer \| object (1..))[], min 1 | yes | Clips to add the effect to. |
-| `effect` | `wabcut.color.basic` \| `wabcut.vignette` \| `wabcut.color.grade` \| `wabcut.blur.gaussian` \| `wabcut.sharpen` \| `wabcut.crop` \| `wabcut.dropShadow` \| `wabcut.title.style` \| `wabcut.mask` \| `wabcut.mosaic` \| `wabcut.key.trackMatte` \| `wabcut.border` \| `wabcut.key.ultra` \| `wabcut.adjust.levels` \| `wabcut.adjust.procAmp` \| `wabcut.adjust.extract` \| `wabcut.adjust.convolutionKernel` \| `wabcut.channel.invert` \| `wabcut.color.brightnessContrast` \| `wabcut.color.tint` \| `wabcut.color.changeColor` \| `wabcut.color.changeToColor` \| `wabcut.color.leaveColor` \| `wabcut.color.balance` \| `wabcut.color.videoLimiter` \| `wabcut.image.blackWhite` \| `wabcut.image.colorPass` \| `wabcut.image.colorReplace` \| `wabcut.image.gammaCorrection` \| `wabcut.key.alphaAdjust` \| `wabcut.key.luma` \| `wabcut.noise.noise` \| `wabcut.stylize.posterize` \| `wabcut.stylize.solarize` \| `wabcut.stylize.strobeLight` \| `wabcut.stylize.threshold` \| `wabcut.stylize.replicate` \| `wabcut.blur.directional` \| `wabcut.blur.camera` \| `wabcut.distort.cornerPin` \| `wabcut.distort.lensDistortion` \| `wabcut.distort.magnify` \| `wabcut.distort.mirror` \| `wabcut.distort.offset` \| `wabcut.distort.spherize` \| `wabcut.distort.twirl` \| `wabcut.distort.waveWarp` \| `wabcut.distort.turbulentDisplace` \| `wabcut.distort.transform` \| `wabcut.transform.horizontalFlip` \| `wabcut.transform.verticalFlip` \| `wabcut.transform.edgeFeather` \| `wabcut.perspective.basic3d` \| `wabcut.perspective.bevelEdges` \| `wabcut.perspective.bevelAlpha` \| `wabcut.perspective.radialShadow` \| `wabcut.blur.unsharpMask` \| `wabcut.stylize.alphaGlow` \| `wabcut.stylize.colorEmboss` \| `wabcut.stylize.emboss` \| `wabcut.stylize.findEdges` \| `wabcut.stylize.roughenEdges` \| `wabcut.noise.dustScratches` \| `wabcut.noise.median` \| `wabcut.key.colorKey` \| `wabcut.generate.fourColorGradient` \| `wabcut.generate.checkerboard` \| `wabcut.generate.circle` \| `wabcut.generate.grid` \| `wabcut.generate.lensFlare` \| `wabcut.generate.ramp` \| `wabcut.transition.blockDissolve` \| `wabcut.transition.gradientWipe` \| `wabcut.transition.linearWipe` \| `wabcut.transition.radialWipe` \| `wabcut.transition.venetianBlinds` \| `wabcut.key.differenceMatte` \| `wabcut.key.imageMatte` \| `wabcut.time.echo` \| `wabcut.time.posterizeTime` \| `wabcut.video.clipName` \| `wabcut.video.simpleText` \| `wabcut.video.timecode` \| `wabcut.audio.gain` \| `wabcut.audio.eq3` \| `wabcut.audio.compressor` \| `wabcut.audio.limiter` \| `wabcut.audio.denoise` \| `wabcut.audio.enhanceSpeech` \| `wabcut.audio.filter` \| `wabcut.audio.dehum` \| `wabcut.audio.deess` \| `wabcut.audio.expander` \| `wabcut.audio.reverb` \| `wabcut.audio.width` \| `wabcut.audio.essentialSound` \| `wabcut.audio.amplify` \| `wabcut.audio.channelMixer` \| `wabcut.audio.dynamics` \| `wabcut.audio.hardLimiter` \| `wabcut.audio.multibandCompressor` \| `wabcut.audio.singleBandCompressor` \| `wabcut.audio.tubeModeledCompressor` \| `wabcut.audio.distortion` \| `wabcut.audio.guitarSuite` \| `wabcut.audio.mastering` \| `wabcut.audio.vocalEnhancer` \| `wabcut.audio.pitchShifter` \| `wabcut.audio.graphicEq10` \| `wabcut.audio.graphicEq20` \| `wabcut.audio.graphicEq30` \| `wabcut.audio.parametricEq` \| `wabcut.audio.simpleParametricEq` \| `wabcut.audio.highpass` \| `wabcut.audio.lowpass` \| `wabcut.audio.bandpass` \| `wabcut.audio.simpleNotch` \| `wabcut.audio.bass` \| `wabcut.audio.treble` \| `wabcut.audio.notchFilter` \| `wabcut.audio.scientificFilter` \| `wabcut.audio.fftFilter` \| `wabcut.audio.stereoExpander` \| `wabcut.audio.balance` \| `wabcut.audio.channelVolume` \| `wabcut.audio.fillLeftWithRight` \| `wabcut.audio.fillRightWithLeft` \| `wabcut.audio.invert` \| `wabcut.audio.swapChannels` \| `wabcut.audio.delay` \| `wabcut.audio.analogDelay` \| `wabcut.audio.multitapDelay` \| `wabcut.audio.chorusFlanger` \| `wabcut.audio.flanger` \| `wabcut.audio.phaser` \| `wabcut.audio.convolutionReverb` \| `wabcut.audio.studioReverb` \| `wabcut.audio.surroundReverb` \| `wabcut.audio.deReverb` \| `wabcut.audio.spectralDenoise` \| `wabcut.audio.adaptiveNoiseReduction` \| `wabcut.audio.automaticClickRemover` \| `wabcut.stabilize.warp` \| `wabcut.stabilize.rollingShutter` |  | The effect id (effect.list). |
+| `effect` | `wabcut.color.basic` \| `wabcut.vignette` \| `wabcut.color.grade` \| `wabcut.blur.gaussian` \| `wabcut.sharpen` \| `wabcut.crop` \| `wabcut.dropShadow` \| `wabcut.title.style` \| `wabcut.mask` \| `wabcut.mosaic` \| `wabcut.key.trackMatte` \| `wabcut.border` \| `wabcut.key.ultra` \| `wabcut.adjust.levels` \| `wabcut.adjust.procAmp` \| `wabcut.adjust.extract` \| `wabcut.adjust.convolutionKernel` \| `wabcut.channel.invert` \| `wabcut.color.brightnessContrast` \| `wabcut.color.tint` \| `wabcut.color.changeColor` \| `wabcut.color.changeToColor` \| `wabcut.color.leaveColor` \| `wabcut.color.balance` \| `wabcut.color.videoLimiter` \| `wabcut.image.blackWhite` \| `wabcut.image.colorPass` \| `wabcut.image.colorReplace` \| `wabcut.image.gammaCorrection` \| `wabcut.key.alphaAdjust` \| `wabcut.key.luma` \| `wabcut.noise.noise` \| `wabcut.stylize.posterize` \| `wabcut.stylize.solarize` \| `wabcut.stylize.strobeLight` \| `wabcut.stylize.threshold` \| `wabcut.stylize.replicate` \| `wabcut.blur.directional` \| `wabcut.blur.camera` \| `wabcut.distort.cornerPin` \| `wabcut.distort.lensDistortion` \| `wabcut.distort.magnify` \| `wabcut.distort.mirror` \| `wabcut.distort.offset` \| `wabcut.distort.spherize` \| `wabcut.distort.twirl` \| `wabcut.distort.waveWarp` \| `wabcut.distort.turbulentDisplace` \| `wabcut.distort.transform` \| `wabcut.transform.horizontalFlip` \| `wabcut.transform.verticalFlip` \| `wabcut.transform.edgeFeather` \| `wabcut.perspective.basic3d` \| `wabcut.perspective.bevelEdges` \| `wabcut.perspective.bevelAlpha` \| `wabcut.perspective.radialShadow` \| `wabcut.blur.unsharpMask` \| `wabcut.stylize.alphaGlow` \| `wabcut.stylize.glow` \| `wabcut.stylize.colorEmboss` \| `wabcut.stylize.emboss` \| `wabcut.stylize.findEdges` \| `wabcut.stylize.roughenEdges` \| `wabcut.noise.dustScratches` \| `wabcut.noise.median` \| `wabcut.key.colorKey` \| `wabcut.generate.fourColorGradient` \| `wabcut.generate.checkerboard` \| `wabcut.generate.circle` \| `wabcut.generate.grid` \| `wabcut.generate.lensFlare` \| `wabcut.generate.ramp` \| `wabcut.generate.colorama` \| `wabcut.generate.fractalNoise` \| `wabcut.generate.cellPattern` \| `wabcut.generate.lightning` \| `wabcut.generate.scribble` \| `wabcut.generate.paintBucket` \| `wabcut.transition.blockDissolve` \| `wabcut.transition.gradientWipe` \| `wabcut.transition.linearWipe` \| `wabcut.transition.radialWipe` \| `wabcut.transition.venetianBlinds` \| `wabcut.key.differenceMatte` \| `wabcut.key.imageMatte` \| `wabcut.time.echo` \| `wabcut.time.posterizeTime` \| `wabcut.video.clipName` \| `wabcut.video.simpleText` \| `wabcut.video.timecode` \| `wabcut.audio.gain` \| `wabcut.audio.eq3` \| `wabcut.audio.compressor` \| `wabcut.audio.limiter` \| `wabcut.audio.denoise` \| `wabcut.audio.enhanceSpeech` \| `wabcut.audio.filter` \| `wabcut.audio.dehum` \| `wabcut.audio.deess` \| `wabcut.audio.expander` \| `wabcut.audio.reverb` \| `wabcut.audio.width` \| `wabcut.audio.essentialSound` \| `wabcut.audio.amplify` \| `wabcut.audio.channelMixer` \| `wabcut.audio.dynamics` \| `wabcut.audio.hardLimiter` \| `wabcut.audio.multibandCompressor` \| `wabcut.audio.singleBandCompressor` \| `wabcut.audio.tubeModeledCompressor` \| `wabcut.audio.distortion` \| `wabcut.audio.guitarSuite` \| `wabcut.audio.mastering` \| `wabcut.audio.vocalEnhancer` \| `wabcut.audio.pitchShifter` \| `wabcut.audio.graphicEq10` \| `wabcut.audio.graphicEq20` \| `wabcut.audio.graphicEq30` \| `wabcut.audio.parametricEq` \| `wabcut.audio.simpleParametricEq` \| `wabcut.audio.highpass` \| `wabcut.audio.lowpass` \| `wabcut.audio.bandpass` \| `wabcut.audio.simpleNotch` \| `wabcut.audio.bass` \| `wabcut.audio.treble` \| `wabcut.audio.notchFilter` \| `wabcut.audio.scientificFilter` \| `wabcut.audio.fftFilter` \| `wabcut.audio.stereoExpander` \| `wabcut.audio.balance` \| `wabcut.audio.channelVolume` \| `wabcut.audio.fillLeftWithRight` \| `wabcut.audio.fillRightWithLeft` \| `wabcut.audio.invert` \| `wabcut.audio.swapChannels` \| `wabcut.audio.delay` \| `wabcut.audio.analogDelay` \| `wabcut.audio.multitapDelay` \| `wabcut.audio.chorusFlanger` \| `wabcut.audio.flanger` \| `wabcut.audio.phaser` \| `wabcut.audio.convolutionReverb` \| `wabcut.audio.studioReverb` \| `wabcut.audio.surroundReverb` \| `wabcut.audio.deReverb` \| `wabcut.audio.spectralDenoise` \| `wabcut.audio.adaptiveNoiseReduction` \| `wabcut.audio.automaticClickRemover` \| `wabcut.stabilize.warp` \| `wabcut.stabilize.rollingShutter` |  | The effect id (effect.list). |
 | `index` | integer (0..) |  | Position in the stack (0 = first). Default: last. |
 | `params` | object |  | Parameter values by key, e.g. {"radius": 12}. |
 | `plugin` | string |  | Or an audio plugin's effect id (plugins.list), e.g. "plugin.vst3.<id>". |
@@ -2990,7 +3271,7 @@ Capability `EditSequence`. Tool name `clip_splitAtShots`.
 
 ### `clip.trim` v1: Trim
 
-Trim an edge (selection tool): moves a clip's In or Out point without moving anything else. Clamped to neighbours, source media and one frame; the delta actually applied is returned.
+Trim an edge (selection tool): makes a clip longer or shorter - extend it into a gap or shorten it - by moving its In or Out point by a delta, without moving anything else. Clamped to neighbours, source media and one frame; the delta actually applied is returned.
 
 Capability `EditSequence`. Tool name `clip_trim`.
 
@@ -3264,7 +3545,7 @@ Capability `EditSequence`. Tool name `color_inputSpace_set`.
 | `clip` | integer \| object (1..) |  | The clip. A clip id, or {"track", "time"} for the clip there. |
 | `clips` | (integer \| object (1..))[], min 1 |  | Clips to change (or "clip" for one). |
 | `sequence` | integer (1..) |  | Sequence id; only needed when the project has several. |
-| `space` | `auto` \| `rec709` \| `srgb` \| `rec2020` \| `rec2100-pq` \| `rec2100-hlg` \| `s-log3-cine` \| `s-log3` \| `v-log` \| `logc3` \| `logc4` \| `canon-log3` \| `canon-log2` \| `red-log3g10` \| `apple-log` \| `linear-rec709` \| `acescg` \| `acescct` \| `aces2065-1` | yes | The input colour space, or "auto". |
+| `space` | `auto` \| `rec709` \| `srgb` \| `rec2020` \| `rec2100-pq` \| `rec2100-hlg` \| `s-log3-cine` \| `s-log3` \| `s-log2-cine` \| `s-log2` \| `v-log` \| `logc3` \| `logc4` \| `canon-log3` \| `canon-log2` \| `canon-log` \| `red-log3g10` \| `red-log-film` \| `apple-log` \| `d-log` \| `f-log` \| `f-log2` \| `l-log` \| `n-log` \| `linear-rec709` \| `acescg` \| `acescct` \| `aces2065-1` | yes | The input colour space, or "auto". |
 
 ```json
 {"command":"color.inputSpace.set","params":{"clips":[42,43],"space":"s-log3-cine"}}
@@ -3288,16 +3569,26 @@ No parameters.
 
 ### `color.management.set` v1: Set Colour Management
 
-Sets the project's colour management (Premiere Pro's sequence Color Setup): "mode" rec709 (Direct Rec.709 (SDR), the default: SDR media as it is, HDR media and log clips tone-mapped into SDR on input), hdr-hlg or hdr-pq (Direct HLG / PQ (HDR): a linear Rec.2020 working space, SDR clips and titles at the graphics white; the monitor shows a tone-mapped SDR preview, HDR exports carry HLG or PQ), aces (Wide Gamut (Tone Mapped): ACES 1.3, clips read through their input colour space into ACEScg, the grade works in ACEScct, the ACES output transforms), wide-gamut (Wide Gamut (No Tone Mapping): ACEScg, clipped at the output's white) or off (Disable Color Management: no conversion at all). "peakNits" (100..10000, default 1000) is the HDR mastering peak, "referenceWhiteNits" (80..400, default 203) the graphics white where SDR white lands, "autoDetectLog" (default true) reads clips as the camera log their metadata names. Only the given fields change. One undo step.
+Sets the project's colour management (Premiere Pro's sequence Color Setup): "mode" rec709 (Direct Rec.709 (SDR), the default: SDR media as it is, HDR media and log clips tone-mapped into SDR on input), hdr-hlg or hdr-pq (Direct HLG / PQ (HDR): a linear Rec.2020 working space, SDR clips and titles at the graphics white; the monitor shows a tone-mapped SDR preview, HDR exports carry HLG or PQ), aces (Wide Gamut (Tone Mapped): ACES 1.3, clips read through their input colour space into ACEScg, the grade works in ACEScct, the ACES output transforms), wide-gamut (Wide Gamut (No Tone Mapping): ACEScg, clipped at the output's white) or off (Disable Color Management: no conversion at all). "peakNits" (100..10000, default 1000) is the HDR mastering peak, "referenceWhiteNits" (80..400, default 203) the graphics white where SDR white lands, "autoDetectLog" (default true) reads clips as the camera log their metadata names. 0.6: wide-gamut-minimal (Wide Gamut (Minimal Tone Mapping): ACEScg; SDR media and graphics unchanged, camera log and HDR media gamut compressed and their highlights rolled off), "gamutCompression" (ACES 1.3 reference gamut compression of camera log and HDR media in managed setups; values below 0 are then kept) at "gamutCompressionStrength" (0..1), "outputSpace" (what exports write: auto, rec709, rec2020, p3-d65, rec2100-pq, rec2100-hlg) and "sdrConform" (how an HDR or Wide Gamut sequence becomes an SDR export: enabled, targetPeakNits, paperWhiteNits, toneMap bt2390 / aces / reinhard, gamut aces-rgc / saturation / clip, legalRange). Only the given fields change. One undo step.
 
 Capability `EditProject`. Tool name `color_management_set`.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `autoDetectLog` | boolean |  | Read clips as the camera log their metadata names. |
-| `mode` | `rec709` \| `hdr-hlg` \| `hdr-pq` \| `aces` \| `wide-gamut` \| `off` |  | The colour setup. |
+| `gamutCompression` | boolean |  | ACES 1.3 gamut compression of camera log and HDR media. |
+| `gamutCompressionStrength` | number (0.0..1.0) |  | Gamut compression strength, 0..1. |
+| `mode` | `rec709` \| `hdr-hlg` \| `hdr-pq` \| `aces` \| `wide-gamut-minimal` \| `wide-gamut` \| `off` |  | The colour setup. |
+| `outputSpace` | `auto` \| `rec709` \| `rec2020` \| `p3-d65` \| `rec2100-pq` \| `rec2100-hlg` |  | What exports write. |
 | `peakNits` | number (100.0..10000.0) |  | HDR mastering peak in nits, 100..10000. |
 | `referenceWhiteNits` | number (80.0..400.0) |  | HDR graphics (reference) white in nits, 80..400. |
+| `sdrConform` | object |  | SDR Conform (only the given fields change). |
+| `sdrConform.enabled` | boolean |  | Conform SDR exports of HDR and Wide Gamut setups. |
+| `sdrConform.gamut` | `aces-rgc` \| `saturation` \| `clip` |  | The gamut mapping. |
+| `sdrConform.legalRange` | boolean |  | Soft-clip the encoded components above 90 %. |
+| `sdrConform.paperWhiteNits` | number (48.0..400.0) |  | Where the reference white lands, in nits. |
+| `sdrConform.targetPeakNits` | number (48.0..400.0) |  | The SDR display's white in nits (100 or 203). |
+| `sdrConform.toneMap` | `bt2390` \| `aces` \| `reinhard` |  | The tone-mapping operator. |
 
 ```json
 {"command":"color.management.set","params":{"mode":"hdr-pq","peakNits":1000}}
@@ -3497,14 +3788,14 @@ Capability `EditSequence`. Tool name `edit_snapToBeats`.
 
 ### `effect.analyzeRollingShutter` v1: Analyze Rolling Shutter
 
-Rolling Shutter Repair's analysis: measures the picture's motion per frame of a video clip's footage and keys it (motion.x, motion.y: source pixels per frame) into the clip's Rolling Shutter Repair (added at the top of its stack when it has none), which then skews each line back by its share of the scan (Rolling Shutter Rate, Scan Direction). Shares the cached analysis with Warp Stabilizer's Position method.
+Rolling Shutter Repair's analysis: measures the picture's motion per frame of a video clip's footage and keys it (motion.x, motion.y: source pixels per frame) into the clip's Rolling Shutter Repair (added at the top of its stack when it has none), which then skews each line back by its share of the scan (Rolling Shutter Rate, Scan Direction). Shares the cached analysis with Warp Stabilizer's Position method. One in the clip's media's Master Clip Effects (named by `effect`) is analysed over the frames every clip of that media shows.
 
 Capability `EditSequence`. Tool name `effect_analyzeRollingShutter`.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `clip` | integer (1..) | yes | The video clip (id). |
-| `effect` | integer (1..) |  | Its Rolling Shutter Repair instance (id). Default: the clip's first (or a new one). |
+| `effect` | integer (1..) |  | Its Rolling Shutter Repair instance (id), in the clip's stack or its media's Master Clip Effects. Default: the clip's first (or a new one). |
 | `sequence` | integer (1..) |  | Sequence id; only needed when the project has several. |
 
 ```json
@@ -3515,14 +3806,14 @@ Capability `EditSequence`. Tool name `effect_analyzeRollingShutter`.
 
 ### `effect.analyzeStabilization` v1: Analyze Stabilization
 
-Warp Stabilizer's Analyze: tracks the camera motion of a video clip's footage, smooths the camera path with the effect's settings (Result, Smoothness, Method, Preserve Scale, Framing, Maximum Scale, Action-Safe Margin, Additional Scale, Detailed Analysis, Rolling Shutter Ripple, Crop Less Smooth More) and keys the compensating transform per frame into the clip's Warp Stabilizer (added at the top of its stack when it has none), with the crop or auto-scale that hides the moving borders. The keys stay editable. Changing a setting and running it again re-smooths from the cached analysis. Runs as a job with progress and cancel; a dry run analyses and previews the keys.
+Warp Stabilizer's Analyze: tracks the camera motion of a video clip's footage, smooths the camera path with the effect's settings (Result, Smoothness, Method, Preserve Scale, Framing, Maximum Scale, Action-Safe Margin, Additional Scale, Detailed Analysis, Rolling Shutter Ripple, Crop Less Smooth More) and keys the compensating transform per frame into the clip's Warp Stabilizer (added at the top of its stack when it has none), with the crop or auto-scale that hides the moving borders. The keys stay editable. Changing a setting and running it again re-smooths from the cached analysis. A Warp Stabilizer in the clip's media's Master Clip Effects (named by `effect`) is analysed over the frames every clip of that media shows, so every instance plays it stabilized. Runs as a job with progress and cancel; a dry run analyses and previews the keys.
 
 Capability `EditSequence`. Tool name `effect_analyzeStabilization`.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `clip` | integer (1..) | yes | The video clip (id). |
-| `effect` | integer (1..) |  | Its Warp Stabilizer instance (id). Default: the clip's first (or a new one). |
+| `effect` | integer (1..) |  | Its Warp Stabilizer instance (id), in the clip's stack or its media's Master Clip Effects. Default: the clip's first (or a new one). |
 | `sequence` | integer (1..) |  | Sequence id; only needed when the project has several. |
 
 ```json
@@ -3725,6 +4016,7 @@ Capability `EditProject`. Tool name `effects_savePreset`.
 | `description` | string |  | A description (Premiere's Description field). |
 | `effects` | (integer (0..))[] |  | Stack effects to save. |
 | `fixed` | (`motion` \| `opacity` \| `volume` \| `panner`)[] |  | Fixed effects to save (Motion and Opacity of a video clip, Volume and Panner of an audio clip). |
+| `master` | (integer (0..))[] |  | 0.6: master clip effects to save (they come first in the preset). |
 | `name` | string | yes | The preset's name: unique among the user's presets, not a built-in's. |
 | `replace` | boolean |  | Replace a preset of yours with that name (default false: refused). |
 | `sequence` | integer (1..) |  | Sequence id; only needed when the project has several. |
@@ -3786,7 +4078,7 @@ Capability `Read`. Tool name `export_describe`.
 | `in` | integer \| string |  | Custom range start (with "out"). Timecode in the sequence's rate ("00:01:02:03") or ticks. |
 | `out` | integer \| string |  | Custom range end. Timecode in the sequence's rate ("00:01:02:03") or ticks. |
 | `output` | string |  | The output file (default: next to the project, named after the sequence). |
-| `overrides` | object |  | Settings on top of the preset (ExportController's keys, docs/export.md): container, videoCodec, encoder, quality, bitrateMbps, maxBitrateMbps, frameRate, width, height, scaleMode, range (whole \| inOut \| workArea \| custom), video, audio, audioCodec, audioChannels, sampleRate, audioBitrateKbps, dynamicRange, captions, pixelFormat, alpha (Include Alpha Channel), proresProfile, dnxhrProfile, exportAsSequence, subtitles, and the objects effects, metadata and render (export.describe shows their fields). |
+| `overrides` | object |  | Settings on top of the preset (ExportController's keys, docs/export.md): container, videoCodec, encoder, quality, bitrateMbps, maxBitrateMbps, frameRate, width, height, scaleMode, range (whole \| inOut \| workArea \| custom), video, audio, audioCodec, audioChannels, sampleRate, audioBitrateKbps, dynamicRange, captions, pixelFormat, alpha (Include Alpha Channel), proresProfile, dnxhrProfile, exportAsSequence, subtitles, targetMB (a size limit in MB, 1-4000, for H.264, HEVC, AV1 or VP9: the whole file at most that size; 0 = off), and the objects effects, metadata and render (export.describe shows their fields). |
 | `preset` | string |  | A preset id (export.presets: a built-in one such as "match-source", or a user preset "user-..."). |
 | `range` | `whole` \| `inOut` \| `workArea` \| `custom` |  | Premiere's Range: Entire Source (default), Source In/Out, Work Area, Custom. |
 | `sequence` | integer (1..) |  | Sequence id; only needed when the project has several. |
@@ -3857,7 +4149,7 @@ Capability `EditProject`. Tool name `export_preset_save`.
 |---|---|---|---|
 | `description` | string |  | A one-line description. |
 | `name` | string | yes | The preset's name (1..256 bytes); its id is "user-" and the name in lowercase. |
-| `overrides` | object |  | Settings on top of the preset (ExportController's keys, docs/export.md): container, videoCodec, encoder, quality, bitrateMbps, maxBitrateMbps, frameRate, width, height, scaleMode, range (whole \| inOut \| workArea \| custom), video, audio, audioCodec, audioChannels, sampleRate, audioBitrateKbps, dynamicRange, captions, pixelFormat, alpha (Include Alpha Channel), proresProfile, dnxhrProfile, exportAsSequence, subtitles, and the objects effects, metadata and render (export.describe shows their fields). |
+| `overrides` | object |  | Settings on top of the preset (ExportController's keys, docs/export.md): container, videoCodec, encoder, quality, bitrateMbps, maxBitrateMbps, frameRate, width, height, scaleMode, range (whole \| inOut \| workArea \| custom), video, audio, audioCodec, audioChannels, sampleRate, audioBitrateKbps, dynamicRange, captions, pixelFormat, alpha (Include Alpha Channel), proresProfile, dnxhrProfile, exportAsSequence, subtitles, targetMB (a size limit in MB, 1-4000, for H.264, HEVC, AV1 or VP9: the whole file at most that size; 0 = off), and the objects effects, metadata and render (export.describe shows their fields). |
 | `overwrite` | boolean |  | Replace a preset of the same name (default false). |
 | `preset` | string |  | A preset id (export.presets: a built-in one such as "match-source", or a user preset "user-..."). |
 
@@ -3883,20 +4175,27 @@ No parameters.
 
 ### `export.queue` v1: Send to Media Encoder
 
-Queues exports of the sequence, one per preset in "presets" (to the matching "outputs"), with the same overrides: Premiere's Export with several destinations and Send to Media Encoder. They run one after another in the background. With "hold" they wait in the queue until export.queue.start (Media Encoder's queue before Start Queue).
+Queues exports of the sequence, one per preset in "presets" (to the matching "outputs"), with the same overrides: Premiere's Export with several destinations and Send to Media Encoder. They run one after another in the background. With "hold" they wait in the queue until export.queue.start (Media Encoder's queue before Start Queue). P1: "ranges" ([{in, out, name}], with one preset) queues one export per range instead - each marker range or clip as its own file - named "<sequence> - <name>" in "folder" (default: the preset's usual folder) and numbered when taken; an empty range queues none. 0.6: "stems": "role" queues the dialogue / music / effects stems after the first export (after each range's with "ranges"); they are listed with a "stem" key.
 
 Capability `Read`. Tool name `export_queue`. Reads or writes the files its parameters name (extensions never run it).
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
+| `folder` | string |  | P1, with "ranges": the folder the files go to. |
 | `hold` | boolean |  | Queue without starting (default false). |
 | `in` | integer \| string |  | Custom range start (with "out"). Timecode in the sequence's rate ("00:01:02:03") or ticks. |
 | `out` | integer \| string |  | Custom range end. Timecode in the sequence's rate ("00:01:02:03") or ticks. |
 | `outputs` | string[] |  | The output file of each preset, in order (default: next to the project). |
-| `overrides` | object |  | Settings on top of the preset (ExportController's keys, docs/export.md): container, videoCodec, encoder, quality, bitrateMbps, maxBitrateMbps, frameRate, width, height, scaleMode, range (whole \| inOut \| workArea \| custom), video, audio, audioCodec, audioChannels, sampleRate, audioBitrateKbps, dynamicRange, captions, pixelFormat, alpha (Include Alpha Channel), proresProfile, dnxhrProfile, exportAsSequence, subtitles, and the objects effects, metadata and render (export.describe shows their fields). |
+| `overrides` | object |  | Settings on top of the preset (ExportController's keys, docs/export.md): container, videoCodec, encoder, quality, bitrateMbps, maxBitrateMbps, frameRate, width, height, scaleMode, range (whole \| inOut \| workArea \| custom), video, audio, audioCodec, audioChannels, sampleRate, audioBitrateKbps, dynamicRange, captions, pixelFormat, alpha (Include Alpha Channel), proresProfile, dnxhrProfile, exportAsSequence, subtitles, targetMB (a size limit in MB, 1-4000, for H.264, HEVC, AV1 or VP9: the whole file at most that size; 0 = off), and the objects effects, metadata and render (export.describe shows their fields). |
 | `presets` | string[], min 1 | yes | One export per preset (Premiere's several destinations). |
 | `range` | `whole` \| `inOut` \| `workArea` \| `custom` |  | Premiere's Range: Entire Source (default), Source In/Out, Work Area, Custom. |
+| `ranges` | object[], min 1 |  | P1: one file per range (one preset; not with "outputs"). |
+| `ranges[].in` | integer \| string | yes | The range's start. Timecode in the sequence's rate ("00:01:02:03") or ticks. |
+| `ranges[].name` | string |  | Names its file. |
+| `ranges[].out` | integer \| string | yes | The range's end. Timecode in the sequence's rate ("00:01:02:03") or ticks. |
 | `sequence` | integer (1..) |  | Sequence id; only needed when the project has several. |
+| `stems` | `off` \| `role` |  | 0.6: "role" also writes the dialogue, music and effects stems (one audio-only 24-bit WAV per track role with an audible track, "_DX", "_MX", "_FX", "_OTHER" for tracks without a role) next to the export, queued after it, sample-aligned with it; never loudness-normalised. Default off. |
+| `stemsMasterEffects` | boolean |  | 0.6, with "stems": the stems go through the master bus's effects (default true). |
 
 ```json
 {"command":"export.queue","params":{"presets":["youtube-1080p60","shorts-1080x1920-60"]}}
@@ -4014,10 +4313,12 @@ Capability `Read`. Tool name `export_quick`. Reads or writes the files its param
 | `in` | integer \| string |  | Custom range start (with "out"). Timecode in the sequence's rate ("00:01:02:03") or ticks. |
 | `out` | integer \| string |  | Custom range end. Timecode in the sequence's rate ("00:01:02:03") or ticks. |
 | `output` | string |  | The output file; its extension follows the format. |
-| `overrides` | object |  | Settings on top of the preset (ExportController's keys, docs/export.md): container, videoCodec, encoder, quality, bitrateMbps, maxBitrateMbps, frameRate, width, height, scaleMode, range (whole \| inOut \| workArea \| custom), video, audio, audioCodec, audioChannels, sampleRate, audioBitrateKbps, dynamicRange, captions, pixelFormat, alpha (Include Alpha Channel), proresProfile, dnxhrProfile, exportAsSequence, subtitles, and the objects effects, metadata and render (export.describe shows their fields). |
+| `overrides` | object |  | Settings on top of the preset (ExportController's keys, docs/export.md): container, videoCodec, encoder, quality, bitrateMbps, maxBitrateMbps, frameRate, width, height, scaleMode, range (whole \| inOut \| workArea \| custom), video, audio, audioCodec, audioChannels, sampleRate, audioBitrateKbps, dynamicRange, captions, pixelFormat, alpha (Include Alpha Channel), proresProfile, dnxhrProfile, exportAsSequence, subtitles, targetMB (a size limit in MB, 1-4000, for H.264, HEVC, AV1 or VP9: the whole file at most that size; 0 = off), and the objects effects, metadata and render (export.describe shows their fields). |
 | `preset` | string |  | A preset id (export.presets: a built-in one such as "match-source", or a user preset "user-..."). |
 | `range` | `whole` \| `inOut` \| `workArea` \| `custom` |  | Premiere's Range: Entire Source (default), Source In/Out, Work Area, Custom. |
 | `sequence` | integer (1..) |  | Sequence id; only needed when the project has several. |
+| `stems` | `off` \| `role` |  | 0.6: "role" also writes the dialogue, music and effects stems (one audio-only 24-bit WAV per track role with an audible track, "_DX", "_MX", "_FX", "_OTHER" for tracks without a role) next to the export, queued after it, sample-aligned with it; never loudness-normalised. Default off. |
+| `stemsMasterEffects` | boolean |  | 0.6, with "stems": the stems go through the master bus's effects (default true). |
 
 ```json
 {"command":"export.quick","params":{"output":"C:/Exports/Episode 12.mp4","preset":"youtube-1080p60"}}
@@ -4541,7 +4842,7 @@ Capability `EditSequence`. Tool name `highlights_find`.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `audioRoles` | (`game` \| `mic` \| `mixed` \| `ignore`)[] |  | What each audio stream of the recordings carries, by stream (OBS track 1, 2, ...). Default: the most voice-like of several streams is the mic, the others game; a single stream is mixed. |
+| `audioRoles` | (`auto` \| `game` \| `mic` \| `mixed` \| `ignore`)[] |  | What each audio stream of the recordings carries, by stream (OBS track 1, 2, ...): "auto" keeps the stream's own role. Default: with several streams, a stream titled like OBS's Mic/Aux is the mic, Game/Desktop Audio and Alerts are game, Discord and Music are left out; streams without such a title: the most voice-like is the mic (unless a title named it), the others game. A single stream is mixed. |
 | `chatDelay` | number (0.0..120.0) |  | How late chat reacts, seconds (default 6). |
 | `chatOffset` | number (-86400.0..86400.0) |  | Chat time + this = recording time, seconds (default: as imported). |
 | `count` | integer (1..200) |  | How many moments at most. Default 10. |
@@ -4761,7 +5062,7 @@ Capability `EditProject`. Tool name `history_restore`.
 
 ### `interchange.export` v1: Export Timeline
 
-Writes the sequence (with the sequences it nests and its multicam sources) as a timeline file other editors read, at "path": Final Cut Pro 7 XML ("fcp7-xml": Premiere Pro, DaVinci Resolve), FCPXML ("fcpxml": Final Cut Pro, Resolve; "fcpxmlVersion" 1.10 or 1.11), OpenTimelineIO ("otio") or a CMX3600 EDL ("edl"); or for audio post as an AAF ("aaf": Pro Tools, Nuendo, Resolve / Fairlight, Media Composer) or an OMF 2.0 file ("omf") with its audio rendered to new files ("audioPost": Premiere's AAF and OMF settings). Returns the export report: how many elements were carried exactly, and every one approximated (rounded to frames, a transition the format has no name for, ...) or dropped (graphics and effects the format cannot describe). The project does not change; a dry run writes nothing.
+Writes the sequence (with the sequences it nests and its multicam sources) as a timeline file other editors read, at "path": Final Cut Pro 7 XML ("fcp7-xml": Premiere Pro, DaVinci Resolve), FCPXML ("fcpxml": Final Cut Pro, Resolve; "fcpxmlVersion" 1.10 or 1.11), OpenTimelineIO ("otio") or a CMX3600 EDL ("edl"); or for audio post as an AAF ("aaf": Pro Tools, Nuendo, Resolve / Fairlight, Media Composer) or an OMF 2.0 file ("omf") with its audio rendered to new files ("audioPost": Premiere's AAF and OMF settings). Returns the export report: how many elements were carried exactly, and every one approximated (rounded to frames, a transition the format has no name for, ...) or dropped (graphics and effects the format cannot describe). None of these formats carries caption tracks: each caption track with cues is reported as dropped, unless "captionSidecars" names a caption file format - then each is written next to the file as "<name> - <track name>[.<language>].<ext>" (words the soundtrack bleeps replaced, as captions.export does), reported as carried, and listed in "captionFiles". The project does not change; a dry run writes nothing.
 
 Capability `Read`. Tool name `interchange_export`. Reads or writes the files its parameters name (extensions never run it).
 
@@ -4780,6 +5081,7 @@ Capability `Read`. Tool name `interchange_export`. Reads or writes the files its
 | `audioPost.render` | `trim` \| `complete` |  | Trim Audio Files (the parts used, plus handles) or Copy Complete Audio Files. Default trim. |
 | `audioPost.renderAudioClipEffects` | boolean |  | Render the clips' audio effects into the new files. |
 | `audioPost.sampleRate` | integer (48000..96000) |  | 48000 or 96000 (Hz). Default 48000. |
+| `captionSidecars` | `srt` \| `vtt` \| `scc` \| `mcc` \| `stl` \| `ttml` \| `dfxp` \| `smpte-tt` \| `itt` |  | 0.6: also write every caption track with cues next to the file in this caption format (default: none). |
 | `fcpxmlVersion` | `1.10` \| `1.11` |  | FCPXML only (default 1.10). |
 | `format` | `fcp7-xml` \| `fcpxml` \| `otio` \| `edl` \| `aaf` \| `omf` | yes | The file format. |
 | `path` | string | yes | The file to write (UTF-8 path); an existing one is replaced. |
@@ -6825,31 +7127,100 @@ Capability `EditProject`. Tool name `sequence_exportFrame`. Aliases: `frame.expo
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `bin` | integer (1..) |  | With importIntoProject: the bin it goes into (default the root bin). |
+| `fit` | `fit` \| `fill` |  | With a size of another shape: "fit" keeps the whole frame with black bars (default), "fill" crops its centre. |
 | `format` | `dpx` \| `jpeg` \| `png` \| `tiff` \| `targa` \| `bmp` \| `gif` \| `openexr` |  | The image format (Premiere's Export Frame list). Default png. |
+| `height` | integer (16..16384) |  | Scale the frame to this height (with width). |
 | `importIntoProject` | boolean |  | Premiere's "Import into project": the still is added to the project as a media item. |
+| `maxBytes` | integer (10000..) |  | JPEG: the most the file may weigh, in bytes (YouTube thumbnails: 2000000); the quality goes down until it fits. |
 | `path` | string | yes | The file to write (UTF-8 path). The format's extension is added when it has another one; an existing file is replaced. |
+| `quality` | integer (1..100) |  | JPEG quality, 1-100 (default: the highest). |
 | `sequence` | integer (1..) |  | Sequence id; only needed when the project has several. |
 | `time` | integer \| string | yes | The frame to export (snapped to the sequence's frames). Timecode in the sequence's rate ("00:01:02:03") or ticks. |
+| `width` | integer (16..16384) |  | Scale the frame to this width (with height; default the frame's own size). 1280 x 720 is a YouTube thumbnail. |
 
 ```json
 {"command":"sequence.exportFrame","params":{"format":"png","importIntoProject":true,"path":"C:/Stills/Thumbnail.png","time":"00:00:10:00"}}
+```
+
+<a id="sequence.exportFramesAtMarkers-v1"></a>
+
+### `sequence.exportFramesAtMarkers` v1: Export Frames at Markers
+
+Writes one still per sequence marker - all of them, the chapter markers, the highlight markers, or one colour - rendered as Export Frame renders them (original media, the export colour transform), named after the marker, into "folder": thumbnail candidates. A highlight marker's still is taken at its peak. With "width" / "height" (1280 x 720 for YouTube), "quality" and "maxBytes" (2000000 keeps a YouTube thumbnail under 2 MB) as sequence.exportFrame. With "importIntoProject" the stills join the project in a "Thumbnails" bin, one undo step. Needs a host that renders frames; a dry run lists the files only.
+
+Capability `EditProject`. Tool name `sequence_exportFramesAtMarkers`. Reads or writes the files its parameters name (extensions never run it).
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `at` | `peak` \| `start` |  | Where the still is taken: a highlight marker's peak (default; the start for other markers) or every marker's start. |
+| `binName` | string |  | With importIntoProject: the top-level bin they go into. Default "Thumbnails". |
+| `colorIndex` | integer (0..7) |  | Only the markers of this colour (Premiere's 8: 0 green .. 7 cyan). |
+| `fit` | `fit` \| `fill` |  | With a size of another shape: "fit" keeps the whole frame with black bars (default), "fill" crops its centre. |
+| `folder` | string | yes | The folder the stills go into (UTF-8 path; it must exist). Each still is named after its marker ("Marker 3" when it has no name; " (2)" for a name used twice); an existing file is replaced. |
+| `format` | `dpx` \| `jpeg` \| `png` \| `tiff` \| `targa` \| `bmp` \| `gif` \| `openexr` |  | The image format. Default jpeg. |
+| `height` | integer (16..16384) |  | Scale the frame to this height (with width). |
+| `importIntoProject` | boolean |  | The stills are added to the project, into a bin (made when missing), in one undo step. |
+| `markers` | `all` \| `chapters` \| `highlights` |  | Which markers: every one (default), chapter markers, or the markers a highlight finder wrote. |
+| `maxBytes` | integer (10000..) |  | JPEG: the most the file may weigh, in bytes (YouTube thumbnails: 2000000); the quality goes down until it fits. |
+| `quality` | integer (1..100) |  | JPEG quality, 1-100 (default: the highest). |
+| `sequence` | integer (1..) |  | Sequence id; only needed when the project has several. |
+| `width` | integer (16..16384) |  | Scale the frame to this width (with height; default the frame's own size). 1280 x 720 is a YouTube thumbnail. |
+
+```json
+{"command":"sequence.exportFramesAtMarkers","params":{"fit":"fill","folder":"C:/Thumbnails","format":"jpeg","height":720,"markers":"highlights","maxBytes":2000000,"width":1280}}
 ```
 
 <a id="sequence.exportMarkers-v1"></a>
 
 ### `sequence.exportMarkers` v1: Export Markers
 
-Returns the sequence's markers as text: "csv" (Premiere's columns: Marker Name, Description, In, Out, Duration, Marker Type, plus Color) or "youtube" (chapter lines for a video description, from the chapter markers, or every marker when there are none). YouTube's rules (the first chapter at 0:00, at least 3 chapters, each at least 10 s) are reported as warnings, never fixed silently. Nothing is written to disk.
+Returns the sequence's markers as text: "csv" (Premiere's columns: Marker Name, Description, In, Out, Duration, Marker Type, plus Color) or "youtube" (chapter lines for a video description, from the chapter markers, or every marker when there are none). YouTube's rules (the first chapter at 0:00, at least 3 chapters, each at least 10 s) are reported as warnings, never fixed silently. "range": "inOut" keeps the markers that start between the sequence's In and Out marks, YouTube times counted from the In mark. "chaptersOnly": chapter markers only (no text and the warning "no chapter markers" when there are none). Nothing is written to disk.
 
 Capability `Read`. Tool name `sequence_exportMarkers`.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
+| `chaptersOnly` | boolean |  | Chapter markers only, never every marker. Default false. |
 | `format` | `csv` \| `youtube` |  | The text format. Default csv. |
+| `range` | `sequence` \| `inOut` |  | The whole sequence (default) or its In/Out marks, YouTube times counted from the In mark. |
 | `sequence` | integer (1..) |  | Sequence id; only needed when the project has several. |
 
 ```json
 {"command":"sequence.exportMarkers","params":{"format":"youtube"}}
+```
+
+<a id="sequence.extendNextToPlayhead-v1"></a>
+
+### `sequence.extendNextToPlayhead` v1: Extend Next Edit to Playhead
+
+Shift+W: the nearest edit point after the playhead on the targeted tracks rolls back to the playhead.
+
+Capability `EditSequence`. Tool name `sequence_extendNextToPlayhead`.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `sequence` | integer (1..) |  | Sequence id; only needed when the project has several. |
+| `time` | integer \| string | yes | The playhead. Timecode in the sequence's rate ("00:01:02:03") or ticks. |
+
+```json
+{"command":"sequence.extendNextToPlayhead","params":{"time":"00:00:07:12"}}
+```
+
+<a id="sequence.extendPreviousToPlayhead-v1"></a>
+
+### `sequence.extendPreviousToPlayhead` v1: Extend Previous Edit to Playhead
+
+Shift+Q: the nearest edit point before the playhead on the targeted tracks rolls to the playhead (the clips on both sides change length; a clip next to a gap grows into it). Nothing else moves.
+
+Capability `EditSequence`. Tool name `sequence_extendPreviousToPlayhead`.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `sequence` | integer (1..) |  | Sequence id; only needed when the project has several. |
+| `time` | integer \| string | yes | The playhead. Timecode in the sequence's rate ("00:01:02:03") or ticks. |
+
+```json
+{"command":"sequence.extendPreviousToPlayhead","params":{"time":"00:00:07:12"}}
 ```
 
 <a id="sequence.extract-v1"></a>
@@ -6992,6 +7363,25 @@ Capability `EditProject`. Tool name `sequence_matchFrame`.
 
 ```json
 {"command":"sequence.matchFrame","params":{"time":"00:00:12:05"}}
+```
+
+<a id="sequence.mediaUsage-v1"></a>
+
+### `sequence.mediaUsage` v1: Media Usage Report
+
+Lists every use of a source in the sequence, for archive clearances, music licensing and credits: one row per use with the media's name, path, tape name, scene / shot / take, whether it is AI-generated, the track, the record In/Out (the sequence's timecode, from its start time), the source In/Out (the media's timecode, at the clip's speed), the duration and the speed; then per source its uses, seconds on screen and seconds of the source shown. Clips of enabled video tracks and audible audio tracks, enabled clips only; a linked video and audio clip is one use. "flatten" (default true) reports through nested sequences (in the top sequence's record time) and multicam clips (their active angle); false lists a nested clip as one row. Time-remapped clips are reported as their whole range with the note "remapped". Titles, mattes and graphics are not listed. "text" is the CSV (or the JSON) to write; "report" the same as data. Nothing is written to disk.
+
+Capability `Read`. Tool name `sequence_mediaUsage`.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `flatten` | boolean |  | Report through nested and multicam clips. Default true. |
+| `format` | `csv` \| `json` |  | The text format. Default csv. |
+| `range` | `sequence` \| `inOut` |  | The whole sequence (default) or its In/Out marks. |
+| `sequence` | integer (1..) |  | Sequence id; only needed when the project has several. |
+
+```json
+{"command":"sequence.mediaUsage","params":{"format":"csv"}}
 ```
 
 <a id="sequence.nest-v1"></a>
@@ -7309,6 +7699,40 @@ Capability `Read`. Tool name `sequence_summary`.
 {"command":"sequence.summary","params":{"from":"00:00:00:00","to":"00:01:00:00"}}
 ```
 
+<a id="sequence.trimNextToPlayhead-v1"></a>
+
+### `sequence.trimNextToPlayhead` v1: Trim Next Edit to Playhead
+
+Ctrl+Alt+W: the clip under the playhead on each targeted track ends at the playhead (a regular trim of its tail; a gap is left after it).
+
+Capability `EditSequence`. Tool name `sequence_trimNextToPlayhead`.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `sequence` | integer (1..) |  | Sequence id; only needed when the project has several. |
+| `time` | integer \| string | yes | The playhead. Timecode in the sequence's rate ("00:01:02:03") or ticks. |
+
+```json
+{"command":"sequence.trimNextToPlayhead","params":{"time":"00:00:07:12"}}
+```
+
+<a id="sequence.trimPreviousToPlayhead-v1"></a>
+
+### `sequence.trimPreviousToPlayhead` v1: Trim Previous Edit to Playhead
+
+Ctrl+Alt+Q: the clip under the playhead on each targeted track starts at the playhead (a regular trim of its head; a gap is left before it).
+
+Capability `EditSequence`. Tool name `sequence_trimPreviousToPlayhead`.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `sequence` | integer (1..) |  | Sequence id; only needed when the project has several. |
+| `time` | integer \| string | yes | The playhead. Timecode in the sequence's rate ("00:01:02:03") or ticks. |
+
+```json
+{"command":"sequence.trimPreviousToPlayhead","params":{"time":"00:00:07:12"}}
+```
+
 <a id="sequence.unnest-v1"></a>
 
 ### `sequence.unnest` v1: Unnest
@@ -7436,12 +7860,17 @@ Capability `EditProject`. Tool name `source_exportFrame`. Reads or writes the fi
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `bin` | integer (1..) |  | With importIntoProject: the bin it goes into (default the root bin). |
+| `fit` | `fit` \| `fill` |  | With a size of another shape: "fit" keeps the whole frame with black bars (default), "fill" crops its centre. |
 | `format` | `dpx` \| `jpeg` \| `png` \| `tiff` \| `targa` \| `bmp` \| `gif` \| `openexr` |  | The image format (Premiere's Export Frame list). Default png. |
+| `height` | integer (16..16384) |  | Scale the frame to this height (with width). |
 | `importIntoProject` | boolean |  | Premiere's "Import into project": the still is added to the project as a media item. |
+| `maxBytes` | integer (10000..) |  | JPEG: the most the file may weigh, in bytes (YouTube thumbnails: 2000000); the quality goes down until it fits. |
 | `media` | integer \| string (1..) | yes | The media item the Source Monitor shows. A media id or exact name. |
 | `path` | string | yes | The file to write (UTF-8 path). The format's extension is added when it has another one; an existing file is replaced. |
+| `quality` | integer (1..100) |  | JPEG quality, 1-100 (default: the highest). |
 | `sequence` | integer (1..) |  | Sequence id; only needed when the project has several. |
 | `time` | integer \| string \| null | yes | The source frame to export (the media's time). Ticks, or a timecode in the media's frame rate ("00:00:02:10"). |
+| `width` | integer (16..16384) |  | Scale the frame to this width (with height; default the frame's own size). 1280 x 720 is a YouTube thumbnail. |
 
 ```json
 {"command":"source.exportFrame","params":{"format":"jpeg","media":3,"path":"C:/Stills/Frame.jpg","time":"00:00:04:12"}}
@@ -8496,6 +8925,26 @@ Capability `EditSequence`. Tool name `transcript_cleanup`.
 
 ```json
 {"command":"transcript.cleanup","params":{"fillers":true,"silences":0.8}}
+```
+
+<a id="transcript.correctFromScript-v1"></a>
+
+### `transcript.correctFromScript` v1: Correct from Script
+
+Corrects the sequence's transcript from the script it was read from: each line is found in what was said (fuzzy, Thai too; a line with a long aside is found in parts), and where the speech follows the line, the words the recogniser got wrong take the script's spelling, casing and punctuation (names, jargon, numbers written another way). Only substitutions that sound like the script: a word the speaker skipped is never added, a word they added never removed, a word they changed ("great" for "good") is kept and listed; lines that do not match closely enough are skipped and listed. The corrections are saved with the project like transcript.correctRange (merged with corrections made before), so captions follow on captions.updateFromTranscript. One undo step; dryRun lists the changes (at most 200) without making them.
+
+Capability `EditProject`. Tool name `transcript_correctFromScript`.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `fixCase` | boolean |  | Also give names and terms the script's capitals where only those differ ("kubernetes" -> "Kubernetes"; default true). |
+| `minMatch` | number (0.3..0.99) |  | How closely what was said must follow a line before its words are corrected, 0.3..0.99 (default 0.7). |
+| `sequence` | integer (1..) |  | The sequence whose transcript is corrected; only needed when the project has several. |
+| `split` | `auto` \| `lines` \| `sentences` |  | Lines of the script: "auto" (bullets and short lines whole, prose per sentence; default), every line, or every sentence. |
+| `text` | string | yes | The script as it should read (plain text or Markdown). |
+
+```json
+{"command":"transcript.correctFromScript","params":{"text":"Today we test Wabcut with Dr. Somchai on Kubernetes."}}
 ```
 
 <a id="transcript.correctRange-v1"></a>

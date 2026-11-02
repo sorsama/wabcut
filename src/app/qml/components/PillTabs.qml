@@ -6,7 +6,8 @@ import QtQuick.Controls.Basic
 //   * segmented (default): a sunken pill track with a sliding pill plate in the accent fill (black text on it);
 //   * `tabs: true`: text tabs for a panel's views, the current one on a sliding hover-coloured pill.
 // The indicator springs (no spring under reduce motion). `model` is a list of strings or of { label, icon }
-// objects. Segments share the width equally while every label fits that way; otherwise each is as wide as its label
+// objects; P1 #47: an object may also say `enabled: false` (greyed, skipped by the keys) and give a `tooltip` (shown on
+// hover, also while disabled, and read as the segment's accessible description). Segments share the width equally while every label fits that way; otherwise each is as wide as its label
 // plus an equal share of the room left, and when even that does not fit they shrink in proportion and the labels elide.
 // Keyboard: Tab focuses the whole control, Left/Right (and Home/End) change the current tab.
 Control {
@@ -63,12 +64,29 @@ Control {
     // Emitted only for user interaction (click or key), like Slider.moved.
     signal activated(int index)
 
+    /// Whether segment `index` can be chosen (a model object's `enabled: false` greys it).
+    function segmentEnabled(index: int): bool {
+        const item = root.model[index]
+        return typeof item !== "object" || item === null || item.enabled !== false
+    }
     function select(index) {
         const clamped = Math.max(0, Math.min(count - 1, index))
-        if (clamped === currentIndex)
+        if (clamped === currentIndex || !root.segmentEnabled(clamped))
             return
         currentIndex = clamped
         activated(clamped)
+    }
+    // The keys step over disabled segments: the first enabled one from `start` towards `delta`.
+    function selectFrom(start: int, delta: int) {
+        for (let i = start; i >= 0 && i < root.count; i += delta) {
+            if (root.segmentEnabled(i)) {
+                root.select(i)
+                return
+            }
+        }
+    }
+    function step(delta: int) {
+        root.selectFrom(root.currentIndex + delta, delta)
     }
 
     implicitHeight: compact ? Theme.controlHeightSmall : Theme.controlHeight
@@ -82,14 +100,14 @@ Control {
     // Arrow keys, Home and End move between tabs here: claim them so the keymap does not move the playhead.
     Keys.onShortcutOverride: event => event.accepted = event.key === Qt.Key_Left || event.key === Qt.Key_Right
                                                        || event.key === Qt.Key_Home || event.key === Qt.Key_End
-    Keys.onLeftPressed: root.select(root.currentIndex - 1)
-    Keys.onRightPressed: root.select(root.currentIndex + 1)
+    Keys.onLeftPressed: root.step(-1)
+    Keys.onRightPressed: root.step(1)
     Keys.onPressed: event => {
         if (event.key === Qt.Key_Home) {
-            root.select(0)
+            root.selectFrom(0, 1)
             event.accepted = true
         } else if (event.key === Qt.Key_End) {
-            root.select(root.count - 1)
+            root.selectFrom(root.count - 1, -1)
             event.accepted = true
         }
     }
@@ -141,7 +159,9 @@ Control {
                     readonly property bool current: index === root.currentIndex
                     readonly property string label: typeof modelData === "string" ? modelData : (modelData.label ?? "")
                     readonly property string iconName: typeof modelData === "string" ? "" : (modelData.icon ?? "")
+                    readonly property string tip: typeof modelData === "string" ? "" : (modelData.tooltip ?? "")
                     readonly property color foreground: current ? (root.tabs ? Theme.textPrimary : Theme.accentOnFill)
+                                                      : !enabled ? Theme.textDisabled
                                                       : hovered ? Theme.textPrimary : Theme.textSecondary
                     readonly property int labelWeight: Theme.weightLabel
 
@@ -149,10 +169,12 @@ Control {
                     height: root.availableHeight
                     focusPolicy: Qt.NoFocus
                     hoverEnabled: true
+                    enabled: root.segmentEnabled(index)
                     onClicked: root.select(index)
 
                     Accessible.role: Accessible.PageTab
                     Accessible.name: label
+                    Accessible.description: tip
                     Accessible.selected: current
 
                     contentItem: Item {
@@ -193,6 +215,18 @@ Control {
                     HoverHandler {
                         enabled: tab.enabled
                         cursorShape: Qt.PointingHandCursor
+                    }
+                    // Sees the pointer on a disabled segment too, for its tooltip ("Too large for this screen").
+                    HoverHandler {
+                        id: tabHover
+                    }
+                    Loader {
+                        active: tab.tip !== "" && tabHover.hovered
+                        sourceComponent: Tooltip {
+                            parent: tab
+                            visible: true
+                            text: tab.tip
+                        }
                     }
                 }
             }

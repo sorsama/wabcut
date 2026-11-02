@@ -80,6 +80,8 @@ target_link_libraries(wabcut_ai_edit PUBLIC wabcut_ai_segment)
 target_link_libraries(wabcut_ai_edit PUBLIC wabcut_ai_highlights)
 # P.2: effect.analyzeStabilization / effect.analyzeRollingShutter (src/ai/stabilize).
 target_link_libraries(wabcut_ai_edit PUBLIC wabcut_ai_stabilize)
+# P1 #62: autopilot.broll / autopilot.publishKit / autopilot.pacing (src/ai/autopilot).
+target_link_libraries(wabcut_ai_edit PUBLIC wabcut_ai_autopilot)
 
 # wabcut_ai_edit_media — the media-backed services: transcripts from the analysis cache by source fingerprint, the
 # audio-energy probes (AudioDecoder RMS; AudioEnergyService) and transcript.transcribe's transcriber

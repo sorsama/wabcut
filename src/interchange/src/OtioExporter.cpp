@@ -4,9 +4,14 @@
 //   Timeline.1 { metadata.wabcut, name, global_start_time (0 at the sequence rate),
 //                tracks: Stack.1 { markers: Marker.2 (the sequence markers), children: Track.1 V1..Vn, then A1..An } }
 //   Track.1    { kind "Video" | "Audio", enabled, children: Clip.2 | Gap.1 | Transition.1 | Stack.1 }
-//   Clip.2     { source_range, effects: LinearTimeWarp.1 | FreezeFrame.1, enabled,
+//   Clip.2     { source_range, effects: LinearTimeWarp.1 | FreezeFrame.1 | Effect.1 (0.6, its effect stack), enabled,
 //                media_references.DEFAULT_MEDIA: ExternalReference.1 (a file:/// URL) | MissingReference.1 (no path)
-//                                                | GeneratorReference.1 (a title, generator_kind "Text") }
+//                                                | GeneratorReference.1 (a title, generator_kind "Text"; 0.6: a
+//                                                  synthetic item, generator_kind "SolidColor", "SMPTEBars",
+//                                                  "CountingLeader" or "AdjustmentLayer") }
+//   Effect.1   (0.6, card #67) { name, effect_name (the name editors know: "Gaussian Blur", "Levels", ...), enabled,
+//                metadata.wabcut.effect: the instance exactly (as the clip section's effects below) }; a foreign
+//                effect Wabcut kept as a placeholder is written back as it came. Tracks' effect stacks likewise.
 //   Stack.1    a nested or multicam clip: source_range in the nested sequence's time, its time effects, its tracks
 //   Transition.1 { transition_type "SMPTE_Dissolve" (dissolves, crossfades) | "Custom_Transition", in_offset (before
 //                the cut), out_offset (after it) }, between the two items that meet at its cut
@@ -32,23 +37,27 @@
 //   Clip.2, a nested clip's Stack   "clip": {name, start, duration, sourceIn, stream: {kind, index}, enabled,
 //                                   linkGroup?, speed?: {num, den, reversed}, remap?: {curveIn, keys}, properties?:
 //                                   {stable parameter key: parameter} (the non-default ones), channels?: {format,
-//                                   channels: [{sources, muted?, gainDb?}]}, effects?: [{effect, version, enabled,
-//                                   params: {key: parameter}, mask?, data?: {key: {points: [[x, y]]} | {text}}, masks?:
-//                                   [{id, name, shape, mode, inverted, enabled, params, path?}]}], title?: {text,
+//                                   channels: [{sources, muted?, gainDb?}]}, effects? (before 0.6; now Effect.1
+//                                   objects, "effect": {effect, version, enabled, params: {key: parameter}, mask?,
+//                                   data?: {key: {points: [[x, y]]} | {text}}, masks?: [{id, name, shape, mode,
+//                                   inverted, enabled, params, path?}]}), title?: {text,
 //                                   fontFamily, fontStyle, style: {key: number}}, sequence? (the key of the sequence
 //                                   it plays), angles? (a multicam clip's active angles)}
 //   Transition.1                    "transition": {kind, name, cut, before, after}
 //   Marker.2                        "marker": {name, comment, start, duration, colorIndex, type?, url?, target?}
 //   External/MissingReference.1     "media": {key, name, hasVideo, stillImage, width, height, frameRate?, sampleRate,
 //                                   audioChannels: [channels per stream], duration?, startTimecode?}
+//   GeneratorReference.1 (0.6)      "generator": {kind, name, params: {key: number}}
 // Names, marker comments and clip enabled flags are OTIO fields too, which the importer reads (so an edit made in
 // another editor wins); a track's OTIO enabled flag is its output for other editors (off when muted).
 
 #include "Exporters.h"
+#include "InterchangeEffects.h"
 #include "TimeMath.h"
 
 #include <wabcut/interchange/FileUrl.h>
 #include <wabcut/model/Nesting.h>
+#include <wabcut/model/Synthetic.h>
 #include <wabcut/model/TimeRemap.h>
 
 #include <algorithm>
@@ -299,9 +308,8 @@ Json maskJson(const Mask& m) {
 
 /// A clip's effect stack. AI object masks are left out (their mattes live in this project's analysis cache): `notes`
 /// says which.
-Json effectsJson(const std::vector<EffectInstance>& effects, std::vector<std::string>& notes) {
-    Json list = Json::array();
-    for (const EffectInstance& e : effects) {
+Json effectJson(const EffectInstance& e, std::vector<std::string>& notes) {
+    {
         Json params = Json::object();
         for (const EffectParam& p : e.params) {
             params[p.key] = parameterJson(p.value);
@@ -343,9 +351,102 @@ Json effectsJson(const std::vector<EffectInstance>& effects, std::vector<std::st
         if (!masks.empty()) {
             j["masks"] = std::move(masks);
         }
-        list.push_back(std::move(j));
+        return j;
     }
-    return list;
+}
+
+/// 0.6 (card #67): an effect as OTIO's Effect object other tools read by name; Wabcut's instance in its metadata. A
+/// placeholder of an OTIO effect is written back as it came.
+Json effectObject(const EffectInstance& e, std::vector<std::string>& notes) {
+    Json j;
+    if (e.effect.starts_with(kOtioPlaceholder)) {
+        const std::string schema = dataText(e, "source.schema");
+        j["OTIO_SCHEMA"] = schema.empty() ? std::string("Effect.1") : schema;
+        Json meta = Json::object();
+        if (const std::string text = dataText(e, kSourceMetadata); !text.empty()) {
+            meta = Json::parse(text, nullptr, false);
+            if (!meta.is_object()) {
+                meta = Json::object();
+            }
+        }
+        j["metadata"] = std::move(meta);
+        j["name"] = dataText(e, kSourceName);
+        j["effect_name"] = e.effect.substr(kOtioPlaceholder.size());
+        j["enabled"] = dataText(e, kSourceEnabled) != "0";
+        return j;
+    }
+    const ForeignEffect* known = foreignEffectFor(e.effect);
+    std::string effectName = dataText(e, kSourceName);
+    if (effectName.empty()) {
+        effectName = known ? std::string(known->name) : effectLabel(e);
+    }
+    Json meta = Json::object();
+    if (const std::string text = dataText(e, kSourceMetadata); !text.empty()) {
+        meta = Json::parse(text, nullptr, false);
+        if (!meta.is_object()) {
+            meta = Json::object();
+        }
+    }
+    Json data;
+    data["version"] = kMetadataVersion;
+    data["effect"] = effectJson(e, notes);
+    meta["wabcut"] = std::move(data);
+    j["OTIO_SCHEMA"] = "Effect.1";
+    j["metadata"] = std::move(meta);
+    j["name"] = effectLabel(e);
+    j["effect_name"] = effectName;
+    j["enabled"] = isForeignPlaceholder(e) ? dataText(e, kSourceEnabled) != "0" : e.enabled;
+    return j;
+}
+
+/// 0.6 (card #69): the generator_kind and parameters other editors read for a synthetic item.
+Json generatorReferenceJson(const IrMedia& m, Rate rate) {
+    const IrGenerator& g = *m.generator;
+    Json params = Json::object();
+    std::string kind;
+    const auto color = [](double r, double gr, double b, double a) {
+        return Json::array({number(r), number(gr), number(b), number(a)});
+    };
+    if (g.kind == kColorMatteGenerator) {
+        kind = "SolidColor";
+        params["color"] = color(generatorParam(g, "color.r"), generatorParam(g, "color.g"), generatorParam(g, "color.b"), 1.0);
+    } else if (g.kind == kBlackVideoGenerator) {
+        kind = "SolidColor";
+        params["color"] = color(0.0, 0.0, 0.0, 1.0);
+    } else if (g.kind == kTransparentVideoGenerator) {
+        kind = "SolidColor";
+        params["color"] = color(0.0, 0.0, 0.0, 0.0);
+    } else if (g.kind == kBarsAndToneGenerator) {
+        kind = "SMPTEBars";
+        params["pattern"] = generatorParam(g, "pattern") >= 0.5 ? "SD" : "HD";
+        params["tone_frequency"] = number(generatorParam(g, "tone.frequency"));
+        params["tone_level_db"] = number(generatorParam(g, "tone.level"));
+    } else if (g.kind == kCountingLeaderGenerator) {
+        kind = "CountingLeader";
+    } else {
+        kind = "AdjustmentLayer";
+    }
+    Json exact = Json::object();
+    for (const EffectParam& p : g.params) {
+        exact[p.key] = number(p.value.isConstant() ? p.value.constant() : 0.0);
+    }
+    Json body;
+    body["kind"] = g.kind;
+    body["name"] = m.name;
+    body["params"] = std::move(exact);
+    Json j;
+    j["OTIO_SCHEMA"] = "GeneratorReference.1";
+    j["metadata"] = wabcutMetadata("generator", std::move(body));
+    j["name"] = m.name;
+    if (m.duration) {
+        j["available_range"] = timeRange(Ticks{}, *m.duration, rate);
+    } else {
+        j["available_range"] = nullptr;
+    }
+    j["available_image_bounds"] = nullptr;
+    j["generator_kind"] = kind;
+    j["parameters"] = std::move(params);
+    return j;
 }
 
 Json titleJson(const IrTitle& t) {
@@ -623,7 +724,7 @@ private:
         return j;
     }
 
-    Json clipMetadata(const IrClip& c, std::vector<std::string>& notes) const {
+    Json clipMetadata(const IrClip& c, [[maybe_unused]] std::vector<std::string>& notes) const {
         Json j;
         j["name"] = c.name;
         j["start"] = c.start.value;
@@ -662,9 +763,6 @@ private:
         }
         if (c.channels) {
             j["channels"] = channelsJson(*c.channels);
-        }
-        if (!c.effects.empty()) {
-            j["effects"] = effectsJson(c.effects, notes);
         }
         if (c.title) {
             j["title"] = titleJson(*c.title);
@@ -818,8 +916,22 @@ private:
         j["metadata"] = wabcutMetadata("track", trackMetadata(track));
         j["name"] = track.name;
         j["source_range"] = nullptr;
-        j["effects"] = Json::array();
+        std::vector<std::string> effectNotes;
+        j["effects"] = withEffects(Json::array(), track.effects, effectNotes); // 0.6 (card #67)
         j["markers"] = Json::array();
+        if (defining && !track.effects.empty()) {
+            std::string list;
+            for (const EffectInstance& e : track.effects) {
+                list += (list.empty() ? "" : ", ") + effectLabel(e);
+            }
+            std::string reason = std::string(kind == TrackKind::Video ? "V" : "A") + std::to_string(index + 1) +
+                                 " track effects " + list + " (other editors see them by name; Wabcut reads them exactly)";
+            for (const std::string& n : effectNotes) {
+                reason += "; " + n;
+            }
+            m_ctx.add(effectNotes.empty() ? ReportOutcome::Carried : ReportOutcome::Approximated, ReportCategory::Effect,
+                      std::move(reason), track.location, s.name);
+        }
         // Other editors have no mute: a muted track is written with its output off (Wabcut reads both flags).
         j["enabled"] = enabled.value_or(track.enabled && !muted);
         j["children"] = writeItems(seqIndex, track, kind, index, defining, depth);
@@ -952,13 +1064,19 @@ private:
         }
         std::vector<std::string> notes;
         Json references;
-        references["DEFAULT_MEDIA"] = c.title ? titleReference(*c.title) : writeMediaReference(c.media, seqIndex);
+        const bool generated = !c.title && m_doc.media[c.media].generator.has_value();
+        references["DEFAULT_MEDIA"] = c.title    ? titleReference(*c.title)
+                                      : generated ? writeGeneratorReference(c.media, seqIndex)
+                                                  : writeMediaReference(c.media, seqIndex);
         Json j;
         j["OTIO_SCHEMA"] = "Clip.2";
         j["metadata"] = wabcutMetadata("clip", clipMetadata(c, notes));
+        if (!c.alternates.empty()) {
+            j["metadata"]["wabcut"]["audition"] = auditionMetadata(seqIndex, c, depth, defining);
+        }
         j["name"] = c.name;
         j["source_range"] = timeRange(origin + timing.start, c.duration, m_rates[seqIndex]);
-        j["effects"] = timing.effects;
+        j["effects"] = withEffects(timing.effects, c.effects, notes);
         j["markers"] = Json::array();
         j["enabled"] = c.enabled;
         j["media_references"] = std::move(references);
@@ -967,6 +1085,49 @@ private:
             reportClip(s, c, timing, notes);
         }
         return j;
+    }
+
+    /// 0.6 (card #74): an audition's other takes as OTIO items (each a Clip or Stack with its own Wabcut data) and the
+    /// active take's place in take order. Other editors see the active take, the clip itself.
+    Json auditionMetadata(std::size_t seqIndex, const IrClip& c, int depth, bool defining) {
+        Json takes = Json::array();
+        for (const IrClip& take : c.alternates) {
+            takes.push_back(writeClip(seqIndex, take, false, depth));
+        }
+        if (defining) {
+            m_ctx.add(ReportOutcome::Carried, ReportCategory::Clip,
+                      "audition '" + c.name + "' with " + std::to_string(c.alternates.size() + 1) +
+                          " takes (in Wabcut's metadata; other editors see the active take)",
+                      c.location, m_doc.sequences[seqIndex].name);
+        }
+        Json j;
+        j["active"] = c.activeTake;
+        j["takes"] = std::move(takes);
+        return j;
+    }
+
+    /// Time effects, then the effect stack as Effect objects.
+    static Json withEffects(Json timeEffects, const std::vector<EffectInstance>& effects, std::vector<std::string>& notes) {
+        for (const EffectInstance& e : effects) {
+            timeEffects.push_back(effectObject(e, notes));
+        }
+        return timeEffects;
+    }
+
+    Json writeGeneratorReference(std::size_t index, std::size_t seqIndex) {
+        const IrMedia& m = m_doc.media[index];
+        if (m_mediaReported.insert(index).second) {
+            const IrGenerator& g = *m.generator;
+            const bool solid = g.kind == kColorMatteGenerator || g.kind == kBlackVideoGenerator ||
+                               g.kind == kTransparentVideoGenerator;
+            m_ctx.add(ReportOutcome::Carried, ReportCategory::Media,
+                      "generated '" + m.name + "' (" + std::string(generatorDisplayName(g.kind)) +
+                          (solid ? "; other editors see a SolidColor generator"
+                                 : "; other editors see a generator they may not draw") +
+                          ", Wabcut reads its settings)",
+                      m.location, {});
+        }
+        return generatorReferenceJson(m, m.frameRate ? otioRate(*m.frameRate) : m_rates[seqIndex]);
     }
 
     Json writeMediaReference(std::size_t index, std::size_t seqIndex) {
@@ -1027,6 +1188,9 @@ private:
         if (complete) {
             data["sequence"] = sequenceMetadata(c.sequence);
         }
+        if (!c.alternates.empty()) {
+            data["audition"] = auditionMetadata(seqIndex, c, depth, defining);
+        }
         Json meta;
         meta["wabcut"] = std::move(data);
         Json j;
@@ -1034,7 +1198,7 @@ private:
         j["metadata"] = std::move(meta);
         j["name"] = c.name;
         j["source_range"] = timeRange(timing.start, c.duration, m_rates[seqIndex]);
-        j["effects"] = timing.effects;
+        j["effects"] = withEffects(timing.effects, c.effects, notes);
         j["markers"] = elided ? Json::array() : writeMarkers(c.sequence, complete);
         j["enabled"] = c.enabled;
         j["children"] = elided ? Json::array() : writeTracks(c.sequence, &c, complete, depth + 1);
@@ -1162,9 +1326,9 @@ private:
         if (!c.effects.empty()) {
             std::string list;
             for (const EffectInstance& e : c.effects) {
-                list += (list.empty() ? "" : ", ") + e.effect;
+                list += (list.empty() ? "" : ", ") + effectLabel(e);
             }
-            std::string reason = who + " effects " + list + " (other editors do not see them; Wabcut does)";
+            std::string reason = who + " effects " + list + " (other editors see them by name; Wabcut reads them exactly)";
             for (const std::string& n : notes) {
                 reason += "; " + n;
             }

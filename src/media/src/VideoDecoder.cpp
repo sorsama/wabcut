@@ -678,6 +678,19 @@ struct VideoDecoder::Impl {
         for (unsigned i = 0; i < fmt->nb_streams; ++i) {
             fmt->streams[i]->discard = static_cast<int>(i) == streamIndex ? AVDISCARD_DEFAULT : AVDISCARD_ALL;
         }
+        // F2P (0.6): Matroska's Cues before the first decode, so shouldDecodeForward() sees every keyframe.
+        if (!loadSeekIndex(fmt.get(), stream)) {
+            log(LogLevel::Warning, "{}: could not read the seek index; seeks search the file", path);
+            auto again = openInput(path);
+            if (!again) {
+                return std::unexpected(again.error());
+            }
+            fmt = std::move(*again);
+            stream = fmt->streams[streamIndex];
+            for (unsigned i = 0; i < fmt->nb_streams; ++i) {
+                fmt->streams[i]->discard = static_cast<int>(i) == streamIndex ? AVDISCARD_DEFAULT : AVDISCARD_ALL;
+            }
+        }
         resetDecodeState();
         return {};
     }
@@ -1266,7 +1279,16 @@ struct VideoDecoder::Impl {
         }
         const auto absolute = checkedAdd(t, origin);
         const auto stamp = absolute ? toStreamTime(*absolute, stream->time_base) : std::nullopt;
-        if (stamp && avformat_index_get_entries_count(stream) > 0 && loop.lastPacketDts() != AV_NOPTS_VALUE) {
+        const int entries = avformat_index_get_entries_count(stream);
+        if (stamp && entries > 0 && loop.lastPacketDts() != AV_NOPTS_VALUE) {
+            // F2P (0.6): an index that ends where the decoder has read to cannot say whether a keyframe lies ahead
+            // (a Matroska file without Cues, an index built while reading). Beyond a second, seek: the demuxer finds
+            // the keyframe before the target by reading packets, which costs far less than decoding every frame up
+            // to it, and where the index was complete (the last GOP) the seek decodes at most that GOP again.
+            const AVIndexEntry* last = avformat_index_get_entry(stream, entries - 1);
+            if (last != nullptr && last->timestamp <= loop.lastPacketDts()) {
+                return distance < Ticks::fromSeconds(1);
+            }
             // Seek only if a keyframe lies between what the decoder has already read and the target.
             const AVIndexEntry* key =
                 avformat_index_get_entry_from_timestamp(stream, *stamp, AVSEEK_FLAG_BACKWARD);

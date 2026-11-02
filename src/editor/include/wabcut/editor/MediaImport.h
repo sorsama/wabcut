@@ -22,6 +22,7 @@
 #include <cstdint>
 #include <expected>
 #include <filesystem>
+#include <functional>
 #include <optional>
 #include <span>
 #include <string>
@@ -202,6 +203,12 @@ struct TimelineImportOptions {
     /// Sequences removed in the same undo step as the import (M5f: the empty first sequence of a project started
     /// for the import, so the new project holds just the imported sequences). Unknown ids are ignored.
     std::vector<SequenceId> dropSequences;
+    /// 0.6 (fix round 1, AAF / OMF): where the embedded media is written (interchange::ImportOptions); empty: the
+    /// importer's default ("<file name> Media" beside the project, else beside the file).
+    std::filesystem::path embeddedMediaFolder;
+    /// 0.6 (fix round 1): progress 0..1 over the whole import; returning false cancels it (ErrorCode::Cancelled).
+    /// Called on the importing thread.
+    std::function<bool(double)> progress;
 };
 
 /// Imports a timeline file into the session's project (a new bin with its media and sequences) as one undo
@@ -210,6 +217,22 @@ struct TimelineImportOptions {
 std::expected<interchange::ImportResult, Error> importTimelineFile(EditSession& session,
                                                                    const std::filesystem::path& file,
                                                                    const TimelineImportOptions& options = {});
+
+/// 0.6 (fix round 1): importTimelineFile's work without the commit, on any thread: imports `file` into `target` (the
+/// session's stateForSave()) and returns the result whose `project` is the state to commit. The app runs it on a
+/// worker for a large AAF / OMF; commitTimelineImport() then makes it the undo step on the GUI thread.
+std::expected<interchange::ImportResult, Error> prepareTimelineImport(ProjectState target,
+                                                                      const std::filesystem::path& file,
+                                                                      const TimelineImportOptions& options = {});
+/// Commits prepareTimelineImport()'s result as the undo step "Import <file name>".
+std::expected<void, Error> commitTimelineImport(EditSession& session, const std::filesystem::path& file,
+                                                const interchange::ImportResult& prepared);
+
+/// 0.6 (fix round 1, ARGON-08): the folder the audio embedded in an AAF / OMF is written to, "<file name> Media"
+/// inside the first of these that can be written to: the project's folder (a saved project), the imported file's
+/// folder, `fallback` (the app passes Documents/Wabcut/Imported Media; made when needed).
+std::filesystem::path embeddedMediaFolderFor(const std::filesystem::path& file, const std::filesystem::path& projectFile,
+                                             const std::filesystem::path& fallback);
 
 /// Facts about a candidate media file for interchange relinking (size, duration), from media::probe.
 interchange::MediaInspector probeInspector();

@@ -139,6 +139,13 @@ public:
         std::lock_guard lock(m_lightMutex);
         return m_light;
     }
+    std::optional<SdrConformReport> conformReport() const override {
+        if (!m_format.sdrConform) {
+            return std::nullopt;
+        }
+        std::lock_guard lock(m_lightMutex);
+        return m_conform;
+    }
 
     std::expected<void, Error> request(std::int64_t frameIndex) override {
         std::lock_guard lock(m_mutex);
@@ -261,6 +268,11 @@ private:
         composite->color.exportTarget = m_format.dynamicRange == DynamicRange::Pq    ? color::OutputTarget::Pq
                                         : m_format.dynamicRange == DynamicRange::Hlg ? color::OutputTarget::Hlg
                                                                                      : color::OutputTarget::Sdr;
+        // 0.6 (#72): the SDR output colour space (Rec.2020, P3-D65), and SDR Conform as this export resolved it (the
+        // export's own settings or the sequence's; off when it does not apply), reporting what it maps.
+        composite->color.exportTarget = color::outputTargetOf(m_format.outputSpace, composite->color.exportTarget);
+        composite->color.management.sdrConform = m_format.sdrConform.value_or(SdrConform{});
+        composite->color.conformStats = m_format.sdrConform.has_value();
         // Decoded frames per evaluated layer; generated layers (titles) need none. The composite layers are then
         // built exactly as the preview Scheduler builds them (effects, transitions, titles): preview == export.
         std::vector<media::VideoFrame> frames(specs.size());
@@ -412,6 +424,20 @@ private:
         if (image->tenBit) {
             return tenBitFrame(*image, composite, index);
         }
+        if (m_format.sdrConform && !m_format.alpha) {
+            // 0.6 (#72): SDR Conform's flags in the alpha (render::conformFlagsOf), counted, then the alpha made opaque.
+            std::uint64_t tone = 0;
+            std::uint64_t gamut = 0;
+            const std::size_t count = static_cast<std::size_t>(image->width) * static_cast<std::size_t>(image->height);
+            for (std::size_t i = 0; i < count; ++i) {
+                std::uint8_t& a = image->rgba[i * 4 + 3];
+                const int flags = render::conformFlagsOf(a / 255.0);
+                tone += (flags & 1) ? 1 : 0;
+                gamut += (flags & 2) ? 1 : 0;
+                a = 255;
+            }
+            countConform(tone, gamut, count);
+        }
         auto pixels = std::make_shared<std::vector<std::uint8_t>>(std::move(image->rgba));
         media::FrameHandle f;
         f.pts = composite->targetTime;
@@ -438,11 +464,25 @@ private:
                                                          std::int64_t index) {
         const bool hdr = m_format.dynamicRange == DynamicRange::Pq || m_format.dynamicRange == DynamicRange::Hlg;
         const bool pq = m_format.dynamicRange == DynamicRange::Pq;
+        const bool bt2020 = hdr || m_format.outputSpace == OutputColorSpace::Rec2020; // 0.6: Rec.2020 SDR too
+        if (m_format.sdrConform) {
+            // 0.6 (#72): SDR Conform's flags in the 2-bit alpha (render::conformFlagsOf).
+            std::uint64_t tone = 0;
+            std::uint64_t gamut = 0;
+            const std::size_t count = static_cast<std::size_t>(image.width) * static_cast<std::size_t>(image.height);
+            const auto* words = reinterpret_cast<const std::uint32_t*>(image.rgba.data());
+            for (std::size_t i = 0; i < count; ++i) {
+                const int flags = render::conformFlagsOf((words[i] >> 30) / 3.0);
+                tone += (flags & 1) ? 1 : 0;
+                gamut += (flags & 2) ? 1 : 0;
+            }
+            countConform(tone, gamut, count);
+        }
         const auto plane = static_cast<std::size_t>(image.width) * static_cast<std::size_t>(image.height);
         auto pixels = std::make_shared<std::vector<std::uint16_t>>(plane * 3);
         double maxNits = 0.0;
         double averageNits = 0.0;
-        rgb10ToYuv444(reinterpret_cast<const std::uint32_t*>(image.rgba.data()), image.width, image.height, hdr,
+        rgb10ToYuv444(reinterpret_cast<const std::uint32_t*>(image.rgba.data()), image.width, image.height, bt2020,
                       pixels->data(), pixels->data() + plane, pixels->data() + 2 * plane, pq ? &maxNits : nullptr,
                       pq ? &averageNits : nullptr);
         if (pq) {
@@ -459,8 +499,8 @@ private:
         f.width = image.width;
         f.height = image.height;
         f.format = media::PixelFormat::YUV444P10;
-        f.color = ColorInfo{hdr ? ColorMatrix::BT2020NonConstant : ColorMatrix::BT709, ColorRange::Limited,
-                            hdr ? ColorPrimaries::BT2020 : ColorPrimaries::BT709,
+        f.color = ColorInfo{bt2020 ? ColorMatrix::BT2020NonConstant : ColorMatrix::BT709, ColorRange::Limited,
+                            bt2020 ? ColorPrimaries::BT2020 : ColorPrimaries::BT709,
                             pq ? TransferFunction::PQ : hdr ? TransferFunction::HLG : TransferFunction::BT709,
                             ChromaLocation::Left};
         media::CpuPlanes cpu;
@@ -491,6 +531,19 @@ private:
     bool m_stopped = false;
     mutable std::mutex m_lightMutex; // I.9: the light levels, measured by the render threads
     ContentLightLevels m_light;
+    SdrConformReport m_conform; // 0.6 (#72), under m_lightMutex
+
+    void countConform(std::uint64_t tone, std::uint64_t gamut, std::size_t pixels) {
+        std::lock_guard lock(m_lightMutex);
+        ++m_conform.frames;
+        m_conform.pixels += pixels;
+        m_conform.toneMapped += tone;
+        m_conform.gamutMapped += gamut;
+        if (pixels > 0) {
+            m_conform.worstToneMappedFrame = std::max(m_conform.worstToneMappedFrame, static_cast<double>(tone) / static_cast<double>(pixels));
+            m_conform.worstGamutMappedFrame = std::max(m_conform.worstGamutMappedFrame, static_cast<double>(gamut) / static_cast<double>(pixels));
+        }
+    }
     std::vector<std::jthread> m_renderThreads; // last: joined before the state above is destroyed
     std::jthread m_decodeThread;
 };

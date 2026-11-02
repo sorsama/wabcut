@@ -9,6 +9,16 @@ import QtQuick.Controls.Basic
 // reduce motion). The AI row opens a placeholder until the AI platform plugs its provider in.
 Popup {
     id: root
+    // P1 #61: the popup's own item (UI Automation's dialog window, which NVDA announces when the focus enters) takes
+    // the name its content has; Popup itself takes no Accessible.
+    readonly property string accessibleTitle: root.contentItem ? root.contentItem.Accessible.name : ""
+    function nameDialogElement() {
+        const shell = root.contentItem ? root.contentItem.parent : null
+        if (shell)
+            shell.Accessible.name = root.accessibleTitle
+    }
+    onAccessibleTitleChanged: root.nameDialogElement()
+    Component.onCompleted: root.nameDialogElement()
 
     objectName: "commandPalette"
 
@@ -102,7 +112,7 @@ Popup {
     transformOrigin: Item.Top
 
     Overlay.modal: Rectangle {
-        color: Theme.scrim
+        color: Theme.scrimModal
         Behavior on opacity { NumberAnimation { duration: Theme.durFast } }
     }
 
@@ -249,7 +259,7 @@ Popup {
                         size: Theme.iconSm
                         name: rowItem.modelData.section === "edits" ? "pencil" : "chevron-down"
                         rotation: rowItem.modelData.section === "edits" ? 0 : -90
-                        color: Theme.textTertiary
+                        color: rowItem.modelData.enabled ? Theme.textTertiary : Theme.textDisabled
                     }
 
                     Column {
@@ -258,13 +268,15 @@ Popup {
                         anchors.right: shortcutChip.left
                         anchors.rightMargin: Theme.space(2)
                         anchors.verticalCenter: parent.verticalCenter
-                        opacity: rowItem.modelData.enabled ? 1 : Theme.disabledOpacity
 
                         Row {
                             spacing: Theme.space(2)
                             Text {
+                                objectName: "paletteRowTitle_" + rowItem.index
                                 text: rowItem.modelData.title
-                                color: Theme.textPrimary
+                                // A row that cannot run keeps its title readable (QA: 40 % opacity left it at 2.7:1
+                                // on the selected row in the light theme); secondary text says "this one is off".
+                                color: rowItem.modelData.enabled ? Theme.textPrimary : Theme.textSecondary
                                 font.family: Theme.fontSans
                                 font.pixelSize: Theme.textMd
                                 font.weight: Font.DemiBold
@@ -277,11 +289,13 @@ Popup {
                             }
                         }
                         Text {
+                            objectName: "paletteRowReason_" + rowItem.index
                             visible: text !== ""
                             width: parent.width
                             text: rowItem.modelData.enabled ? rowItem.modelData.detail : rowItem.modelData.reason
                             elide: Text.ElideRight
-                            color: rowItem.modelData.enabled ? Theme.textTertiary : Theme.warning
+                            // The reason is what the user needs to read: full strength, in the warning's text shade.
+                            color: rowItem.modelData.enabled ? Theme.textTertiary : Theme.warningText
                             font.family: Theme.fontSans
                             font.pixelSize: Theme.textSm
                         }

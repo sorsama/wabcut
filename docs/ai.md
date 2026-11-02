@@ -1855,6 +1855,12 @@ Describe.h      describeCall / describeChanges: tool calls and ChangeSets as hum
   - Edits return `{ok, changed: "2 clips removed, 1 changed on V1, A1; length …", sequenceLength, createdIds, warnings, data}`.
   - Failures return `{error: {code, message, details}}` with `isError`, so the model can fix its call. The recorded fixtures show
     each adapter's wire form.
+  - Refusals (0.6): a failed call (unknown tool, arguments that do not match the schema, a command the assistant may
+    not use, a command error) also carries a `next` line telling the model to fix the arguments, use another tool or
+    answer the user. The same call again at the same staged state (same tool and arguments; for a tool the assistant
+    may not use, any arguments) is not run: it gets "Refused again ... change course". A third identical call ends
+    the run with status `Stuck` and says what was refused, instead of looping to the step limit. An edit in between
+    resets the count, because the same call may work on the changed project.
 - **Verification.**
   - When the model stops calling tools, `verify()` checks the staged result against the base. The check ids are stable:
     - `invariants`: validate().
@@ -2061,6 +2067,14 @@ bar. Timeline snapping uses grid beats as targets (`SnapOptions::beats`, up to a
 
 The analysis commands get their analyses through `AnalysisServices`, which hosts combine with the transcript services in
 a `command::ServiceBundle`. `editingCommands()` serves them.
+
+Since 0.6 the app has the menus for them (`BeatBridge`, QML `Beats`): Sequence > Beat Grid has Detect Beats from
+Selected Clip… (an optional BPM range), Snap Selected Clips to Beats, Cut Selected Clips to Beats… (1, 2, 4 or 8 beats
+per clip) and Clear Beat Grid; Clip > Detect Beats… and the clip right-click menu open the same detection on a clip
+with sound. The detection runs on a command job with the analysis services, off the GUI thread and with progress, and
+its one undo step reports the tempo and the beats on the toast. Timeline Display > Beat grid shows the grid as thin
+ticks on the ruler (downbeats taller). The keymap ids are `sequence.detectBeats`, `edit.snapToBeats`,
+`sequence.cutToBeats` and `sequence.clearBeatGrid`, with no default keys (Premiere has no beat detection).
 
 ```
 wabcut-cli analyze <media> [--shots] [--beats] [--json] [--detector combined|content|adaptive|threshold]
@@ -2386,7 +2400,8 @@ Three features for people who record themselves: a **rough cut from a script**, 
 
 ### App
 - **Rough cut sheet** (`qml/panels/creator/RoughCutSheet.qml`, Sequence menu): paste or open a script, choose the scope and the take preference, clean-up, B-roll, and the cloud interpretation (only offered with a set-up model and never for a no-cloud project). **Make the cut** previews; the report lists every line with its chosen take, confidence and alternates; clicking an alternate swaps it (a staged edit); **Create sequence** applies and opens it.
-- **Takes panel** (`qml/panels/creator/TakesPanel.qml`, Window menu): groups with the takes' words, the diff against the best (added words underlined, missing ones struck through), quality chips and pace. **Play** auditions a take in place (timeline takes in the Program Monitor, others in the Source Monitor), **Use this take** stages one edit, **Keep best takes** stages them all with a review list; the ghost shows on the timeline.
+- **Takes panel** (`qml/panels/creator/TakesPanel.qml`, Window menu; not the Take Selector of auditions, which holds
+  alternatives at one cut of the timeline - see getting-started.md "Auditions"): groups with the takes' words, the diff against the best (added words underlined, missing ones struck through), quality chips and pace. **Play** auditions a take in place (timeline takes in the Program Monitor, others in the Source Monitor), **Use this take** stages one edit, **Keep best takes** stages them all with a review list; the ghost shows on the timeline.
 - **Auto zoom dialog** (`qml/dialogs/AutoZoomDialog.qml`, clip menu): the zoom window over the recording's frames, the activity near the playhead, the zoom over time (scrub or click), max zoom, hold, motion, and what to zoom in on. **Add zoom** applies.
 - The singletons are `RoughCut`, `Takes` and `AutoZoom` (`src/app/src/bridge/CreatorBridge.*`). Each runs its command on a scratch copy and commits only on apply, guarded by the revision it was made at.
 
@@ -2409,6 +2424,12 @@ Three features for people who record themselves: a **rough cut from a script**, 
 - `creator/test_autozoom.cpp`: sidecars (JSON, CSV, bad input), detection on the synthetic recording, the zoom path (targets in view, smoothness bounds, idle zoom-out, inside the frame, idempotent rerun), the command (dry run with preview, sidecar, refusals), the analysis throughput.
 - `creator/test_creator_agent.cpp`: the assistant makes a cut and swaps a take, verified and applied as one undo step; it may not read files or edit sequences it did not make.
 - `test_creator_ui.cpp` (`ai_ui`): the sheet, the panel and the dialog; saves `rough-cut-report.png`, `takes-panel.png` and `auto-zoom-preview.png`.
+
+### Creator autopilot (0.6, `autopilot/Autopilot.h`, `autopilot.*`)
+**Sequence > Creator Autopilot...** (keymap command `sequence.creatorAutopilot`; also in the sequence pill's menu) opens one sheet with three jobs for the current sequence. Each runs off the GUI thread with progress and Stop, previews first (the timeline shows the staged edit as a ghost) and applies as one undo step. Everything works on this computer; the cloud steps are opt-in, priced and asked first. Design note: [creator-autopilot.md](creator-autopilot.md). Library: `wabcut_ai_autopilot` (`src/ai/autopilot`).
+- **Auto B-roll** (`autopilot.broll`). The transcript is read line by line (sentences, with their most specific words). Each line is matched against the library's video items the sequence does not use: by picture with the smart search when its model is installed, and always by words - the item's name, bin, Description and Comment, its clip markers and its transcript. A clip per matched line, as long as the line (2-6 s), at most 4 per minute, 4 s apart, never over the first 3 s, the same shot never twice, video only, on the lowest free video track above the A-roll (else a new "B-roll" track). Switch suggestions off before Apply; lines nothing matched get **Generate...**, which opens the Generate panel with the line as the prompt at its place (the cost and consent are shown there). Name your clips or give them a Description for better matches.
+- **Publishing kit** (`autopilot.publishKit`). Title ideas (the most telling lines, the hook counting extra), a description (a short lead, the chapters, hashtags), chapters (the chapter markers, else the transcript's topics; first at 0:00; warnings when YouTube would not show them), tags (at most 15 and 500 characters) and thumbnail candidates (highlight markers, chapter starts, shot middles and telling lines, scored for sharpness, contrast, colour and exposure; 1280 x 720 JPEG under 2 MB). Edit the title, description and tags, then **Write files**: `title.txt`, `description.txt`, `chapters.txt`, `tags.txt`, `thumbnail-N.jpg`, `publishing-kit.md` and `publishing-kit.json` in a `<sequence> - publishing kit` folder. Nothing is uploaded. **Write with my AI** lets your chat model write the title ideas, description and tags from the transcript text (never the video); the estimate shows first and consent is asked.
+- **Pacing match** (`autopilot.pacing`). Pick a reference video from the project; its cuts come from shot detection (cached per file). Both rhythms show as cuts per minute, the median shot and the shot length over the running time. A shot of yours much longer than the reference's at the same point gets cuts, each moved to a sentence end, a pause or a beat, never inside a word; shots already quicker are left alone (it never removes footage). Apply as **markers** ("Cut (pace)") or as **cuts** (Add Edit on all tracks).
 
 ## Going global (AI-12)
 
@@ -3058,7 +3079,16 @@ Qwen3 1.7B replaces Qwen2.5 1.5B at the same footprint.
 **Admission** (`admit()`): the weights, the KV cache at the tier's context (layers x 2 x KV heads x head size x
 2 bytes x tokens), 512 MiB of llama.cpp compute buffers, 512 MiB for the process and a 1 GiB reserve for the
 editor. On the GPU the weights, cache and buffers must fit in its free memory with a 512 MiB margin (the
-process and the reserve in RAM); on the CPU all of it must fit in free RAM. Unknown memory fails closed. GPU
+process and the reserve in RAM); on the CPU all of it must fit in free RAM. Unknown memory fails closed.
+**Which GPU** (0.6): the one Wabcut uses for everything else, so hybrid graphics (an integrated GPU next to a
+discrete one) work. That is the card picked in Settings > Playback & performance > Graphics card, else Automatic:
+Windows' high-performance GPU. Without either, discrete GPUs come before integrated ones, then the one with the
+most free memory. Its free memory is the DXGI budget minus usage. On an NVIDIA card it is also checked against
+the driver's NVML, because DXGI's budget ignores what other programs, a game for example, hold on the card; the
+smaller of the two is used. If the chosen GPU is integrated, or its free
+memory is unknown, the tier runs on the CPU and the reason says so. llama-server is pinned to that card with
+`--device` (found by name in `llama-server --list-devices`; identical cards are told apart by free memory), so
+llama.cpp never splits a model across the integrated GPU or a second card that was not measured. GPU
 threads: clamp(CPU threads / 4, 1, 4); CPU threads: clamp(CPU threads / 2, 1, 8). **Recommendation**
 (`recommend()`): the largest tier that fits on the GPU; without a usable GPU the largest that fits in RAM and
 still answers at a usable speed (the medium tier on the CPU only with 8+ threads; the large tier never on the
@@ -3124,9 +3154,14 @@ in reads them alike (`editor::addChapterMarkers`): File > Import, Import Folder,
 the Source Monitor, and the Media Browser's import and Ingest copy (`media.importCameraClips`, whose `markers` counts
 them). The highlight finder reads the raw chapter positions as hints, as before.
 
-With several audio streams (OBS multi-track), the most voice-like one is the mic and the others are game audio;
-one stream is "mixed" (game spikes from its level, the voice from its voiced parts). `audioRoles` overrides
-this per stream.
+With several audio streams (OBS multi-track), the stream titles come first (0.6): a stream titled like OBS's Mic/Aux
+is the mic, Game / Desktop Audio and Alerts are game audio, and Discord and Music are left out (a friend's voice is not
+"your voice", music is not a game spike). A stream without such a title keeps the classification: the most voice-like
+one is the mic (unless a title already named the mic) and the others are game audio. One stream is "mixed" (game
+spikes from its level, the voice from its voiced parts), whatever its title. `audioRoles` overrides this per stream
+("auto" keeps a stream's own role). In the app, the Highlights panel's Find options list the recording's streams
+(**Audio streams**: Auto, Game, Your voice, Mixed, Leave out, remembered by stream position) and the summary says what
+the find used ("Audio: Game · Your voice").
 
 **Fusion.** Each signal becomes an activation (0..1). The fused score is their weighted mean (mic 1.2, game 1.0,
 chat 1.0, visual 0.8; only the signals present count), plus 0.15 for each further signal that agrees (>= 0.35),
@@ -3154,6 +3189,16 @@ laughed", "3 flashes, fast action (2.6x the usual motion)", "chat 6x busier (38 
 
 The assistant can run all of these except importChat. On a small local model, the tool router offers them for
 requests about highlights, reels, montages, moments, clutches and TikToks.
+
+**In the app, every one is a command** (0.6): the Moments presets (slow-mo 25 / 50 %, speed ramp in, freeze and
+replay, fast forward 200 / 300 / 400 %, punch in, punch in and hold, shake, instant replay, Shorts and square versions)
+are keymap commands with no default key, so they are bindable in Keyboard Shortcuts, listed in the command palette and
+in Clip > Moments; the sequence actions (Find Dead Time…, Find Highlights…, the two versions) sit in Sequence > Gaming
+beside Auto Reframe Sequence…, and every row greys out with the reason while it cannot act (no clip to retime or zoom,
+no open sequence). **Make a Short from In to Out** (Sequence menu, the Moments popover, the clip menu's Moments submenu,
+the palette; no default key) makes the sequence's In to Out range a 1080x1920 Short with the Short options' layout,
+facecam region, hook title, caption style, lead-in and tail — without running a find and without leaving a subsequence
+behind. Its title is the first marker inside the range, else "<sequence> <In TC>".
 
 **Measured once, cached.** The measurements (per audio stream and the picture) are AnalysisCache entries by
 source fingerprint ("highlights.audio" / "highlights.video"). Another run, with other signals, another chat log or
@@ -3195,3 +3240,105 @@ mic tracks and chapter markers:
 These numbers come from synthetic recordings. They show that the pipeline finds what it is built to find. They do not
 show how well it matches a player's taste on real, noisier gameplay: music, voice chat, constant explosions. No
 labelled real recordings were available to measure on.
+
+## Measured in 0.6 (2 November 2026)
+
+This is the 0.6 measurement pass: what was measured for real, on which machine, and - as important - what could not be
+measured here and why. Machine class: a **16-thread desktop CPU, 32 GB RAM, an RTX 3060 12 GB, Windows 11**; every
+process ran in the round's shared job object (80 % of the CPU, BelowNormal priority), so throughput numbers are lower
+bounds and quality numbers are what they are.
+
+### The local assistant, tier by tier (`tests/ai/eval`)
+
+The eval above runs 56 editing requests (trim, ripple, markers, captions, audio, colour, multicam, library and four
+questions) over four fixture projects, each checked deterministically on the staged ChangeSet. Run on the real pinned
+weights:
+
+```powershell
+build\<preset>\bin\wabcut_eval_tests.exe "Local assistant eval on the real tiers"
+```
+
+with `WABCUT_EVAL_MODELS` (the GGUFs) and `WABCUT_EVAL_LLAMA` (llama.cpp b11429, `cpu/` and `vulkan/`) set. Results:
+`build/<preset>/test-output/eval/local-eval-<tier>-<mode>.json`.
+
+| Tier | Model | Backend | Requests right | Valid tool calls | Routing recall | Median step | p90 step | First token | Decode | Peak RAM |
+|---|---|---|---|---|---|---|---|---|---|---|
+| small (first pass) | Qwen3 1.7B Q4_K_M | CPU, 8 threads | **17/56 (30 %)** | 97.6 % | 98.2 % | 3.3 s | 12.3 s | 1.08 s | 15.3 tok/s | 2.7 GB |
+| small | Qwen3 1.7B Q4_K_M | GPU (Vulkan, RTX 3060) | **17/56 (30 %)** | 98.2 % | 100 % | 0.40 s | 0.74 s | 0.15 s | 131 tok/s | 1.7 GB (1.9 GB on the card) |
+| medium | Qwen3 4B Instruct 2507 Q4_K_M | GPU (Vulkan, RTX 3060) | **29/56 (52 %)** | 100 % | 100 % | 0.93 s | 1.7 s | 0.18 s | 66 tok/s | 3.2 GB (3.8 GB on the card) |
+| large | Qwen3 8B Q4_K_M | GPU (Vulkan, RTX 3060) | **30/56 (54 %)** | 100 % | 100 % | 1.1 s | 2.4 s | 0.26 s | 47 tok/s | 5.6 GB (6.0 GB on the card) |
+
+The first pass ran on the CPU (see "Why the CPU" below). The GPU rows are from the same day after the two fixes
+described there: the hybrid-graphics admission and the refused-call handling. The whole 56-request pass took 102 s
+(small), 175 s (medium) and 208 s (large) on the card, against 23 minutes for the small tier on the CPU. One pass
+each; an earlier GPU pass with a first wording of the refusal hint gave 17, 30 and 29, so treat ±1 request as noise.
+
+Where the small tier's 56 requests went:
+
+| Area | Right | What went wrong |
+|---|---|---|
+| markers | 6/8 | a marker at the wrong frame; a 0-frame highlight |
+| questions | 3/4 | answered "the second caption says..." instead of what the user asked |
+| audio | 3/7 | wrong values (-6 dB instead of -3, no fade); 2 hit the step limit on `audio.autoDuck` |
+| library | 2/6 | 3 ended without an edit, 1 hit the step limit on a refused `bin.create` |
+| ripple | 1/7 | 4 hit the step limit repeating `timeline.rippleDelete (error)`; 2 deleted the wrong range |
+| captions | 1/7 | 1 hit the step limit on `captions.addTrack`; 2 ended without an edit; 3 staged the wrong cues |
+| colour | 1/6 | 4 hit the step limit repeating `color.grade.set (error)` / `color.match (error)`; a wrong label colour |
+| trim | 0/7 | 4 trims within a few frames but not on the asked boundary; 1 step limit; 2 with no edit |
+| multicam | 0/4 | 2 hit the step limit repeating a refused `multicam.switchAngle`; 2 ended without an edit |
+
+**The dominant failure is the loop, not the understanding.** Of the 39 wrong requests, 15 stopped at the step limit
+after ten model calls, almost always the same tool call the engine had just refused, repeated ten times:
+`timeline.rippleDelete (error)` x10, `captions.addTrack (error)` x10, `color.grade.set (error)` x10,
+`multicam.switchAngle (error)` x10; 10 more ended with no edit at all, and 14 staged an edit the check refused. The
+replies were nearly all valid tool calls (97.6 % name an offered tool with schema-valid arguments), so the route and
+the grammar work; what the 1.7B tier cannot do is recover from a refusal.
+The requests that needed one call and no recovery (markers, simple track and attribute edits) are the ones it gets
+right. **Recommendation: do not ship the small tier as a default for editing**; it is a chat/answers tier on this
+class of machine.
+
+**After the refusal fix** (the loop's "Refusals" rule above), the small tier still gets 17/56 right; what changed is
+how it fails. Step-limit stops went from 15 to 4, 8 runs now end as `Stuck` with the refused call named, and the pass
+needs 210 model calls instead of 244. Most of its refusals are ids it guessed (track 1, clip 28, bin 14). After the
+hint it often reads `sequence_summary` and then guesses again. The fix makes failures short and honest; it does not
+make the 1.7B model competent. The medium and large tiers rarely loop (1 step-limit stop each, no `Stuck`) and stage
+an edit in 39 and 41 of 56 requests.
+
+**Why the CPU (first pass), and the fix.** The admission (`Tiers.h`) used to put a tier on the GPU only when the
+computer had exactly one discrete adapter of known free memory. This desktop lists three DXGI adapters: the CPU's
+integrated graphics, the RTX 3060, and a virtual display driver's proxy of the same RTX 3060. So it fell back to the
+CPU ("no single discrete GPU with a known free memory") while the card sat idle with about 11 GB free. Since the fix
+the admission takes the GPU Wabcut uses (Settings > Graphics card, else Windows' high-performance GPU, see "Which
+GPU"), reads that card's free memory (DXGI, checked against NVML on NVIDIA), and pins llama-server to it with
+`--device`. Medium and large now run on this machine at about 1-2.4 s per step.
+
+**Not measured here:**
+
+- **Medium and large tiers on the CPU.** Medium fits in RAM there but needs about 2.5x the small tier's time per
+  step; large is GPU-only by default. Not run: the GPU rows above are what this machine uses.
+- **The cloud reference** (`WABCUT_EVAL_CLOUD` + `WABCUT_LIVE_<PROVIDER>_KEY`): no cloud key is configured on this
+  machine, and the eval never uses a key it was not given. No cloud accuracy, speed or cost number was produced.
+- **The CUDA runtime** (it needs the user to accept NVIDIA's terms): the GPU rows use the Vulkan build. AMD and Intel
+  discrete cards were not available to test either.
+
+### Gameplay highlights on real recordings
+
+Still not measured. The pipeline's numbers (precision and recall 1.00 on the synthetic fixture and on the decoded
+150 s MKV, 3/3 moments end to end) are unchanged and only prove that it finds what it was built to find. What is
+missing is the owner's real gameplay: labelled moments in real recordings with music, voice chat and constant
+explosions. Nothing in the tree can stand in for them, so no real-world precision, recall or "does it match a
+player's taste" number is claimed. (For scale only: the 150 s decoded-MKV measurement test takes 5.7 s in the 0.6
+whole-tree gate, about 26x real time, on the shared machine.)
+
+### Transcription, search and the other AI features
+
+- **Transcription WER: not measurable here.** This build has no `wabcut-infer` (the local inference process is not
+  part of it), so the real-model transcription tests skip; and there is no labelled reference audio in the tree to
+  score against. The analysis benchmark's transcription number (102x real time) runs a stand-in helper: it measures
+  the pipeline, not accuracy.
+- **Search quality: no number.** The analysis benchmark measures a query over 1,000 shots at 5.4 ms p95 with a stand-in
+  embedder. That is latency, not relevance; a relevance number needs a labelled query set and the real SigLIP model
+  (`WABCUT_TEST_SIGLIP_DIR`), neither of which is here.
+- **Auto reframe, rough cut, auto zoom, masks**: the numbers in their sections above were measured earlier on this
+  machine class with synthetic or fixture material; nothing in this pass re-measured them, and none of them has a
+  real-footage accuracy number yet.

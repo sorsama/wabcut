@@ -19,6 +19,7 @@
 
 #include <QCoreApplication>
 #include <QDir>
+#include <QFileInfo>
 #include <QJsonDocument>
 #include <QQmlEngine>
 #include <QQuickImageProvider>
@@ -27,6 +28,7 @@
 #include <QRunnable>
 #include <QThread>
 #include <QThreadPool>
+#include <QUrl>
 
 #include <algorithm>
 #include <cmath>
@@ -1023,6 +1025,97 @@ QString GraphicsBridge::removeTemplate(const QString& templateKey) {
     return {};
 }
 
+// ---- Template files -------------------------------------------------------------------------------------------------
+
+bool GraphicsBridge::isTemplateFile(const QUrl& file) const {
+    const QString name = file.isLocalFile() ? file.toLocalFile() : file.fileName();
+    const QString lower = name.toLower();
+    return lower.endsWith(QLatin1String(".mogrt")) || lower.endsWith(QLatin1String(".wabcut-template.json"));
+}
+
+QVariantMap GraphicsBridge::templateReport(const QVariantMap& data, const QString& fileName) const {
+    const QVariantMap report = data.value(QStringLiteral("report")).toMap();
+    QVariantList entries;
+    for (const QVariant& v : report.value(QStringLiteral("entries")).toList()) {
+        const QVariantMap e = v.toMap();
+        entries.append(QVariantMap{{QStringLiteral("outcome"), e.value(QStringLiteral("outcome")).toString()},
+                                   {QStringLiteral("category"), e.value(QStringLiteral("category")).toString()},
+                                   {QStringLiteral("reason"), e.value(QStringLiteral("reason")).toString()},
+                                   {QStringLiteral("location"), e.value(QStringLiteral("element")).toString()}});
+    }
+    QString author = data.value(QStringLiteral("authorApp")).toString();
+    if (author.isEmpty())
+        author = tr("Wabcut");
+    const int fieldCount = data.value(QStringLiteral("fields")).toList().size();
+    QString summary = tr("%1 template · %2 fields").arg(author).arg(fieldCount);
+    if (const QString name = data.value(QStringLiteral("name")).toString(); !name.isEmpty())
+        summary = name + QStringLiteral(" · ") + summary;
+    return {{QStringLiteral("file"), fileName},
+            //: The file format of an imported template
+            {QStringLiteral("format"), tr("Motion Graphics template")},
+            {QStringLiteral("summary"), summary},
+            {QStringLiteral("carried"), report.value(QStringLiteral("carried"), 0)},
+            {QStringLiteral("approximated"), report.value(QStringLiteral("approximated"), 0)},
+            {QStringLiteral("dropped"), report.value(QStringLiteral("dropped"), 0)},
+            {QStringLiteral("entries"), entries}};
+}
+
+QVariantMap GraphicsBridge::importTemplate(const QUrl& file, const QString& library) {
+    const QString path = file.isLocalFile() ? file.toLocalFile() : file.toString();
+    QVariantMap out{{QStringLiteral("file"), path}};
+    if (!isTemplateFile(file)) {
+        out[QStringLiteral("error")] = setError(tr("Choose a Motion Graphics template (.mogrt) or a Wabcut template file"));
+        return out;
+    }
+    const QString where = library == QLatin1String("user") ? QStringLiteral("user") : QStringLiteral("project");
+    const Json params{{"path", path.toStdString()}, {"library", where.toStdString()}};
+    QVariantMap data;
+    const QString error = runCommandNow("template.import", params.dump(), &data);
+    if (!error.isEmpty()) {
+        out[QStringLiteral("error")] = error;
+        return out;
+    }
+    refreshTemplates();
+    const QString id = data.value(QStringLiteral("template")).toString();
+    out[QStringLiteral("key")] = where + QLatin1Char('/') + id;
+    out[QStringLiteral("name")] = data.value(QStringLiteral("name")).toString();
+    out[QStringLiteral("library")] = where;
+    out[QStringLiteral("report")] = templateReport(data, QFileInfo(path).fileName());
+    return out;
+}
+
+QString GraphicsBridge::exportTemplate(const QString& templateKey, const QUrl& file, bool overwrite) {
+    if (!m_controller)
+        return setError(tr("No project"));
+    const int slash = static_cast<int>(templateKey.indexOf(QLatin1Char('/')));
+    if (slash <= 0 || slash == templateKey.size() - 1)
+        return setError(tr("Unknown template"));
+    QString path = file.isLocalFile() ? file.toLocalFile() : file.toString();
+    if (path.isEmpty())
+        return setError(tr("Choose where to save the template"));
+    // The file dialog's filter asks for the suffix too; a name typed without it gets it (a .json name keeps its stem).
+    const QString lower = path.toLower();
+    if (!lower.endsWith(QLatin1String(".wabcut-template.json"))) {
+        path = lower.endsWith(QLatin1String(".json")) ? path.left(path.size() - 5) + QStringLiteral(".wabcut-template.json")
+                                                     : path + QStringLiteral(".wabcut-template.json");
+    }
+    Json params{{"template", templateKey.mid(slash + 1).toStdString()},
+                {"path", path.toStdString()},
+                {"overwrite", overwrite}};
+    if (templateKey.left(slash) != QLatin1String("builtin"))
+        params["library"] = templateKey.left(slash).toStdString();
+    const QString error = runCommandNow("template.export", params.dump());
+    if (error.isEmpty())
+        setMessage(tr("Template exported to %1").arg(QFileInfo(path).fileName()));
+    return error;
+}
+
+void GraphicsBridge::openInstallDialog(const QString& library) {
+    emit installRequested(library == QLatin1String("user") ? QStringLiteral("user") : QStringLiteral("project"));
+}
+
+void GraphicsBridge::openExportDialog(const QString& templateKey) { emit exportRequested(templateKey); }
+
 // ---- The selected graphic -------------------------------------------------------------------------------------------
 
 std::optional<GraphicsBridge::Target> GraphicsBridge::target() const {
@@ -1215,7 +1308,8 @@ void GraphicsBridge::rebuildLayer() {
                                                       {QStringLiteral("opacity"), l->shadow.opacity},
                                                       {QStringLiteral("angle"), l->shadow.angle},
                                                       {QStringLiteral("distance"), l->shadow.distance},
-                                                      {QStringLiteral("softness"), l->shadow.softness}}}};
+                                                      {QStringLiteral("softness"), l->shadow.softness},
+                                                      {QStringLiteral("size"), l->shadow.size}}}};
         const Json json = Json::parse(io::layerToJson(*l), nullptr, false);
         out.insert(QStringLiteral("masks"), json.is_object() && json.contains("masks") ? toVariant(json["masks"]) : QVariantList());
         if (l->pin) {
@@ -1233,7 +1327,8 @@ void GraphicsBridge::rebuildLayer() {
             out.insert(QStringLiteral("pin"), QVariantMap{{QStringLiteral("target"), target}, {QStringLiteral("edges"), edges}});
         }
         if (l->kind == LayerKind::Text) {
-            const TextContent& text = l->text;
+            // 0.6: what shows at the playhead (Source Text keys and the size / spacing keys applied).
+            const TextContent text = textAt(l->text, time);
             QVariantList runs;
             for (const TextRun& r : text.runs) {
                 runs.append(QVariantMap{{QStringLiteral("text"), QString::fromStdString(r.text)},
@@ -1247,8 +1342,18 @@ void GraphicsBridge::rebuildLayer() {
                                         {QStringLiteral("underline"), r.style.underline},
                                         {QStringLiteral("tracking"), r.style.tracking},
                                         {QStringLiteral("leading"), r.style.leading},
-                                        {QStringLiteral("baselineShift"), r.style.baselineShift}});
+                                        {QStringLiteral("baselineShift"), r.style.baselineShift},
+                                        {QStringLiteral("kerning"), r.style.kerning},
+                                        {QStringLiteral("caps"), QString::fromUtf8(toString(r.style.caps).data())},
+                                        {QStringLiteral("fauxBold"), r.style.fauxBold},
+                                        {QStringLiteral("fauxItalic"), r.style.fauxItalic}});
             }
+            QVariantList strokes;
+            for (const TextStroke& st : l->text.strokes)
+                strokes.append(QVariantMap{{QStringLiteral("enabled"), st.enabled},
+                                           {QStringLiteral("color"), colorMap(st.color, kit)},
+                                           {QStringLiteral("width"), paramMap(st.width, time)},
+                                           {QStringLiteral("position"), QString::fromUtf8(toString(st.position).data())}});
             QStringList animators;
             for (const TextAnimator& a : text.animators)
                 animators << QString::fromStdString(a.name);
@@ -1264,6 +1369,10 @@ void GraphicsBridge::rebuildLayer() {
                                                                               {QStringLiteral("radius"), text.background.radius}}},
                                    {QStringLiteral("runs"), runs},
                                    {QStringLiteral("animators"), animators},
+                                   {QStringLiteral("verticalAlign"), QString::fromUtf8(toString(text.verticalAlign).data())},
+                                   {QStringLiteral("strokes"), strokes},
+                                   {QStringLiteral("sourceKeyed"), l->text.sourceKey.isCurve()},
+                                   {QStringLiteral("sizeKeyed"), l->text.sizeKeys.has_value()},
                                    {QStringLiteral("onPath"),
                                     text.path ? QVariantMap{{QStringLiteral("enabled"), true},
                                                             {QStringLiteral("closed"), text.path->closed},
@@ -1629,8 +1738,15 @@ QString GraphicsBridge::setValue(int layerId, const QString& path, double value)
         layerId, "Edit Graphic Layer",
         [&](GraphicLayer& l, const Graphic&) -> std::optional<QString> {
             ParamValue* p = paramAt(l, key);
+            std::optional<ParamValue> other = p ? std::nullopt : edit::layerParam(l, key); // 0.6: text.fontSize ...
+            if (other)
+                p = &*other;
             if (!p)
                 return tr("Not an animatable property");
+            const auto store = [&] {
+                if (other)
+                    edit::setLayerParam(l, key, std::move(*other));
+            };
             if (const Curve* curve = p->curve()) {
                 Curve next = *curve;
                 if (const auto k = next.keyAt(time)) {
@@ -1645,6 +1761,7 @@ QString GraphicsBridge::setValue(int layerId, const QString& path, double value)
             } else {
                 *p = ParamValue(value);
             }
+            store();
             return std::nullopt;
         },
         "graphicValue:" + std::to_string(layerId) + ":" + key);
@@ -1655,8 +1772,15 @@ QString GraphicsBridge::toggleKey(int layerId, const QString& path) {
     const std::string key = path.toStdString();
     return editLayer(layerId, "Graphic Keyframe", [&](GraphicLayer& l, const Graphic&) -> std::optional<QString> {
         ParamValue* p = paramAt(l, key);
+        std::optional<ParamValue> other = p ? std::nullopt : edit::layerParam(l, key); // 0.6: text.fontSize ...
+        if (other)
+            p = &*other;
         if (!p)
             return tr("Not an animatable property");
+        const auto store = [&] {
+            if (other)
+                edit::setLayerParam(l, key, std::move(*other));
+        };
         const double current = p->valueAt(time);
         Curve next;
         if (const Curve* curve = p->curve())
@@ -1664,6 +1788,7 @@ QString GraphicsBridge::toggleKey(int layerId, const QString& path) {
         if (const auto k = p->curve() ? next.keyAt(time) : std::nullopt) {
             next.keys.erase(next.keys.begin() + static_cast<std::ptrdiff_t>(*k));
             *p = next.keys.empty() ? ParamValue(current) : ParamValue(std::move(next));
+            store();
             return std::nullopt;
         }
         Keyframe kf;
@@ -1671,6 +1796,7 @@ QString GraphicsBridge::toggleKey(int layerId, const QString& path) {
         kf.value = current;
         next.keys.insert(next.keys.begin() + static_cast<std::ptrdiff_t>(next.insertionIndex(time)), kf);
         *p = ParamValue(std::move(next));
+        store();
         return std::nullopt;
     });
 }
@@ -1680,6 +1806,9 @@ QString GraphicsBridge::setAnimated(int layerId, const QString& path, bool anima
     const std::string key = path.toStdString();
     return editLayer(layerId, animated ? "Animate Graphic Property" : "Stop Animating", [&](GraphicLayer& l, const Graphic&) -> std::optional<QString> {
         ParamValue* p = paramAt(l, key);
+        std::optional<ParamValue> other = p ? std::nullopt : edit::layerParam(l, key); // 0.6: text.fontSize ...
+        if (other)
+            p = &*other;
         if (!p)
             return tr("Not an animatable property");
         const double current = p->valueAt(time);
@@ -1695,21 +1824,28 @@ QString GraphicsBridge::setAnimated(int layerId, const QString& path, bool anima
         } else {
             *p = ParamValue(current);
         }
+        if (other)
+            edit::setLayerParam(l, key, std::move(*other));
         return std::nullopt;
     });
 }
 
 QString GraphicsBridge::setText(int layerId, const QString& text) {
+    const Ticks time = graphicTime();
     return editLayer(
         layerId, "Edit Graphic Text",
         [&](GraphicLayer& l, const Graphic&) -> std::optional<QString> {
             if (l.kind != LayerKind::Text)
                 return tr("Not a text layer");
-            TextRun run;
-            if (!l.text.runs.empty())
-                run.style = l.text.runs.front().style;
-            run.text = text.toStdString();
-            l.text.runs = {std::move(run)};
+            // 0.6: with Source Text keys, the text shown at the playhead (a key there).
+            edit::editSourceRunsAt(l.text, time, [&](std::vector<TextRun>& runs) {
+                TextRun run;
+                if (!runs.empty())
+                    run.style = runs.front().style;
+                run.text = text.toStdString();
+                runs = {std::move(run)};
+                return true;
+            });
             return std::nullopt;
         },
         "graphicText:" + std::to_string(layerId));
@@ -1754,15 +1890,46 @@ QString GraphicsBridge::setTextPathOption(int layerId, const QString& key, bool 
     });
 }
 
+namespace {
+/// A text run's style value (GraphicsBridge::setRun's keys); an error message or nothing.
+std::optional<QString> runValue(TextRun& r, const QString& key, const QVariant& value, const BrandKit* kit);
+} // namespace
+
 QString GraphicsBridge::setRun(int layerId, int run, const QString& key, const QVariant& value) {
     const ProjectSnapshot snap = m_controller ? m_controller->snapshot() : nullptr;
     const BrandKit* kit = snap && snap->brandKit ? &*snap->brandKit : nullptr;
+    // 0.6: a keyframed size or spacing (Effect Controls' Text rows) takes the value as the key at the playhead.
+    if (const auto t = target(); t && (key == QLatin1String("fontSize") || key == QLatin1String("tracking") ||
+                                       key == QLatin1String("leading") || key == QLatin1String("baselineShift"))) {
+        const GraphicLayer* l = t->graphic.findLayer(static_cast<std::uint32_t>(layerId));
+        const std::string path = "text." + key.toStdString();
+        const auto current = l ? edit::layerParam(*l, path) : std::nullopt;
+        if (current && current->isCurve())
+            return setValue(layerId, QString::fromStdString(path), value.toDouble());
+    }
+    const Ticks time = graphicTime();
     return editLayer(
         layerId, "Edit Graphic Text",
         [&](GraphicLayer& l, const Graphic&) -> std::optional<QString> {
-            if (l.kind != LayerKind::Text || run < 0 || run >= static_cast<int>(l.text.runs.size()))
-                return tr("No such text run");
-            TextRun& r = l.text.runs[static_cast<std::size_t>(run)];
+            std::optional<QString> error;
+            // 0.6: the runs shown at the playhead (with Source Text keys, the key there).
+            edit::editSourceRunsAt(l.text, time, [&](std::vector<TextRun>& runs) {
+                if (l.kind != LayerKind::Text || run < 0 || run >= static_cast<int>(runs.size())) {
+                    error = tr("No such text run");
+                    return false;
+                }
+                error = runValue(runs[static_cast<std::size_t>(run)], key, value, kit);
+                return !error;
+            });
+            return error;
+        },
+        "graphicRun:" + std::to_string(layerId) + ":" + std::to_string(run) + ":" + key.toStdString());
+}
+
+namespace {
+std::optional<QString> runValue(TextRun& r, const QString& key, const QVariant& value, const BrandKit* kit) {
+    {
+        {
             TextStyle& s = r.style;
             if (key == QLatin1String("text"))
                 r.text = value.toString().toStdString();
@@ -1786,17 +1953,29 @@ QString GraphicsBridge::setRun(int layerId, int run, const QString& key, const Q
                 s.leading = value.toDouble();
             else if (key == QLatin1String("baselineShift"))
                 s.baselineShift = value.toDouble();
+            else if (key == QLatin1String("kerning")) // 0.6
+                s.kerning = value.toBool();
+            else if (key == QLatin1String("caps")) {
+                const auto caps = textCapsFromString(value.toString().toStdString());
+                if (!caps)
+                    return GraphicsBridge::tr("Unknown capitals");
+                s.caps = *caps;
+            } else if (key == QLatin1String("fauxBold"))
+                s.fauxBold = value.toBool();
+            else if (key == QLatin1String("fauxItalic"))
+                s.fauxItalic = value.toBool();
             else if (key == QLatin1String("fill")) {
                 const auto color = parseColor(value.toString(), s.fill, kit);
                 if (!color)
-                    return tr("Not a colour");
+                    return GraphicsBridge::tr("Not a colour");
                 s.fill = *color;
             } else
-                return tr("Unknown text property");
+                return GraphicsBridge::tr("Unknown text property");
             return std::nullopt;
-        },
-        "graphicRun:" + std::to_string(layerId) + ":" + std::to_string(run) + ":" + key.toStdString());
+        }
+    }
 }
+} // namespace
 
 QString GraphicsBridge::setColor(int layerId, const QString& what, const QString& color) {
     const ProjectSnapshot snap = m_controller ? m_controller->snapshot() : nullptr;
@@ -1813,8 +1992,7 @@ QString GraphicsBridge::setColor(int layerId, const QString& what, const QString
             bool ok = true;
             if (what == QLatin1String("fill")) {
                 if (l.kind == LayerKind::Text) {
-                    for (TextRun& r : l.text.runs)
-                        ok = apply(r.style.fill) && ok;
+                    edit::editAllRuns(l.text, [&](TextRun& r) { ok = apply(r.style.fill) && ok; }); // 0.6: every version
                 } else {
                     ok = apply(l.shape.fill.color);
                     if (l.shape.fill.kind == PaintKind::None)
@@ -1827,6 +2005,12 @@ QString GraphicsBridge::setColor(int layerId, const QString& what, const QString
                 ok = apply(l.text.background.color);
             } else if (what == QLatin1String("shadow")) {
                 ok = apply(l.shadow.color);
+            } else if (what.startsWith(QLatin1String("textStroke:"))) { // 0.6
+                const int stroke = what.mid(11).toInt();
+                if (stroke < 0 || stroke >= static_cast<int>(l.text.strokes.size()))
+                    return tr("No such stroke");
+                ok = apply(l.text.strokes[static_cast<std::size_t>(stroke)].color);
+                l.text.strokes[static_cast<std::size_t>(stroke)].enabled = true;
             } else if (what.startsWith(QLatin1String("stop:"))) {
                 const int stop = what.mid(5).toInt();
                 if (stop < 0 || stop >= static_cast<int>(l.shape.fill.stops.size()))
@@ -1838,6 +2022,41 @@ QString GraphicsBridge::setColor(int layerId, const QString& what, const QString
             return ok ? std::nullopt : std::optional<QString>(tr("Not a colour"));
         },
         "graphicColor:" + std::to_string(layerId) + ":" + what.toStdString());
+}
+
+QString GraphicsBridge::setTextStroke(int layerId, int index, const QString& key, const QVariant& value) {
+    return editLayer(layerId, "Edit Text Stroke", [&](GraphicLayer& l, const Graphic&) -> std::optional<QString> {
+        if (l.kind != LayerKind::Text)
+            return tr("Not a text layer");
+        std::vector<TextStroke>& strokes = l.text.strokes;
+        if (key == QLatin1String("add")) {
+            if (strokes.size() >= kMaxTextStrokes)
+                return tr("A text has at most %1 strokes").arg(static_cast<int>(kMaxTextStrokes));
+            TextStroke st;
+            if (!strokes.empty()) {
+                st.width = ParamValue(strokes.back().width.constant() + 4.0);
+                st.color = GraphicColor{{1.0, 1.0, 1.0, 1.0}, {}};
+            }
+            strokes.push_back(std::move(st));
+            return std::nullopt;
+        }
+        if (index < 0 || index >= static_cast<int>(strokes.size()))
+            return tr("No such stroke");
+        TextStroke& st = strokes[static_cast<std::size_t>(index)];
+        if (key == QLatin1String("remove")) {
+            strokes.erase(strokes.begin() + index);
+        } else if (key == QLatin1String("position")) {
+            const auto position = strokePositionFromString(value.toString().toStdString());
+            if (!position)
+                return tr("Unknown stroke position");
+            st.position = *position;
+        } else if (key == QLatin1String("enabled")) {
+            st.enabled = value.toBool();
+        } else {
+            return tr("Unknown stroke property");
+        }
+        return std::nullopt;
+    });
 }
 
 QString GraphicsBridge::setFillKind(int layerId, const QString& kind) {

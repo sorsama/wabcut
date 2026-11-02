@@ -15,6 +15,16 @@ import QtQuick.Layouts
 Popup {
     id: dialog
     objectName: "welcomeDialog"
+    // P1 #61: the popup's own item (UI Automation's dialog window, which NVDA announces when the focus enters) takes
+    // the name its content has; Popup itself takes no Accessible.
+    readonly property string accessibleTitle: dialog.contentItem ? dialog.contentItem.Accessible.name : ""
+    function nameDialogElement() {
+        const shell = dialog.contentItem ? dialog.contentItem.parent : null
+        if (shell)
+            shell.Accessible.name = dialog.accessibleTitle
+    }
+    onAccessibleTitleChanged: dialog.nameDialogElement()
+    Component.onCompleted: dialog.nameDialogElement()
 
     property int page: 0
     readonly property int pageCount: 5

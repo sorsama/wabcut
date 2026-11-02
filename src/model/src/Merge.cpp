@@ -2,6 +2,7 @@
 
 #include <wabcut/model/Merge.h>
 
+#include <wabcut/model/Auditions.h>
 #include <wabcut/model/Nesting.h>
 #include <wabcut/model/SubmixOps.h>
 #include <wabcut/model/Timecode.h>
@@ -179,6 +180,29 @@ void visitIds(ProjectState& s, F&& f) {
                     f(c.linkGroup.value);
                     f(c.group.value); // 0.2 clip groups come from the same id generator
                     f(c.sequence.value);
+                    if (const Audition* audition = c.audition()) {
+                        // 0.6 (card #74): an audition's other takes name media, sequences and effects too.
+                        Audition a = *audition;
+                        for (AuditionTake& take : a.others) {
+                            f(take.media.value);
+                            f(take.sequence.value);
+                            if (take.content && (!take.content->effects.empty() || take.content->graphic)) {
+                                ClipContent block = *take.content;
+                                visitEffects(block.effects, f);
+                                if (block.graphic) {
+                                    Graphic g = *block.graphic;
+                                    visitGraphicIds(g, f);
+                                    block.graphic = std::make_shared<const Graphic>(std::move(g));
+                                }
+                                take.content = std::make_shared<const ClipContent>(std::move(block));
+                            }
+                        }
+                        if (!(a == *audition)) {
+                            ClipContent content = c.content();
+                            content.audition = std::make_shared<const Audition>(std::move(a));
+                            c.setContent(std::move(content));
+                        }
+                    }
                     if (!c.effects().empty()) {
                         ClipContent content = c.content();
                         visitEffects(content.effects, f);
@@ -716,16 +740,19 @@ std::expected<Created<SequenceId>, Error> copySequenceFrom(const ProjectState& s
     std::optional<std::string> missing;
     seq->forEachTrack([&](const Track& t) {
         for (const Clip& c : t.clips) {
-            if (c.media.isValid()) {
-                media.insert(c.media.value);
-            }
-            if (c.isNested()) {
-                if (state.findSequence(c.sequence)) {
-                    keep.insert(c.sequence.value);
-                } else {
-                    missing = "it plays a nested sequence the project no longer has";
+            // 0.6: every take of an audition (Auditions.h), the clip's own source first.
+            forEachTakeSource(c, [&](MediaId m, SequenceId s) {
+                if (m.isValid()) {
+                    media.insert(m.value);
                 }
-            }
+                if (s.isValid()) {
+                    if (state.findSequence(s)) {
+                        keep.insert(s.value);
+                    } else {
+                        missing = "it plays a nested sequence the project no longer has";
+                    }
+                }
+            });
         }
     });
     if (missing) {
@@ -1425,20 +1452,29 @@ std::expected<MergeResult, Error> mergeProjects(const ProjectState& base, const 
             const SequencePtr seq = merged.sequences[i];
             seq->forEachTrack([&](const Track& t) {
                 for (const Clip& c : t.clips) {
-                    restoreMedia(c.media);
-                    if (const Graphic* graphic = c.graphic()) { // C.13: the pictures its image layers show
-                        Graphic g = *graphic;
-                        visitGraphicIds(g, [&](std::uint64_t& v) { restoreMedia(MediaId{v}); });
-                    }
-                    if (c.isNested() && !merged.findSequence(c.sequence)) {
-                        for (const ProjectState* s : {&theirs, &mine, &base}) {
-                            if (const SequencePtr p = s->sequencePtr(c.sequence)) {
-                                merged.sequences.insert(std::lower_bound(merged.sequences.begin(), merged.sequences.end(), p->id,
-                                                                         [](const SequencePtr& x, SequenceId v) { return x->id < v; }),
-                                                        p);
-                                out.adjustments.push_back("sequence '" + p->name + "' was kept: a merged clip plays it");
-                                break;
+                    // 0.6 (card #74): every take of an audition (the clip itself first), not only the active one.
+                    const auto restoreTake = [&](const Clip& take) {
+                        restoreMedia(take.media);
+                        if (const Graphic* graphic = take.graphic()) { // C.13: the pictures its image layers show
+                            Graphic g = *graphic;
+                            visitGraphicIds(g, [&](std::uint64_t& v) { restoreMedia(MediaId{v}); });
+                        }
+                        if (take.isNested() && !merged.findSequence(take.sequence)) {
+                            for (const ProjectState* s : {&theirs, &mine, &base}) {
+                                if (const SequencePtr p = s->sequencePtr(take.sequence)) {
+                                    merged.sequences.insert(std::lower_bound(merged.sequences.begin(), merged.sequences.end(), p->id,
+                                                                             [](const SequencePtr& x, SequenceId v) { return x->id < v; }),
+                                                            p);
+                                    out.adjustments.push_back("sequence '" + p->name + "' was kept: a merged clip plays it");
+                                    break;
+                                }
                             }
+                        }
+                    };
+                    restoreTake(c);
+                    if (const Audition* a = c.audition()) {
+                        for (const AuditionTake& take : a->others) {
+                            restoreTake(takeClip(take, c.timelineRange));
                         }
                     }
                 }

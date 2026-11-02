@@ -80,6 +80,172 @@ EditOutcome rippleTrimNextEditToPlayhead(const ProjectState& state, SequenceId s
     return rippleTrimToPlayhead(state, sequence, playhead, false);
 }
 
+// --- Shift+Q / Shift+W, Ctrl+Alt+Q / Ctrl+Alt+W (0.6): the non-ripple companions ---------------------------------
+
+namespace {
+
+/// The edit point on `t` at `at` as one clip edge: the clip ending there (its tail), else the clip starting there.
+std::optional<std::pair<ClipId, Edge>> edgeAt(const Track& t, Ticks at) {
+    std::optional<std::pair<ClipId, Edge>> head;
+    for (const Clip& c : t.clips) {
+        if (c.end() == at) {
+            return std::pair{c.id, Edge::Tail};
+        }
+        if (c.start() == at && !head) {
+            head = std::pair{c.id, Edge::Head};
+        }
+    }
+    return head;
+}
+
+/// Runs `step` (one track's edit, on the state so far) on each unlocked targeted track and combines them into one
+/// result. `pick` chooses the track's clip edge and how far it moves (nullopt: nothing on that track). A clip that an
+/// earlier track's edit already moved with its links is not edited again. Fails with `none` when no track had
+/// anything to do, or with the first refusal when every edit was refused.
+template <class Pick, class Step>
+EditOutcome onTargetedTracks(const ProjectState& state, SequenceId sequenceId, const char* none, Pick&& pick,
+                             Step&& step) {
+    const auto seq = detail::findSequence(state, sequenceId);
+    if (!seq) {
+        return std::unexpected(seq.error());
+    }
+    const std::vector<TrackId> targets = detail::unlockedTargets(**seq);
+    if (targets.empty()) {
+        return std::unexpected(invalidArgument("no unlocked track is targeted"));
+    }
+    ProjectState current = state;
+    std::vector<std::uint64_t> covered;
+    std::optional<Error> refused;
+    bool found = false;
+    bool edited = false;
+    for (const TrackId id : targets) {
+        const Sequence* now = current.findSequence(sequenceId);
+        const Track* track = now ? now->findTrack(id) : nullptr;
+        if (!track) {
+            continue;
+        }
+        const auto chosen = pick(*track);
+        if (!chosen) {
+            continue;
+        }
+        found = true;
+        const auto& [clip, edge, delta] = *chosen;
+        if (std::ranges::find(covered, clip.value) != covered.end()) {
+            continue; // moved with an earlier track's linked clip
+        }
+        const ClipId self[] = {clip};
+        for (const ClipId partner : withLinkedClips(*now, self)) {
+            covered.push_back(partner.value);
+        }
+        if (delta.value == 0) {
+            continue;
+        }
+        auto next = step(current, clip, edge, delta);
+        if (!next) {
+            if (!refused) {
+                refused = next.error();
+            }
+            continue;
+        }
+        if (!next->changes.empty()) {
+            edited = true;
+        }
+        current = std::move(next->state);
+    }
+    if (!found) {
+        return std::unexpected(invalidArgument(none));
+    }
+    if (!edited && refused) {
+        return std::unexpected(*refused);
+    }
+    EditResult result;
+    result.changes = diff(state, current);
+    result.state = std::move(current);
+    return result;
+}
+
+struct ChosenEdge {
+    ClipId clip;
+    Edge edge;
+    Ticks delta;
+};
+
+} // namespace
+
+EditOutcome trimPreviousEditToPlayhead(const ProjectState& state, SequenceId sequence, Ticks playhead) {
+    return onTargetedTracks(
+        state, sequence, "no targeted track has a clip under the playhead",
+        [&](const Track& t) -> std::optional<ChosenEdge> {
+            const auto i = t.clipIndexAt(playhead);
+            if (!i) {
+                return std::nullopt;
+            }
+            const Clip& c = t.clips[*i];
+            return ChosenEdge{c.id, Edge::Head, playhead - c.start()};
+        },
+        [&](const ProjectState& s, ClipId clip, Edge edge, Ticks delta) {
+            return trimEdge(s, sequence, clip, edge, delta);
+        });
+}
+
+EditOutcome trimNextEditToPlayhead(const ProjectState& state, SequenceId sequence, Ticks playhead) {
+    return onTargetedTracks(
+        state, sequence, "no targeted track has a clip under the playhead",
+        [&](const Track& t) -> std::optional<ChosenEdge> {
+            const auto i = t.clipIndexAt(playhead);
+            if (!i) {
+                return std::nullopt;
+            }
+            const Clip& c = t.clips[*i];
+            return ChosenEdge{c.id, Edge::Tail, playhead - c.end()};
+        },
+        [&](const ProjectState& s, ClipId clip, Edge edge, Ticks delta) {
+            return trimEdge(s, sequence, clip, edge, delta);
+        });
+}
+
+namespace {
+
+EditOutcome extendEditToPlayhead(const ProjectState& state, SequenceId sequence, Ticks playhead, bool previous) {
+    // The edit: the nearest clip start or end on this side of the playhead across the targeted tracks (as Q / W find
+    // theirs), so a track without a cut there (a music bed) is left alone.
+    std::optional<Ticks> at;
+    if (const Sequence* s = state.findSequence(sequence)) {
+        for (const TrackId id : detail::unlockedTargets(*s)) {
+            for (const Clip& c : s->findTrack(id)->clips) {
+                for (const Ticks p : {c.start(), c.end()}) {
+                    if ((previous ? p < playhead : p > playhead) && (!at || (previous ? p > *at : p < *at))) {
+                        at = p;
+                    }
+                }
+            }
+        }
+    }
+    return onTargetedTracks(
+        state, sequence, previous ? "there is no edit before the playhead" : "there is no edit after the playhead",
+        [&](const Track& t) -> std::optional<ChosenEdge> {
+            const auto edge = at ? edgeAt(t, *at) : std::nullopt;
+            if (!edge) {
+                return std::nullopt;
+            }
+            return ChosenEdge{edge->first, edge->second, playhead - *at};
+        },
+        [&](const ProjectState& s, ClipId clip, Edge edge, Ticks delta) {
+            // A roll: two clips meeting there change length together; a clip next to a gap grows into it or leaves one.
+            return rollEdit(s, sequence, clip, edge, delta);
+        });
+}
+
+} // namespace
+
+EditOutcome extendPreviousEditToPlayhead(const ProjectState& state, SequenceId sequence, Ticks playhead) {
+    return extendEditToPlayhead(state, sequence, playhead, true);
+}
+
+EditOutcome extendNextEditToPlayhead(const ProjectState& state, SequenceId sequence, Ticks playhead) {
+    return extendEditToPlayhead(state, sequence, playhead, false);
+}
+
 // --- Regular trim -------------------------------------------------------------------------------------
 
 EditOutcome trimEdge(const ProjectState& state, SequenceId sequenceId, ClipId clipId, Edge edge, Ticks delta,

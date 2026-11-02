@@ -13,12 +13,18 @@
 // by id afterwards; a nested sequence is defined at its first clip. A multicam clip carries its whole <multiclip>
 // (each clip has its own active angles). Premiere writes a stereo (5.1) track as consecutive mono tracks: so does
 // this, so a stereo clip stays one clip on one track.
+// 0.6 (card #69): synthetic items are <generatoritem>s: a colour matte FCP7's Color generator, black video its Slug,
+// bars and tone its Bars and Tone, the other kinds a generator named by the Wabcut kind; each with Wabcut's kind and
+// settings as "wabcut:" parameters, so Wabcut reads them back exactly.
 
 #include "EffectMap.h"
+#include "FilterMap.h"
 #include "Exporters.h"
+#include "InterchangeEffects.h"
 #include "TimeMath.h"
 
 #include <wabcut/interchange/FileUrl.h>
+#include <wabcut/model/Synthetic.h>
 #include <wabcut/model/Timecode.h>
 #include <wabcut/model/TimeRemap.h>
 
@@ -392,7 +398,9 @@ private:
 
     void writeClip(pugi::xml_node parent, const IrSequence& seq, const IrTrack& track, const IrClip& c, int exploded) {
         const bool title = c.title.has_value();
-        pugi::xml_node node = parent.append_child(title ? "generatoritem" : "clipitem");
+        const IrGenerator* generated =
+            !title && c.media < m_doc.media.size() && m_doc.media[c.media].generator ? &*m_doc.media[c.media].generator : nullptr;
+        pugi::xml_node node = parent.append_child(title || generated ? "generatoritem" : "clipitem");
         // Exploded audio tracks: each channel is its own clipitem.
         const std::string id = exploded == 0 ? clipId(c) : clipId(c) + "-" + std::to_string(exploded + 1);
         node.append_attribute("id") = id.c_str();
@@ -408,7 +416,7 @@ private:
         boolean(node, "enabled", c.enabled);
         if (c.media != kNoMedia && m_doc.media[c.media].duration && !m_doc.media[c.media].stillImage) {
             integer(node, "duration", frames(*m_doc.media[c.media].duration, r, exact));
-        } else if (title) {
+        } else if (title || generated) {
             integer(node, "duration", frames(c.duration, r, exact));
         }
         rate(node, r, seq, c.location);
@@ -441,6 +449,8 @@ private:
             writeTitle(node, *c.title, notes);
         } else if (c.sequence != kNoSequence) {
             writeNested(node, c, track.kind, notes);
+        } else if (generated) {
+            writeGenerator(node, *generated, track.kind, notes);
         } else if (c.media != kNoMedia) {
             writeFileRef(node, c.media, seq, c);
         }
@@ -449,7 +459,7 @@ private:
             text(st, "mediatype", track.kind == TrackKind::Video ? "video" : "audio");
             integer(st, "trackindex", sourceTrackIndex(c, exploded));
         }
-        if (exploded == 0 && c.media != kNoMedia && !title) {
+        if (exploded == 0 && c.media != kNoMedia && !title && !generated) {
             writeMediaMarkers(node, m_doc.media[c.media], r);
         }
         if (exploded == 0) {
@@ -464,7 +474,7 @@ private:
             m_linkNodes.push_back({node, &c, exploded, track.kind});
         }
         if (exploded == 0) {
-            const std::string what = std::string(title ? "title" : c.sequence != kNoSequence ? (c.angles.empty() ? "nested clip" : "multicam clip") : "clip") +
+            const std::string what = std::string(title ? "title" : generated ? "generated clip" : c.sequence != kNoSequence ? (c.angles.empty() ? "nested clip" : "multicam clip") : "clip") +
                                      " '" + c.name + "'";
             std::string reason = what;
             for (const std::string& n : notes) {
@@ -642,6 +652,43 @@ private:
         (void)index;
         boolean(node, "enabled", track.enabled);
         boolean(node, "locked", track.locked);
+    }
+
+    /// 0.6 (card #69): a synthetic item's generator effect: FCP7's own where it has one, and Wabcut's kind and settings.
+    void writeGenerator(pugi::xml_node parent, const IrGenerator& g, TrackKind kind, std::vector<std::string>& notes) {
+        pugi::xml_node effect = parent.append_child("effect");
+        const bool matte = g.kind == kColorMatteGenerator;
+        const bool slug = g.kind == kBlackVideoGenerator;
+        const bool bars = g.kind == kBarsAndToneGenerator;
+        const std::string name = matte ? "Color" : slug ? "Slug" : bars ? "Bars and Tone" : std::string(generatorDisplayName(g.kind));
+        text(effect, "name", name);
+        text(effect, "effectid", matte || slug || bars ? name : g.kind);
+        text(effect, "effectcategory", matte || slug ? "Matte" : "Generator");
+        text(effect, "effecttype", "generator");
+        text(effect, "mediatype", kind == TrackKind::Video ? "video" : "audio");
+        const auto parameter = [&](const std::string& id, const std::string& label) {
+            pugi::xml_node p = effect.append_child("parameter");
+            text(p, "parameterid", id);
+            text(p, "name", label);
+            return p;
+        };
+        if (matte) {
+            pugi::xml_node value = parameter("fillcolor", "Color").append_child("value");
+            const auto byte = [&](const char* key) {
+                return std::to_string(std::clamp<std::int64_t>(std::llround(generatorParam(g, key) * 255.0), 0, 255));
+            };
+            text(value, "alpha", "255");
+            text(value, "red", byte("color.r"));
+            text(value, "green", byte("color.g"));
+            text(value, "blue", byte("color.b"));
+        }
+        text(parameter("wabcut:generator", "Wabcut Generator"), "value", g.kind);
+        for (const EffectParam& p : g.params) {
+            text(parameter("wabcut:" + p.key, p.key), "value", number(p.value.isConstant() ? p.value.constant() : 0.0));
+        }
+        if (!matte && !slug && !bars) {
+            notes.push_back("other editors see a generator they may not have; Wabcut reads it");
+        }
     }
 
     void writeTitle(pugi::xml_node parent, const IrTitle& t, std::vector<std::string>& notes) {
@@ -949,7 +996,36 @@ private:
                 text(p, "name", std::string(name));
                 return p;
             };
-            if (const NativeEffect* native = nativeEffectFor(e.effect)) {
+            if (const auto premiere = fcpFilterFor(e)) {
+                // 0.6 (card #66): Premiere's own filter (Lumetri Color, Parametric Equalizer, Dynamics, ...) with its
+                // names and units, and the Wabcut effect again as "wabcut:" parameters other editors skip.
+                text(effect, "name", premiere->name);
+                text(effect, "effectid", premiere->id);
+                if (!premiere->category.empty()) {
+                    text(effect, "effectcategory", premiere->category);
+                }
+                text(effect, "effecttype", "filter");
+                text(effect, "mediatype", premiere->mediaType);
+                if (premiere->premiereBypass) { // PF: Premiere's own switch, as Premiere writes it
+                    text(effect, "pproBypass", e.enabled ? "false" : "true");
+                }
+                for (const FcpWriteParam& wp : premiere->params) {
+                    pugi::xml_node p = parameter(wp.id, wp.name);
+                    if (wp.wabcutOnly) {
+                        p.attribute("authoringApp").set_value("Wabcut");
+                    }
+                    if (!wp.text.empty()) {
+                        text(p, "value", wp.text);
+                    } else if (wp.premiereKeys) { // PF: "ticks,value,0,0,0,0,0,0" keys (Premiere's value form)
+                        text(p, "value", premiereKeyListText(wp.value, wp.scale, wp.boolean));
+                    } else {
+                        parameterValue(p, wp.value, wp.scale, 0.0, r, exact);
+                    }
+                }
+                for (const std::string& note : premiere->notes) {
+                    notes.push_back(note);
+                }
+            } else if (const NativeEffect* native = nativeEffectFor(e.effect)) {
                 text(effect, "name", std::string(native->fcpName));
                 text(effect, "effectid", std::string(native->fcpId));
                 text(effect, "effectcategory", std::string(native->category));
@@ -992,9 +1068,12 @@ private:
                 for (const EffectParam& p : e.params) {
                     parameterValue(parameter(p.key, p.key), p.value, 1.0, 0.0, r, exact);
                 }
+                for (const EffectData& d : e.data) { // 0.6: curves and other effect data
+                    text(parameter(std::string(kWabcutDataParam) + d.key, d.key), "value", effectDataToText(d));
+                }
                 ownOnly.push_back(e.effect);
             }
-            if (!e.masks.empty() || !e.data.empty()) {
+            if (!e.masks.empty() || (!e.data.empty() && nativeEffectFor(e.effect))) {
                 partial.push_back(e.effect + (e.masks.empty() ? " data" : " masks"));
             }
         }

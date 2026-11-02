@@ -1,10 +1,13 @@
 #include <wabcut/ai/Provenance.h>
+#include <wabcut/color/ColorSpaces.h>
 #include <wabcut/model/ProjectIO.h>
 #include "ExportController.h"
 
 #include "BridgeIds.h"
 #include "CaptionStyleMapping.h"
 #include "CaptionsBridge.h"
+#include "DiskSpace.h"
+#include "ExportInternal.h"
 #include "GamingExport.h"
 #include "PlaybackBridge.h"
 #include "ProjectController.h"
@@ -13,6 +16,7 @@
 #include <wabcut/editor/SourceEdit.h>
 #include <wabcut/export/Encoders.h>
 #include <wabcut/export/ReviewFrames.h>
+#include <wabcut/export/Stems.h>
 #include <wabcut/model/EditSession.h>
 #include <wabcut/model/ProjectOps.h>
 #include <wabcut/model/MediaLocator.h>
@@ -32,6 +36,7 @@
 #include <QSettings>
 #include <QStandardPaths>
 #include <QStringList>
+#include <QTimer>
 #include <QUrl>
 #include <QtQml/qqml.h>
 
@@ -122,6 +127,21 @@ QString presetName(std::string_view id) {
     return fromUtf8(preset ? std::string_view(preset->name) : id);
 }
 
+/// 0.6 (#52): a stem's name in the UI (the track roles of the Audio Track Mixer).
+QString stemRoleName(TrackRole role) {
+    switch (role) {
+    case TrackRole::Dialogue:
+        return translate("Dialogue");
+    case TrackRole::Music:
+        return translate("Music");
+    case TrackRole::Effects:
+        return translate("Effects");
+    case TrackRole::None:
+        break;
+    }
+    return translate("Other");
+}
+
 QString codecText(ex::VideoCodec c) {
     switch (c) {
     case ex::VideoCodec::H264:
@@ -154,6 +174,10 @@ QString codecText(ex::VideoCodec c) {
         return QStringLiteral("Animation");
     case ex::VideoCodec::CineForm:
         return QStringLiteral("CineForm");
+    case ex::VideoCodec::Xdcam: // 0.6 (#73)
+        return QStringLiteral("XDCAM HD422");
+    case ex::VideoCodec::AvcIntra:
+        return QStringLiteral("AVC-Intra 100");
     }
     return {};
 }
@@ -173,7 +197,10 @@ QString presetCategory(std::string_view id) {
     static constexpr std::string_view kFormats[] = {"prores-4444-alpha", "animation-alpha", "cineform-alpha", "dnxhr-hq",
                                                     "dnxhr-444", "dnxhd-1080p-hq", "audio-mp3", "audio-aac",
                                                     "audio-aiff", "png-sequence", "tiff-sequence", "dpx-sequence",
-                                                    "jpeg-sequence", "targa-sequence", "exr-sequence", "png-still"};
+                                                    "jpeg-sequence", "targa-sequence", "exr-sequence", "png-still",
+                                                    // 0.6 (#73): broadcast delivery and Avid MediaFiles
+                                                    "mxf-op1a-xdcam-hd422", "mxf-op1a-dnxhd-hq", "mxf-op1a-dnxhr-hq",
+                                                    "mxf-opatom-dnxhd-hq", "mxf-op1a-avc-intra-100"};
     for (const std::string_view f : kFormats) {
         if (f == id) {
             return QStringLiteral("formats");
@@ -297,6 +324,15 @@ QString safeFileName(QString name) {
 
 } // namespace
 
+// P1 round (2C): the helpers ExportBatches.cpp and ExportQueueKeeper.cpp share (ExportInternal.h).
+QString exportdetail::safeFileName(QString name) {
+    return wabcut::app::safeFileName(std::move(name));
+}
+
+QString exportdetail::presetDisplayName(std::string_view id) {
+    return presetName(id);
+}
+
 // ---- ExportJobModel --------------------------------------------------------------------------------------
 
 ExportJobModel::ExportJobModel(QObject* parent) : QAbstractListModel(parent) {}
@@ -339,6 +375,13 @@ QVariant ExportJobModel::data(const QModelIndex& index, int role) const {
         return r.origin;
     case ErrorKindRole:
         return r.errorKind;
+    case RetryableRole:
+        // P1 (#20): a restored job retries from the request kept with it; an interrupted one always can.
+        return (!r.presetId.isEmpty() || r.restored) &&
+               (r.state == QLatin1String("failed") || r.state == QLatin1String("cancelled") ||
+                r.state == QLatin1String("interrupted"));
+    case RestoredRole:
+        return r.restored;
     default:
         return {};
     }
@@ -349,7 +392,8 @@ QHash<int, QByteArray> ExportJobModel::roleNames() const {
             {PresetNameRole, "presetName"}, {StateRole, "jobState"},  {PhaseTextRole, "phaseText"},
             {ProgressRole, "progress"},     {FpsTextRole, "fpsText"}, {EtaTextRole, "etaText"},
             {EncoderRole, "encoder"},       {DetailRole, "detail"},   {FinishedRole, "finished"},
-            {OriginRole, "origin"},         {ErrorKindRole, "errorKind"}};
+            {OriginRole, "origin"},         {ErrorKindRole, "errorKind"}, {RetryableRole, "retryable"},
+            {RestoredRole, "restored"}};
 }
 
 int ExportJobModel::activeCount() const {
@@ -358,6 +402,8 @@ int ExportJobModel::activeCount() const {
 }
 
 void ExportJobModel::append(Row row) {
+    if (!row.queuedAt.isValid())
+        row.queuedAt = QDateTime::currentDateTimeUtc();
     const int at = rowCount();
     beginInsertRows({}, at, at);
     m_rows.push_back(std::move(row));
@@ -439,6 +485,35 @@ const ExportJobModel::Row* ExportJobModel::update(exporter::ExportJobId queueId,
                         translate("HDR PQ · MaxCLL %1 / MaxFALL %2 nits").arg(status.result->maxCll).arg(status.result->maxFall);
         else if (status.result->dynamicRange == ex::DynamicRange::Hlg)
             r.detail += QStringLiteral(" · ") + translate("HDR HLG");
+        // 0.6 (#73): the delivery - MXF's operational pattern, timecode, audio layout and UMID, the embedded captions.
+        if (!status.result->operationalPattern.empty()) {
+            r.detail += QStringLiteral(" · ") + translate("MXF %1 · TC %2").arg(fromUtf8(status.result->operationalPattern),
+                                                                              fromUtf8(status.result->startTimecode));
+            if (!status.result->audioLayout.empty())
+                r.detail += QStringLiteral(" · ") + fromUtf8(status.result->audioLayout);
+            if (!status.result->extraFiles.empty())
+                r.detail += QStringLiteral(" · ") + (status.result->extraFiles.size() == 1
+                                                         ? translate("1 more file")
+                                                         : translate("%1 more files").arg(status.result->extraFiles.size()));
+            // OP-Atom (more files): the picture file's UMID - FFmpeg gives every OP-Atom file a material package of its
+            // own (docs/export.md), so the audio files are separate clips in Media Composer.
+            if (!status.result->materialUmid.empty())
+                r.detail += QStringLiteral(" · ")
+                            + (status.result->extraFiles.empty() ? translate("UMID %1")
+                                                                 : translate("picture UMID %1 (each file has its own)"))
+                                  .arg(fromUtf8(status.result->materialUmid));
+        }
+        if (!status.result->embeddedCaptions.empty()) {
+            const QString captions = fromUtf8(status.result->embeddedCaptions);
+            const int cues = status.result->embeddedCaptionCues;
+            r.detail += QStringLiteral(" · ") + (cues == 1 ? translate("%1 (1 caption)").arg(captions)
+                                                           : translate("%1 (%2 captions)").arg(captions).arg(cues));
+        }
+        // 0.6 (#72): what SDR Conform mapped.
+        if (status.result->sdrConform)
+            r.detail += QStringLiteral(" · ") + translate("SDR Conform: %1 % tone-mapped, %2 % gamut-mapped")
+                                                    .arg(status.result->sdrConform->toneMappedShare() * 100.0, 0, 'f', 1)
+                                                    .arg(status.result->sdrConform->gamutMappedShare() * 100.0, 0, 'f', 1);
     } else if (status.error) {
         r.detail = ExportController::plainError(*status.error);
     }
@@ -458,6 +533,19 @@ const ExportJobModel::Row* ExportJobModel::find(const QString& jobId) const {
     return it == m_rows.end() ? nullptr : &*it;
 }
 
+void ExportJobModel::setRequest(const QString& jobId, const QString& sequenceId, const QString& presetId,
+                                const QVariantMap& overrides) {
+    const auto it = std::find_if(m_rows.begin(), m_rows.end(), [&](const Row& r) { return r.jobId == jobId; });
+    if (it == m_rows.end()) {
+        return;
+    }
+    it->sequenceId = sequenceId;
+    it->presetId = presetId;
+    it->overrides = overrides;
+    const int row = static_cast<int>(it - m_rows.begin());
+    emit dataChanged(index(row), index(row), {RetryableRole});
+}
+
 void ExportJobModel::removeFinished() {
     for (int i = rowCount() - 1; i >= 0; --i) {
         if (m_rows[static_cast<std::size_t>(i)].finished) {
@@ -471,6 +559,9 @@ void ExportJobModel::removeFinished() {
 }
 
 void ExportJobModel::removeFinished(exporter::ExportJobId queueId) {
+    if (queueId == 0) {
+        return; // P1 (#20): an unknown job (queueIdOf) - not a restored row outside the queue
+    }
     for (int i = rowCount() - 1; i >= 0; --i) {
         const Row& r = m_rows[static_cast<std::size_t>(i)];
         if (r.queueId == queueId && r.finished) {
@@ -568,6 +659,20 @@ ExportController::ExportController(QObject* parent)
     ex::WatchFolderService::Options watchOptions;
     m_watch = std::make_shared<ex::WatchFolderService>(*m_queue, watchOptions);
     connect(m_jobs, &ExportJobModel::activeCountChanged, this, &ExportController::busyChanged);
+    // P1 (#29): while exports run, their drives are checked every 30 s (diskSpaceLow under 2 GB, once per drive).
+    connect(m_jobs, &ExportJobModel::activeCountChanged, this, [this] {
+        if (m_jobs->activeCount() > 0 && !m_spaceTimer) {
+            auto* timer = new QTimer(this);
+            timer->setInterval(30'000);
+            connect(timer, &QTimer::timeout, this, &ExportController::checkDiskSpace);
+            timer->start();
+            m_spaceTimer = timer;
+        } else if (m_jobs->activeCount() == 0 && m_spaceTimer) {
+            m_spaceTimer->deleteLater();
+            m_spaceTimer = nullptr;
+            m_spaceWarned.clear();
+        }
+    });
     // UX rework (L): a deleted user preset changes what lastPreset / lastQuickPreset read.
     connect(this, &ExportController::presetsChanged, this, &ExportController::exportMemoryChanged);
     // AI-15: the Content Credentials setting ("ai" until the user picks another).
@@ -612,6 +717,9 @@ ExportController::ExportController(QObject* parent)
 }
 
 ExportController::~ExportController() {
+    if (m_persistPending) {
+        persistQueue(); // P1 (#20): a change not written yet (the queue below is cancelled, not "finished")
+    }
     {
         std::lock_guard lock(m_relay->mutex);
         m_relay->target = nullptr;
@@ -631,9 +739,25 @@ ExportController* ExportController::create(QQmlEngine*, QJSEngine*) {
 }
 
 void ExportController::setProject(ProjectController* project) {
-    if (m_project != project) {
+    // P1 (#21): project() may have found the singleton already (lazily): the sequence watch is made here either way.
+    if (m_project != project || (project && !m_sequenceConnection)) {
+        const bool changed = m_project != project;
         m_project = project;
-        emit projectChanged();
+        // P1 (#21): another sequence of the other shape changes what the remembered presets read.
+        disconnect(m_sequenceConnection);
+        m_lastPortrait = portraitSequence({});
+        if (project) {
+            m_sequenceConnection = connect(project, &ProjectController::sequenceChanged, this, [this] {
+                const bool portrait = portraitSequence({});
+                if (portrait != m_lastPortrait) {
+                    m_lastPortrait = portrait;
+                    emit exportMemoryChanged();
+                }
+            });
+        }
+        if (changed) {
+            emit projectChanged();
+        }
     }
 }
 
@@ -804,10 +928,12 @@ QVariantMap ExportController::describe(const QString& sequenceId, const QString&
     d[QStringLiteral("container")] = fromUtf8(ex::containerName(s.container));
     d[QStringLiteral("videoCodec")] = fromUtf8(ex::videoCodecName(s.video.codec));
     if (s.video.enabled) {
+        // 0.6 (#73): MXF names its operational pattern.
+        const QString containerText = s.container == ex::Container::Mxf         ? QStringLiteral("MXF OP1a")
+                                      : s.container == ex::Container::MxfOpAtom ? QStringLiteral("MXF OP-Atom")
+                                                                                : fromUtf8(ex::containerName(s.container)).toUpper();
         d[QStringLiteral("format")] =
-            QStringLiteral("%1 · %2 · %3")
-                .arg(fromUtf8(ex::containerName(s.container)).toUpper(), codecText(s.video.codec),
-                     pixelFormatText(s.video.pixelFormat));
+            QStringLiteral("%1 · %2 · %3").arg(containerText, codecText(s.video.codec), pixelFormatText(s.video.pixelFormat));
         QString resolution = QStringLiteral("%1 × %2").arg(r->width).arg(r->height);
         if (r->renderWidth > r->width || r->renderHeight > r->height) {
             resolution += translate(" · centre crop");
@@ -823,12 +949,35 @@ QVariantMap ExportController::describe(const QString& sequenceId, const QString&
             s.video.encoder == "auto"
                 ? (picked.isEmpty() ? translate("Auto · hardware first") : translate("Auto · %1").arg(picked))
                 : QString::fromStdString(s.video.encoder);
+        const bool sized = s.video.rateControl == ex::RateControl::TargetSize;
         d[QStringLiteral("quality")] =
             s.video.codec == ex::VideoCodec::ProRes || s.video.codec == ex::VideoCodec::DnxHR
                 ? translate("Profile")
             : s.video.rateControl == ex::RateControl::Quality
                 ? translate("Constant quality %1").arg(s.video.quality)
+            : sized
+                // P1 (#28): a size limit: what fits, and the bitrate that leaves the picture.
+                ? translate("Fits %1 MB (≈ %2 Mb/s)")
+                      .arg(QString::number(static_cast<double>(s.video.targetBytes) / 1e6, 'g', 4))
+                      .arg(static_cast<double>(r->targetVideoBitrate) / 1e6, 0, 'f', 1)
                 : translate("%1 Mb/s").arg(static_cast<double>(s.video.bitrate) / 1e6, 0, 'f', 1);
+        d[QStringLiteral("targetMB")] = sized ? static_cast<double>(s.video.targetBytes) / 1e6 : 0.0;
+        // P1 (#28): too few bits for the picture (under 0.03 bits a pixel at the output size and rate) blocks up.
+        const double rate = sized ? static_cast<double>(r->targetVideoBitrate)
+                            : s.video.rateControl == ex::RateControl::Bitrate ? static_cast<double>(s.video.bitrate)
+                                                                              : 0.0;
+        d[QStringLiteral("targetMbps")] = sized ? static_cast<double>(r->targetVideoBitrate) / 1e6 : 0.0;
+        const double pixelRate = static_cast<double>(r->width) * r->height * r->frameRate.toDouble();
+        const bool lowBitrate = rate > 0 && pixelRate > 0 && rate / pixelRate < 0.03;
+        d[QStringLiteral("lowBitrate")] = lowBitrate;
+        d[QStringLiteral("lowBitrateNote")] =
+            lowBitrate ? translate("%1 Mb/s is little for %2 × %3 at %4: the picture will block up. A smaller frame size, a "
+                                   "lower frame rate or a shorter range looks better.")
+                             .arg(rate / 1e6, 0, 'f', 1)
+                             .arg(r->width)
+                             .arg(r->height)
+                             .arg(rateText(r->frameRate))
+                       : QString();
         // 0.2 (I.9): what the picture is written as, and whether this format can carry HDR from this sequence.
         const ColorManagement management = managementOf(project());
         d[QStringLiteral("dynamicRangeSetting")] = fromUtf8(ex::dynamicRangeName(s.video.dynamicRange));
@@ -840,7 +989,23 @@ QVariantMap ExportController::describe(const QString& sequenceId, const QString&
             r->dynamicRange == ex::DynamicRange::Pq    ? translate("HDR · Rec.2100 PQ · HDR10 metadata, %1 nits").arg(management.peakNits)
             : r->dynamicRange == ex::DynamicRange::Hlg ? translate("HDR · Rec.2100 HLG")
             : management.isHdr()                       ? translate("SDR · tone-mapped from HDR")
-                                                       : translate("SDR · Rec.709");
+            : r->outputSpace != OutputColorSpace::Rec709 ? translate("SDR") // 0.6 (#72): the chain below names the space
+                                                         : translate("SDR · Rec.709");
+        // 0.6 (#72): the colour chain (the output colour space, SDR Conform, tone mapping or clipping) when it is more
+        // than Rec.709 as it is.
+        if (management.managed() || r->outputSpace != OutputColorSpace::Rec709) {
+            ColorManagement effective = management;
+            if (r->sdrConform) {
+                effective.sdrConform = *r->sdrConform;
+            }
+            const color::OutputTarget target =
+                r->dynamicRange == ex::DynamicRange::Pq    ? color::OutputTarget::Pq
+                : r->dynamicRange == ex::DynamicRange::Hlg ? color::OutputTarget::Hlg
+                                                           : color::outputTargetOf(r->outputSpace, color::OutputTarget::Sdr);
+            d[QStringLiteral("colorChain")] = fromUtf8(color::describeOutput(effective, target, r->sdrConform.has_value()));
+            d[QStringLiteral("dynamicRange")] = d.value(QStringLiteral("dynamicRange")).toString() + QStringLiteral(" · ") +
+                                                d.value(QStringLiteral("colorChain")).toString();
+        }
     } else {
         d[QStringLiteral("format")] = fromUtf8(ex::containerName(s.container)).toUpper();
         d[QStringLiteral("resolution")] = translate("No video");
@@ -889,10 +1054,61 @@ QVariantMap ExportController::describe(const QString& sequenceId, const QString&
         s.video.enabled && (s.container == ex::Container::Mp4 || s.container == ex::Container::Mov || s.container == ex::Container::Mkv);
     d[QStringLiteral("subtitles")] = s.subtitles.enabled;
     d[QStringLiteral("smartRenderAvailable")] = vc == ex::VideoCodec::ProRes || vc == ex::VideoCodec::DnxHR;
+    // 0.6 (#73): MXF delivery - the operational pattern, the reel, how the audio is laid out - and embedded captions:
+    // what the format can carry and where this export puts them.
+    const bool mxf = ex::isMxf(s.container);
+    d[QStringLiteral("mxf")] = mxf;
+    d[QStringLiteral("operationalPattern")] = s.container == ex::Container::Mxf         ? QStringLiteral("OP1a")
+                                              : s.container == ex::Container::MxfOpAtom ? QStringLiteral("OP-Atom")
+                                                                                        : QString();
+    d[QStringLiteral("reelName")] = fromUtf8(s.mxf.reelName);
+    d[QStringLiteral("mxfAudioLayout")] = fromUtf8(ex::mxfAudioLayoutName(s.mxf.audioLayout));
+    if (mxf && s.audio.enabled) {
+        const int mixChannels = channels <= 1 ? 1 : channels >= 6 && sequence->masterFormat == ChannelFormat::Surround51 ? 6 : 2;
+        QString layout = s.container == ex::Container::MxfOpAtom
+                             ? (channels == 1 ? translate("1 mono audio file") : translate("%1 mono audio files").arg(channels))
+                         : s.mxf.audioLayout == ex::MxfAudioLayout::OneTrack ? translate("one %1-channel track").arg(channels)
+                         : channels == 1 ? translate("1 mono track")
+                                         : translate("%1 mono tracks").arg(channels);
+        if (channels > mixChannels) {
+            layout += translate(" · %1 the %2 mix, %3 silent")
+                          .arg(mixChannels == 1 ? QStringLiteral("1") : QStringLiteral("1-%1").arg(mixChannels),
+                               mixChannels == 6 ? translate("5.1") : translate("stereo"),
+                               mixChannels + 1 == channels ? QString::number(channels)
+                                                           : QStringLiteral("%1-%2").arg(mixChannels + 1).arg(channels));
+        }
+        d[QStringLiteral("audio")] = translate("PCM %1-bit · %2 kHz · %3")
+                                         .arg(s.audio.codec == ex::AudioCodec::Pcm16 ? 16 : 24)
+                                         .arg(s.audio.sampleRate / 1000.0)
+                                         .arg(layout);
+    }
+    d[QStringLiteral("captionMode")] = fromUtf8(ex::captionExportName(s.captions.mode));
+    d[QStringLiteral("captionStandard")] = fromUtf8(ex::captionStandardName(s.captions.standard));
+    d[QStringLiteral("cc608Channel")] = static_cast<int>(s.captions.channel608);
+    d[QStringLiteral("cc708Service")] = static_cast<int>(s.captions.service708);
+    d[QStringLiteral("captionCarriage")] = fromUtf8(ex::captionCarriageName(s.captions.carriage));
+    d[QStringLiteral("captionDisplay")] = static_cast<int>(s.captions.display608);
+    d[QStringLiteral("captionTrackAvailable")] = s.container == ex::Container::Mxf || s.container == ex::Container::Mov;
+    d[QStringLiteral("captionInVideoAvailable")] =
+        s.video.enabled && (vc == ex::VideoCodec::H264 || vc == ex::VideoCodec::Hevc || vc == ex::VideoCodec::Xdcam);
+    if (s.captions.mode == ex::CaptionExport::Embed) {
+        if (const auto plan = ex::embeddedCaptionPlan(s)) {
+            d[QStringLiteral("embeddedCaptions")] = fromUtf8(ex::describeEmbeddedCaptions(s, *plan));
+        }
+    }
     d[QStringLiteral("chapterMarkers")] = static_cast<int>(std::count_if(
         sequence->markers.begin(), sequence->markers.end(), [&](const Marker& m) {
             return m.type == MarkerType::Chapter && m.start >= r->range.start && m.start < r->range.end();
         }));
+    // P1 (#27): the original media this export would read that is offline or missing (the export would stop on it).
+    QStringList offline;
+    if (const ProjectSnapshot snapshot = project() ? project()->snapshot() : ProjectSnapshot{}) {
+        for (const ex::MissingOriginal& m : ex::missingOriginals(*snapshot, *sequence, s, m_projectFile)) {
+            offline << QString::fromStdString(m.name.empty() ? m.path : m.name);
+        }
+    }
+    d[QStringLiteral("offline")] = offline;
+    d[QStringLiteral("offlineCount")] = static_cast<int>(offline.size());
     QString output = overrides.contains(QStringLiteral("output"))
                          ? pathToQString(outputFromOverride(overrides.value(QStringLiteral("output"))))
                          : defaultOutputPath(sequenceId, presetId, overrides);
@@ -902,6 +1118,34 @@ QVariantMap ExportController::describe(const QString& sequenceId, const QString&
         output = pathToQString(path);
     }
     d[QStringLiteral("output")] = output;
+    // 0.6 (#52): the stems a "By track role" export writes next to this one, and the line the settings drawer shows.
+    QVariantList stems;
+    QStringList stemNames;
+    for (const ex::StemRole& role : ex::stemRoles(*sequence)) {
+        const QString path = output.isEmpty() ? QString() : pathToQString(ex::stemOutput(pathFromQString(output), role.role));
+        const QString file = QFileInfo(path).fileName();
+        const QString name = stemRoleName(role.role);
+        stems.append(QVariantMap{{QStringLiteral("key"), fromUtf8(role.key)},
+                                 {QStringLiteral("name"), name},
+                                 {QStringLiteral("suffix"), fromUtf8(role.suffix)},
+                                 {QStringLiteral("tracks"), role.tracks},
+                                 {QStringLiteral("path"), path},
+                                 {QStringLiteral("file"), file}});
+        stemNames << (file.isEmpty() ? name : translate("%1 (%2)").arg(name, file));
+    }
+    d[QStringLiteral("stems")] = stems;
+    d[QStringLiteral("stemsOn")] = overrides.value(QStringLiteral("stems")).toString() == QLatin1String("role");
+    d[QStringLiteral("stemsText")] =
+        sequence->multicam ? translate("A multicam source sequence has no stems: export the sequence it is cut into.")
+        : stems.isEmpty()  ? translate("No audio track plays in this export, so there is nothing to split into stems.")
+                           : (stems.size() == 1
+                              ? translate("Also writes 1 stem, 24-bit WAV, next to the export: %1. Same range and sample "
+                                          "rate as the export, no loudness normalisation.")
+                                    .arg(stemNames.join(QStringLiteral(", ")))
+                              : translate("Also writes %1 stems, 24-bit WAV, next to the export: %2. Same range and sample "
+                                          "rate as the export, no loudness normalisation.")
+                                    .arg(stems.size())
+                                    .arg(stemNames.join(QStringLiteral(", "))));
     return d;
 }
 
@@ -931,6 +1175,17 @@ QString ExportController::queueExportAs(const QString& sequenceId, const QString
     if (!settings) {
         setLastError(plainError(settings.error()));
         return {};
+    }
+    // 0.6 (#52): a stem of an export ("stemOnly", Stems.h): audio only, of the project with that role's tracks soloed.
+    const QString stemKey = overrides.value(QStringLiteral("stemOnly")).toString();
+    std::optional<TrackRole> stemRole;
+    if (!stemKey.isEmpty()) {
+        stemRole = ex::stemRoleFromKey(stemKey.toStdString());
+        if (!stemRole) {
+            setLastError(translate("Unknown stem \"%1\".").arg(stemKey));
+            return {};
+        }
+        *settings = ex::stemSettings(*settings);
     }
     if (settings->captions.mode != ex::CaptionExport::None) {
         // The caption track the program monitor shows (Captions panel; PlaybackBridge draws the same), in that track's
@@ -972,10 +1227,18 @@ QString ExportController::queueExportAs(const QString& sequenceId, const QString
         setLastError(translate("Choose where to save the export."));
         return {};
     }
+    if (stemRole && !overrides.contains(QStringLiteral("output"))) {
+        output = ex::stemOutput(output, *stemRole); // next to the master's default file
+    }
     output.replace_extension(std::string(ex::outputExtension(*settings))); // the format decides (0.2: stills too)
 
     ex::ExportRequest request;
     request.snapshot = project()->snapshot();
+    if (stemRole && request.snapshot) {
+        const bool masterEffects = overrides.value(QStringLiteral("stemsMasterEffects"), true).toBool();
+        request.snapshot = std::make_shared<const ProjectState>(
+            ex::stemProject(*request.snapshot, sequence->id, *stemRole, masterEffects));
+    }
     request.sequence = sequence->id;
     request.settings = *settings;
     request.output = output;
@@ -983,13 +1246,34 @@ QString ExportController::queueExportAs(const QString& sequenceId, const QString
     request.videoSource = m_videoSource;
     setLastError({});
     const auto user = settings->presetId.starts_with("user-") ? userPresetStore()->find(settings->presetId) : std::nullopt;
-    const bool chosenOutput = overrides.contains(QStringLiteral("output"));
-    const QString job = queueRequestAs(newJobId(), std::move(request), user ? fromUtf8(user->name) : presetName(settings->presetId),
-                                       overrides.value(QStringLiteral("hold")).toBool(),
-                                       overrides.value(QStringLiteral("contentCredentials")).toString(), origin);
+    const bool chosenOutput = overrides.contains(QStringLiteral("output")) && !stemRole;
+    const QString label = stemRole ? translate("%1 stem").arg(stemRoleName(*stemRole))
+                          : user   ? fromUtf8(user->name)
+                                   : presetName(settings->presetId);
+    // Stems carry no Content Credentials (WAV); the master export does.
+    const QString job = queueRequestAs(newJobId(), std::move(request), label, overrides.value(QStringLiteral("hold")).toBool(),
+                                       stemRole ? QStringLiteral("off")
+                                                : overrides.value(QStringLiteral("contentCredentials")).toString(),
+                                       origin);
+    // P1 (#27): the request stays with the job, so a failed one can be retried as it was (its own sequence, not the
+    // current one then).
+    if (!job.isEmpty()) {
+        m_jobs->setRequest(job, sequenceKey(sequence->id), presetId, rawOverrides);
+    }
     // UX rework (L): a destination the user chose is where the next export goes by default.
     if (!job.isEmpty() && chosenOutput) {
         setLastFolder(pathToQString(output.parent_path()));
+    }
+    // 0.6 (#52): "By track role": the stems right after the export, named after its file ("<name>_DX.wav", ...), each a
+    // job of its own (retried on its own).
+    if (!job.isEmpty() && !stemRole && overrides.value(QStringLiteral("stems")).toString() == QLatin1String("role")) {
+        for (const ex::StemRole& role : ex::stemRoles(*sequence)) {
+            QVariantMap stem = rawOverrides;
+            stem.remove(QStringLiteral("stems"));
+            stem[QStringLiteral("stemOnly")] = fromUtf8(role.key);
+            stem[QStringLiteral("output")] = pathToQString(ex::stemOutput(output, role.role));
+            queueExportAs(sequenceKey(sequence->id), presetId, stem, origin);
+        }
     }
     return job;
 }
@@ -1050,14 +1334,14 @@ std::expected<ExportController::Transcode, Error> ExportController::queueTransco
     if (const auto r = ex::resolve(*settings, *snap->findSequence(withSequence->id), snap->colorManagement); !r) {
         return std::unexpected(r.error());
     }
-    // "<name><extension>", numbered when taken.
+    // "<name><extension>", numbered "<name> (2)<extension>", ... when taken (like every other export's file name).
     const std::filesystem::path stem = pathFromUtf8(source.name.empty() ? std::string("Transcoded") : source.name).filename();
     const std::string ext(ex::outputExtension(*settings));
     std::filesystem::path output = folder / stem;
     output += ext;
-    for (int n = 1; std::filesystem::exists(output, ec) && n < 10000; ++n) {
+    for (int n = 2; std::filesystem::exists(output, ec) && n < 10000; ++n) {
         output = folder / stem;
-        output += "_" + std::to_string(n) + ext;
+        output += " (" + std::to_string(n) + ")" + ext;
     }
     ex::ExportRequest request;
     request.snapshot = snap;
@@ -1088,6 +1372,9 @@ QStringList ExportController::sendToQueue(const QString& sequenceId, const QStri
         o[QStringLiteral("hold")] = hold;
         if (presetIds.size() > 1) {
             o.remove(QStringLiteral("output")); // each destination gets its own default name
+        }
+        if (id != presetIds.front()) {
+            o.remove(QStringLiteral("stems")); // 0.6 (#52): one set of stems, after the first destination
         }
         const QString job = queueExportAs(sequenceId, id, o, QStringLiteral("queue"));
         if (!job.isEmpty()) {
@@ -1298,6 +1585,8 @@ QString ExportController::queueRequestAs(const QString& jobIdIn, ex::ExportReque
         signedFlag = std::make_shared<std::atomic<bool>>(false);
         request.finalize = ai::c2pa::exportFinalizer(request.snapshot, request.sequence, std::move(options), credentialsIdentity(), signedFlag);
     }
+    row.restored = m_restoring; // P1 (#20): brought back from the last session (or its Retry)
+    keepJob(jobId, request, presetLabel, credentials, origin); // P1 (#20): kept across restarts
     row.queueId = m_queue->enqueue(std::move(request), hold);
     {
         std::lock_guard lock(m_idsMutex);
@@ -1395,6 +1684,9 @@ void ExportController::cancelAll() {
             m_queue->cancel(r.queueId);
         }
     }
+    // P1 (#20): cancelled for good, also when Wabcut closes before the cancellations are reported (Cancel Exports and
+    // Quit): nothing of them comes back next time.
+    dropKept(true);
 }
 
 void ExportController::start(const QString& jobId) {
@@ -1460,6 +1752,85 @@ void ExportController::clearFinished() {
     m_jobs->removeFinished();
 }
 
+void ExportController::checkDiskSpace() {
+    constexpr double kLow = 2e9; // under 2 GB a long export may not fit any more
+    for (const ExportJobModel::Row& r : m_jobs->rows()) {
+        if (r.finished || r.held || r.outputPath.isEmpty()) {
+            continue;
+        }
+        const QString folder = QFileInfo(r.outputPath).absolutePath();
+        const qint64 free = diskspace::freeBytesAt(folder);
+        const QString volume = diskspace::volumeNameOf(folder);
+        if (free < 0 || static_cast<double>(free) >= kLow || m_spaceWarned.contains(volume)) {
+            continue;
+        }
+        m_spaceWarned << volume;
+        //: While an export runs, e.g. "Only 1.4 GB left on Data while exporting Trailer.mp4: free some space, or the
+        //: export may stop when the drive is full."
+        emit diskSpaceLow(translate("Only %1 left on %2 while exporting %3: free some space, or the export may stop when "
+                                    "the drive is full.")
+                              .arg(diskspace::bytesText(static_cast<double>(free)), volume, r.title));
+    }
+}
+
+QString ExportController::retryOutputPath(const QString& path, const QDateTime& since, const QDateTime& replaced) const {
+    const QFileInfo was(path);
+    const QString wanted = was.absoluteFilePath();
+    const auto writtenByJob = [&](const QString& candidate) {
+        return std::any_of(m_jobs->rows().begin(), m_jobs->rows().end(), [&](const ExportJobModel::Row& r) {
+            return !r.finished && QDir::cleanPath(QDir::fromNativeSeparators(r.outputPath)) == QDir::cleanPath(candidate);
+        });
+    };
+    if (!writtenByJob(wanted)) {
+        const QFileInfo now(wanted);
+        if (!now.exists())
+            return wanted;
+        const QDateTime modified = now.lastModified().toUTC();
+        if (now.isFile() && ((replaced.isValid() && modified == replaced) || (since.isValid() && modified <= since)))
+            return wanted; // the file the export was to replace (the user chose it)
+    }
+    // "Clip (2).mp4", "Clip (3).mp4", ... from the name without an earlier number.
+    static const QRegularExpression kNumbered(QStringLiteral(R"(^(.*) \((\d+)\)$)"));
+    QString base = was.completeBaseName();
+    if (const auto m = kNumbered.match(base); m.hasMatch())
+        base = m.captured(1);
+    const QString ext = was.suffix().isEmpty() ? QString() : QStringLiteral(".") + was.suffix();
+    QString output = wanted;
+    for (int n = 2; n < 1000 && (QFileInfo::exists(output) || writtenByJob(output)); ++n)
+        output = was.dir().filePath(QStringLiteral("%1 (%2)%3").arg(base).arg(n).arg(ext));
+    return output;
+}
+
+QString ExportController::retry(const QString& jobId) {
+    const ExportJobModel::Row* row = m_jobs->find(jobId);
+    if (row && row->restored) {
+        return retryKept(jobId); // P1 (#20): its kept project and settings, not the project open now
+    }
+    if (!row || row->presetId.isEmpty() ||
+        (row->state != QLatin1String("failed") && row->state != QLatin1String("cancelled"))) {
+        setLastError(translate("This export cannot be retried: export it again from the Export panel."));
+        return {};
+    }
+    // The same request on the project as it is now, into the same file (a failed or cancelled export never wrote it:
+    // a file there from before it was queued is the one it was to replace), or a numbered one when another job writes
+    // that name now or a file was written there since.
+    QVariantMap overrides = row->overrides;
+    overrides.remove(QStringLiteral("hold")); // a retry starts at once
+    if (!row->outputPath.isEmpty()) {
+        overrides[QStringLiteral("output")] = QDir::toNativeSeparators(retryOutputPath(row->outputPath, row->queuedAt));
+    }
+    const QString sequenceId = row->sequenceId;
+    const QString presetId = row->presetId;
+    const QString origin = row->origin;
+    const bool chosenOutput = row->overrides.contains(QStringLiteral("output"));
+    const QString folderBefore = lastFolder();
+    const QString job = queueExportAs(sequenceId, presetId, overrides, origin); // `row` may move: not used after this
+    if (!chosenOutput) {
+        setLastFolder(folderBefore); // a retry of a default name does not make its folder the next default
+    }
+    return job;
+}
+
 // ---- UX rework (L): finished jobs for toasts, and the remembered choices ---------------------------------------------
 
 namespace {
@@ -1469,7 +1840,15 @@ const QString kLastGamingPresetKey = QStringLiteral("export/lastGamingPreset");
 const QString kLastQuickPresetKey = QStringLiteral("export/lastQuickPreset");
 const QString kLastFolderKey = QStringLiteral("export/lastFolder");
 const QString kLastRangeKey = QStringLiteral("export/lastRange");
+const QString kLastTargetKey = QStringLiteral("export/lastTargetMB"); // P1 (#28)
 const QString kDefaultPreset = QStringLiteral("match-source");
+// P1 (#21): a vertical sequence's own choices (the keys above are the landscape ones, as before).
+const QString kPortraitSuffix = QStringLiteral("Portrait");
+
+/// The key of `key` for a sequence of this shape.
+QString shapedKey(const QString& key, bool portrait) {
+    return portrait ? key + kPortraitSuffix : key;
+}
 
 bool presetExists(const QString& id) {
     return !id.isEmpty() && ExportController::userPresetStore()->findAny(id.toStdString()).has_value();
@@ -1566,48 +1945,72 @@ QUrl ExportController::folderUrlOf(const QString& pathOrUrl) const {
 
 void ExportController::forgetExportChoices() {
     QSettings settings;
-    for (const QString& key : {kLastPresetKey, kLastGamingPresetKey, kLastQuickPresetKey, kLastFolderKey, kLastRangeKey}) {
+    for (const QString& key : {kLastPresetKey, kLastGamingPresetKey, kLastQuickPresetKey, kLastFolderKey, kLastRangeKey,
+                               kLastTargetKey,
+                               shapedKey(kLastPresetKey, true), shapedKey(kLastGamingPresetKey, true),
+                               shapedKey(kLastQuickPresetKey, true)}) {
         settings.remove(key);
     }
     emit exportMemoryChanged();
 }
 
+bool ExportController::portraitSequence(const QString& sequenceId) const {
+    const SequencePtr sequence = sequenceFor(sequenceId);
+    return sequence && sequence->height > sequence->width;
+}
+
+QVariantMap ExportController::rememberedFor(const QString& sequenceId) const {
+    const bool portrait = portraitSequence(sequenceId);
+    const QSettings settings;
+    const QString preset = settings.value(shapedKey(kLastPresetKey, portrait)).toString();
+    const QString gaming = settings.value(shapedKey(kLastGamingPresetKey, portrait)).toString();
+    const QString quick = settings.value(shapedKey(kLastQuickPresetKey, portrait)).toString();
+    return {{QStringLiteral("portrait"), portrait},
+            {QStringLiteral("preset"), presetExists(preset) ? preset : kDefaultPreset},
+            {QStringLiteral("gamingPreset"), gamingPresetExists(gaming) ? gaming : QString()},
+            {QStringLiteral("quickPreset"), presetExists(quick) ? quick : kDefaultPreset}};
+}
+
+// P1 (#21): the preset choices read and write the current sequence's shape (landscape: the keys of old).
 QString ExportController::lastPreset() const {
-    const QString id = QSettings().value(kLastPresetKey).toString();
+    const QString id = QSettings().value(shapedKey(kLastPresetKey, portraitSequence({}))).toString();
     return presetExists(id) ? id : kDefaultPreset;
 }
 
 void ExportController::setLastPreset(const QString& id) {
-    if (!presetExists(id) || QSettings().value(kLastPresetKey).toString() == id) {
+    const QString key = shapedKey(kLastPresetKey, portraitSequence({}));
+    if (!presetExists(id) || QSettings().value(key).toString() == id) {
         return;
     }
-    QSettings().setValue(kLastPresetKey, id);
+    QSettings().setValue(key, id);
     emit exportMemoryChanged();
 }
 
 QString ExportController::lastGamingPreset() const {
-    const QString id = QSettings().value(kLastGamingPresetKey).toString();
+    const QString id = QSettings().value(shapedKey(kLastGamingPresetKey, portraitSequence({}))).toString();
     return gamingPresetExists(id) ? id : QString();
 }
 
 void ExportController::setLastGamingPreset(const QString& id) {
-    if ((!id.isEmpty() && !gamingPresetExists(id)) || QSettings().value(kLastGamingPresetKey).toString() == id) {
+    const QString key = shapedKey(kLastGamingPresetKey, portraitSequence({}));
+    if ((!id.isEmpty() && !gamingPresetExists(id)) || QSettings().value(key).toString() == id) {
         return;
     }
-    QSettings().setValue(kLastGamingPresetKey, id);
+    QSettings().setValue(key, id);
     emit exportMemoryChanged();
 }
 
 QString ExportController::lastQuickPreset() const {
-    const QString id = QSettings().value(kLastQuickPresetKey).toString();
+    const QString id = QSettings().value(shapedKey(kLastQuickPresetKey, portraitSequence({}))).toString();
     return presetExists(id) ? id : kDefaultPreset;
 }
 
 void ExportController::setLastQuickPreset(const QString& id) {
-    if (!presetExists(id) || QSettings().value(kLastQuickPresetKey).toString() == id) {
+    const QString key = shapedKey(kLastQuickPresetKey, portraitSequence({}));
+    if (!presetExists(id) || QSettings().value(key).toString() == id) {
         return;
     }
-    QSettings().setValue(kLastQuickPresetKey, id);
+    QSettings().setValue(key, id);
     emit exportMemoryChanged();
 }
 
@@ -1645,6 +2048,20 @@ void ExportController::setLastRange(const QString& range) {
         return;
     }
     QSettings().setValue(kLastRangeKey, next);
+    emit exportMemoryChanged();
+}
+
+double ExportController::lastTargetMB() const {
+    const double mb = QSettings().value(kLastTargetKey, 0.0).toDouble();
+    return mb >= 1.0 && mb <= 4000.0 ? mb : 0.0;
+}
+
+void ExportController::setLastTargetMB(double megabytes) {
+    const double next = megabytes >= 1.0 && megabytes <= 4000.0 ? megabytes : 0.0;
+    if (std::abs(lastTargetMB() - next) < 1e-9) {
+        return;
+    }
+    QSettings().setValue(kLastTargetKey, next);
     emit exportMemoryChanged();
 }
 

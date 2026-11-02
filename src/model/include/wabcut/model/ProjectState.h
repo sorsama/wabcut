@@ -399,6 +399,11 @@ struct MediaItem {
     ClipMetadata metadata;
     /// 0.2 (P.3): set on a copy imported from another project (ImportSource, Sequence.h). Saved only when set.
     std::optional<ImportSource> importSource;
+    /// 0.6 (card #71): Premiere's Master Clip Effects. Every clip of this item plays them before its own effects: the
+    /// video effects on its video clips, the audio effects on its audio clips (MasterClipEffects.h). A subclip's clips
+    /// get its master item's first, then the subclip's own. Keyframe times are media time, like every clip curve, so
+    /// a key holds at the same source frame in every instance. Saved only when there are any.
+    EffectStack masterEffects;
 
     bool hasStream(StreamRef stream) const;
     /// Amount of source media available for `stream`, or nullopt when unbounded (still images) or
@@ -427,7 +432,7 @@ struct MediaItem {
                audioTakes == o.audioTakes && derived == o.derived && recording == o.recording && channels == o.channels &&
                scaling == o.scaling && interpretation == o.interpretation && timecode == o.timecode &&
                stillDuration == o.stillDuration && madeOffline == o.madeOffline && metadata == o.metadata &&
-               importSource == o.importSource;
+               importSource == o.importSource && masterEffects == o.masterEffects;
     }
 };
 

@@ -9,7 +9,7 @@
 Premiere Pro's shortcuts and edit rules · round trips with Premiere, Resolve and Final Cut · AI that runs on your own machine
 
 [![Status: alpha](https://img.shields.io/badge/status-alpha-D6F54C)](#project-status)
-[![Version 0.5.3](https://img.shields.io/badge/version-0.5.3-9B6CFF)](docs/release-notes-0.5.md)
+[![Version 0.6.0](https://img.shields.io/badge/version-0.6.0-9B6CFF)](docs/release-notes-0.6.md)
 [![Platforms: Windows, with Linux and macOS previews](https://img.shields.io/badge/platforms-Windows%20%7C%20Linux%20%7C%20macOS%20%28preview%29-1D1D20)](#install)
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue)](LICENSE)
 [![C++23](https://img.shields.io/badge/C%2B%2B-23-00599C?logo=cplusplus&logoColor=white)](docs/building.md)
@@ -21,7 +21,7 @@ Premiere Pro's shortcuts and edit rules · round trips with Premiere, Resolve an
 </div>
 
 > [!WARNING]
-> **Wabcut is in development. This is an alpha version (0.5.3).**
+> **Wabcut is in development. This is an alpha version (0.6.0).**
 > Expect bugs, missing features and changes between versions, including to shortcuts, settings and the project format.
 > Keep backups of your projects and media, and don't rely on it yet for deadline work or sensitive material.
 
@@ -33,8 +33,10 @@ Premiere Pro's shortcuts and edit rules · round trips with Premiere, Resolve an
   your muscle memory carries over. Since 0.2, Premiere's transitions and effects, Optical Flow, Warp Stabilizer, a
   Media Encoder-style export queue and the Project panel's metadata, search bins and Media Browser are there too
   ([how it compares](docs/premiere-parity.md)). 0.3 adds Premiere's menu bar, its Window menu and the Effects panel's
-  folders, 0.4 Alt-drag copy, Ctrl+Alt-drag rearrange and Premiere keys that did nothing before, and 0.5 caption
-  tracks on the timeline, the Audio Meters panel, audio scrubbing and Scene Edit Detection.
+  folders, 0.4 Alt-drag copy, Ctrl+Alt-drag rearrange and Premiere keys that did nothing before, 0.5 caption tracks on
+  the timeline, the Audio Meters panel, audio scrubbing and Scene Edit Detection, and 0.6 text in Effect Controls,
+  auditions, HDR finishing, an export queue that survives a restart, MXF delivery with CEA-608/708 captions, AAF/OMF
+  import and Creator Autopilot.
 - **Bring your edit with you.** Import timelines from Premiere Pro, DaVinci Resolve and Final Cut Pro (FCP7 XML,
   FCPXML, OpenTimelineIO, EDL) and send them back the same way.
 - **AI that stays yours.** Transcription, speech enhancement, smart search and object masks run locally. Cloud features
@@ -99,16 +101,23 @@ captured by the automated UI tests.</sub>
 
 ## Project status
 
-Wabcut is an **alpha**. The current release is **0.5.3** (0.5.0 with a zoomable Effect Controls keyframe lane, update checks that work,
-the launch intro on the desktop, and Linux and macOS downloads that start).
-0.5 brought caption tracks you edit on the timeline, waveforms on
-nested and multicam clips, the Audio Meters panel and audio scrubbing, Scene Edit Detection, a dead-time review, OBS
-chapter markers and the source clip's transcript, the discrete GPU on hybrid laptops, and opt-in updates
-([release notes](docs/release-notes-0.5.md)). 0.4 brought Alt-drag copy and rearrange, Premiere keys that did nothing
-before and safe quitting ([0.4 release notes](docs/release-notes-0.4.md)); 0.3 a new Home, Premiere's menu bar and
-Window menu ([0.3 release notes](docs/release-notes-0.3.md)); 0.2 most of what Premiere Pro has for gaming videos,
-video essays and documentaries ([0.2 release notes](docs/release-notes-0.2.md)). Most of the editor works, but it has
-only been tested on a small number of machines and projects. Known gaps in this version:
+Wabcut is an **alpha**. The current release is **0.6.0**.
+
+0.6 brought text you edit in Effect Controls, auditions that keep several takes at one cut, a beat grid to cut music
+to, HDR finishing and SDR Conform, seven new effects and Master Clip Effects, an export queue that survives a restart,
+several sequences or every marker as separate files, MXF OP1a and OP-Atom delivery with CEA-608/708 captions,
+dialogue, music and effects stems, caption files beside timeline hand-offs, Library usage counts, bins that open in
+place, captions you click in the Program Monitor, Premiere's caption keys, speakers and script correction in the
+transcript, a voice-over script prompter, loudness QC, AAF and OMF import, colour grades and EQ through FCP XML, Creator
+Autopilot, and a settings and accessibility pass ([0.6 release notes](docs/release-notes-0.6.md)). 0.5 brought
+caption tracks you edit on the timeline, waveforms on nested and multicam clips, the Audio Meters panel and audio
+scrubbing, Scene Edit Detection, a dead-time review, OBS chapter markers and the source clip's transcript, the discrete
+GPU on hybrid laptops, and opt-in updates ([0.5 release notes](docs/release-notes-0.5.md)); 0.4 Alt-drag copy and
+rearrange, Premiere keys that did nothing before and safe quitting ([0.4 release notes](docs/release-notes-0.4.md));
+0.3 a new Home, Premiere's menu bar and Window menu ([0.3 release notes](docs/release-notes-0.3.md)); 0.2 most of what
+Premiere Pro has for gaming videos, video essays and documentaries ([0.2 release notes](docs/release-notes-0.2.md)).
+Most of the editor works, but it has only been tested on a small number of machines and projects. Known gaps in this
+version:
 
 - **Made and tested on Windows.** Wabcut is built by a solo developer who works only on Windows 10 and 11. The Linux
   and macOS (Apple silicon) downloads are **previews**: GitHub's machines build, install, start and smoke-test them
@@ -119,11 +128,12 @@ only been tested on a small number of machines and projects. Known gaps in this 
   you quit.
 - **AI quality is not benchmarked yet.** Local models and live cloud providers have not been measured on real projects.
 - **The features since 0.2 are tested by automated tests only.** None has been through a release run with real
-  projects yet, and AAF / OMF files have not yet been opened in Pro Tools.
+  projects yet, an AAF or OMF hand-off has not been through a full mix session, and an MXF has not been through a
+  broadcaster's QC tool.
 - **Not built yet:** OpenFX video plug-ins, VR / 360 video, and cloud collaboration (review links, shared projects).
 - **Privacy redaction:** check every redacted export by eye before you share it.
 
-The full list is in the [release notes](docs/release-notes-0.5.md#known-issues).
+The full list is in the [release notes](docs/release-notes-0.6.md#known-issues).
 
 Need something that isn't here? [Open an issue](../../issues) and say what you're trying to make.
 

@@ -4,7 +4,10 @@ import QtQuick.Controls.Basic
 import QtQuick.Layouts
 
 // ● AUDIO TOOLS (the Audio workspace's browser slot, M5g). Every action is a typed audio command, one undo step:
-//   Analyze loudness   the mix, every track and the mix, or the selected clips (audio.loudness): a report table.
+//   Analyze loudness   the mix, every track and the mix, or the selected clips (audio.loudness): a report table. 0.6
+//                      (P1 round, #54, loudness QC): with how many true-peak overs each row has (a link to the first), and
+//                      for the mix where its loudest moments and overs are (links), stepping through the overs and
+//                      "Add markers for overs" (LoudnessQc).
 //   Normalize          to the loudness target (audio.normalize), dry-run first: before → gain → after per target,
 //                      then Apply.
 //   Auto-duck          two modes (0.4): "Music under dialogue" ducks the music tracks under the dialogue tracks
@@ -289,13 +292,14 @@ Panel {
                     objectName: "loudnessReport"
                     Layout.fillWidth: true
                     visible: AudioMixer.report.length > 0
-                    columns: 4
+                    columns: 5
                     columnSpacing: Theme.space(2)
                     rowSpacing: Theme.space(1)
                     Head { Layout.fillWidth: true; text: qsTr("Target") }
                     Head { text: qsTr("LUFS") }
                     Head { text: qsTr("LRA") }
                     Head { text: qsTr("dBTP") }
+                    Head { text: qsTr("Overs") } // 0.6 (#54): true-peak overs above the ceiling
                     Repeater {
                         model: AudioMixer.report
                         delegate: Text {
@@ -350,6 +354,42 @@ Panel {
                             font.pixelSize: Theme.textXs
                         }
                     }
+                    // 0.6 (P1 round, #54): how many true-peak overs, as a link to the first one.
+                    Repeater {
+                        model: AudioMixer.report
+                        delegate: RowLayout {
+                            id: oversCell
+                            required property var modelData
+                            required property int index
+                            readonly property var overs: modelData.overs ?? []
+                            readonly property int count: Math.max(modelData.overCount ?? 0, overs.length)
+                            Layout.row: index + 1
+                            Layout.column: 4
+                            Text {
+                                objectName: "reportNoOvers_" + oversCell.index
+                                visible: oversCell.count === 0
+                                text: qsTr("0")
+                                color: Theme.textTertiary
+                                font.family: Theme.fontMono
+                                font.pixelSize: Theme.textXs
+                            }
+                            TimecodeLink {
+                                objectName: "reportOvers_" + oversCell.index
+                                timecode: oversCell.overs.length > 0 ? oversCell.overs[0].start : ""
+                                label: String(oversCell.count)
+                                what: oversCell.count === 1
+                                      ? qsTr("First of 1 true-peak over in %1").arg(oversCell.modelData.target)
+                                      : qsTr("First of %1 true-peak overs in %2").arg(oversCell.count).arg(oversCell.modelData.target)
+                                linkColor: Theme.dangerText
+                            }
+                        }
+                    }
+                }
+                // 0.6 (P1 round, #54): the mix's loudest moments and true-peak overs (links, stepper, markers).
+                LoudnessQc {
+                    objectName: "toolsLoudnessQc"
+                    Layout.fillWidth: true
+                    heading: true
                 }
             }
 

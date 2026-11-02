@@ -391,3 +391,67 @@ TEST_CASE("sequence.exportFrame and source.exportFrame render as an export and i
     program.params["bin"] = 999999;
     CHECK(engine.execute(program).error->code == command::ErrorCode::NotFound);
 }
+
+// ---- P1 round (stream 1C, #23): a size, a JPEG quality and a size cap ------------------------------------------------
+
+TEST_CASE("Export Frame scales a still to fit or fill and keeps a JPEG under a size cap", "[export][stills][p1]") {
+    const std::filesystem::path dir = freshOutputDir("stills-sized");
+    // A 16:9 frame: a red picture with a smooth gradient and some grain (JPEG has work to do).
+    QImage frame(1920, 1080, QImage::Format_RGBA8888);
+    for (int y = 0; y < frame.height(); ++y) {
+        for (int x = 0; x < frame.width(); ++x) {
+            const int grain = static_cast<int>((static_cast<unsigned>(x * 7919 + y * 104729) >> 3) % 23);
+            frame.setPixelColor(x, y, QColor(200 + grain, (x * 120) / frame.width() + grain, (y * 90) / frame.height(), 255));
+        }
+    }
+    // Fit into 9:16 keeps the whole frame with black bars above and below; fill crops its centre.
+    const QImage fit = exporter::scaleStill(frame, 1080, 1920, false);
+    REQUIRE(fit.size() == QSize(1080, 1920));
+    CHECK(fit.pixelColor(540, 20) == QColor(0, 0, 0, 255));
+    CHECK(fit.pixelColor(540, 960).red() > 150);
+    const QImage fill = exporter::scaleStill(frame, 1080, 1920, true);
+    REQUIRE(fill.size() == QSize(1080, 1920));
+    CHECK(fill.pixelColor(540, 20).red() > 150);
+    CHECK(exporter::scaleStill(frame, 0, 0, true).size() == frame.size()); // no size: unchanged
+
+    // A YouTube thumbnail: 1280 x 720 JPEG; the size and the quality are reported.
+    using exporter::StillFormat;
+    exporter::StillOptions best;
+    best.width = 1280;
+    best.height = 720;
+    best.fill = true;
+    const auto full = exporter::writeStill(frame, dir / "best.jpg", StillFormat::Jpeg, best);
+    REQUIRE(full);
+    CHECK(full->width == 1280);
+    CHECK(full->height == 720);
+    CHECK(full->quality == 100);
+    CHECK(full->bytes == static_cast<std::int64_t>(std::filesystem::file_size(dir / "best.jpg")));
+    const QImage back = decodeWithFfmpeg(dir / "best.jpg");
+    CHECK(back.size() == QSize(1280, 720));
+    // A cap under that size: the quality goes down until the file fits.
+    exporter::StillOptions capped = best;
+    capped.maxBytes = full->bytes * 6 / 10;
+    const auto small = exporter::writeStill(frame, dir / "capped.jpg", StillFormat::Jpeg, capped);
+    REQUIRE(small);
+    CHECK(small->quality < 100);
+    CHECK(small->bytes <= capped.maxBytes);
+    CHECK(small->bytes == static_cast<std::int64_t>(std::filesystem::file_size(dir / "capped.jpg")));
+    // An explicit quality is used as it is; the scale maps onto the encoder's (100 best).
+    exporter::StillOptions medium = best;
+    medium.quality = 60;
+    const auto mid = exporter::writeStill(frame, dir / "medium.jpg", StillFormat::Jpeg, medium);
+    REQUIRE(mid);
+    CHECK(mid->quality == 60);
+    CHECK(mid->bytes < full->bytes);
+    CHECK(exporter::jpegQscale(100) == 2);
+    CHECK(exporter::jpegQscale(1) == 31);
+    CHECK(exporter::jpegQscale(60) > exporter::jpegQscale(90));
+    // Other formats are scaled too (no quality); a size needs both sides.
+    const auto png = exporter::writeStill(frame, dir / "thumb.png", StillFormat::Png, best);
+    REQUIRE(png);
+    CHECK(png->quality == 0);
+    CHECK(QImage(QString::fromStdString(pathToUtf8(dir / "thumb.png"))).size() == QSize(1280, 720));
+    exporter::StillOptions half;
+    half.width = 1280;
+    CHECK_FALSE(exporter::writeStill(frame, dir / "bad.png", StillFormat::Png, half));
+}

@@ -1,6 +1,7 @@
 #include <wabcut/editor/MediaImport.h>
 #include <wabcut/editor/ProjectDocument.h>
 
+#include <wabcut/model/Auditions.h>
 #include <wabcut/model/ImageSequence.h>
 #include <wabcut/model/MediaLocator.h>
 #include <wabcut/model/ProjectOps.h>
@@ -9,6 +10,7 @@
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <fstream>
 #include <iterator>
 #include <map>
@@ -210,7 +212,7 @@ ProjectDocument::ProjectDocument(EditSession& session, ProjectDocumentOptions op
 ProjectDocument::~ProjectDocument() = default;
 
 void ProjectDocument::rememberClean() {
-    m_clean = m_session.snapshot();
+    m_clean = m_session.committed(); // never a preview (an audition's take playing): it is not saved
     m_autosaved = m_clean;
 }
 
@@ -219,7 +221,7 @@ std::string ProjectDocument::displayName() const {
 }
 
 bool ProjectDocument::isDirty() const {
-    const ProjectSnapshot now = m_session.snapshot();
+    const ProjectSnapshot now = m_session.committed();
     return !m_clean || !now || !isSameRevision(*m_clean, *now);
 }
 
@@ -282,7 +284,7 @@ std::expected<void, Error> ProjectDocument::save() {
 
 std::expected<void, Error> ProjectDocument::saveAs(const std::filesystem::path& file) {
     const std::filesystem::path absolute = absolutePath(file);
-    const ProjectSnapshot saved = m_session.snapshot();
+    const ProjectSnapshot saved = m_session.committed();
     ProjectState state = rebased(m_session.stateForSave(), absolute);
     if (m_saveFilter) {
         m_saveFilter(state);
@@ -340,7 +342,7 @@ std::optional<ProjectDocument::AutosaveJob> ProjectDocument::prepareAutosave() c
     if (job.target.empty()) {
         return std::nullopt;
     }
-    job.snapshot = m_session.snapshot();
+    job.snapshot = m_session.committed();
     if (m_autosaved && job.snapshot && isSameRevision(*m_autosaved, *job.snapshot)) {
         return std::nullopt;
     }
@@ -587,46 +589,407 @@ std::expected<int, Error> ProjectDocument::refreshMediaStatus() {
     return changed;
 }
 
-std::vector<RelinkCandidate> ProjectDocument::findRelinkCandidates(
-    MediaId mediaId, const std::vector<std::filesystem::path>& folders) const {
+namespace {
+
+/// The file name (lower case) an item's file had: after the last separator of either kind (a project saved on Windows
+/// names "C:\\Media\\a.mov", whose filename() on macOS/Linux would be the whole string, I.7 portability audit), of the
+/// file that stands for an image sequence, spanned clip or layered-file item (0.2: its first frame, part, PSD).
+std::string recordedFileName(const MediaItem& media) {
+    const std::string recorded = media.locator.path.empty() ? media.name
+                                                            : pathToUtf8(mediaFileToCheck(pathFromUtf8(media.locator.path)));
+    const std::size_t separator = recorded.find_last_of("/\\");
+    return lower(separator == std::string::npos ? recorded : recorded.substr(separator + 1));
+}
+
+/// "clip.mkv" -> {"clip", ".mkv"} (lower case already).
+std::pair<std::string, std::string> stemAndExtension(const std::string& name) {
+    const std::size_t dot = name.find_last_of('.');
+    if (dot == std::string::npos || dot == 0) {
+        return {name, {}};
+    }
+    return {name.substr(0, dot), name.substr(dot)};
+}
+
+/// Calls `fn(lowerCaseName, absolutePath)` for every regular file under `folders` (recursive, at most kMaxSearchEntries
+/// entries in all).
+template <typename Fn>
+void forEachFile(const std::vector<std::filesystem::path>& folders, Fn&& fn) {
+    std::size_t visited = 0;
+    for (const std::filesystem::path& folder : folders) {
+        std::error_code ec;
+        std::filesystem::recursive_directory_iterator it(folder, std::filesystem::directory_options::skip_permission_denied,
+                                                         ec);
+        for (; !ec && it != std::filesystem::recursive_directory_iterator(); it.increment(ec)) {
+            if (++visited > kMaxSearchEntries) {
+                break;
+            }
+            std::error_code fileEc;
+            if (it->is_regular_file(fileEc)) {
+                fn(lower(pathToUtf8(it->path().filename())), it->path());
+            }
+        }
+    }
+}
+
+/// Every regular file under `folders` by lower-case file name (forEachFile).
+std::multimap<std::string, std::filesystem::path> filesByName(const std::vector<std::filesystem::path>& folders) {
+    std::multimap<std::string, std::filesystem::path> out;
+    forEachFile(folders, [&](const std::string& name, const std::filesystem::path& file) {
+        out.emplace(name, absolutePath(file));
+    });
+    return out;
+}
+
+/// A plain file's item (not an image sequence, spanned clip or layered file, whose path says more than a file).
+bool plainFileItem(const MediaItem& media) {
+    return !media.isGenerator() && !media.locator.path.empty() &&
+           mediaFileToCheck(pathFromUtf8(media.locator.path)) == pathFromUtf8(media.locator.path);
+}
+
+/// P1 round (#42): `probed` is `media`'s recording in another container: the same length (within a frame, or 50 ms -
+/// an audio packet - whichever is longer: a remux may end its audio a packet earlier), picture size and frame rate,
+/// audio streams and channels.
+bool sameRecordingInfo(const MediaInfo& original, const MediaInfo& probed) {
+    if (original.isStillImage || probed.isStillImage || original.duration.value <= 0 || probed.duration.value <= 0) {
+        return false;
+    }
+    double frame = 1.0 / 30.0;
+    if (original.hasVideo() && original.video.front().frameRate.isValid()) {
+        frame = 1.0 / original.video.front().frameRate.toDouble();
+    }
+    if (std::abs(original.duration.toSeconds() - probed.duration.toSeconds()) > std::max(frame, 0.05) + 1e-6) {
+        return false;
+    }
+    if (original.video.size() != probed.video.size() || original.audio.size() != probed.audio.size()) {
+        return false;
+    }
+    if (original.hasVideo()) {
+        const VideoStreamInfo& a = original.video.front();
+        const VideoStreamInfo& b = probed.video.front();
+        if (a.width != b.width || a.height != b.height) {
+            return false;
+        }
+        if (a.frameRate.isValid() != b.frameRate.isValid() ||
+            (a.frameRate.isValid() && std::abs(a.frameRate.toDouble() - b.frameRate.toDouble()) > 0.01)) {
+            return false;
+        }
+    }
+    for (std::size_t i = 0; i < original.audio.size(); ++i) {
+        if (original.audio[i].channels != probed.audio[i].channels) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/// Why `next` cannot have `item` (or its subclips) play `info`: a clip of a sequence plays a stream it lacks; nullopt
+/// when every clip finds its stream.
+std::optional<std::string> missingStreamProblem(const ProjectState& state, const MediaItem& item, const MediaInfo& info) {
+    MediaItem probe = item;
+    probe.info = info;
+    std::optional<std::string> problem;
+    for (const SequencePtr& s : state.sequences) {
+        const auto check = [&](MediaId media, StreamRef stream, const std::string& what) {
+            if (problem || !media.isValid()) {
+                return;
+            }
+            const MediaItem* used = state.findMedia(media);
+            if (!used || (used->id != item.id && !(used->subclip && used->subclip->master == item.id))) {
+                return;
+            }
+            if (!probe.hasStream(stream)) {
+                problem = "the new file has no " + std::string(stream.kind == StreamKind::Video ? "video" : "audio") +
+                          " stream " + std::to_string(stream.index + 1) + " for " + what + " in '" + s->name + "'";
+            }
+        };
+        s->forEachTrack([&](const Track& t) {
+            for (const Clip& c : t.clips) {
+                check(c.media, c.stream, "clip '" + c.name() + "'");
+                if (const Audition* a = c.audition()) { // 0.6 (card #74): an audition's other takes play it too
+                    for (const AuditionTake& take : a->others) {
+                        check(take.media, take.stream, "take '" + take.name() + "' of clip '" + c.name() + "'");
+                    }
+                }
+            }
+        });
+        if (problem) {
+            break;
+        }
+    }
+    return problem;
+}
+
+} // namespace
+
+std::vector<RelinkCandidate> ProjectDocument::findRelinkCandidates(MediaId mediaId,
+                                                                  const std::vector<std::filesystem::path>& folders,
+                                                                  bool matchStem) const {
     std::vector<RelinkCandidate> out;
     const ProjectSnapshot snap = m_session.snapshot();
     const MediaItem* media = snap->findMedia(mediaId);
     if (!media || media->isGenerator()) {
         return out;
     }
-    // The file name after the last separator of either kind: a project saved on Windows names "C:\\Media\\a.mov",
-    // whose filename() on macOS/Linux would be the whole string (I.7 portability audit).
-    // 0.2: the file that stands for an image sequence, spanned clip or layered-file item (its first frame, part, PSD).
-    const std::string recorded = media->locator.path.empty() ? media->name
-                                                             : pathToUtf8(mediaFileToCheck(pathFromUtf8(media->locator.path)));
-    const std::size_t separator = recorded.find_last_of("/\\");
-    const std::string wanted = lower(separator == std::string::npos ? recorded : recorded.substr(separator + 1));
-    std::size_t visited = 0;
-    for (const std::filesystem::path& folder : folders) {
-        std::error_code ec;
-        std::filesystem::recursive_directory_iterator it(
-            folder, std::filesystem::directory_options::skip_permission_denied, ec);
-        for (; !ec && it != std::filesystem::recursive_directory_iterator(); it.increment(ec)) {
-            if (++visited > kMaxSearchEntries) {
-                break;
-            }
-            std::error_code fileEc;
-            if (!it->is_regular_file(fileEc) || lower(pathToUtf8(it->path().filename())) != wanted) {
-                continue;
-            }
-            const std::filesystem::path found = absolutePath(it->path());
-            if (std::ranges::any_of(out, [&](const RelinkCandidate& c) { return c.file == found; })) {
-                continue;
-            }
+    const std::string wanted = recordedFileName(*media);
+    const std::string wantedStem = stemAndExtension(wanted).first;
+    const bool byStem = matchStem && plainFileItem(*media);
+    std::vector<std::filesystem::path> stemMatches;
+    forEachFile(folders, [&](const std::string& name, const std::filesystem::path& path) {
+        const bool named = name == wanted;
+        if (!named && !(byStem && stemAndExtension(name).first == wantedStem)) {
+            return;
+        }
+        const std::filesystem::path found = absolutePath(path);
+        if (std::ranges::any_of(out, [&](const RelinkCandidate& c) { return c.file == found; }) ||
+            std::ranges::find(stemMatches, found) != stemMatches.end()) {
+            return;
+        }
+        if (named) {
             const auto fingerprint = fingerprintFile(found);
             out.push_back({found, fingerprint && fingerprint->sameContentAs(media->locator.fingerprint)});
+        } else {
+            stemMatches.push_back(found);
         }
-    }
+    });
     std::ranges::stable_sort(out, [](const RelinkCandidate& a, const RelinkCandidate& b) {
         return a.fingerprintMatches && !b.fingerprintMatches;
     });
+    for (const std::filesystem::path& found : stemMatches) { // P1 round (#42): another container, after the name matches
+        out.push_back({found, false, isSameRecording(mediaId, found)});
+    }
     return out;
+}
+
+bool ProjectDocument::isSameRecording(MediaId mediaId, const std::filesystem::path& file) const {
+    const ProjectSnapshot snap = m_session.snapshot();
+    const MediaItem* media = snap->findMedia(mediaId);
+    if (!media || !plainFileItem(*media) || !isFile(file)) {
+        return false;
+    }
+    const auto described = describeMediaFile(file, m_file);
+    return described && sameRecordingInfo(media->info, described->info);
+}
+
+std::expected<int, Error> ProjectDocument::relinkAfterLocate(MediaId mediaId, const std::filesystem::path& file,
+                                                             bool force) {
+    const ProjectSnapshot snap = m_session.snapshot();
+    const MediaItem* media = snap->findMedia(mediaId);
+    if (!media) {
+        return std::unexpected(Error{ErrorCode::NotFound, "no such media item"});
+    }
+    if (media->isGenerator()) {
+        return std::unexpected(Error{ErrorCode::InvalidArgument, media->name + " is generated (a title): it has no file"});
+    }
+    auto described = describeMediaFile(pathFromUtf8(relinkedMediaPath(media->locator.path, file)), m_file);
+    if (!described) {
+        return std::unexpected(std::move(described.error()));
+    }
+    const bool sameContent =
+        !media->locator.fingerprint.isKnown() || described->locator.fingerprint.sameContentAs(media->locator.fingerprint);
+    if (!sameContent && !force) {
+        if (plainFileItem(*media) && sameRecordingInfo(media->info, described->info)) {
+            return std::unexpected(Error{ErrorCode::InvalidArgument,
+                                         pathToUtf8(file.filename()) + " looks like the same recording as " + media->name +
+                                             " in another container, but it is not the same file"});
+        }
+        return std::unexpected(Error{ErrorCode::InvalidArgument,
+                                     pathToUtf8(file.filename()) + " is not the same file as " + media->name});
+    }
+    if (!sameContent) { // forced: every clip must still find its stream
+        if (const auto problem = missingStreamProblem(*snap, *media, described->info)) {
+            return std::unexpected(Error{ErrorCode::InvalidArgument, *problem});
+        }
+    }
+
+    // The others: the same place under the moved folder, then anything named like them under the located file's folder.
+    std::vector<std::pair<MediaId, std::filesystem::path>> found;
+    std::vector<const MediaItem*> rest;
+    for (const MediaPtr& m : snap->media) {
+        if (m->id != mediaId && m->locator.offline && !m->isGenerator() && !m->locator.path.empty()) {
+            rest.push_back(m.get());
+        }
+    }
+    const auto take = [&](const MediaItem& item, const std::filesystem::path& candidate) {
+        if (!mediaFileExists(candidate)) {
+            return false;
+        }
+        const auto fingerprint = fingerprintFile(mediaFileToCheck(candidate));
+        if (!fingerprint || !fingerprint->sameContentAs(item.locator.fingerprint)) {
+            return false;
+        }
+        found.emplace_back(item.id, candidate);
+        return true;
+    };
+    const std::filesystem::path oldFile = absolutePath(mediaFileToCheck(pathFromUtf8(media->locator.path)));
+    const std::filesystem::path newFile = absolutePath(file);
+    std::filesystem::path oldDir = oldFile.parent_path();
+    std::filesystem::path newDir = newFile.parent_path();
+    for (int level = 0; level <= 3 && !rest.empty() && !oldDir.empty() && !newDir.empty(); ++level) {
+        if (level > 0) {
+            // One folder up on both sides, while the folders left behind are named alike (the same tree, moved).
+            if (lower(pathToUtf8(oldDir.filename())) != lower(pathToUtf8(newDir.filename())) ||
+                oldDir.parent_path() == oldDir || newDir.parent_path() == newDir) {
+                break;
+            }
+            oldDir = oldDir.parent_path();
+            newDir = newDir.parent_path();
+        }
+        std::erase_if(rest, [&](const MediaItem* item) {
+            const std::filesystem::path was = absolutePath(mediaFileToCheck(pathFromUtf8(item->locator.path)));
+            const std::filesystem::path relative = was.lexically_relative(oldDir);
+            if (relative.empty() || relative.begin()->string() == "..") {
+                return false;
+            }
+            return take(*item, (newDir / relative).lexically_normal());
+        });
+    }
+    if (!rest.empty()) {
+        const auto files = filesByName({newFile.parent_path()});
+        std::erase_if(rest, [&](const MediaItem* item) {
+            const auto [first, last] = files.equal_range(recordedFileName(*item));
+            for (auto it = first; it != last; ++it) {
+                if (take(*item, it->second)) {
+                    return true;
+                }
+            }
+            return false;
+        });
+    }
+
+    int others = 0;
+    auto committed = m_session.apply("Relink Media", [&](const ProjectState& state) -> std::expected<ProjectState, Error> {
+        ProjectState next = state;
+        others = 0;
+        for (MediaPtr& m : next.media) {
+            if (m->id == mediaId) {
+                auto item = std::make_shared<MediaItem>(*m);
+                item->locator.path = described->locator.path;
+                item->locator.relativePath = described->locator.relativePath;
+                item->locator.fingerprint = described->locator.fingerprint;
+                item->locator.offline = false;
+                item->madeOffline = false;
+                item->info = described->info;
+                m = std::move(item);
+                continue;
+            }
+            const auto hit = std::ranges::find_if(found, [&](const auto& f) { return f.first == m->id; });
+            if (hit == found.end()) {
+                continue;
+            }
+            auto item = std::make_shared<MediaItem>(*m);
+            item->locator.path = relinkedMediaPath(m->locator.path, mediaFileToCheck(hit->second));
+            item->locator.relativePath =
+                m_file.empty() ? std::string{} : relativeMediaPath(m_file, pathFromUtf8(item->locator.path));
+            item->locator.offline = false;
+            item->madeOffline = false;
+            m = std::move(item);
+            ++others;
+        }
+        return next;
+    });
+    if (!committed) {
+        return std::unexpected(std::move(committed.error()));
+    }
+    return others;
+}
+
+std::vector<SameRecording> ProjectDocument::findSameRecordings(const std::vector<std::filesystem::path>& folders) const {
+    std::vector<SameRecording> out;
+    const ProjectSnapshot snap = m_session.snapshot();
+    std::vector<const MediaItem*> offline;
+    for (const MediaPtr& m : snap->media) {
+        // Subclips follow their master (relinkSameRecordings moves them with it).
+        if (m->locator.offline && plainFileItem(*m) && !m->isSubclip()) {
+            offline.push_back(m.get());
+        }
+    }
+    if (offline.empty()) {
+        return out;
+    }
+    std::multimap<std::string, std::filesystem::path> byStem;
+    for (const auto& [name, file] : filesByName(folders)) {
+        byStem.emplace(stemAndExtension(name).first, file);
+    }
+    std::map<std::filesystem::path, std::optional<MediaInfo>> probed; // each file is read once
+    for (const MediaItem* item : offline) {
+        const auto [stem, extension] = stemAndExtension(recordedFileName(*item));
+        const auto [first, last] = byStem.equal_range(stem);
+        for (auto it = first; it != last; ++it) {
+            if (stemAndExtension(lower(pathToUtf8(it->second.filename()))).second == extension) {
+                continue; // the same name: a plain relink's business
+            }
+            auto [slot, inserted] = probed.try_emplace(it->second);
+            if (inserted) {
+                if (auto described = describeMediaFile(it->second, m_file)) {
+                    slot->second = described->info;
+                }
+            }
+            if (slot->second && sameRecordingInfo(item->info, *slot->second)) {
+                out.push_back({item->id, it->second});
+                break;
+            }
+        }
+    }
+    return out;
+}
+
+std::expected<int, Error> ProjectDocument::relinkSameRecordings(const std::vector<SameRecording>& offers) {
+    const ProjectSnapshot snap = m_session.snapshot();
+    struct Planned {
+        MediaId media;
+        std::string oldPath;
+        MediaItem described;
+    };
+    std::vector<Planned> planned;
+    for (const SameRecording& offer : offers) {
+        const MediaItem* media = snap->findMedia(offer.media);
+        if (!media) {
+            return std::unexpected(Error{ErrorCode::NotFound, "no such media item"});
+        }
+        if (!plainFileItem(*media)) {
+            return std::unexpected(Error{ErrorCode::InvalidArgument, media->name + " has no plain file to relink"});
+        }
+        auto described = describeMediaFile(offer.file, m_file);
+        if (!described) {
+            return std::unexpected(std::move(described.error()));
+        }
+        if (!sameRecordingInfo(media->info, described->info)) {
+            return std::unexpected(Error{ErrorCode::InvalidArgument, pathToUtf8(offer.file.filename()) +
+                                                                         " is not the same recording as " + media->name});
+        }
+        if (const auto problem = missingStreamProblem(*snap, *media, described->info)) {
+            return std::unexpected(Error{ErrorCode::InvalidArgument, *problem});
+        }
+        planned.push_back({media->id, media->locator.path, std::move(*described)});
+    }
+    if (planned.empty()) {
+        return 0;
+    }
+    auto committed = m_session.apply("Relink Media", [&](const ProjectState& state) -> std::expected<ProjectState, Error> {
+        ProjectState next = state;
+        for (MediaPtr& m : next.media) {
+            const auto hit = std::ranges::find_if(planned, [&](const Planned& p) {
+                return p.media == m->id ||
+                       (m->subclip && m->subclip->master == p.media && m->locator.path == p.oldPath); // its subclips
+            });
+            if (hit == planned.end()) {
+                continue;
+            }
+            auto item = std::make_shared<MediaItem>(*m);
+            item->locator.path = hit->described.locator.path;
+            item->locator.relativePath = hit->described.locator.relativePath;
+            item->locator.fingerprint = hit->described.locator.fingerprint;
+            item->locator.offline = false;
+            item->madeOffline = false;
+            item->info = hit->described.info; // the new container's streams and indexes
+            m = std::move(item);
+        }
+        return next;
+    });
+    if (!committed) {
+        return std::unexpected(std::move(committed.error()));
+    }
+    return static_cast<int>(planned.size());
 }
 
 std::expected<void, Error> ProjectDocument::relink(MediaId mediaId, const std::filesystem::path& file, bool force) {

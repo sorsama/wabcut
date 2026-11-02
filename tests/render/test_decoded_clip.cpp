@@ -138,3 +138,47 @@ TEST_CASE("Zero-copy: a D3D11 decoder surface composites like the CPU path", "[r
     CHECK(psnr >= 45.0);
     (void)media::setSharedD3D11Device(nullptr, nullptr);
 }
+
+TEST_CASE("Zero-copy: pictures without media let go of the views that keep a decoder's surfaces",
+          "[render][gpu][media][zerocopy]") {
+    // F2P (0.6): a view of a decoder surface keeps the decoder's whole surface array alive. The importer kept unused
+    // views for 240 frames in case the decoder came back, so once a project closed (its decoders gone, the monitor
+    // black and idle) its decoder memory stayed until the next play. Black pictures now let them go as soon as the
+    // GPU is done with them, which the program monitor waits for with a few more frames.
+    const char* clip = "h264_1080p60_aac.mp4";
+    if (!haveMedia(clip)) {
+        SKIP("test media missing");
+    }
+    OffscreenOptions options;
+    options.shareDeviceWithDecoders = true;
+    auto created = OffscreenRenderer::create(options);
+    REQUIRE(created.has_value());
+    auto& renderer = **created;
+    if (renderer.backendName() != "D3D11" || !decodersShareDevice(renderer.rhi())) {
+        SKIP("zero-copy needs a D3D11 device with video support");
+    }
+    const FrameImporter& importer = renderer.compositor().importer();
+    {
+        media::DecoderOptions native;
+        native.outputMode = media::OutputMode::Native;
+        auto decoder = media::VideoDecoder::open(mediaPath(clip), -1, native);
+        REQUIRE(decoder.has_value());
+        auto frame = (*decoder)->frameAt((*decoder)->firstFrameTime() + Ticks{10 * (kTicksPerSecond / 60)});
+        REQUIRE(frame.has_value());
+        REQUIRE(frame->payloadKind() == media::PayloadKind::D3D11Texture);
+        REQUIRE(renderer.render(compositeOf({frame->width, frame->height}, {layerOf(*frame)})).has_value());
+        CHECK(importer.stats().nativeViews >= 1);
+        CHECK(importer.holdsFrames());
+    } // the decoder and its frame are gone: only the importer still holds the surface array
+    const auto black = compositeOf({1920, 1080}, {});
+    int frames = 0;
+    while (importer.holdsFrames() && frames < 8) {
+        REQUIRE(renderer.render(black).has_value());
+        ++frames;
+    }
+    INFO("black frames drawn " << frames << ", retire latency " << importer.retireLatency());
+    CHECK_FALSE(importer.holdsFrames());
+    CHECK(importer.stats().nativeViews == 0);
+    CHECK(frames <= importer.retireLatency() + 1);
+    (void)media::setSharedD3D11Device(nullptr, nullptr);
+}

@@ -2,6 +2,8 @@ import QtQuick
 
 // 0.1.3 workspaces: a workspace tab's menu (right-click, the Menu key or Shift+F10 on the tab). Its own QtQuick-only
 // file: a file importing QtQuick.Controls would get Qt's ContextMenu instead of Wabcut's.
+// P1 round (#32): the Window menu's workspace rows too - Save Changes to This Workspace, Save as New Workspace…, Reset to
+// Saved Layout, Reset to <Preset> Preset… and Lock Workspace (the window runs them: actionRequested, Main.menuAction).
 ContextMenu {
     id: root
     objectName: "workspaceTabMenu"
@@ -13,6 +15,16 @@ ContextMenu {
     signal renameRequested(int id)
     /// A workspace was made from this one: the tabs switch to it and rename it.
     signal created(int id)
+    /// P1 round (#32): an action only the window can do for the workspace (Main.menuAction's "saveWorkspaceChanges",
+    /// "saveAsNewWorkspace", "resetWorkspaceToPreset", "lockWorkspace"), once the menu has closed.
+    signal actionRequested(string action, int id)
+    property string pendingAction: ""
+    onClosed: {
+        const action = root.pendingAction
+        root.pendingAction = ""
+        if (action !== "")
+            Qt.callLater(() => root.actionRequested(action, root.workspaceId))
+    }
 
     ContextMenuItem {
         objectName: "workspaceMenuRename"
@@ -42,13 +54,43 @@ ContextMenu {
         onTriggered: Workspaces.move(root.workspaceId, 1)
     }
     ContextMenuSeparator {}
-    // Every panel back where the workspace's preset puts them.
+    ContextMenuItem {
+        objectName: "workspaceMenuSave"
+        text: qsTr("Save Changes to This Workspace")
+        iconName: "save"
+        onTriggered: root.pendingAction = "saveWorkspaceChanges"
+    }
+    ContextMenuItem {
+        objectName: "workspaceMenuSaveAsNew"
+        text: qsTr("Save as New Workspace…")
+        iconName: "copy"
+        onTriggered: root.pendingAction = "saveAsNewWorkspace"
+    }
+    // Every panel back where Save Changes kept them, else where the workspace's preset puts them.
     ContextMenuItem {
         objectName: "workspaceMenuReset"
-        text: qsTr("Reset layout")
+        text: qsTr("Reset to Saved Layout")
         iconName: "rotate-ccw"
         onTriggered: Workspaces.reset(root.workspaceId)
     }
+    ContextMenuItem {
+        objectName: "workspaceMenuResetToPreset"
+        text: qsTr("Reset to %1 Preset…").arg(Workspaces.presetLabel(Workspaces.resolve(root.workspaceId).preset))
+        iconName: "layout-grid"
+        onTriggered: root.pendingAction = "resetWorkspaceToPreset"
+    }
+    ContextMenuItem {
+        objectName: "workspaceMenuLock"
+        text: qsTr("Lock Workspace")
+        iconName: "lock"
+        checkable: true
+        checked: Workspaces.isLocked(root.workspaceId)
+        onTriggered: {
+            checked = Qt.binding(() => Workspaces.isLocked(root.workspaceId))
+            root.pendingAction = "lockWorkspace"
+        }
+    }
+    ContextMenuSeparator {}
     // The last workspace stays.
     ContextMenuItem {
         objectName: "workspaceMenuDelete"

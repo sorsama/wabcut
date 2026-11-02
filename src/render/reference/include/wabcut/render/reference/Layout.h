@@ -32,6 +32,8 @@ Image gaussianBlur(const Image& picture, double radius, bool repeatEdges);
 /// instead of adding taps (and caps taps at 96); the reference always runs the full-resolution kernel, which that mip
 /// path approximates. At or below 24 the two are the same kernel (taps <= 72).
 Image gaussianBlurSigma(const Image& picture, double sigma, bool repeatEdges);
+/// One pass of the same Gaussian along x (`horizontal`) or y only (0.6 Glow's Glow Dimensions).
+Image gaussianBlurSigmaAxis(const Image& picture, double sigma, bool horizontal, bool repeatEdges);
 
 // ---- Drop shadow (wabcut.dropShadow) --------------------------------------------------------------------------------
 

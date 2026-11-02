@@ -220,3 +220,51 @@ TEST_CASE("5.1 loudness: libebur128's channel weights, the LFE ignored, surround
           Approx(10.0 * std::log10(1.41)).margin(0.01));
 }
 
+
+// 0.6 (P1 round, #54, loudness QC): the meter says where - the loudest 400 ms and 3 s windows, the 100 ms block of the
+// true peak - and keeps every 100 ms block whose true peak reaches the floor (-6 dBTP), so overs can be listed later.
+TEST_CASE("Loudness says where the loudest windows and the true peak are, and keeps the hot blocks", "[audio][dsp][loudness]") {
+    // 10 s at -30 dBFS, 2 s at -3 dBFS from 10 s, 10 s at -30 dBFS.
+    const auto r = measure(program({{-30.0, 10.0}, {-3.0, 2.0}, {-30.0, 10.0}}));
+    constexpr std::int64_t kSecond = 48000;
+    // The loudest 400 ms window lies inside the loud part; the loudest 3 s window holds all of it.
+    CHECK(r.maxMomentaryFrame >= 10 * kSecond - kSecond / 10);
+    CHECK(r.maxMomentaryFrame + 4 * kSecond / 10 <= 12 * kSecond + kSecond / 10);
+    CHECK(r.maxShortTermFrame >= 9 * kSecond - kSecond / 10);
+    CHECK(r.maxShortTermFrame <= 10 * kSecond + kSecond / 10);
+    // The true peak's block is one of the loud part's (the oversampling filter may ring a block past its end).
+    CHECK(r.truePeakFrame >= 10 * kSecond);
+    CHECK(r.truePeakFrame < 12 * kSecond + kSecond / 10);
+    // The hot blocks are the loud part's 100 ms blocks (the -30 dBFS ones are below the floor), in order, ~-3 dBTP.
+    REQUIRE(r.peakBlocks.size() >= 20);
+    CHECK(r.peakBlocks.size() <= 22);
+    for (std::size_t i = 0; i < r.peakBlocks.size(); ++i) {
+        INFO(i);
+        CHECK(r.peakBlocks[i].frame >= 10 * kSecond - kSecond / 10);
+        CHECK(r.peakBlocks[i].frame <= 12 * kSecond + kSecond / 10);
+        CHECK(r.peakBlocks[i].frames == kSecond / 10);
+        CHECK(r.peakBlocks[i].truePeakDbtp >= dsp::kPeakBlockFloorDbtp);
+        CHECK(r.peakBlocks[i].truePeakDbtp <= r.truePeakDbtp + 1e-9);
+        if (i > 0) {
+            CHECK(r.peakBlocks[i].frame == r.peakBlocks[i - 1].frame + kSecond / 10);
+        }
+    }
+    CHECK(r.truePeakDbtp == Approx(-3.0).margin(0.4));
+
+    // Silence: nowhere, and no blocks.
+    const std::vector<float> silence(48000 * 2 * 5, 0.0f);
+    const auto quiet = measure(silence);
+    CHECK(quiet.maxMomentaryFrame == -1);
+    CHECK(quiet.maxShortTermFrame == -1);
+    CHECK(quiet.truePeakFrame == -1);
+    CHECK(quiet.peakBlocks.empty());
+
+    // reset() forgets them.
+    dsp::LoudnessMeter meter(2, 48000);
+    const auto loud = program({{-3.0, 1.0}});
+    meter.add(loud.data(), loud.size() / 2);
+    REQUIRE_FALSE(meter.result().peakBlocks.empty());
+    meter.reset();
+    CHECK(meter.result().peakBlocks.empty());
+    CHECK(meter.result().truePeakFrame == -1);
+}

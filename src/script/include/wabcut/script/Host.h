@@ -21,6 +21,7 @@
 #include <wabcut/model/Error.h>
 #include <wabcut/script/Events.h>
 #include <wabcut/script/Extension.h>
+#include <wabcut/script/Protocol.h>
 
 #include <array>
 #include <chrono>
@@ -220,6 +221,11 @@ private:
     bool callRunning() const;
     /// A token from `bucket` (refilled at `perSecond` up to `burst`), or false when it is empty.
     bool takeToken(double& bucket, Clock::time_point& refilled, int perSecond, int burst, Clock::time_point now);
+    /// A storageSet / storageRemove from the helper (rate limited; the write is saved a moment later).
+    void applyStorage(const HostMessage& message, Clock::time_point now);
+    /// P1 round (#65): stop() reads what the helper wrote before it ended - its last storage changes - for up to
+    /// `limit` before storage is saved; every other message from it is dropped then.
+    void drainStorage(std::chrono::milliseconds limit);
     void saveStorage();
     void addLog(std::string level, std::string message);
 

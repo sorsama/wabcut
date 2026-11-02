@@ -19,6 +19,8 @@
 #include <format>
 #include <random>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 using namespace wabcut;
@@ -42,6 +44,35 @@ double logC4(double e) {
     const double s = (7.0 * std::log(2.0) * std::pow(2.0, 7.0 - 14.0 * c / b)) / (a * b);
     const double t = (std::pow(2.0, 14.0 * (-c / b) + 6.0) - 64.0) / a;
     return e >= 0.0 ? (std::pow(2.0, 14.0 * (e - c) / b + 6.0) - 64.0) / a : e * s + t;
+}
+
+// 0.6: the camera logs made from the makers' documents, as each document writes its encoding (scene-linear reflectance
+// -> full-range code value): the product decodes, these encode, so a round trip checks one against the other.
+double dLogEncode(double x) { // DJI, "White Paper on D-Log and D-Gamut of DJI Cinema Color System" (2017)
+    return x <= 0.0078 ? 6.025 * x + 0.0929 : std::log10(x * 0.9892 + 0.0108) * 0.256663 + 0.584555;
+}
+double fLogEncode(double in) { // Fujifilm, "F-Log Data Sheet" Ver.1.1
+    return in < 0.00089 ? 8.735631 * in + 0.092864 : 0.344676 * std::log10(0.555556 * in + 0.009468) + 0.790453;
+}
+double fLog2Encode(double in) { // Fujifilm, "F-Log2 Data Sheet" Ver.1.0
+    return in < 0.000889 ? 8.799461 * in + 0.092864 : 0.245281 * std::log10(5.555556 * in + 0.064829) + 0.384316;
+}
+double nLogEncode(double y) { // Nikon, "N-Log Specification Document" 1.0.0 (10-bit code values)
+    return (y < 0.328 ? 650.0 * std::cbrt(y + 0.0075) : 150.0 * std::log(y) + 619.0) / 1023.0;
+}
+double sLog2Encode(double r) { // Sony, "S-Log2 Technical Paper": S-Log of 155 / 219 of the light, video range
+    const double x = r / 0.9 * 155.0 / 219.0;
+    const double y = x >= 0.0 ? 0.432699 * std::log10(x + 0.037584) + 0.616596 + 0.03 : x * 5.0 + 0.030001222851889303;
+    return (876.0 * y + 64.0) / 1023.0;
+}
+double canonLogEncode(double r) { // L. Thorpe, Canon, "Canon-Log Transfer Characteristic" (2012), video range
+    const double x = r / 0.9;
+    const double c = x >= 0.0 ? 0.529136 * std::log10(10.1596 * x + 1.0) + 0.0730597
+                              : -0.529136 * std::log10(-10.1596 * x + 1.0) + 0.0730597;
+    return (876.0 * c + 64.0) / 1023.0;
+}
+double lLogEncode(double lsr) { // Leica Camera AG, "L-Log Reference Manual" V1.9, 4.1
+    return lsr <= 0.006 ? 8.0 * lsr + 0.09 : 0.27 * std::log10(1.3 * lsr + 0.0115) + 0.6;
 }
 
 bool closeRel(double a, double b, double rel, double abs = 0.0) { return std::fabs(a - b) <= std::max(abs, rel * std::fabs(b)); }
@@ -131,8 +162,8 @@ TEST_CASE("Colour spaces: camera logs decode as their makers publish, through Op
             }
         }
     }
-    // Canon Log 3 and Apple Log: monotonic neutrals, 18 % grey at a mid code value.
-    for (const char* style : {"CANON_CLOG3-CGAMUT_to_ACES2065-1", "APPLE_LOG_to_ACES2065-1"}) {
+    // Canon Log 3, Apple Log and RED Log Film (0.6): monotonic neutrals, 18 % grey at a mid code value.
+    for (const char* style : {"CANON_CLOG3-CGAMUT_to_ACES2065-1", "APPLE_LOG_to_ACES2065-1", "RED_REDLOGFILM-RWG_to_ACES2065-1"}) {
         INFO(style);
         double previous = -1.0;
         double greyCode = -1.0;
@@ -148,6 +179,159 @@ TEST_CASE("Colour spaces: camera logs decode as their makers publish, through Op
         }
         CHECK(greyCode > 0.3);
         CHECK(greyCode < 0.55);
+    }
+}
+
+TEST_CASE("Colour spaces: the 0.6 camera logs decode their makers grey and white code values", "[color][ocio][log]") {
+    // Each document's 18 % grey and 90 % white as 10-bit code values (its own table; D-Log and N-Log from the equation,
+    // their documents print no table) decode to 0.18 and 0.90 within the 10-bit rounding (0.5 %); the exact code value
+    // of 18 % grey (the encoding of 0.18) within 1e-4; and exposures from 6 stops under grey to 5 over round-trip through
+    // the documents' encodings within 1e-4 (the decode is a 4096-sample 1D LUT of the equation). Every camera log is a
+    // camera format with an OpenColorIO transform, and nothing else is.
+    struct Case {
+        InputColorSpace space;
+        double (*encode)(double);
+        double grey10;  ///< 18 % grey, 10-bit code value
+        double white10; ///< 90 % white
+    };
+    const Case cases[] = {
+        {InputColorSpace::DLogDGamut, dLogEncode, 407.94, 586.12},
+        {InputColorSpace::FLogFGamut, fLogEncode, 470.0, 705.0},
+        {InputColorSpace::FLog2FGamut, fLog2Encode, 400.0, 570.0},
+        {InputColorSpace::NLogNGamut, nLogEncode, 372.03, 603.20},
+        {InputColorSpace::SLog2SGamut, sLog2Encode, 347.0, 582.0},
+        {InputColorSpace::SLog2SGamut3Cine, sLog2Encode, 347.0, 582.0},
+        {InputColorSpace::CanonLogCinemaGamut, canonLogEncode, 351.0, 614.0},
+        {InputColorSpace::LLogRec2020, lLogEncode, 445.0, 634.0},
+    };
+    for (const Case& c : cases) {
+        INFO(toString(c.space));
+        CHECK(isCameraLog(c.space));
+        CHECK(std::fabs(c.encode(0.18) * 1023.0 - c.grey10) < 0.5); // the document's table and its equation agree
+        CHECK(std::fabs(c.encode(0.90) * 1023.0 - c.white10) < 0.5);
+        for (const auto& [code10, linear] : {std::pair{c.grey10, 0.18}, std::pair{c.white10, 0.90}}) {
+            const double v = code10 / 1023.0;
+            const auto r = cameraToAces2065(c.space, {v, v, v});
+            REQUIRE(r);
+            for (const double x : *r) {
+                CHECK(closeRel(x, linear, 0.005));
+            }
+        }
+        const double grey = c.encode(0.18);
+        const auto g = cameraToAces2065(c.space, {grey, grey, grey});
+        REQUIRE(g);
+        CHECK((*g)[0] == Approx(0.18).epsilon(1e-4));
+        CHECK((*g)[1] == Approx(0.18).epsilon(1e-4));
+        CHECK((*g)[2] == Approx(0.18).epsilon(1e-4));
+        for (int stop = -6; stop <= 5; ++stop) {
+            const double linear = 0.18 * std::exp2(stop);
+            const double v = c.encode(linear);
+            INFO("stop " << stop << " code " << v);
+            const auto r = cameraToAces2065(c.space, {v, v, v});
+            REQUIRE(r);
+            CHECK(closeRel((*r)[1], linear, 1e-4, 1e-6));
+        }
+    }
+    // The white papers' printed values: D-Log's 18 % grey (0.3988, colour-science's reference) and Canon Log's 2 % black
+    // (169 of 1023); L-Log's top code value (1023) is 23.3 (Leica's table, 2330 %).
+    const auto dlog = cameraToAces2065(InputColorSpace::DLogDGamut, {0.3987645561893306, 0.3987645561893306, 0.3987645561893306});
+    REQUIRE(dlog);
+    CHECK((*dlog)[1] == Approx(0.18).epsilon(1e-4));
+    const auto black2 = cameraToAces2065(InputColorSpace::CanonLogCinemaGamut, {169.0 / 1023.0, 169.0 / 1023.0, 169.0 / 1023.0});
+    REQUIRE(black2);
+    CHECK((*black2)[1] == Approx(0.02).epsilon(0.02));
+    const auto top = cameraToAces2065(InputColorSpace::LLogRec2020, {1.0, 1.0, 1.0});
+    REQUIRE(top);
+    CHECK((*top)[1] == Approx(23.30).epsilon(1e-3));
+
+    for (const InputColorSpace space : allInputColorSpaces()) {
+        INFO(toString(space));
+        CHECK(cameraToAces2065(space, {0.4, 0.4, 0.4}).has_value() == isCameraLog(space));
+    }
+}
+
+TEST_CASE("Colour spaces: the 0.6 camera gamuts match OpenColorIO's camera transforms", "[color][ocio][log]") {
+    // A camera gamut's matrix to ACES2065-1 is CAT02-adapted, as the camera makers' ACES transforms are: the same scene
+    // colours (each channel 0.01..2 linear) through the new space and through an OpenColorIO transform of the same
+    // primaries (its code values found with the inverse transform of a neutral, channel by channel) agree within 1e-4 of
+    // the largest channel (`tolerance`). S-Gamut has S-Gamut3's primaries. F-Gamut, N-Gamut and Leica's L-Log gamut are
+    // Rec.2020, as is Apple Log's - but OpenColorIO's Apple Log transform adapts its white with Bradford (no maker's
+    // matrix exists for these three), so against it they agree within 0.5 %, and their matrix is checked exactly below.
+    struct Case {
+        InputColorSpace space;
+        double (*encode)(double);
+        const char* reference; ///< an OCIO built-in transform with the same primaries
+        double tolerance;
+    };
+    const Case cases[] = {
+        {InputColorSpace::SLog2SGamut, sLog2Encode, "SONY_SLOG3-SGAMUT3_to_ACES2065-1", 1e-4},
+        {InputColorSpace::SLog2SGamut3Cine, sLog2Encode, "SONY_SLOG3-SGAMUT3.CINE_to_ACES2065-1", 1e-4},
+        {InputColorSpace::CanonLogCinemaGamut, canonLogEncode, "CANON_CLOG3-CGAMUT_to_ACES2065-1", 1e-4},
+        {InputColorSpace::FLogFGamut, fLogEncode, "APPLE_LOG_to_ACES2065-1", 5e-3},
+        {InputColorSpace::FLog2FGamut, fLog2Encode, "APPLE_LOG_to_ACES2065-1", 5e-3},
+        {InputColorSpace::NLogNGamut, nLogEncode, "APPLE_LOG_to_ACES2065-1", 5e-3},
+        {InputColorSpace::LLogRec2020, lLogEncode, "APPLE_LOG_to_ACES2065-1", 5e-3},
+    };
+    std::mt19937 rng(23);
+    std::uniform_real_distribution<double> stops(std::log2(0.01), 1.0);
+    for (const Case& c : cases) {
+        INFO(toString(c.space) << " vs " << c.reference);
+        for (int k = 0; k < 64; ++k) {
+            const Rgb3 scene{std::exp2(stops(rng)), std::exp2(stops(rng)), std::exp2(stops(rng))};
+            Rgb3 code{};
+            Rgb3 referenceCode{};
+            for (std::size_t i = 0; i < 3; ++i) {
+                code[i] = c.encode(scene[i]);
+                const auto back = applyBuiltin(c.reference, {scene[i], scene[i], scene[i]}, true);
+                REQUIRE(back);
+                referenceCode[i] = (*back)[0];
+            }
+            const auto got = cameraToAces2065(c.space, code);
+            const auto expected = applyBuiltin(c.reference, referenceCode);
+            REQUIRE(got);
+            REQUIRE(expected);
+            const double largest = std::max({std::fabs((*expected)[0]), std::fabs((*expected)[1]), std::fabs((*expected)[2])});
+            for (std::size_t i = 0; i < 3; ++i) {
+                CHECK(std::fabs((*got)[i] - (*expected)[i]) <= c.tolerance * largest + 1e-6);
+            }
+        }
+    }
+    // The Rec.2020 cameras' matrix, column by column (a scene primary at 1.0, the others at 0): Rec.2020 -> ACES2065-1,
+    // CAT02 from D65 to the ACES white (computed independently of the product).
+    constexpr double kRec2020ToAp0Cat02[9]{0.6788911506,  0.1588684224, 0.1622404270, 0.0455708309, 0.8607127720,
+                                           0.0937163970, -0.0004857104, 0.0250601957, 0.9754255146};
+    for (const Case& c : cases) {
+        if (std::string_view(c.reference) != "APPLE_LOG_to_ACES2065-1") {
+            continue;
+        }
+        INFO(toString(c.space));
+        for (std::size_t column = 0; column < 3; ++column) {
+            Rgb3 code{c.encode(0.0), c.encode(0.0), c.encode(0.0)};
+            code[column] = c.encode(1.0);
+            const auto r = cameraToAces2065(c.space, code);
+            REQUIRE(r);
+            for (std::size_t row = 0; row < 3; ++row) {
+                CHECK((*r)[row] == Approx(kRec2020ToAp0Cat02[row * 3 + column]).margin(2e-5));
+            }
+        }
+    }
+    // D-Log / D-Gamut against the ACES transform OpenColorIO's studio config carries (CSC.DJI.DLog_DGamut_to_ACES): the
+    // same log segment and matrix, so colours above the toe agree within 1e-4. (OpenColorIO 2.5 and later carry it.)
+    const auto probe = applyBuiltinConfigSpace("studio-config-latest", "D-Log D-Gamut", {0.4, 0.4, 0.4});
+    INFO("OpenColorIO " << ocioVersion() << ": " << (probe ? std::string("D-Log D-Gamut found") : probe.error().message));
+    REQUIRE(probe);
+    CHECK((*probe)[1] == Approx(0.18214).epsilon(1e-3)); // D-Log code 0.4: (10^(3.89616 x 0.4 - 2.27752) - 0.0108) / 0.9892
+    for (int k = 0; k < 64; ++k) {
+        const Rgb3 scene{std::exp2(stops(rng)), std::exp2(stops(rng)), std::exp2(stops(rng))};
+        const Rgb3 code{dLogEncode(scene[0]), dLogEncode(scene[1]), dLogEncode(scene[2])};
+        const auto got = cameraToAces2065(InputColorSpace::DLogDGamut, code);
+        const auto expected = applyBuiltinConfigSpace("studio-config-latest", "D-Log D-Gamut", code);
+        REQUIRE(got);
+        REQUIRE(expected);
+        const double largest = std::max({std::fabs((*expected)[0]), std::fabs((*expected)[1]), std::fabs((*expected)[2])});
+        for (std::size_t i = 0; i < 3; ++i) {
+            CHECK(std::fabs((*got)[i] - (*expected)[i]) <= 1e-4 * largest + 1e-6);
+        }
     }
 }
 
@@ -486,4 +670,295 @@ TEST_CASE("Colour spaces: stream tags choose the input space (Auto)", "[color][p
     CHECK(inputSpaceOf(c, false) == InputColorSpace::Rec709);
     c.transfer = TransferFunction::Unknown;
     CHECK(inputSpaceOf(c, true) == InputColorSpace::Srgb);
+}
+
+// ---- 0.6 (#72): HDR finishing --------------------------------------------------------------------------------------
+
+namespace {
+
+double rec709Oetf(double v) {
+    const double a = 1.09929682680944, b = 0.018053968510807;
+    v = std::clamp(v, 0.0, 1.0);
+    return v < b ? 4.5 * v : a * std::pow(v, 0.45) - (a - 1.0);
+}
+
+ColorManagement setup(ColorManagementMode mode) {
+    ColorManagement m;
+    m.mode = mode;
+    return m;
+}
+
+} // namespace
+
+TEST_CASE("Colour spaces: gamut compression follows ACES 1.3 RGC and leaves the gamut core alone (0.6)", "[color][gamut]") {
+    // Greys and colours whose distances from the achromatic axis stay below the thresholds pass unchanged.
+    for (const Rgb3 c : {Rgb3{0.5, 0.5, 0.5}, Rgb3{0.5, 0.3, 0.25}, Rgb3{2.0, 1.2, 0.9}, Rgb3{0.0, 0.0, 0.0}}) {
+        const Rgb3 out = gamutCompress(c);
+        for (std::size_t i = 0; i < 3; ++i) {
+            CHECK(out[i] == Approx(c[i]).margin(1e-12));
+        }
+    }
+    // Outside the gamut (a negative channel): pulled in, the largest channel (the achromatic axis) kept.
+    const Rgb3 outside{1.0, -0.2, 0.1};
+    const Rgb3 in = gamutCompress(outside);
+    CHECK(in[0] == Approx(1.0));
+    CHECK(in[1] > -0.2);
+    CHECK(in[1] >= 0.0); // its distance 1.2 is inside magenta's limit (1.264): it lands inside the gamut
+    CHECK(in[2] > 0.1); // 0.9 from the axis, past yellow's threshold (0.880): compressed a little
+    CHECK(in[2] < 0.12);
+    // The limits land exactly on the gamut boundary (distance 1: the channel at 0).
+    CHECK(gamutCompress({1.0 - 1.147, 1.0, 1.0})[0] == Approx(0.0).margin(1e-9));
+    CHECK(gamutCompress({1.0, 1.0 - 1.264, 1.0})[1] == Approx(0.0).margin(1e-9));
+    CHECK(gamutCompress({1.0, 1.0, 1.0 - 1.312})[2] == Approx(0.0).margin(1e-9));
+    // The strength mixes the original and the compressed colour.
+    const Rgb3 half = gamutCompress(outside, 0.5);
+    CHECK(half[1] == Approx((outside[1] + in[1]) / 2.0));
+    CHECK(gamutCompress(outside, 0.0)[1] == Approx(-0.2));
+    // Monotone: farther out stays farther out.
+    double last = 1.0;
+    for (double g = 0.9; g >= -0.5; g -= 0.01) {
+        const double out = gamutCompress({1.0, g, 1.0})[1];
+        CHECK(out <= last + 1e-12);
+        last = out;
+    }
+}
+
+TEST_CASE("Colour spaces: Wide Gamut Minimal Tone Mapping rolls off scene-referred highlights and passes SDR media (0.6)",
+          "[color][plans][widegamut]") {
+    const ColorManagement minimal = setup(ColorManagementMode::WideGamutMinimal);
+    CHECK(workingOf(minimal.mode) == Working::AcesCg);
+    CHECK(minimal.managed());
+    CHECK(minimal.compressesGamut());
+    const double white = minimalRolloffWhite(minimal);
+    CHECK(white == Approx(1000.0 / 203.0));
+    // The curve: as it is up to the knee, slope 1 there, the HDR peak on 1.0, monotone over a grey ramp.
+    CHECK(minimalRolloffCurve(0.5, white) == 0.5);
+    CHECK(minimalRolloffCurve(kMinimalKnee, white) == Approx(kMinimalKnee));
+    CHECK((minimalRolloffCurve(kMinimalKnee + 1e-6, white) - kMinimalKnee) / 1e-6 == Approx(1.0).epsilon(1e-4));
+    CHECK(minimalRolloffCurve(white, white) == Approx(1.0));
+    CHECK(minimalRolloffCurve(20.0, white) == 1.0);
+    double last = -1.0;
+    for (double v = 0.0; v <= 6.0; v += 0.01) {
+        const double out = minimalRolloffCurve(v, white);
+        CHECK(out >= last);
+        CHECK(out <= 1.0);
+        last = out;
+    }
+    // Hue kept: the colour is scaled along its largest channel.
+    const Rgb3 warm = minimalRolloff({3.0, 1.5, 0.75}, white);
+    CHECK(warm[1] / warm[0] == Approx(0.5));
+    CHECK(warm[2] / warm[0] == Approx(0.25));
+    // SDR media and graphics: no roll-off, no compression - the same code values out as in.
+    const auto out = planOutput(minimal, OutputTarget::Sdr);
+    REQUIRE(out);
+    CHECK(out->label == "Wide Gamut · minimal tone mapping");
+    for (const bool graphics : {false, true}) {
+        const auto in = planInput(minimal, InputColorSpace::Rec709, false, graphics);
+        REQUIRE(in);
+        CHECK(in->gamutStrength == 0.0);
+        CHECK(in->rolloffWhite == 0.0);
+        for (const Rgb3 code : {Rgb3{0.1, 0.5, 0.9}, Rgb3{1.0, 0.0, 0.0}, Rgb3{1.0, 1.0, 1.0}, Rgb3{0.95, 0.9, 0.2}}) {
+            const Rgb3 back = runOutputPlan(*out, runInputPlan(*in, code));
+            for (std::size_t i = 0; i < 3; ++i) {
+                CHECK(back[i] == Approx(code[i]).margin(1e-9));
+            }
+        }
+    }
+    // Camera log: compressed and rolled off.
+    const auto log = planInput(minimal, InputColorSpace::SLog3SGamut3Cine, false, false);
+    REQUIRE(log);
+    CHECK(log->gamutStrength == 1.0);
+    CHECK(log->rolloffWhite == Approx(white));
+    // PQ fixtures read with 1.0 = the reference white: 100 nits below the knee as it is, the 1000-nit peak on white,
+    // the 203-nit reference white rolled off a little (not clipped as without tone mapping).
+    const auto pq = planInput(minimal, InputColorSpace::Rec2100Pq, false, false);
+    REQUIRE(pq);
+    const auto pqGrey = [&](double nits) { return runInputPlan(*pq, {nitsToPq(nits), nitsToPq(nits), nitsToPq(nits)})[1]; };
+    CHECK(pqGrey(100.0) == Approx(100.0 / 203.0).epsilon(1e-6));
+    CHECK(pqGrey(1000.0) == Approx(1.0).epsilon(1e-6));
+    CHECK(pqGrey(203.0) == Approx(minimalRolloffCurve(1.0, white)).epsilon(1e-6));
+    CHECK(pqGrey(203.0) < 0.95);
+    CHECK(pqGrey(4000.0) == Approx(1.0));
+    // HLG fixture: its 75 % reference white (BT.2408) lands near the same place, highlights below 1.0.
+    const auto hlg = planInput(minimal, InputColorSpace::Rec2100Hlg, false, false);
+    REQUIRE(hlg);
+    const double hlgWhite = runInputPlan(*hlg, {0.75, 0.75, 0.75})[1];
+    CHECK(hlgWhite > 0.8);
+    CHECK(hlgWhite < 1.0);
+    CHECK(runInputPlan(*hlg, {1.0, 1.0, 1.0})[1] <= 1.0);
+    // Without tone mapping the same PQ white clips (read at 100 nits = 1.0).
+    const auto noTm = planInput(setup(ColorManagementMode::WideGamut), InputColorSpace::Rec2100Pq, false, false);
+    REQUIRE(noTm);
+    CHECK(runInputPlan(*noTm, {nitsToPq(203.0), nitsToPq(203.0), nitsToPq(203.0)})[1] == Approx(2.03).epsilon(1e-6));
+}
+
+TEST_CASE("Colour spaces: gamut compression is opt-in for managed setups and keeps negative working values (0.6)",
+          "[color][plans][gamut]") {
+    ColorManagement m = setup(ColorManagementMode::Aces13);
+    CHECK_FALSE(m.compressesGamut());
+    const auto plain = planInput(m, InputColorSpace::SLog3SGamut3, false, false);
+    REQUIRE(plain);
+    CHECK(plain->gamutStrength == 0.0);
+    m.gamutCompression = true;
+    m.gamutCompressionStrength = 0.6;
+    CHECK(m.compressesGamut());
+    const auto compressed = planInput(m, InputColorSpace::SLog3SGamut3, false, false);
+    REQUIRE(compressed);
+    CHECK(compressed->gamutStrength == Approx(0.6));
+    // Display-referred pictures are left exactly as they are.
+    const auto rec709 = planInput(m, InputColorSpace::Rec709, false, false);
+    REQUIRE(rec709);
+    CHECK(rec709->gamutStrength == 0.0);
+    // A saturated S-Gamut3 blue: negative in ACEScg; compressed it comes in, and the plan returns the value as it is
+    // (the layer pass no longer clips it at 0).
+    const Rgb3 before = runInputPlan(*plain, {0.25, 0.25, 0.95});
+    const Rgb3 after = runInputPlan(*compressed, {0.25, 0.25, 0.95});
+    REQUIRE(std::min({before[0], before[1], before[2]}) < 0.0);
+    CHECK(std::min({after[0], after[1], after[2]}) > std::min({before[0], before[1], before[2]}));
+    const auto applied = applyInput(m, InputColorSpace::SLog3SGamut3, false, false, {0.25, 0.25, 0.95});
+    REQUIRE(applied);
+    CHECK(std::min({(*applied)[0], (*applied)[1], (*applied)[2]}) > std::min({before[0], before[1], before[2]}) - 0.02);
+    // Direct Rec.709 and Disable Color Management never compress.
+    ColorManagement direct = setup(ColorManagementMode::DisplayRec709);
+    direct.gamutCompression = true;
+    CHECK_FALSE(direct.compressesGamut());
+}
+
+TEST_CASE("Colour spaces: the output colour spaces Rec.2020 SDR and P3-D65 (0.6)", "[color][plans][output]") {
+    CHECK(outputTargetOf(OutputColorSpace::Rec2020, OutputTarget::Sdr) == OutputTarget::Rec2020Sdr);
+    CHECK(outputTargetOf(OutputColorSpace::P3D65, OutputTarget::Sdr) == OutputTarget::P3D65);
+    CHECK(outputTargetOf(OutputColorSpace::Automatic, OutputTarget::Sdr) == OutputTarget::Sdr);
+    CHECK(outputTargetOf(OutputColorSpace::P3D65, OutputTarget::Pq) == OutputTarget::Pq);
+    CHECK(isSdrTarget(OutputTarget::P3D65));
+    CHECK_FALSE(isSdrTarget(OutputTarget::Hlg));
+    const ColorManagement direct;
+    // Rec.2020 SDR: Rec.709's primaries converted, the BT.709 curve; white stays white, mid grey stays mid grey.
+    const auto r2020 = planOutput(direct, OutputTarget::Rec2020Sdr);
+    REQUIRE(r2020);
+    CHECK(r2020->curve == OutputPlan::Curve::Bt709);
+    const Rgb3 red = runOutputPlan(*r2020, {1.0, 0.0, 0.0});
+    CHECK(red[0] == Approx(rec709Oetf(0.627404)).margin(1e-4));
+    CHECK(red[1] == Approx(rec709Oetf(0.069097)).margin(1e-4));
+    CHECK(runOutputPlan(*r2020, {0.18, 0.18, 0.18})[1] == Approx(rec709Oetf(0.18)).margin(1e-9));
+    // P3-D65: a 2.6 power.
+    const auto p3 = planOutput(direct, OutputTarget::P3D65);
+    REQUIRE(p3);
+    CHECK(p3->curve == OutputPlan::Curve::Gamma26);
+    CHECK(runOutputPlan(*p3, {0.18, 0.18, 0.18})[0] == Approx(std::pow(0.18, 1.0 / 2.6)).margin(1e-9));
+    CHECK(runOutputPlan(*p3, {1.0, 1.0, 1.0})[2] == Approx(1.0).margin(1e-9));
+    // An HDR project's SDR versions in those spaces: the same tone map, the target's primaries.
+    const ColorManagement hdr = setup(ColorManagementMode::HdrPq);
+    const auto hdr709 = planOutput(hdr, OutputTarget::Sdr);
+    const auto hdr2020 = planOutput(hdr, OutputTarget::Rec2020Sdr);
+    REQUIRE(hdr709);
+    REQUIRE(hdr2020);
+    CHECK(hdr2020->kind == OutputPlan::Kind::ToneMapSdr);
+    CHECK(runOutputPlan(*hdr709, {0.5, 0.5, 0.5})[1] == Approx(runOutputPlan(*hdr2020, {0.5, 0.5, 0.5})[1]).margin(1e-9));
+    // ACES: the SDR output transform onto those displays, within the LUT's tolerance of OpenColorIO's own chain.
+    const ColorManagement aces = setup(ColorManagementMode::Aces13);
+    for (const OutputTarget target : {OutputTarget::Rec2020Sdr, OutputTarget::P3D65}) {
+        const auto plan = planOutput(aces, target);
+        REQUIRE(plan);
+        CHECK(plan->kind == OutputPlan::Kind::Lut);
+        for (const double v : {0.02, 0.18, 0.5, 1.0, 4.0}) {
+            const auto exact = applyOutput(aces, target, {v, v, v});
+            REQUIRE(exact);
+            CHECK(runOutputPlan(*plan, {v, v, v})[1] == Approx((*exact)[1]).margin(3.0 / 1023.0));
+        }
+    }
+    // What the export details say.
+    CHECK(describeOutput(direct, OutputTarget::P3D65, false).find("P3-D65") != std::string::npos);
+    ColorManagement conformed = hdr;
+    conformed.sdrConform.enabled = true;
+    CHECK(describeOutput(conformed, OutputTarget::Sdr, true).find("SDR Conform (BT.2390, ACES gamut compression)") !=
+          std::string::npos);
+    CHECK(describeOutput(setup(ColorManagementMode::WideGamut), OutputTarget::Sdr, false).find("clipped") != std::string::npos);
+}
+
+TEST_CASE("Colour spaces: SDR Conform tone-maps by the operator and maps the gamut (0.6)", "[color][conform]") {
+    // The operators: monotone, the source peak on white, BT.2390 nearly the identity in the shadows.
+    for (const ToneMapOperator op : {ToneMapOperator::Bt2390, ToneMapOperator::Aces, ToneMapOperator::Reinhard}) {
+        INFO(displayName(op));
+        double last = 0.0;
+        for (double s = 0.0; s <= 6.0; s += 0.02) {
+            const double y = conformToneMap(op, s, 4.926, 100.0);
+            CHECK(y >= last - 1e-12);
+            CHECK(y <= 1.0);
+            last = y;
+        }
+        CHECK(conformToneMap(op, 4.926, 4.926, 100.0) == Approx(1.0).margin(1e-6));
+    }
+    CHECK(conformToneMap(ToneMapOperator::Bt2390, 0.05, 4.926, 100.0) == Approx(0.05).epsilon(1e-3));
+    CHECK(conformToneMap(ToneMapOperator::Reinhard, 0.5, 0.9, 100.0) == 0.5); // a source that fits: as it is
+
+    // BT.2390 measured against the reference operator: with the paper white and target peak at the reference white,
+    // SDR Conform's luminance is the tone-mapped SDR preview's (color::toneMapToSdr) on a grey ramp.
+    ColorManagement hdr = setup(ColorManagementMode::HdrPq);
+    hdr.sdrConform.enabled = true;
+    hdr.sdrConform.targetPeakNits = 203.0;
+    hdr.sdrConform.paperWhiteNits = 203.0;
+    hdr.sdrConform.gamut = GamutMapping::Clip;
+    CHECK(hdr.conformsSdr());
+    const auto plan = planOutput(hdr, OutputTarget::Sdr, true);
+    REQUIRE(plan);
+    REQUIRE(plan->kind == OutputPlan::Kind::Conform);
+    for (double v = 0.0; v <= 6.0; v += 0.05) {
+        const Rgb3 reference = toneMapToSdr({v, v, v}, 203.0, 1000.0);
+        const ConformPixel got = sdrConformPixel(*plan, {v, v, v});
+        CHECK(got.code[1] == Approx(rec709Oetf(reference[1])).margin(1e-9));
+        CHECK(got.toneMapped == (v > 1.0 + 1e-6));
+        CHECK_FALSE(got.gamutMapped);
+    }
+    // The Rec.2020 primaries at mid luminance lie outside Rec.709: flagged, and each mapping brings them in.
+    for (const GamutMapping mapping : {GamutMapping::AcesRgc, GamutMapping::Saturation, GamutMapping::Clip}) {
+        INFO(displayName(mapping));
+        hdr.sdrConform.gamut = mapping;
+        const auto p = planOutput(hdr, OutputTarget::Sdr, true);
+        REQUIRE(p);
+        for (const Rgb3 primary : {Rgb3{0.5, 0.0, 0.0}, Rgb3{0.0, 0.5, 0.0}, Rgb3{0.0, 0.0, 0.5}}) {
+            const ConformPixel px = sdrConformPixel(*p, primary);
+            CHECK(px.gamutMapped);
+            for (const double c : px.code) {
+                CHECK(c >= 0.0);
+                CHECK(c <= 1.0);
+            }
+            // The hue's dominant channel stays dominant.
+            const auto dominant = std::max_element(primary.begin(), primary.end()) - primary.begin();
+            CHECK(std::max_element(px.code.begin(), px.code.end()) - px.code.begin() == dominant);
+        }
+    }
+    // Saturation mapping keeps the luminance of a colour that only crosses 0.
+    hdr.sdrConform.gamut = GamutMapping::Saturation;
+    const auto sat = planOutput(hdr, OutputTarget::Sdr, true);
+    REQUIRE(sat);
+    const ConformPixel green = sdrConformPixel(*sat, {0.05, 0.4, 0.05});
+    const auto decode = [](double v) {
+        const double a = 1.09929682680944, b = 0.018053968510807;
+        return v < 4.5 * b ? v / 4.5 : std::pow((v + (a - 1.0)) / a, 1.0 / 0.45);
+    };
+    const double luma709 = 0.2126 * decode(green.code[0]) + 0.7152 * decode(green.code[1]) + 0.0722 * decode(green.code[2]);
+    const double luma2020 = 0.2627 * 0.05 + 0.6780 * 0.4 + 0.0593 * 0.05;
+    CHECK(luma709 == Approx(luma2020).epsilon(0.01));
+    // Legal range: nothing at 100 %.
+    hdr.sdrConform.legalRange = true;
+    const auto legal = planOutput(hdr, OutputTarget::Sdr, true);
+    REQUIRE(legal);
+    const ConformPixel peak = sdrConformPixel(*legal, {10.0, 10.0, 10.0});
+    CHECK(peak.code[1] < 0.99);
+    CHECK(peak.code[1] > 0.95);
+    CHECK(peak.toneMapped);
+    // Wide Gamut (No and Minimal) conform too; ACES (Tone Mapped) keeps its output transform; SDR setups never.
+    ColorManagement wide = setup(ColorManagementMode::WideGamut);
+    wide.sdrConform.enabled = true;
+    CHECK(wide.conformsSdr());
+    CHECK(planOutput(wide, OutputTarget::P3D65, true)->kind == OutputPlan::Kind::Conform);
+    ColorManagement aces = setup(ColorManagementMode::Aces13);
+    aces.sdrConform.enabled = true;
+    CHECK_FALSE(aces.conformsSdr());
+    CHECK(planOutput(aces, OutputTarget::Sdr, true)->kind == OutputPlan::Kind::Lut);
+    ColorManagement direct;
+    direct.sdrConform.enabled = true;
+    CHECK_FALSE(direct.conformsSdr());
+    // HDR outputs are never conformed.
+    CHECK(planOutput(hdr, OutputTarget::Pq, true)->kind == OutputPlan::Kind::Pq);
 }

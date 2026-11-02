@@ -1515,7 +1515,8 @@ TEST_CASE("The ruler menu marks and clears In and Out without moving the playhea
     REQUIRE(c.undo());
     CHECK(c.rippleSequenceMarkers());
 
-    // A right click on a marker's flag: Edit Marker… and Clear Marker for it, then the rest; the playhead stays.
+    // A right click on a marker's flag: Edit Marker… and Clear Marker for it (0.6: with its Colour, Type and Go to rows,
+    // and only the marker's rows); the playhead stays.
     spin(100);
     QQuickItem* flag = findNamed(ruler, QStringLiteral("rulerMarker_0"));
     REQUIRE(flag);
@@ -1526,6 +1527,8 @@ TEST_CASE("The ruler menu marks and clears In and Out without moving the playhea
     CHECK(menu->property("markerIndex").toInt() == 0);
     CHECK(child(menu, "rulerMenuEditMarker")->property("visible").toBool());
     CHECK(child(menu, "rulerMenuClearMarker")->property("visible").toBool());
+    CHECK(child(menu, "rulerMenuGoToMarker")->property("visible").toBool());
+    CHECK_FALSE(child(menu, "rulerMenuMarkIn")->property("visible").toBool());
     anchoredAt(onFlag); // measured with the two flag rows in it
     p.settle();
     p.shot(popupRect(menu).united(sceneRect(ruler).intersected(popupRect(menu).adjusted(-260, -80, 40, 80)))

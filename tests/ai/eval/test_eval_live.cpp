@@ -174,15 +174,7 @@ TEST_CASE("Local assistant eval on the real tiers", "[ai][eval][perf][live]") {
             appendMarkdown("| " + tierId + " | " + info.id + " | - | - | not run: " + a.reason + " | | | | | | | | | |");
             continue;
         }
-        llm::LaunchPlan plan;
-        plan.runtimeId = a.runtimeId;
-        plan.ramNeeded = a.ramNeeded;
-        plan.vramNeeded = a.vramNeeded;
-        plan.threads = a.threads;
-        plan.gpu = a.gpu;
-        plan.reason = a.reason;
-        plan.context = a.context;
-        plan.reasoningOff = tier->hybridThinking;
+        const llm::LaunchPlan plan = llm::launchPlanFor(a); // pinned to the adapter admission measured (hybrid GPUs)
         const auto executable = std::filesystem::path(*llama) / (a.gpu ? "vulkan" : "cpu") / "llama-server.exe";
         REQUIRE(std::filesystem::exists(executable));
 
@@ -215,6 +207,7 @@ TEST_CASE("Local assistant eval on the real tiers", "[ai][eval][perf][live]") {
             report["sha256"] = info.sha256;
             report["runtime"] = "llama.cpp b11429 " + plan.runtimeId;
             report["backend"] = a.gpu ? "gpu" : "cpu";
+            report["device"] = runtime.status().device; // the llama.cpp device it ran on ("Vulkan0"); empty: CPU
             report["threads"] = plan.threads;
             report["context"] = plan.context;
             report["admission"] = {{"ramNeededGB", gb(a.ramNeeded)}, {"vramNeededGB", gb(a.vramNeeded)}, {"reason", a.reason}};

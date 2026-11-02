@@ -19,6 +19,8 @@
 #include <cstdint>
 #include <expected>
 #include <filesystem>
+#include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -129,24 +131,44 @@ public:
 
     /// Parses the header, FAT, mini FAT and directory of `bytes` (kept by the reader). Errors: ParseError.
     static std::expected<Reader, Error> open(std::string bytes);
+    /// 0.6 (AAF import): the same for a file read on demand: the header, FATs and directory now, streams when read() or
+    /// copy() asks, so a file of any size (embedded media) never has to fit in memory. Errors: IoError (cannot open or
+    /// read it), ParseError.
+    static std::expected<Reader, Error> openFile(const std::filesystem::path& file);
 
     const Clsid& headerClsid() const { return m_headerClsid; }
     std::uint16_t majorVersion() const { return m_majorVersion; }
     std::uint32_t sectorSize() const { return m_sectorSize; }
+    /// Size of the whole compound file.
+    std::uint64_t fileSize() const { return m_fileSize; }
     const std::vector<Entry>& entries() const { return m_entries; }
     const Entry& root() const { return m_entries.front(); }
     /// The child of storage `storage` named `name` (case-insensitive, as the format compares names).
     std::optional<std::size_t> child(std::size_t storage, std::string_view name) const;
     /// An entry by path from the root: "/Header-2/Content-3b03"; "/" is the root.
     std::optional<std::size_t> find(std::string_view path) const;
-    /// A stream's bytes. Errors: ParseError (a broken chain, not a stream), Unsupported (over kMaxReadStreamBytes).
+    /// A stream's bytes. Errors: ParseError (a broken chain, not a stream, or streams that share sectors so that
+    /// reading them would read the file many times over), Unsupported (over kMaxReadStreamBytes), IoError.
     std::expected<std::string, Error> read(std::size_t stream) const;
+    /// 0.6: a stream of any size, handed to `sink` in blocks of at most 1 MiB, in order. `sink` returns false to stop
+    /// (Cancelled). Errors as read(), without the size limit.
+    std::expected<void, Error> copy(std::size_t stream, const std::function<bool(std::string_view)>& sink) const;
 
 private:
+    class Source;
+    static std::expected<Reader, Error> parse(Reader r);
+    /// The sectors of a chain from `start`: at most `maxCount` of them (a stream needs no more than its size), each
+    /// below `limit`. Chains that loop or leave the table are errors.
     std::expected<std::vector<std::uint32_t>, Error> chain(const std::vector<std::uint32_t>& table, std::uint32_t start,
-                                                           std::uint64_t limit) const;
+                                                           std::uint64_t limit, std::uint64_t maxCount) const;
+    /// Appends `size` bytes from `offset` of the file (zeros past its end, as a short last sector reads).
+    std::expected<void, Error> fetch(std::uint64_t offset, std::size_t size, std::string& out) const;
+    /// Counts bytes read from streams against the budget (a few times the file size).
+    std::expected<void, Error> charge(std::uint64_t bytes) const;
 
-    std::string m_bytes;
+    std::shared_ptr<Source> m_source;
+    std::uint64_t m_fileSize = 0;
+    mutable std::uint64_t m_bytesRead = 0;
     Clsid m_headerClsid{};
     std::uint16_t m_majorVersion = 0;
     std::uint32_t m_sectorSize = 512;

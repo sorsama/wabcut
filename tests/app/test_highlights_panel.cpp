@@ -36,6 +36,7 @@
 #include <QPainter>
 #include <QQmlComponent>
 #include <QQuickItem>
+#include <QSettings>
 #include <QTemporaryDir>
 #include <QThread>
 #include <QTimer>
@@ -1518,7 +1519,8 @@ TEST_CASE("Highlights panel in the window: cards, the keyboard path, options, re
     QQuickItem* summary = findNamed(panel.get(), QStringLiteral("highlightsSummary"));
     REQUIRE(summary);
     CHECK(summary->property("text").toString() ==
-          QStringLiteral("Moments: 5 · Recordings: 1 · Chat messages: %1 · Accepted: 2").arg(QLocale().toString(qlonglong(18234))));
+          QStringLiteral("Moments: 5 · Recordings: 1 · Chat messages: %1 · Audio: Game · Your voice · Accepted: 2")
+              .arg(QLocale().toString(qlonglong(18234)))); // 0.6 (P1 #56): the roles the find used
     const QImage image = shell.grab();
     REQUIRE_FALSE(image.isNull());
     REQUIRE(image.save(QDir(outputDir()).filePath(QStringLiteral("highlights-panel.png"))));
@@ -1578,4 +1580,371 @@ TEST_CASE("Highlights panel in the window: cards, the keyboard path, options, re
     const QStringList messages = takeMessages();
     INFO(join(messages));
     CHECK(messages.isEmpty());
+}
+
+// ---- 0.6 (P1 round, D2 #9): a Short of the In to Out range, without the highlight find --------------------------------
+
+namespace {
+
+/// A sequence marker through marker.add (one undo step, as the app does).
+void addSequenceMarker(ProjectController& project, double start, const char* name) {
+    command::CommandEngine engine(project.session());
+    command::CommandRequest add;
+    add.command = "marker.add";
+    add.params = Json{{"time", Ticks::fromSeconds(static_cast<std::int64_t>(start)).value}, {"name", name},
+                      {"sequence", project.currentSequenceId().value}};
+    const command::CommandResult result = engine.execute(add);
+    INFO(command::toJson(result).dump());
+    REQUIRE(result.ok());
+}
+
+} // namespace
+
+TEST_CASE("Highlights: a Short from In to Out uses the marks, the Short options and the range's marker title",
+          "[app][highlights]") {
+    resetSettings();
+    clearMessages();
+    Rig r;
+    QString opened;
+    QObject::connect(&r.hl, &HighlightsBridge::sequenceOpened, &r.hl, [&](const QString& name) { opened = name; });
+
+    // The command is the bridge's, and greyed out with the reason until both marks are set.
+    CHECK(HighlightsBridge::handlesCommand(QStringLiteral("sequence.makeShortFromInOut")));
+    CHECK_FALSE(HighlightsBridge::handlesCommand(QStringLiteral("sequence.makeShortFromInOutAll")));
+    QVariantMap state = r.hl.commandAvailability(QStringLiteral("sequence.makeShortFromInOut"));
+    CHECK(state.value(QStringLiteral("handled")).toBool());
+    CHECK_FALSE(state.value(QStringLiteral("enabled")).toBool());
+    CHECK(state.value(QStringLiteral("reason")).toString() == QStringLiteral("Set In and Out first"));
+    CHECK(r.hl.makeShortFromInOut() == QStringLiteral("Set In and Out first"));
+    CHECK(r.hl.message() == QStringLiteral("Set In and Out first"));
+    CHECK(r.undo() == 0);
+    // Only one mark: still nothing.
+    r.controller.setPlayhead(seconds(4));
+    r.controller.markInAtPlayhead();
+    CHECK_FALSE(r.hl.commandAvailability(QStringLiteral("sequence.makeShortFromInOut"))
+                     .value(QStringLiteral("enabled"))
+                     .toBool());
+
+    // 4 s to 12 s, with markers inside and outside: the first one inside names the Short.
+    r.controller.setPlayhead(seconds(12));
+    r.controller.markOutAtPlayhead();
+    addSequenceMarker(r.controller, 2.0, "Before");
+    addSequenceMarker(r.controller, 12.0, "At the Out");
+    addSequenceMarker(r.controller, 6.0, "Later");
+    addSequenceMarker(r.controller, 5.0, "Clutch");
+    state = r.hl.commandAvailability(QStringLiteral("sequence.makeShortFromInOut"));
+    CHECK(state.value(QStringLiteral("enabled")).toBool());
+    CHECK(state.value(QStringLiteral("reason")).toString().isEmpty());
+
+    // The Short options' last used ones (Settings > the Short options, the panel's popover) fill what the call does not
+    // give: a 2 s lead-in, a 0.5 s tail, no minimum length, the "Bold" caption style.
+    QSettings().setValue(QStringLiteral("highlights/shortLeadIn"), 2.0);
+    QSettings().setValue(QStringLiteral("highlights/shortTail"), 0.5);
+    QSettings().setValue(QStringLiteral("highlights/shortMinLength"), 0);
+    QSettings().setValue(QStringLiteral("highlights/shortCaptionPreset"), QStringLiteral("Bold"));
+
+    const std::size_t before = r.undo();
+    const double outSeconds = r.controller.markOut()->toSeconds(); // the Out frame included
+    REQUIRE(r.hl.makeShortFromInOut().isEmpty());
+    Json sent = last(g_lastShort);
+    INFO(sent.dump());
+    CHECK(sent["sequence"] == r.tl.seq.value);
+    CHECK(sent["start"].get<double>() == Approx(4.0));
+    CHECK(sent["end"].get<double>() == Approx(outSeconds));
+    CHECK(sent["title"] == "Clutch");
+    CHECK(sent["handleBefore"].get<double>() == Approx(2.0));
+    CHECK(sent["handleAfter"].get<double>() == Approx(0.5));
+    CHECK_FALSE(sent.contains("minLength")); // the command takes it as the handles
+    CHECK(sent["captions"] == true);
+    CHECK(sent["hookTitle"] == true);
+    CHECK(sent["captionPreset"] == "Bold");
+    // One undo step; the Short is the sequence shown, and it is announced.
+    CHECK(r.undo() == before + 1);
+    CHECK(r.controller.currentSequenceId() != r.tl.seq);
+    CHECK(r.controller.currentSequence()->width == 1080);
+    CHECK(r.controller.currentSequence()->height == 1920);
+    CHECK(opened == r.controller.sequenceName());
+    CHECK(r.hl.message().startsWith(QStringLiteral("Made")));
+
+    // Back on the source sequence: the options given win over the remembered ones.
+    r.controller.setCurrentSequenceIndex(0);
+    REQUIRE(r.controller.currentSequenceId() == r.tl.seq);
+    REQUIRE(r.hl
+                .makeShortFromInOut(opts({{QStringLiteral("captions"), false},
+                                          {QStringLiteral("hookTitle"), false},
+                                          {QStringLiteral("layout"), QStringLiteral("verticalSplit")},
+                                          {QStringLiteral("handleBefore"), 0}}))
+                .isEmpty());
+    sent = last(g_lastShort);
+    CHECK(sent["captions"] == false);
+    CHECK(sent["layout"] == "verticalSplit");
+    CHECK(sent["hookTitle"] == false); // given as off, so sent as off
+    CHECK_FALSE(sent.contains("handleBefore"));
+
+    // makeShortFromRange: any range; clamped to the sequence, titled by its first marker else "<sequence> <In TC>".
+    r.controller.setCurrentSequenceIndex(0);
+    REQUIRE(r.controller.currentSequenceId() == r.tl.seq);
+    REQUIRE(r.hl.makeShortFromRange(8.0, 99.0, opts({{QStringLiteral("layout"), QStringLiteral("verticalBlurFill")},
+                                                    {QStringLiteral("zoom"), 2.0}}))
+                .isEmpty());
+    sent = last(g_lastShort);
+    CHECK(sent["start"].get<double>() == Approx(8.0));
+    CHECK(sent["end"].get<double>() == Approx(30.0)); // the gameplay sequence's end
+    CHECK(sent["title"] == "At the Out");             // the first marker inside 8..30
+    CHECK(sent["layout"] == "verticalBlurFill");
+    CHECK(sent["zoom"].get<double>() == Approx(2.0));
+    // No marker inside its range: "<sequence> <In TC>". An empty range is refused.
+    r.controller.setCurrentSequenceIndex(0);
+    const QString sourceName = r.controller.sequenceName();
+    const QString inText = r.controller.formatTimecode(seconds(13));
+    REQUIRE(r.hl.makeShortFromRange(13.0, 17.0, {}).isEmpty());
+    sent = last(g_lastShort);
+    CHECK(sent["title"] == (sourceName + QLatin1Char(' ') + inText).toStdString());
+    r.controller.setCurrentSequenceIndex(0);
+    CHECK_FALSE(r.hl.makeShortFromRange(5.0, 5.0, {}).isEmpty());
+
+    const QStringList messages = takeMessages();
+    INFO(join(messages));
+    CHECK(messages.isEmpty());
+    QSettings().remove(QStringLiteral("highlights"));
+}
+
+// ---- 0.6 (P1 round, stream 3A): audio roles from the stream titles (#56), the remembered Short options (#51) ---------
+
+namespace {
+
+/// The project with the gameplay's two audio streams titled as OBS writes them.
+ProjectState withStreamTitles(const Timeline& tl, const std::string& first, const std::string& second) {
+    ProjectState state = tl.state;
+    for (MediaPtr& media : state.media) {
+        if (media->id != tl.media('G'))
+            continue;
+        MediaItem titled = *media;
+        REQUIRE(titled.info.audio.size() == 2);
+        titled.info.audio[0].title = first;
+        titled.info.audio[1].title = second;
+        media = std::make_shared<const MediaItem>(std::move(titled));
+    }
+    return state;
+}
+
+} // namespace
+
+TEST_CASE("Highlights: the audio streams come with the roles their titles give and the corrections reach the find",
+          "[app][highlights][audioRoles]") {
+    resetSettings();
+    clearMessages();
+    Rig r;
+    r.controller.resetProject(withStreamTitles(r.tl, "Discord", "Mic/Aux"), r.tl.seq);
+    QVariantList streams = r.hl.audioStreams();
+    REQUIRE(streams.size() == 2);
+    const QVariantMap first = streams[0].toMap();
+    const QVariantMap second = streams[1].toMap();
+    CHECK(first.value(QStringLiteral("index")).toInt() == 0);
+    CHECK(first.value(QStringLiteral("title")).toString() == QStringLiteral("Discord"));
+    CHECK(first.value(QStringLiteral("name")).toString() == QStringLiteral("Discord"));
+    CHECK(first.value(QStringLiteral("named")).toString() == QStringLiteral("ignore"));
+    CHECK(first.value(QStringLiteral("found")).toString().isEmpty());
+    CHECK(second.value(QStringLiteral("title")).toString() == QStringLiteral("Mic/Aux"));
+    CHECK(second.value(QStringLiteral("name")).toString() == QStringLiteral("Mic"));
+    CHECK(second.value(QStringLiteral("named")).toString() == QStringLiteral("mic"));
+    // Untitled streams: no opinion from the titles (the find classifies them by their sound).
+    r.controller.resetProject(r.tl.state, r.tl.seq);
+    streams = r.hl.audioStreams();
+    REQUIRE(streams.size() == 2);
+    CHECK(streams[0].toMap().value(QStringLiteral("named")).toString().isEmpty());
+    CHECK(streams[0].toMap().value(QStringLiteral("title")).toString().isEmpty());
+
+    // findParams: each entry checked (an unknown one is "auto"), sent only when one is not "auto", trailing ones dropped.
+    QVariantMap p = r.hl.findParams(opts({{QStringLiteral("audioRoles"),
+                                           QVariantList{QStringLiteral("auto"), QStringLiteral("game"), QStringLiteral("bogus"),
+                                                        QStringLiteral("auto")}}}));
+    CHECK(p.value(QStringLiteral("audioRoles")).toStringList() == QStringList{QStringLiteral("auto"), QStringLiteral("game")});
+    p = r.hl.findParams(opts({{QStringLiteral("audioRoles"), QVariantList{QStringLiteral("auto"), QStringLiteral("auto")}}}));
+    CHECK_FALSE(p.contains(QStringLiteral("audioRoles")));
+    p = r.hl.findParams(opts({{QStringLiteral("audioRoles"), QVariantList{QStringLiteral("loud")}}}));
+    CHECK_FALSE(p.contains(QStringLiteral("audioRoles")));
+    p = r.hl.findParams(opts({{QStringLiteral("audioRoles"), QVariantList{QStringLiteral("ignore"), QStringLiteral("mic"),
+                                                                           QStringLiteral("mixed")}}}));
+    CHECK(p.value(QStringLiteral("audioRoles")).toStringList() ==
+          QStringList({QStringLiteral("ignore"), QStringLiteral("mic"), QStringLiteral("mixed")}));
+    // The find sends them.
+    REQUIRE(r.hl.find(opts({{QStringLiteral("signals"), QStringList{QStringLiteral("game"), QStringLiteral("mic")}},
+                            {QStringLiteral("audioRoles"), QVariantList{QStringLiteral("mic")}}}))
+                .isEmpty());
+    const Json sent = last(g_lastFind);
+    INFO(sent.dump());
+    CHECK(sent["audioRoles"] == Json::array({"mic"}));
+    // A sequence without a recording has no streams.
+    const Timeline empty("V1 tgt |..........|\n");
+    r.controller.resetProject(empty.state, empty.seq);
+    CHECK(r.hl.audioStreams().isEmpty());
+}
+
+TEST_CASE("Highlights: a Short from In to Out uses the remembered layout and the facecam region of the gameplay's file",
+          "[app][highlights][layout]") {
+    resetSettings();
+    clearMessages();
+    Rig r;
+    r.controller.setPlayhead(seconds(4));
+    r.controller.markInAtPlayhead();
+    r.controller.setPlayhead(seconds(10));
+    r.controller.markOutAtPlayhead();
+    // HighlightShortOptions' remembered choices (Preferences.highlightsShortOptions) and the region drawn for G.
+    QSettings().setValue(QStringLiteral("highlights/shortOptions"),
+                         QStringLiteral(R"({"layout":"verticalSplit","split":0.7,"facecamOnTop":true,"zoom":2,)"
+                                        R"("useRegion":true,"captions":false,"hookTitle":false})"));
+    LayoutBridge::storeRegionFor(*r.controller.snapshot()->findMedia(r.tl.media('G')),
+                                 opts({{QStringLiteral("x"), 0.7}, {QStringLiteral("y"), 0.05},
+                                       {QStringLiteral("width"), 0.25}, {QStringLiteral("height"), 0.3}}));
+    REQUIRE(r.hl.makeShortFromInOut().isEmpty());
+    Json sent = last(g_lastShort);
+    INFO(sent.dump());
+    CHECK(sent["layout"] == "verticalSplit");
+    CHECK(sent["split"].get<double>() == Approx(0.7));
+    CHECK(sent["facecamOnTop"] == true);
+    CHECK_FALSE(sent.contains("zoom")); // the split has no zoom
+    CHECK(sent["captions"] == false);
+    CHECK(sent["hookTitle"] == false);
+    REQUIRE(sent.contains("facecamRegion"));
+    CHECK(sent["facecamRegion"]["x"].get<double>() == Approx(0.7));
+    // The region switch off: no region; the blurred fill takes the zoom and no split.
+    QSettings().setValue(QStringLiteral("highlights/shortOptions"),
+                         QStringLiteral(R"({"layout":"verticalBlurFill","split":0.7,"zoom":2,"useRegion":false})"));
+    r.controller.setCurrentSequenceIndex(0);
+    REQUIRE(r.hl.makeShortFromInOut().isEmpty());
+    sent = last(g_lastShort);
+    CHECK(sent["layout"] == "verticalBlurFill");
+    CHECK(sent["zoom"].get<double>() == Approx(2.0));
+    CHECK_FALSE(sent.contains("split"));
+    CHECK_FALSE(sent.contains("facecamRegion"));
+}
+
+TEST_CASE("Highlights panel in the window: the Audio streams rows correct the roles; the summary says what the find used; "
+          "screenshots",
+          "[app][highlights][audioRoles][qml][screenshot]") {
+    resetSettings();
+    clearMessages();
+    A11yScope a11y;
+    Shell shell;
+    REQUIRE(shell.window);
+    shell.resize(kShotWidth, kShotHeight);
+    shell.theme->setProperty("reduceMotion", true);
+    shell.setAppearance(true, "ultraviolet");
+    auto* controller = shell.engine.singletonInstance<ProjectController*>("Wabcut", "ProjectController");
+    auto* hl = shell.engine.singletonInstance<HighlightsBridge*>("Wabcut", "Highlights");
+    REQUIRE(controller);
+    REQUIRE(hl);
+    g_findSteps = 4;
+    g_stepMs = 0;
+    g_chatImported = false;
+    hl->setSynchronous(true);
+    hl->setTransport([](bool) {});
+    setPreviewFramesForTests(testFrame);
+    hl->setRegistry(&catalog());
+    Timeline tl{gameplayPicture()};
+    controller->resetProject(withStreamTitles(tl, "Desktop Audio", "Discord"), tl.seq);
+    REQUIRE_FALSE(shell.grab().isNull());
+    QQuickItem* library = findNamed(shell.window->contentItem(), QStringLiteral("libraryPanel"));
+    REQUIRE(library);
+    const auto panel = makeItem(shell, "import Wabcut\nHighlightsPanel {}\n", sceneRect(library));
+
+    // Find options: one row per stream, titled, with what Auto does.
+    QQuickItem* optionsButton = findNamed(panel.get(), QStringLiteral("highlightsOptionsButton"));
+    REQUIRE(optionsButton);
+    auto* findOptions = panel->findChild<QObject*>(QStringLiteral("highlightFindOptions"));
+    REQUIRE(findOptions);
+    REQUIRE(QMetaObject::invokeMethod(optionsButton, "clicked"));
+    REQUIRE(waitFor([&] { return findOptions->property("opened").toBool(); }, 3000));
+    auto* content = findOptions->property("contentItem").value<QQuickItem*>();
+    REQUIRE(content);
+    QQuickItem* group = findNamed(content, QStringLiteral("highlightsAudioStreams"));
+    REQUIRE(group);
+    CHECK(group->isVisible());
+    QQuickItem* title0 = findNamed(content, QStringLiteral("highlightsStreamTitle0"));
+    QQuickItem* title1 = findNamed(content, QStringLiteral("highlightsStreamTitle1"));
+    QQuickItem* role0 = findNamed(content, QStringLiteral("highlightsStreamRole0"));
+    QQuickItem* role1 = findNamed(content, QStringLiteral("highlightsStreamRole1"));
+    REQUIRE(title0);
+    REQUIRE(title1);
+    REQUIRE(role0);
+    REQUIRE(role1);
+    QObject* roleMenu1 = role1->findChild<QObject*>(QStringLiteral("highlightsStreamRoleMenu1"));
+    REQUIRE(roleMenu1);
+    CHECK(title0->property("text").toString() == QStringLiteral("Stream 1 · Desktop Audio"));
+    CHECK(title1->property("text").toString() == QStringLiteral("Stream 2 · Discord"));
+    // Auto says what it does: the role the title gives.
+    CHECK(role0->property("text").toString() == QStringLiteral("Auto · Game"));
+    CHECK(role0->property("tooltip").toString() == QStringLiteral("Auto: Game (from the title)"));
+    CHECK(role1->property("text").toString() == QStringLiteral("Auto · Left out"));
+    CHECK(role1->property("tooltip").toString() == QStringLiteral("Auto: Left out (from the title)"));
+    {
+        const QStringList issues = auditAccessibility(content);
+        INFO(join(issues));
+        CHECK(issues.isEmpty());
+    }
+    // The friend on Discord is the one talking over this recording's commentary: "Your voice" for stream 2.
+    REQUIRE(QMetaObject::invokeMethod(role1, "clicked"));
+    REQUIRE(waitFor([&] { return roleMenu1->property("opened").toBool(); }, 3000));
+    QStringList choices;
+    for (const QVariant& v : roleMenu1->property("options").toList())
+        choices << v.toMap().value(QStringLiteral("name")).toString();
+    CHECK(choices == QStringList({QStringLiteral("Auto"), QStringLiteral("Game"), QStringLiteral("Your voice"),
+                                  QStringLiteral("Mixed"), QStringLiteral("Left out")}));
+    REQUIRE(QMetaObject::invokeMethod(roleMenu1, "chosen", Q_ARG(QString, QStringLiteral("mic"))));
+    REQUIRE(QMetaObject::invokeMethod(roleMenu1, "close"));
+    REQUIRE(waitFor([&] { return !roleMenu1->property("visible").toBool(); }, 3000));
+    CHECK(role1->property("text").toString() == QStringLiteral("Your voice"));
+    const QJsonDocument saved = QJsonDocument::fromJson(shell.preferences->property("highlightsAudioRoles").toString().toUtf8());
+    REQUIRE(saved.isArray());
+    CHECK(saved.toVariant().toStringList() == QStringList({QStringLiteral("auto"), QStringLiteral("mic")}));
+    QVariant options;
+    REQUIRE(QMetaObject::invokeMethod(findOptions, "options", Q_RETURN_ARG(QVariant, options)));
+    CHECK(options.toMap().value(QStringLiteral("audioRoles")).toStringList() ==
+          QStringList({QStringLiteral("auto"), QStringLiteral("mic")}));
+    {
+        polishAll(panel.get());
+        spin(50);
+        const QImage dark = shell.grab();
+        REQUIRE_FALSE(dark.isNull());
+        REQUIRE(dark.save(QDir(outputDir()).filePath(QStringLiteral("highlight-find-audio-streams-dark.png"))));
+        shell.setAppearance(false, "ultraviolet");
+        polishAll(panel.get());
+        spin(50);
+        const QImage light = shell.grab();
+        REQUIRE_FALSE(light.isNull());
+        REQUIRE(light.save(QDir(outputDir()).filePath(QStringLiteral("highlight-find-audio-streams-light.png"))));
+        shell.setAppearance(true, "ultraviolet");
+    }
+    QMetaObject::invokeMethod(findOptions, "close");
+    REQUIRE(waitFor([&] { return !findOptions->property("visible").toBool(); }, 3000));
+
+    // Find: the correction goes with it; the summary names the roles the find used (the stub's: game, then the mic).
+    QQuickItem* findButton = findNamed(panel.get(), QStringLiteral("highlightsFindButton"));
+    REQUIRE(findButton);
+    REQUIRE(QMetaObject::invokeMethod(findButton, "clicked"));
+    const Json sent = last(g_lastFind);
+    INFO(sent.dump());
+    CHECK(sent["audioRoles"] == Json::array({"auto", "mic"}));
+    polishAll(panel.get());
+    QQuickItem* summary = findNamed(panel.get(), QStringLiteral("highlightsSummary"));
+    REQUIRE(summary);
+    CHECK(summary->property("text").toString().contains(QStringLiteral("Audio: Game · Your voice")));
+    // Back to Auto: nothing is sent.
+    REQUIRE(QMetaObject::invokeMethod(optionsButton, "clicked"));
+    REQUIRE(waitFor([&] { return findOptions->property("opened").toBool(); }, 3000));
+    // The rows are read again on each open.
+    role1 = findNamed(content, QStringLiteral("highlightsStreamRole1"));
+    REQUIRE(role1);
+    roleMenu1 = role1->findChild<QObject*>(QStringLiteral("highlightsStreamRoleMenu1"));
+    REQUIRE(roleMenu1);
+    CHECK(role1->property("text").toString() == QStringLiteral("Your voice"));
+    REQUIRE(QMetaObject::invokeMethod(roleMenu1, "chosen", Q_ARG(QString, QStringLiteral("auto"))));
+    CHECK(shell.preferences->property("highlightsAudioRoles").toString().isEmpty());
+    CHECK(role1->property("text").toString().startsWith(QStringLiteral("Auto")));
+    REQUIRE(QMetaObject::invokeMethod(findOptions, "options", Q_RETURN_ARG(QVariant, options)));
+    CHECK_FALSE(options.toMap().contains(QStringLiteral("audioRoles")));
+    QMetaObject::invokeMethod(findOptions, "close");
+    hl->setRegistry(nullptr);
+    setPreviewFramesForTests(nullptr);
 }

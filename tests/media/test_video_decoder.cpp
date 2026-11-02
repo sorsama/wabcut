@@ -316,6 +316,24 @@ TEST_CASE("Video: frames are cheap shared handles that outlive the decoder", "[m
     CHECK(frameIndexOf(kept) == 77); // still readable after the decoder is gone
 }
 
+TEST_CASE("Video: a jump into a long MKV seeks to its keyframe instead of decoding from the start", "[media][video]") {
+    // F2P (0.6): Matroska reads its Cues on the first seek, so a fresh decoder (its first frame decoded at open) saw an
+    // index of the keyframes the probe read, found no keyframe between that frame and the jump, and decoded forward
+    // to it: every frame up to 1:00:00 for a jump into the middle of a 2-hour OBS recording, minutes per jump.
+    auto decoder = openOrSkip("obs_long_recording.mkv"); // 5 min at 10 fps, GOP 2 s (20 frames), 2 B-frames
+    // The middle, back, near the end, the last GOP (after the last keyframe), and the start again.
+    for (const std::int64_t second : {150LL, 61LL, 271LL, 299LL, 3LL}) {
+        const std::uint64_t before = decoder->stats().framesDecoded;
+        auto frame = decoder->frameAt(Ticks::fromSeconds(second));
+        INFO("jump to " << second << " s: " << (frame ? "" : frame.error().message));
+        REQUIRE(frame.has_value());
+        CHECK(frameIndexOf(*frame) == (second * 10) % 1024); // a 320-pixel-wide barcode carries 10 bits
+        const std::uint64_t decoded = decoder->stats().framesDecoded - before;
+        INFO("decoded " << decoded << " frames");
+        CHECK(decoded <= 60); // up to one GOP from the keyframe before it (and the codec's reorder delay)
+    }
+}
+
 TEST_CASE("Video: errors", "[media][video]") {
     auto missing = VideoDecoder::open(mediaPath("missing.mp4"));
     REQUIRE_FALSE(missing.has_value());

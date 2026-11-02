@@ -6,7 +6,9 @@ import QtQuick.Layouts
 // capture device), "Test input" with its meter (the microphone is open only while it is on, and closes with the
 // dialog), the voice-over options (count-in and its beep, pre-roll, post-roll, input monitoring and its gain) and the
 // recording latency: the calibration, measured by a loopback pass ("Measure": clicks played through the speakers into
-// the microphone) or typed. Every value is saved (Preferences voiceOver/*, through VoiceOverSync).
+// the microphone) or typed. Every value is saved (Preferences voiceOver/*, through VoiceOverSync). 0.6 (P1 round, #53):
+// the script prompter (ScriptPrompterSection: Open script… or Paste…, text size, mirror, show when armed, a marker per
+// paragraph; the VoiceOver bridge keeps them in the settings).
 WabcutDialog {
     id: dialog
     objectName: "audioSettings"
@@ -240,6 +242,11 @@ WabcutDialog {
     }
     Note {
         text: qsTr("A pass records onto the first armed audio track (R in the track header or the mixer), between In and Out when both are set, else from the playhead until you stop it.")
+    }
+
+    // ---- Script prompter (0.6, P1 round #53) ----
+    ScriptPrompterSection {
+        Layout.fillWidth: true
     }
 
     // ---- Latency ----

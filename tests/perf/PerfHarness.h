@@ -124,6 +124,18 @@ double gpuMemoryMb();
 /// divided by its wall seconds is "ms per second": 1000 is one core busy.
 double processCpuMs();
 
+/// Where the private bytes are (diagnostic): the process heaps' allocated and committed bytes (Windows HeapSummary over
+/// GetProcessHeaps; the CRT, Qt and FFmpeg allocate there), so a "retained" figure splits into blocks still held
+/// (allocated), freed memory a heap kept committed (committed - allocated), and private memory outside the heaps
+/// (privateMb() - committed: the QML engine's JS heap, driver allocations, thread stacks). Zeros where unknown.
+struct HeapUsage {
+    double allocatedMb = 0.0;
+    double committedMb = 0.0;
+    int heaps = 0;
+};
+HeapUsage heapUsage();
+Json toJson(const HeapUsage& heaps);
+
 /// Milliseconds since `start` (steady clock).
 double msSince(std::chrono::steady_clock::time_point start);
 

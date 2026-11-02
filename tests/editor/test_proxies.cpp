@@ -17,9 +17,12 @@
 
 #include <chrono>
 #include <filesystem>
+#include <algorithm>
 #include <fstream>
 #include <memory>
 #include <mutex>
+#include <set>
+#include <string>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -639,4 +642,237 @@ TEST_CASE("Cache inspector: sizes, cleaning regenerable data, per-cache limits",
     CHECK(formatBytes(1500) == "1.5 KB");
     CHECK(formatBytes(340'000'000) == "340 MB");
     CHECK(formatBytes(1'234'000'000) == "1.2 GB");
+}
+
+// P1 #48 (stream 3E): Settings > Media & cache > Proxies: In this folder.
+TEST_CASE("Proxy manager: a proxy folder override takes new proxies; the ones made before are still found and deleted",
+          "[editor][proxy]") {
+    if (!fs::exists(testMedia("h264_422_10bit.mp4"))) {
+        SKIP("test media not generated");
+    }
+    const fs::path dir = workDir("proxy-root");
+    const fs::path project = dir / "film" / "Film.wabcut";
+    const fs::path root = dir / "fast drive";
+    fs::create_directories(project.parent_path());
+    // Writes a stand-in proxy file where the job says (the real transcode is covered above).
+    const ProxyQueue::Transcoder writer = [](const ProxyJob& job, const exporter::ProxyControl&)
+        -> std::expected<exporter::ProxyResult, Error> {
+        std::error_code ec;
+        fs::create_directories(job.output.parent_path(), ec);
+        std::ofstream(job.output, std::ios::binary) << "proxy";
+        exporter::ProxyResult r;
+        r.file = job.output;
+        r.frames = 1;
+        return r;
+    };
+    EditSession session;
+    session.reset(projectWithSequence());
+    ProjectDocument doc(session);
+    const MediaId id = importOne(session, testMedia("h264_422_10bit.mp4"), project);
+    REQUIRE(doc.saveAs(project));
+
+    fs::path nearProject;
+    {
+        // Made next to the project (the default) before the folder moves; quit without saving.
+        ProxyManager pm(doc, {.untitledProxyRoot = dir, .policy = ProxyPolicy::Off, .transcoder = writer});
+        CHECK(pm.proxyFolder() == project.parent_path() / "Film Proxies");
+        REQUIRE(pm.generate({id}) == 1);
+        REQUIRE(settle(pm, 30s));
+        REQUIRE(pm.status(id).state == ProxyState::Ready);
+        nearProject = pm.status(id).file;
+        CHECK(nearProject.parent_path() == project.parent_path() / "Film Proxies");
+    }
+
+    ProxyManager pm(doc, {.untitledProxyRoot = dir, .proxyRoot = root, .policy = ProxyPolicy::Off, .transcoder = writer});
+    CHECK(pm.proxyRoot() == root);
+    CHECK(pm.proxyFolder() == root / "Film Proxies");
+    const std::vector<fs::path> managed = pm.managedFolders();
+    CHECK(managed.front() == root / "Film Proxies");
+    CHECK(std::ranges::find(managed, project.parent_path() / "Film Proxies") != managed.end());
+    CHECK(std::ranges::find(managed, root / "Untitled Proxies") != managed.end());
+    CHECK(std::ranges::find(managed, dir / "Untitled Proxies") != managed.end());
+    // The proxy made before the move is found again from its folder's index, and still plays.
+    pm.refresh(true);
+    REQUIRE(pm.status(id).state == ProxyState::Ready);
+    CHECK(pm.status(id).file == nearProject);
+    // It is still Wabcut's own: Delete proxies removes the file.
+    CHECK(pm.deleteProxies({id}) == 1);
+    CHECK_FALSE(fs::exists(nearProject));
+    // A new proxy goes to the new folder.
+    REQUIRE(pm.generate({id}) == 1);
+    REQUIRE(settle(pm, 30s));
+    REQUIRE(pm.status(id).state == ProxyState::Ready);
+    CHECK(pm.status(id).file.parent_path() == root / "Film Proxies");
+    CHECK(fs::exists(pm.status(id).file));
+    // Back to "Next to the project": new proxies go there again; the moved one stays where it is.
+    pm.setProxyRoot({});
+    CHECK(pm.proxyFolder() == project.parent_path() / "Film Proxies");
+    CHECK(pm.managedFolders().size() == 2); // next to the project, the untitled folder
+}
+
+// ---- Fix round 2 (F2C): Clean deletes only files Wabcut made; what cannot be rebuilt is not "regenerable" ----------
+
+namespace {
+
+void writeFile(const fs::path& file, const std::string& text) {
+    fs::create_directories(file.parent_path());
+    std::ofstream(file, std::ios::binary) << text;
+}
+
+} // namespace
+
+TEST_CASE("Cache cleaning (fix F2C): two projects share a proxy folder and Clean keeps a user's own files there",
+          "[editor][cache][proxy]") {
+    if (!fs::exists(testMedia("h264_422_10bit.mp4")) || !fs::exists(testMedia("h264_1080p60_aac.mp4"))) {
+        SKIP("test media not generated");
+    }
+    const fs::path dir = workDir("f2c-shared-proxies");
+    const fs::path root = dir / "fast drive";
+    const ProxyQueue::Transcoder writer = [](const ProxyJob& job, const exporter::ProxyControl&)
+        -> std::expected<exporter::ProxyResult, Error> {
+        std::error_code ec;
+        fs::create_directories(job.output.parent_path(), ec);
+        std::ofstream(job.output, std::ios::binary) << "proxy";
+        exporter::ProxyResult r;
+        r.file = job.output;
+        r.frames = 1;
+        return r;
+    };
+    // Two projects of the same name in different folders, one proxy folder: "<root>/Film Proxies" (P1 #48).
+    const auto makeProxy = [&](const fs::path& project, const char* media, EditSession& session, ProjectDocument& doc,
+                               std::unique_ptr<ProxyManager>& pm) {
+        fs::create_directories(project.parent_path());
+        const MediaId id = importOne(session, testMedia(media), project);
+        REQUIRE(doc.saveAs(project));
+        pm = std::make_unique<ProxyManager>(
+            doc, ProxyManagerOptions{.untitledProxyRoot = dir, .proxyRoot = root, .policy = ProxyPolicy::Off, .transcoder = writer});
+        REQUIRE(pm->generate({id}) == 1);
+        REQUIRE(settle(*pm, 30s));
+        REQUIRE(pm->status(id).state == ProxyState::Ready);
+        return pm->status(id).file;
+    };
+    EditSession sessionA, sessionB;
+    sessionA.reset(projectWithSequence());
+    sessionB.reset(projectWithSequence());
+    ProjectDocument docA(sessionA), docB(sessionB);
+    std::unique_ptr<ProxyManager> pmA, pmB;
+    const fs::path proxyA = makeProxy(dir / "a" / "Film.wabcut", "h264_422_10bit.mp4", sessionA, docA, pmA);
+    const fs::path proxyB = makeProxy(dir / "b" / "Film.wabcut", "h264_1080p60_aac.mp4", sessionB, docB, pmB);
+    const fs::path shared = root / "Film Proxies";
+    REQUIRE(pmA->proxyFolder() == shared);
+    REQUIRE(proxyA.parent_path() == shared);
+    REQUIRE(proxyB.parent_path() == shared);
+    REQUIRE(isProxyFileName(pathToUtf8(proxyA.filename())));
+    // The user's own files saved in the same folder, one even of the proxy shape (but never made by Wabcut).
+    const fs::path holiday = shared / "My holiday.mov";
+    const fs::path notes = shared / "notes.txt";
+    const fs::path lookalike = shared / "Interview.0123abcd.g1.mov";
+    writeFile(holiday, "the user's own video");
+    writeFile(notes, "notes");
+    writeFile(lookalike, "an export the user named like a proxy");
+
+    // Project B is closed; project A is open: its proxy is in use.
+    pmB.reset();
+    const std::set<fs::path> inUse = pmA->filesInUse();
+    CacheInspector inspector;
+    inspector.setLocations({{"proxies", "Proxies", shared, 0, {".mov"}, CacheKind::WabcutProxies}});
+    std::vector<CacheUsage> usage = inspector.scan(inUse);
+    REQUIRE(usage.size() == 1);
+    CHECK(usage[0].files == 2); // the two proxies Wabcut made; not the user's files
+    CHECK(usage[0].inUseFiles == 1);
+    CHECK(usage[0].bytes == 10);
+    CHECK(usage[0].inUseBytes == 5);
+
+    // Clean (the user's explicit choice): the other project's proxy goes (made again when B needs it); A's proxy and
+    // every file Wabcut did not make stay.
+    CHECK(inspector.clean("proxies", inUse) == 5);
+    CHECK(fs::exists(proxyA));
+    CHECK_FALSE(fs::exists(proxyB));
+    CHECK(fs::exists(holiday));
+    CHECK(fs::exists(notes));
+    CHECK(fs::exists(lookalike));
+    // A size limit (none is set for proxies; F1A) would not reach the user's files either.
+    inspector.setLimit("proxies", 1);
+    inspector.enforceLimits(inUse);
+    CHECK(fs::exists(holiday));
+    CHECK(fs::exists(lookalike));
+    CHECK(fs::exists(proxyA));
+}
+
+TEST_CASE("Cache cleaning (fix F2C): only indexed Wabcut proxies and rebuildable analysis entries are cleaned",
+          "[editor][cache][proxy]") {
+    const fs::path dir = workDir("f2c-clean-kinds");
+    const fs::path proxies = dir / "Film Proxies";
+    // The folder's index as Wabcut's generator writes it, plus entries that must not count: a non-proxy name (a forged
+    // or damaged index naming the user's video), another tool's entry and a name that leaves the folder.
+    writeFile(proxies / "proxies.json", R"({"version": 1, "generator": "wabcut-proxy 1", "proxies": [
+        {"file": "clip.0123abcd.g1.mov", "generator": "wabcut-proxy 1", "sourcePath": "C:/media/clip.mp4"},
+        {"file": "older.89abcdef.g3.mov", "generator": "wabcut-proxy 0"},
+        {"file": "My holiday.mov", "generator": "wabcut-proxy 1"},
+        {"file": "other.0123abcd.g1.mov", "generator": "another-tool 2"},
+        {"file": "../escape.0123abcd.g1.mov", "generator": "wabcut-proxy 1"},
+        {"file": "sub/nested.0123abcd.g1.mov", "generator": "wabcut-proxy 1"}
+    ]})");
+    for (const char* name : {"clip.0123abcd.g1.mov", "older.89abcdef.g3.mov", "My holiday.mov", "other.0123abcd.g1.mov",
+                             "stray.0123abcd.g1.mov", "notes.txt", "sub/nested.0123abcd.g1.mov"}) {
+        writeFile(proxies / name, "1234");
+    }
+    writeFile(dir / "escape.0123abcd.g1.mov", "outside the folder");
+    std::vector<std::string> indexed = indexedProxyFiles(proxies);
+    std::ranges::sort(indexed);
+    CHECK(indexed == std::vector<std::string>{"clip.0123abcd.g1.mov", "older.89abcdef.g3.mov"});
+
+    // The analysis cache: a transcript (rebuildable), an AI object mask's matte and an imported chat log (not), and
+    // files that are no entries.
+    const fs::path analysis = dir / "analysis";
+    const fs::path source = analysis / "v1" / "00000000000000ab";
+    writeFile(source / "0" / "transcript" / "whisper-1234.json", R"({"schema":"wabcut.analysis"})");
+    writeFile(source / "0" / "matte" / "sam2-5678.json", R"({"schema":"wabcut.analysis"})");
+    writeFile(source / "-1" / "highlights.chat" / "highlights-chat-1-0000.json", R"({"schema":"wabcut.analysis"})");
+    writeFile(source / "0" / "transcript" / "whisper-1234.json.tmp-1", "partial");
+    writeFile(analysis / "readme.txt", "not an entry");
+
+    CacheInspector inspector;
+    inspector.setLocations({{"proxies", "Proxies", proxies, 0, {".mov"}, CacheKind::WabcutProxies},
+                            {"analysis", "Analysis", analysis, 0, {}, CacheKind::Analysis},
+                            {"analysisKept", "AI masks and chat logs", analysis, 0, {}, CacheKind::KeptAnalysis}});
+    const std::vector<CacheUsage> usage = inspector.scan();
+    REQUIRE(usage.size() == 3);
+    CHECK(usage[0].files == 2);
+    CHECK(usage[1].files == 1);
+    CHECK(usage[2].files == 2);
+    CHECK(usage[2].kind == CacheKind::KeptAnalysis);
+
+    // Clean regenerable data: the Wabcut proxies and the transcript; nothing else.
+    inspector.clean("");
+    CHECK_FALSE(fs::exists(proxies / "clip.0123abcd.g1.mov"));
+    CHECK_FALSE(fs::exists(proxies / "older.89abcdef.g3.mov"));
+    for (const char* name : {"My holiday.mov", "other.0123abcd.g1.mov", "stray.0123abcd.g1.mov", "notes.txt",
+                             "sub/nested.0123abcd.g1.mov", "proxies.json"}) {
+        INFO(name);
+        CHECK(fs::exists(proxies / name));
+    }
+    CHECK(fs::exists(dir / "escape.0123abcd.g1.mov"));
+    CHECK_FALSE(fs::exists(source / "0" / "transcript" / "whisper-1234.json"));
+    CHECK(fs::exists(source / "0" / "matte" / "sam2-5678.json"));
+    CHECK(fs::exists(source / "-1" / "highlights.chat" / "highlights-chat-1-0000.json"));
+    CHECK(fs::exists(source / "0" / "transcript" / "whisper-1234.json.tmp-1"));
+    CHECK(fs::exists(analysis / "readme.txt"));
+
+    // Their own Clean (asked for by id, after its confirmation) deletes the masks and chat logs, and only them.
+    inspector.clean("analysisKept");
+    CHECK_FALSE(fs::exists(source / "0" / "matte" / "sam2-5678.json"));
+    CHECK_FALSE(fs::exists(source / "-1" / "highlights.chat" / "highlights-chat-1-0000.json"));
+    CHECK(fs::exists(analysis / "readme.txt"));
+
+    // The proxy file shape (ProxyManager::queueFor).
+    CHECK(isProxyFileName("clip.0123abcd.g1.mov"));
+    CHECK(isProxyFileName("My clip 2.deadbeef.g12.MOV"));
+    CHECK_FALSE(isProxyFileName("clip.0123ABCD.g1.mov"));
+    CHECK_FALSE(isProxyFileName("clip.0123abc.g1.mov"));
+    CHECK_FALSE(isProxyFileName("clip.0123abcd.g.mov"));
+    CHECK_FALSE(isProxyFileName("clip.0123abcd.gx.mov"));
+    CHECK_FALSE(isProxyFileName("clip.0123abcd.g1.mp4"));
+    CHECK_FALSE(isProxyFileName("holiday.mov"));
+    CHECK_FALSE(isProxyFileName("sub/clip.0123abcd.g1.mov"));
 }

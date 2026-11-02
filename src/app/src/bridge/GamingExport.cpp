@@ -1,6 +1,7 @@
 #include "GamingExport.h"
 
 #include "BridgeIds.h"
+#include "DiskSpace.h"
 #include "ExportController.h"
 #include "ProjectController.h"
 
@@ -8,7 +9,10 @@
 #include <wabcut/export/ExportSettings.h>
 
 #include <QCoreApplication>
+#include <QDir>
+#include <QFileInfo>
 #include <QQmlEngine>
+#include <QUrl>
 
 #include <algorithm>
 #include <cmath>
@@ -134,6 +138,49 @@ bool isHardware(const std::string& encoder) {
     return false;
 }
 
+/// P1 (#3): the bytes of one still of `width` x `height`: the pixel format's bytes per pixel times what the format's
+/// compression keeps of them (PNG about half, TIFF LZW 0.6, OpenEXR half ZIP 0.6, DPX and Targa as they are), or about
+/// a quarter byte a pixel for a high-quality JPEG.
+double stillFrameBytes(ex::VideoCodec codec, ex::OutputPixelFormat format, int width, int height) {
+    const double pixels = static_cast<double>(width) * height;
+    if (codec == ex::VideoCodec::Jpeg)
+        return pixels * 0.25;
+    double bytesPerPixel = 3.0;
+    switch (format) {
+    case ex::OutputPixelFormat::Pal8:
+        bytesPerPixel = 1.0;
+        break;
+    case ex::OutputPixelFormat::Rgba:
+        bytesPerPixel = 4.0;
+        break;
+    case ex::OutputPixelFormat::Rgb48:
+    case ex::OutputPixelFormat::Rgbf: // half float RGB
+        bytesPerPixel = 6.0;
+        break;
+    case ex::OutputPixelFormat::Rgba64:
+    case ex::OutputPixelFormat::Rgbaf:
+        bytesPerPixel = 8.0;
+        break;
+    case ex::OutputPixelFormat::Gbrp10: // DPX packs three 10-bit values in 32 bits
+        bytesPerPixel = 4.0;
+        break;
+    case ex::OutputPixelFormat::Gbrp12:
+        bytesPerPixel = 4.5;
+        break;
+    case ex::OutputPixelFormat::Gbrap12:
+        bytesPerPixel = 6.0;
+        break;
+    default:
+        bytesPerPixel = 3.0;
+        break;
+    }
+    const double kept = codec == ex::VideoCodec::Png    ? 0.5
+                        : codec == ex::VideoCodec::Tiff ? 0.6
+                        : codec == ex::VideoCodec::Exr  ? 0.6
+                                                        : 1.0; // DPX, Targa
+    return pixels * bytesPerPixel * kept;
+}
+
 QString clockText(double seconds) {
     const auto total = static_cast<long long>(std::max(0.0, std::floor(seconds)));
     const long long h = total / 3600;
@@ -216,6 +263,18 @@ double GamingExport::encodeSeconds(const std::string& codec, const std::string& 
     } else if (codec == "prores" || codec == "dnxhr") {
         fps1080 = 60.0;
         fps2160 = 15.0;
+    } else if (codec == "av1") {
+        // P1 (#3), not measured: the GPUs' AV1 like their HEVC; SVT-AV1 at preset 8 (Encode.cpp) under real time.
+        fps1080 = hardware ? 80.8 : 24.0;
+        fps2160 = hardware ? 24.4 : 6.0;
+    } else if (codec == "vp9") {
+        // Not measured: libvpx-vp9 at "good", cpu-used 4 (Encode.cpp) keeps 720p near real time.
+        fps1080 = hardware ? 60.0 : 14.0;
+        fps2160 = hardware ? 18.0 : 3.5;
+    } else if (codec == "gif") {
+        // Not measured: a palette made for each frame, then LZW.
+        fps1080 = 30.0;
+        fps2160 = 8.0;
     }
     if (hardware && encoder.find("nvenc") == std::string::npos) {
         fps1080 *= 0.8;
@@ -363,6 +422,11 @@ QVariantMap GamingExport::plan(const QString& id, const QString& sequenceId, con
                             "the action.")
                              .arg(sequence->width)
                              .arg(sequence->height);
+            // (A range over 3:00 is said by estimate(): every vertical export gets that note.)
+        } else if (portrait) {
+            // P1 (#21): a 16:9 preset on a 9:16 sequence fits it with black bars at the sides (not an upscale).
+            notes << tr("This 9:16 sequence is pillarboxed into 16:9 (black bars at the sides): pick Shorts / TikTok / "
+                        "Reels for a vertical file.");
         } else if (p->width > sequence->width || p->height > sequence->height) {
             notes << tr("Upscaled from %1×%2: the platform gives higher resolutions more bitrate, but no detail is added.")
                          .arg(sequence->width)
@@ -411,8 +475,13 @@ QVariantMap GamingExport::estimate(const QString& sequenceId, const QString& pre
     QStringList notes;
 
     double videoBps = 0;
+    // P1 (#3): stills (an image sequence, one still, PNG in MOV) are priced per frame: the picture's bytes at the pixel
+    // format's depth, times what the format's compression keeps.
+    double stillBytes = -1; // >= 0: the bytes of one frame
+    const bool images = s.container == ex::Container::Image;
     if (s.video.enabled) {
         const double pixelRate = static_cast<double>(r->width) * r->height * fps;
+        const double pixels = static_cast<double>(r->width) * r->height;
         switch (s.video.codec) {
         case ex::VideoCodec::ProRes: {
             const double scale = s.video.proresProfile == ex::ProResProfile::Proxy ? 0.2
@@ -431,19 +500,63 @@ QVariantMap GamingExport::estimate(const QString& sequenceId, const QString& pre
         }
         case ex::VideoCodec::H264:
         case ex::VideoCodec::Hevc:
+        case ex::VideoCodec::Av1: // P1 (#3): AV1 and VP9 rate like the other long-GOP codecs
+        case ex::VideoCodec::Vp9:
             if (s.video.rateControl == ex::RateControl::TargetSize) {
-                videoBps = static_cast<double>(r->targetVideoBitrate); // the exporter's size target (Discord)
+                videoBps = static_cast<double>(r->targetVideoBitrate); // the exporter's size target (Discord, #28)
             } else if (s.video.rateControl == ex::RateControl::Bitrate) {
                 videoBps = static_cast<double>(s.video.bitrate);
             } else {
-                // Constant quality: bits per pixel of fast game footage at CRF 18, doubling every 6 steps lower.
-                const double bpp = 0.11 * std::pow(2.0, (18.0 - s.video.quality) / 6.0) *
-                                   (s.video.codec == ex::VideoCodec::Hevc ? 0.65 : 1.0);
+                // Constant quality: bits per pixel of fast game footage at CRF 18, doubling every 6 steps lower; the
+                // newer codecs need fewer bits for the same picture.
+                const double codecFactor = s.video.codec == ex::VideoCodec::Av1    ? 0.55
+                                           : s.video.codec == ex::VideoCodec::Hevc ? 0.65
+                                           : s.video.codec == ex::VideoCodec::Vp9  ? 0.65
+                                                                                   : 1.0;
+                const double bpp = 0.11 * std::pow(2.0, (18.0 - s.video.quality) / 6.0) * codecFactor;
                 videoBps = bpp * pixelRate;
                 approximate = true;
                 notes << tr("Constant quality: the size depends on the picture.");
             }
             break;
+        case ex::VideoCodec::Gif:
+            // An 8-bit palette per frame, LZW-packed: about 0.8 bits a pixel of game footage.
+            videoBps = 0.8 * pixelRate;
+            approximate = true;
+            notes << tr("GIF: the size depends on the picture.");
+            break;
+        case ex::VideoCodec::CineForm: {
+            // Like ProRes 422 HQ: about 200 Mb/s at 1080p30; the 12-bit RGB(A) flavours carry half as much again.
+            const bool rgb = s.video.pixelFormat == ex::OutputPixelFormat::Gbrp12 ||
+                             s.video.pixelFormat == ex::OutputPixelFormat::Gbrap12;
+            videoBps = 200e6 * (rgb ? 1.5 : 1.0) * pixelRate / (1920.0 * 1080.0 * 29.97);
+            approximate = true;
+            break;
+        }
+        case ex::VideoCodec::Xdcam: // 0.6 (#73): XDCAM HD422 is 50 Mb/s constant bit rate
+            videoBps = 50e6;
+            break;
+        case ex::VideoCodec::AvcIntra:
+            // AVC-Intra 100 (SMPTE RP 2027): a fixed size per frame, about 113 Mb/s at 1080p25 / 29.97 and 720p50 / 59.94.
+            videoBps = 113.5e6;
+            break;
+        case ex::VideoCodec::Animation:
+            // QuickTime Animation (run-length): about half the RGB(A) bytes of each frame.
+            videoBps = pixels * (ex::hasAlpha(s.video.pixelFormat) ? 4.0 : 3.0) * 0.5 * 8.0 * fps;
+            approximate = true;
+            break;
+        case ex::VideoCodec::Png:
+        case ex::VideoCodec::Tiff:
+        case ex::VideoCodec::Dpx:
+        case ex::VideoCodec::Jpeg:
+        case ex::VideoCodec::Targa:
+        case ex::VideoCodec::Exr: {
+            stillBytes = stillFrameBytes(s.video.codec, s.video.pixelFormat, r->width, r->height);
+            videoBps = stillBytes * 8.0 * fps;
+            approximate = true;
+            notes << tr("Stills: the size depends on the picture.");
+            break;
+        }
         }
     }
     double audioBps = 0;
@@ -452,6 +565,8 @@ QVariantMap GamingExport::estimate(const QString& sequenceId, const QString& pre
         switch (s.audio.codec) {
         case ex::AudioCodec::Aac:
         case ex::AudioCodec::Ac3:
+        case ex::AudioCodec::Opus: // P1 (#3): WebM's and MP3's sound at their bitrate too
+        case ex::AudioCodec::Mp3:
             audioBps = static_cast<double>(s.audio.bitrate);
             break;
         case ex::AudioCodec::Pcm16:
@@ -462,11 +577,27 @@ QVariantMap GamingExport::estimate(const QString& sequenceId, const QString& pre
             break;
         }
     }
-    const double bytes = (videoBps + audioBps) * seconds / 8.0 * kContainerOverhead;
+    // P1 (#21): Shorts are 3 minutes at most. A longer vertical export is still allowed (never blocked), it is just said.
+    if (s.video.enabled && !images && r->height > r->width && seconds > 180.0 + 1e-6)
+        notes << tr("Over 3:00: YouTube treats it as a regular video, not a Short.");
+    // Stills on their own (Container::Image): one file a frame, or the range's first frame alone; no sound, no container.
+    const double bytes = images && stillBytes >= 0
+                             ? stillBytes * static_cast<double>(s.video.exportAsSequence ? std::max<std::int64_t>(1, r->frameCount) : 1)
+                             : (videoBps + audioBps) * seconds / 8.0 * kContainerOverhead;
 
     const std::string_view codecName = ex::videoCodecName(s.video.codec);
     const QString codec = QString::fromUtf8(codecName.data(), static_cast<qsizetype>(codecName.size()));
-    QString encoder = s.video.enabled ? encoderFor(codec, s.video.encoder) : QString();
+    // P1 (#3): GIF, the stills, QuickTime Animation and CineForm have no hardware encoder: "auto" is their own.
+    const bool softwareOnly = s.video.codec == ex::VideoCodec::Gif || s.video.codec == ex::VideoCodec::Png ||
+                              s.video.codec == ex::VideoCodec::Tiff || s.video.codec == ex::VideoCodec::Dpx ||
+                              s.video.codec == ex::VideoCodec::Jpeg || s.video.codec == ex::VideoCodec::Targa ||
+                              s.video.codec == ex::VideoCodec::Exr || s.video.codec == ex::VideoCodec::Animation ||
+                              s.video.codec == ex::VideoCodec::CineForm;
+    QString encoder = !s.video.enabled ? QString()
+                      : softwareOnly && s.video.encoder == "auto"
+                          ? QString::fromLatin1(ex::softwareEncoder(s.video.codec).data(),
+                                                static_cast<qsizetype>(ex::softwareEncoder(s.video.codec).size()))
+                          : encoderFor(codec, s.video.encoder);
     // Not probed yet: time the software encoder (the slower case).
     const std::string timed = encoder.isEmpty() ? std::string(ex::softwareEncoder(s.video.codec)) : encoder.toStdString();
     const double encodeSecs = s.video.enabled ? encodeSeconds(codec.toStdString(), timed, r->width, r->height, r->frameCount)
@@ -486,9 +617,32 @@ QVariantMap GamingExport::estimate(const QString& sequenceId, const QString& pre
         encoderText = tr("x264 (CPU)");
     } else if (encoder == QLatin1String("libx265")) {
         encoderText = tr("x265 (CPU)");
+    } else if (encoder == QLatin1String("libsvtav1")) {
+        encoderText = tr("SVT-AV1 (CPU)");
+    } else if (encoder == QLatin1String("libvpx-vp9")) {
+        encoderText = tr("libvpx VP9 (CPU)");
     } else {
         encoderText = encoder;
     }
+
+    // P1 (#29): the drive the file goes to (the chosen output, else the default output path) and whether it has room for
+    // the file with a margin. A warning only: the export stays allowed (the estimate may be high).
+    QString target = overrides.value(QStringLiteral("output")).toString();
+    if (target.isEmpty() && exporter())
+        target = exporter()->defaultOutputPath(sequenceId, presetId, overrides);
+    const QUrl targetUrl(target);
+    const QString targetPath = targetUrl.isLocalFile() ? targetUrl.toLocalFile() : target;
+    const QString folder = targetPath.isEmpty() ? QString() : QFileInfo(targetPath).absolutePath();
+    const qint64 freeBytes = folder.isEmpty() ? -1 : diskspace::freeBytesAt(folder);
+    const QString lowSpaceNote =
+        folder.isEmpty() ? QString() : diskspace::lowSpaceMessage(folder, bytes, tr("the export"));
+    if (!lowSpaceNote.isEmpty())
+        notes << lowSpaceNote;
+    out[QStringLiteral("folder")] = QDir::toNativeSeparators(folder);
+    out[QStringLiteral("freeBytes")] = static_cast<double>(freeBytes);
+    out[QStringLiteral("freeText")] = freeBytes >= 0 ? diskspace::bytesText(static_cast<double>(freeBytes)) : QString();
+    out[QStringLiteral("lowSpace")] = !lowSpaceNote.isEmpty();
+    out[QStringLiteral("lowSpaceNote")] = lowSpaceNote;
 
     out[QStringLiteral("ok")] = true;
     out[QStringLiteral("bytes")] = bytes;

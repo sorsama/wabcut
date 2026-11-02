@@ -2,6 +2,7 @@
 
 #include <wabcut/model/Nesting.h>
 
+#include <wabcut/model/Auditions.h>
 #include "SequenceEditor.h"
 
 #include <algorithm>
@@ -83,9 +84,12 @@ std::vector<SequenceId> nestedSequencesOf(const Sequence& sequence) {
     std::vector<SequenceId> out;
     sequence.forEachTrack([&](const Track& t) {
         for (const Clip& c : t.clips) {
-            if (c.isNested()) {
-                out.push_back(c.sequence);
-            }
+            // 0.6: an audition's takes count (Auditions.h): making one active must not close a cycle.
+            forEachTakeSource(c, [&](MediaId, SequenceId s) {
+                if (s.isValid()) {
+                    out.push_back(s);
+                }
+            });
         }
     });
     std::sort(out.begin(), out.end());

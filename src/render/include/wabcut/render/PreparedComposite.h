@@ -117,6 +117,10 @@ struct ColorView {
     /// Before/after: left of this fraction of the canvas width, graded layers show themselves before their grade;
     /// negative = off.
     double split = -1.0;
+    /// 0.6 (#72): the monitor's SDR Conform preview of an HDR or Wide Gamut (No / Minimal Tone Mapping) setup, with its
+    /// sdrConform settings: negative = off; left of this fraction of the canvas width the setup's own SDR preview
+    /// (before), right of it SDR Conform (after) - 0 conforms the whole picture.
+    double conformSplit = -1.0;
 
     bool active() const { return maskView != 0 || split >= 0.0; }
     bool operator==(const ColorView&) const = default;

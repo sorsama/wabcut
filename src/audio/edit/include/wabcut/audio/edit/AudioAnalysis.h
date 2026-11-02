@@ -36,8 +36,37 @@ struct LoudnessStats {
     double maxShortTermLufs = -std::numeric_limits<double>::infinity();
     Ticks duration;
 
+    // ---- 0.6 (P1 round, #54): loudness QC - where ----
+    /// The 100 ms blocks whose true peak reached `peakFloorDbtp`: an offset from `start`, a length, the peak.
+    struct PeakBlock {
+        Ticks at;
+        Ticks duration;
+        double truePeakDbtp = 0.0;
+        bool operator==(const PeakBlock&) const = default;
+    };
+    /// Where the measured range starts on the timeline (set by the analyzer for this measurement; not cached).
+    Ticks start;
+    /// Offsets from `start`: where the loudest momentary (400 ms) and short-term (3 s) windows start, and the 100 ms
+    /// block holding the true peak. nullopt when not known (silence, a cache entry from before 0.6).
+    std::optional<Ticks> maxMomentaryAt;
+    std::optional<Ticks> maxShortTermAt;
+    std::optional<Ticks> truePeakAt;
+    std::vector<PeakBlock> peakBlocks;
+    double peakFloorDbtp = -6.0;
+
     bool hasIntegrated() const noexcept { return integratedLufs > -1e300; }
 };
+
+/// 0.6 (#54): neighbouring 100 ms blocks above a true-peak ceiling (gaps of a block or less bridged): a range on the
+/// timeline and its highest true peak.
+struct TruePeakOver {
+    TimeRange range;
+    double truePeakDbtp = 0.0;
+};
+/// The true-peak overs of `stats` above `ceilingDbtp` (clamped to at least its peakFloorDbtp), in time order: at most
+/// `maxOvers` of them (the first ones); `total` (optional) gets how many there are in all.
+std::vector<TruePeakOver> truePeakOvers(const LoudnessStats& stats, double ceilingDbtp, std::size_t maxOvers = 200,
+                                        std::size_t* total = nullptr);
 
 /// What is measured: one clip as it renders on its own (its media, Volume/Panner and effect stack), one track
 /// (its clips, transitions and track effects, before mute and fader), or the sequence's mix (mute/solo, the master

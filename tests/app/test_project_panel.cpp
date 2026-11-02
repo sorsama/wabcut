@@ -151,7 +151,7 @@ TEST_CASE("Library: clip metadata columns, inline edits and Good, one undo step 
         ids << c.toMap().value(QStringLiteral("id")).toString();
     for (const char* id : {"scene", "shot", "take", "logNote", "good", "client", "tapeName"})
         CHECK(ids.contains(QLatin1String(id)));
-    CHECK(r.library.columns().size() == 12); // hidden until chosen
+    CHECK(r.library.columns().size() == 13); // hidden until chosen (0.6: the defaults include File Size)
 
     const auto before = r.undo();
     REQUIRE(r.library.setMetadata({r.key('A'), r.key('B')}, QStringLiteral("scene"), QStringLiteral("12")));

@@ -781,9 +781,23 @@ unlocked sync-locked track.
   `home/projectFilter`, `projectSort`, `projectView`). `ProjectGrid` / `ProjectRow`: one card is the list's Tab stop;
   the arrows move, Enter opens, Delete removes (Undo), the Menu key / Shift+F10 / right-click / "…" open
   `ProjectMenu` (Open, Open Next to This One, Show in Explorer, Copy Path, Star / Unstar, Locate… for a missing
-  project, Remove from List). A missing project is dimmed with the Missing badge; a click opens its menu. The star is
+  project, Remove from List; 0.6: Rename…, Duplicate…, Versions… and Move to Recycle Bin…, below). A missing project
+  is dimmed with the Missing badge; a click opens its menu. The star is
   lime and filled when starred; starred projects stay past the list's limit (`Home.projectEntries`). Tab goes card,
   star, "…". After a removal (or Undo) the focus stays in the list, on the card now at its place.
+- **The project's files (0.6, `ProjectMenu`, `ProjectNameDialog`, `HomeBridge`):** Rename… and Duplicate… ask for a
+  name in a small dialog (`ProjectNameDialog`: the file name's rules, a free "<name> copy" suggested, the reason a
+  name cannot be used under the field). Rename moves the project and its sidecars together - `<name>.autosave*`,
+  `<name>.bakN` and the `<name> Preview Files` folder - the recent entry and its star follow, and "Reopen the last
+  project" too. Move to Recycle Bin… (Move to Trash… on macOS and Linux) asks first, then moves the same files to the
+  platform's recycle bin (never a permanent delete: without a bin the move is refused and nothing goes); the status
+  line's Undo brings them back and puts the entry in the list again. Rename and Move to Recycle Bin are greyed with the
+  reason (the 1E tooltip) while the project is open in this window, held by another Wabcut (its `.lock`), or missing.
+  Duplicate… reads the project and saves it again as "<name> copy" in the same folder (a valid file; no backups,
+  autosaves, lock or previews come with it). Versions… opens the recovery dashboard for that project
+  (`RecoveryDialog.openDashboardFor`): the saved file, its autosaves and backups with a poster, what differs and
+  Open as copy (asks about unsaved changes first). A project that fails to open shows the same "Recover a version…" on
+  the problem when it has autosaves or backups.
 - **Learn page** (`LearnPage`): Start here (the sample project - `ProjectFile.openDemo()` after the unsaved prompt -,
   the tour, the Keyboard Trainer, What's new: Home closes first), User guide and Support from `Home.links` (the website;
   an external-link glyph). Rows are 50 px: a tinted icon circle, the title, one line, a chevron or external-link icon.
@@ -1078,7 +1092,10 @@ unlocked sync-locked track.
   - Sequence or Clip scope, a search over names and comments, and the colour filter swatches.
   - Rows show the colour bar, name and type badge, then times and comment. Click jumps to the marker, double-click
     edits it, Delete removes it.
-  - Export: CSV with Premiere's columns, or YouTube chapters with YouTube's rules reported as warnings.
+  - Export: CSV with Premiere's columns, or YouTube chapters with YouTube's rules reported as warnings. 0.6: **Copy
+    YouTube chapters** puts them on the clipboard; the YouTube rows use chapter markers only (to-dos and comments never
+    become chapters); **From In to Out** (checkable, with In and Out set) keeps the markers between the marks and times
+    them from the In mark, for an export with pre-roll.
 - **Keys:** M, Shift+M / Ctrl+Shift+M (next / previous), Ctrl+Alt+M (the marker at the playhead), Ctrl+Alt+Shift+M
   (all).
 
@@ -1149,8 +1166,13 @@ unlocked sync-locked track.
 - **High contrast:** `Theme.highContrast` swaps the surfaces for black (white in light mode), text for full white
   (black) and borders for strong hairlines. Every text token passes WCAG AAA (7:1) on its surfaces, accents 4.5:1,
   strong borders 3:1 (a test checks both themes). `Theme.pick(dark, light, hcDark, hcLight)` chooses per token.
-- **Interface size:** 100 / 125 / 150 % (`Preferences.uiScale`), applied as `QT_SCALE_FACTOR` when Wabcut starts
-  (main.cpp, unless the environment sets one); the page says so until the restart.
+- **Interface size:** 90 / 100 / 125 / 150 % (`Preferences.uiScale`; 90 since 0.6), applied as `QT_SCALE_FACTOR` when
+  Wabcut starts (main.cpp, unless the environment sets one); the page says so until the restart and offers Restart now
+  (`AppShell.requestRestart()`: the normal close path, then main() starts the new process with the open project). A
+  size whose screen would hold less than 1100 x 700 (`UiScaleInfo.fits`) is greyed with "Too large for this screen"
+  (`PillTabs` model entries take `enabled` and `tooltip`). The window's minimum is cut to the screen's work area
+  (`UiScaleInfo.availableSize`), and main.cpp fits the opening size the same way (`startWindowProperties`: a first run
+  on a small screen opens maximized).
 
 ### Onboarding (`qml/onboarding/`, fun, skippable, never in the way)
 - **Welcome ("Coming from Premiere?")**: on first run, after the launch Home screen closes (never over it). Five
@@ -1207,7 +1229,7 @@ unlocked sync-locked track.
 - **Moving:** drag cards or list rows onto a bin card, a bin row, a crumb or a bin tab
   (`application/x-wabcut-library`: the selection's keys). Media still drag onto the timeline
   (`application/x-wabcut-media`). Deleting a bin deletes what is inside; the model refuses while a sequence outside
-  it uses its media, and the toast says which.
+  it uses its media, and the toast says which. 0.6: the Library asks first instead (**Deleting items in use**, below).
 - **Views:** grid (icon view) or list (Premiere's list view), `project.iconView` / `project.listView` /
   `project.toggleView`, the two header buttons. Rows are grouped bins, then sequences, then media, and sorted inside
   the groups by the list's sort column.
@@ -1219,10 +1241,34 @@ unlocked sync-locked track.
   and the timecode in the badge; "Set poster frame here" in the menu uses that position.
 - **List view (`LibraryListView`):** a TableView over the model, so only the cells in view exist. Columns: Name,
   Label, Type, Duration, Frame rate, Resolution, Codec, Audio, Media In, Media Out, Proxy, Analysis (Transcribed ·
-  Indexed · Shots), Generated, Date modified, File path, Comment, Description. Click a header to sort (again:
+  Indexed · Shots), Generated, Date modified, File path, Comment, Description (0.6 adds File Size, Data Rate, Video
+  Usage and Audio Usage; the last three start hidden). Click a header to sort (again:
   descending), drag a header to move its column, drag its right edge to resize; the columns button chooses them (the
   name always shows). All of it is saved (`library/*` settings). 28 px rows, alternate rows on `sunken`, mono for
   times and numbers.
+- **Twirl-down bins (0.6, list view, `LibraryListView`):** a bin's chevron (the Name cell's one `Loader`, only for a
+  bin with contents; `libraryTwirl_<key>`) or Right shows its contents under it, indented by level (`DepthRole`,
+  `ExpandableRole`, `ExpandedRole`) and sorted inside each level, so children stay under their bin; Alt+click or
+  Alt+Right opens every level inside; Left closes an open bin, else goes to the bin the row is in. Selection,
+  Shift-range across levels, inline rename, drags to a bin row or the timeline and the item menu all work on rows
+  inside bins; collapsing a bin that hides selected rows selects the bin. Double-click still opens a bin in place.
+  Find and search bins list the whole project flat as before, and the grid shows the bin shown alone. Which bins are
+  open is kept per project file (`library/expanded`, `Library.setExpanded` / `isExpanded`).
+- **Usage (0.6, #40):** `recomputeStats` counts, per media item and per sequence nested elsewhere, the clips on video
+  and on audio tracks (a linked pair is one use). The **Video Usage** / **Audio Usage** list columns (hidden until
+  chosen; numbers, sorted as numbers; blank on bins) and each card's **usage badge** (`libraryUsageBadge_<key>`, bottom
+  left, hidden at 0) show them; media no sequence uses carry a dimmed **Unused** mark (`libraryUnusedMark_<key>`).
+  Clicking the badge opens `UsageMenu` and the item menu's **Find in Timeline ▸** lists the same places - one row per
+  use, "Sequence 01 · 00:00:12:03 · V1, A1" (`Library.usages`); a row opens that sequence's tab, puts the playhead on
+  the clip's start, selects the clip with its linked partner and scrolls the timeline to it (`Library.findInTimeline`).
+- **Deleting items in use (0.6, #38):** Delete (Backspace, Delete, the item menu) on media, a sequence nested elsewhere
+  or a bin holding them asks first - "Hero.mp4 is used by 14 clips in 3 sequences. Delete it and remove those clips?"
+  (`libraryDeletePopover`; `Library.deleteImpact` counts, `requestDelete` asks). **Delete and Remove Clips** lifts the
+  clips that play the items (linked partners too, no ripple) and removes the items in one undo step; Cancel changes
+  nothing. Unused items still go at once. **Ctrl+Delete** (Delete with Options…, `project.deleteWithOptions`) always
+  asks, also for unused items, and shows "Remove their clips from sequences" as a switch (on; turned off, the button
+  reads **Delete Unused Items** and deletes only the items no sequence uses - `deleteImpact`'s `unusedKeys` - with a
+  note that the used ones stay; greyed out, with the reason, only when every item is used). Plain `deleteItems(keys)` still refuses items in use.
 - **Editing:** a click on the name of the selected item, F2 or Enter renames inline; double-click a Comment or
   Description cell to edit it; the Label submenu (Premiere's 16 names) labels the selection. Every edit is one undo
   step (`setMediaAttributes`); new clips of a media item take its name and label.
@@ -1595,6 +1641,11 @@ unlocked sync-locked track.
   this one" buttons, the Library's Sort by submenu, the mixer's clip light and the track format badge as buttons.
 - `tests/app/A11yAudit.h` (`auditAccessibility`, `tabChain`, `tabReaches`) checks names, roles and Tab reachability per
   panel; the M5n suites run it over every panel added since M5j.
+- **0.6 screen-reader pass** ([accessibility.md](accessibility.md)): `test_screen_reader_p1.cpp` audits Home, every
+  built-in workspace, each menu and every Settings page, plus unnamed scroll bars and dialogs, and scans the QML sources
+  for tab strips, toggles, icon buttons, sliders and fields with no name. A `Popup` takes no `Accessible`: dialogs name
+  their popup item from the content's name (`nameDialogElement()` in WabcutDialog, Popover, SettingsWindow, ...), so
+  UI Automation's dialog window carries the title.
 
 ## M5o: gaming videos - New gaming video, Highlights, layouts, callouts, Moments, gaming export
 

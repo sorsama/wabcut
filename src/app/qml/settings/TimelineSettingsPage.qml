@@ -150,6 +150,22 @@ SettingsPage {
                 onClicked: Preferences.fitClipChoice = ""
             }
         }
+        // 0.6 (stream 1A): Premiere's Clip Mismatch Warning - the first clip in an empty sequence of another size or rate.
+        SettingsRow {
+            objectName: "clipMismatchRow"
+            rowKey: "clipMismatch"
+            label: qsTr("Clip mismatch warning")
+            description: qsTr("When the first clip in an empty sequence has another frame size or frame rate.")
+            PillTabs {
+                objectName: "settingsClipMismatch"
+                width: Theme.space(104)
+                compact: true
+                model: [qsTr("Ask"), qsTr("Change the sequence"), qsTr("Keep its settings")]
+                currentIndex: Math.max(0, ["ask", "change", "keep"].indexOf(Preferences.clipMismatch))
+                onActivated: index => Preferences.clipMismatch = ["ask", "change", "keep"][index]
+                Accessible.name: qsTr("Clip mismatch warning")
+            }
+        }
     }
 
     SettingsSection {

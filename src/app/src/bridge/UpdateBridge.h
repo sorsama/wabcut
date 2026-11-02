@@ -19,6 +19,9 @@
 //     association) and starts Wabcut again.
 //   * The portable ZIP, Linux and macOS: the dialog says a version is out and opens its release page (on Linux and macOS
 //     nothing can verify the manifest, so it only ever links to the fixed release page of the announced version).
+//   * P1 round (#5): while a newer version is known and not skipped (`updateNotice`), the Help menu's title shows a dot
+//     and its Check for Updates row names the version; Main shows What's New once after an update (compareVersions on
+//     Preferences.lastSeenVersion).
 //
 // Tests replace the configuration (a loopback fake server, their own key, a temporary folder) and the launcher, so no
 // installer ever runs.
@@ -80,6 +83,9 @@ class UpdateBridge : public QObject {
     Q_PROPERTY(QString scheduledVersion READ scheduledVersion NOTIFY installScheduledChanged FINAL)
     /// "26/10/2026 14:05", when updates were last checked ("" never).
     Q_PROPERTY(QString lastChecked READ lastChecked NOTIFY lastCheckedChanged FINAL)
+    /// P1 round (#5): a check found a newer version than this one, the user has not skipped it, and it is not installed
+    /// yet ("available", "downloading" or "ready"): the Help menu shows a dot.
+    Q_PROPERTY(bool updateNotice READ updateNotice NOTIFY stateChanged FINAL)
 
 public:
     struct Config {
@@ -162,6 +168,7 @@ public:
     bool installScheduled() const;
     QString scheduledVersion() const;
     QString lastChecked() const;
+    bool updateNotice() const;
     const std::optional<update::UpdateRelease>& release() const { return m_release; }
 
     // ---- QML ----
@@ -179,8 +186,10 @@ public:
     /// installWhenClosed(), then asks the window to close (quitRequested: the normal close, with its questions).
     Q_INVOKABLE void quitAndInstall();
     Q_INVOKABLE void cancelInstall();
-    /// Automatic checks stay quiet about this version.
+    /// Automatic checks stay quiet about this version (and the Help menu's dot goes).
     Q_INVOKABLE void skipThisVersion();
+    /// update::compareVersions for QML (What's New after an update): < 0, 0, > 0 as `a` is older, the same or newer.
+    Q_INVOKABLE int compareVersions(const QString& a, const QString& b) const;
     /// The release page of the found version (or of the latest one).
     Q_INVOKABLE void openReleasePage();
     /// Help > Check for Updates..., Settings: shows the dialog (openRequested), checking now when `checkNow`.

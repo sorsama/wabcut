@@ -28,8 +28,9 @@ ContextMenuItem {
 
     objectName: control.command !== "" ? "menuCommand_" + control.command : ""
     enabled: control.available && (control.commandInfo === null || control.commandInfo.enabled === true)
-    Accessible.description: control.commandInfo !== null && control.commandInfo.enabled !== true
-                            ? (control.commandInfo.reason ?? "") : ""
+    // P1 round (#31): why it is greyed out, in a tooltip on the row (ContextMenuItem) and for screen readers.
+    disabledReason: control.commandInfo !== null && control.commandInfo.enabled !== true
+                    ? (control.commandInfo.reason ?? "") : ""
 
     onTriggered: {
         if (control.runsCommand)

@@ -21,6 +21,7 @@
 #include <QString>
 
 #include <chrono>
+#include <memory>
 #include <thread>
 
 using namespace wabcut;
@@ -103,4 +104,35 @@ TEST_CASE("Retired snapshots are freed while the shell's views keep working thro
     CHECK(controller->session().pendingReleases() == 0);
     CHECK(controller->clipCount() > 0);
     CHECK(controller->canUndo());
+}
+
+TEST_CASE("Closing a project frees it and gives the freed memory back once after a burst of resets",
+          "[app][release]") {
+    // F2P (0.6): 250 ms after the last reset (a project closed, opened or replaced) ProjectController runs the QML
+    // garbage collector and asks its releaser to free the old project, then trim the heaps (SnapshotReleaser).
+    Shell shell;
+    REQUIRE(shell.window != nullptr);
+    auto* controller = shell.engine.singletonInstance<ProjectController*>("Wabcut", "ProjectController");
+    auto* file = shell.engine.singletonInstance<ProjectLifecycle*>("Wabcut", "ProjectFile");
+    REQUIRE(controller != nullptr);
+    REQUIRE(file != nullptr);
+    spin(600); // the start's own reset (the demo project) has had its pass
+    const std::size_t trimsBefore = controller->releaser().trims();
+
+    DemoProject stress = buildStressProject({2, 2, 400, 10});
+    controller->resetProject(std::move(stress.state), stress.mainSequence);
+    const std::weak_ptr<const ProjectState> big = controller->snapshot();
+    pump();
+    file->newProject(); // closes it: two resets in a row, one trim
+    pump();
+    CHECK(controller->releaser().trims() == trimsBefore); // not on the GUI thread's way: later, once
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (controller->releaser().trims() == trimsBefore && std::chrono::steady_clock::now() < until) {
+        spin(20);
+    }
+    CHECK(controller->releaser().trims() == trimsBefore + 1);
+    CHECK(big.expired()); // nothing keeps the closed project (ProjectController's last change held it until an edit)
+    CHECK(controller->session().pendingReleases() == 0);
+    spin(400);
+    CHECK(controller->releaser().trims() == trimsBefore + 1); // no further pass without another reset
 }

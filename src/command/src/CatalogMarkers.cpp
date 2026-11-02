@@ -8,6 +8,7 @@
 #include <wabcut/model/EditOps.h>
 #include <wabcut/model/Timecode.h>
 
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -102,6 +103,8 @@ void requireValidMarker(const Marker& marker) {
     }
 }
 
+Ticks markerFrameTime(ExecutionContext& c, Ticks t) { return snapToFrame(t, c.sequence().frameRate); }
+
 namespace {
 
 /// Premiere's eight marker colours, colorIndex 0-7.
@@ -182,7 +185,7 @@ CommandOutput updateMarker(ExecutionContext& c) {
     const std::size_t index = markerIndex(c, seq.markers.size());
     Marker marker = seq.markers[index];
     if (c.has("time")) {
-        const Ticks moved = c.time("time");
+        const Ticks moved = markerFrameTime(c, c.time("time"));
         if (marker.highlight) {
             marker.highlight->peak = marker.highlight->peak + (moved - marker.start); // the peak moves with its marker
         }
@@ -284,20 +287,35 @@ std::string youtubeTime(Ticks t) {
 
 std::string firstLine(const std::string& text) { return text.substr(0, text.find('\n')); }
 
-/// YouTube chapters: the chapter markers, or every marker when there are none. YouTube needs the first chapter at
-/// 0:00, at least three chapters and each at least 10 s long; problems are warnings, never silently fixed.
-std::string youtubeChapters(const Sequence& seq, std::vector<std::string>& warnings, std::size_t& count) {
+/// YouTube chapters: the chapter markers, or (unless `chaptersOnly`) every marker when there are none. P1 (#24): with a
+/// `range` (the In/Out marks) only the markers that start inside it count, timed from its start, the last one running
+/// to its end. YouTube needs the first chapter at 0:00, at least three chapters and each at least 10 s long; problems
+/// are warnings, never silently fixed. Chapters only without any chapter marker: no text, the warning "no chapter
+/// markers".
+std::string youtubeChapters(const Sequence& seq, const std::optional<TimeRange>& range, bool chaptersOnly,
+                            std::vector<std::string>& warnings, std::size_t& count) {
+    const auto inside = [&](const Marker& m) { return !range || (m.start >= range->start && m.start < range->end()); };
     std::vector<const Marker*> chapters;
     for (const Marker& m : seq.markers) {
-        if (m.type == MarkerType::Chapter) {
+        if (m.type == MarkerType::Chapter && inside(m)) {
             chapters.push_back(&m);
         }
+    }
+    if (chapters.empty() && chaptersOnly) {
+        count = 0;
+        warnings.push_back("no chapter markers");
+        return {};
     }
     if (chapters.empty()) {
         for (const Marker& m : seq.markers) {
-            chapters.push_back(&m);
+            if (inside(m)) {
+                chapters.push_back(&m);
+            }
         }
     }
+    const Ticks origin = range ? range->start : Ticks{};
+    const Ticks end = range ? range->end() : seq.duration;
+    const auto at = [&](const Marker& m) { return Ticks{m.start.value - origin.value}; };
     count = chapters.size();
     std::string out;
     for (std::size_t i = 0; i < chapters.size(); ++i) {
@@ -306,14 +324,14 @@ std::string youtubeChapters(const Sequence& seq, std::vector<std::string>& warni
         if (title.empty()) {
             title = "Chapter " + std::to_string(i + 1);
         }
-        out += youtubeTime(m.start) + ' ' + title + '\n';
-        const Ticks next = i + 1 < chapters.size() ? chapters[i + 1]->start : seq.duration;
+        out += youtubeTime(at(m)) + ' ' + title + '\n';
+        const Ticks next = i + 1 < chapters.size() ? chapters[i + 1]->start : end;
         if (next.value - m.start.value < 10 * kTicksPerSecond) {
-            warnings.push_back("chapter " + std::to_string(i + 1) + " (" + youtubeTime(m.start) +
+            warnings.push_back("chapter " + std::to_string(i + 1) + " (" + youtubeTime(at(m)) +
                                ") is shorter than 10 seconds");
         }
     }
-    if (chapters.empty() || chapters.front()->start.value >= kTicksPerSecond) {
+    if (chapters.empty() || at(*chapters.front()).value >= kTicksPerSecond) {
         warnings.push_back("the first chapter must start at 0:00");
     }
     if (chapters.size() < 3) {
@@ -325,12 +343,38 @@ std::string youtubeChapters(const Sequence& seq, std::vector<std::string>& warni
 CommandOutput exportMarkers(ExecutionContext& c) {
     const Sequence& seq = c.sequence();
     const std::string format = c.string("format", "csv");
+    // P1 (#24): the In/Out range (times from its start) and chapter markers only.
+    std::optional<TimeRange> range;
+    if (c.string("range", "sequence") == "inOut") {
+        const auto marked = seq.markedRange();
+        if (!marked) {
+            fail(ErrorCode::InvalidParams, "the sequence has no In and Out marks", Json{{"path", "/range"}});
+        }
+        range = *marked;
+    }
+    const bool chaptersOnly = c.boolean("chaptersOnly", false);
     std::vector<std::string> warnings;
-    std::size_t count = seq.markers.size();
-    const std::string text = format == "youtube" ? youtubeChapters(seq, warnings, count) : markersCsv(c, seq.markers);
+    std::size_t count = 0;
+    std::string text;
+    if (format == "youtube") {
+        text = youtubeChapters(seq, range, chaptersOnly, warnings, count);
+    } else {
+        std::vector<Marker> listed;
+        for (const Marker& m : seq.markers) {
+            if ((!range || (m.start >= range->start && m.start < range->end())) &&
+                (!chaptersOnly || m.type == MarkerType::Chapter)) {
+                listed.push_back(m);
+            }
+        }
+        count = listed.size();
+        text = markersCsv(c, listed);
+    }
     CommandOutput out;
     out.state = c.state();
     out.data = Json{{"format", format}, {"count", count}, {"text", text}, {"warnings", warnings}};
+    if (range) {
+        out.data["rangeStart"] = Json{{"ticks", range->start.value}, {"timecode", c.timecode(range->start)}};
+    }
     return out;
 }
 
@@ -401,10 +445,17 @@ void registerMarkerCommands(CommandRegistry& registry) {
                 "Returns the sequence's markers as text: \"csv\" (Premiere's columns: Marker Name, Description, In, Out, "
                 "Duration, Marker Type, plus Color) or \"youtube\" (chapter lines for a video description, from the "
                 "chapter markers, or every marker when there are none). YouTube's rules (the first chapter at 0:00, at "
-                "least 3 chapters, each at least 10 s) are reported as warnings, never fixed silently. Nothing is "
-                "written to disk.",
+                "least 3 chapters, each at least 10 s) are reported as warnings, never fixed silently. \"range\": "
+                "\"inOut\" keeps the markers that start between the sequence's In and Out marks, YouTube times counted "
+                "from the In mark. \"chaptersOnly\": chapter markers only (no text and the warning \"no chapter "
+                "markers\" when there are none). Nothing is written to disk.",
                 Capability::Read,
-                withSequence({{"format", schema::enumeration({"csv", "youtube"}, "The text format. Default csv.")}}),
+                withSequence({{"format", schema::enumeration({"csv", "youtube"}, "The text format. Default csv.")},
+                              {"range", schema::enumeration({"sequence", "inOut"},
+                                                            "The whole sequence (default) or its In/Out marks, "
+                                                            "YouTube times counted from the In mark.")},
+                              {"chaptersOnly", schema::boolean("Chapter markers only, never every marker. Default "
+                                                               "false.")}}),
                 Json{{"format", "youtube"}}, {},
                 [](ExecutionContext& c) { return exportMarkers(c); }});
 }

@@ -73,6 +73,7 @@ WabcutDialog {
 
     PillTabs {
         objectName: "audioGainMode"
+        Accessible.name: qsTr("Gain mode") // P1 #61
         Layout.fillWidth: true
         compact: true
         enabled: !dialog.running

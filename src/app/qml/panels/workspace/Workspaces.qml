@@ -7,7 +7,7 @@ import QtQuick
 // the Edit preset.
 //
 // A workspace is a plain object (normalized() fills in anything missing):
-//   { id, preset, name, layout, floating, volumeLanes }
+//   { id, preset, name, layout, floating, volumeLanes, saved, locked }
 //   * id: 100 and up. The ids 0-4 were the built-in workspaces (0 Edit, 1 Audio, 2 Export, 3 Color, 4 Captions); the
 //     workspace keys, the welcome and Settings still use them to mean "the first workspace made from that preset"
 //     (legacyPresets, Main.openPreset, which makes one when there is none).
@@ -17,9 +17,15 @@ import QtQuick
 //     panel is closed.
 //   * floating: the groups in windows of their own, { group id: [x, y, width, height] }.
 //   * volumeLanes: the timeline shows the audio volume rubber bands (the Audio preset).
+//   * saved (P1 round, #32): the layout Save Changes to This Workspace kept, { layout, floating }, or null: Reset to
+//     Saved Layout goes back to it (none: to the preset). Every panel drag still changes `layout` at once.
+//   * locked (P1 round, #32): Lock Workspace - its panels cannot be dragged, undocked, resized or closed (DockManager
+//     refuses; the grips, tab drags and gutters are off and its tab shows a lock); opening a panel still works.
 // Main.qml lays the workbench out from the current one (DockManager loads its layout and keeps the changes here); the
 // title bar's WorkspaceTabs create, rename, reorder, reset and delete them. Kept in Preferences.workspaceLayout as
 // versioned JSON; version 1 (built-ins and column layouts) is read once: its own workspaces keep their panels.
+// `saved` and `locked` are optional keys of version 2 (not a version 3: an older Wabcut would read a newer version as
+// version 1 and lose the layouts; it drops the two keys instead).
 QtObject {
     id: root
 
@@ -64,6 +70,10 @@ QtObject {
         { key: "mixer", label: qsTr("Audio Track Mixer"), icon: "volume-2", browser: false, column: "right", hue: "mint" },
         // 0.5: Premiere's Audio Meters (the mix's level), along the timeline; the Edit preset docks it right of it.
         { key: "audioMeters", label: qsTr("Audio Meters"), icon: "audio-lines", browser: false, column: "timeline", hue: "mint" },
+        // P1 round (#4): History, Premiere's dockable History panel (with the clip editors when it opens).
+        { key: "history", label: qsTr("History"), icon: "undo-2", browser: false, column: "right", hue: "blue" },
+        // 0.6 (card #74): the Take Selector, the takes of an audition (with the clip editors when it opens).
+        { key: "takeSelector", label: qsTr("Take Selector"), icon: "layers", browser: false, column: "right", hue: "violet" },
         { key: "color", label: qsTr("Color"), icon: "contrast", browser: false, column: "right", hue: "orange" },
         { key: "export", label: qsTr("Export"), icon: "upload", browser: false, column: "right", hue: "lime" },
         { key: "timeline", label: qsTr("Timeline"), icon: "layers", browser: false, column: "timeline", hue: "violet" }
@@ -338,8 +348,17 @@ QtObject {
             name: name !== "" ? name : root.presetLabel(preset),
             layout: layout,
             floating: root.cleanFloating(raw.floating, layout),
-            volumeLanes: typeof raw.volumeLanes === "boolean" ? raw.volumeLanes : preset === "audio"
+            volumeLanes: typeof raw.volumeLanes === "boolean" ? raw.volumeLanes : preset === "audio",
+            saved: root.cleanSaved(raw.saved),
+            locked: raw.locked === true
         }
+    }
+    /// A kept snapshot ({ layout, floating }) made well formed, or null for none.
+    function cleanSaved(value: var): var {
+        if (!value || typeof value !== "object" || value.layout === undefined)
+            return null
+        const layout = root.normalizedLayout(value.layout)
+        return { layout: layout, floating: root.cleanFloating(value.floating, layout) }
     }
 
     // ---- Changing ----
@@ -373,13 +392,13 @@ QtObject {
                 return candidate
         }
     }
-    /// A new workspace laid out like `fromId` (its panels, their places and sizes, its windows), right after it;
-    /// returns its id.
+    /// A new workspace laid out like `fromId` (its panels, their places and sizes, its windows, its saved layout; not
+    /// locked), right after it; returns its id.
     function create(fromId: int, name: string): int {
         const from = root.resolve(fromId)
         const id = root.nextId()
         const w = root.normalized(Object.assign(root.copy(from), {
-            id: id, name: root.uniqueName(name !== "" ? name : qsTr("%1 copy").arg(from.name))
+            id: id, name: root.uniqueName(name !== "" ? name : qsTr("%1 copy").arg(from.name)), locked: false
         }))
         const list = root.all.slice()
         const at = list.findIndex(x => x.id === from.id)
@@ -423,12 +442,44 @@ QtObject {
         if (index >= 0)
             root.moveTo(id, index + delta)
     }
-    /// A workspace's layout back to its preset's (every panel docked again).
+    /// Reset to Saved Layout: a workspace's layout (and floating windows) back to the one Save Changes kept, else to its
+    /// preset's (resetToPreset).
     function reset(id: int) {
         const w = root.find(id)
         if (!w)
             return
-        root.replace(id, { id: id, preset: w.preset, name: w.name })
+        if (w.saved)
+            root.update(id, { layout: root.copy(w.saved.layout), floating: root.copy(w.saved.floating) })
+        else
+            root.resetToPreset(id)
+    }
+    /// P1 round (#32), Reset to <Preset> Preset: the preset's layout (every panel docked again) and its volume lanes;
+    /// the name, the lock and the saved layout stay (Reset to Saved Layout still goes back to that one).
+    function resetToPreset(id: int) {
+        const w = root.find(id)
+        if (!w)
+            return
+        root.update(id, { layout: root.presetLayout(w.preset), floating: {}, volumeLanes: w.preset === "audio" })
+    }
+    /// P1 round (#32), Save Changes to This Workspace: its layout and floating windows as they are now become what
+    /// Reset to Saved Layout goes back to.
+    function saveChanges(id: int) {
+        const w = root.find(id)
+        if (!w)
+            return
+        root.update(id, { saved: { layout: root.copy(w.layout), floating: root.copy(w.floating) } })
+    }
+    /// Whether Save Changes kept a layout for the workspace.
+    function hasSaved(id: int): bool {
+        return (root.find(id)?.saved ?? null) !== null
+    }
+    /// P1 round (#32), Lock Workspace.
+    function setLocked(id: int, locked: bool) {
+        if (root.find(id))
+            root.update(id, { locked: locked })
+    }
+    function isLocked(id: int): bool {
+        return root.find(id)?.locked === true
     }
 
     // ---- Keeping ----
@@ -450,7 +501,7 @@ QtObject {
                     || seen.includes(entry.id))
                 continue // version 1's built-ins (0-4) are gone
             seen.push(entry.id)
-            if (saved.version === root.version) {
+            if (saved.version === root.version) { // version 2, with or without P1's optional saved / locked
                 list.push(root.normalized(entry))
             } else {
                 const preset = root.presetOrder.includes(entry.preset) ? entry.preset : "edit"

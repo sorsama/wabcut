@@ -23,14 +23,14 @@ std::filesystem::path outputFolderOf(const WatchFolder& w) {
     return w.output.empty() ? w.folder / "Output" : w.output;
 }
 
-/// "<folder>/<stem><ext>", numbered "<stem>_1<ext>", ... when taken.
+/// "<folder>/<stem><ext>", numbered "<stem> (2)<ext>", ... when taken (like every other export's file name).
 std::filesystem::path freeName(const std::filesystem::path& folder, const std::filesystem::path& stem, std::string_view ext) {
     std::error_code ec;
     std::filesystem::path candidate = folder / stem;
     candidate += std::string(ext);
-    for (int n = 1; std::filesystem::exists(candidate, ec) && n < 10000; ++n) {
+    for (int n = 2; std::filesystem::exists(candidate, ec) && n < 10000; ++n) {
         candidate = folder / stem;
-        candidate += std::format("_{}", n);
+        candidate += std::format(" ({})", n);
         candidate += std::string(ext);
     }
     return candidate;

@@ -11,6 +11,8 @@ MenuBarMenu {
     title: qsTr("Help")
     key: "help"
     mnemonic: "H"
+    // P1 round (#5): a dot on the title while a newer Wabcut is out (found by an opt-in check, not skipped).
+    badge: Updates.updateNotice
 
     /// The website page of Home.links `id` ("" when Home has no such link).
     function linkUrl(id: string): string {
@@ -81,9 +83,10 @@ MenuBarMenu {
         url: root.linkUrl("releaseNotes")
     }
     // P0 round: asks for the latest release at once (Updates; the dialog shows what it found).
+    // P1 round (#5): while a newer version is known, the row names it.
     HelpItem {
         what: "updates"
-        text: qsTr("Check for Updates…")
+        text: Updates.updateNotice ? qsTr("Wabcut %1 Is Available…").arg(Updates.latestVersion) : qsTr("Check for Updates…")
     }
     ContextMenuSeparator {}
     // The demo project as at launch (after the unsaved-changes prompt).

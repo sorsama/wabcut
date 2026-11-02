@@ -18,6 +18,7 @@
 #include "TimelineView.h"
 
 #include <wabcut/command/ExecutionContext.h>
+#include <wabcut/model/EffectPresets.h>
 
 #include <QCoreApplication>
 #include <QDragEnterEvent>
@@ -1611,6 +1612,46 @@ TEST_CASE("Effects panel UI: every control has a name and Tab reaches the search
     CHECK_FALSE(QAccessible::queryAccessibleInterface(tile)->state().focused);
     shell.preferences->setProperty("effectsView", QStringLiteral("list"));
 
+    const QStringList messages = takeMessages();
+    INFO(join(messages));
+    CHECK(messages.isEmpty());
+}
+
+TEST_CASE("Effects panel UI: Glow in Stylize and the 0.6 generators in Generate", "[app][effects][qml][screenshot]") {
+    resetSettings();
+    clearMessages();
+    sharedEffectLibrary()->set({});
+    Shell shell;
+    REQUIRE(shell.window);
+    shell.resize(kShotWidth, kShotHeight);
+    shell.theme->setProperty("reduceMotion", true);
+    shell.setAppearance(true, "ultraviolet");
+    EffectsUi ui(shell);
+    ui.show();
+    ui.clickFolder(QStringLiteral("video"));
+    ui.clickFolder(QStringLiteral("video/Stylize"));
+    QQuickItem* glow = ui.reveal(QStringLiteral("video/Stylize|wabcut.stylize.glow"));
+    REQUIRE(glow);
+    CHECK(glow->objectName() == QStringLiteral("effectItem_wabcut.stylize.glow"));
+    ui.clickFolder(QStringLiteral("video/Stylize"));
+    ui.clickFolder(QStringLiteral("video/Generate"));
+    for (const char* id : {"wabcut.generate.colorama", "wabcut.generate.fractalNoise", "wabcut.generate.cellPattern",
+                           "wabcut.generate.lightning", "wabcut.generate.scribble", "wabcut.generate.paintBucket"}) {
+        INFO(id);
+        QQuickItem* row = ui.reveal(QStringLiteral("video/Generate|") + QLatin1String(id));
+        REQUIRE(row);
+        CHECK(row->objectName() == QStringLiteral("effectItem_") + QLatin1String(id));
+    }
+    // The presets that come with them.
+    for (const char* name : {"Soft Glow", "Fractal Clouds", "Lightning Strike", "Scribble Write-On", "Paint Bucket Outline"})
+        CHECK(findBuiltinEffectPreset(name));
+    ui.select(QStringLiteral("video/Generate|wabcut.generate.lightning"));
+    ui.saveCrop(QStringLiteral("effects-generate-06.png"));
+    shell.setAppearance(false, "ultraviolet");
+    spin(300);
+    ui.saveCrop(QStringLiteral("effects-generate-06-light.png"));
+    shell.setAppearance(true, "ultraviolet");
+    spin(100);
     const QStringList messages = takeMessages();
     INFO(join(messages));
     CHECK(messages.isEmpty());

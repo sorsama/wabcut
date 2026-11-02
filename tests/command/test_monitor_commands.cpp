@@ -116,17 +116,21 @@ struct FakeFrames {
         Ticks time{};
         std::filesystem::path file;
         std::string format;
+        command::FrameExportServices::Options options; // P1 (#23)
     };
     std::vector<Call> calls;
 
     std::shared_ptr<command::FrameExportServices> services(bool canImport = true) {
         command::FrameExportServices::Writer writer =
             [this](const ProjectState& state, SequenceId sequence, Ticks time, const std::filesystem::path& file,
-                   const std::string& format) -> std::expected<command::FrameExportServices::Written, Error> {
-            calls.push_back({state, sequence, time, file, format});
+                   const std::string& format,
+                   const command::FrameExportServices::Options& options) -> std::expected<command::FrameExportServices::Written, Error> {
+            calls.push_back({state, sequence, time, file, format, options});
             std::ofstream(file, std::ios::binary) << "still";
             const Sequence* seq = state.findSequence(sequence);
-            return command::FrameExportServices::Written{file, seq ? seq->width : 0, seq ? seq->height : 0};
+            const int width = options.width > 0 ? options.width : seq ? seq->width : 0;
+            const int height = options.height > 0 ? options.height : seq ? seq->height : 0;
+            return command::FrameExportServices::Written{file, width, height, 5, format == "jpeg" ? (options.quality > 0 ? options.quality : 95) : 0};
         };
         command::FrameExportServices::Describer describer;
         if (canImport) {
@@ -248,4 +252,120 @@ TEST_CASE("source.exportFrame renders the media's frame at its own size and time
     // The project itself is untouched.
     CHECK_FALSE(h.session.canUndo());
     CHECK(h.errorOf("source.exportFrame", Json{{"media", 99999}, {"time", 0}, {"path", pathToUtf8(dir / "b")}}) == "NotFound");
+}
+
+// ---- P1 round (stream 1C, #23): Export Frame sizes and Export Frames at Markers ------------------------------------------
+
+TEST_CASE("sequence.exportFrame passes a size a JPEG quality and a size cap to the host", "[command][monitor][p1]") {
+    FakeFrames frames;
+    command::EnginePolicy policy;
+    policy.services = frames.services();
+    CommandHarness h(kPicture, policy);
+    const std::filesystem::path dir = stillsDir("sized");
+    const auto r = h.ok("sequence.exportFrame",
+                        Json{{"time", tc(3)}, {"format", "jpeg"}, {"path", pathToUtf8(dir / "Thumb")}, {"width", 1280},
+                             {"height", 720}, {"fit", "fill"}, {"quality", 80}, {"maxBytes", 2000000}});
+    REQUIRE(frames.calls.size() == 1);
+    const command::FrameExportServices::Options& o = frames.calls[0].options;
+    CHECK(o.width == 1280);
+    CHECK(o.height == 720);
+    CHECK(o.fill);
+    CHECK(o.quality == 80);
+    CHECK(o.maxBytes == 2000000);
+    CHECK(r.data.at("width") == 1280);
+    CHECK(r.data.at("height") == 720);
+    CHECK(r.data.at("quality") == 80);
+    CHECK(r.data.at("bytes") == 5);
+    CHECK(r.data.at("overLimit") == false);
+    // No size: the frame's own, fitted; a size needs both sides.
+    h.ok("sequence.exportFrame", Json{{"time", tc(3)}, {"path", pathToUtf8(dir / "Plain")}});
+    CHECK(frames.calls.back().options.width == 0);
+    CHECK_FALSE(frames.calls.back().options.fill);
+    CHECK(h.errorOf("sequence.exportFrame", Json{{"time", tc(3)}, {"path", pathToUtf8(dir / "x")}, {"width", 1280}}) ==
+          "InvalidParams");
+    CHECK(h.errorOf("sequence.exportFrame",
+                    Json{{"time", tc(3)}, {"path", pathToUtf8(dir / "x")}, {"width", 8}, {"height", 8}}) == "InvalidParams");
+}
+
+TEST_CASE("sequence.exportFramesAtMarkers writes a still per marker named after it and imports them in one step",
+          "[command][monitor][p1]") {
+    FakeFrames frames;
+    command::EnginePolicy policy;
+    policy.services = frames.services();
+    CommandHarness h(kPicture, policy);
+    const std::filesystem::path dir = stillsDir("markers");
+    h.ok("marker.add", Json{{"time", tc(1)}, {"name", "Clutch: 1v3"}, {"type", "chapter"}});
+    h.ok("marker.add", Json{{"time", tc(4)}, {"name", "Clutch: 1v3"}, {"colorIndex", 1}});
+    h.ok("marker.add", Json{{"time", tc(6)}});
+    h.ok("marker.add", Json{{"time", tc(8)}, {"duration", tc(2)}, {"name", "Ace"},
+                            {"highlight", Json{{"score", 0.9}, {"peak", tc(9)}, {"reasons", Json::array({"kills"})}}}});
+    const auto undo = h.session.undoCount();
+
+    // Every marker: one still each, named after it (a name used twice numbered; none: "Marker N"; ':' replaced).
+    const auto all = h.ok("sequence.exportFramesAtMarkers",
+                          Json{{"folder", pathToUtf8(dir)}, {"width", 1280}, {"height", 720}, {"fit", "fill"},
+                               {"maxBytes", 2000000}});
+    REQUIRE(frames.calls.size() == 4);
+    CHECK(all.data.at("count") == 4);
+    CHECK(frames.calls[0].file.filename() == "Clutch_ 1v3.jpg"); // jpeg by default
+    CHECK(frames.calls[1].file.filename() == "Clutch_ 1v3 (2).jpg");
+    CHECK(frames.calls[2].file.filename() == "Marker 3.jpg");
+    CHECK(frames.calls[3].file.filename() == "Ace.jpg");
+    CHECK(frames.calls[0].time == f(1));
+    CHECK(frames.calls[3].time == f(9)); // a highlight's still is taken at its peak
+    CHECK(frames.calls[0].options.width == 1280);
+    CHECK(frames.calls[0].options.maxBytes == 2000000);
+    CHECK_FALSE(all.committed);
+    CHECK(h.session.undoCount() == undo);
+
+    // The highlight markers, at their start; chapters; one colour.
+    frames.calls.clear();
+    h.ok("sequence.exportFramesAtMarkers", Json{{"folder", pathToUtf8(dir)}, {"markers", "highlights"}, {"at", "start"},
+                                                {"format", "png"}});
+    REQUIRE(frames.calls.size() == 1);
+    CHECK(frames.calls[0].time == f(8));
+    CHECK(frames.calls[0].file.filename() == "Ace.png");
+    frames.calls.clear();
+    h.ok("sequence.exportFramesAtMarkers", Json{{"folder", pathToUtf8(dir)}, {"markers", "chapters"}});
+    CHECK(frames.calls.size() == 1);
+    frames.calls.clear();
+    h.ok("sequence.exportFramesAtMarkers", Json{{"folder", pathToUtf8(dir)}, {"colorIndex", 1}});
+    REQUIRE(frames.calls.size() == 1);
+    CHECK(frames.calls[0].time == f(4));
+
+    // Import into project: a "Thumbnails" bin with the four stills, one undo step; undone in one.
+    const std::size_t media = h.state()->media.size();
+    const std::size_t bins = h.state()->bins.size();
+    const auto imported = h.ok("sequence.exportFramesAtMarkers", Json{{"folder", pathToUtf8(dir)}, {"importIntoProject", true}});
+    CHECK(imported.committed);
+    CHECK(h.session.undoCount() == undo + 1);
+    REQUIRE(h.state()->media.size() == media + 4);
+    REQUIRE(h.state()->bins.size() == bins + 1);
+    CHECK(h.state()->bins.back().name == "Thumbnails");
+    const BinId thumbnails = h.state()->bins.back().id;
+    CHECK(h.state()->media.back()->bin == thumbnails);
+    CHECK(imported.data.at("media").size() == 4);
+    // Again: the same bin.
+    h.ok("sequence.exportFramesAtMarkers", Json{{"folder", pathToUtf8(dir)}, {"markers", "highlights"}, {"importIntoProject", true}});
+    CHECK(h.state()->bins.size() == bins + 1);
+    CHECK(h.state()->media.back()->bin == thumbnails);
+    REQUIRE(h.session.undo());
+    REQUIRE(h.session.undo());
+    CHECK(h.state()->media.size() == media);
+    CHECK(h.state()->bins.size() == bins);
+
+    // A dry run lists the files only; no folder, no markers of a kind, no host: refused.
+    const auto calls = frames.calls.size();
+    const auto dry = h.run(Json{{"command", "sequence.exportFramesAtMarkers"},
+                                {"params", Json{{"folder", pathToUtf8(dir)}}},
+                                {"dryRun", true}});
+    REQUIRE(dry.ok());
+    CHECK(frames.calls.size() == calls);
+    CHECK(dry.data.at("stills").size() == 4);
+    CHECK(h.errorOf("sequence.exportFramesAtMarkers", Json{{"folder", pathToUtf8(dir / "missing")}}) == "NotFound");
+    CommandHarness bare(kPicture, policy);
+    CHECK(bare.errorOf("sequence.exportFramesAtMarkers", Json{{"folder", pathToUtf8(dir)}}) == "NotFound");
+    CommandHarness hostless(kPicture);
+    hostless.ok("marker.add", Json{{"time", tc(1)}});
+    CHECK(hostless.errorOf("sequence.exportFramesAtMarkers", Json{{"folder", pathToUtf8(dir)}}) == "InvalidRequest");
 }

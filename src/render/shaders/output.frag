@@ -13,6 +13,9 @@ layout(std140, binding = 0) uniform OutputParams {
     mat4 toOutput; // I.9: working -> Rec.2020 (PQ, HLG); identity before a LUT; Rec.2020 -> Rec.709 (tone map)
     vec4 cm;       // I.9: x = reference white (nits; a LUT: nits of display light 1.0), y = peak (nits), z = HLG system
                    // gamma, w = outLut size
+    mat4 conformIn; // 0.6 (#72) SDR Conform: working -> Rec.2020
+    vec4 conform0;  // x = paper white / target peak, y = the source peak in those units, z = operator, w = gamut mapping
+    vec4 conform1;  // x = legal range, y = target peak (nits), z = a split preview's before kind (-1: none), w = the split
 } p;
 
 layout(binding = 1) uniform sampler2D canvasTex;
@@ -26,6 +29,9 @@ const int OUT_HLG = 4;
 const int OUT_LUT = 5;      // mode.z: the finish (0 as is, 1 BT.1886, 2 PQ, 3 HLG)
 const int OUT_TONEMAP = 6;  // the tone-mapped SDR preview of HDR (color::toneMapToSdr)
 const int OUT_REC709_MATRIX = 7; // 0.2, Wide Gamut (No Tone Mapping): toOutput (ACEScg -> Rec.709), then BT.709, clipped
+const int OUT_CONFORM = 8;       // 0.6 (#72): SDR Conform (color::sdrConformPixel)
+// mode.z of OUT_TONEMAP, OUT_REC709_MATRIX and OUT_CONFORM (0.6): 0 = the BT.709 curve, 1 = a 2.6 power (P3-D65); of
+// OUT_LUT: its finish (4 = a 2.6 power). mode.w (OUT_CONFORM, opaque exports that report): the flags in the alpha.
 // mode.y
 const int ALPHA_OPAQUE = 0;
 const int ALPHA_STRAIGHT = 1;
@@ -74,6 +80,14 @@ float pqToNits(float code)
     return 10000.0 * pow(max(e - c1, 0.0) / (c2 - c3 * e), 1.0 / m1);
 }
 
+// 0.6: an SDR target's encoding of linear light, clamped: the BT.709 OETF, or a 2.6 power (P3-D65).
+vec3 encodeSdr(vec3 l, int curve)
+{
+    if (curve == 1)
+        return pow(clamp(l, vec3(0.0), vec3(1.0)), vec3(1.0 / 2.6));
+    return encode3(l, OUT_REC709);
+}
+
 // color::toneMapToSdr: BT.2390 EETF on the luminance (PQ domain) from [0, peak] into [0, reference white], the colour
 // scaled along, Rec.2020 -> Rec.709 (toOutput), then BT.709 encoded (clamped).
 vec3 toneMapSdr(vec3 c)
@@ -98,7 +112,7 @@ vec3 toneMapSdr(vec3 c)
         }
         ratio = nits > peak ? white / nits : pqToNits(e2 * pqPeak) / nits;
     }
-    return encode3(mat3(p.toOutput) * (c * ratio), OUT_REC709);
+    return encodeSdr(mat3(p.toOutput) * (c * ratio), p.mode.z);
 }
 
 float hlgOetf(float e)
@@ -172,7 +186,7 @@ vec3 encodeManaged(vec3 l, int t)
     if (t == OUT_TONEMAP)
         return toneMapSdr(l);
     if (t == OUT_REC709_MATRIX)
-        return encode3(mat3(p.toOutput) * l, OUT_REC709);
+        return encodeSdr(mat3(p.toOutput) * l, p.mode.z);
     vec3 nits;
     if (t == OUT_LUT) {
         vec3 light = outputLut(mat3(p.toOutput) * l); // linear display light
@@ -180,6 +194,8 @@ vec3 encodeManaged(vec3 l, int t)
             return light;
         if (p.mode.z == 1)
             return pow(clamp(light, vec3(0.0), vec3(1.0)), vec3(1.0 / 2.4));
+        if (p.mode.z == 4) // 0.6: P3-D65 (a 2.6 power)
+            return pow(clamp(light, vec3(0.0), vec3(1.0)), vec3(1.0 / 2.6));
         nits = max(light, vec3(0.0)) * p.cm.x;
         if (p.mode.z == 2)
             return vec3(nitsToPq(nits.r), nitsToPq(nits.g), nitsToPq(nits.b));
@@ -196,16 +212,137 @@ vec3 encodeAny(vec3 l, int t)
     return t >= OUT_PQ ? encodeManaged(l, t) : encode3(l, t);
 }
 
+// ---- 0.6 (#72): SDR Conform (color::sdrConformPixel, color::conformToneMap, color::gamutCompress) ----
+
+float compressDistance(float dist, float lim, float thr)
+{
+    const float pwr = 1.2;
+    if (dist < thr)
+        return dist;
+    float scl = (lim - thr) / pow(pow((1.0 - thr) / (lim - thr), -pwr) - 1.0, 1.0 / pwr);
+    float nd = (dist - thr) / scl;
+    return thr + scl * nd / pow(1.0 + pow(nd, pwr), 1.0 / pwr);
+}
+
+vec3 gamutCompress(vec3 c)
+{
+    float ach = max(c.r, max(c.g, c.b));
+    if (ach == 0.0)
+        return c;
+    vec3 dist = (vec3(ach) - c) / abs(ach);
+    vec3 cd = vec3(compressDistance(dist.r, 1.147, 0.815), compressDistance(dist.g, 1.264, 0.803),
+                   compressDistance(dist.b, 1.312, 0.880));
+    return vec3(ach) - cd * abs(ach);
+}
+
+float kneeCurve(float v, float knee, float white)
+{
+    if (v <= knee)
+        return v;
+    if (v >= white)
+        return 1.0;
+    float a = 1.0 - knee;
+    float t = (v - knee) / a;
+    float big = (white - knee) / a;
+    return knee + a * t * (1.0 + t / (big * big)) / (1.0 + t);
+}
+
+float acesFilmic(float x)
+{
+    return x * (2.51 * x + 0.03) / (x * (2.43 * x + 0.59) + 0.14);
+}
+
+// The operator on s (1.0 = the SDR white) with the source peak `peak`: 0 BT.2390 (PQ, `tp` nits of white), 1 ACES, 2
+// Reinhard.
+float conformToneMap(float s, float peak, int op, float tp)
+{
+    if (s <= 0.0)
+        return 0.0;
+    if (op == 1)
+        return clamp(acesFilmic(0.6 * s) / acesFilmic(0.6 * max(peak, 1.0)), 0.0, 1.0);
+    if (peak <= 1.0 || s >= peak)
+        return min(s, 1.0);
+    if (op == 2)
+        return min(1.0, s * (1.0 + s / (peak * peak)) / (1.0 + s));
+    float pqPeak = nitsToPq(peak * tp);
+    float e1 = min(nitsToPq(s * tp) / pqPeak, 1.0);
+    float maxLum = nitsToPq(tp) / pqPeak;
+    float ks = 1.5 * maxLum - 0.5;
+    float e2 = e1;
+    if (e1 >= ks && ks < 1.0) {
+        float t = (e1 - ks) / (1.0 - ks);
+        float t2 = t * t;
+        float t3 = t2 * t;
+        e2 = (2.0 * t3 - 3.0 * t2 + 1.0) * ks + (t3 - 2.0 * t2 + t) * (1.0 - ks) + (-2.0 * t3 + 3.0 * t2) * maxLum;
+    }
+    return min(pqToNits(e2 * pqPeak) / tp, 1.0);
+}
+
+// A working value conformed into the SDR target: the luminance tone-mapped, the target's primaries (toOutput), the gamut
+// mapping (0 ACES RGC, 1 saturation, 2 clip), the legal range's soft clip, the curve. flags: 1 brighter than the SDR
+// white, 2 outside the target's gamut.
+vec3 conform(vec3 working, out int flags)
+{
+    vec3 c = mat3(p.conformIn) * working;
+    float y = max(dot(c, vec3(0.2627, 0.6780, 0.0593)), 0.0);
+    float gain = p.conform0.x;
+    float s = y * gain;
+    flags = s > 1.0 + 1e-6 ? 1 : 0;
+    float yt = conformToneMap(s, p.conform0.y, int(p.conform0.z + 0.5), p.conform1.y);
+    float k = y > 0.0 ? yt / y : gain;
+    vec3 t = mat3(p.toOutput) * (c * k);
+    float lo = min(t.r, min(t.g, t.b));
+    float hi = max(t.r, max(t.g, t.b));
+    if (lo < -1.0 / 1024.0 || hi > 1.0 + 1.0 / 1024.0)
+        flags += 2;
+    int gamut = int(p.conform0.w + 0.5);
+    if (gamut == 0) {
+        t = gamutCompress(t);
+    } else if (gamut == 1) {
+        float f = 1.0;
+        if (lo < 0.0)
+            f = min(f, yt / (yt - lo));
+        if (hi > 1.0) // at the white itself only a grey fits
+            f = min(f, yt < 1.0 ? (1.0 - yt) / (hi - yt) : 0.0);
+        t = vec3(yt) + (t - vec3(yt)) * f;
+    }
+    if (p.conform1.x > 0.5) {
+        float m = max(t.r, max(t.g, t.b));
+        if (m > 0.9)
+            t *= kneeCurve(m, 0.9, 1.25) / m;
+    }
+    return encodeSdr(t, p.mode.z);
+}
+
+// The output of a linear working value: SDR Conform (its split preview's before side: the setup's own SDR output,
+// through Rec.2020 and the same toOutput), or the transform. One encodeAny call (F3P, 0.6): shader compilers inline
+// every call, and each copy of the output transforms costs D3D's compiler about 0.2 s at the shader's first use.
+vec3 encodeOutput(vec3 l, int t, out int flags)
+{
+    flags = 0;
+    if (t == OUT_CONFORM) {
+        if (!(p.conform1.z >= 0.0 && v_uv.x < p.conform1.w))
+            return conform(l, flags);
+        l = mat3(p.conformIn) * l; // the split preview's before side
+        t = int(p.conform1.z + 0.5);
+    }
+    return encodeAny(l, t);
+}
+
 void main()
 {
     vec4 c = texture(canvasTex, v_uv); // linear, premultiplied
-    int t = p.mode.x;
-    if (p.mode.y == ALPHA_OPAQUE) {
-        fragColor = vec4(encodeAny(c.rgb, t), 1.0); // over black
+    // One encodeOutput call (F3P, 0.6: see encodeOutput): opaque encodes the premultiplied colour over black, the
+    // alpha modes the straight colour.
+    bool opaque = p.mode.y == ALPHA_OPAQUE;
+    float a = clamp(c.a, 0.0, 1.0);
+    vec3 straight = opaque ? c.rgb : (a > 0.0 ? c.rgb / a : vec3(0.0));
+    int flags = 0;
+    vec3 e = encodeOutput(straight, p.mode.x, flags);
+    if (opaque) {
+        // 0.6: an export that reports SDR Conform carries the flags in the alpha it ignores (render::conformFlagsOf).
+        fragColor = vec4(e, p.mode.w == 1 ? 1.0 - float(flags) / 3.0 : 1.0);
     } else {
-        float a = clamp(c.a, 0.0, 1.0);
-        vec3 straight = a > 0.0 ? c.rgb / a : vec3(0.0);
-        vec3 e = encodeAny(straight, t);
         fragColor = p.mode.y == ALPHA_STRAIGHT ? vec4(e, a) : vec4(e * a, a);
     }
 }

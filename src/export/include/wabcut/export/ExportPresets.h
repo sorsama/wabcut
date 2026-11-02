@@ -38,7 +38,7 @@ std::expected<ExportSettings, Error> settingsFromJson(const Json& json);
 /// width, height, scaleMode, range, customRange {start, end} (ticks), captions, audioCodec, audioChannels, sampleRate,
 /// audioBitrateKbps, dynamicRange; 0.2: pixelFormat, alpha (Include Alpha Channel), proresProfile, dnxhrProfile,
 /// exportAsSequence, subtitles (bool), effects / metadata / render (objects in settingsToJson's format, replacing those
-/// sections). A container or codec change also moves the fields that depend on it (pixel format, audio codec). Does not
+/// sections); P1 (#28): targetMB (1-4000 decimal MB: RateControl::TargetSize at that size; 0 = off, the preset's own). A container or codec change also moves the fields that depend on it (pixel format, audio codec). Does not
 /// validate. Errors: InvalidArgument ("Unsupported export option <key> = <value>").
 std::expected<void, Error> applyOverrides(ExportSettings& settings, const Json& overrides);
 

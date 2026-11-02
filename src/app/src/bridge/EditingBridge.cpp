@@ -195,6 +195,9 @@ bool EditingBridge::handlesCommand(const QString& id) {
         QStringLiteral("window.history"),
         QStringLiteral("history.stepBackward"),
         QStringLiteral("history.stepForward"),
+        // P1 round (#4): the History panel's Delete (Backspace) and its menu's Clear History (both confirm first)
+        QStringLiteral("history.delete"),
+        QStringLiteral("history.clear"),
     };
     return kCommands.contains(id);
 }
@@ -444,8 +447,109 @@ bool EditingBridge::runCommand(const QString& id) {
             const int current = static_cast<int>(m_controller->session().undoCount());
             goToHistoryStep(current + (id == QLatin1String("history.stepForward") ? 1 : -1));
         }
+    } else if (id == QLatin1String("history.delete")) {
+        // P1 round (#4): the current step (a click on a step makes it current) and the ones after it, once confirmed.
+        const int current = m_controller ? static_cast<int>(m_controller->session().undoCount()) : 0;
+        if (current > 0)
+            emit historyEditRequested(QStringLiteral("delete"), current);
+        else
+            setMessage(tr("The project as it was opened cannot be deleted"));
+    } else if (id == QLatin1String("history.clear")) {
+        if (m_controller && (m_controller->canUndo() || m_controller->canRedo()))
+            emit historyEditRequested(QStringLiteral("clear"), -1);
+        else
+            setMessage(tr("The history is empty"));
     }
     return true;
+}
+
+QVariantMap EditingBridge::commandAvailability(const QString& id) const {
+    const auto state = [](bool enabled, const QString& reason = {}) {
+        return QVariantMap{{QStringLiteral("handled"), true}, {QStringLiteral("enabled"), enabled},
+                           {QStringLiteral("reason"), enabled ? QString() : reason}};
+    };
+    if (!handlesCommand(id))
+        return {{QStringLiteral("handled"), false}, {QStringLiteral("enabled"), false}, {QStringLiteral("reason"), QString()}};
+    const SequencePtr seq = m_controller ? m_controller->currentSequence() : nullptr;
+    const QStringList librarySelection = m_library ? m_library->selection() : QStringList{};
+    const std::vector<ClipId> clips = targetClips({});
+    // Clip > Video Options: the selected clips (Frame Hold and Field Options: a video one).
+    const auto hasVideo = [&] {
+        return std::ranges::any_of(clips, [&](ClipId c) {
+            const auto loc = seq ? seq->findClip(c) : std::nullopt;
+            return loc && loc->clip().stream.kind == StreamKind::Video;
+        });
+    };
+    if (id == QLatin1String("clip.scaleToFrameSize") || id == QLatin1String("clip.setToFrameSize") ||
+        id == QLatin1String("clip.setToFillFrame"))
+        return state(!clips.empty(), tr("Select a clip first"));
+    if (id == QLatin1String("clip.frameHoldOptions") || id == QLatin1String("clip.fieldOptions") ||
+        id == QLatin1String("clip.addFrameHold") || id == QLatin1String("clip.insertFrameHoldSegment"))
+        return state(hasVideo(), tr("Select a video clip"));
+    // The Library's selection.
+    if (id == QLatin1String("edit.duplicate"))
+        return state(!librarySelection.isEmpty(), tr("Select items in the Library to duplicate"));
+    if (id == QLatin1String("file.newSequenceFromClip") || id == QLatin1String("clip.replaceFootage"))
+        return state(!librarySelection.isEmpty() && parseMediaKey(librarySelection.front()).has_value(),
+                     tr("Select a clip in the Library"));
+    if (id == QLatin1String("clip.mergeClips"))
+        return state(mediaOf({}).size() >= 2, tr("Select a video clip and the audio clips to merge with it"));
+    if (id == QLatin1String("clip.interpretFootage"))
+        return state(!mediaOf({}).empty(), tr("Select clips in the Library to interpret"));
+    if (id == QLatin1String("clip.modifyTimecode"))
+        return state(!mediaOf({}).empty(), tr("Select clips in the Library"));
+    if (id == QLatin1String("clip.makeOffline"))
+        return state(!mediaOf({}).empty(), tr("Select clips in the Library to make offline"));
+    if (id == QLatin1String("clip.rawSourceSettings"))
+        return state(!rawMediaOf({}).empty(),
+                     tr("Source Settings develop camera RAW clips (ProRes RAW, CinemaDNG): select one in the Library"));
+    if (id == QLatin1String("edit.editOriginal")) {
+        const bool libraryItem = !librarySelection.isEmpty() && parseMediaKey(librarySelection.front()).has_value();
+        const bool clipMedia = std::ranges::any_of(clips, [&](ClipId c) {
+            const auto loc = seq ? seq->findClip(c) : std::nullopt;
+            return loc && loc->clip().media.isValid();
+        });
+        return state(libraryItem || clipMedia, tr("Select a clip of a media file"));
+    }
+    if (id == QLatin1String("clip.revealInProject"))
+        return state(revealInfo({}).value(QStringLiteral("inProject")).toBool(), tr("Select a clip first"));
+    // The History panel's keys.
+    if (id == QLatin1String("history.stepBackward"))
+        return state(m_controller && m_controller->canUndo(), tr("Nothing to undo"));
+    if (id == QLatin1String("history.stepForward"))
+        return state(m_controller && m_controller->canRedo(), tr("Nothing to redo"));
+    if (id == QLatin1String("history.delete"))
+        return state(m_controller && m_controller->canUndo(), tr("The project as it was opened cannot be deleted"));
+    if (id == QLatin1String("history.clear"))
+        return state(m_controller && (m_controller->canUndo() || m_controller->canRedo()), tr("The history is empty"));
+    // The rest act on the open sequence.
+    if (id == QLatin1String("edit.preferencesMedia") || id == QLatin1String("edit.preferencesTimeline") ||
+        id == QLatin1String("window.history"))
+        return state(true);
+    if (!seq)
+        return state(false, tr("Open a sequence first"));
+    if (id == QLatin1String("sequence.replaceFromSourceMonitor") ||
+        id == QLatin1String("sequence.replaceFromSourceMonitorMatchFrame")) {
+        if (clips.empty())
+            return state(false, tr("Select the clip to replace"));
+        return state(m_source && m_source->mediaId().isValid(),
+                     tr("Load the clip to replace it with in the Source Monitor"));
+    }
+    if (id == QLatin1String("sequence.replaceFromBin")) {
+        if (clips.empty())
+            return state(false, tr("Select the clip to replace"));
+        return state(!mediaOf({}).empty(), tr("Select the clip to replace it with in the Library"));
+    }
+    if (id == QLatin1String("sequence.makeSubsequenceFromInToOut"))
+        return state(seq->markedRange().has_value(), tr("Set an In and an Out in the sequence first"));
+    if (id == QLatin1String("sequence.makeSubsequence"))
+        return state(!clips.empty() || seq->markedRange().has_value(), tr("Select clips or set an In and an Out first"));
+    if (id == QLatin1String("sequence.closeGap")) {
+        // Between the selected clips, else every gap of the sequence (the command's own rule, run on a copy).
+        const ProjectSnapshot snap = m_controller->snapshot();
+        return state(snap && edit::closeGaps(*snap, seq->id, clips).has_value(), tr("There is no gap to close"));
+    }
+    return state(true); // Sequence Settings, Join Through Edits, Go to Gap: the open sequence is enough
 }
 
 std::vector<ClipId> EditingBridge::targetClips(const QString& key) const {
@@ -1089,6 +1193,27 @@ bool EditingBridge::goToHistoryStep(int index) {
             return false;
     }
     emit historyChanged();
+    return true;
+}
+
+bool EditingBridge::deleteHistoryStep(int index) {
+    if (!m_controller || index < 1)
+        return false;
+    EditSession& session = m_controller->session();
+    if (session.inGesture() || index > static_cast<int>(session.undoCount() + session.redoCount()))
+        return false;
+    if (!goToHistoryStep(index - 1) || !session.discardRedo())
+        return false;
+    emit m_controller->historyChanged(); // Undo / Redo, their menu rows and historySteps (connected) follow
+    return true;
+}
+
+bool EditingBridge::clearHistory() {
+    if (!m_controller || (!m_controller->canUndo() && !m_controller->canRedo()))
+        return false;
+    if (!m_controller->session().clearHistory())
+        return false;
+    emit m_controller->historyChanged();
     return true;
 }
 

@@ -151,6 +151,7 @@ WabcutDialog {
                             Layout.preferredWidth: Theme.space(28)
                             compact: true
                             model: [qsTr("Camera"), qsTr("Mic")]
+                            Accessible.name: qsTr("Recording kind") // P1 #61
                             currentIndex: recording.modelData.kind === "camera" ? 0 : 1
                             onActivated: index => PodcastWorkflow.addMedia(recording.modelData.key, index === 0 ? "camera" : "mic")
                         }
@@ -187,6 +188,7 @@ WabcutDialog {
             Label { text: qsTr("Episode name") }
             FieldInput {
                 id: nameField
+                Accessible.name: qsTr("Episode name") // P1 #61
                 objectName: "podcastName"
                 Layout.fillWidth: true
                 text: PodcastWorkflow.options.name ?? "Podcast"
@@ -195,6 +197,7 @@ WabcutDialog {
             Label { text: qsTr("Camera switching") }
             PillTabs {
                 id: styleTabs
+                Accessible.name: qsTr("Camera switching") // P1 #61
                 objectName: "podcastSwitchStyle"
                 Layout.fillWidth: true
                 compact: true
@@ -204,6 +207,7 @@ WabcutDialog {
             Label { text: qsTr("Captions") }
             PillTabs {
                 id: captionTabs
+                Accessible.name: qsTr("Captions") // P1 #61
                 objectName: "podcastCaptionStyle"
                 Layout.fillWidth: true
                 compact: true
@@ -213,6 +217,7 @@ WabcutDialog {
             Label { text: qsTr("Loudness") }
             PillTabs {
                 id: loudnessTabs
+                Accessible.name: qsTr("Loudness") // P1 #61
                 objectName: "podcastLoudness"
                 Layout.fillWidth: true
                 compact: true

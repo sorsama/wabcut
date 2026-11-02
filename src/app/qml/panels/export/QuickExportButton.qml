@@ -11,6 +11,8 @@ import QtQuick.Layouts
 // UX rework (stream L): it remembers the preset picked last (ExportController.lastQuickPreset) and starts in the folder
 // exported to last; a marked sequence offers its range (Entire sequence / In to Out / Work Area, the last pick first);
 // the presets are a keyboard list (Up/Down pick, Enter exports). When the export ends, Main shows a toast.
+// P1 round: a 9:16 sequence starts from the preset picked last for a vertical sequence (rememberedFor, #21); Export
+// waits while media it reads is offline, with Relink… (#27); the drive's free space is checked against the estimate (#29).
 IconButton {
     id: root
     objectName: "quickExportButton"
@@ -27,6 +29,12 @@ IconButton {
     /// The ranges this sequence has (always the whole sequence; In to Out with marks, a work area when set).
     readonly property var ranges: ["whole", "inOut", "workArea"].filter(r => r === "whole"
                                                                             || (root.summary.rangeAvailable ?? {})[r] === true)
+    /// P1 (#29): the size and the drive's room for it (GamingExport's estimate).
+    readonly property var estimate: popover.opened && root.summary.ok === true
+                                    ? GamingExport.estimate(ProjectController.sequenceId, presetId, root.overrides())
+                                    : ({})
+    /// P1 (#27): the original media this export reads that is offline (Export waits).
+    readonly property int offlineCount: root.summary.offlineCount ?? 0
 
     function overrides() {
         const o = root.range !== "whole" ? { range: root.range } : {}
@@ -39,6 +47,8 @@ IconButton {
         ExportController.lastQuickPreset = id
     }
     function exportNow() {
+        if (root.offlineCount > 0)
+            return
         if (ExportController.quickExport(root.presetId, root.output, root.overrides()) !== "") {
             root.output = ""
             popover.close()
@@ -57,15 +67,15 @@ IconButton {
         else
             popover.open()
     }
-    // The last choice comes back (set once, so a pick is never overwritten).
-    Component.onCompleted: presetId = ExportController.lastQuickPreset
-    // Forgotten or changed elsewhere (the Export panel's Reset to defaults, a deleted user preset): the next Quick
-    // Export starts from what is remembered now.
+    // The last choice comes back (set once, so a pick is never overwritten). P1 (#21): the one for the sequence's shape.
+    Component.onCompleted: presetId = ExportController.rememberedFor("").quickPreset
+    // Forgotten or changed elsewhere (the Export panel's Reset to defaults, a deleted user preset, a sequence of the other
+    // shape): the next Quick Export starts from what is remembered now.
     Connections {
         target: ExportController
         function onExportMemoryChanged() {
             if (!popover.opened)
-                root.presetId = ExportController.lastQuickPreset
+                root.presetId = ExportController.rememberedFor("").quickPreset
         }
     }
 
@@ -86,8 +96,8 @@ IconButton {
         onAboutToShow: {
             ExportController.probeEncoders()
             // The preset picked last (Match Source after the Export panel's Reset to defaults, or when a user preset
-            // was deleted since).
-            root.presetId = ExportController.lastQuickPreset
+            // was deleted since); P1 (#21): the one picked last for a sequence of this shape (landscape or 9:16).
+            root.presetId = ExportController.rememberedFor("").quickPreset
             const suggested = ExportController.suggestedRange("")
             root.range = suggested === "" ? "whole" : suggested
         }
@@ -138,7 +148,7 @@ IconButton {
                     else if (event.key === Qt.Key_Down)
                         step(1)
                     else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
-                        if (root.summary.ok === true)
+                        if (root.summary.ok === true && root.offlineCount === 0)
                             root.exportNow()
                     } else {
                         event.accepted = false
@@ -208,11 +218,79 @@ IconButton {
                 width: parent.width
                 text: root.summary.ok === true ? qsTr("%1 · %2 · %3").arg(root.summary.format).arg(root.summary.resolution)
                                                        .arg(root.summary.duration)
+                                                 + (root.estimate.ok === true ? qsTr(" · ≈ %1").arg(root.estimate.sizeText) : "")
                                                : (root.summary.error ?? "")
                 wrapMode: Text.WordWrap
                 color: root.summary.ok === false ? Theme.danger : Theme.textSecondary
                 font.family: Theme.fontMono
                 font.pixelSize: Theme.textSm
+            }
+
+            // P1 (#27): media this export reads is offline: Export waits until it is relinked.
+            Row {
+                objectName: "quickExportOffline"
+                width: parent.width
+                visible: root.summary.ok === true && root.offlineCount > 0
+                spacing: Theme.space(2)
+                Accessible.role: Accessible.AlertMessage
+                Accessible.name: offlineText.text
+
+                Icon {
+                    id: offlineIcon
+                    anchors.verticalCenter: parent.verticalCenter
+                    name: "triangle-alert"
+                    size: Theme.iconSm
+                    color: Theme.warning
+                }
+                Text {
+                    id: offlineText
+                    width: parent.width - offlineIcon.width - relink.width - parent.spacing * 2
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: root.offlineCount === 1 ? qsTr("1 offline file in this export: relink to export.")
+                                                  : qsTr("%1 offline files in this export: relink to export.").arg(root.offlineCount)
+                    wrapMode: Text.WordWrap
+                    color: Theme.textPrimary
+                    font.family: Theme.fontSans
+                    font.pixelSize: Theme.textSm
+                }
+                PillButton {
+                    id: relink
+                    objectName: "quickExportRelink"
+                    anchors.verticalCenter: parent.verticalCenter
+                    compact: true
+                    variant: "secondary"
+                    text: qsTr("Relink…")
+                    tooltip: qsTr("Find the offline files (Relink Media)")
+                    onClicked: {
+                        popover.close()
+                        ExportController.relinkRequested()
+                    }
+                }
+            }
+            // P1 (#29): the drive is short of space for the file (the export stays allowed).
+            Row {
+                objectName: "quickExportLowSpace"
+                width: parent.width
+                visible: root.estimate.lowSpace === true
+                spacing: Theme.space(2)
+                Accessible.role: Accessible.AlertMessage
+                Accessible.name: lowSpaceText.text
+
+                Icon {
+                    id: lowSpaceIcon
+                    name: "triangle-alert"
+                    size: Theme.iconSm
+                    color: Theme.warning
+                }
+                Text {
+                    id: lowSpaceText
+                    width: parent.width - lowSpaceIcon.width - parent.spacing
+                    text: root.estimate.lowSpaceNote ?? ""
+                    wrapMode: Text.WordWrap
+                    color: Theme.textPrimary
+                    font.family: Theme.fontSans
+                    font.pixelSize: Theme.textSm
+                }
             }
 
             // A marked sequence (or one with a work area): which part to export. The pick is remembered.
@@ -278,7 +356,7 @@ IconButton {
                 iconName: "upload"
                 text: root.range === "inOut" ? qsTr("Export In to Out")
                       : root.range === "workArea" ? qsTr("Export Work Area") : qsTr("Export")
-                enabled: root.summary.ok === true
+                enabled: root.summary.ok === true && root.offlineCount === 0
                 onClicked: root.exportNow()
             }
         }

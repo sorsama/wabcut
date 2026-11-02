@@ -8,7 +8,8 @@
 //   * Sony's NonRealTimeMeta XML (XAVC S / HS / XAVC in MP4, and the clip's "<name>M01.XML" sidecar next to it):
 //     <Item name="CaptureGammaEquation" value="s-log3-cine"/> with <Item name="CaptureColorPrimaries" .../>.
 //   * Key / value metadata a demuxer reports (QuickTime "mdta" keys, Matroska tags): a key about the gamma, transfer or
-//     log whose value names a log curve ("LOG-C", "LogC4", "Canon Log 3", "V-Log", "Apple Log", "Log3G10", "S-Log3").
+//     log whose value names a log curve ("LOG-C", "LogC4", "Canon Log 3", "V-Log", "Apple Log", "Log3G10", "S-Log3";
+//     0.6: "D-Log", "F-Log", "F-Log2", "N-Log", "S-Log2", "C-Log" / "Canon Log", "L-Log", "REDlogFilm").
 //
 // Every read is bounded (files are untrusted): at most kMaxMetadataBytes of a file's metadata boxes and of a sidecar.
 
@@ -22,8 +23,10 @@ namespace wabcut::media {
 /// The most bytes read from a file's metadata boxes or a sidecar while looking for its camera log.
 inline constexpr std::size_t kMaxMetadataBytes = 4u << 20;
 
-/// The log a curve name means ("S-Log3.Cine", "slog3", "LOG-C", "LogC4", "C-Log3", "V-Log", "Apple Log", "Log3G10"),
-/// as an InputColorSpace id, or empty. `gamut` refines S-Log3 (S-Gamut3 or S-Gamut3.Cine).
+/// The log a curve name means ("S-Log3.Cine", "slog3", "LOG-C", "LogC4", "C-Log3", "V-Log", "Apple Log", "Log3G10",
+/// "D-Log", "F-Log2", "N-Log", "S-Log2", "Canon Log", "L-Log", "REDlogFilm"), as an InputColorSpace id, or empty.
+/// `gamut` refines S-Log3 and S-Log2 (S-Gamut / S-Gamut3 or S-Gamut3.Cine). Curves without a space here are empty:
+/// DJI's D-Log M (no published equation) and Fujifilm's F-Log2 C (F-Gamut C).
 std::string cameraLogFromName(std::string_view curve, std::string_view gamut = {});
 /// The log Sony's NonRealTimeMeta XML names (CaptureGammaEquation, CaptureColorPrimaries), or empty.
 std::string cameraLogFromXml(std::string_view xml);

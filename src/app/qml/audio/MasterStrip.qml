@@ -6,7 +6,8 @@ import QtQuick.Layouts
 // (audio.masterLimiter, −1 dBTP), the master fader beside its level meter, and the loudness of the mix against a
 // target (YouTube −14, Podcast −16, Broadcast −23 LUFS, or custom). The loudness comes from the last analysis of
 // the mix (AudioMixer.loudness), labelled as such: integrated, short-term and momentary maxima, true peak and range;
-// "Analyze" measures again.
+// "Analyze" measures again. 0.6 (P1 round, #54, loudness QC): the maxima and the true peak show where they are (a link
+// that moves the playhead there) and the true-peak overs are counted, stepped through and marked (LoudnessQc).
 Rectangle {
     id: root
     objectName: "masterStrip"
@@ -17,19 +18,6 @@ Rectangle {
 
     function lufsText(v) {
         return v === undefined || v === null ? qsTr("−∞") : Number(v).toFixed(1)
-    }
-
-    // A loudness statistic and its value.
-    component Stat: Text {
-        color: Theme.textSecondary
-        font.family: Theme.fontSans
-        font.pixelSize: Theme.textXs
-    }
-    component Value: Text {
-        Layout.alignment: Qt.AlignRight
-        color: Theme.textPrimary
-        font.family: Theme.fontMono
-        font.pixelSize: Theme.textXs
     }
 
     implicitWidth: Theme.mixerMasterWidth
@@ -246,23 +234,10 @@ Rectangle {
                         font.pixelSize: Theme.textSm
                         wrapMode: Text.Wrap
                     }
-                    GridLayout {
+                    // 0.6 (P1 round, #54): the maxima, the true peak and the range, each loudest moment with its time as
+                    // a link to it, then the true-peak overs (LoudnessQc).
+                    LoudnessQc {
                         Layout.fillWidth: true
-                        visible: root.hasLoudness
-                        columns: 2
-                        columnSpacing: Theme.space(2)
-                        rowSpacing: 0
-                        Stat { text: qsTr("Short-term (max)") }
-                        Value { text: qsTr("%1 LUFS").arg(root.lufsText(root.loudness.shortTerm)) }
-                        Stat { text: qsTr("Momentary (max)") }
-                        Value { text: qsTr("%1 LUFS").arg(root.lufsText(root.loudness.momentary)) }
-                        Stat { text: qsTr("True peak") }
-                        Value {
-                            text: qsTr("%1 dBTP").arg(root.lufsText(root.loudness.truePeak))
-                            color: (root.loudness.truePeak ?? -99) > AudioMixer.targetTruePeak ? Theme.danger : Theme.textPrimary
-                        }
-                        Stat { text: qsTr("Range (LRA)") }
-                        Value { text: qsTr("%1 LU").arg(root.lufsText(root.loudness.range)) }
                     }
                     RowLayout {
                         Layout.fillWidth: true

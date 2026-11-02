@@ -8,6 +8,9 @@
 //   * Preview quality Full / 1/2 / 1/4 / Auto (Auto: the coarsest resolution that still fills the monitor's pixels)
 //     and "Use proxies": both go to the scheduler (decode resolution, proxies) and the program monitor (composite
 //     resolution). `qualityBadge` says what the picture really is made of ("Proxy 1/2", "1/2", "Full", ...).
+//   * P1 (#16), Premiere's Paused Resolution: `pausedQuality` ("same", "full", "half", "quarter"; default "full") is the
+//     resolution while neither the Program nor the Source Monitor plays; `previewDivisor` follows the transport (the
+//     parked frame is re-rendered at the paused resolution), `playbackDivisor` and the badge keep the playback one.
 //   * Per-media proxy state for the library cards (`mediaStates`), the "Proxies 3/12" pill, Create / Reveal / Delete.
 //   * Background work pauses while the transport plays or a timeline gesture runs (the resource governor); the queue
 //     ranks media under the playhead, then on the sequence, then selected in the library.
@@ -20,11 +23,21 @@
 // monitor plays a rendered file where its segment is still valid (PreviewCache::validAt: an edit that changes the
 // segment makes playback composite live again). renderInToOut() runs render.previewInOut off the GUI thread
 // (CommandJob) with progress and cancel; previewServices() gives the same cache and renderer to the assistant.
+//
+// P1 round (#7, #58, stream 2A): Sequence > Render Selection (the selected video clips' ranges, one render.previewInOut
+// per merged range in one job), Delete Render Files and Delete Render Files In to Out (render.deletePreviewFiles off the
+// GUI thread; the render bar turns red or yellow again), their menu and palette states (commandAvailability), the
+// project's render files as a row of the disk caches ("renderFiles": its size; Clean deletes them, never by the size
+// limits), and the cache limits kept automatically: a quiet enforce-and-scan 30 s after start and after each proxy batch
+// (QSettings cache/autoEnforce), skipped and tried again later while a render, a proxy job, playback or an export runs.
+// Fix round 1 (F1A, ARGON-04): only that job deletes (scanCaches() only measures), and only caches no project refers to
+// have a limit (thumbnails, waveforms); proxies and analysis results are deleted by their row's Clean alone.
 
 #include "CommandJob.h"
 
 #include <wabcut/editor/CacheInspector.h>
 #include <wabcut/editor/ProxyManager.h>
+#include <wabcut/model/Time.h>
 
 #include <QObject>
 #include <QPointer>
@@ -36,8 +49,10 @@
 #include <QtQml/qqmlregistration.h>
 
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <mutex>
+#include <vector>
 
 class QJSEngine;
 class QQmlEngine;
@@ -52,6 +67,7 @@ namespace wabcut::app {
 class PlaybackBridge;
 class ProjectController;
 class ProjectLifecycle;
+class SourceMonitorBridge;
 
 class MediaReadinessBridge : public QObject {
     Q_OBJECT
@@ -69,8 +85,15 @@ class MediaReadinessBridge : public QObject {
     Q_PROPERTY(QString previewQuality READ previewQuality WRITE setPreviewQuality NOTIFY previewChanged FINAL)
     /// Monitor pixels per sequence pixel (set by the monitor panel): drives the Auto quality.
     Q_PROPERTY(double displayScale READ displayScale WRITE setDisplayScale NOTIFY previewChanged FINAL)
-    /// The resolution divisor the preview uses now (1, 2 or 4): ProgramMonitor.previewDivisor and decoding.
+    /// The resolution divisor the preview uses now (1, 2 or 4): ProgramMonitor.previewDivisor and decoding. P1 (#16):
+    /// the paused one while no monitor plays.
     Q_PROPERTY(int previewDivisor READ previewDivisor NOTIFY previewChanged FINAL)
+    /// P1 (#16), Paused Resolution: "same" (as playback), "full", "half" or "quarter" (QSettings preview/pausedQuality).
+    Q_PROPERTY(QString pausedQuality READ pausedQuality WRITE setPausedQuality NOTIFY previewChanged FINAL)
+    /// P1 (#16): the divisor while playing (previewQuality, Auto resolved): the quality pill and badge show it.
+    Q_PROPERTY(int playbackDivisor READ playbackDivisor NOTIFY previewChanged FINAL)
+    /// P1 (#16): whether a monitor plays (the Program's transport or the Source Monitor's).
+    Q_PROPERTY(bool monitorPlaying READ monitorPlaying NOTIFY previewChanged FINAL)
     /// What the monitor shows, honestly: "Full", "1/2", "Proxy 1/2", "Proxy 1/2 + 1 original", ...
     Q_PROPERTY(QString qualityBadge READ qualityBadge NOTIFY badgeChanged FINAL)
     Q_PROPERTY(QString qualityTooltip READ qualityTooltip NOTIFY badgeChanged FINAL)
@@ -87,7 +110,27 @@ class MediaReadinessBridge : public QObject {
     Q_PROPERTY(QVariantMap mediaStates READ mediaStates NOTIFY proxiesChanged FINAL)
     /// Where new proxies go ("<project> Proxies").
     Q_PROPERTY(QString proxyFolder READ proxyFolder NOTIFY proxiesChanged FINAL)
-    /// [{ id, name, folder, bytes, sizeText, files, inUseText, limitBytes, limitText }] (scanCaches()).
+    /// P1 (#48), Settings > Media & cache, app-wide (CacheFolders.h). The media cache folder chosen ("" = the default,
+    /// defaultMediaCacheFolder); it applies when Wabcut starts, so mediaCacheFolderInUse may still be the old one.
+    Q_PROPERTY(QString mediaCacheFolder READ mediaCacheFolder WRITE setMediaCacheFolder NOTIFY locationsChanged FINAL)
+    Q_PROPERTY(QString defaultMediaCacheFolder READ defaultMediaCacheFolder CONSTANT FINAL)
+    /// The folder the thumbnails and waveforms use now (a production's own media cache wins), native separators.
+    Q_PROPERTY(QString mediaCacheFolderInUse READ mediaCacheFolderInUse NOTIFY locationsChanged FINAL)
+    /// The AI models and analysis folder chosen ("" = the default, defaultAiCacheFolder); applies when Wabcut starts.
+    Q_PROPERTY(QString aiCacheFolder READ aiCacheFolder WRITE setAiCacheFolder NOTIFY locationsChanged FINAL)
+    Q_PROPERTY(QString defaultAiCacheFolder READ defaultAiCacheFolder CONSTANT FINAL)
+    /// "project" (next to the project) or "folder" (proxyRootFolder): where new proxies go, at once.
+    Q_PROPERTY(QString proxyLocation READ proxyLocation WRITE setProxyLocation NOTIFY locationsChanged FINAL)
+    Q_PROPERTY(QString proxyRootFolder READ proxyRootFolder WRITE setProxyRootFolder NOTIFY locationsChanged FINAL)
+    /// "412 GB free on Data" for the media cache (the chosen folder), the AI cache and the proxy folder; "" unknown.
+    Q_PROPERTY(QString mediaCacheFreeText READ mediaCacheFreeText NOTIFY locationsChanged FINAL)
+    Q_PROPERTY(QString aiCacheFreeText READ aiCacheFreeText NOTIFY locationsChanged FINAL)
+    Q_PROPERTY(QString proxyFreeText READ proxyFreeText NOTIFY locationsChanged FINAL)
+    /// A media cache or AI folder change waits for a restart.
+    Q_PROPERTY(bool restartNeeded READ restartNeeded NOTIFY locationsChanged FINAL)
+    /// [{ id, name, folder, bytes, sizeText, files, inUseText, limitBytes, limited, limitText, freeText }] (scanCaches());
+    /// `limited`: the row has a size limit (F1A: thumbnails and waveforms only).
+    /// P1 (#48): with the proxy folder moved, "proxiesNearProject" lists the proxies left next to the project.
     Q_PROPERTY(QVariantList caches READ caches NOTIFY cachesChanged FINAL)
     Q_PROPERTY(QString cacheTotalText READ cacheTotalText NOTIFY cachesChanged FINAL)
     Q_PROPERTY(bool cacheBusy READ cacheBusy NOTIFY cachesChanged FINAL)
@@ -95,6 +138,10 @@ class MediaReadinessBridge : public QObject {
     Q_PROPERTY(bool rendering READ rendering NOTIFY renderChanged FINAL)
     Q_PROPERTY(double renderProgress READ renderProgress NOTIFY renderChanged FINAL)
     Q_PROPERTY(QString renderMessage READ renderMessage NOTIFY renderChanged FINAL)
+    /// P1 (#7): what the render running (or the last one) covers: "inToOut" or "selection" (the toast and Try Again).
+    Q_PROPERTY(QString renderScope READ renderScope NOTIFY renderChanged FINAL)
+    /// P1 (#58): the cache limits are kept without opening Settings (QSettings cache/autoEnforce, default true).
+    Q_PROPERTY(bool autoEnforce READ autoEnforce WRITE setAutoEnforce NOTIFY settingsChanged FINAL)
 
 public:
     MediaReadinessBridge(ProjectLifecycle* lifecycle, PlaybackBridge* playback, QObject* parent = nullptr);
@@ -119,6 +166,13 @@ public:
     double displayScale() const { return m_displayScale; }
     void setDisplayScale(double scale);
     int previewDivisor() const;
+    QString pausedQuality() const { return m_pausedQuality; }
+    void setPausedQuality(const QString& quality);
+    int playbackDivisor() const;
+    bool monitorPlaying() const { return m_monitorPlaying; }
+    /// P1 (#16): the Source Monitor's transport counts as playing too (set from the singleton in create(); tests that
+    /// build the bridge themselves may pass theirs). Its preview follows Playback's (PlaybackBridge forwards it).
+    void setSourceMonitor(SourceMonitorBridge* source);
     QString qualityBadge() const { return m_badge; }
     QString qualityTooltip() const { return m_badgeTooltip; }
     QString qualityState() const { return m_badgeState; }
@@ -128,12 +182,42 @@ public:
     bool pausedForForeground() const { return m_pausedForForeground; }
     QVariantMap mediaStates() const { return m_mediaStates; }
     QString proxyFolder() const;
+    QString mediaCacheFolder() const;
+    void setMediaCacheFolder(const QString& folder);
+    QString defaultMediaCacheFolder() const;
+    QString mediaCacheFolderInUse() const;
+    QString aiCacheFolder() const;
+    void setAiCacheFolder(const QString& folder);
+    QString defaultAiCacheFolder() const;
+    QString proxyLocation() const;
+    void setProxyLocation(const QString& location);
+    QString proxyRootFolder() const;
+    void setProxyRootFolder(const QString& folder);
+    QString mediaCacheFreeText() const;
+    QString aiCacheFreeText() const;
+    QString proxyFreeText() const;
+    bool restartNeeded() const;
     QVariantList caches() const { return m_caches; }
     QString cacheTotalText() const { return m_cacheTotal; }
     bool cacheBusy() const { return m_cacheBusy; }
     bool rendering() const { return m_rendering; }
     double renderProgress() const { return m_renderProgress; }
     QString renderMessage() const { return m_renderMessage; }
+    QString renderScope() const { return m_renderScope; }
+    bool autoEnforce() const;
+    void setAutoEnforce(bool on);
+
+    /// P1 (#7, #58): the Sequence menu's render rows this bridge answers (Render Selection, Delete Render Files, Delete
+    /// Render Files In to Out), for CommandPalette::commandState: {handled, enabled, reason}.
+    static bool handlesCommand(const QString& id);
+    QVariantMap commandAvailability(const QString& id);
+    /// P1 (#58): the quiet enforce-limits-and-scan job (the timer's). Returns false when it is off, or skipped because
+    /// work that may use the caches runs (then it is tried again in a minute).
+    bool autoEnforceCaches();
+    /// Whether an automatic enforce is waiting on its timer (tests).
+    bool autoEnforcePending() const { return m_autoEnforce.isActive(); }
+    /// What says an export runs (create() asks the ExportController singleton); tests may set their own.
+    void setExportBusyProbe(std::function<bool()> probe) { m_exportBusy = std::move(probe); }
 
     /// The open project's preview render cache (made when first asked for; a new one when the project file changes).
     std::shared_ptr<PreviewCache> previewCache();
@@ -141,14 +225,29 @@ public:
     std::shared_ptr<command::CommandServices> previewServices();
     /// Tests: renders with this renderer instead of editor::makeExportPreviewRenderer, and on the calling thread.
     void setPreviewRendererForTests(std::shared_ptr<PreviewRenderer> renderer);
-    void setRenderSynchronous(bool synchronous) { m_render.setSynchronous(synchronous); }
+    /// Tests: renders and deletes render files on the calling thread.
+    void setRenderSynchronous(bool synchronous) {
+        m_render.setSynchronous(synchronous);
+        m_deleteJob.setSynchronous(synchronous);
+    }
 
     // ---- QML ----
     /// Sequence > Render In to Out (Enter): renders the current sequence's red and yellow segments between In and Out
     /// (the whole sequence without marks). Returns "" when it started, else why not.
     Q_INVOKABLE QString renderInToOut();
+    /// P1 (#7): Sequence > Render Selection: renders the red and yellow segments under the selected video clips (each
+    /// run of overlapping or touching clips once). Returns "" when it started, else why not.
+    Q_INVOKABLE QString renderSelection();
     /// Stops the render at its next checkpoint; the segments rendered so far stay.
     Q_INVOKABLE void cancelRender();
+    /// P1 (#7, #58): what Delete Render Files (In to Out) would delete in the current sequence, as the command's dry run
+    /// counts it: { enabled, reason, files, bytes, sizeText ("1.2 GB"), sequenceName }. In to Out: the files that meet
+    /// [In, Out) (a missing mark is the sequence's start or end; neither set: not enabled).
+    Q_INVOKABLE QVariantMap previewFilesInfo(bool inToOut);
+    /// P1 (#7, #58): Sequence > Delete Render Files (In to Out): render.deletePreviewFiles on the current sequence, off
+    /// the GUI thread; then the monitor and the render bar look again and renderFilesDeleted says what went. Returns ""
+    /// when it started, else why not. A file the monitor still has open goes once it is let go (PreviewCache).
+    Q_INVOKABLE QString deleteRenderFiles(bool inToOut);
     /// Library > Create proxy (regardless of the policy). Returns how many were queued.
     Q_INVOKABLE int generateProxies(const QStringList& mediaIds);
     /// Library > Delete proxy: the proxy files go (originals untouched); they are not made again automatically.
@@ -160,12 +259,21 @@ public:
     Q_INVOKABLE void setLibrarySelection(const QStringList& mediaIds);
     /// Re-measures the caches in the background (cachesChanged when done).
     Q_INVOKABLE void scanCaches();
-    /// Deletes the regenerable files of one cache ("" = every cache), never a proxy the project uses.
+    /// Deletes the files of one cache ("" = every cache that can be rebuilt), never a file the project uses. P1 (#58):
+    /// "renderFiles" deletes every render file of the project (render.deletePreviewFiles all); "" leaves them. Fix F2C:
+    /// only files Wabcut made are ever deleted (proxies its proxy index records, analysis cache entries); "" leaves
+    /// "analysisKept" (AI object mask mattes, imported chat logs: they cannot be rebuilt). The dialog confirms first.
+    /// A row of `caches` carries what Clean deletes: cleanableBytes, cleanableFiles, cleanableText; rebuildable;
+    /// proxies (a proxy folder's row).
     Q_INVOKABLE void cleanCache(const QString& id);
+    /// "1.2 GB" (editor::formatBytes), for the confirmations' totals.
+    Q_INVOKABLE QString sizeText(double bytes) const;
     /// 0 = unlimited. Over-limit files (least recently written first) are deleted at the next scan.
     Q_INVOKABLE void setCacheLimit(const QString& id, double bytes);
     /// Opens Settings > Media & cache (Main.qml hosts the dialog).
     Q_INVOKABLE void openSettings();
+    /// P1 (#48): opens a cache location ("media", "ai" or "proxies": where it is now) in the file manager.
+    Q_INVOKABLE bool revealLocation(const QString& which);
 
 signals:
     void settingsChanged();
@@ -174,6 +282,8 @@ signals:
     void proxiesChanged();
     void cachesChanged();
     void settingsRequested();
+    /// P1 (#48): a cache location setting changed (or the free space was read again).
+    void locationsChanged();
     void renderChanged();
     /// 0.2: the preview cache's files may have changed (a render finished, or the project's cache was made anew): the
     /// timeline's render bar looks again.
@@ -181,6 +291,11 @@ signals:
     /// UX rework (L): Render In to Out ended (after renderChanged): `outcome` "done", "cancelled" or "failed";
     /// `message` is renderMessage ("" when done). For the editor's toast.
     void renderFinished(const QString& outcome, const QString& message);
+    /// P1 (#29, stream 1C): Create proxy was not started: the proxy folder's drive has less room than the proxies need
+    /// (x 1.2). Render In to Out says the same through renderFinished("failed", ...).
+    void diskSpaceLow(const QString& message);
+    /// P1 (#7, #58): Delete Render Files ended: `ok`, and "Deleted 1.2 GB of render files (12 files)." or the error.
+    void renderFilesDeleted(bool ok, const QString& message);
 
 private:
     void attachDocument();
@@ -189,8 +304,23 @@ private:
     void updateProxyState();
     void updateBadge();
     void updateFocus();
+    void updatePlaying();
     void configureCaches();
+    /// P1 (#48): the proxy folder setting reaches ProxyManager; the caches are measured again.
+    void applyProxyRoot();
     void runCacheJob(std::function<std::vector<editor::CacheUsage>(editor::CacheInspector&)> job);
+    /// P1 (#7): Render In to Out (no ranges: the command's In-Out default) or Render Selection (these ranges).
+    QString startRender(const std::vector<TimeRange>& ranges, const QString& scope);
+    /// P1 (#7): the selected video clips' timeline ranges, overlapping or touching ones merged, in time order.
+    std::vector<TimeRange> selectionRanges() const;
+    /// P1 (#7, #58): runs render.deletePreviewFiles with `params` off the GUI thread ("" = started).
+    QString startDelete(command::Json params);
+    /// P1 (#58): the "renderFiles" cache row (the project's render files, from the preview cache's index).
+    QVariantMap renderFilesRow();
+    /// Puts a fresh "renderFiles" row into `caches` once they were measured.
+    void updateRenderFilesRow();
+    /// P1 (#58): a render, a render-file delete, a proxy job, a cache job, playback or an export runs.
+    bool cacheWorkRunning() const;
 
     QPointer<ProjectLifecycle> m_lifecycle;
     QPointer<PlaybackBridge> m_playback;
@@ -209,6 +339,9 @@ private:
 
     bool m_useProxies = true;
     QString m_quality = QStringLiteral("auto");
+    QString m_pausedQuality = QStringLiteral("full");
+    QPointer<SourceMonitorBridge> m_source;
+    bool m_monitorPlaying = false;
     double m_displayScale = 1.0;
     std::shared_ptr<const playback::ProxyTable> m_appliedTable;
     int m_appliedDivisor = 0;
@@ -224,7 +357,14 @@ private:
     QVariantMap m_mediaStates;
     QVariantList m_caches;
     QString m_cacheTotal;
+    /// P1 (#48): the media cache and AI cache folders this process started with (a change waits for a restart).
+    QString m_startMediaCache;
+    QString m_startAiCache;
     bool m_cacheBusy = false;
+    /// P1 (#58): the measured caches' bytes without the render files (the total adds them).
+    std::int64_t m_measuredBytes = 0;
+    QTimer m_autoEnforce;
+    std::function<bool()> m_exportBusy;
 
     std::shared_ptr<PreviewCache> m_previews;
     std::filesystem::path m_previewFolder;
@@ -236,6 +376,8 @@ private:
     bool m_rendering = false;
     double m_renderProgress = -1.0;
     QString m_renderMessage;
+    QString m_renderScope = QStringLiteral("inToOut");
+    CommandJob m_deleteJob;
 };
 
 } // namespace wabcut::app

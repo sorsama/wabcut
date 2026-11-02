@@ -1,0 +1,503 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE xmeml>
+<!-- A real Premiere Pro "Export > Final Cut Pro XML" (xmeml v4, 59.94 fps), trimmed (PF, card #66): media names and
+     paths replaced, empty tracks and logging / colour info removed; the <filter> block is Premiere's, verbatim. The
+     video clip has Lumetri Color: Temperature -15, Tint 1.32, Saturation 120, Exposure 2.4, Contrast 23, Highlights
+     -4.37, Shadows -3.61, Whites -8.18, Blacks -5.13, Vibrance 42 (Creative). The audio clip had Parametric Equalizer
+     and Dynamics in Premiere, which Premiere does not write into FCP7 XML. -->
+<xmeml version="4">
+	<sequence id="sequence-1">
+		<uuid>5cbbfa44-9d50-4271-ad3e-fd6b84e83b81</uuid>
+		<duration>1010</duration>
+		<rate>
+			<timebase>60</timebase>
+			<ntsc>TRUE</ntsc>
+		</rate>
+		<name>Sequence 01</name>
+		<media>
+			<video>
+				<format>
+					<samplecharacteristics>
+						<rate>
+							<timebase>60</timebase>
+							<ntsc>TRUE</ntsc>
+						</rate>
+						<codec>
+							<name>Apple ProRes 422</name>
+							<appspecificdata>
+								<appname>Final Cut Pro</appname>
+								<appmanufacturer>Apple Inc.</appmanufacturer>
+								<appversion>7.0</appversion>
+								<data>
+									<qtcodec>
+										<codecname>Apple ProRes 422</codecname>
+										<codectypename>Apple ProRes 422</codectypename>
+										<codectypecode>apcn</codectypecode>
+										<codecvendorcode>appl</codecvendorcode>
+										<spatialquality>1024</spatialquality>
+										<temporalquality>0</temporalquality>
+										<keyframerate>0</keyframerate>
+										<datarate>0</datarate>
+									</qtcodec>
+								</data>
+							</appspecificdata>
+						</codec>
+						<width>1920</width>
+						<height>1080</height>
+						<anamorphic>FALSE</anamorphic>
+						<pixelaspectratio>square</pixelaspectratio>
+						<fielddominance>none</fielddominance>
+						<colordepth>24</colordepth>
+					</samplecharacteristics>
+				</format>
+				<track TL.SQTrackShy="0" TL.SQTrackExpandedHeight="41" TL.SQTrackExpanded="0" MZ.TrackTargeted="1">
+					<clipitem id="clipitem-1">
+						<masterclipid>masterclip-1</masterclipid>
+						<name>Graded Clip.mp4</name>
+						<enabled>TRUE</enabled>
+						<duration>1010</duration>
+						<rate>
+							<timebase>60</timebase>
+							<ntsc>TRUE</ntsc>
+						</rate>
+						<start>0</start>
+						<end>1010</end>
+						<in>0</in>
+						<out>1010</out>
+						<pproTicksIn>0</pproTicksIn>
+						<pproTicksOut>4280211936000</pproTicksOut>
+						<alphatype>none</alphatype>
+						<pixelaspectratio>square</pixelaspectratio>
+						<anamorphic>FALSE</anamorphic>
+						<file id="file-1">
+							<name>Graded Clip.mp4</name>
+							<rate>
+								<timebase>30</timebase>
+								<ntsc>FALSE</ntsc>
+							</rate>
+							<duration>506</duration>
+							<timecode>
+								<rate>
+									<timebase>30</timebase>
+									<ntsc>FALSE</ntsc>
+								</rate>
+								<string>00:00:00:00</string>
+								<frame>0</frame>
+								<displayformat>NDF</displayformat>
+							</timecode>
+							<media>
+								<video>
+									<samplecharacteristics>
+										<rate>
+											<timebase>30</timebase>
+											<ntsc>FALSE</ntsc>
+										</rate>
+										<width>1280</width>
+										<height>720</height>
+										<anamorphic>FALSE</anamorphic>
+										<pixelaspectratio>square</pixelaspectratio>
+										<fielddominance>none</fielddominance>
+									</samplecharacteristics>
+								</video>
+							</media>
+						</file>
+						<filter>
+							<effect>
+								<name></name>
+								<effectid>Lumetri</effectid>
+								<effecttype>filter</effecttype>
+								<mediatype>video</mediatype>
+								<pproBypass>false</pproBypass>
+								<parameter authoringApp="PremierePro">
+									<parameterid>1</parameterid>
+									<name>Blob</name>
+									<hash>124acdb9-c243-847f-bcf8-2a5700003561</hash>
+									<value>PEx1bWV0cmk+CiAgPGd1aWQ+IjI1MmE0M2RlLWQ1ZjYtMTFmMS1hYzk0LWQ4NWVkMzMxZjkzZiI8L2d1aWQ+CiAgPHZlcnNpb24+IjMiPC92ZXJzaW9uPgogIDxuYW1lPiIiPC9uYW1lPgogIDxrZXlmcmFtZT4KICAgIDx0aW1lPiIwIjwvdGltZT4KICAgIDx0d2Vlbj4iMCI8L3R3ZWVuPgogICAgPGVhc2Vpbj4iMSI8L2Vhc2Vpbj4KICAgIDxlYXNlb3V0PiIxIjwvZWFzZW91dD4KICAgIDxzZWxlY3RlZGxheWVyPiIwIjwvc2VsZWN0ZWRsYXllcj4KICAgIDxzaGFkZXI+CiAgICAgIDxuYW1lPiJfX0dyb3VwQmVnaW4iPC9uYW1lPgogICAgICA8Y3VzdG9tbmFtZT4iX19Hcm91cEJlZ2luIjwvY3VzdG9tbmFtZT4KICAgICAgPHZpc2libGU+IjEiPC92aXNpYmxlPgogICAgICA8bG9ja2VkdmlzaWJsZT4iMCI8L2xvY2tlZHZpc2libGU+CiAgICAgIDxvcGFjaXR5PiIxIjwvb3BhY2l0eT4KICAgICAgPG1hc2s+IjAiPC9tYXNrPgogICAgICA8dmVjdG9ybWFzaz4iMCI8L3ZlY3Rvcm1hc2s+CiAgICAgIDxsaW5rZWQ+IjAiPC9saW5rZWQ+CiAgICAgIDxwYXJhbWV0ZXJzPgogICAgICAgIDxfX1ByQ29sb3I+IjEiPC9fX1ByQ29sb3I+CiAgICAgICAgPF9fQ3VzdG9tT24+IjEiPC9fX0N1c3RvbU9uPgogICAgICA8L3BhcmFtZXRlcnM+CiAgICA8L3NoYWRlcj4KICAgIDxzaGFkZXI+CiAgICAgIDxuYW1lPiJfX0dyb3VwQmVnaW4iPC9uYW1lPgogICAgICA8Y3VzdG9tbmFtZT4iX19Hcm91cEJlZ2luIjwvY3VzdG9tbmFtZT4KICAgICAgPHZpc2libGU+IjEiPC92aXNpYmxlPgogICAgICA8bG9ja2VkdmlzaWJsZT4iMCI8L2xvY2tlZHZpc2libGU+CiAgICAgIDxvcGFjaXR5PiIxIjwvb3BhY2l0eT4KICAgICAgPG1hc2s+IjAiPC9tYXNrPgogICAgICA8dmVjdG9ybWFzaz4iMCI8L3ZlY3Rvcm1hc2s+CiAgICAgIDxsaW5rZWQ+IjAiPC9saW5rZWQ+CiAgICAgIDxwYXJhbWV0ZXJzPgogICAgICA8L3BhcmFtZXRlcnM+CiAgICA8L3NoYWRlcj4KICAgIDxzaGFkZXI+CiAgICAgIDxuYW1lPiJMVVQiPC9uYW1lPgogICAgICA8Y3VzdG9tbmFtZT4iTFVUIjwvY3VzdG9tbmFtZT4KICAgICAgPHZpc2libGU+IjEiPC92aXNpYmxlPgogICAgICA8bG9ja2VkdmlzaWJsZT4iMCI8L2xvY2tlZHZpc2libGU+CiAgICAgIDxvcGFjaXR5PiIxIjwvb3BhY2l0eT4KICAgICAgPG1hc2s+IjAiPC9tYXNrPgogICAgICA8dmVjdG9ybWFzaz4iMCI8L3ZlY3Rvcm1hc2s+CiAgICAgIDxsaW5rZWQ+IjAiPC9saW5rZWQ+CiAgICAgIDxwYXJhbWV0ZXJzPgogICAgICAgIDxfX0VtYmVkPiIxIjwvX19FbWJlZD4KICAgICAgICA8TFVUPiIiPC9MVVQ+CiAgICAgIDwvcGFyYW1ldGVycz4KICAgIDwvc2hhZGVyPgogICAgPHNoYWRlcj4KICAgICAgPG5hbWU+IkxpbmVhcml6ZSI8L25hbWU+CiAgICAgIDxjdXN0b21uYW1lPiJHYW1tYSAyLjQgdG8gTGluZWFyIjwvY3VzdG9tbmFtZT4KICAgICAgPHZpc2libGU+IjEiPC92aXNpYmxlPgogICAgICA8bG9ja2VkdmlzaWJsZT4iMCI8L2xvY2tlZHZpc2libGU+CiAgICAgIDxvcGFjaXR5PiIxIjwvb3BhY2l0eT4KICAgICAgPG1hc2s+IjAiPC9tYXNrPgogICAgICA8dmVjdG9ybWFzaz4iMCI8L3ZlY3Rvcm1hc2s+CiAgICAgIDxsaW5rZWQ+IjAiPC9saW5rZWQ+CiAgICAgIDxwYXJhbWV0ZXJzPgogICAgICAgIDxHYW1tYT4iMi40IjwvR2FtbWE+CiAgICAgIDwvcGFyYW1ldGVycz4KICAgIDwvc2hhZGVyPgogICAgPHNoYWRlcj4KICAgICAgPG5hbWU+IkJhc2ljQ29ycmVjdGlvbjMiPC9uYW1lPgogICAgICA8Y3VzdG9tbmFtZT4iQmFzaWMgQ29ycmVjdGlvbiI8L2N1c3RvbW5hbWU+CiAgICAgIDx2aXNpYmxlPiIxIjwvdmlzaWJsZT4KICAgICAgPGxvY2tlZHZpc2libGU+IjAiPC9sb2NrZWR2aXNpYmxlPgogICAgICA8b3BhY2l0eT4iMSI8L29wYWNpdHk+CiAgICAgIDxtYXNrPiIwIjwvbWFzaz4KICAgICAgPHZlY3Rvcm1hc2s+IjAiPC92ZWN0b3JtYXNrPgogICAgICA8bGlua2VkPiIwIjwvbGlua2VkPgogICAgICA8cGFyYW1ldGVycz4KICAgICAgICA8RXhwb3N1cmU+IjIuNCI8L0V4cG9zdXJlPgogICAgICAgIDxCbGFja3M+Ii01LjEyNjk1IjwvQmxhY2tzPgogICAgICAgIDxEaWZmV2hpdGU+Ik4xMDAiPC9EaWZmV2hpdGU+CiAgICAgICAgPENvbnRyYXN0PiIyMyI8L0NvbnRyYXN0PgogICAgICAgIDxTaGFkb3dzPiItMy42MTMyOCI8L1NoYWRvd3M+CiAgICAgICAgPFRlbXA+Ii0xNSI8L1RlbXA+CiAgICAgICAgPFdoaXRlcz4iLTguMTc4NzEiPC9XaGl0ZXM+CiAgICAgICAgPFNwZWN1bGFyPiJEMCI8L1NwZWN1bGFyPgogICAgICAgIDxIaWdobGlnaHRzPiItNC4zNzAxMiI8L0hpZ2hsaWdodHM+CiAgICAgICAgPFNhdHVyYXRpb24+Ijk4Ljk1MDIiPC9TYXR1cmF0aW9uPgogICAgICAgIDxUaW50PiIxLjMxODM2IjwvVGludD4KICAgICAgPC9wYXJhbWV0ZXJzPgogICAgPC9zaGFkZXI+CiAgICA8c2hhZGVyPgogICAgICA8bmFtZT4iX19Hcm91cEVuZCI8L25hbWU+CiAgICAgIDxjdXN0b21uYW1lPiJCYXNpYyBDb3JyZWN0aW9uIjwvY3VzdG9tbmFtZT4KICAgICAgPHZpc2libGU+IjEiPC92aXNpYmxlPgogICAgICA8bG9ja2VkdmlzaWJsZT4iMCI8L2xvY2tlZHZpc2libGU+CiAgICAgIDxvcGFjaXR5PiIxIjwvb3BhY2l0eT4KICAgICAgPG1hc2s+IjAiPC9tYXNrPgogICAgICA8dmVjdG9ybWFzaz4iMCI8L3ZlY3Rvcm1hc2s+CiAgICAgIDxsaW5rZWQ+IjAiPC9saW5rZWQ+CiAgICAgIDxwYXJhbWV0ZXJzPgogICAgICAgIDxDb2xsYXBzZWQ+IjEiPC9Db2xsYXBzZWQ+CiAgICAgICAgPF9fQmFzaWM+IjEiPC9fX0Jhc2ljPgogICAgICA8L3BhcmFtZXRlcnM+CiAgICA8L3NoYWRlcj4KICAgIDxzaGFkZXI+CiAgICAgIDxuYW1lPiJfX0dyb3VwQmVnaW4iPC9uYW1lPgogICAgICA8Y3VzdG9tbmFtZT4iX19Hcm91cEJlZ2luIjwvY3VzdG9tbmFtZT4KICAgICAgPHZpc2libGU+IjEiPC92aXNpYmxlPgogICAgICA8bG9ja2VkdmlzaWJsZT4iMCI8L2xvY2tlZHZpc2libGU+CiAgICAgIDxvcGFjaXR5PiIxIjwvb3BhY2l0eT4KICAgICAgPG1hc2s+IjAiPC9tYXNrPgogICAgICA8dmVjdG9ybWFzaz4iMCI8L3ZlY3Rvcm1hc2s+CiAgICAgIDxsaW5rZWQ+IjAiPC9saW5rZWQ+CiAgICAgIDxwYXJhbWV0ZXJzPgogICAgICA8L3BhcmFtZXRlcnM+CiAgICA8L3NoYWRlcj4KICAgIDxzaGFkZXI+CiAgICAgIDxuYW1lPiJfX0dyb3VwQmVnaW4iPC9uYW1lPgogICAgICA8Y3VzdG9tbmFtZT4iX19Hcm91cEJlZ2luIjwvY3VzdG9tbmFtZT4KICAgICAgPHZpc2libGU+IjEiPC92aXNpYmxlPgogICAgICA8bG9ja2VkdmlzaWJsZT4iMCI8L2xvY2tlZHZpc2libGU+CiAgICAgIDxvcGFjaXR5PiIxIjwvb3BhY2l0eT4KICAgICAgPG1hc2s+IjAiPC9tYXNrPgogICAgICA8dmVjdG9ybWFzaz4iMCI8L3ZlY3Rvcm1hc2s+CiAgICAgIDxsaW5rZWQ+IjAiPC9saW5rZWQ+CiAgICAgIDxwYXJhbWV0ZXJzPgogICAgICAgIDxfX0VtYmVkPiIxIjwvX19FbWJlZD4KICAgICAgICA8X19QcmVzZXQ+IioiPC9fX1ByZXNldD4KICAgICAgPC9wYXJhbWV0ZXJzPgogICAgPC9zaGFkZXI+CiAgICA8c2hhZGVyPgogICAgICA8bmFtZT4iX19Hcm91cEVuZCI8L25hbWU+CiAgICAgIDxjdXN0b21uYW1lPiJQcmVzZXQiPC9jdXN0b21uYW1lPgogICAgICA8dmlzaWJsZT4iMSI8L3Zpc2libGU+CiAgICAgIDxsb2NrZWR2aXNpYmxlPiIwIjwvbG9ja2VkdmlzaWJsZT4KICAgICAgPG9wYWNpdHk+IjEiPC9vcGFjaXR5PgogICAgICA8bWFzaz4iMCI8L21hc2s+CiAgICAgIDx2ZWN0b3JtYXNrPiIwIjwvdmVjdG9ybWFzaz4KICAgICAgPGxpbmtlZD4iMCI8L2xpbmtlZD4KICAgICAgPHBhcmFtZXRlcnM+CiAgICAgICAgPF9fSW50ZW5zaXR5PiIxMDAiPC9fX0ludGVuc2l0eT4KICAgICAgPC9wYXJhbWV0ZXJzPgogICAgPC9zaGFkZXI+CiAgICA8c2hhZGVyPgogICAgICA8bmFtZT4iTG9va0FkanVzdG1lbnRzIjwvbmFtZT4KICAgICAgPGN1c3RvbW5hbWU+Ikxvb2sgQWRqdXN0bWVudHMiPC9jdXN0b21uYW1lPgogICAgICA8dmlzaWJsZT4iMSI8L3Zpc2libGU+CiAgICAgIDxsb2NrZWR2aXNpYmxlPiIwIjwvbG9ja2VkdmlzaWJsZT4KICAgICAgPG9wYWNpdHk+IjEiPC9vcGFjaXR5PgogICAgICA8bWFzaz4iMCI8L21hc2s+CiAgICAgIDx2ZWN0b3JtYXNrPiIwIjwvdmVjdG9ybWFzaz4KICAgICAgPGxpbmtlZD4iMCI8L2xpbmtlZD4KICAgICAgPHBhcmFtZXRlcnM+CiAgICAgICAgPExvSGlTcGxpdD4iRDAiPC9Mb0hpU3BsaXQ+CiAgICAgICAgPFNoYWRvd1RpbnQuWj4iRDEiPC9TaGFkb3dUaW50Llo+CiAgICAgICAgPEhpZ2hsaWdodFRpbnQuWj4iRDEiPC9IaWdobGlnaHRUaW50Llo+CiAgICAgICAgPFZpYnJhbmNlPiJEMCI8L1ZpYnJhbmNlPgogICAgICAgIDxGYWRlPiJEMCI8L0ZhZGU+CiAgICAgICAgPFNoYWRvd1RpbnQuWT4iRDEiPC9TaGFkb3dUaW50Llk+CiAgICAgICAgPEhpZ2hsaWdodFRpbnQuWD4iRDEiPC9IaWdobGlnaHRUaW50Llg+CiAgICAgICAgPEhpZ2hsaWdodFRpbnQuWT4iRDEiPC9IaWdobGlnaHRUaW50Llk+CiAgICAgICAgPFNhdHVyYXRpb24+IkQxMDAiPC9TYXR1cmF0aW9uPgogICAgICAgIDxTaGFkb3dUaW50Llg+IkQxIjwvU2hhZG93VGludC5YPgogICAgICA8L3BhcmFtZXRlcnM+CiAgICA8L3NoYWRlcj4KICAgIDxzaGFkZXI+CiAgICAgIDxuYW1lPiJTaGFycG5lc3MiPC9uYW1lPgogICAgICA8Y3VzdG9tbmFtZT4iU2hhcnBuZXNzIjwvY3VzdG9tbmFtZT4KICAgICAgPHZpc2libGU+IjEiPC92aXNpYmxlPgogICAgICA8bG9ja2VkdmlzaWJsZT4iMCI8L2xvY2tlZHZpc2libGU+CiAgICAgIDxvcGFjaXR5PiIxIjwvb3BhY2l0eT4KICAgICAgPG1hc2s+IjAiPC9tYXNrPgogICAgICA8dmVjdG9ybWFzaz4iMCI8L3ZlY3Rvcm1hc2s+CiAgICAgIDxsaW5rZWQ+IjAiPC9saW5rZWQ+CiAgICAgIDxwYXJhbWV0ZXJzPgogICAgICAgIDxTaGFycG5lc3M+IkQwIjwvU2hhcnBuZXNzPgogICAgICA8L3BhcmFtZXRlcnM+CiAgICA8L3NoYWRlcj4KICAgIDxzaGFkZXI+CiAgICAgIDxuYW1lPiJfX0dyb3VwRW5kIjwvbmFtZT4KICAgICAgPGN1c3RvbW5hbWU+Ikxvb2siPC9jdXN0b21uYW1lPgogICAgICA8dmlzaWJsZT4iMSI8L3Zpc2libGU+CiAgICAgIDxsb2NrZWR2aXNpYmxlPiIwIjwvbG9ja2VkdmlzaWJsZT4KICAgICAgPG9wYWNpdHk+IjEiPC9vcGFjaXR5PgogICAgICA8bWFzaz4iMCI8L21hc2s+CiAgICAgIDx2ZWN0b3JtYXNrPiIwIjwvdmVjdG9ybWFzaz4KICAgICAgPGxpbmtlZD4iMCI8L2xpbmtlZD4KICAgICAgPHBhcmFtZXRlcnM+CiAgICAgICAgPF9fTG9vaz4iMSI8L19fTG9vaz4KICAgICAgICA8Q29sbGFwc2VkPiIxIjwvQ29sbGFwc2VkPgogICAgICA8L3BhcmFtZXRlcnM+CiAgICA8L3NoYWRlcj4KICAgIDxzaGFkZXI+CiAgICAgIDxuYW1lPiJfX0dyb3VwQmVnaW4iPC9uYW1lPgogICAgICA8Y3VzdG9tbmFtZT4iX19Hcm91cEJlZ2luIjwvY3VzdG9tbmFtZT4KICAgICAgPHZpc2libGU+IjEiPC92aXNpYmxlPgogICAgICA8bG9ja2VkdmlzaWJsZT4iMCI8L2xvY2tlZHZpc2libGU+CiAgICAgIDxvcGFjaXR5PiIxIjwvb3BhY2l0eT4KICAgICAgPG1hc2s+IjAiPC9tYXNrPgogICAgICA8dmVjdG9ybWFzaz4iMCI8L3ZlY3Rvcm1hc2s+CiAgICAgIDxsaW5rZWQ+IjAiPC9saW5rZWQ+CiAgICAgIDxwYXJhbWV0ZXJzPgogICAgICA8L3BhcmFtZXRlcnM+CiAgICA8L3NoYWRlcj4KICAgIDxzaGFkZXI+CiAgICAgIDxuYW1lPiJUb25lQ3VydmVzIjwvbmFtZT4KICAgICAgPGN1c3RvbW5hbWU+IlRvbmUrUkdCIEN1cnZlcyI8L2N1c3RvbW5hbWU+CiAgICAgIDx2aXNpYmxlPiIxIjwvdmlzaWJsZT4KICAgICAgPGxvY2tlZHZpc2libGU+IjAiPC9sb2NrZWR2aXNpYmxlPgogICAgICA8b3BhY2l0eT4iMSI8L29wYWNpdHk+CiAgICAgIDxtYXNrPiIwIjwvbWFzaz4KICAgICAgPHZlY3Rvcm1hc2s+IjAiPC92ZWN0b3JtYXNrPgogICAgICA8bGlua2VkPiIwIjwvbGlua2VkPgogICAgICA8cGFyYW1ldGVycz4KICAgICAgICA8VG9uZUN1cnZlc0x1bWE+ImN1YmljLHZhbHVlOjBAMDsxQDEiPC9Ub25lQ3VydmVzTHVtYT4KICAgICAgICA8VG9uZUN1cnZlc0JsdWU+ImN1YmljLHZhbHVlOjBAMDsxQDEiPC9Ub25lQ3VydmVzQmx1ZT4KICAgICAgICA8VG9uZUN1cnZlc0dyZWVuPiJjdWJpYyx2YWx1ZTowQDA7MUAxIjwvVG9uZUN1cnZlc0dyZWVuPgogICAgICAgIDxSYW5nZT4iMTAwIjwvUmFuZ2U+CiAgICAgICAgPFRvbmVDdXJ2ZXNSZWQ+ImN1YmljLHZhbHVlOjBAMDsxQDEiPC9Ub25lQ3VydmVzUmVkPgogICAgICA8L3BhcmFtZXRlcnM+CiAgICA8L3NoYWRlcj4KICAgIDxzaGFkZXI+CiAgICAgIDxuYW1lPiJDb2xvckN1cnZlcyI8L25hbWU+CiAgICAgIDxjdXN0b21uYW1lPiJIdWUvSHVlIEh1ZS9MdW0gSHVlL1NhdCBMdW0vU2F0IEN1cnZlcyI8L2N1c3RvbW5hbWU+CiAgICAgIDx2aXNpYmxlPiIxIjwvdmlzaWJsZT4KICAgICAgPGxvY2tlZHZpc2libGU+IjAiPC9sb2NrZWR2aXNpYmxlPgogICAgICA8b3BhY2l0eT4iMSI8L29wYWNpdHk+CiAgICAgIDxtYXNrPiIwIjwvbWFzaz4KICAgICAgPHZlY3Rvcm1hc2s+IjAiPC92ZWN0b3JtYXNrPgogICAgICA8bGlua2VkPiIwIjwvbGlua2VkPgogICAgICA8cGFyYW1ldGVycz4KICAgICAgICA8SHVlSHVlRW5hYmxlZD4iMSI8L0h1ZUh1ZUVuYWJsZWQ+CiAgICAgICAgPEh1ZUh1ZUN1cnZlPiJub24tb3Zlci1jb25zdCx2YWx1ZToxQDA7MUAxIjwvSHVlSHVlQ3VydmU+CiAgICAgICAgPFNhdFNhdEVuYWJsZWQ+IjEiPC9TYXRTYXRFbmFibGVkPgogICAgICAgIDxIdWVTYXRFbmFibGVkPiIxIjwvSHVlU2F0RW5hYmxlZD4KICAgICAgICA8THVtU2F0RW5hYmxlZD4iMSI8L0x1bVNhdEVuYWJsZWQ+CiAgICAgICAgPFNhdFNhdEN1cnZlPiJub24tb3Zlci1jb25zdCx2YWx1ZTowQDA7MEAxIjwvU2F0U2F0Q3VydmU+CiAgICAgICAgPEh1ZUx1bUVuYWJsZWQ+IjEiPC9IdWVMdW1FbmFibGVkPgogICAgICAgIDxIdWVMdW1DdXJ2ZT4ibm9uLW92ZXItY29uc3QsdmFsdWU6MUAwOzFAMSI8L0h1ZUx1bUN1cnZlPgogICAgICAgIDxMdW1TYXRDdXJ2ZT4ibm9uLW92ZXItY29uc3QsdmFsdWU6MEAwOzBAMSI8L0x1bVNhdEN1cnZlPgogICAgICAgIDxIdWVTYXRDdXJ2ZT4ibm9uLW92ZXItY29uc3QsdmFsdWU6MUAwOzFAMSI8L0h1ZVNhdEN1cnZlPgogICAgICA8L3BhcmFtZXRlcnM+CiAgICA8L3NoYWRlcj4KICAgIDxzaGFkZXI+CiAgICAgIDxuYW1lPiJfX0dyb3VwRW5kIjwvbmFtZT4KICAgICAgPGN1c3RvbW5hbWU+IkN1cnZlcyI8L2N1c3RvbW5hbWU+CiAgICAgIDx2aXNpYmxlPiIxIjwvdmlzaWJsZT4KICAgICAgPGxvY2tlZHZpc2libGU+IjAiPC9sb2NrZWR2aXNpYmxlPgogICAgICA8b3BhY2l0eT4iMSI8L29wYWNpdHk+CiAgICAgIDxtYXNrPiIwIjwvbWFzaz4KICAgICAgPHZlY3Rvcm1hc2s+IjAiPC92ZWN0b3JtYXNrPgogICAgICA8bGlua2VkPiIwIjwvbGlua2VkPgogICAgICA8cGFyYW1ldGVycz4KICAgICAgICA8Q29sbGFwc2VkPiIxIjwvQ29sbGFwc2VkPgogICAgICAgIDxfX0N1cnZlcz4iMSI8L19fQ3VydmVzPgogICAgICA8L3BhcmFtZXRlcnM+CiAgICA8L3NoYWRlcj4KICAgIDxzaGFkZXI+CiAgICAgIDxuYW1lPiJfX0dyb3VwQmVnaW4iPC9uYW1lPgogICAgICA8Y3VzdG9tbmFtZT4iX19Hcm91cEJlZ2luIjwvY3VzdG9tbmFtZT4KICAgICAgPHZpc2libGU+IjEiPC92aXNpYmxlPgogICAgICA8bG9ja2VkdmlzaWJsZT4iMCI8L2xvY2tlZHZpc2libGU+CiAgICAgIDxvcGFjaXR5PiIxIjwvb3BhY2l0eT4KICAgICAgPG1hc2s+IjAiPC9tYXNrPgogICAgICA8dmVjdG9ybWFzaz4iMCI8L3ZlY3Rvcm1hc2s+CiAgICAgIDxsaW5rZWQ+IjAiPC9saW5rZWQ+CiAgICAgIDxwYXJhbWV0ZXJzPgogICAgICA8L3BhcmFtZXRlcnM+CiAgICA8L3NoYWRlcj4KICAgIDxzaGFkZXI+CiAgICAgIDxuYW1lPiJXaGVlbHMiPC9uYW1lPgogICAgICA8Y3VzdG9tbmFtZT4iV2hlZWxzIjwvY3VzdG9tbmFtZT4KICAgICAgPHZpc2libGU+IjEiPC92aXNpYmxlPgogICAgICA8bG9ja2VkdmlzaWJsZT4iMCI8L2xvY2tlZHZpc2libGU+CiAgICAgIDxvcGFjaXR5PiIxIjwvb3BhY2l0eT4KICAgICAgPG1hc2s+IjAiPC9tYXNrPgogICAgICA8dmVjdG9ybWFzaz4iMCI8L3ZlY3Rvcm1hc2s+CiAgICAgIDxsaW5rZWQ+IjAiPC9saW5rZWQ+CiAgICAgIDxwYXJhbWV0ZXJzPgogICAgICAgIDxEaWZmV2hpdGU+Ik4xMDAiPC9EaWZmV2hpdGU+CiAgICAgICAgPE1pZHRvbmVzLlo+IkQwIjwvTWlkdG9uZXMuWj4KICAgICAgICA8U2hhZG93cy5ZPiJEMCI8L1NoYWRvd3MuWT4KICAgICAgICA8U3BlY3VsYXIuWj4iRDAiPC9TcGVjdWxhci5aPgogICAgICAgIDxTaGFkb3dzLlg+IkQwIjwvU2hhZG93cy5YPgogICAgICAgIDxIaWdobGlnaHRzLlo+IkQwIjwvSGlnaGxpZ2h0cy5aPgogICAgICAgIDxIaWdobGlnaHRzLlg+IkQwIjwvSGlnaGxpZ2h0cy5YPgogICAgICAgIDxTaGFkb3dzLlo+IkQwIjwvU2hhZG93cy5aPgogICAgICAgIDxTcGVjdWxhci5ZPiJEMCI8L1NwZWN1bGFyLlk+CiAgICAgICAgPE1pZHRvbmVzLlk+IkQwIjwvTWlkdG9uZXMuWT4KICAgICAgICA8TWlkdG9uZXMuWD4iRDAiPC9NaWR0b25lcy5YPgogICAgICAgIDxTcGVjdWxhci5YPiJEMCI8L1NwZWN1bGFyLlg+CiAgICAgICAgPEhpZ2hsaWdodHMuWT4iRDAiPC9IaWdobGlnaHRzLlk+CiAgICAgIDwvcGFyYW1ldGVycz4KICAgIDwvc2hhZGVyPgogICAgPHNoYWRlcj4KICAgICAgPG5hbWU+Il9fR3JvdXBFbmQiPC9uYW1lPgogICAgICA8Y3VzdG9tbmFtZT4iV2hlZWxzIjwvY3VzdG9tbmFtZT4KICAgICAgPHZpc2libGU+IjEiPC92aXNpYmxlPgogICAgICA8bG9ja2VkdmlzaWJsZT4iMCI8L2xvY2tlZHZpc2libGU+CiAgICAgIDxvcGFjaXR5PiIxIjwvb3BhY2l0eT4KICAgICAgPG1hc2s+IjAiPC9tYXNrPgogICAgICA8dmVjdG9ybWFzaz4iMCI8L3ZlY3Rvcm1hc2s+CiAgICAgIDxsaW5rZWQ+IjAiPC9saW5rZWQ+CiAgICAgIDxwYXJhbWV0ZXJzPgogICAgICAgIDxDb2xsYXBzZWQ+IjEiPC9Db2xsYXBzZWQ+CiAgICAgICAgPF9fV2hlZWxzPiIxIjwvX19XaGVlbHM+CiAgICAgIDwvcGFyYW1ldGVycz4KICAgIDwvc2hhZGVyPgogICAgPHNoYWRlcj4KICAgICAgPG5hbWU+Il9fR3JvdXBCZWdpbiI8L25hbWU+CiAgICAgIDxjdXN0b21uYW1lPiJfX0dyb3VwQmVnaW4iPC9jdXN0b21uYW1lPgogICAgICA8dmlzaWJsZT4iMSI8L3Zpc2libGU+CiAgICAgIDxsb2NrZWR2aXNpYmxlPiIwIjwvbG9ja2VkdmlzaWJsZT4KICAgICAgPG9wYWNpdHk+IjEiPC9vcGFjaXR5PgogICAgICA8bWFzaz4iMCI8L21hc2s+CiAgICAgIDx2ZWN0b3JtYXNrPiIwIjwvdmVjdG9ybWFzaz4KICAgICAgPGxpbmtlZD4iMCI8L2xpbmtlZD4KICAgICAgPHBhcmFtZXRlcnM+CiAgICAgIDwvcGFyYW1ldGVycz4KICAgIDwvc2hhZGVyPgogICAgPHNoYWRlcj4KICAgICAgPG5hbWU+IlNlY29uZGFyeUxheWVyIjwvbmFtZT4KICAgICAgPGN1c3RvbW5hbWU+IlNlY29uZGFyeUxheWVyIjwvY3VzdG9tbmFtZT4KICAgICAgPHZpc2libGU+IjEiPC92aXNpYmxlPgogICAgICA8bG9ja2VkdmlzaWJsZT4iMCI8L2xvY2tlZHZpc2libGU+CiAgICAgIDxvcGFjaXR5PiIxIjwvb3BhY2l0eT4KICAgICAgPG1hc2s+IjAiPC9tYXNrPgogICAgICA8dmVjdG9ybWFzaz4iMCI8L3ZlY3Rvcm1hc2s+CiAgICAgIDxsaW5rZWQ+IjAiPC9saW5rZWQ+CiAgICAgIDxwYXJhbWV0ZXJzPgogICAgICAgIDxlbmFibGVITFMuWT4iTjEiPC9lbmFibGVITFMuWT4KICAgICAgICA8TWlkdG9uZXMuWj4iRDAiPC9NaWR0b25lcy5aPgogICAgICAgIDxTaGFkb3dzLlk+IkQwIjwvU2hhZG93cy5ZPgogICAgICAgIDxTcGVjdWxhci5aPiJEMCI8L1NwZWN1bGFyLlo+CiAgICAgICAgPHRvbGVyYW5jZUhMUy5aPiJOMCI8L3RvbGVyYW5jZUhMUy5aPgogICAgICAgIDxyYW5nZUhMUy5YPiJOMCI8L3JhbmdlSExTLlg+CiAgICAgICAgPERlbm9pc2U+IkQwIjwvRGVub2lzZT4KICAgICAgICA8cmFuZ2VITFMuWT4iTjAiPC9yYW5nZUhMUy5ZPgogICAgICAgIDxtaWRkbGVITFMuWj4iTjAuNSI8L21pZGRsZUhMUy5aPgogICAgICAgIDxTaGFkb3dzLlg+IkQwIjwvU2hhZG93cy5YPgogICAgICAgIDxTaGFycG5lc3M+IkQwIjwvU2hhcnBuZXNzPgogICAgICAgIDxlbmFibGVITFMuWD4iTjEiPC9lbmFibGVITFMuWD4KICAgICAgICA8SGlnaGxpZ2h0cy5aPiJEMCI8L0hpZ2hsaWdodHMuWj4KICAgICAgICA8aW52ZXJ0Llg+IkQwIjwvaW52ZXJ0Llg+CiAgICAgICAgPEhpZ2hsaWdodHMuWD4iRDAiPC9IaWdobGlnaHRzLlg+CiAgICAgICAgPGVuYWJsZUhMUy5aPiJOMSI8L2VuYWJsZUhMUy5aPgogICAgICAgIDxDb250cmFzdD4iRDAiPC9Db250cmFzdD4KICAgICAgICA8bWlkZGxlSExTLlg+Ik4xODAiPC9taWRkbGVITFMuWD4KICAgICAgICA8dG9sZXJhbmNlSExTLlk+Ik4wIjwvdG9sZXJhbmNlSExTLlk+CiAgICAgICAgPFNoYWRvd3MuWj4iRDAiPC9TaGFkb3dzLlo+CiAgICAgICAgPFNwZWN1bGFyLlk+IkQwIjwvU3BlY3VsYXIuWT4KICAgICAgICA8TWlkdG9uZXMuWT4iRDAiPC9NaWR0b25lcy5ZPgogICAgICAgIDxUZW1wPiJEMCI8L1RlbXA+CiAgICAgICAgPHRvbGVyYW5jZUhMUy5YPiJOMCI8L3RvbGVyYW5jZUhMUy5YPgogICAgICAgIDxNaWR0b25lcy5YPiJEMCI8L01pZHRvbmVzLlg+CiAgICAgICAgPFNwZWN1bGFyLlg+IkQwIjwvU3BlY3VsYXIuWD4KICAgICAgICA8Qmx1cj4iRDAiPC9CbHVyPgogICAgICAgIDxtaWRkbGVITFMuWT4iTjAuNSI8L21pZGRsZUhMUy5ZPgogICAgICAgIDxyYW5nZUhMUy5aPiJOMCI8L3JhbmdlSExTLlo+CiAgICAgICAgPFNhdHVyYXRpb24+IkQxMDAiPC9TYXR1cmF0aW9uPgogICAgICAgIDxIaWdobGlnaHRzLlk+IkQwIjwvSGlnaGxpZ2h0cy5ZPgogICAgICAgIDxUaW50PiJEMCI8L1RpbnQ+CiAgICAgICAgPFNob3dLZXk+IkQwIjwvU2hvd0tleT4KICAgICAgPC9wYXJhbWV0ZXJzPgogICAgPC9zaGFkZXI+CiAgICA8c2hhZGVyPgogICAgICA8bmFtZT4iX19Hcm91cEVuZCI8L25hbWU+CiAgICAgIDxjdXN0b21uYW1lPiJTZWNvbmRhcmllcyI8L2N1c3RvbW5hbWU+CiAgICAgIDx2aXNpYmxlPiIxIjwvdmlzaWJsZT4KICAgICAgPGxvY2tlZHZpc2libGU+IjAiPC9sb2NrZWR2aXNpYmxlPgogICAgICA8b3BhY2l0eT4iMSI8L29wYWNpdHk+CiAgICAgIDxtYXNrPiIwIjwvbWFzaz4KICAgICAgPHZlY3Rvcm1hc2s+IjAiPC92ZWN0b3JtYXNrPgogICAgICA8bGlua2VkPiIwIjwvbGlua2VkPgogICAgICA8cGFyYW1ldGVycz4KICAgICAgICA8X19TZWNvbmRhcmllcz4iMSI8L19fU2Vjb25kYXJpZXM+CiAgICAgICAgPENvbGxhcHNlZD4iMSI8L0NvbGxhcHNlZD4KICAgICAgPC9wYXJhbWV0ZXJzPgogICAgPC9zaGFkZXI+CiAgICA8c2hhZGVyPgogICAgICA8bmFtZT4iX19Hcm91cEJlZ2luIjwvbmFtZT4KICAgICAgPGN1c3RvbW5hbWU+Il9fR3JvdXBCZWdpbiI8L2N1c3RvbW5hbWU+CiAgICAgIDx2aXNpYmxlPiIxIjwvdmlzaWJsZT4KICAgICAgPGxvY2tlZHZpc2libGU+IjAiPC9sb2NrZWR2aXNpYmxlPgogICAgICA8b3BhY2l0eT4iMSI8L29wYWNpdHk+CiAgICAgIDxtYXNrPiIwIjwvbWFzaz4KICAgICAgPHZlY3Rvcm1hc2s+IjAiPC92ZWN0b3JtYXNrPgogICAgICA8bGlua2VkPiIwIjwvbGlua2VkPgogICAgICA8cGFyYW1ldGVycz4KICAgICAgPC9wYXJhbWV0ZXJzPgogICAgPC9zaGFkZXI+CiAgICA8c2hhZGVyPgogICAgICA8bmFtZT4iVmlnbmV0dGUiPC9uYW1lPgogICAgICA8Y3VzdG9tbmFtZT4iVmlnbmV0dGUiPC9jdXN0b21uYW1lPgogICAgICA8dmlzaWJsZT4iMSI8L3Zpc2libGU+CiAgICAgIDxsb2NrZWR2aXNpYmxlPiIwIjwvbG9ja2VkdmlzaWJsZT4KICAgICAgPG9wYWNpdHk+IjEiPC9vcGFjaXR5PgogICAgICA8bWFzaz4iMCI8L21hc2s+CiAgICAgIDx2ZWN0b3JtYXNrPiIyIjwvdmVjdG9ybWFzaz4KICAgICAgPGxpbmtlZD4iMCI8L2xpbmtlZD4KICAgICAgPHNoYWRlcm1hc2s+CiAgICAgICAgPG5hbWU+IiI8L25hbWU+CiAgICAgICAgPG1pZHBvaW50PiI1MCI8L21pZHBvaW50PgogICAgICAgIDxyb3VuZG5lc3M+IjAiPC9yb3VuZG5lc3M+CiAgICAgICAgPGZlYXRoZXI+IjUwIjwvZmVhdGhlcj4KICAgICAgPC9zaGFkZXJtYXNrPgogICAgICA8cGFyYW1ldGVycz4KICAgICAgICA8X19GZWF0aGVyPiI1MCI8L19fRmVhdGhlcj4KICAgICAgICA8X19Sb3VuZG5lc3M+IkQwIjwvX19Sb3VuZG5lc3M+CiAgICAgICAgPFZpZ25ldHRlPiJEMCI8L1ZpZ25ldHRlPgogICAgICAgIDxfX01pZHBvaW50PiI1MCI8L19fTWlkcG9pbnQ+CiAgICAgIDwvcGFyYW1ldGVycz4KICAgIDwvc2hhZGVyPgogICAgPHNoYWRlcj4KICAgICAgPG5hbWU+IkhpZ2hsaWdodFJlY292ZXJ5IjwvbmFtZT4KICAgICAgPGN1c3RvbW5hbWU+IkhpZ2hsaWdodFJlY292ZXJ5IjwvY3VzdG9tbmFtZT4KICAgICAgPHZpc2libGU+IjEiPC92aXNpYmxlPgogICAgICA8bG9ja2VkdmlzaWJsZT4iMCI8L2xvY2tlZHZpc2libGU+CiAgICAgIDxvcGFjaXR5PiIxIjwvb3BhY2l0eT4KICAgICAgPG1hc2s+IjAiPC9tYXNrPgogICAgICA8dmVjdG9ybWFzaz4iMCI8L3ZlY3Rvcm1hc2s+CiAgICAgIDxsaW5rZWQ+IjAiPC9saW5rZWQ+CiAgICAgIDxwYXJhbWV0ZXJzPgogICAgICAgIDxHYW1tYT4iMi40IjwvR2FtbWE+CiAgICAgIDwvcGFyYW1ldGVycz4KICAgIDwvc2hhZGVyPgogICAgPHNoYWRlcj4KICAgICAgPG5hbWU+Il9fR3JvdXBFbmQiPC9uYW1lPgogICAgICA8Y3VzdG9tbmFtZT4iRWZmZWN0cyI8L2N1c3RvbW5hbWU+CiAgICAgIDx2aXNpYmxlPiIxIjwvdmlzaWJsZT4KICAgICAgPGxvY2tlZHZpc2libGU+IjAiPC9sb2NrZWR2aXNpYmxlPgogICAgICA8b3BhY2l0eT4iMSI8L29wYWNpdHk+CiAgICAgIDxtYXNrPiIwIjwvbWFzaz4KICAgICAgPHZlY3Rvcm1hc2s+IjAiPC92ZWN0b3JtYXNrPgogICAgICA8bGlua2VkPiIwIjwvbGlua2VkPgogICAgICA8cGFyYW1ldGVycz4KICAgICAgICA8Q29sbGFwc2VkPiIxIjwvQ29sbGFwc2VkPgogICAgICAgIDxfX0VmZmVjdHM+IjEiPC9fX0VmZmVjdHM+CiAgICAgIDwvcGFyYW1ldGVycz4KICAgIDwvc2hhZGVyPgogICAgPHNoYWRlcj4KICAgICAgPG5hbWU+Il9fR3JvdXBFbmQiPC9uYW1lPgogICAgICA8Y3VzdG9tbmFtZT4iUHJlbWllcmUgQ29sb3IiPC9jdXN0b21uYW1lPgogICAgICA8dmlzaWJsZT4iMSI8L3Zpc2libGU+CiAgICAgIDxsb2NrZWR2aXNpYmxlPiIwIjwvbG9ja2VkdmlzaWJsZT4KICAgICAgPG9wYWNpdHk+IjEiPC9vcGFjaXR5PgogICAgICA8bWFzaz4iMCI8L21hc2s+CiAgICAgIDx2ZWN0b3JtYXNrPiIwIjwvdmVjdG9ybWFzaz4KICAgICAgPGxpbmtlZD4iMCI8L2xpbmtlZD4KICAgICAgPHBhcmFtZXRlcnM+CiAgICAgICAgPENvbGxhcHNlZD4iMSI8L0NvbGxhcHNlZD4KICAgICAgPC9wYXJhbWV0ZXJzPgogICAgPC9zaGFkZXI+CiAgPC9rZXlmcmFtZT4KICA8cHJvcGVydGllcz4KICA8L3Byb3BlcnRpZXM+CjwvTHVtZXRyaT4K</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>3</parameterid>
+									<name> </name>
+									<value>-91445760000000000,true,0,0,0,0,0,0</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>4</parameterid>
+									<name> </name>
+									<hash>63866a15-9327-e4cb-ff31-c9ea0000000e</hash>
+									<value>/v4=</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>5</parameterid>
+									<name>Input LUT</name>
+									<LowerBound>0</LowerBound>
+									<UpperBound>11</UpperBound>
+									<value>-91445760000000000,0,0,0,0,0,0,0</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>7</parameterid>
+									<name>Temperature</name>
+									<LowerBound>-300</LowerBound>
+									<UpperBound>300</UpperBound>
+									<LowerUIBound>-100</LowerUIBound>
+									<UpperUIBound>100</UpperUIBound>
+									<value>-91445760000000000,-15.,0,0,0,0,0,0</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>8</parameterid>
+									<name>Tint</name>
+									<LowerBound>-300</LowerBound>
+									<UpperBound>300</UpperBound>
+									<LowerUIBound>-100</LowerUIBound>
+									<UpperUIBound>100</UpperUIBound>
+									<value>-91445760000000000,1.318359375,0,0,0,0,0,0</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>20</parameterid>
+									<name>Saturation</name>
+									<LowerBound>0</LowerBound>
+									<UpperBound>300</UpperBound>
+									<UpperUIBound>200</UpperUIBound>
+									<value>-91445760000000000,120.,0,0,0,0,0,0</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>11</parameterid>
+									<name>Exposure</name>
+									<LowerBound>-7</LowerBound>
+									<UpperBound>7</UpperBound>
+									<LowerUIBound>-5</LowerUIBound>
+									<UpperUIBound>5</UpperUIBound>
+									<value>-91445760000000000,2.3999989032745361328125,0,0,0,0,0,0</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>12</parameterid>
+									<name>Contrast</name>
+									<LowerBound>-150</LowerBound>
+									<UpperBound>150</UpperBound>
+									<LowerUIBound>-100</LowerUIBound>
+									<UpperUIBound>100</UpperUIBound>
+									<value>-91445760000000000,23.,0,0,0,0,0,0</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>13</parameterid>
+									<name>Highlights</name>
+									<LowerBound>-150</LowerBound>
+									<UpperBound>150</UpperBound>
+									<LowerUIBound>-100</LowerUIBound>
+									<UpperUIBound>100</UpperUIBound>
+									<value>-91445760000000000,-4.3701171875,0,0,0,0,0,0</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>14</parameterid>
+									<name>Shadows</name>
+									<LowerBound>-150</LowerBound>
+									<UpperBound>150</UpperBound>
+									<LowerUIBound>-100</LowerUIBound>
+									<UpperUIBound>100</UpperUIBound>
+									<value>-91445760000000000,-3.61328125,0,0,0,0,0,0</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>15</parameterid>
+									<name>Whites</name>
+									<LowerBound>-150</LowerBound>
+									<UpperBound>150</UpperBound>
+									<LowerUIBound>-100</LowerUIBound>
+									<UpperUIBound>100</UpperUIBound>
+									<value>-91445760000000000,-8.1787109375,0,0,0,0,0,0</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>16</parameterid>
+									<name>Blacks</name>
+									<LowerBound>-150</LowerBound>
+									<UpperBound>150</UpperBound>
+									<LowerUIBound>-100</LowerUIBound>
+									<UpperUIBound>100</UpperUIBound>
+									<value>-91445760000000000,-5.126953125,0,0,0,0,0,0</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>23</parameterid>
+									<name> </name>
+									<value>-91445760000000000,true,0,0,0,0,0,0</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>24</parameterid>
+									<name> </name>
+									<hash>63866a15-9327-e4cb-ff31-c9ea0000000e</hash>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>25</parameterid>
+									<name>Look</name>
+									<LowerBound>0</LowerBound>
+									<UpperBound>68</UpperBound>
+									<value>-91445760000000000,0,0,0,0,0,0,0</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>26</parameterid>
+									<name>Intensity</name>
+									<LowerBound>0</LowerBound>
+									<UpperBound>200</UpperBound>
+									<value>-91445760000000000,100.,0,0,0,0,0,0</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>28</parameterid>
+									<name>Faded Film</name>
+									<LowerBound>0</LowerBound>
+									<UpperBound>150</UpperBound>
+									<UpperUIBound>100</UpperUIBound>
+									<value>-91445760000000000,0.,0,0,0,0,0,0</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>29</parameterid>
+									<name>Sharpen</name>
+									<LowerBound>-100</LowerBound>
+									<UpperBound>100</UpperBound>
+									<value>-91445760000000000,0.,0,0,0,0,0,0</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>30</parameterid>
+									<name>Vibrance</name>
+									<LowerBound>-100</LowerBound>
+									<UpperBound>100</UpperBound>
+									<value>-91445760000000000,42.,0,0,0,0,0,0</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>31</parameterid>
+									<name>Saturation</name>
+									<LowerBound>0</LowerBound>
+									<UpperBound>300</UpperBound>
+									<UpperUIBound>200</UpperUIBound>
+									<value>-91445760000000000,100.,0,0,0,0,0,0</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>32</parameterid>
+									<name></name>
+									<hash>49d2fca5-ddd1-a393-0544-f6d80000002c</hash>
+									<value>AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>33</parameterid>
+									<name>Tint Balance</name>
+									<LowerBound>-150</LowerBound>
+									<UpperBound>150</UpperBound>
+									<LowerUIBound>-100</LowerUIBound>
+									<UpperUIBound>100</UpperUIBound>
+									<value>-91445760000000000,0.,0,0,0,0,0,0</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>37</parameterid>
+									<name> </name>
+									<value>-91445760000000000,true,0,0,0,0,0,0</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>39</parameterid>
+									<name> </name>
+									<hash>261f3840-e8cf-a8cd-fa5e-bac10000082c</hash>
+									<value>AAAAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA8D8AAAAAAADwPwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAPA/AAAAAAAA8D8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADwPwAAAAAAAPA/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA8D8AAAAAAADwPwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>42</parameterid>
+									<name>Hue vs Sat</name>
+									<hash>f146cafe-eab3-19ed-0ee8-de0e00000214</hash>
+									<value>AwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA8D8AAAAAAADwPwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>46</parameterid>
+									<name> </name>
+									<value>-91445760000000000,true,0,0,0,0,0,0</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>47</parameterid>
+									<name> </name>
+									<hash>0b5436c4-bae0-bb64-a2f6-c8c40000006c</hash>
+									<value>AAAAAAAAAAAAAAAAAADgPwAAAAAAAAAAAAAAAAAAAAAAAAAAAADgPwAAAAAAAAAAAAAAAAAAAAAAAAAAAADgPwAAAAAAAAAAAAAAAAAAAAAAAAAAAADgPwAAAAAAAAAA</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>50</parameterid>
+									<name> </name>
+									<value>-91445760000000000,true,0,0,0,0,0,0</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>51</parameterid>
+									<name>Amount</name>
+									<LowerBound>-5</LowerBound>
+									<UpperBound>5</UpperBound>
+									<LowerUIBound>-3</LowerUIBound>
+									<UpperUIBound>3</UpperUIBound>
+									<value>-91445760000000000,0.,0,0,0,0,0,0</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>52</parameterid>
+									<name>Midpoint</name>
+									<LowerBound>0</LowerBound>
+									<UpperBound>100</UpperBound>
+									<value>-91445760000000000,50.,0,0,0,0,0,0</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>53</parameterid>
+									<name>Roundness</name>
+									<LowerBound>-100</LowerBound>
+									<UpperBound>100</UpperBound>
+									<value>-91445760000000000,0.,0,0,0,0,0,0</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>54</parameterid>
+									<name>Feather</name>
+									<LowerBound>0</LowerBound>
+									<UpperBound>100</UpperBound>
+									<value>-91445760000000000,50.,0,0,0,0,0,0</value>
+								</parameter>
+							</effect>
+						</filter>
+						<labels>
+							<label2>Violet</label2>
+						</labels>
+					</clipitem>
+					<enabled>TRUE</enabled>
+					<locked>FALSE</locked>
+				</track>
+			</video>
+			<audio>
+				<numOutputChannels>2</numOutputChannels>
+				<format>
+					<samplecharacteristics>
+						<depth>16</depth>
+						<samplerate>48000</samplerate>
+					</samplecharacteristics>
+				</format>
+				<outputs>
+					<group>
+						<index>1</index>
+						<numchannels>1</numchannels>
+						<downmix>0</downmix>
+						<channel>
+							<index>1</index>
+						</channel>
+					</group>
+					<group>
+						<index>2</index>
+						<numchannels>1</numchannels>
+						<downmix>0</downmix>
+						<channel>
+							<index>2</index>
+						</channel>
+					</group>
+				</outputs>
+				<track TL.SQTrackAudioKeyframeStyle="0" TL.SQTrackShy="0" TL.SQTrackExpandedHeight="41" TL.SQTrackExpanded="0" MZ.TrackTargeted="1" PannerCurrentValue="0.5" PannerIsInverted="true" PannerStartKeyframe="-91445760000000000,0.5,0,0,0,0,0,0" PannerName="Balance" currentExplodedTrackIndex="0" totalExplodedTrackCount="2" premiereTrackType="Stereo">
+					<clipitem id="clipitem-2" premiereChannelType="stereo">
+						<masterclipid>masterclip-2</masterclipid>
+						<name>Music.mp3</name>
+						<enabled>TRUE</enabled>
+						<duration>10822</duration>
+						<rate>
+							<timebase>60</timebase>
+							<ntsc>TRUE</ntsc>
+						</rate>
+						<start>0</start>
+						<end>1010</end>
+						<in>0</in>
+						<out>1010</out>
+						<pproTicksIn>0</pproTicksIn>
+						<pproTicksOut>4280211936000</pproTicksOut>
+						<file id="file-2">
+							<name>Music.mp3</name>
+							<rate>
+								<timebase>30</timebase>
+								<ntsc>TRUE</ntsc>
+							</rate>
+							<duration>5411</duration>
+							<timecode>
+								<rate>
+									<timebase>30</timebase>
+									<ntsc>TRUE</ntsc>
+								</rate>
+								<string>00;00;00;00</string>
+								<frame>0</frame>
+								<displayformat>DF</displayformat>
+							</timecode>
+							<media>
+								<audio>
+									<samplecharacteristics>
+										<depth>16</depth>
+										<samplerate>44100</samplerate>
+									</samplecharacteristics>
+									<channelcount>2</channelcount>
+								</audio>
+							</media>
+						</file>
+						<sourcetrack>
+							<mediatype>audio</mediatype>
+							<trackindex>1</trackindex>
+						</sourcetrack>
+						<link>
+							<linkclipref>clipitem-2</linkclipref>
+							<mediatype>audio</mediatype>
+							<trackindex>1</trackindex>
+							<clipindex>1</clipindex>
+							<groupindex>1</groupindex>
+						</link>
+						<link>
+							<linkclipref>clipitem-3</linkclipref>
+							<mediatype>audio</mediatype>
+							<trackindex>2</trackindex>
+							<clipindex>1</clipindex>
+							<groupindex>1</groupindex>
+						</link>
+					</clipitem>
+					<enabled>TRUE</enabled>
+					<locked>FALSE</locked>
+					<outputchannelindex>1</outputchannelindex>
+				</track>
+				<track TL.SQTrackAudioKeyframeStyle="0" TL.SQTrackShy="0" TL.SQTrackExpandedHeight="41" TL.SQTrackExpanded="0" MZ.TrackTargeted="1" PannerCurrentValue="0.5" PannerIsInverted="true" PannerStartKeyframe="-91445760000000000,0.5,0,0,0,0,0,0" PannerName="Balance" currentExplodedTrackIndex="1" totalExplodedTrackCount="2" premiereTrackType="Stereo">
+					<clipitem id="clipitem-3" premiereChannelType="stereo">
+						<masterclipid>masterclip-2</masterclipid>
+						<name>Music.mp3</name>
+						<enabled>TRUE</enabled>
+						<duration>10822</duration>
+						<rate>
+							<timebase>60</timebase>
+							<ntsc>TRUE</ntsc>
+						</rate>
+						<start>0</start>
+						<end>1010</end>
+						<in>0</in>
+						<out>1010</out>
+						<pproTicksIn>0</pproTicksIn>
+						<pproTicksOut>4280211936000</pproTicksOut>
+						<file id="file-2"/>
+						<sourcetrack>
+							<mediatype>audio</mediatype>
+							<trackindex>2</trackindex>
+						</sourcetrack>
+						<link>
+							<linkclipref>clipitem-2</linkclipref>
+							<mediatype>audio</mediatype>
+							<trackindex>1</trackindex>
+							<clipindex>1</clipindex>
+							<groupindex>1</groupindex>
+						</link>
+						<link>
+							<linkclipref>clipitem-3</linkclipref>
+							<mediatype>audio</mediatype>
+							<trackindex>2</trackindex>
+							<clipindex>1</clipindex>
+							<groupindex>1</groupindex>
+						</link>
+					</clipitem>
+					<enabled>TRUE</enabled>
+					<locked>FALSE</locked>
+					<outputchannelindex>2</outputchannelindex>
+				</track>
+			</audio>
+		</media>
+		<timecode>
+			<rate>
+				<timebase>60</timebase>
+				<ntsc>TRUE</ntsc>
+			</rate>
+			<string>00;00;00;00</string>
+			<frame>0</frame>
+			<displayformat>DF</displayformat>
+		</timecode>
+		<labels>
+			<label2>Forest</label2>
+		</labels>
+	</sequence>
+</xmeml>

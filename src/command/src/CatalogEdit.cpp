@@ -573,6 +573,42 @@ void registerEditCommands(CommandRegistry& registry) {
                 [](ExecutionContext& c) {
                     return edited(c.take(edit::rippleTrimNextEditToPlayhead(c.state(), c.sequenceId(), c.time("time"))));
                 }});
+    // 0.6: the non-ripple companions of Q / W (Premiere's Shift+Q / Shift+W and Ctrl+Alt+Q / Ctrl+Alt+W).
+    addBuiltin(registry,
+               {"sequence.extendPreviousToPlayhead", 1, "Extend Previous Edit to Playhead",
+                "Shift+Q: the nearest edit point before the playhead on the targeted tracks rolls to the playhead (the "
+                "clips on both sides change length; a clip next to a gap grows into it). Nothing else moves.",
+                Capability::EditSequence, withSequence({{"time", timeParam("The playhead.")}}, {"time"}),
+                Json{{"time", "00:00:07:12"}}, {},
+                [](ExecutionContext& c) {
+                    return edited(c.take(edit::extendPreviousEditToPlayhead(c.state(), c.sequenceId(), c.time("time"))));
+                }});
+    addBuiltin(registry,
+               {"sequence.extendNextToPlayhead", 1, "Extend Next Edit to Playhead",
+                "Shift+W: the nearest edit point after the playhead on the targeted tracks rolls back to the playhead.",
+                Capability::EditSequence, withSequence({{"time", timeParam("The playhead.")}}, {"time"}),
+                Json{{"time", "00:00:07:12"}}, {},
+                [](ExecutionContext& c) {
+                    return edited(c.take(edit::extendNextEditToPlayhead(c.state(), c.sequenceId(), c.time("time"))));
+                }});
+    addBuiltin(registry,
+               {"sequence.trimPreviousToPlayhead", 1, "Trim Previous Edit to Playhead",
+                "Ctrl+Alt+Q: the clip under the playhead on each targeted track starts at the playhead (a regular trim of "
+                "its head; a gap is left before it).",
+                Capability::EditSequence, withSequence({{"time", timeParam("The playhead.")}}, {"time"}),
+                Json{{"time", "00:00:07:12"}}, {},
+                [](ExecutionContext& c) {
+                    return edited(c.take(edit::trimPreviousEditToPlayhead(c.state(), c.sequenceId(), c.time("time"))));
+                }});
+    addBuiltin(registry,
+               {"sequence.trimNextToPlayhead", 1, "Trim Next Edit to Playhead",
+                "Ctrl+Alt+W: the clip under the playhead on each targeted track ends at the playhead (a regular trim of "
+                "its tail; a gap is left after it).",
+                Capability::EditSequence, withSequence({{"time", timeParam("The playhead.")}}, {"time"}),
+                Json{{"time", "00:00:07:12"}}, {},
+                [](ExecutionContext& c) {
+                    return edited(c.take(edit::trimNextEditToPlayhead(c.state(), c.sequenceId(), c.time("time"))));
+                }});
 
     const auto trimSchema = [] {
         return withSequence({{"clip", clipParam("The clip whose edge moves.")},
@@ -587,8 +623,9 @@ void registerEditCommands(CommandRegistry& registry) {
     };
     addBuiltin(registry,
                {"clip.trim", 1, "Trim",
-                "Trim an edge (selection tool): moves a clip's In or Out point without moving anything else. Clamped to "
-                "neighbours, source media and one frame; the delta actually applied is returned.",
+                "Trim an edge (selection tool): makes a clip longer or shorter - extend it into a gap or shorten it - by "
+                "moving its In or Out point by a delta, without moving anything else. Clamped to neighbours, source media "
+                "and one frame; the delta actually applied is returned.",
                 Capability::EditSequence, trimSchema(), Json{{"clip", 42}, {"edge", "tail"}, {"delta", "-00:00:00:10"}}, {},
                 [deltaData](ExecutionContext& c) {
                     return deltaData(c, c.take(edit::trimEdge(c.state(), c.sequenceId(), c.clip("clip"), edgeOf(c),
@@ -745,8 +782,11 @@ void registerEditCommands(CommandRegistry& registry) {
                              {"time"}),
                 Json{{"time", "00:01:00:00"}, {"name", "Chapter 2"}, {"type", "chapter"}}, {"markers.add"},
                 [](ExecutionContext& c) {
-                    Marker marker{c.time("time"), c.optionalTime("duration").value_or(Ticks{}), c.string("name"),
-                                  c.string("comment"), static_cast<std::int32_t>(c.integer("colorIndex"))};
+                    // A start that falls between two frames lands on the frame that contains it (never between frames).
+                    // A length is a measured span and is kept exactly (loudness QC marks sub-frame blocks).
+                    Marker marker{markerFrameTime(c, c.time("time")), c.optionalTime("duration").value_or(Ticks{}),
+                                  c.string("name"), c.string("comment"),
+                                  static_cast<std::int32_t>(c.integer("colorIndex"))};
                     applyMarkerLinkParams(c, marker);
                     requireValidMarker(marker);
                     return edited(c.take(edit::addMarker(c.state(), c.sequenceId(), marker)));

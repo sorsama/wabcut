@@ -11,6 +11,7 @@
 #include <wabcut/interchange/ImportSummary.h>
 #include <wabcut/model/FinishingOps.h>
 #include <wabcut/model/GraphicOps.h>
+#include <wabcut/model/MasterClipEffects.h>
 #include <wabcut/model/Nesting.h>
 #include <wabcut/model/ProjectOps.h>
 #include <wabcut/model/TitleOps.h>
@@ -591,7 +592,8 @@ TEST_CASE("Export: the same project gives the same bytes; graphics and effects a
     const auto exported = exportSequence(s, tl.seq, Format::Fcp7Xml);
     REQUIRE(exported.has_value());
     CHECK(it::hasEntry(exported->report, ReportOutcome::Dropped, ReportCategory::Graphic, "motion graphic"));
-    CHECK(it::hasEntry(exported->report, ReportOutcome::Approximated, ReportCategory::Clip, "wabcut.color.basic"));
+    // 0.6 (card #66): Basic Correction goes out as Premiere's Lumetri Color.
+    CHECK(exported->data.find("<effectid>Lumetri</effectid>") != std::string::npos); // PF: Premiere's own effect id
     CHECK(formatSummary(*exported).find("Exported 1 sequence as Final Cut Pro 7 XML") != std::string::npos);
     CHECK_FALSE(exportSequence(s, SequenceId{999'999}, Format::Fcp7Xml).has_value());
     CHECK_FALSE(exportSequence(s, tl.seq, Format::PremiereProject).has_value());
@@ -694,8 +696,10 @@ TEST_CASE("Export: effect stacks survive FCP7 XML: blur, crop and drop shadow as
     INFO(joined(r.differences));
     CHECK(r.differences.empty());
     CHECK(r.exported.data.find("<effectid>GaussianBlur</effectid>") != std::string::npos);
-    CHECK(r.exported.data.find("<effectid>wabcut.color.basic</effectid>") != std::string::npos);
-    CHECK(it::hasEntry(r.exported.report, ReportOutcome::Approximated, ReportCategory::Clip, "wabcut.audio.eq3"));
+    // 0.6 (card #66): colour and EQ effects go out as Premiere's filters (Wabcut reads its own parameters back).
+    CHECK(r.exported.data.find("<effectid>Lumetri</effectid>") != std::string::npos);
+    CHECK(it::hasEntry(r.exported.report, ReportOutcome::Approximated, ReportCategory::Clip,
+                       "Parametric EQ (3-band) is written as Premiere's Parametric Equalizer"));
 }
 
 namespace {
@@ -762,4 +766,40 @@ TEST_CASE("Export: marker highlights survive OTIO and go into the comment elsewh
         REQUIRE(exported.has_value());
         CHECK(exported->data.find("1v4 [highlight 0.87 high: kill streak; mic peak]") != std::string::npos);
     }
+}
+
+TEST_CASE("Export: Master Clip Effects are folded onto every clip and reported (0.6)", "[interchange][export]") {
+    // Card #71: none of these formats has master clip effects, so each clip of A carries A's Gaussian Blur in its own
+    // stack (before its own effects, as it plays) and the report says how many clips took them.
+    wabcut::test::Timeline tl(R"(
+        V1 tgt |A10aaaaaaaaB30bbbbbbbA50aaaaaaa|
+        A1 tgt |A10aaaaaaaaB30bbbbbbbA50aaaaaaa|
+    )");
+    tl.linkMatching();
+    ProjectState s = ok(edit::addEffect(tl.state, tl.seq, edit::EffectTarget::ofMedia(tl.media('A')), "wabcut.blur.gaussian",
+                                        {EffectParam{"radius", ParamValue(12.0)}}))
+                         .state;
+    const ClipId last = tl.clip("V1@21");
+    s = ok(edit::addEffect(s, tl.seq, std::span(&last, 1), "wabcut.color.basic", {EffectParam{"saturation", ParamValue(120.0)}}))
+            .state;
+    std::size_t folded = 0;
+    const ProjectState flat = flattenMasterEffects(s, &folded);
+    CHECK(folded == 2);
+    for (const Format format : {Format::Fcp7Xml, Format::FcpXml, Format::Otio}) {
+        INFO(displayName(format));
+        const auto exported = exportSequence(s, tl.seq, format);
+        REQUIRE(exported.has_value());
+        CHECK(it::hasEntry(exported->report, ReportOutcome::Approximated, ReportCategory::Effect,
+                           "Master Clip Effects folded onto 2 clips"));
+        // The file is the flattened project's.
+        const auto expected = exportSequence(flat, tl.seq, format);
+        REQUIRE(expected.has_value());
+        CHECK(exported->data == expected->data);
+        CHECK_FALSE(it::hasEntry(expected->report, ReportOutcome::Approximated, ReportCategory::Effect, "Master Clip Effects"));
+    }
+    // FCP7 XML brings the folded stacks back as each clip's own effects.
+    const RoundTrip r = roundTrip(flat, tl.seq, Format::Fcp7Xml);
+    INFO(joined(r.differences));
+    CHECK(r.differences.empty());
+    CHECK(r.exported.data.find("<effectid>GaussianBlur</effectid>") != std::string::npos);
 }

@@ -402,11 +402,20 @@ std::optional<std::uint32_t> Container::resolve(const ReadValue& value, std::uin
     return std::nullopt;
 }
 
-std::expected<Container, Error> read(std::string_view bytes, std::size_t maxValueBytes) {
-    if (bytes.size() < kLabelSize) {
+namespace {
+
+/// Appends [offset, offset + size) of the container to `out`; false when it cannot be read.
+using Fetch = std::function<bool(std::uint64_t offset, std::uint64_t size, std::string& out)>;
+
+std::expected<Container, Error> readContainer(std::uint64_t fileSize, const Fetch& fetch, std::size_t maxValueBytes) {
+    if (fileSize < kLabelSize) {
         return std::unexpected(parseError("too short"));
     }
-    const std::string_view label = bytes.substr(bytes.size() - kLabelSize);
+    std::string labelBytes;
+    if (!fetch(fileSize - kLabelSize, kLabelSize, labelBytes)) {
+        return std::unexpected(Error{ErrorCode::IoError, "OMF: the file cannot be read"});
+    }
+    const std::string_view label = labelBytes;
     if (!std::equal(kMagic.begin(), kMagic.end(), reinterpret_cast<const std::uint8_t*>(label.data()))) {
         return std::unexpected(parseError("no Bento label"));
     }
@@ -420,11 +429,19 @@ std::expected<Container, Error> read(std::string_view bytes, std::size_t maxValu
         return std::unexpected(parseError("bad TOC block size"));
     }
     c.blockSize = blockKiB * 1024u;
-    if (tocSize == 0 || tocSize > kMaxTocBytes || tocOffset + tocSize > bytes.size() - kLabelSize) {
+    if (tocSize == 0 || tocSize > kMaxTocBytes || tocOffset + tocSize > fileSize - kLabelSize) {
         return std::unexpected(parseError("the TOC lies outside the file"));
     }
-    const std::string_view toc = bytes.substr(static_cast<std::size_t>(tocOffset), static_cast<std::size_t>(tocSize));
-    const std::uint64_t dataEnd = bytes.size(); // the container value (object 1) spans the whole file
+    std::string tocBytes;
+    if (!fetch(tocOffset, tocSize, tocBytes)) {
+        return std::unexpected(Error{ErrorCode::IoError, "OMF: the file cannot be read"});
+    }
+    const std::string_view toc = tocBytes;
+    const std::uint64_t dataEnd = fileSize; // the container value (object 1) spans the whole file
+    // Values may overlap (a hostile TOC can point millions of them at the same bytes): what is loaded stays within a
+    // few times the file's size.
+    const std::uint64_t loadBudget = 2 * fileSize + (16ull << 20);
+    std::uint64_t loaded = 0;
 
     std::uint32_t object = 0;
     std::uint32_t property = 0;
@@ -454,11 +471,22 @@ std::expected<Container, Error> read(std::string_view bytes, std::size_t maxValu
         if (first) {
             v.offset = offset;
         }
+        if (v.segments.size() >= kMaxValues) {
+            return std::unexpected(parseError("too many value segments"));
+        }
+        v.segments.emplace_back(offset, size);
         v.size += size;
         if (v.size <= maxValueBytes) {
-            v.data.append(bytes.substr(static_cast<std::size_t>(offset), static_cast<std::size_t>(size)));
+            loaded += size;
+            if (loaded > loadBudget) {
+                return std::unexpected(parseError("values overlap (reading them would read the file many times over)"));
+            }
+            if (!fetch(offset, size, v.data)) {
+                return std::unexpected(Error{ErrorCode::IoError, "OMF: the file cannot be read"});
+            }
         } else {
             v.data.clear();
+            v.data.shrink_to_fit();
         }
         return {};
     };
@@ -580,6 +608,42 @@ std::expected<Container, Error> read(std::string_view bytes, std::size_t maxValu
         }
     }
     return c;
+}
+
+} // namespace
+
+std::expected<Container, Error> read(std::string_view bytes, std::size_t maxValueBytes) {
+    return readContainer(bytes.size(),
+                         [&](std::uint64_t offset, std::uint64_t size, std::string& out) {
+                             if (offset > bytes.size() || size > bytes.size() - offset) {
+                                 return false;
+                             }
+                             out.append(bytes.substr(static_cast<std::size_t>(offset), static_cast<std::size_t>(size)));
+                             return true;
+                         },
+                         maxValueBytes);
+}
+
+std::expected<Container, Error> readFile(const std::filesystem::path& file, std::size_t maxValueBytes) {
+    std::ifstream in(file, std::ios::binary);
+    std::error_code ec;
+    const auto size = std::filesystem::file_size(file, ec);
+    if (!in || ec) {
+        return std::unexpected(Error{ErrorCode::IoError, "cannot read " + utf8FromPath(file)});
+    }
+    return readContainer(size,
+                         [&](std::uint64_t offset, std::uint64_t n, std::string& out) {
+                             if (offset > size || n > size - offset) {
+                                 return false;
+                             }
+                             const std::size_t at = out.size();
+                             out.resize(at + static_cast<std::size_t>(n));
+                             in.clear();
+                             in.seekg(static_cast<std::streamoff>(offset));
+                             in.read(out.data() + at, static_cast<std::streamsize>(n));
+                             return in.gcount() == static_cast<std::streamsize>(n);
+                         },
+                         maxValueBytes);
 }
 
 } // namespace wabcut::interchange::detail::bento

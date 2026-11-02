@@ -10,6 +10,7 @@
 #include "TimeRemapBridge.h"
 
 #include <wabcut/audio/edit/Loudness.h>
+#include <wabcut/model/Auditions.h>
 #include <wabcut/model/ClipGroups.h>
 #include <wabcut/model/EditOps.h>
 #include <wabcut/model/Graphics.h>
@@ -172,6 +173,10 @@ struct LabelEntry {
     ClipFx fxState = ClipFx::None;     // what it shows
     int fxStyleRevision = -1;
     bool fxInverted = false;           // drawn as a clipInk pill (its colour is the clip's own)
+    QSGTransformNode* sync = nullptr;  // 0.6: the out-of-sync tag before the name (sibling, follows the label)
+    QString syncText;                  // what it shows ("+5", "-12")
+    int syncStyleRevision = -1;
+    bool syncInverted = false;
     bool pending = false;
     QString text;
     QColor color;
@@ -550,6 +555,8 @@ void TimelineView::setStyle(const QVariantMap& map) {
         s.labelFont = m_style.labelFont;
     s.laneRadius = realFrom(map, "laneRadius", s.laneRadius);
     s.clipRadius = realFrom(map, "clipRadius", s.clipRadius);
+    s.chipRadius = realFrom(map, "chipRadius", s.chipRadius); // 0.6
+    s.syncColor = colorFrom(map.value(QStringLiteral("syncColor")), s.syncColor);
     s.selectionWidth = realFrom(map, "selectionWidth", s.selectionWidth);
     s.selectionGap = realFrom(map, "selectionGap", s.selectionGap);
     s.glowSize = realFrom(map, "glowSize", s.glowSize);
@@ -835,6 +842,13 @@ void addClipFacts(TimelineLaneFacts& facts, const ProjectState& snap, const Trac
         facts.fx.emplace(c.id.value, fx);
 }
 
+/// 0.6: the out-of-sync linked clips of the sequence (one walk; they depend on their partners, not on one clip).
+void addSyncFacts(TimelineLaneFacts& facts, const Sequence& seq) {
+    facts.sync.clear();
+    for (const auto& [id, offset] : edit::outOfSyncClips(seq))
+        facts.sync.emplace(id.value, static_cast<int>(ticksToFrames(offset, seq.frameRate)));
+}
+
 } // namespace
 
 TimelineLaneFacts TimelineView::laneFacts() const {
@@ -849,6 +863,7 @@ TimelineLaneFacts TimelineView::laneFacts() const {
         for (const Clip& c : track.clips)
             addClipFacts(facts, *snap, track, c);
     });
+    addSyncFacts(facts, *seq);
     if (m_trackKeyframes != QLatin1String("off")) {
         for (const TrackPtr& t : seq->audioTracks)
             facts.faders.emplace_back(t->volume, t->pan);
@@ -887,11 +902,13 @@ void TimelineView::updateFacts(const TimelineChange& change) {
         return;
     }
     if (s) {
+        bool linked = false; // 0.6: a linked clip changed, so its partners' sync may have too
         for (const std::vector<ClipId>* list : {&s->removedClips, &s->modifiedClips, &s->addedClips}) {
             for (ClipId id : *list) {
                 m_facts.badges.erase(id.value);
                 m_facts.channels.erase(id.value);
                 m_facts.fx.erase(id.value);
+                linked = linked || m_facts.sync.contains(id.value);
             }
         }
         // One walk over the clips for the whole change: a ripple modifies thousands, and findClip per id is linear.
@@ -903,10 +920,14 @@ void TimelineView::updateFacts(const TimelineChange& change) {
         if (!wanted.empty()) {
             seq->forEachTrack([&](const Track& track) {
                 for (const Clip& c : track.clips)
-                    if (std::ranges::binary_search(wanted, c.id.value))
+                    if (std::ranges::binary_search(wanted, c.id.value)) {
                         addClipFacts(m_facts, *snap, track, c);
+                        linked = linked || c.linkGroup.isValid();
+                    }
             });
         }
+        if (linked)
+            addSyncFacts(m_facts, *seq);
     }
     // A nested sequence no clip plays any more keeps its entry (nothing draws it), as long as the cache lives.
     m_factsSnapshot = snap;
@@ -1491,6 +1512,19 @@ QVariantMap TimelineView::clipHoverInfo(const QString& clipId) const {
         state << tr("Disabled");
     if (offline)
         state << tr("Offline");
+    // 0.6: out of sync with its linked partner (the red tag): the clip menu's Move / Slip into Sync fix it.
+    const auto sync = edit::syncOffset(*m_sequence, c.id);
+    const int syncFrames = sync ? static_cast<int>(ticksToFrames(*sync, frameRate())) : 0;
+    info.insert(QStringLiteral("syncFrames"), syncFrames);
+    if (syncFrames != 0)
+        state << (syncFrames > 0 ? tr("%1 frames late against its linked clip").arg(syncFrames)
+                                 : tr("%1 frames early against its linked clip").arg(-syncFrames));
+    // 0.6 (card #74): an audition names its active take and how many it holds.
+    if (const Audition* audition = c.audition()) {
+        info.insert(QStringLiteral("takes"), static_cast<int>(audition->size()));
+        info.insert(QStringLiteral("activeTake"), static_cast<int>(audition->active));
+        state << tr("Audition: take %1 of %2").arg(audition->active + 1).arg(audition->size());
+    }
     if (!state.isEmpty())
         lines << state.join(QStringLiteral(" · "));
     info.insert(QStringLiteral("text"), lines.join(QLatin1Char('\n')));
@@ -1968,9 +2002,70 @@ void addSpeedLine(BuildContext& ctx, const Clip& clip, const QRectF& rect, doubl
 void removeLabel(LabelPool& pool, TrackBucket& b, std::unordered_map<std::uint64_t, LabelEntry>::iterator it) {
     delete it->second.badge;
     delete it->second.fx;
+    delete it->second.sync;
     if (it->second.node)
         pool.release(it->second.node);
     b.labels.erase(it);
+}
+
+// 0.6: Premiere's out-of-sync box at the start of a linked clip's name: the offset in frames ("+5", "-12") in clipInk on
+// the danger colour with a clipInk hairline (inverted on a clip whose own fill is close to it), its corners like the
+// fx chip's (square with Square timeline corners). Returns the width it takes (with the gap after it), 0 = none.
+qreal placeSyncChip(BuildContext& ctx, LabelEntry& e, const BuiltClip& c, const QString& text, const QColor& clipFill,
+                    qreal x, qreal labelY, qreal available) {
+    const auto remove = [&] {
+        delete e.sync;
+        e.sync = nullptr;
+        e.syncText.clear();
+    };
+    if (text.isEmpty()) {
+        remove();
+        return 0;
+    }
+    const TimelineStyle& st = ctx.style;
+    QFont font = st.labelFont;
+    font.setPixelSize(static_cast<int>(st.microSize));
+    font.setLetterSpacing(QFont::AbsoluteSpacing, st.microTracking);
+    const QFontMetricsF metrics(font);
+    const qreal chipHeight = std::ceil(metrics.height()) + 2;
+    const qreal chipWidth = std::ceil(metrics.horizontalAdvance(text)) + 8;
+    const qreal chipY = labelY + (ctx.metrics.height() - chipHeight) / 2;
+    if (chipWidth > available || chipY < c.y + st.stripHeight || chipY + chipHeight > c.y + c.h) {
+        remove();
+        return 0;
+    }
+    const double dr = st.syncColor.redF() - clipFill.redF();
+    const double dg = st.syncColor.greenF() - clipFill.greenF();
+    const double db = st.syncColor.blueF() - clipFill.blueF();
+    const bool inverted = clipFill.alphaF() > 0.5 && std::sqrt(dr * dr + dg * dg + db * db) < 0.25;
+    if (e.sync && (e.syncStyleRevision != ctx.styleRevision || e.syncText != text || e.syncInverted != inverted))
+        remove();
+    if (!e.sync) {
+        e.sync = new QSGTransformNode;
+        ctx.labelGroup->appendChildNode(e.sync);
+        auto* plate = MeshBuilder::createNode();
+        e.sync->appendChildNode(plate);
+        MeshBuilder mesh;
+        mesh.addRoundedRect(QRectF(0, 0, chipWidth, chipHeight), std::min(st.chipRadius, chipHeight / 2),
+                            inverted ? st.markerInkColor : st.syncColor, st.markerInkColor, 0.75);
+        mesh.commit(plate);
+        auto* glyphs = ctx.window->createTextNode();
+        e.sync->appendChildNode(glyphs);
+        glyphs->setColor(inverted ? st.syncColor : st.markerInkColor);
+        QTextLayout layout(text, font);
+        layout.beginLayout();
+        QTextLine line = layout.createLine();
+        line.setLineWidth(chipWidth);
+        layout.endLayout();
+        glyphs->addTextLayout({4, 1}, &layout);
+        e.syncStyleRevision = ctx.styleRevision;
+        e.syncText = text;
+        e.syncInverted = inverted;
+    }
+    QMatrix4x4 transform;
+    transform.translate(static_cast<float>(x), static_cast<float>(chipY));
+    e.sync->setMatrix(transform);
+    return chipWidth + 4;
 }
 
 // 0.4: the fx chip right after the unabridged name (before the micro-tag): "fx" in clipInk on a pill in the fx colour
@@ -2016,8 +2111,8 @@ qreal placeFxChip(BuildContext& ctx, LabelEntry& e, const BuiltClip& c, ClipFx f
         auto* plate = MeshBuilder::createNode();
         e.fx->appendChildNode(plate);
         MeshBuilder mesh;
-        mesh.addRoundedRect(QRectF(0, 0, chipWidth, chipHeight), chipHeight / 2, inverted ? st.markerInkColor : fill,
-                            st.markerInkColor, 0.75);
+        mesh.addRoundedRect(QRectF(0, 0, chipWidth, chipHeight), std::min(st.chipRadius, chipHeight / 2),
+                            inverted ? st.markerInkColor : fill, st.markerInkColor, 0.75);
         mesh.commit(plate);
         auto* glyphs = ctx.window->createTextNode();
         e.fx->appendChildNode(glyphs);
@@ -2102,13 +2197,33 @@ void placeGeneratedBadge(BuildContext& ctx, LabelEntry& e, const BuiltClip& c, c
 // Places (or removes) the label of `c`. Returns true when the label is pinned to the view's left edge.
 bool placeLabel(BuildContext& ctx, TrackBucket& b, const BuiltClip& c) {
     const TimelineStyle& st = ctx.style;
-    const qreal x = std::max(c.x0, ctx.viewLeft) + st.labelPadding;
-    const qreal available = c.x1 - st.labelPadding - x;
+    const qreal chipX = std::max(c.x0, ctx.viewLeft) + st.labelPadding;
+    qreal x = chipX;
+    qreal available = c.x1 - st.labelPadding - x;
     auto existing = b.labels.find(c.id.value);
     if (available < st.minLabelWidth) {
         if (existing != b.labels.end())
             removeLabel(ctx.pool, b, existing);
         return false;
+    }
+    // 0.6: an out-of-sync linked clip starts its label with the offset tag (Premiere's red box); the name follows it.
+    QString syncTag;
+    if (ctx.facts) {
+        if (const auto off = ctx.facts->sync.find(c.id.value); off != ctx.facts->sync.end())
+            syncTag = off->second > 0 ? QStringLiteral("+%1").arg(off->second) : QString::number(off->second);
+    }
+    qreal syncRoom = 0;
+    if (!syncTag.isEmpty()) {
+        QFont micro = st.labelFont;
+        micro.setPixelSize(static_cast<int>(st.microSize));
+        micro.setLetterSpacing(QFont::AbsoluteSpacing, st.microTracking);
+        syncRoom = std::ceil(QFontMetricsF(micro).horizontalAdvance(syncTag)) + 12;
+        if (available - syncRoom >= st.minLabelWidth) {
+            x += syncRoom;
+            available -= syncRoom;
+        } else {
+            syncRoom = 0; // no room for the tag and a name: the name alone
+        }
     }
     QString name = QString::fromStdString(b.track->clips[c.index].name());
     if (const Clip& nestedClip = b.track->clips[c.index]; nestedClip.isNested() && ctx.facts) {
@@ -2189,6 +2304,13 @@ bool placeLabel(BuildContext& ctx, TrackBucket& b, const BuiltClip& c) {
         if (const auto channels = ctx.facts->channels.find(clip.id.value); channels != ctx.facts->channels.end())
             tag = tag.isEmpty() ? channels->second : tag + QStringLiteral(" · ") + channels->second;
     }
+    // 0.6 (card #74): an audition says which of its takes plays, first ("Take 2 of 4").
+    if (const Audition* audition = clip.audition()) {
+        const QString take = TimelineView::tr("Take %1 of %2").arg(audition->active + 1).arg(audition->size());
+        tag = tag.isEmpty() ? take : take + QStringLiteral(" · ") + tag;
+    }
+    placeSyncChip(ctx, e, c, syncRoom > 0 ? syncTag : QString(),
+                  c.audio ? st.audioFill(clip.colorIndex) : st.clipBody(clip.colorIndex), chipX, y, syncRoom);
     // 0.4: the fx chip (read from the clip itself, so a drag's preview and an Alt-drag's copies show theirs too).
     const ClipFx fx = ctx.showFxBadges && text == name ? clipFxOf(clip) : ClipFx::None;
     const qreal fxWidth = placeFxChip(ctx, e, c, fx, c.audio ? st.audioFill(clip.colorIndex) : st.clipBody(clip.colorIndex),
@@ -3686,6 +3808,8 @@ QSGNode* TimelineView::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
             }
             if (label.fx) // 0.4
                 stats.fxBadges.insert(id, label.fxState == ClipFx::Effects ? QStringLiteral("effects") : QStringLiteral("changed"));
+            if (label.sync) // 0.6
+                stats.syncBadges.insert(id, label.syncText);
             stats.labelTexts.insert(id, label.text);
         }
     }

@@ -28,11 +28,33 @@ Panel {
     function focusContent() {
         tabs.forceActiveFocus(Qt.TabFocusReason)
     }
+    /// P1 round (#30): Edit > Find (Ctrl+F) while this panel is active - the Transcript tab's Find field (the sequence's
+    /// or the source clip's words, as shown). False when there are no words to find in yet (Main: the Library's search).
+    function focusFind(): bool {
+        if (root.sourceMode ? !sourceTranscriptPage.hasWords : !transcriptPage.hasWords)
+            return false
+        tabs.currentIndex = 0
+        if (root.sourceMode)
+            sourceTranscriptPage.focusFind()
+        else
+            transcriptPage.focusFind()
+        return true
+    }
     /// 0.5 (stream A): the Captions tab showing cue `index`, its text open for typing when `edit` (the timeline's caption
     /// lane: a double-click, the cue menu's Edit Text / Select in Captions; Main calls this).
     function showCaptionCue(index: int, edit: bool) {
         tabs.currentIndex = 2
         captionsPage.showCue(index, edit)
+    }
+    /// P1 round (#35, stream 2E): the Captions tab (Add New Caption Track, Ctrl+Alt+A).
+    function showCaptions() {
+        tabs.currentIndex = 2
+    }
+    /// P1 round (#35): the Captions tab with the new cue `index` (Add Caption at Playhead, Ctrl+Alt+C) shown and its
+    /// text selected, so typing replaces it.
+    function showNewCaption(index: int) {
+        tabs.currentIndex = 2
+        captionsPage.showNewCue(index)
     }
 
     ColumnLayout {
@@ -80,9 +102,11 @@ Panel {
                     currentIndex: root.sourceMode ? 1 : 0
 
                     TranscriptPage {
+                        id: transcriptPage
                         onSetupRequested: root.setupRequested()
                     }
                     SourceTranscriptPage {
+                        id: sourceTranscriptPage
                         onSetupRequested: root.setupRequested()
                     }
                 }

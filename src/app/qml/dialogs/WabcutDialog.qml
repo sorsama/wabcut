@@ -18,9 +18,19 @@ Popup {
     focus: true
     closePolicy: Popup.CloseOnEscape
     padding: Theme.pad + Theme.space(2)
+    // P1 #61: the popup's own item (what UI Automation shows as the dialog's window, and NVDA announces when the focus
+    // enters) carries the title too, not only the content inside it. Popup itself takes no Accessible.
+    function nameDialogElement() {
+        const shell = control.contentItem ? control.contentItem.parent : null
+        if (shell)
+            shell.Accessible.name = control.title
+    }
+    Component.onCompleted: control.nameDialogElement()
+    onTitleChanged: control.nameDialogElement()
+    onContentItemChanged: control.nameDialogElement()
 
     Overlay.modal: Rectangle {
-        color: Theme.scrim
+        color: Theme.scrimModal
     }
 
     contentItem: ColumnLayout {

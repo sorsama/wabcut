@@ -1,9 +1,10 @@
 pragma ComponentBehavior: Bound
 import QtQuick
 
-// Window (the menu bar, Premiere's order): Workspaces (switch, new from a preset, duplicate, rename, delete), Maximize
-// Frame, Reset Panel Layout, History, then every panel of the catalog (Workspaces.catalog), checked while it is open in
-// this workspace. Choosing a panel opens it where you clicked last (a closed one joins that group as a tab) or brings it
+// Window (the menu bar, Premiere's order): Workspaces (switch, new from a preset, duplicate, rename, delete; P1 round:
+// Save Changes to This Workspace, Save as New Workspace…, Reset to <Preset> Preset…, Lock Workspace), Maximize Frame,
+// Reset to Saved Layout, then every panel of the catalog (Workspaces.catalog; P1 round: History is one of them),
+// checked while it is open in this workspace. Choosing a panel opens it where you clicked last (a closed one joins that group as a tab) or brings it
 // forward where it is, and focuses it (Main.openPanelFromWindowMenu). Generate is not listed while AI is turned off
 // (Settings > AI).
 MenuBarMenu {
@@ -22,7 +23,7 @@ MenuBarMenu {
                                              effects: "window.effects", effectControls: "window.effectControls",
                                              source: "window.sourceMonitor", program: "window.programMonitor",
                                              timeline: "window.timeline", mixer: "window.audioTrackMixer",
-                                             audioMeters: "window.audioMeters" })
+                                             audioMeters: "window.audioMeters", history: "window.history" })
     /// The catalog's panels the menu lists (AI off: no Generate).
     readonly property var panels: Workspaces.catalog.filter(p => p.key !== "generate" || Preferences.aiEnabled)
     /// Where the panels' rows start: after the separator that ends the fixed rows.
@@ -97,6 +98,34 @@ MenuBarMenu {
             available: Workspaces.all.length > 1
             onTriggered: workspacesMenu.request("deleteWorkspace", root.workspace)
         }
+        ContextMenuSeparator {}
+        // P1 round (#32): Premiere's saved layouts. Panel drags change the workspace at once; Save Changes keeps the
+        // layout Reset to Saved Layout comes back to.
+        BarMenuItem {
+            objectName: "windowMenuSaveWorkspace"
+            text: qsTr("Save Changes to This Workspace")
+            onTriggered: workspacesMenu.request("saveWorkspaceChanges", root.workspace)
+        }
+        BarMenuItem {
+            objectName: "windowMenuSaveAsNewWorkspace"
+            text: qsTr("Save as New Workspace…")
+            onTriggered: workspacesMenu.request("saveAsNewWorkspace", root.workspace)
+        }
+        BarMenuItem {
+            objectName: "windowMenuResetWorkspaceToPreset"
+            text: qsTr("Reset to %1 Preset…").arg(Workspaces.presetLabel(Workspaces.resolve(root.workspace).preset))
+            onTriggered: workspacesMenu.request("resetWorkspaceToPreset", root.workspace)
+        }
+        BarMenuItem {
+            objectName: "windowMenuLockWorkspace"
+            text: qsTr("Lock Workspace")
+            checkable: true
+            checked: Workspaces.isLocked(root.workspace)
+            onTriggered: {
+                checked = Qt.binding(() => Workspaces.isLocked(root.workspace))
+                workspacesMenu.request("lockWorkspace", root.workspace)
+            }
+        }
     }
     // The group you clicked last takes the whole work area; again (or Shift+`) gives the layout back.
     BarMenuItem {
@@ -107,18 +136,12 @@ MenuBarMenu {
         checked: (root.docking?.maximizedGroup ?? "") !== ""
         onTriggered: checked = Qt.binding(() => (root.docking?.maximizedGroup ?? "") !== "")
     }
-    // The current workspace's panels back where its preset puts them (Premiere's Reset to Saved Layout; the toast offers
-    // Undo).
+    // The current workspace's panels back where Save Changes to This Workspace kept them, else where its preset puts
+    // them (Premiere's Reset to Saved Layout; the toast offers Undo).
     BarMenuItem {
         objectName: "resetPanelLayoutMenuItem"
-        text: qsTr("Reset Panel Layout")
+        text: qsTr("Reset to Saved Layout")
         command: "window.resetToSavedLayout"
-    }
-    // P.2 (E5): the History popup (not a docked panel).
-    BarMenuItem {
-        objectName: "historyMenuItem"
-        text: qsTr("History")
-        command: "window.history"
     }
     ContextMenuSeparator {
         id: panelsSeparator

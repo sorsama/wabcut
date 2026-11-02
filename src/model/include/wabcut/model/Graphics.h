@@ -116,6 +116,8 @@ struct DropShadow {
     double angle = 135.0;   ///< degrees clockwise from the x axis
     double distance = 6.0;  ///< pixels
     double softness = 8.0;  ///< blur radius, pixels
+    /// 0.6 (Premiere's Size): the shadow's shape grows by this many pixels before it is blurred, 0..1000.
+    double size = 0.0;
 
     bool operator==(const DropShadow&) const = default;
 };
@@ -123,6 +125,12 @@ struct DropShadow {
 // ---- Text -------------------------------------------------------------------------------------------------------------
 
 enum class TextAlign : std::uint8_t { Left, Center, Right, Justify };
+/// 0.6: where paragraph text sits in its box when the box is taller than the text (TextContent::boxHeight > 0).
+enum class TextVerticalAlign : std::uint8_t { Top, Center, Bottom };
+/// 0.6: Premiere's All Caps / Small Caps (the text keeps its letters; only how they are drawn changes).
+enum class TextCaps : std::uint8_t { Normal, AllCaps, SmallCaps };
+/// 0.6: where a text stroke lies on the glyphs' outline: Premiere's Outer, Center and Inner strokes.
+enum class StrokePosition : std::uint8_t { Outside, Center, Inside };
 
 struct TextStyle {
     std::string fontFamily;   ///< empty: the brand kit's font for `brandFont`, else the platform's sans-serif
@@ -136,9 +144,33 @@ struct TextStyle {
     double tracking = 0.0;    ///< 1/1000 em, -1000..10000 (Premiere's tracking)
     double leading = 0.0;     ///< line height in pixels; 0 = automatic (1.2 x the size)
     double baselineShift = 0.0; ///< pixels
+    /// 0.6: the font's own kerning pairs (Premiere's Metrics kerning); off spaces every pair by the advances alone. The
+    /// text engine (Qt) has no optical or per-pair manual kerning: tracking spaces letters by hand.
+    bool kerning = true;
+    TextCaps caps = TextCaps::Normal;
+    /// 0.6: synthesised bold (the glyphs thickened by an outline in their own colour) and italic (slanted 12 degrees),
+    /// for fonts without those faces; independent of the font style.
+    bool fauxBold = false;
+    bool fauxItalic = false;
 
     bool operator==(const TextStyle&) const = default;
 };
+
+/// 0.6: a stroke round a text layer's glyphs. A layer may have several (kMaxTextStrokes): the first hugs the glyphs,
+/// each next one is drawn behind the one before it (a wider second stroke frames the first, as Premiere stacks them).
+/// Outside strokes are under the fill; Center and Inside strokes over it (Inside clipped to the glyphs).
+struct TextStroke {
+    bool enabled = true;
+    GraphicColor color{{0.0, 0.0, 0.0, 1.0}, {}};
+    ParamValue width{4.0}; ///< pixels, 0..1000; keyframable
+    StrokePosition position = StrokePosition::Outside;
+
+    bool operator==(const TextStroke&) const = default;
+};
+
+inline constexpr std::size_t kMaxTextStrokes = 8;
+/// 0.6: Source Text keyframes: the text versions one layer can hold besides its runs.
+inline constexpr std::size_t kMaxTextSources = 64;
 
 /// A piece of text in one style. The runs of a layer join into its text; '\n' starts a new line.
 struct TextRun {
@@ -218,6 +250,23 @@ struct TextContent {
     std::vector<TextAnimator> animators;
     /// 0.2: type on a path (the box is ignored: the path is the line).
     std::optional<TextPath> path;
+    /// 0.6: where the lines sit in a paragraph box taller than them.
+    TextVerticalAlign verticalAlign = TextVerticalAlign::Top;
+    /// 0.6: strokes round the glyphs (TextStroke), at most kMaxTextStrokes.
+    std::vector<TextStroke> strokes;
+    /// 0.6, Source Text keyframes (Premiere's Source Text stopwatch): the text and its run styles change at hold keys.
+    /// `sourceKey` is the version shown from each key on: 0 the layer's `runs`, i > 0 `sources[i - 1]`. A constant 0
+    /// (no keys) shows `runs`. Edited through the layer parameter "text.source" (GraphicOps.h), which keeps the keys
+    /// hold keys and drops versions no key shows.
+    ParamValue sourceKey{0.0};
+    std::vector<std::vector<TextRun>> sources; ///< at most kMaxTextSources, each bounded like `runs`
+    /// 0.6: keyframes of the text's size, tracking, leading and baseline shift as a whole (Effect Controls' rows): the
+    /// first run's value over time, or nothing (the runs' own values). Every run follows the curve: sizes in proportion
+    /// to the first run's, the others by the same amount. Edited through "text.fontSize", "text.tracking", ...
+    std::optional<Curve> sizeKeys;
+    std::optional<Curve> trackingKeys;
+    std::optional<Curve> leadingKeys;
+    std::optional<Curve> baselineKeys;
 
     bool operator==(const TextContent&) const = default;
     /// Every run's text joined.
@@ -502,6 +551,13 @@ std::string_view toString(PaintKind kind);
 std::optional<PaintKind> paintKindFromString(std::string_view text);
 std::string_view toString(TextAlign align);
 std::optional<TextAlign> textAlignFromString(std::string_view text);
+/// 0.6: "top", "center", "bottom"; "normal", "allCaps", "smallCaps"; "outside", "center", "inside".
+std::string_view toString(TextVerticalAlign align);
+std::optional<TextVerticalAlign> textVerticalAlignFromString(std::string_view text);
+std::string_view toString(TextCaps caps);
+std::optional<TextCaps> textCapsFromString(std::string_view text);
+std::string_view toString(StrokePosition position);
+std::optional<StrokePosition> strokePositionFromString(std::string_view text);
 std::string_view toString(TextUnit unit);
 std::optional<TextUnit> textUnitFromString(std::string_view text);
 std::string_view toString(TextSelectorShape shape);

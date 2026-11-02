@@ -1,5 +1,6 @@
 #include <wabcut/export/ExportSettings.h>
 
+#include "Delivery.h"
 #include "Extras.h"
 
 #include <algorithm>
@@ -384,6 +385,45 @@ std::vector<Preset> builtInPresets() {
                        images("exr-sequence", VideoCodec::Exr, OutputPixelFormat::Rgbf, true)});
     presets.push_back({"png-still", "PNG still", "The first frame of the range as one PNG",
                        images("png-still", VideoCodec::Png, OutputPixelFormat::Rgb24, false)});
+
+    // 0.6 (#73): broadcast delivery and Avid MediaFiles - MXF with 24-bit PCM mono tracks and a timecode track.
+    const auto mxf = [](const char* id, Container container, VideoCodec codec, OutputPixelFormat format) {
+        ExportSettings s;
+        s.presetId = id;
+        s.container = container;
+        s.video.codec = codec;
+        s.video.encoder = "auto";
+        s.video.pixelFormat = format;
+        s.video.width = 1920;
+        s.video.height = 1080;
+        s.audio.codec = AudioCodec::Pcm24;
+        s.audio.sampleRate = 48000;
+        return s;
+    };
+    presets.push_back({"mxf-op1a-xdcam-hd422", "MXF OP1a XDCAM HD422",
+                       "XDCAM HD422 50 Mb/s (MPEG-2 4:2:2) 1920×1080 up to 30 fps, 24-bit PCM mono tracks, timecode, MXF "
+                       "OP1a for broadcast delivery",
+                       mxf("mxf-op1a-xdcam-hd422", Container::Mxf, VideoCodec::Xdcam, OutputPixelFormat::Yuv422p)});
+    ExportSettings mxfDnxhd = mxf("mxf-op1a-dnxhd-hq", Container::Mxf, VideoCodec::DnxHR, OutputPixelFormat::Yuv422p);
+    mxfDnxhd.video.dnxhrProfile = DnxhrProfile::DnxhdHq;
+    presets.push_back({"mxf-op1a-dnxhd-hq", "MXF OP1a DNxHD HQ",
+                       "DNxHD HQ 1920×1080 at Avid's bitrate for the frame rate, 24-bit PCM mono tracks, timecode, MXF OP1a",
+                       mxfDnxhd});
+    ExportSettings mxfDnxhr = mxf("mxf-op1a-dnxhr-hq", Container::Mxf, VideoCodec::DnxHR, OutputPixelFormat::Yuv422p);
+    mxfDnxhr.video.dnxhrProfile = DnxhrProfile::Hq;
+    mxfDnxhr.video.width.reset(); // DNxHR: any size (the sequence's)
+    mxfDnxhr.video.height.reset();
+    presets.push_back({"mxf-op1a-dnxhr-hq", "MXF OP1a DNxHR HQ",
+                       "DNxHR HQ 8-bit 4:2:2 at the sequence size, 24-bit PCM mono tracks, timecode, MXF OP1a", mxfDnxhr});
+    ExportSettings opAtom = mxf("mxf-opatom-dnxhd-hq", Container::MxfOpAtom, VideoCodec::DnxHR, OutputPixelFormat::Yuv422p);
+    opAtom.video.dnxhrProfile = DnxhrProfile::DnxhdHq;
+    presets.push_back({"mxf-opatom-dnxhd-hq", "MXF OP-Atom DNxHD HQ (Avid)",
+                       "DNxHD HQ 1920×1080 for Avid: one MXF OP-Atom file for the picture and one per audio channel, "
+                       "each its own clip (the same name and timecode)",
+                       opAtom});
+    presets.push_back({"mxf-op1a-avc-intra-100", "MXF OP1a AVC-Intra 100",
+                       "AVC-Intra 100 (10-bit 4:2:2 intra) 1920×1080 at 25 or 29.97 fps, 24-bit PCM mono tracks, MXF OP1a",
+                       mxf("mxf-op1a-avc-intra-100", Container::Mxf, VideoCodec::AvcIntra, OutputPixelFormat::Yuv422p10)});
     return presets;
 }
 
@@ -402,10 +442,10 @@ std::expected<void, Error> validate(const ExportSettings& s) {
     if (!v.enabled && !a.enabled) {
         return std::unexpected(invalid("Nothing to export: video and audio are both off"));
     }
-    // P.2: 608 captions are embedded in the H.264 / HEVC stream (A/53 caption SEI).
-    if (s.captions.mode == CaptionExport::Embed &&
-        (!v.enabled || (v.codec != VideoCodec::H264 && v.codec != VideoCodec::Hevc))) {
-        return std::unexpected(invalid("Captions embed in H.264 or HEVC video: choose a sidecar file or burn them in"));
+    // 0.6 (#73): MXF, the broadcast codecs and embedded 608 / 708 captions (Delivery.cpp; P.2's 608 in H.264 / HEVC is
+    // one of its cases).
+    if (auto ok = detail::validateDelivery(s); !ok) {
+        return ok;
     }
     // Containers.
     if (s.container == Container::Gif) {
@@ -555,6 +595,9 @@ std::expected<void, Error> validate(const ExportSettings& s) {
                 return std::unexpected(invalid("GIF plays at most 50 fps (its frame times are hundredths of a second)"));
             }
             break;
+        case VideoCodec::Xdcam: // 0.6 (#73): validateDelivery checks their pixel formats and containers
+        case VideoCodec::AvcIntra:
+            break;
         }
         if (v.rateControl == RateControl::TargetSize && v.codec != VideoCodec::H264 && v.codec != VideoCodec::Hevc &&
             v.codec != VideoCodec::Av1 && v.codec != VideoCodec::Vp9) {
@@ -678,6 +721,14 @@ std::expected<ResolvedExport, Error> resolve(const ExportSettings& s, const Sequ
             r.dynamicRange = management.mode == ColorManagementMode::HdrPq && tenBit && hdrCodec    ? DynamicRange::Pq
                              : management.mode == ColorManagementMode::HdrHlg && tenBit && hdrCodec ? DynamicRange::Hlg
                                                                                                      : DynamicRange::Sdr;
+            // 0.6 (#72): an output colour space of Rec.2100 PQ / HLG (the export's, else the sequence's) makes Auto an
+            // HDR master of a managed setup when the format can carry it; otherwise its SDR version.
+            if (const OutputColorSpace hdrSpace =
+                    s.video.outputSpace != OutputColorSpace::Automatic ? s.video.outputSpace : management.outputSpace;
+                managed && tenBit && hdrCodec &&
+                (hdrSpace == OutputColorSpace::Rec2100Pq || hdrSpace == OutputColorSpace::Rec2100Hlg)) {
+                r.dynamicRange = hdrSpace == OutputColorSpace::Rec2100Pq ? DynamicRange::Pq : DynamicRange::Hlg;
+            }
             break;
         case DynamicRange::Sdr:
             r.dynamicRange = DynamicRange::Sdr;
@@ -689,6 +740,33 @@ std::expected<ResolvedExport, Error> resolve(const ExportSettings& s, const Sequ
             }
             r.dynamicRange = s.video.dynamicRange;
             break;
+        }
+        // 0.6 (#72): the colour space written, and SDR Conform. An export that asks for Rec.2100 PQ / HLG itself needs a
+        // format and a setup that can carry it; the sequence's PQ / HLG falls back to its SDR version (Rec.709) as Auto
+        // does. Disable Color Management converts nothing: Rec.709.
+        const bool exportSpaceSet = s.video.outputSpace != OutputColorSpace::Automatic;
+        const OutputColorSpace space = exportSpaceSet ? s.video.outputSpace : management.outputSpace;
+        if (exportSpaceSet && (space == OutputColorSpace::Rec2100Pq || space == OutputColorSpace::Rec2100Hlg) &&
+            r.dynamicRange == DynamicRange::Sdr && s.video.dynamicRange != DynamicRange::Sdr) {
+            return std::unexpected(invalid(managed ? "Rec.2100 PQ and HLG need a 10-bit HEVC, ProRes or AV1 format"
+                                                   : "Rec.2100 PQ and HLG need an HDR or Wide Gamut sequence colour setup"));
+        }
+        if (r.dynamicRange == DynamicRange::Pq) {
+            r.outputSpace = OutputColorSpace::Rec2100Pq;
+        } else if (r.dynamicRange == DynamicRange::Hlg) {
+            r.outputSpace = OutputColorSpace::Rec2100Hlg;
+        } else if (management.mode != ColorManagementMode::Disabled &&
+                   (space == OutputColorSpace::Rec2020 || space == OutputColorSpace::P3D65)) {
+            r.outputSpace = space;
+        }
+        if (r.dynamicRange == DynamicRange::Sdr && (management.isHdr() || management.isWideGamutDirect())) {
+            const SdrConform conform = s.video.sdrConform.value_or(management.sdrConform);
+            if (conform.enabled) {
+                if (const auto problem = sdrConformProblem(conform)) {
+                    return std::unexpected(invalid(std::string(*problem)));
+                }
+                r.sdrConform = conform;
+            }
         }
         // 0.2: Render at Maximum Depth reads 10 bits back for any project into a format deeper than 8 bits.
         r.tenBitRender = deep && (managed || s.render.maximumDepth);
@@ -787,6 +865,9 @@ std::expected<ResolvedExport, Error> resolve(const ExportSettings& s, const Sequ
                 "not at 29.97 / 30): use DNxHR",
                 r.width, r.height, r.frameRate.toDouble())));
         }
+        if (const auto problem = detail::deliveryProblem(s, r)) { // 0.6 (#73): MXF rates, XDCAM / AVC-Intra rasters
+            return std::unexpected(invalid(*problem));
+        }
     } else {
         r.duration = r.range.duration;
     }
@@ -841,6 +922,10 @@ std::string_view containerName(Container c) {
         return "aiff";
     case Container::Image:
         return "image";
+    case Container::Mxf: // 0.6 (#73)
+        return "mxf";
+    case Container::MxfOpAtom:
+        return "mxf-opatom";
     }
     return "mp4";
 }
@@ -867,6 +952,9 @@ std::string_view fileExtension(Container c) {
         return ".aif";
     case Container::Image:
         return ".png";
+    case Container::Mxf: // 0.6 (#73)
+    case Container::MxfOpAtom:
+        return ".mxf";
     }
     return ".mp4";
 }
@@ -892,7 +980,7 @@ std::string_view outputExtension(const ExportSettings& s) {
 }
 
 std::optional<Container> containerFromName(std::string_view name) {
-    for (int c = 0; c <= static_cast<int>(Container::Image); ++c) {
+    for (int c = 0; c <= static_cast<int>(Container::MxfOpAtom); ++c) {
         if (containerName(static_cast<Container>(c)) == name) {
             return static_cast<Container>(c);
         }
@@ -901,7 +989,7 @@ std::optional<Container> containerFromName(std::string_view name) {
 }
 
 std::optional<VideoCodec> videoCodecFromName(std::string_view name) {
-    for (int c = 0; c <= static_cast<int>(VideoCodec::CineForm); ++c) {
+    for (int c = 0; c <= static_cast<int>(VideoCodec::AvcIntra); ++c) {
         if (videoCodecName(static_cast<VideoCodec>(c)) == name) {
             return static_cast<VideoCodec>(c);
         }
@@ -1052,6 +1140,10 @@ std::string_view videoCodecName(VideoCodec c) {
         return "animation";
     case VideoCodec::CineForm:
         return "cineform";
+    case VideoCodec::Xdcam: // 0.6 (#73)
+        return "xdcam-hd422";
+    case VideoCodec::AvcIntra:
+        return "avc-intra-100";
     }
     return "h264";
 }

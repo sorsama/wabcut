@@ -2,6 +2,7 @@
 
 #include "AppAudioServices.h"
 #include "BridgeIds.h"
+#include "CommandJob.h"
 #include "PlaybackBridge.h"
 #include "ProjectController.h"
 
@@ -17,12 +18,15 @@
 #include <wabcut/playback/video/PlaybackController.h>
 
 #include <QCoreApplication>
+#include <QCryptographicHash>
 #include <QDateTime>
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QQmlEngine>
 #include <QRegularExpression>
+#include <QSettings>
 #include <QStandardPaths>
 #include <QtGlobal>
 
@@ -168,6 +172,13 @@ VoiceOverBridge::VoiceOverBridge(QObject* parent) : QObject(parent), m_input(std
     // kept and placed (A5-P1-7).
     if (QCoreApplication* app = QCoreApplication::instance())
         connect(app, &QCoreApplication::aboutToQuit, this, &VoiceOverBridge::endPass);
+    // 0.6 (#53): the script prompter's options are the user's.
+    const QSettings settings;
+    m_showScript = settings.value(QStringLiteral("voiceOverPrompter/showScript"), true).toBool();
+    m_prompterTextSize = std::clamp(settings.value(QStringLiteral("voiceOverPrompter/textSize"), 36).toInt(), 16, 96);
+    m_mirror = settings.value(QStringLiteral("voiceOverPrompter/mirror"), false).toBool();
+    m_markerPerParagraph = settings.value(QStringLiteral("voiceOverPrompter/markerPerParagraph"), false).toBool();
+    connect(this, &VoiceOverBridge::stateChanged, this, &VoiceOverBridge::onPassStateChanged);
 }
 
 VoiceOverBridge::~VoiceOverBridge() {
@@ -202,10 +213,15 @@ void VoiceOverBridge::setController(ProjectController* controller) {
     connect(m_controller, &ProjectController::sessionClosing, this, &VoiceOverBridge::endPass, Qt::DirectConnection);
     // Another project file opened: offer what a crash left in its Voice-over folder (A5-P2-13).
     connect(m_controller, &ProjectController::mediaChanged, this, &VoiceOverBridge::onMediaChanged);
+    // 0.6 (#53): the prompter shows while a track is armed; the script is the project file's.
+    connect(m_controller, &ProjectController::revisionChanged, this, &VoiceOverBridge::updateArmed);
+    connect(m_controller, &ProjectController::sequenceChanged, this, &VoiceOverBridge::updateArmed);
     onMediaChanged();
+    updateArmed();
 }
 
 void VoiceOverBridge::onMediaChanged() {
+    syncScript(); // 0.6 (#53): another project file, its script
     if (!m_controller || recording() || m_controller->projectFile() == m_scannedProject)
         return;
     m_scannedProject = m_controller->projectFile();
@@ -740,6 +756,283 @@ void VoiceOverBridge::dismissRecoveredTakes() {
         audio::removeWavJournal(pathOf(row.toMap().value(QStringLiteral("path")).toString()));
     m_recovered.clear();
     emit recoveredTakesChanged();
+}
+
+// ---- 0.6 (P1 round, #53): the script prompter --------------------------------------------------------------------
+
+namespace {
+
+constexpr qint64 kMaxScriptBytes = 256 * 1024;
+
+/// A Markdown line as read aloud: emphasis, code marks, quote and list markers gone.
+QString plainLine(QString line) {
+    static const QRegularExpression quote(QStringLiteral("^\\s*>\\s?"));
+    static const QRegularExpression bullet(QStringLiteral("^\\s*(?:[-*+]|\\d+[.)])\\s+"));
+    static const QRegularExpression emphasis(QStringLiteral("(\\*\\*|__|\\*|`|~~)"));
+    static const QRegularExpression underscores(QStringLiteral("(^|\\s)_([^_]+)_(?=\\s|$|[.,;:!?])"));
+    line.remove(quote);
+    line.remove(bullet);
+    line.remove(emphasis);
+    line.replace(underscores, QStringLiteral("\\1\\2"));
+    return line.trimmed();
+}
+
+QString settingsKey(const QString& project) {
+    const QByteArray hash = QCryptographicHash::hash(QDir::cleanPath(project).toUtf8(), QCryptographicHash::Sha1).toHex();
+    return QStringLiteral("voiceOverScripts/") + QString::fromLatin1(hash.left(20));
+}
+
+} // namespace
+
+QStringList VoiceOverBridge::scriptParagraphs(const QString& text) {
+    QString normalized = text;
+    normalized.replace(QStringLiteral("\r\n"), QStringLiteral("\n")).replace(QLatin1Char('\r'), QLatin1Char('\n'));
+    const QStringList lines = normalized.split(QLatin1Char('\n'));
+    static const QRegularExpression heading(QStringLiteral("^\\s{0,3}#{1,6}(\\s|$)"));
+    static const QRegularExpression rule(QStringLiteral("^\\s*([-*_]\\s*){3,}$"));
+    // Blank lines (and headings) part paragraphs. A script with none is one sentence or thought per line: each line is
+    // a paragraph then, so the prompter never shows the whole script at once.
+    bool blankLines = false;
+    bool seenText = false;
+    for (const QString& line : lines) {
+        if (line.trimmed().isEmpty()) {
+            blankLines = blankLines || seenText;
+        } else {
+            seenText = true;
+        }
+    }
+    QStringList out;
+    QString current;
+    const auto flush = [&] {
+        if (!current.trimmed().isEmpty())
+            out << current.trimmed();
+        current.clear();
+    };
+    for (const QString& raw : lines) {
+        if (raw.trimmed().isEmpty() || heading.match(raw).hasMatch() || rule.match(raw).hasMatch()) {
+            flush();
+            continue;
+        }
+        const QString line = plainLine(raw);
+        if (line.isEmpty())
+            continue;
+        if (!blankLines) {
+            current = line;
+            flush();
+            continue;
+        }
+        current += (current.isEmpty() ? QString() : QStringLiteral(" ")) + line;
+    }
+    flush();
+    return out;
+}
+
+QString VoiceOverBridge::useScript(const QString& text, const QString& path, int index) {
+    if (text.toUtf8().size() > kMaxScriptBytes)
+        return tx("The script is larger than 256 KB");
+    const QStringList paragraphs = scriptParagraphs(text);
+    if (paragraphs.isEmpty())
+        return tx("The script has no text to show");
+    m_paragraphs = paragraphs;
+    m_scriptText = paragraphs.join(QStringLiteral("\n\n"));
+    m_scriptPath = path;
+    m_paragraphIndex = std::clamp(index, 0, static_cast<int>(m_paragraphs.size()) - 1);
+    saveScript();
+    emit scriptChanged();
+    emit paragraphChanged();
+    emit prompterChanged();
+    return {};
+}
+
+QString VoiceOverBridge::loadScript(const QUrl& file) {
+    const QString path = file.isLocalFile() ? file.toLocalFile() : file.toString();
+    const QFileInfo info(path);
+    const QString suffix = info.suffix().toLower();
+    if (suffix != QLatin1String("txt") && suffix != QLatin1String("md") && suffix != QLatin1String("markdown")
+        && suffix != QLatin1String("fountain"))
+        return tx("Open a .txt, .md or .fountain script");
+    if (!info.isFile())
+        return tx("The script file is not there");
+    if (info.size() > kMaxScriptBytes)
+        return tx("The script is larger than 256 KB");
+    QFile in(path);
+    if (!in.open(QIODevice::ReadOnly))
+        return tx("The script file could not be read");
+    return useScript(QString::fromUtf8(in.readAll()), path, 0);
+}
+
+QString VoiceOverBridge::setScriptText(const QString& text) {
+    return useScript(text, {}, 0);
+}
+
+void VoiceOverBridge::clearScript() {
+    if (!m_scriptProject.isEmpty())
+        QSettings().remove(settingsKey(m_scriptProject));
+    const bool had = !m_paragraphs.isEmpty();
+    m_paragraphs.clear();
+    m_scriptText.clear();
+    m_scriptPath.clear();
+    m_paragraphIndex = 0;
+    if (had) {
+        emit scriptChanged();
+        emit paragraphChanged();
+        emit prompterChanged();
+    }
+}
+
+void VoiceOverBridge::saveScript() const {
+    if (m_scriptProject.isEmpty() || m_paragraphs.isEmpty())
+        return; // an unsaved project keeps its script in memory; it is stored once the project has a file
+    QSettings().setValue(settingsKey(m_scriptProject),
+                         QVariantMap{{QStringLiteral("project"), m_scriptProject},
+                                     {QStringLiteral("file"), m_scriptPath},
+                                     {QStringLiteral("text"), m_scriptText},
+                                     {QStringLiteral("paragraph"), m_paragraphIndex}});
+}
+
+void VoiceOverBridge::syncScript() {
+    const QString project = m_controller ? QString::fromStdWString(m_controller->projectFile().wstring()) : QString();
+    if (project == m_scriptProject)
+        return;
+    // An unsaved project was saved: its script goes with the file.
+    if (m_scriptProject.isEmpty() && !project.isEmpty() && !m_paragraphs.isEmpty()) {
+        m_scriptProject = project;
+        saveScript();
+        return;
+    }
+    m_scriptProject = project;
+    const QVariantMap stored = project.isEmpty() ? QVariantMap{} : QSettings().value(settingsKey(project)).toMap();
+    if (stored.isEmpty()) {
+        const bool had = !m_paragraphs.isEmpty();
+        m_paragraphs.clear();
+        m_scriptText.clear();
+        m_scriptPath.clear();
+        m_paragraphIndex = 0;
+        if (had) {
+            emit scriptChanged();
+            emit paragraphChanged();
+            emit prompterChanged();
+        }
+        return;
+    }
+    // The file again when it is still there (it may have been edited), else the text as it was.
+    const QString file = stored.value(QStringLiteral("file")).toString();
+    QString text = stored.value(QStringLiteral("text")).toString();
+    if (!file.isEmpty()) {
+        QFile in(file);
+        if (QFileInfo(file).size() <= kMaxScriptBytes && in.open(QIODevice::ReadOnly))
+            text = QString::fromUtf8(in.readAll());
+    }
+    useScript(text, file, stored.value(QStringLiteral("paragraph")).toInt());
+}
+
+void VoiceOverBridge::setParagraphIndex(int index) {
+    const int clamped = m_paragraphs.isEmpty() ? 0 : std::clamp(index, 0, static_cast<int>(m_paragraphs.size()) - 1);
+    if (clamped == m_paragraphIndex)
+        return;
+    m_paragraphIndex = clamped;
+    saveScript();
+    emit paragraphChanged();
+}
+
+bool VoiceOverBridge::nextParagraph() {
+    if (m_paragraphIndex + 1 >= static_cast<int>(m_paragraphs.size()))
+        return false;
+    setParagraphIndex(m_paragraphIndex + 1);
+    if (m_markerPerParagraph && state() == QLatin1String("recording"))
+        markParagraph();
+    return true;
+}
+
+bool VoiceOverBridge::previousParagraph() {
+    if (m_paragraphIndex <= 0)
+        return false;
+    setParagraphIndex(m_paragraphIndex - 1);
+    return true;
+}
+
+void VoiceOverBridge::markParagraph() {
+    if (!m_controller || m_paragraphs.isEmpty())
+        return;
+    // Named after the paragraph's first words (at most six, or 40 characters, with "…").
+    const QString paragraph = m_paragraphs.at(m_paragraphIndex).simplified();
+    QStringList words = paragraph.split(QLatin1Char(' '), Qt::SkipEmptyParts);
+    QString name = words.mid(0, 6).join(QLatin1Char(' '));
+    if (name.size() > 40)
+        name = name.left(40).trimmed();
+    if (name.size() < paragraph.size())
+        name += QChar(0x2026);
+    const command::CommandResult result = CommandJob::runNow(
+        m_controller, nullptr, "marker.add",
+        Json{{"time", m_controller->playhead().value}, {"name", name.toStdString()}, {"comment", paragraph.toStdString()}});
+    if (!result.ok())
+        qWarning("Wabcut: no marker for the script paragraph: %s", result.error->message.c_str());
+}
+
+void VoiceOverBridge::onPassStateChanged() {
+    const QString now = state();
+    if (now == m_lastPassState)
+        return;
+    // The paragraph being read when the take starts recording gets its marker too.
+    if (now == QLatin1String("recording") && !m_passLoopback && m_markerPerParagraph)
+        markParagraph();
+    m_lastPassState = now;
+    emit prompterChanged();
+}
+
+bool VoiceOverBridge::armed() const { return m_armed; }
+
+void VoiceOverBridge::updateArmed() {
+    const SequencePtr seq = m_controller ? m_controller->currentSequence() : nullptr;
+    const bool armedNow = seq && std::any_of(seq->audioTracks.begin(), seq->audioTracks.end(),
+                                             [](const TrackPtr& t) { return t && t->recordArmed; });
+    if (armedNow == m_armed)
+        return;
+    m_armed = armedNow;
+    emit prompterChanged();
+}
+
+bool VoiceOverBridge::prompterVisible() const {
+    if (m_paragraphs.isEmpty())
+        return false;
+    const QString now = state();
+    const bool pass = !m_passLoopback && (now == QLatin1String("countIn") || now == QLatin1String("preroll")
+                                          || now == QLatin1String("recording") || now == QLatin1String("postroll"));
+    return pass || (m_showScript && m_armed);
+}
+
+void VoiceOverBridge::setShowScript(bool on) {
+    if (on == m_showScript)
+        return;
+    m_showScript = on;
+    QSettings().setValue(QStringLiteral("voiceOverPrompter/showScript"), on);
+    emit prompterOptionsChanged();
+    emit prompterChanged();
+}
+
+void VoiceOverBridge::setPrompterTextSize(int px) {
+    px = std::clamp(px, 16, 96);
+    if (px == m_prompterTextSize)
+        return;
+    m_prompterTextSize = px;
+    QSettings().setValue(QStringLiteral("voiceOverPrompter/textSize"), px);
+    emit prompterOptionsChanged();
+}
+
+void VoiceOverBridge::setMirror(bool on) {
+    if (on == m_mirror)
+        return;
+    m_mirror = on;
+    QSettings().setValue(QStringLiteral("voiceOverPrompter/mirror"), on);
+    emit prompterOptionsChanged();
+}
+
+void VoiceOverBridge::setMarkerPerParagraph(bool on) {
+    if (on == m_markerPerParagraph)
+        return;
+    m_markerPerParagraph = on;
+    QSettings().setValue(QStringLiteral("voiceOverPrompter/markerPerParagraph"), on);
+    emit prompterOptionsChanged();
 }
 
 } // namespace wabcut::app

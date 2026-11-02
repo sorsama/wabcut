@@ -569,4 +569,31 @@ double processCpuMs() { return static_cast<double>(std::clock()) * 1000.0 / stat
 
 double gpuMemoryMb() { return gpuProcessMemoryMb(); }
 
+HeapUsage heapUsage() {
+    HeapUsage usage;
+#ifdef _WIN32
+    std::vector<HANDLE> heaps(64);
+    DWORD count = GetProcessHeaps(static_cast<DWORD>(heaps.size()), heaps.data());
+    if (count > heaps.size()) {
+        heaps.resize(count + 16);
+        count = GetProcessHeaps(static_cast<DWORD>(heaps.size()), heaps.data());
+    }
+    heaps.resize(std::min<std::size_t>(count, heaps.size()));
+    for (HANDLE heap : heaps) {
+        HEAP_SUMMARY summary{};
+        summary.cb = sizeof summary;
+        if (HeapSummary(heap, 0, &summary)) {
+            usage.allocatedMb += static_cast<double>(summary.cbAllocated) / kMb;
+            usage.committedMb += static_cast<double>(summary.cbCommitted) / kMb;
+            ++usage.heaps;
+        }
+    }
+#endif
+    return usage;
+}
+
+Json toJson(const HeapUsage& heaps) {
+    return Json{{"heapAllocatedMb", heaps.allocatedMb}, {"heapCommittedMb", heaps.committedMb}, {"heaps", heaps.heaps}};
+}
+
 } // namespace wabcut::perf

@@ -8,6 +8,8 @@ import QtQuick
 // 0.4: the caption style (a caption preset, "Shorts" by default: big outlined words above the platforms' buttons) and
 // the length - Lead-in (the build-up before the moment), Tail (the reaction after) and At least (a minimum length, the
 // missing time two thirds before) - all remembered (Preferences.highlightsShort*). Make Shorts (N) uses the same options.
+// 0.6 (P1 #51): the layout, split, facecam side, zoom, the facecam region switch, captions and the hook title are
+// remembered too (Preferences.highlightsShortOptions, a JSON object; Make a Short from In to Out reads them as well).
 // In its own file, importing only QtQuick, so the Wabcut ContextMenu (the caption style menu) is not shadowed.
 Popover {
     id: root
@@ -22,6 +24,41 @@ Popover {
     readonly property bool regionAvailable: Object.keys(Layouts.facecamRegion).length > 0
     /// "At least": 0 (Off) or seconds.
     readonly property var minLengths: [0, 15, 30, 45, 60]
+
+    /// 0.6 (P1 #51): set once the remembered options are back (changes before that are the restore itself).
+    property bool restored: false
+
+    /// Remembers the options beyond the length (Preferences.highlightsShortOptions).
+    function saveOptions() {
+        if (!root.restored)
+            return
+        Preferences.highlightsShortOptions = JSON.stringify({
+            layout: root.layout, split: splitField.value / 100, facecamOnTop: topToggle.checked, zoom: zoomField.value,
+            useRegion: regionToggle.checked, captions: captionsToggle.checked, hookTitle: hookToggle.checked })
+    }
+    /// The remembered options, each checked (a hand-edited settings file keeps the defaults).
+    function restoreOptions() {
+        const saved = Preferences.parsedJson(Preferences.highlightsShortOptions, ({}))
+        if (saved !== null && typeof saved === "object") {
+            const layoutIndex = root.layouts.indexOf(String(saved.layout ?? ""))
+            if (layoutIndex >= 0)
+                layoutTabs.currentIndex = layoutIndex
+            if (typeof saved.split === "number" && isFinite(saved.split))
+                splitField.value = Math.max(20, Math.min(80, Math.round(saved.split * 100)))
+            if (typeof saved.zoom === "number" && isFinite(saved.zoom))
+                zoomField.value = Math.max(1, Math.min(4, saved.zoom))
+            if (typeof saved.facecamOnTop === "boolean")
+                topToggle.checked = saved.facecamOnTop
+            if (typeof saved.useRegion === "boolean")
+                regionToggle.checked = saved.useRegion
+            if (typeof saved.captions === "boolean")
+                captionsToggle.checked = saved.captions
+            if (typeof saved.hookTitle === "boolean")
+                hookToggle.checked = saved.hookTitle
+        }
+        root.restored = true
+    }
+    Component.onCompleted: root.restoreOptions()
 
     /// highlights.toShort's options, for Highlights.makeShort() / makeShorts() / shortParams().
     function options() {
@@ -73,6 +110,7 @@ Popover {
             model: [{ label: qsTr("Auto") }, { label: qsTr("Split") }, { label: qsTr("Blurred fill") }]
             currentIndex: 0
             Accessible.name: qsTr("Layout")
+            onCurrentIndexChanged: root.saveOptions()
         }
         Hint {
             objectName: "highlightsShortLayoutHint"
@@ -102,13 +140,17 @@ Popover {
                 value: 60
                 suffix: qsTr("%")
                 Accessible.name: qsTr("Split: the gameplay's share of the height")
-                onValueModified: v => splitField.value = v
+                onValueModified: v => {
+                    splitField.value = v
+                    root.saveOptions()
+                }
             }
             Toggle {
                 id: topToggle
                 objectName: "highlightsShortFacecamOnTop"
                 anchors.verticalCenter: parent.verticalCenter
                 text: qsTr("Facecam on top")
+                onToggled: root.saveOptions()
             }
         }
         // The blurred fill: the gameplay's scale over fit-to-width.
@@ -132,7 +174,10 @@ Popover {
                 value: 1
                 suffix: qsTr("×")
                 Accessible.name: qsTr("Zoom: the gameplay's scale in the blurred fill")
-                onValueModified: v => zoomField.value = v
+                onValueModified: v => {
+                    zoomField.value = v
+                    root.saveOptions()
+                }
             }
         }
 
@@ -149,6 +194,7 @@ Popover {
             objectName: "highlightsShortUseRegion"
             visible: root.regionAvailable
             text: qsTr("Use the facecam region from the layout picker")
+            onToggled: root.saveOptions()
         }
 
         // ---- Length (0.4) ----
@@ -215,6 +261,7 @@ Popover {
             objectName: "highlightsShortCaptions"
             text: qsTr("Captions")
             checked: true
+            onToggled: root.saveOptions()
         }
         // 0.4: the caption style, while captions are on (a caption preset: built in or the project's).
         Row {
@@ -255,6 +302,7 @@ Popover {
             text: qsTr("Hook title")
             checked: true
             tooltip: qsTr("The moment's title over the first seconds")
+            onToggled: root.saveOptions()
         }
     }
 }

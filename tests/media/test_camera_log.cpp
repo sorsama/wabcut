@@ -67,6 +67,54 @@ TEST_CASE("Camera log names map to input colour spaces", "[media][cameralog]") {
     CHECK(cameraLogFromName("").empty());
 }
 
+TEST_CASE("More camera log names map to input colour spaces (0.6)", "[media][cameralog]") {
+    // DJI, Fujifilm, Nikon, Sony S-Log2, the original Canon Log, Leica and RED Log Film, as cameras and tools write them.
+    CHECK(cameraLogFromName("D-Log") == "d-log");
+    CHECK(cameraLogFromName("DJI D-Log") == "d-log");
+    CHECK(cameraLogFromName("F-Log") == "f-log");
+    CHECK(cameraLogFromName("Fujifilm F-Log") == "f-log");
+    CHECK(cameraLogFromName("F-Log2") == "f-log2");
+    CHECK(cameraLogFromName("N-Log") == "n-log");
+    CHECK(cameraLogFromName("Nikon N-Log") == "n-log");
+    CHECK(cameraLogFromName("S-Log2") == "s-log2");
+    CHECK(cameraLogFromName("s-log2", "s-gamut") == "s-log2");
+    CHECK(cameraLogFromName("s-log2", "s-gamut3") == "s-log2"); // S-Gamut3 has S-Gamut's primaries
+    CHECK(cameraLogFromName("s-log2", "s-gamut3-cine") == "s-log2-cine");
+    CHECK(cameraLogFromName("C-Log") == "canon-log");
+    CHECK(cameraLogFromName("Canon Log") == "canon-log");
+    CHECK(cameraLogFromName("CanonLog") == "canon-log");
+    CHECK(cameraLogFromName("L-Log") == "l-log");
+    CHECK(cameraLogFromName("Leica L-Log") == "l-log");
+    CHECK(cameraLogFromName("REDLogFilm") == "red-log-film");
+    CHECK(cameraLogFromName("REDlogFilm") == "red-log-film");
+    // Names that hold a shorter one: each finds its own space.
+    CHECK(cameraLogFromName("Canon Log Cinema Gamut") == "canon-log"); // holds "logc"
+    CHECK(cameraLogFromName("C-Log3") == "canon-log3");
+    CHECK(cameraLogFromName("Canon Log 2") == "canon-log2");
+    CHECK(cameraLogFromName("REDlog3G10") == "red-log3g10");           // holds "dlog"
+    CHECK(cameraLogFromName("S-Log3") == "s-log3");
+    CHECK(cameraLogFromName("LOG-C") == "logc3");
+    // Curves without a space here are not guessed: D-Log M (no published equation), F-Log2 C (F-Gamut C).
+    CHECK(cameraLogFromName("D-Log M").empty());
+    CHECK(cameraLogFromName("DJI D-Log M").empty());
+    CHECK(cameraLogFromName("F-Log2 C").empty());
+    CHECK(cameraLogFromName("Standard Log").empty());
+    CHECK(cameraLogFromName("Full Log").empty());
+
+    // Key / value tags and Sony's XML.
+    CHECK(cameraLogFromTag("gamma", "D-Log") == "d-log");
+    CHECK(cameraLogFromTag("com.fujifilm.gamma", "F-Log2") == "f-log2");
+    CHECK(cameraLogFromTag("TransferCharacteristic", "N-Log") == "n-log");
+    CHECK(cameraLogFromTag("color_space", "L-Log") == "l-log");
+    CHECK(cameraLogFromTag("gamma", "D-Log M").empty());
+    CHECK(cameraLogFromTag("title", "F-Log").empty()); // a key about something else
+    std::string slog2(kSonyXml);
+    slog2.replace(slog2.find("s-log3-cine"), 11, "s-log2");
+    CHECK(cameraLogFromXml(slog2) == "s-log2-cine"); // the primaries say S-Gamut3.Cine
+    slog2.replace(slog2.find("s-gamut3-cine"), 13, "s-gamut");
+    CHECK(cameraLogFromXml(slog2) == "s-log2");
+}
+
 TEST_CASE("Sony's NonRealTimeMeta XML and key value tags name the camera log", "[media][cameralog]") {
     CHECK(cameraLogFromXml(kSonyXml) == "s-log3-cine");
     std::string plain(kSonyXml);

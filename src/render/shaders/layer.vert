@@ -19,6 +19,7 @@ layout(std140, binding = 0) uniform LayerParams {
     vec4 params;       // x = opacity, y = alpha sample scale, zw = uv scale (display / texture size)
     ivec4 mode;        // x = plane layout, y = transfer, z = alpha mode
     vec4 cm;           // fragment stage only (layer.frag)
+    vec4 post;         // fragment stage only (0.6: gamut compression, roll-off)
 } p;
 
 out gl_PerVertex { vec4 gl_Position; };

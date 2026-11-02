@@ -328,7 +328,8 @@ QString ClipAudioBridge::separateStems(const QString& key) {
                      }
                      const Json media = result.data.value("media", result.data.value("stems", Json::array()));
                      const int count = media.is_array() && !media.empty() ? static_cast<int>(media.size()) : 4;
-                     self->setMessage(tr("Separated into %n stem(s) in the Library", nullptr, count));
+                     self->setMessage(count == 1 ? tr("Separated into 1 stem in the Library")
+                                                 : tr("Separated into %1 stems in the Library").arg(count));
                  });
 }
 

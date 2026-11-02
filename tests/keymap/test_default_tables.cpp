@@ -497,3 +497,94 @@ TEST_CASE("Verified (0.5): Toggle Audio Scrubbing is Shift+S and Audio Meters ha
         CHECK(keysOf(p, "window.audioMeters").empty());
     }
 }
+
+TEST_CASE("Verified (0.6): the non-ripple Q and W and the target-all keys follow the shipped key sets",
+          "[keymap][tables][verified]") {
+    // Premiere's default .kys files for both OSes: Extend Previous / Next Edit to Playhead, Trim Previous / Next Edit to
+    // Playhead (cmd.tlnav.trim.in / out.to.cti) and Toggle All Video / Audio Targets and Sources, all in context.global.
+    const Platform p = GENERATE(Platform::Windows, Platform::MacOS);
+    const bool mac = p == Platform::MacOS;
+    const std::pair<std::string, const char*> rows[] = {
+        {"Shift+Q", "sequence.extendPreviousToPlayhead"},
+        {"Shift+W", "sequence.extendNextToPlayhead"},
+        {mac ? "Opt+Q" : "Ctrl+Alt+Q", "sequence.trimPreviousToPlayhead"},
+        {mac ? "Opt+W" : "Ctrl+Alt+W", "sequence.trimNextToPlayhead"},
+        {mac ? "Cmd+0" : "Ctrl+0", "timeline.toggleAllVideoTargets"},
+        {mac ? "Cmd+9" : "Ctrl+9", "timeline.toggleAllAudioTargets"},
+        {mac ? "Opt+Cmd+0" : "Ctrl+Alt+0", "timeline.toggleAllVideoSources"},
+        {mac ? "Opt+Cmd+9" : "Ctrl+Alt+9", "timeline.toggleAllAudioSources"},
+    };
+    for (const auto& [key, command] : rows) {
+        INFO(key << " -> " << command);
+        CHECK(keysOf(p, command) == Keys{key});
+        CHECK(resolved(p, Scope::Application, key) == command);
+    }
+    const CommandRegistry& registry = CommandRegistry::builtin();
+    for (const auto& [kys, id] : {std::pair{"cmd.sequence.extendpreviousedittoplayhead", "sequence.extendPreviousToPlayhead"},
+                                  std::pair{"cmd.tlnav.trim.out.to.cti", "sequence.trimNextToPlayhead"},
+                                  std::pair{"cmd.tlnav.toggle.all.target.audio", "timeline.toggleAllAudioTargets"},
+                                  std::pair{"cmd.marker.edit", "marker.edit"},
+                                  std::pair{"cmd.marker.setchaptermarkerdialog", "marker.addChapter"}}) {
+        INFO(kys);
+        const CommandInfo* c = registry.findKys("context.global", kys);
+        REQUIRE(c != nullptr);
+        CHECK(c->id == id);
+    }
+    // Edit Marker… and Add Chapter Marker… have no default key in Premiere; Move / Slip into Sync no .kys identity.
+    CHECK(keysOf(p, "marker.edit").empty());
+    CHECK(keysOf(p, "marker.addChapter").empty());
+    CHECK(registry.find("clip.moveIntoSync")->kysName.empty());
+}
+
+TEST_CASE("Verified (0.6): the four caption keys are Premiere's on both OSes", "[keymap][tables][verified]") {
+    // Premiere's default key sets (Windows Premiere_default_keys.kys, macOS Default Adobe.kys): Add New Caption Track,
+    // Add Caption at Playhead and Go to Next / Previous Caption Segment. Wabcut binds them as Application keys, so they
+    // act from any panel; no other command claims them.
+    const Platform p = GENERATE(Platform::Windows, Platform::MacOS);
+    const bool mac = p == Platform::MacOS;
+    const std::pair<std::string, const char*> rows[] = {
+        {mac ? "Opt+Cmd+A" : "Ctrl+Alt+A", "sequence.addCaptionTrack"},
+        {mac ? "Opt+Cmd+C" : "Ctrl+Alt+C", "sequence.addCaptionAtPlayhead"},
+        {mac ? "Opt+Cmd+Down" : "Ctrl+Alt+Down", "sequence.nextCaptionSegment"},
+        {mac ? "Opt+Cmd+Up" : "Ctrl+Alt+Up", "sequence.previousCaptionSegment"},
+    };
+    for (const auto& [key, command] : rows) {
+        INFO(key << " -> " << command);
+        CHECK(keysOf(p, command) == Keys{key});
+        CHECK(resolved(p, Scope::Application, key) == command);
+        CHECK(resolved(p, Scope::Timeline, key) == command);       // with the Timeline focused
+        CHECK(resolved(p, Scope::ProgramMonitor, key) == command); // and from any other panel
+    }
+    const CommandRegistry& registry = CommandRegistry::builtin();
+    const auto kysOf = [&](const char* context, const char* kys) {
+        const CommandInfo* c = registry.findKys(context, kys);
+        INFO(kys);
+        REQUIRE(c != nullptr);
+        return c;
+    };
+    CHECK(kysOf("context.global", "cmd.caption.add.track")->id == "sequence.addCaptionTrack");
+    CHECK(kysOf("context.global", "cmd.caption.add.trackitem")->id == "sequence.addCaptionAtPlayhead");
+    CHECK(kysOf("context.timeline", "cmd.timeline.goto.next.caption.trackitem")->id == "sequence.nextCaptionSegment");
+    CHECK(kysOf("context.timeline", "cmd.timeline.goto.prev.caption.trackitem")->id == "sequence.previousCaptionSegment");
+    CHECK(keymap(p).conflicts().empty());
+}
+
+TEST_CASE("Verified (0.6, D9): the beat tools are Wabcut commands with no default key",
+          "[keymap][tables][verified]") {
+    // Premiere has no beat detection: Detect Beats, Snap to Beats, Cut to Beats and Clear Beat Grid are Wabcut's, in
+    // Sequence > Beat Grid and Clip > Detect Beats..., with no default key in either shipped key set and no .kys
+    // identity, so a key set carries none over (docs/keymap.md, footnote d9).
+    const Platform p = GENERATE(Platform::Windows, Platform::MacOS);
+    const CommandRegistry& registry = CommandRegistry::builtin();
+    for (const char* id : {"sequence.detectBeats", "edit.snapToBeats", "sequence.cutToBeats", "sequence.clearBeatGrid"}) {
+        INFO(id);
+        const CommandInfo* c = registry.find(id);
+        REQUIRE(c != nullptr);
+        CHECK(c->scope == Scope::Application);
+        CHECK(c->group == "Sequence");
+        CHECK(c->premiereName.empty());
+        CHECK(c->kysName.empty());
+        CHECK(keysOf(p, id).empty());
+    }
+    CHECK(keymap(p).conflicts().empty());
+}

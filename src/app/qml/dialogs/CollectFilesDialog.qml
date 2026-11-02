@@ -107,6 +107,7 @@ WabcutDialog {
         Label { text: qsTr("Media") }
         PillTabs {
             id: trimTabs
+            Accessible.name: qsTr("Media") // P1 #61
             objectName: "collectTrimTabs"
             Layout.fillWidth: true
             compact: true

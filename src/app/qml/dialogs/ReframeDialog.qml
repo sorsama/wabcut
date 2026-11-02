@@ -173,6 +173,7 @@ WabcutDialog {
                 ValueSlider {
                     id: timeSlider
                     objectName: "reframeTimeSlider"
+                    Accessible.name: qsTr("Preview position") // P1 #61
                     Layout.fillWidth: true
                     from: 0
                     to: dialog.activeClip ? Math.max(0, dialog.activeClip.path.length - 1) : 0
@@ -214,6 +215,7 @@ WabcutDialog {
             Label { text: qsTr("Aspect") }
             PillTabs {
                 id: aspectTabs
+                Accessible.name: qsTr("Aspect") // P1 #61
                 objectName: "reframeAspectTabs"
                 Layout.fillWidth: true
                 compact: true
@@ -223,6 +225,7 @@ WabcutDialog {
             Label { text: qsTr("Follow") }
             PillTabs {
                 id: modeTabs
+                Accessible.name: qsTr("Follow") // P1 #61
                 objectName: "reframeModeTabs"
                 Layout.fillWidth: true
                 compact: true
@@ -232,6 +235,7 @@ WabcutDialog {
             Label { text: qsTr("When subjects don't fit") }
             PillTabs {
                 id: fitTabs
+                Accessible.name: qsTr("When subjects don't fit") // P1 #61
                 objectName: "reframeFitTabs"
                 Layout.fillWidth: true
                 compact: true
@@ -241,6 +245,7 @@ WabcutDialog {
             Label { text: qsTr("Smoothness") }
             ValueSlider {
                 id: smoothSlider
+                Accessible.name: qsTr("Smoothness") // P1 #61
                 objectName: "reframeSmoothness"
                 Layout.fillWidth: true
                 from: 0

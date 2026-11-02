@@ -1,5 +1,6 @@
 #include <wabcut/model/ChangeSet.h>
 
+#include <wabcut/model/Auditions.h>
 #include <wabcut/model/ProjectState.h>
 
 #include <algorithm>
@@ -104,6 +105,11 @@ PropertyRoles compareClips(const Clip& a, const Clip& b) {
         }
         if (a.content().fieldOptions != b.content().fieldOptions) {
             roles |= PropertyRole::Effects; // 0.2: Field Options change how the decoded frames are shown, not the frames
+        }
+        const Audition* sa = a.audition();
+        const Audition* sb = b.audition();
+        if (!(sa == sb || (sa && sb && *sa == *sb))) {
+            roles |= PropertyRole::Label; // 0.6: the other takes of an audition: its badge, not what it plays
         }
     } else if (a.colorIndex != b.colorIndex) {
         roles |= PropertyRole::Label;

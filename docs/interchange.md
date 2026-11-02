@@ -3,7 +3,8 @@
 Module `wabcut_interchange` (pure C++23, no Qt) imports timelines from Premiere Pro, DaVinci Resolve,
 Final Cut Pro and anything that writes OpenTimelineIO or CMX3600 EDLs, and (X.1) exports them back in the same
 formats ("Export" below); since P.2 it also exports AAF and OMF for audio post and reads and writes caption files
-("Audio post" and "Caption files" below). Owner: Interchange (follow-ups since C.4: Core engine).
+("Audio post" and "Caption files" below), and since 0.6 it imports AAF and OMF 2.0 timelines back from Pro Tools, Media
+Composer, Nuendo, Premiere Pro and DaVinci Resolve ("Audio post: AAF and OMF import"). Owner: Interchange (follow-ups since C.4: Core engine).
 
 ```cpp
 #include <wabcut/interchange/Import.h>
@@ -18,6 +19,7 @@ if (!result) { /* result.error(): NotFound / IoError / Unsupported / ParseError 
 
 ```
 wabcut-cli import <file> [--search <dir>]... [--json] [--carried] [--edl-rate 24000/1001] [--experimental-prproj]
+                  [--media-folder <dir>]   (AAF / OMF: where embedded audio is written; without it, it stays offline)
 ```
 
 ## How it works
@@ -108,15 +110,15 @@ C = carried exactly, A = approximated (reported), D = dropped (reported), — = 
 | Opacity, scale, rotation, volume, pan (static) | C (Opacity, Basic Motion, Audio Levels/Pan) | C (`adjust-blend`, `adjust-transform`, `adjust-volume`; each clip of a picture-and-sound element takes its own) | — | — | D |
 | Keyframed parameters (X.1) | C (curves in the clip's media frames; curved keys A: ease in and out) | C for scale, rotation, opacity, volume (`keyframeAnimation`) | — | — | D |
 | Position and anchor (X.1) | C (Basic Motion `center` / `centerOffset`, fractions of the frame) | C (`position` / `anchor`, percent of the frame height, y up) | — | — | D |
-| Effects (X.1) | Gaussian Blur, Crop, Drop Shadow C (into the clip's effect stack); Wabcut's own (`effectid` `wabcut.*`) C; others D (named) | D (named) | D (named) | — | D |
+| Effects (X.1) | Gaussian Blur, Crop, Drop Shadow C (into the clip's effect stack); Wabcut's own (`effectid` `wabcut.*`) C; 0.6: Lumetri Color (Premiere's ids and values), colour correctors, RGB Curves, EQ and dynamics filters C / A (Premiere writes no audio filters into FCP7 XML; see "Colour grades and audio filters in FCP7 XML"); others D (named, with their parameter count) | 0.6: Wabcut's own (`com.wabcut.effect`) C; Gaussian Blur, Sharpen, Levels, Proc Amp, Brightness & Contrast, Color Balance (Color Wheels / Board), Vignette, Flipped, Channel EQ, Compressor, Limiter A (mapped by name; shared settings by name, the rest kept for export); others A (a disabled placeholder written back on export) | 0.6: `Effect` objects on clips and tracks: Wabcut's own (`metadata.wabcut.effect`) C; well-known names A (Wabcut's defaults); others A (placeholder, written back) | — | D |
 | Sequence markers (name, comment, duration, colour) | C | — | C (stack markers) | C (`* LOC:`) | C |
 | Clip markers | C (X.1: markers of the clip's source media, in media frames, as Premiere keeps them: they move with every clip of it) | A (all FCPXML markers are on clips: sequence markers) | A | — | — |
 | Nested sequences / compound clips | C (C.8): a nested clip of the nested sequence, which imports as its own sequence (`<in>` in its time); a retimed nested clip A (100%) | C (`ref-clip`: a nested clip of the compound's sequence, `start` in its time); longer than the compound A (ends with it: the rest showed nothing); retimed A (100%) | C (nested `Stack`: a nested clip of a sequence made from its tracks, imported after the timelines; its constant time effect C) | — | C (X.1: `Video/AudioSequenceSource`: a nested clip of the sequence, `InPoint` in its time) |
 | Multicam | C (`<multiclip>`: a multicam source, one angle per `<angle>` - its clip's first video track and its audio tracks; `synctype` as the sync method; the clip plays the `activevideoangle` / `activeaudioangle`); further video tracks of an angle D | C (`mc-clip` of a `<multicam>`: one angle per `mc-angle` (its primary storyline; connected clips D), placed where FCP synced them (sync method manual); `mc-source` angles for picture and sound) | — | — | A (X.1: the clip plays its source sequence as a nested clip; its angle switches are not read. No ground-truth sample yet) |
 | Bins (X.1) | C (`<bin>`: sequences, and media whose master clip `<clip>` is in a bin) | events C (the projects and the media of the event's own clips); keyword collections A (a media item's first keyword's collection, as a bin inside the event's) | — | — | D (the import bin) |
 | Titles | C (Text and Outline Text generators: text, font, size, style, alignment, colour, outline width/colour); other parameters A (listed) | C (X.1: `title` with its `text-style`: text, font, face, size, colour, alignment); other attributes A (listed) | — | — | D |
-| Other generators (slug, black video, colour mattes, shapes) | D | D | D (`GeneratorReference`) | `BL` → gap | D |
-| Auditions / sync clips | — | A (active pick / separate clips) | — | — | — |
+| Other generators (slug, black video, colour mattes, bars and tone, counting leader) | 0.6: Color, Slug / Black Video, Bars and Tone (HD or SD), Universal Counting Leader, Adjustment Layer C (synthetic items); Wabcut's own (`wabcut:` parameters) C; others D | 0.6: Wabcut's own (`com.wabcut.generator`) C; Final Cut's solids (Custom) A (a colour matte); a "Bars" generator A; others D | 0.6: Wabcut's own (`metadata.wabcut.generator`) C; `SolidColor` A (colour matte, or transparent video when alpha is 0), `SMPTEBars` A; others D | `BL` → gap | D |
+| Auditions / sync clips | — | Auditions C (0.6: `<audition>` becomes an audition, its picks the takes, the first one active; a pick without the active pick's picture and sound D, a pick's connected clips D); sync clips A (separate clips) | C (0.6: an audition written by Wabcut, from its metadata) | — | — |
 | Split edits (J/L cuts) | C (separate clips) | A (audio trimmed to the video edit) | C | C | C |
 | Keys | — | — | — | D (`K`/`KO` foreground; background kept) | — |
 | Stereo/multichannel audio mapping | Premiere exploded tracks C (one track); FCP7 stereo pairs A (one clip); single channel of a stream C (a mono channel map, A.9) | C (asset streams); `audio-channel-source` C (the clip's channel map: `srcCh` / `outCh` L, R, C, 5.1 names, `active="0"` mutes), several components A (one mono channel of their sources) | A (stream 1; OTIO has no channel field) | `AA`/`A`+`A2` A (one clip), streams A | stream 1 |
@@ -196,6 +198,49 @@ ProjectState ──describeForExport──► IR (src/Ir.h) ──writer (FCP7 /
   `file:///C:/...` for FCPXML and OTIO); media with only a project-relative path are resolved against
   `ExportOptions::projectFile`.
 
+### Colour grades and audio filters in FCP7 XML (0.6)
+
+Checked against a real Premiere Pro export: Premiere writes Lumetri Color as a filter with the effect id `Lumetri`
+(and an empty name), numeric parameter ids (7 Temperature, 8 Tint, 11 Exposure, 12 Contrast, 13 Highlights,
+14 Shadows, 15 Whites, 16 Blacks, 20 Saturation, 26 Intensity, 28 Faded Film, 30 Vibrance, 31 Creative Saturation,
+33 Tint Balance, 51-54 Vignette, unnamed section switches) and each value as Premiere's key list
+(`-91445760000000000,-15.,0,0,0,0,0,0`: a time in ticks, then the value; a static value sits at -100 hours, keyframes
+are further `;`-separated keys). Wabcut reads Lumetri by those ids first (two parameters are both called
+"Saturation"), with the same units as its own Color Grade. Premiere also writes a base64 "Blob" of the whole Lumetri
+state: Wabcut reads it only to name LUT files and to report curves, colour wheels or HSL secondary set there (FCP7 XML
+has no parameters for them); the Look and Input LUT menus are only their place in Premiere's list. A bypassed Lumetri
+(`pproBypass`) comes in switched off.
+
+**Premiere does not write its audio effects into FCP7 XML.** A clip with Parametric Equalizer or Dynamics in Premiere
+arrives with no audio filter at all, so Premiere's EQ and dynamics cannot travel to Wabcut (or back) through FCP7 XML;
+use AAF for an audio hand-off or apply them again. The audio rows below are for FCP7's own filters, other tools that
+write them, and Wabcut's own files.
+
+Other filters are read by effect name or id and by parameter name or id (case and punctuation ignored), so the same
+table works for files from Resolve, Final Cut Pro 7 and hand-written XML (`FilterMap.h`):
+
+| Filter | Becomes | Notes |
+|---|---|---|
+| Lumetri Color | Color Grade: Basic Correction (temperature, tint, exposure, contrast, highlights, shadows, whites, blacks, saturation), Creative (intensity, faded film, vibrance, saturation, tint balance), Vignette (amount, midpoint, roundness, feather), the section switches | C, keyframes too. Shadow / Highlight Tint colours A (hue and amount, when a file names them). The Look / input LUT is only named in the report (FCP7 XML has no LUT path); Sharpen, and curves / wheels / HSL set in Premiere's state block, D (named) |
+| Fast Color Corrector, Three-Way Color Corrector, FCP7 Color Corrector (3-way) | Color Grade: saturation, and the wheels (ASC CDL) | A: input / output levels as slope, offset and power; balance wheels as lift (shadows), gamma (midtones), gain (highlights); the values are in the report |
+| RGB Curves | Color Grade curves (master, red, green, blue) | A: points sampled (at most 17 when there are more than 32) |
+| ProcAmp, Levels, Color Balance, Dynamics, Parametric Equalizer, Single-band / Multiband Compressor, Simple Parametric EQ, Bass, Treble, Hard Limiter and every other effect Wabcut has under Premiere's name | the same Wabcut effect | C: by Premiere's parameter names (files Wabcut or other tools write; Premiere itself writes no audio filters) |
+| FCP7 3 Band Equalizer, Premiere's legacy EQ | Parametric EQ (3-band) | C (extra mid bands D) |
+| FCP7 Parametric Equalizer (one band) | Parametric Equalizer, band 1 | C |
+| FCP7 Compressor/Limiter | Single-band Compressor | C (Preserve Volume A) |
+| anything else | — | D: named with its parameter count |
+
+Export goes the other way: Color Grade and Basic Correction as Lumetri Color in Premiere's own shape (effect id
+`Lumetri`, the numeric parameter ids, key-list values, `pproBypass` for a switched-off grade; keyframes as timed keys),
+Parametric EQ (3-band) as Premiere's Parametric Equalizer (low shelf, band 1, high shelf), and the effects Wabcut has
+under Premiere's names as those, with every parameter (these audio filters are for Wabcut and FCP7-style readers:
+Premiere does not take audio filters from FCP7 XML). Every Wabcut parameter and curve is also written as a `wabcut:`
+parameter (`authoringApp="Wabcut"`) that other editors skip, so Wabcut reads its own file back exactly; the export
+report says what other editors will not get (the grade's wheels, curves and HSL, a LUT). The import side is tested on a
+trimmed real Premiere export (`tests/interchange/fixtures/premiere_lumetri_real.xml`); that Premiere applies Wabcut's
+Lumetri (written without the state block), and the exact form of Premiere's keyframed values, are not yet checked in
+Premiere itself.
+
 ### Export support matrix
 
 C = carried exactly (comes back the same), A = approximated (written, but changed: the report says how), D = dropped
@@ -217,15 +262,31 @@ C = carried exactly (comes back the same), A = approximated (written, but change
 | Opacity, scale, rotation, position, anchor | C (Opacity, Basic Motion; position and anchor as fractions of the frame) | C (`adjust-blend`, `adjust-transform`: percent of height) | C | D |
 | Volume, pan | C (Audio Levels, Audio Pan) | volume C, pan A | C | D |
 | Keyframes of those | C (`<keyframe>` in media frames; eased keys A) | scale, rotation, opacity, volume C; position A | C | D |
-| Effects | Gaussian Blur, Crop, Drop Shadow C (FCP filters); every other effect C for Wabcut, skipped by other editors (a filter named by its Wabcut id); masks and curve data A | D | C (masks and data A; AI object masks D) | D |
+| Effects | Gaussian Blur, Crop, Drop Shadow C (FCP filters); 0.6: Color Grade and Basic Correction as Lumetri Color, the EQ and dynamics effects as Premiere's (see below); every other effect C for Wabcut, skipped by other editors (a filter named by its Wabcut id); curve data C (0.6); masks A | 0.6: C (`filter-video` / `filter-audio`: Final Cut's own effect where one is equivalent, else `com.wabcut.effect/<id>`; Wabcut's keys, keyframes and data as `com.wabcut.effect` params; eased keys A; masks A; placeholders written back as they came) | C (0.6: `Effect` objects named for other tools, the instance in `metadata.wabcut.effect`; track effects too; AI object masks D) | D |
 | Titles | C (Text / Outline Text generator: text, font, size, style, alignment, fill, outline) | C (`title` with `text-style`) | C | D |
-| Motion graphics (C.13), other generators | D | D | D | D |
+| Generators (0.6: colour matte, black / transparent video, bars and tone, counting leader, adjustment layer) | C (Color, Slug, Bars and Tone generators; the others named by their Wabcut kind; settings as `wabcut:` parameters) | C (`<video ref>` of Final Cut's Custom solid or a `com.wabcut.generator` effect; a generator's sound only with its picture in the primary storyline, else D) | C (`GeneratorReference`: `SolidColor`, `SMPTEBars`, `CountingLeader`, `AdjustmentLayer`; settings in `metadata.wabcut.generator`) | D (named, with its length) |
+| Track effects | D (reported) | D (reported) | C | D (reported) |
+| Motion graphics (C.13) | D | D | D | D |
 | Bins | not written (every item sits in the file; the import side reads bins) | not written | not written | — |
 | Sequence markers (name, comment, duration, colour) | C (`pproColor`) | C for FCP's colours (blue, red/green to-dos, orange chapters); others A | C | `* LOC:` position, name and colour (comment and duration A) |
 | Clip (source) markers | C (`<marker>` in each clipitem, media frames) | — | C | — |
 | Marker highlights (C.15: score, confidence, reasons, peak, source) | A (appended to the comment: `[highlight 0.87 high: kill streak; mic peak]`) | A (in the note, likewise) | C | D (locators carry no comments) |
 | Nested sequences | C (defined at the first clip, then by id) | C (`ref-clip` of a `<media>` compound) | C (a `Stack` per clip; the first carries the definition) | A (an event named after the sequence) |
 | Multicam | C (`<multiclip>` with each clip's active angles) | C (`mc-clip` of a `<multicam>`; one audio track per angle) | C | A (an event named after the source and angle) |
+| Caption tracks (0.6) | D (each track with cues reported by name, language and cue count); with **Captions > Sidecar files** C as caption files next to the timeline | same | same | same |
+| Auditions (0.6) | the active take (the others reported dropped) | C (`<audition>`: the active take first, as Final Cut's active pick, then the others in take order; a take whose sound is not its picture's A) | C (the takes in Wabcut's metadata; other editors see the active take) | the active take (the others reported dropped) |
+
+**Caption tracks with the hand-off (0.6).** None of these formats (nor AAF / OMF) carries a caption track, so the
+export report lists each caption track of the exported sequence that has cues, e.g. *caption track 'English' (en, 214
+cues) is not carried by timeline files* (Dropped, category Caption). File > Export Timeline… has a **Captions** row:
+**Sidecar files** and a caption format (SRT by default; any format of "Caption files" below; both remembered) write
+every caption track with cues next to the timeline file as `<timeline name> - <track name>[.<language>].<ext>`
+(`Film - English.en.srt`, `Film - Thai.th.srt`; characters file systems refuse become `_`, a second track of the same
+name gets ` (2)`; an existing file is replaced, as the timeline file is). Words the soundtrack bleeps are replaced as in
+`captions.export`. Each written track's report entry becomes Carried and names its file; the summary ends with
+"· 2 caption file(s) next to it". With several sequences each timeline gets its own caption files. In commands:
+`interchange.export` `"captionSidecars": "srt"` (any caption format name); the result lists the files in
+`"captionFiles"`; a dry run lists them and writes nothing.
 
 ## Audio post: AAF and OMF export (P.2)
 
@@ -287,6 +348,7 @@ export module), an AAF links the original media instead and says so; an OMF is r
 | Video | linked clips, or the Mixdown Video reference | D |
 | Disabled clips, offline media | D (reported; the rest is written) | same |
 | Track effects, mute, solo, the master bus, the 5.1 panner | D / A (reported) | same |
+| Caption tracks (0.6) | D (reported per track); Captions > Sidecar files writes them next to the file (see the export matrix above) | same |
 
 ### How it is written
 
@@ -313,6 +375,86 @@ export module), an AAF links the original media instead and says so; an OMF is r
   golden was parsed by deck2omf's `bentodump` (a Bento TOC dumper written against real OMF files): all 419 objects with
   their type and property names.
 
+## Audio post: AAF and OMF import (0.6)
+
+A mix or a cut that comes back from audio post opens as a sequence: **File > Import** (or a drop on the Library or the
+Home screen) an `.aaf` or `.omf` file, as in Premiere Pro. It is one undo step ("Import <file>"); the import report
+lists what was carried, approximated and dropped, each with its timecode, and offers Relink… when media is offline.
+
+The import runs in the background, because an AAF or OMF can hold gigabytes of embedded audio. A toast shows
+"Importing Mix.aaf · 40 %" with **Cancel**. Several files are imported one after another, and you can keep working
+while they import. If you edit the project meanwhile, the file is imported again into the project as it is now, so your
+edits are kept (the audio written the first time is reused). Cancel imports nothing and removes the audio files that
+import wrote. Opening another project stops the import.
+
+Where the embedded audio goes: a folder named "<file name> Media", in the first of these places that Wabcut can write
+to:
+1. the project's folder (a saved project);
+2. the AAF / OMF file's folder;
+3. Documents/Wabcut/Imported Media (for example an unsaved project, with the file on a read-only share or disc).
+
+The audio never ends up offline only because the file's own folder is read-only.
+
+```cpp
+interchange::ImportOptions options;
+options.projectFile = "D:/Projects/Film.wabcut";   // embedded audio goes to "D:/Projects/Mix Media/"
+auto result = interchange::ImportRouter::importFile("Mix.aaf", options);
+```
+
+Detection: `.aaf` or the compound-file signature; `.omf` / `.omfi` or the Bento label at the end of the file (an OMF
+without its extension is found too). Files are read on demand (`cfb::Reader::openFile`, `bento::readFile`), so an AAF or
+OMF with gigabytes of embedded audio never has to fit in memory.
+
+### What comes in
+
+| Feature | AAF | OMF 2.0 |
+|---|---|---|
+| Sequences: every top-level composition (else every composition nothing plays), its name | C | C (the primary mobs) |
+| Frame rate (picture or timecode track), start timecode, drop frame | C | C |
+| Audio rate: the tracks' sample rate (48 kHz, 96 kHz, ...); media at another rate plays converted (reported) | C | C |
+| Audio tracks: order (physical track numbers), names | C | C |
+| Clips: position, length, source In, name (the master clip's) | C | C |
+| Linked clips: the clips of one master clip at the same time and source position on different tracks (picture and sound, a stereo master on two mono tracks); two clips that only share a name are not linked; the halves of a split stereo clip ("Dialogue.L" / "Dialogue.R", also "_L" / "_R") are linked | C | C |
+| Handles: media beyond a clip's edges | C (the files keep them; trimmed embedded files keep theirs) | C |
+| Crossfades and fades in / out (Transitions; Filler on one side is a fade) | C, curve: linear = Constant Gain, power / log / Avid's power type = Constant Power | C (OMF dissolves have no curve: Constant Power; clip fade types 1 / 2 = Constant Gain / Constant Power) |
+| Clip gain and volume keyframes (Audio Gain around a clip; Media Composer's constant gain and volume automation multiply) | C (curve in media time) | C |
+| Clip pan | C | C |
+| Track volume and pan (gain / pan around a track's whole sequence), constants or automation | C | C (constants) |
+| Muted clips (Media Composer: Filler selected over the clip) | C (switched off) | — |
+| Subclips, adjusted clips, nested compositions | flattened into the track (their gain carried) | flattened |
+| Multichannel tracks (Audio Channel Combiner): one multichannel file | C (one clip, a 2-, 6- or n-channel track) | — |
+| Multichannel tracks: one mono file per channel | A: stereo = two linked mono tracks panned left / right; 5.1 = six linked tracks routed to a 5.1 master's L R C LFE Ls Rs (by the files' names, Pro Tools' film order included); other counts = linked mono tracks | — |
+| Six mono tracks named "<name> L / R / C / LFE / Ls / Rs" (Wabcut's and Premiere's breakout) | C (routed to a 5.1 master) | C |
+| Video tracks: clips linked to their media (offline when not found) | C | D (OMF import brings the audio, card #68) |
+| Markers (event track): position, length, comment ("name: comment" split), Avid's marker colour | C | — (OMF has none) |
+| Embedded audio (WAV, AIFF-C, raw PCM) | C: written to "<file> Media" beside the project (or the file) and linked; the same file is reused on a second import | C (WAVE / AIFC media data) |
+| Embedded video, other codecs | A: offline, reported | A |
+| Other effects (EQ, plug-ins, video effects) | D, named with their timecode; their clip is kept | D |
+| Speed changes (time warp effects) | A: the clip at 100 % | A |
+| Selectors with alternatives (multigroups) | A: the selected one | A |
+| Media not found | offline, its clips in place, reported (never dropped) | same |
+
+### How it works
+
+`AafImporter.cpp` and `OmfImporter.cpp` only translate their container into one format-neutral mob graph
+(`AudioPostImport.h`); one engine resolves SourceClips through master mobs to the file they play (the channel of a
+multichannel file comes from its source slot's physical track number), flattens lower-level compositions, turns
+transitions into edit-point fades, gain and pan groups into clip or track parameters, and builds the importers' IR, which
+the shared `TimelineBuilder` turns into the project. Definitions the importer does not know by identifier (Avid's own
+operation and parameter definitions) are recognised by the names in the file's Dictionary, and objects of extension
+classes read as the nearest baseline class their MetaDictionary derives them from. Both readers are bounded (object and
+component counts, nesting, automation points, bytes read: streams or values that share sectors cannot make it read the
+file over and over) and fuzzed (`fuzz_aaf_import`, `fuzz_omf_import`).
+
+Tests: `tests/interchange/test_audiopost_import.cpp` (the golden AAF / OMF exports and Wabcut's own exports at 48 and
+96 kHz, embedded and separate; hand-built files in the shapes Pro Tools, Media Composer and Resolve write: 96 kHz with
+44.1 kHz media and a missing file, 5.1 three ways, subclips, volume automation, muted clips, fades, track pan, markers,
+effects; detection; truncated, foreign and mutated files) and `tests/editor/test_audiopost_import.cpp` (one undo step,
+embedded audio written and probed). During development the importer was also run over 65 AAF files exported by Pro
+Tools, Media Composer, Premiere Pro and DaVinci Resolve (the test files of the LibAAF project; not in this repository):
+all import, and their clips, fades, levels, pans, markers and colours match what LibAAF's `aaftool` lists. Run them
+yourself with `WABCUT_AAF_CORPUS=<folder> wabcut_interchange_tests "[.corpus]"`.
+
 ## Caption files (P.2)
 
 `CaptionFiles.h`: the caption and subtitle files Premiere Pro reads and writes, as sidecars and for broadcast.
@@ -337,6 +479,10 @@ export module), an AAF links the original media instead and says so; an OMF is r
   In/Out; frame rate and drop-frame from the sequence) and the export settings' **Captions** row: **Sidecar file** in
   any of the formats above, next to the output, timecode-based ones from the sequence's start timecode at the export's
   first frame. Words the soundtrack bleeps are replaced as in burned-in captions.
+* **Every track at once (0.6)**: the Captions page's **All tracks…** (pick a format, then a folder) writes each caption
+  track with cues as `<sequence> - <track name>[.<language>].<ext>` and says "Saved 3 caption file(s)"; Export Timeline's
+  Captions row and `interchange.export "captionSidecars"` do the same next to a timeline file. The Captions page's SRT /
+  VTT buttons go through `captions.export` too (0.6), so bleeped words stay replaced there as well.
 * **CEA-608 details** (`Cea608.h`): byte pairs with odd parity; control codes sent twice; preamble address codes for
   rows 1-15 with indents and tab offsets; the standard, special and extended (Spanish / French / Portuguese / German /
   Danish) character sets, with the backspace the extended set needs; each caption is loaded before its start (pop-on)
@@ -345,10 +491,11 @@ export module), an AAF links the original media instead and says so; an OMF is r
 * **Embed In Output File** (export Captions row **Embed**, `CaptionExport::Embed`): the same 608 data as an SCC,
   attached to every video frame as A/53 caption data (`AV_FRAME_DATA_A53_CC`), which libx264, libx265 (its `a53cc`
   option), NVENC, Quick Sync H.264, VA-API and VideoToolbox write as caption SEI in the H.264 / HEVC stream (MP4, MOV,
-  MKV). Encoders that do not (AMF, Media Foundation) are skipped by automatic selection and refused by name. Premiere
-  embeds into QuickTime caption tracks and MXF; Wabcut's are in-stream (what YouTube, broadcast encoders and most players
-  read). The test decodes the file and compares every byte pair with the SCC timing; FFmpeg's `ffprobe -show_frames`
-  lists "ATSC A53 Part 4 Closed Captions" side data on every frame of such an export.
+  MKV). Encoders that do not (AMF, Media Foundation) are skipped by automatic selection and refused by name. The test
+  decodes the file and compares every byte pair with the SCC timing; FFmpeg's `ffprobe -show_frames` lists "ATSC A53
+  Part 4 Closed Captions" side data on every frame of such an export. 0.6 (#73): the same 608 data on CC1-CC4, CEA-708
+  services next to it, and the caption tracks Premiere writes - an MXF SMPTE 436M track and a QuickTime c608 track
+  (docs/export.md, "Broadcast delivery: MXF and embedded captions").
 * **Checked with FFmpeg** during development: its `scc` and `mcc` demuxers with the `cc_dec` decoder read the golden
   files back as the same text (FFmpeg's SCC demuxer times each line from its first byte pair, so its start times are a
   few frames earlier than the caption's display; its MCC timing matches to the frame).
@@ -397,7 +544,6 @@ is looked up like a local folder" (`tests/interchange/test_relinker.cpp`).
 |---|---|---|
 | DaVinci Resolve `.drp` / `.drt` / `.dra` | extension (zip archives) | Resolve: File > Export > Timeline… → FCPXML 1.10 or OpenTimelineIO |
 | Final Cut Pro library `.fcpbundle` | extension | FCP: File > Export XML… (FCPXML 1.10+) |
-| AAF | extension, compound-file magic | export FCP XML / FCPXML / OTIO, or an EDL from Avid |
 | `.otioz` | extension | unzip and import `content.otio` |
 | Premiere `.prproj` (default) | gzip magic + `<PremiereData>` | Premiere: File > Export > Final Cut Pro XML… |
 
@@ -440,6 +586,67 @@ Recommendation: keep FCP7 XML export as the advertised Premiere path (it carries
 audio mapping and is what Adobe calls the robust interchange), and grow the .prproj reader behind the flag
 with more ground-truth samples (py-premiere has ~80) before turning it on.
 
+## Generators and effects in FCPXML and OTIO (0.6)
+
+**Generators** (Premiere's File > New items, `Synthetic.h`): a colour matte, black video, transparent video, bars and
+tone, the universal counting leader and adjustment layers travel as generators, never as files, so nothing is offline
+after an import. Each format writes the closest generator it has, and Wabcut's kind and settings (colour, bars pattern,
+tone frequency and level, leader colours and cue blips) privately, so a Wabcut round trip is exact:
+
+| Kind | FCP7 XML | FCPXML | OTIO |
+|---|---|---|---|
+| Color Matte | `Color` generator, `fillcolor` | Final Cut's Custom solid, `Color` | `SolidColor`, `color` [r, g, b, 1] |
+| Black Video | `Slug` | Custom solid, black | `SolidColor`, black |
+| Transparent Video | named by its Wabcut kind | `com.wabcut.generator` effect | `SolidColor`, alpha 0 |
+| Bars and Tone | `Bars and Tone` (picture and sound) | `com.wabcut.generator` effect; its sound rides with its picture in the primary storyline | `SMPTEBars`, pattern, tone frequency and level |
+| Universal Counting Leader | named by its Wabcut kind | `com.wabcut.generator` effect | `CountingLeader` |
+| Adjustment Layer | named by its Wabcut kind (its effects as filters) | `com.wabcut.generator` effect (its effects as filters) | `AdjustmentLayer` |
+
+On import, other editors' equivalents become synthetic items too: Premiere's Black Video, FCP7's Slug and Color,
+Premiere's (HD) Bars and Tone and Universal Counting Leader; Final Cut's Custom solid (a colour matte, reported); OTIO
+`SolidColor` (colour as an array, an object or `#rrggbb`) and `SMPTEBars`. An EDL has no generators: each is reported
+as dropped with its name and length, and its time stays black (or silent).
+
+**Effects** (`InterchangeEffects.h`): FCPXML `filter-video` / `filter-audio` and OTIO `Effect` objects (on clips,
+nested stacks and, in OTIO, tracks) are read into the effect stack:
+* Wabcut's own (written by a Wabcut export) come back exactly: id, on/off, every parameter with its keyframes, curve
+  data. FCPXML carries them as params keyed `com.wabcut.effect...`, OTIO in `metadata.wabcut.effect`.
+* Well-known effects of other editors are mapped by name onto Wabcut's (Gaussian Blur, Sharpen, Levels, Proc Amp,
+  Brightness & Contrast, Color Balance for Color Corrector 3-way / Color Wheels / Color Board, Vignette, Flipped,
+  Channel EQ, Compressor, Limiter, and any Wabcut effect's own display name). Settings both sides name the same way
+  (Amount, Brightness, Contrast, Hue, Saturation, Threshold, Ratio, Attack, Release, ...) are applied; the others are
+  kept with the effect so an export writes them back. Reported as approximated.
+* Effects Wabcut does not know are kept as a disabled placeholder (`fcpxml:<name>`, `otio:<name>`) with the source's
+  name, id, on/off state and settings (OTIO: its metadata). Wabcut does not render it; an export to the same format
+  writes it back as it came. Reported as approximated ("kept as a placeholder").
+
+On export, a Wabcut effect with a Final Cut equivalent is written under Final Cut's name and id with the shared
+settings; every other effect as a `com.wabcut.effect/<id>` filter other editors skip. The Final Cut effect ids
+(`FFGaussianBlur`, ...) follow Final Cut's naming but have not been checked against a Final Cut install; on import
+the name is enough. Masks on effects, eased keyframes (FCPXML has ease in/out only) and track effects in FCP7 XML,
+FCPXML and EDL are reported.
+
+## Auditions (0.6)
+
+An audition (a take stack, [getting started](getting-started.md#auditions-several-takes-at-one-cut-06)) is a clip that
+plays its active take, so every format gets at least that take, exactly. What happens to the other takes:
+
+- **FCPXML** writes Final Cut's `<audition>` at the clip's place: the active take first (Final Cut's active pick), then
+  the other takes in take order, each a clip element with its own source In, length, name, speed and filters, and - in
+  the primary storyline, where a clip keeps its sound - its sound with it. Connected clips sit on the active pick.
+  Import turns an `<audition>` into an audition whose takes are its picks, the first one active; a pick that does not
+  have the active pick's picture and sound is reported and left out, and so are the connected clips of the other picks
+  (Final Cut keeps them on the audition; Wabcut keeps the active pick's). Take order after a round trip: the active take
+  first.
+- **OTIO** writes the active take as the clip and the other takes in its Wabcut metadata (`metadata.wabcut.audition`:
+  the active take's place and each take as an OTIO Clip or Stack with its own Wabcut data). Wabcut reads them back in
+  take order with the same active take; other editors see the active take.
+- **FCP7 XML** and **EDL** have no auditions: the active take is written and the export report lists the takes that are
+  not ("audition 'Angry': its active take is written; the other 2 takes ('Calm', 'Wide') are not: Final Cut Pro 7 XML
+  has no auditions").
+- A take that is short of the audition's range is written over the part it has media for. An audition whose active
+  take is shorter than the audition comes back with the active take's length.
+
 ## Known gaps and next steps
 
 * **Transitions, retiming and titles (C.4)** are carried with the model's operations: `addTransition`,
@@ -450,11 +657,14 @@ with more ground-truth samples (py-premiere has ~80) before turning it on.
     whose tangents are worked out from the neighbouring keys, since neither format keeps handles), `.prproj` time
     remapping and OTIO non-linear time effects (100%; OTIO has no schema for them),
     and title parameters beyond text, font, size, style, alignment, colour and outline.
-  * Still dropped: generators other than titles.
+  * 0.6: generators are carried (card #69, "Generators and effects in FCPXML and OTIO" below). Still dropped: shapes,
+    textures and other generators Wabcut has no synthetic item for.
   * X.1: keyframes of opacity, motion and volume import as curves (curve time = media time), position and anchor
     are carried, and FCP7's Gaussian Blur, Crop and Drop Shadow (and Wabcut's own effects written by an export) import
-    as effect stack entries (`edit::addEffect`). Still dropped: colour, EQ and compressor filters of other editors
-    (their parameters do not map onto Wabcut's), FCPXML filters, OTIO effects other than time warps.
+    as effect stack entries (`edit::addEffect`). 0.6 (card #66): colour grades (Premiere's Lumetri by its real ids and
+    key-list values), EQ and dynamics filters of other tools are carried or approximated (Premiere itself writes no
+    audio filters into FCP7 XML) (see "Colour grades and audio filters in FCP7 XML"); still dropped: other
+    editors' filters Wabcut has no effect for (named in the report). 0.6: FCPXML filters and OTIO effects are read and written (card #67).
 * Premiere's work area and split-edit audio extents need model support before they can be carried (X.1 added the
   sequence start timecode, and clip markers are carried as markers of the source). (Per-channel audio routing has it since A.9: FCP7 and FCPXML channel
   selections import as clip channel maps.)
@@ -463,8 +673,11 @@ with more ground-truth samples (py-premiere has ~80) before turning it on.
 * Bins (X.1): FCP7 bins and FCPXML events and keyword collections become bins below the import bin. Not read:
   `.prproj` bins (the project view's tree is not mapped yet), FCPXML keyword collections beyond a media item's first,
   smart collections. The exporters write no bins.
-* Not supported yet: AAF and OMF import (P.2 exports them), `.otioz`, OTIO `ImageSequenceReference`, OTIO nested `Track` items, multicam angle switches
-  in Premiere `.prproj` files, generators other than titles.
+* AAF / OMF import (0.6): imported files always become a new sequence (Premiere's behaviour); adding their tracks to
+  the open sequence is left for later. Not read: embedded video essence, OMF 1.0 files (refused with guidance), Avid
+  plug-in parameters, multigroup angles other than the selected one.
+* Not supported yet: `.otioz`, OTIO `ImageSequenceReference`, OTIO nested `Track` items, multicam angle switches
+  in Premiere `.prproj` files, generators in `.prproj` files.
 * Nested and multicam sequences (C.8) are built before the sequences that use them; `ImportResult::sequences` keeps the
   parsers' order: a parent sequence comes before the sequences nested in it (FCP7 right after it, FCPXML after the project
   that uses them, OTIO after all timelines; each in the order they were met).

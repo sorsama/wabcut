@@ -7,9 +7,9 @@
 //
 // ImportRouter::detect() identifies a file by its content first and its extension second: FCP7 XML
 // (xmeml, as Premiere Pro and Resolve export it), FCPXML 1.9-1.11 (also .fcpxmld bundles), OpenTimelineIO
-// JSON (.otio, also .otiod bundles), CMX3600 EDL and Premiere .prproj. Formats Wabcut cannot read
-// (Resolve .drp/.drt, AAF, FCP libraries, .otioz) are detected too, with guidance on what to export
-// instead.
+// JSON (.otio, also .otiod bundles), CMX3600 EDL, Premiere .prproj, and (0.6) AAF and OMF 2.0 from audio post
+// (Pro Tools, Media Composer, Nuendo, Premiere, Resolve). Formats Wabcut cannot read (Resolve .drp/.drt, FCP
+// libraries, .otioz) are detected too, with guidance on what to export instead.
 //
 // importFile() builds a new, valid ProjectState through the model's own edit operations (or adds to
 // `targetProject`), relinks media (MediaRelinker.h) and lists what was carried, approximated and dropped
@@ -47,12 +47,14 @@ enum class Format : std::uint8_t {
     PremiereProject,
     /// DaVinci Resolve project/timeline/archive (.drp, .drt, .dra): proprietary.
     ResolveProject,
-    /// Advanced Authoring Format (.aaf): not supported yet.
+    /// Advanced Authoring Format (.aaf): 0.6, its compositions (audio post's tracks, clips, fades, levels).
     Aaf,
     /// Final Cut Pro library (.fcpbundle): proprietary.
     FinalCutLibrary,
     /// Zipped OpenTimelineIO bundle (.otioz): not supported yet.
     OtioArchive,
+    /// 0.6: OMF Interchange 2.0 (.omf, a Bento container): audio tracks, clips, fades, gain and pan.
+    Omf,
 };
 
 /// Stable lower-case id ("fcp7-xml", "fcpxml", "otio", ...).
@@ -88,6 +90,16 @@ struct ImportOptions {
     bool experimentalPremiereProject = false;
     /// Replaces the relinker's file-existence check (RelinkOptions::fileExists); empty: the file system.
     std::function<bool(const std::filesystem::path&)> fileExists;
+    /// 0.6 (AAF / OMF): the folder the audio embedded in the file is written to, so that it plays. Empty:
+    /// "<file name> Media" next to `projectFile`, else next to the imported file; importData() with neither a project
+    /// file nor a base directory writes nothing (the embedded media is imported offline).
+    std::filesystem::path embeddedMediaFolder;
+    /// Off: embedded media is not written anywhere (it is imported offline and reported); wabcut-cli import.
+    bool extractEmbeddedMedia = true;
+    /// 0.6 (fix round 1): called now and then while the embedded media is written (AAF / OMF) with the share done
+    /// (0..1). Returning false cancels: the import fails with ErrorCode::Cancelled and the files this import wrote are
+    /// removed again. Called on the importing thread.
+    std::function<bool(double)> progress;
 };
 
 /// A media file that could not be found. Its MediaItem's locator keeps the original path and is marked

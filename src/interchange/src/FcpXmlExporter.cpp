@@ -12,12 +12,20 @@
 //  * V2..Vn are connected clips on lanes 1..n-1, A2..An on lanes -1..-(n-1), anchored to the spine element under
 //    their start (an A1 clip under a different V1 clip goes below the other audio lanes);
 //  * transitions live in storylines: V1's (with A1's crossfade at the same cut as its audio part).
+// 0.6: generators (card #69) are <video ref="effect"> elements: a colour matte and black video Final Cut's Custom solid,
+// the other kinds a Wabcut generator effect ("com.wabcut.generator/<kind>"); every one also carries Wabcut's kind and
+// settings as params keyed "com.wabcut.generator..." (and whether its sound rides along). Effect stacks (card #67) are
+// <filter-video> / <filter-audio> elements (InterchangeEffects.h): Final Cut's own effect where one is equivalent,
+// else a "com.wabcut.effect/<id>" effect; Wabcut's id, keys, keyframes and data are params keyed "com.wabcut.effect...".
 // Times are exact rational seconds (ticks reduced: "1001/24000s").
 
 #include "Exporters.h"
+#include "InterchangeEffects.h"
+#include "TextUtil.h"
 #include "TimeMath.h"
 
 #include <wabcut/interchange/FileUrl.h>
+#include <wabcut/model/Synthetic.h>
 #include <wabcut/model/Timecode.h>
 
 #include <algorithm>
@@ -161,7 +169,8 @@ private:
     }
 
     std::string effectId(const std::string& name, const std::string& uid) {
-        if (const auto it = m_effects.find(name); it != m_effects.end()) {
+        const std::string key = name + "|" + uid; // 0.6: one resource per effect (filters may share a name)
+        if (const auto it = m_effects.find(key); it != m_effects.end()) {
             return it->second;
         }
         const std::string id = nextId();
@@ -169,7 +178,7 @@ private:
         e.append_attribute("id") = id.c_str();
         e.append_attribute("name") = name.c_str();
         e.append_attribute("uid") = uid.c_str();
-        m_effects.emplace(name, id);
+        m_effects.emplace(key, id);
         return id;
     }
 
@@ -483,11 +492,15 @@ private:
     /// m_localStart is the element's own time at its first frame afterwards.
     pugi::xml_node writeClip(pugi::xml_node parent, const IrSequence& seq, const IrClip& c, const IrClip* partner,
                              TrackKind kind, int lane, Ticks offset) {
+        if (!c.alternates.empty() && !m_writingPicks) {
+            return writeAudition(parent, seq, c, partner, kind, lane, offset);
+        }
         std::vector<std::string> notes;
         pugi::xml_node node;
         const bool both = partner != nullptr;
         const char* enable = both ? nullptr : (kind == TrackKind::Video ? "video" : "audio");
         Ticks localStart = c.sourceIn;
+        const IrGenerator* generator = nullptr;
         if (c.title) {
             node = parent.append_child("title");
             node.append_attribute("ref") =
@@ -502,6 +515,27 @@ private:
             if (c.speed || c.remap) {
                 notes.push_back("it plays its nested sequence at another speed, which is not carried");
             }
+        } else if (const IrGenerator* g = generatorOf(c)) {
+            if (kind == TrackKind::Audio && !partner) {
+                // A generator's sound alone: FCPXML generators have no sound of their own.
+                m_ctx.add(ReportOutcome::Dropped, ReportCategory::Clip,
+                          "the sound of generated '" + c.name + "' without its picture: FCPXML generators have no sound; "
+                                                             "its time is left as a gap",
+                          c.location, seq.name);
+                if (lane != 0) {
+                    m_localStart = Ticks{};
+                    return parent;
+                }
+                pugi::xml_node gap = parent.append_child("gap");
+                gap.append_attribute("name") = "Gap";
+                gap.append_attribute("offset") = fcpxTime(offset).c_str();
+                gap.append_attribute("duration") = fcpxTime(c.duration).c_str();
+                m_localStart = Ticks{};
+                return gap;
+            }
+            node = parent.append_child("video");
+            node.append_attribute("ref") = generatorEffectId(*g).c_str();
+            generator = g;
         } else {
             node = parent.append_child("asset-clip");
             node.append_attribute("ref") = assetId(c.media, seq).c_str();
@@ -519,10 +553,10 @@ private:
         if (!c.enabled) {
             node.append_attribute("enabled") = "0";
         }
-        if (enable && !c.title) {
+        if (enable && !c.title && !generator) {
             node.append_attribute("srcEnable") = enable;
         }
-        if (c.media != kNoMedia && kind == TrackKind::Audio && !both) {
+        if (c.media != kNoMedia && kind == TrackKind::Audio && !both && !generator) {
             // The track's role names the sound (dialogue, music, effects).
             if (const IrTrack* t = trackOf(seq, c); t && !roleName(t->role).empty()) {
                 node.append_attribute("audioRole") = std::string(roleName(t->role)).c_str();
@@ -530,6 +564,8 @@ private:
         }
         if (c.title) {
             writeTitle(node, *c.title, notes);
+        } else if (generator) {
+            writeGenerator(node, *generator, partner != nullptr, notes);
         } else if (c.sequence != kNoSequence && m_doc.sequences[c.sequence].multicam) {
             writeMulticamSources(node, c, partner, kind);
         }
@@ -544,19 +580,19 @@ private:
         if (partner && (partner->name != c.name || partner->enabled != c.enabled)) {
             notes.push_back("its sound's own name or on/off state is not carried (one element: the picture's)");
         }
-        if ((partner || kind == TrackKind::Audio) && c.media != kNoMedia) {
+        if ((partner || kind == TrackKind::Audio) && c.media != kNoMedia && !generator) {
             writeChannels(node, audioClip, notes);
         }
-        for (const IrClip* x : {&c, partner}) {
-            if (x && !x->effects.empty()) {
-                std::string list;
-                for (const EffectInstance& e : x->effects) {
-                    list += (list.empty() ? "" : ", ") + e.effect;
-                }
-                notes.push_back("its effects are not written yet: " + list);
-            }
+        // 0.6 (card #67): the picture's filters, then the sound's (FCPXML's element order).
+        writeFilters(node, c, kind, seq, notes);
+        if (partner) {
+            writeFilters(node, *partner, TrackKind::Audio, seq, notes);
         }
-        std::string reason = std::string(c.title ? "title" : c.sequence != kNoSequence ? "nested clip" : "clip") + " '" + c.name + "'" +
+        std::string reason = std::string(c.title       ? "title"
+                                         : generator   ? "generated clip"
+                                         : c.sequence != kNoSequence ? "nested clip"
+                                                                     : "clip") +
+                             " '" + c.name + "'" +
                              (partner ? " with its sound" : "");
         for (const std::string& n : notes) {
             reason += "; " + n;
@@ -565,6 +601,43 @@ private:
                   seq.name);
         m_localStart = localStart;
         return node;
+    }
+
+    /// 0.6 (card #74): an audition as Final Cut's <audition>: the active take first (Final Cut's active pick), then the
+    /// other takes in take order, each a clip element at the audition's place (and, with an A1 partner that is an
+    /// audition of the same takes, with its sound). Connected clips go on the active pick. m_localStart is the active
+    /// pick's own time afterwards.
+    pugi::xml_node writeAudition(pugi::xml_node parent, const IrSequence& seq, const IrClip& c, const IrClip* partner,
+                                 TrackKind kind, int lane, Ticks offset) {
+        pugi::xml_node audition = parent.append_child("audition");
+        if (lane != 0) {
+            audition.append_attribute("lane") = lane;
+        }
+        audition.append_attribute("offset") = fcpxTime(offset).c_str();
+        m_writingPicks = true;
+        const pugi::xml_node pick = writeClip(audition, seq, c, partner, kind, 0, offset);
+        const Ticks localStart = m_localStart;
+        const bool pairedTakes = partner && partner->alternates.size() == c.alternates.size();
+        for (std::size_t i = 0; i < c.alternates.size(); ++i) {
+            const IrClip& take = c.alternates[i];
+            const IrClip* takePartner = pairedTakes && samePlay(take, partner->alternates[i]) ? &partner->alternates[i] : nullptr;
+            if (partner && !takePartner) {
+                m_ctx.add(ReportOutcome::Approximated, ReportCategory::Clip,
+                          "take '" + take.name + "' of audition '" + c.name + "' is written without its sound",
+                          take.location, seq.name);
+            }
+            writeClip(audition, seq, take, takePartner, kind, 0, offset + (take.start - c.start));
+        }
+        m_writingPicks = false;
+        m_ctx.add(ReportOutcome::Carried, ReportCategory::Clip,
+                  "audition '" + c.name + "' with " + std::to_string(c.alternates.size() + 1) + " takes (" +
+                      (c.activeTake == 0 ? std::string("the active take first")
+                                         : "the active take, take " + std::to_string(c.activeTake + 1) +
+                                               ", first: Final Cut lists its active pick first") +
+                      ")",
+                  c.location, seq.name);
+        m_localStart = localStart;
+        return pick;
     }
 
     const IrTrack* trackOf(const IrSequence& seq, const IrClip& c) const {
@@ -855,6 +928,182 @@ private:
                   "multicam '" + seq.name + "' (" + std::to_string(seq.multicam->angles.size()) + " angles)", seq.location, seq.name);
     }
 
+    // ---- generators and filters (0.6) -----------------------------------------------------------------------------
+
+    const IrGenerator* generatorOf(const IrClip& c) const {
+        if (c.title || c.sequence != kNoSequence || c.media >= m_doc.media.size()) {
+            return nullptr;
+        }
+        const auto& g = m_doc.media[c.media].generator;
+        return g ? &*g : nullptr;
+    }
+
+    /// Final Cut's Custom solid for a colour matte and black video; a Wabcut generator effect for the others.
+    std::string generatorEffectId(const IrGenerator& g) {
+        if (g.kind == kColorMatteGenerator || g.kind == kBlackVideoGenerator) {
+            return effectId("Custom", ".../Generators.localized/Solids.localized/Custom.localized/Custom.motn");
+        }
+        return effectId(std::string(generatorDisplayName(g.kind)), std::string(kWabcutGeneratorUid) + "/" + g.kind);
+    }
+
+    static void param(pugi::xml_node node, const std::string& name, const std::string& key, const std::string& value) {
+        pugi::xml_node p = node.append_child("param");
+        p.append_attribute("name") = name.c_str();
+        if (!key.empty()) {
+            p.append_attribute("key") = key.c_str();
+        }
+        p.append_attribute("value") = value.c_str();
+    }
+
+    void writeGenerator(pugi::xml_node node, const IrGenerator& g, bool withSound, std::vector<std::string>& notes) {
+        if (g.kind == kColorMatteGenerator || g.kind == kBlackVideoGenerator) {
+            const bool black = g.kind == kBlackVideoGenerator;
+            param(node, "Color", {},
+                  black ? std::string("0 0 0 1")
+                        : numberText(generatorParam(g, "color.r")) + " " + numberText(generatorParam(g, "color.g")) + " " +
+                              numberText(generatorParam(g, "color.b")) + " 1");
+        }
+        const std::string prefix(kWabcutGeneratorUid);
+        param(node, "Wabcut Generator", prefix, g.kind);
+        for (const EffectParam& p : g.params) {
+            param(node, p.key, prefix + "/" + p.key, numberText(p.value.isConstant() ? p.value.constant() : 0.0));
+        }
+        if (withSound) {
+            param(node, "Wabcut Generator Sound", prefix + ".audio", "1");
+        }
+        if (g.kind == kBarsAndToneGenerator || g.kind == kCountingLeaderGenerator) {
+            notes.push_back(withSound ? "other editors see a generator without its sound; Wabcut reads both"
+                                      : "other editors see a Wabcut generator they may not draw; Wabcut reads it");
+        } else if (g.kind != kColorMatteGenerator && g.kind != kBlackVideoGenerator) {
+            notes.push_back("other editors see a Wabcut generator they may not draw; Wabcut reads it");
+        }
+    }
+
+    /// A parameter's value, or its keyframes as <keyframeAnimation> (in the clip's own time), scaled.
+    void writeParamValue(pugi::xml_node p, const ParamValue& value, double scale, std::vector<std::string>& eased) {
+        const Curve* curve = value.curve();
+        if (!curve) {
+            p.append_attribute("value") = numberText(value.constant() * scale).c_str();
+            return;
+        }
+        pugi::xml_node animation = p.append_child("keyframeAnimation");
+        for (const Keyframe& k : curve->keys) {
+            pugi::xml_node key = animation.append_child("keyframe");
+            key.append_attribute("time") = fcpxTime(k.time).c_str();
+            key.append_attribute("value") = numberText(k.value * scale).c_str();
+            if (k.interpolation == Interpolation::Hold) {
+                key.append_attribute("interp") = "hold";
+            } else if (k.interpolation != Interpolation::Linear) {
+                key.append_attribute("interp") = "easeInOut";
+                eased.push_back(p.attribute("name").value());
+            }
+        }
+    }
+
+    static std::string dataValue(const EffectData& d) {
+        if (const std::vector<EffectPoint>* points = d.points()) {
+            std::string out = "points:";
+            for (std::size_t i = 0; i < points->size(); ++i) {
+                out += (i ? ";" : "") + numberText((*points)[i].x) + "," + numberText((*points)[i].y);
+            }
+            return out;
+        }
+        return "text:" + *d.text();
+    }
+
+    void writeFilters(pugi::xml_node node, const IrClip& c, TrackKind kind, const IrSequence& seq,
+                      std::vector<std::string>& notes) {
+        const char* tag = kind == TrackKind::Video ? "filter-video" : "filter-audio";
+        for (const EffectInstance& e : c.effects) {
+            const bool placeholder = isForeignPlaceholder(e);
+            const ForeignEffect* known = placeholder ? nullptr : foreignEffectFor(e.effect);
+            std::string name = dataText(e, kSourceName);
+            std::string uid = dataText(e, kSourceUid);
+            const bool fromFcpx = e.effect.starts_with(kFcpxPlaceholder) || (!placeholder && !uid.empty());
+            if (placeholder && e.effect.starts_with(kOtioPlaceholder)) {
+                uid.clear(); // an OTIO effect: Final Cut has no id for it
+            }
+            if (name.empty()) {
+                name = placeholder ? e.effect.substr(e.effect.find(':') + 1) : known ? std::string(known->name) : effectLabel(e);
+            }
+            if (uid.empty()) {
+                uid = known ? std::string(known->fcpxUid)
+                            : std::string(kWabcutEffectUid) + "/" + e.effect;
+            }
+            pugi::xml_node f = node.append_child(tag);
+            f.append_attribute("ref") = effectId(name, uid).c_str();
+            f.append_attribute("name") = name.c_str();
+            const bool enabled = placeholder ? dataText(e, kSourceEnabled) != "0" : e.enabled;
+            if (!enabled) {
+                f.append_attribute("enabled") = "0";
+            }
+            std::vector<std::string> eased;
+            std::set<std::string> written;
+            // The other editor's settings: shared ones from Wabcut's values, then the ones it kept as they came.
+            if (known) {
+                for (const ForeignParam& fp : known->params) {
+                    if (const ParamValue* v = e.find(fp.key)) {
+                        pugi::xml_node p = f.append_child("param");
+                        p.append_attribute("name") = std::string(fp.name).c_str();
+                        writeParamValue(p, *v, fp.scale, eased);
+                        written.insert(toLowerAscii(fp.name));
+                    }
+                }
+            }
+            for (const EffectData& d : e.data) {
+                if (!d.key.starts_with(kSourceParam) || !d.text()) {
+                    continue;
+                }
+                const std::string pname = d.key.substr(kSourceParam.size());
+                if (!written.insert(toLowerAscii(pname)).second) {
+                    continue;
+                }
+                const std::string key = dataText(e, "key:" + pname);
+                param(f, pname, key, *d.text());
+            }
+            if (!placeholder) {
+                // Wabcut's own: the effect id, every key (with keyframes) and its data, for an exact round trip.
+                const std::string prefix(kWabcutEffectUid);
+                param(f, "Wabcut Effect", prefix, e.effect);
+                if (e.version != 1) {
+                    param(f, "Wabcut Effect Version", prefix + ".version", std::to_string(e.version));
+                }
+                for (const EffectParam& p : e.params) {
+                    pugi::xml_node x = f.append_child("param");
+                    x.append_attribute("name") = p.key.c_str();
+                    x.append_attribute("key") = (prefix + "/" + p.key).c_str();
+                    writeParamValue(x, p.value, 1.0, eased);
+                }
+                for (const EffectData& d : e.data) {
+                    if (d.key.starts_with(kSourceParam) || d.key.starts_with("key:")) {
+                        continue;
+                    }
+                    param(f, d.key, prefix + ".data/" + d.key, dataValue(d));
+                }
+            }
+            std::string what = "effect '" + effectLabel(e) + "' on '" + c.name + "'";
+            ReportOutcome outcome = ReportOutcome::Carried;
+            if (placeholder) {
+                what += fromFcpx ? " (written back as it came)" : " (an effect of another editor Final Cut does not know)";
+                outcome = fromFcpx ? ReportOutcome::Carried : ReportOutcome::Approximated;
+            } else if (known) {
+                what += " as Final Cut's '" + name + "'";
+            } else {
+                what += " (other editors skip it; Wabcut reads it)";
+            }
+            if (!e.masks.empty()) {
+                what += "; its masks are not written";
+                outcome = ReportOutcome::Approximated;
+            }
+            if (!eased.empty()) {
+                what += "; eased keyframes are written as ease in and out";
+                outcome = ReportOutcome::Approximated;
+            }
+            m_ctx.add(outcome, ReportCategory::Effect, what, c.location, seq.name);
+        }
+        (void)notes;
+    }
+
     void writeTitle(pugi::xml_node node, const IrTitle& t, std::vector<std::string>& notes) {
         const auto style = [&](const char* key) -> std::optional<double> {
             for (const EffectParam& p : t.style) {
@@ -984,6 +1233,7 @@ private:
     std::map<std::size_t, std::string> m_mediaIds;
     std::vector<std::size_t> m_pendingMedia;
     Ticks m_localStart;
+    bool m_writingPicks = false; ///< 0.6: writing the picks of an <audition> (no audition inside one)
     Ticks m_tcStart; ///< the tcStart of the sequence being written
 };
 

@@ -117,6 +117,10 @@ enum class AgentStatus {
     NoChanges,          ///< the model finished without editing (an answer, or nothing to do)
     VerificationFailed, ///< the model finished but checks still fail after the retry
     StepLimit,          ///< stopped at maxSteps / maxToolCalls
+    /// 0.6: stopped because the model kept making a call the app had refused (permission, schema or command error):
+    /// the refusal goes back to the model, a repeat is answered "refused again, change course" without running, and
+    /// a third identical call at the same staged state ends the run with what was refused.
+    Stuck,
     BudgetExceeded,     ///< token or cost budget, or the monthly spend cap
     TimedOut,
     Cancelled,

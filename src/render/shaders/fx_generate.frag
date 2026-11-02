@@ -48,6 +48,14 @@ const int OP_ECHO = 111;
 const int OP_TEXT_OVERLAY = 112;
 const int OP_DIFFERENCE_MATTE = 113;
 const int OP_IMAGE_MATTE_KEY = 114;
+// 0.6: CPU twins in LibraryGenerate.cpp; Lightning and Scribble read their strokes (LibraryGeometry.h packStrokes)
+// from tex1, Paint Bucket runs in stages (mode.w, Compositor applyLibrary).
+const int OP_COLORAMA = 115;
+const int OP_FRACTAL_NOISE = 116;
+const int OP_CELL_PATTERN = 117;
+const int OP_LIGHTNING = 118;
+const int OP_SCRIBBLE = 119;
+const int OP_PAINT_BUCKET = 120;
 
 float q[32];
 
@@ -220,6 +228,352 @@ float wipeKeep(float field, float feather, float completion)
     return 1.0 - clamp((field + 0.5 * w * (2.0 * completion - 1.0)) / w + 0.5, 0.0, 1.0);
 }
 
+// ---- 0.6: Colorama ----
+
+vec3 hls(vec3 e)
+{
+    float mx = max(e.r, max(e.g, e.b));
+    float mn = min(e.r, min(e.g, e.b));
+    float l = 0.5 * (mx + mn);
+    float d = mx - mn;
+    if (d <= 0.0)
+        return vec3(0.0, l, 0.0);
+    float s = d / max(1.0 - abs(2.0 * l - 1.0), 1e-6);
+    float h;
+    if (mx == e.r)
+        h = (e.g - e.b) / d;
+    else if (mx == e.g)
+        h = (e.b - e.r) / d + 2.0;
+    else
+        h = (e.r - e.g) / d + 4.0;
+    return vec3(fract(h / 6.0), l, clamp(s, 0.0, 1.0));
+}
+
+// Use Preset Palette 1..7, five encoded colours each at 0, 1/4, 1/2, 3/4, 1.
+const vec3 PALETTES[35] = vec3[35](
+    vec3(0.0, 0.0, 0.0), vec3(0.25, 0.25, 0.25), vec3(0.5, 0.5, 0.5), vec3(0.75, 0.75, 0.75), vec3(1.0, 1.0, 1.0),
+    vec3(0.0, 0.0, 0.35), vec3(0.0, 0.45, 0.9), vec3(0.2, 0.85, 0.45), vec3(1.0, 0.85, 0.1), vec3(1.0, 1.0, 1.0),
+    vec3(0.1, 0.05, 0.0), vec3(0.5, 0.3, 0.05), vec3(0.9, 0.65, 0.2), vec3(1.0, 0.85, 0.5), vec3(1.0, 1.0, 0.9),
+    vec3(0.0, 0.0, 0.0), vec3(0.5, 0.0, 0.0), vec3(1.0, 0.3, 0.0), vec3(1.0, 0.8, 0.1), vec3(1.0, 1.0, 0.8),
+    vec3(0.0, 0.0, 0.1), vec3(0.0, 0.2, 0.5), vec3(0.3, 0.6, 0.9), vec3(0.7, 0.9, 1.0), vec3(1.0, 1.0, 1.0),
+    vec3(1.0, 1.0, 1.0), vec3(0.75, 0.75, 0.75), vec3(0.5, 0.5, 0.5), vec3(0.25, 0.25, 0.25), vec3(0.0, 0.0, 0.0),
+    vec3(1.0, 0.0, 0.0), vec3(0.8, 1.0, 0.0), vec3(0.0, 1.0, 0.6), vec3(0.3, 0.0, 1.0), vec3(1.0, 0.0, 0.0));
+
+vec3 coloramaAt(float t)
+{
+    float pos[5];
+    vec3 col[5];
+    int n = 5;
+    int palette = clamp(int(floor(q[3] + 0.5)), 0, 7);
+    if (palette == 0) {
+        n = clamp(int(floor(q[4] + 0.5)), 2, 5);
+        for (int k = 0; k < 5; ++k) {
+            int o = 5 + 4 * k;
+            pos[k] = q[o];
+            col[k] = clamp(vec3(q[o + 1], q[o + 2], q[o + 3]), 0.0, 1.0);
+        }
+        for (int i = 1; i < 5; ++i) {
+            if (i >= n)
+                break;
+            for (int j = i; j > 0; --j) {
+                if (!(pos[j] < pos[j - 1]))
+                    break;
+                float tp = pos[j];
+                pos[j] = pos[j - 1];
+                pos[j - 1] = tp;
+                vec3 tc = col[j];
+                col[j] = col[j - 1];
+                col[j - 1] = tc;
+            }
+        }
+    } else {
+        for (int k = 0; k < 5; ++k) {
+            pos[k] = 0.25 * float(k);
+            col[k] = PALETTES[(palette - 1) * 5 + k];
+        }
+    }
+    if (t <= pos[0])
+        return col[0];
+    for (int k = 0; k < 4; ++k) {
+        if (k + 1 >= n)
+            break;
+        float p0 = pos[k];
+        float p1 = pos[k + 1];
+        if (t <= p1) {
+            float u = (t - p0) / max(p1 - p0, 1e-6);
+            if (q[25] < 0.5)
+                return u < 0.5 ? col[k] : col[k + 1];
+            return mix(col[k], col[k + 1], u);
+        }
+    }
+    return col[n - 1];
+}
+
+// ---- 0.6: Fractal Noise and Cell Pattern ----
+
+float latticeValue(int x, int y, int z, uint seed)
+{
+    return 2.0 * hash01(uint(x) + 2654435761u * uint(y), uint(z) + seed * 1013u, 11u) - 1.0;
+}
+
+float catmullRom(float p0, float p1, float p2, float p3, float t)
+{
+    return 0.5 * (2.0 * p1 + (p2 - p0) * t + (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * t * t
+                  + (3.0 * p1 - p0 - 3.0 * p2 + p3) * t * t * t);
+}
+
+// One layer of noise at lattice depth z by Noise Type (Block, Linear, Soft Linear, Spline).
+float noisePlane(vec2 v, int z, int type, uint seed)
+{
+    vec2 i = floor(v);
+    vec2 f = v - i;
+    int x = int(i.x);
+    int y = int(i.y);
+    if (type == 0)
+        return latticeValue(x, y, z, seed);
+    if (type == 3) {
+        float rows[4];
+        for (int j = 0; j < 4; ++j)
+            rows[j] = catmullRom(latticeValue(x - 1, y + j - 1, z, seed), latticeValue(x, y + j - 1, z, seed),
+                                 latticeValue(x + 1, y + j - 1, z, seed), latticeValue(x + 2, y + j - 1, z, seed), f.x);
+        return clamp(catmullRom(rows[0], rows[1], rows[2], rows[3], f.y), -1.0, 1.0);
+    }
+    vec2 w = type == 1 ? f : f * f * (3.0 - 2.0 * f);
+    return mix(mix(latticeValue(x, y, z, seed), latticeValue(x + 1, y, z, seed), w.x),
+               mix(latticeValue(x, y + 1, z, seed), latticeValue(x + 1, y + 1, z, seed), w.x), w.y);
+}
+
+float noiseTyped(vec2 v, float vz, int type, int period, uint seed)
+{
+    float iz = floor(vz);
+    float fz = vz - iz;
+    int z0 = int(iz);
+    int z1 = z0 + 1;
+    if (period > 0) {
+        z0 = z0 - period * int(floor(float(z0) / float(period)));
+        z1 = z1 - period * int(floor(float(z1) / float(period)));
+    }
+    float wz = fz * fz * (3.0 - 2.0 * fz);
+    return mix(noisePlane(v, z0, type, seed), noisePlane(v, z1, type, seed), wz);
+}
+
+// Contrast, Overflow (Clip, Soft Clamp, Wrap Back) and Invert of a noise value.
+float shapeValue(float v, float contrast, float brightness, int overflow, bool invert)
+{
+    v = (v - 0.5) * contrast / 100.0 + 0.5 + brightness / 100.0;
+    if (overflow == 1) {
+        v = 1.0 / (1.0 + exp(-4.0 * (v - 0.5)));
+    } else if (overflow == 2) {
+        float w = v - 2.0 * floor(v / 2.0);
+        v = w <= 1.0 ? w : 2.0 - w;
+    } else {
+        v = clamp(v, 0.0, 1.0);
+    }
+    return invert ? 1.0 - v : v;
+}
+
+vec4 drawGrey(int mode, vec4 dst, float v, float opacity)
+{
+    float g = eotf(clamp(v, 0.0, 1.0));
+    float k = clamp(opacity, 0.0, 1.0);
+    vec4 src = vec4(vec3(g * k), k);
+    return mode == 0 ? src : blendOver(mode, dst, src);
+}
+
+float fractalNoiseAt(vec2 f, vec2 s)
+{
+    float cell = max(q[7], 1.0);
+    float theta = radians(q[6]);
+    vec2 pp = f - vec2(q[8], q[9]) * s;
+    vec2 v = vec2(cos(theta) * pp.x + sin(theta) * pp.y, -sin(theta) * pp.x + cos(theta) * pp.y) / cell;
+    int period = q[15] > 0.5 ? max(1, int(floor(q[16] + 0.5))) : 0;
+    float z = q[14] / 360.0;
+    if (period > 0)
+        z = z - float(period) * floor(z / float(period));
+    int fractal = clamp(int(floor(q[0] + 0.5)), 0, 3);
+    int type = clamp(int(floor(q[1] + 0.5)), 0, 3);
+    float complexity = clamp(q[10], 1.0, 20.0);
+    int octaves = int(floor(complexity));
+    float last = complexity - float(octaves);
+    float influence = clamp(q[11], 0.0, 1.0);
+    float subScale = 1.0 / clamp(q[12], 0.25, 1.0);
+    float subRotation = radians(q[13]);
+    uint seed = uint(clamp(floor(q[17] + 0.5), 0.0, 1000000.0));
+    float sum = 0.0;
+    float norm = 0.0;
+    float amp = 1.0;
+    float freq = 1.0;
+    for (int o = 0; o < 21; ++o) {
+        float weight = o < octaves ? 1.0 : (o == octaves ? last : 0.0);
+        if (weight <= 0.0)
+            break;
+        float r = subRotation * float(o);
+        vec2 ov = vec2(cos(r) * v.x + sin(r) * v.y, -sin(r) * v.x + cos(r) * v.y) * freq + vec2(7.31, 3.17) * float(o);
+        if (fractal == 2)
+            ov += vec2(0.37, 0.21) * float(o) * z;
+        float n = noiseTyped(ov, z, type, period, seed + uint(o) * 101u);
+        if (fractal == 1)
+            n = abs(n);
+        else if (fractal == 3)
+            n = n * n;
+        sum += weight * amp * n;
+        norm += weight * amp;
+        amp *= influence;
+        freq *= subScale;
+    }
+    float value = norm > 0.0 ? sum / norm : 0.0;
+    float v01 = fractal == 1 || fractal == 3 ? value : 0.5 + 0.5 * value;
+    return shapeValue(v01, q[3], q[4], clamp(int(floor(q[5] + 0.5)), 0, 2), q[2] > 0.5);
+}
+
+float cellPatternAt(vec2 f, vec2 s)
+{
+    float size = max(q[5], 2.0);
+    vec2 u = (f - vec2(q[6], q[7]) * s) / size;
+    vec2 i = floor(u);
+    float disperse = clamp(q[4], 0.0, 1.5);
+    float evolution = radians(q[9]);
+    bool cycle = q[10] > 0.5;
+    float cycleSpeed = 1.0 / float(max(1, int(floor(q[11] + 0.5))));
+    uint seed = uint(clamp(floor(q[12] + 0.5), 0.0, 1000000.0));
+    float f1 = 1e9;
+    float f2 = 1e9;
+    float nearHash = 0.0;
+    float nearStatic = 0.0;
+    for (int dy = -1; dy <= 1; ++dy) {
+        for (int dx = -1; dx <= 1; ++dx) {
+            int nx = int(i.x) + dx;
+            int ny = int(i.y) + dy;
+            uint key = uint(nx) + 2654435761u * uint(ny);
+            float h1 = hash01(key, seed * 1013u + 5u, 21u);
+            float h2 = hash01(key, seed * 1013u + 6u, 21u);
+            float h3 = hash01(key, seed * 1013u + 7u, 21u);
+            float h4 = hash01(key, seed * 1013u + 8u, 21u);
+            float a = 2.0 * PI * h3 + evolution * (cycle ? cycleSpeed : 0.75 + 0.5 * h4);
+            vec2 feature = vec2(float(nx), float(ny)) + 0.5 + disperse * (vec2(h1, h2) - 0.5)
+                         + 0.25 * disperse * vec2(cos(a), sin(a));
+            float d = length(u - feature);
+            if (d < f1) {
+                f2 = f1;
+                f1 = d;
+                nearHash = h3;
+                nearStatic = h4;
+            } else if (d < f2) {
+                f2 = d;
+            }
+        }
+    }
+    float edge = f2 - f1;
+    float r = f1 / max(0.5 * (f1 + f2), 1e-6);
+    int pattern = clamp(int(floor(q[0] + 0.5)), 0, 6);
+    float v;
+    if (pattern == 0)
+        v = sqrt(max(0.0, 1.0 - r * r));
+    else if (pattern == 1)
+        v = clamp(edge, 0.0, 1.0);
+    else if (pattern == 2)
+        v = 0.5 + 0.5 * sin(2.0 * PI * nearHash + evolution);
+    else if (pattern == 3)
+        v = nearStatic;
+    else if (pattern == 4)
+        v = nearStatic * (0.4 + 0.6 * clamp(edge * 4.0, 0.0, 1.0));
+    else if (pattern == 5)
+        v = clamp(2.0 * edge / max(f2, 1e-6), 0.0, 1.0);
+    else
+        v = 1.0 - clamp(edge * 3.0, 0.0, 1.0);
+    if (q[8] > 0.0)
+        v *= smoothstep(0.0, 0.5 * q[8], edge);
+    return shapeValue(v, q[2], 0.0, clamp(int(floor(q[3] + 0.5)), 0, 2), q[1] > 0.5);
+}
+
+// ---- 0.6: Lightning and Scribble: the strokes in tex1 (LibraryGeometry.h packStrokes) ----
+
+vec4 dataTexel(int i)
+{
+    return texelFetch(tex1, ivec2(i % 1024, i / 1024), 0);
+}
+
+// {inside (core or line coverage), outside (glow)} at frame position f: only the segments of f's grid cell.
+vec2 strokeShade(vec2 f)
+{
+    vec4 h0 = dataTexel(0);
+    int count = int(h0.x + 0.5);
+    if (count <= 0)
+        return vec2(0.0);
+    int gw = int(h0.y + 0.5);
+    int gh = int(h0.z + 0.5);
+    int firstIndex = int(h0.w + 0.5);
+    vec4 h1 = dataTexel(1);
+    vec4 h2 = dataTexel(2);
+    int segmentBase = int(h2.x + 0.5);
+    int kind = int(h2.y + 0.5);
+    float core = h2.z;
+    ivec2 cell = ivec2(floor((f - h1.xy) / h1.zw));
+    if (cell.x < 0 || cell.y < 0 || cell.x >= gw || cell.y >= gh)
+        return vec2(0.0);
+    vec4 entry = dataTexel(3 + cell.y * gw + cell.x);
+    int start = int(entry.x + 0.5);
+    int n = int(entry.y + 0.5);
+    const float CUT = 0.011108996538242306; // exp(-4.5): the glow at 3 sigma, subtracted so it ends at 0
+    float inside = 0.0;
+    float outside = 0.0;
+    for (int k = 0; k < n; ++k) {
+        int idx = start + k;
+        vec4 group = dataTexel(firstIndex + idx / 4);
+        int c = idx % 4;
+        float which = c == 0 ? group.x : (c == 1 ? group.y : (c == 2 ? group.z : group.w));
+        int segment = int(which + 0.5);
+        vec4 ab = dataTexel(segmentBase + 2 * segment);
+        vec4 ww = dataTexel(segmentBase + 2 * segment + 1);
+        vec2 v = ab.zw - ab.xy;
+        float len2 = dot(v, v);
+        float t = len2 > 0.0 ? clamp(dot(f - ab.xy, v) / len2, 0.0, 1.0) : 0.0;
+        float d = length(f - (ab.xy + t * v));
+        float w = ww.x + (ww.y - ww.x) * t;
+        if (kind == 0) {
+            inside = max(inside, clamp(0.5 * w - d + 0.5, 0.0, 1.0));
+            continue;
+        }
+        if (core > 0.0 && w > 0.0)
+            inside = max(inside, clamp(0.5 * w * core - d + 0.5, 0.0, 1.0));
+        float sigma = 0.5 * w;
+        if (sigma > 0.0 && d < 3.0 * sigma)
+            outside = max(outside, (exp(-d * d / (2.0 * sigma * sigma)) - CUT) / (1.0 - CUT));
+    }
+    return vec2(inside, outside);
+}
+
+// ---- 0.6: Paint Bucket ----
+
+const ivec2 BUCKET_DIRS[4] = ivec2[4](ivec2(1, 0), ivec2(-1, 0), ivec2(0, 1), ivec2(0, -1));
+
+// The fill point's texel in tex0's coordinates (q[29], q[30]: its canvas texel from the top; q[31] = 1 when inside).
+ivec2 bucketSeed()
+{
+    int sy = int(q[30] + 0.5);
+    return ivec2(int(q[29] + 0.5), p.mode.y == 1 ? int(p.texel.w + 0.5) - 1 - sy : sy);
+}
+
+bool bucketInside(ivec2 t)
+{
+    return t.x >= 0 && t.y >= 0 && t.x < int(p.texel.z + 0.5) && t.y < int(p.texel.w + 0.5);
+}
+
+bool bucketSimilar(vec4 c, vec4 seedColor)
+{
+    if (q[31] < 0.5)
+        return false;
+    vec3 e = encoded(c);
+    vec3 es = encoded(seedColor);
+    float a = clamp(c.a, 0.0, 1.0);
+    float as = clamp(seedColor.a, 0.0, 1.0);
+    vec3 dd = abs(e - es);
+    float dc = max(dd.r, max(dd.g, dd.b));
+    int sel = clamp(int(floor(q[2] + 0.5)), 0, 4);
+    float d = sel == 0 ? max(dc, abs(a - as)) : (sel == 1 ? dc : (sel == 2 ? a : (sel == 3 ? 1.0 - a : abs(a - as))));
+    return d * 255.0 <= q[3];
+}
+
 void main()
 {
     loadParams();
@@ -383,6 +737,113 @@ void main()
         if (q[1] > 0.5)
             m = 1.0 - m;
         fragColor = in0 * m;
+    } else if (op == OP_COLORAMA) {
+        vec3 e = encoded(in0);
+        float a = clamp(in0.a, 0.0, 1.0);
+        vec3 h = hls(e);
+        int src = clamp(int(floor(q[0] + 0.5)), 0, 7);
+        float v = src == 0 ? (e.r + e.g + e.b) / 3.0
+                : src == 1 ? h.y
+                : src == 2 ? h.x
+                : src == 3 ? h.z
+                : src == 4 ? e.r
+                : src == 5 ? e.g
+                : src == 6 ? e.b
+                           : a;
+        float phase = v * max(q[2], 0.1) + q[1] / 360.0;
+        float t = fract(phase);
+        if (phase > 0.0 && t < 1e-6)
+            t = 1.0;
+        vec4 mapped = vec4(eotf3(coloramaAt(t)) * a, a);
+        int mode = clamp(int(floor(q[27] + 0.5)), 0, 7);
+        vec4 blended = mode == 0 ? mapped : blendOver(mode + 1, in0, mapped);
+        fragColor = mix(blended, in0, clamp(q[26], 0.0, 1.0));
+    } else if (op == OP_FRACTAL_NOISE) {
+        fragColor = drawGrey(clamp(int(floor(q[19] + 0.5)), 0, 8), in0, fractalNoiseAt(f, s), q[18]);
+    } else if (op == OP_CELL_PATTERN) {
+        fragColor = drawGrey(clamp(int(floor(q[14] + 0.5)), 0, 8), in0, cellPatternAt(f, s), q[13]);
+    } else if (op == OP_LIGHTNING) {
+        vec2 sh = strokeShade(f);
+        vec3 outsideColor = srgbToLinear3(vec3(q[20], q[21], q[22]));
+        vec3 insideColor = srgbToLinear3(vec3(q[23], q[24], q[25]));
+        float ki = sh.x;
+        float ko = sh.y * (1.0 - ki);
+        vec4 bolt = vec4(insideColor * ki + outsideColor * ko, ki + ko);
+        int mode = clamp(int(floor(q[28] + 0.5)), 0, 2);
+        fragColor = mode == 0 ? bolt + in0 * (1.0 - bolt.a)
+                  : (mode == 1 ? vec4(in0.rgb + bolt.rgb, min(1.0, in0.a + bolt.a)) : in0 + bolt - in0 * bolt);
+    } else if (op == OP_SCRIBBLE) {
+        float k = strokeShade(f).x * clamp(q[6], 0.0, 1.0);
+        vec4 line = vec4(srgbToLinear3(vec3(q[3], q[4], q[5])) * k, k);
+        int composite = clamp(int(floor(q[18] + 0.5)), 0, 2);
+        fragColor = composite == 0 ? line + in0 * (1.0 - k) : (composite == 1 ? line : in0 * k);
+    } else if (op == OP_PAINT_BUCKET) {
+        // The stages (Compositor applyLibrary): 0 runs of similar pixels (1 each), 1 run doubling by q[28], 2 the fill
+        // point, 3 propagation (tex0 = the fill, tex1 = the runs), 4 the mask (Invert Fill), 5 the fill composited
+        // (tex1 = the mask softened by Stroke).
+        int stage = p.mode.w;
+        ivec2 t0 = ivec2(gl_FragCoord.xy);
+        if (stage == 0) {
+            vec4 seedColor = texelFetch(tex0, bucketSeed(), 0);
+            fragColor = vec4(bucketSimilar(texelFetch(tex0, t0, 0), seedColor) ? 1.0 : 0.0);
+        } else if (stage == 1) {
+            vec4 r = texelFetch(tex0, t0, 0);
+            float st = floor(q[28] + 0.5);
+            vec4 runs = r;
+            for (int c = 0; c < 4; ++c) {
+                if (r[c] >= st) {
+                    ivec2 n = t0 + BUCKET_DIRS[c] * int(st);
+                    runs[c] = st + (bucketInside(n) ? texelFetch(tex0, n, 0)[c] : 0.0);
+                }
+            }
+            fragColor = runs;
+        } else if (stage == 2) {
+            float r = texelFetch(tex0, t0, 0).x;
+            fragColor = vec4(q[31] > 0.5 && r > 0.0 && t0 == bucketSeed() ? 1.0 : 0.0);
+        } else if (stage == 3) {
+            float filled = texelFetch(tex0, t0, 0).a;
+            vec4 r = texelFetch(tex1, t0, 0);
+            if (filled < 0.5 && r.x > 0.0) {
+                bool hit = false;
+                for (int c = 0; c < 4; ++c) {
+                    for (int j = 0; j <= 10; ++j) {
+                        int st = 1 << j;
+                        if (hit || r[c] <= float(st))
+                            break;
+                        ivec2 n = t0 + BUCKET_DIRS[c] * st;
+                        hit = bucketInside(n) && texelFetch(tex0, n, 0).a > 0.5;
+                    }
+                }
+                filled = hit ? 1.0 : 0.0;
+            }
+            fragColor = vec4(filled);
+        } else if (stage == 4) {
+            float m = texelFetch(tex0, t0, 0).a > 0.5 ? 1.0 : 0.0;
+            fragColor = vec4(q[11] > 0.5 ? 1.0 - m : m);
+        } else if (q[4] > 0.5) {
+            // View Threshold: what the fill selects, white on black.
+            vec4 seedColor = texelFetch(tex0, bucketSeed(), 0);
+            fragColor = bucketSimilar(in0, seedColor) ? vec4(1.0) : vec4(0.0, 0.0, 0.0, 1.0);
+        } else {
+            float b = clamp(textureLod(tex1, v_uv, 0.0).a, 0.0, 1.0);
+            int stroke = clamp(int(floor(q[5] + 0.5)), 0, 4);
+            float m = b;
+            if (stroke == 2)
+                m = smoothstep(0.02, 0.3, b);
+            else if (stroke == 3)
+                m = smoothstep(0.7, 0.98, b);
+            else if (stroke == 4)
+                m = smoothstep(0.05, 0.3, b) * (1.0 - smoothstep(0.7, 0.95, b));
+            float k = m * clamp(q[12], 0.0, 1.0);
+            vec4 fill = vec4(srgbToLinear3(vec3(q[8], q[9], q[10])) * k, k);
+            int mode = clamp(int(floor(q[13] + 0.5)), 0, 5);
+            fragColor = mode == 0 ? fill + in0 * (1.0 - k)
+                      : mode == 1 ? in0 + fill * (1.0 - in0.a)
+                      : mode == 2 ? vec4(in0.rgb + fill.rgb, min(1.0, in0.a + fill.a))
+                      : mode == 3 ? blendOver(3, in0, fill)
+                      : mode == 4 ? blendOver(4, in0, fill)
+                                  : fill;
+        }
     } else {
         fragColor = in0;
     }

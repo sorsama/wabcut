@@ -11,6 +11,7 @@
 #include <wabcut/audio/effects/EffectChain.h>
 
 #include <wabcut/model/AudioChannelOps.h>
+#include <wabcut/model/MasterClipEffects.h>
 #include <wabcut/model/TimeRemap.h>
 
 #include <algorithm>
@@ -190,10 +191,12 @@ const Transition* tailTransition(const Track& track, ClipId clip) {
 }
 
 /// Whether `next` plays on in the same voice as `prev`: a through edit of forward clips with the same effects and no
-/// transition on the edit point.
+/// transition on the edit point. Fix F1A (card #71): the same Master Clip Effects switch too (the voice plays the first
+/// clip's stack, its media's master effects included or not).
 bool sameVoice(const Track& track, const Clip& prev, const Clip& next) {
     return !prev.reversed && !next.reversed && playable(prev) && playable(next) && continuesSeamlessly(prev, next) &&
-           (prev.sharesContentWith(next) || prev.effects() == next.effects()) &&
+           (prev.sharesContentWith(next) || (prev.effects() == next.effects() &&
+                                              prev.content().masterEffectsOff == next.content().masterEffectsOff)) &&
            tailTransition(track, prev.id) == nullptr && headTransition(track, next.id) == nullptr;
 }
 
@@ -254,6 +257,9 @@ struct TrackRenderer::Impl {
             bool used = false;
         };
         std::vector<Speed> speed;
+        /// 0.6 (card #71): the run's stack with its media's Master Clip Effects first (MasterClipEffects.h); the chain
+        /// binds to it, so it lives until the next bind.
+        EffectStack played;
 
         Voice(ClipId k, int channels, int sampleRate) : key(k), chain(channels, sampleRate) {}
     };
@@ -322,6 +328,25 @@ struct TrackRenderer::Impl {
     std::vector<float> pieceOut; ///< A.10: one speed piece's output for a read
 
     int sampleRate() const { return static_cast<int>(rate.num / std::max(rate.den, 1)); }
+    /// A.4: the clip's Enhance Speech, or null without takes. Fix F1A (card #71): its media's Master Clip Effects play
+    /// first, so one there counts first; read in place (the project keeps the media items), nothing copied on the
+    /// render thread.
+    const EffectInstance* enhanceOf(const Clip& clip) const {
+        if (!takes) {
+            return nullptr;
+        }
+        if (project && playsMasterEffects(*project, clip)) {
+            const MediaItem* item = project->findMedia(clip.media);
+            const MediaItem* master =
+                item && item->subclip && item->subclip->master != item->id ? project->findMedia(item->subclip->master) : nullptr;
+            for (const MediaItem* holder : {master, item}) {
+                if (const EffectInstance* e = holder ? enhanceSpeechEffect(holder->masterEffects) : nullptr) {
+                    return e;
+                }
+            }
+        }
+        return enhanceSpeechEffect(clip.effects());
+    }
     /// Review A5-P2-10: a mono or stereo track on a 5.1 bus runs its clips, their effects and its own effects at the
     /// track's channel count, and its 5.1 panner places the result on the bus as the last step (Premiere's order):
     /// stereo effects see the track's channels, not the puck's spread over five speakers (a reverb never feeds the
@@ -634,7 +659,7 @@ struct TrackRenderer::Impl {
                     TrackRenderStats& stats)
             : m_d(d), m_clip(clip), m_frame(pieceFrame), m_feed(feed), m_stats(stats),
               m_routing(d.routingFor(track, clip)) {
-            const EffectInstance* enhance = d.takes ? enhanceSpeechEffect(clip.effects()) : nullptr;
+            const EffectInstance* enhance = d.enhanceOf(clip);
             m_enhanced = enhance ? d.takes->find(clip.media, clip.stream.index, kEnhanceSpeechTake) : nullptr;
             if (m_enhanced != nullptr) {
                 const ParamValue* strength = enhance->find("strength");
@@ -783,7 +808,7 @@ struct TrackRenderer::Impl {
                 continue;
             }
             // A.4: the media's enhanced take, when the clip enhances speech and the take was rendered.
-            const EffectInstance* enhance = takes ? enhanceSpeechEffect(clip.effects()) : nullptr;
+            const EffectInstance* enhance = enhanceOf(clip);
             const AudioTakes::Take* enhanced = enhance ? takes->find(clip.media, clip.stream.index, kEnhanceSpeechTake) : nullptr;
             const auto readSpan = [&](std::int64_t begin, std::int64_t end) {
                 if (end <= begin) {
@@ -1119,7 +1144,12 @@ struct TrackRenderer::Impl {
             }
             const Clip& first = clips[run.first];
             Voice& voice = voiceFor(first.id);
-            if (voice.chain.bind(first.effects()) && voice.primed) {
+            const EffectStack* stack = &first.effects();
+            if (project && playsMasterEffects(*project, first)) {
+                voice.played = playedEffects(*project, first, EffectKind::Audio);
+                stack = &voice.played;
+            }
+            if (voice.chain.bind(*stack) && voice.primed) {
                 voice.chain.reset(); // the stack's structure changed under a running voice: start it again here
                 voice.primed = false;
             }
@@ -1207,7 +1237,9 @@ struct TrackRenderer::Impl {
         const ClipList& clips = track.clips;
         for (std::size_t i = firstClipEndingAfter(clips, start - options.maxPreroll);
              i < clips.size() && clips[i].start() <= start; ++i) {
-            if (playable(clips[i]) && hasRunnableEffects(clips[i].effects())) {
+            if (playable(clips[i]) && (hasRunnableEffects(clips[i].effects()) ||
+                                       (project && playsMasterEffects(*project, clips[i]) &&
+                                        hasRunnableEffects(masterEffectsOf(*project, clips[i].media, EffectKind::Audio))))) {
                 return true;
             }
         }

@@ -1,4 +1,5 @@
-schema 18
+schema 19
+active
 after
 alignment
 allowOverlap
@@ -10,7 +11,9 @@ audioDisplay
 audioEffects
 audioRate
 audioTracks
+audition
 autoDetectLog
+baselineKeys
 beatGrid
 before
 bin
@@ -26,6 +29,7 @@ brandKit
 cameraAngle
 cameraLabel
 cameraModel
+caps
 captionPresets
 captionTracks
 ceiling
@@ -60,6 +64,8 @@ effect
 effects
 enabled
 endOffScreen
+fauxBold
+fauxItalic
 field
 fieldOptions
 fieldOrder
@@ -79,11 +85,15 @@ frameCount
 frameRate
 freeform
 from
+gamut
+gamutCompression
+gamutCompressionStrength
 generated
 generation
 generator
 good
 graphic
+headTrim
 height
 highlight
 holdFilters
@@ -100,6 +110,7 @@ invertAlpha
 inverted
 isStillImage
 items
+kerning
 keys
 kind
 label
@@ -109,6 +120,8 @@ latencyCompensation
 layer
 layers
 layouts
+leadingKeys
+legalRange
 level
 lfeDb
 lineSpacing
@@ -124,6 +137,8 @@ markIn
 markOut
 markers
 masks
+masterEffects
+masterEffectsOff
 masterFormat
 matrix
 matte
@@ -155,8 +170,10 @@ outgoing
 outline
 outlineWidth
 output
+outputSpace
 pan
 panner.balance
+paperWhiteNits
 parameters
 params
 parent
@@ -168,6 +185,7 @@ pin
 pixelAspect
 pixelFormat
 placement
+position
 positionX
 positionY
 postroll
@@ -207,11 +225,13 @@ scaling
 scene
 schemaVersion
 score
+sdrConform
 search
 sends
 sequence
 sequences
 settings
+shadow
 shadowAngle
 shadowColor
 shadowDistance
@@ -225,9 +245,11 @@ showSpeakers
 size
 size.x
 size.y
+sizeKeys
 solo
 source
 sourceIn
+sourceKey
 sources
 speed
 start
@@ -236,6 +258,7 @@ startTimecode
 status
 stillDuration
 stream
+strokes
 style
 submix
 submixTracks
@@ -243,7 +266,10 @@ surround
 sync
 syncLocked
 t
+tailTrim
 take
+takes
+targetPeakNits
 targeted
 templates
 text
@@ -253,8 +279,10 @@ timeInterpolation
 timecode
 title
 to
+toneMap
 track
 trackStyle
+trackingKeys
 transcribed
 transfer
 transitions
@@ -264,6 +292,7 @@ v
 value
 variableFrameRate
 version
+verticalAlign
 video
 videoDisplay
 videoTracks

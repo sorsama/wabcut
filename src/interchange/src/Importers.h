@@ -9,6 +9,7 @@
 
 #include <cstddef>
 #include <expected>
+#include <filesystem>
 #include <string>
 #include <string_view>
 
@@ -18,6 +19,14 @@ struct ParseContext {
     /// File label for report locations.
     std::string fileLabel;
     const ImportOptions* options = nullptr;
+    /// 0.6 (AAF / OMF): where embedded media is written; empty: it is not extracted (and stays offline).
+    std::filesystem::path mediaFolder;
+};
+
+/// 0.6: a binary file to import (AAF, OMF): its bytes, or the file on disk, read on demand (any size).
+struct BinaryInput {
+    std::string_view bytes;
+    std::filesystem::path file;
 };
 
 /// Nesting limit for recursive structures (nested sequences, stacks, compound clips).
@@ -29,6 +38,9 @@ std::expected<IrDocument, Error> parseOtio(std::string_view data, const ParseCon
 std::expected<IrDocument, Error> parseEdl(std::string_view data, const ParseContext& context);
 /// `data` is the .prproj file as stored (gzip-compressed XML, or plain XML).
 std::expected<IrDocument, Error> parsePremiereProject(std::string_view data, const ParseContext& context);
+/// 0.6 (card #68): AAF (AafImporter.cpp) and OMF 2.0 (OmfImporter.cpp) compositions, through AudioPostImport.h.
+std::expected<IrDocument, Error> parseAaf(const BinaryInput& input, const ParseContext& context);
+std::expected<IrDocument, Error> parseOmf(const BinaryInput& input, const ParseContext& context);
 
 /// Inflates gzip data, refusing to produce more than `maxBytes` (decompression bombs). With
 /// `allowTruncated`, returns what decompressed before the input ended (for sniffing a file prefix).

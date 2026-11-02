@@ -56,7 +56,10 @@ std::expected<UpdateRelease, QString> readManifest(const QByteArray& manifest, c
 /// entries are left out.
 QList<QByteArray> parsePublicKeys(const QString& list);
 
-/// < 0, 0, > 0 as `a` is older than, the same as, or newer than `b` (x.y.z, numerically).
+/// < 0, 0, > 0 as `a` is older than, the same as, or newer than `b`: semantic versions, a leading "v" allowed
+/// ("v0.6.0"), x.y.z compared numerically (missing parts are 0), then a pre-release is older than its release
+/// ("0.6.0-beta.2" < "0.6.0") and pre-release identifiers compare as SemVer says (numbers numerically and below words);
+/// build metadata ("+abc") is ignored.
 int compareVersions(const QString& a, const QString& b);
 
 /// The release page of a version under the releases base URL ("https://github.com/sorsama/wabcut/releases" ->

@@ -1,8 +1,12 @@
 #include "MediaReadinessBridge.h"
 
 #include "BridgeIds.h"
+#include "CacheFolders.h"
+#include "DiskSpace.h"
+#include "ExportController.h"
 #include "PlaybackBridge.h"
 #include "ProjectController.h"
+#include "SourceMonitorBridge.h"
 #include "ProjectLifecycle.h"
 
 #include <wabcut/ai/ModelStore.h>
@@ -29,6 +33,21 @@ namespace wabcut::app {
 namespace {
 
 constexpr int kPollMs = 250;
+// P1 (#58): the automatic cache limits: after start, after a proxy batch, and again while other work ran.
+constexpr int kAutoEnforceAfterStartMs = 30'000;
+constexpr int kAutoEnforceAfterBatchMs = 2'000;
+constexpr int kAutoEnforceRetryMs = 60'000;
+const QString kAutoEnforceKey = QStringLiteral("cache/autoEnforce");
+const QString kRenderFilesId = QStringLiteral("renderFiles");
+
+/// Fix F1A (ARGON-04): the caches whose size limit Wabcut keeps by deleting files: only those no project refers to
+/// (thumbnails and waveforms: pictures made from the media, made again when missing). Proxies (project files name their
+/// proxies, other projects may share a proxy folder, and a proxy can be the only playable copy while the originals are
+/// offline) and analysis results (an AI object mask names its matte there; transcripts and other results serve
+/// projects Wabcut cannot see while they are closed) are never deleted by a limit, only by their row's Clean.
+bool keptByLimit(const std::string& id) {
+    return id == "thumbnails" || id == "peaks";
+}
 
 QString toQString(const std::filesystem::path& p) {
     return QString::fromStdU16String(p.generic_u16string());
@@ -86,11 +105,27 @@ MediaReadinessBridge::MediaReadinessBridge(ProjectLifecycle* lifecycle, Playback
                         .contains(quality)
                     ? quality
                     : QStringLiteral("auto");
+    // P1 (#16): Premiere's Paused Resolution defaults to Full.
+    const QString paused = settings.value(QStringLiteral("preview/pausedQuality"), QStringLiteral("full")).toString();
+    m_pausedQuality = QStringList{QStringLiteral("same"), QStringLiteral("full"), QStringLiteral("half"), QStringLiteral("quarter")}
+                              .contains(paused)
+                          ? paused
+                          : QStringLiteral("full");
+    // P1 (#16): the paused resolution starts and ends with the transport (not only at the next poll).
+    if (m_playback) {
+        connect(m_playback, &PlaybackBridge::transportChanged, this, &MediaReadinessBridge::updatePlaying);
+    }
 
+    m_startMediaCache = cachefolders::mediaCacheFolder();
+    m_startAiCache = QDir::cleanPath(toQString(ai::userCacheDir()));
     if (m_lifecycle) {
         editor::ProxyManagerOptions options;
         const QString cache = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
         options.untitledProxyRoot = toPath(cache);
+        // P1 (#48): Settings > Media & cache > Proxies: In this folder.
+        if (const QString root = cachefolders::proxyRoot(); !root.isEmpty()) {
+            options.proxyRoot = toPath(root);
+        }
         options.governor = m_governor;
         options.policy = editor::parsePolicy(settings.value(QStringLiteral("proxies/policy"), QStringLiteral("auto"))
                                                  .toString()
@@ -118,6 +153,12 @@ MediaReadinessBridge::MediaReadinessBridge(ProjectLifecycle* lifecycle, Playback
     m_poll.setInterval(kPollMs);
     connect(&m_poll, &QTimer::timeout, this, &MediaReadinessBridge::pollNow);
     m_poll.start();
+    // P1 (#58): the cache limits are kept without Settings being opened: a quiet enforce-and-scan after start.
+    m_autoEnforce.setSingleShot(true);
+    connect(&m_autoEnforce, &QTimer::timeout, this, [this] { (void)autoEnforceCaches(); });
+    if (autoEnforce()) {
+        m_autoEnforce.start(kAutoEnforceAfterStartMs);
+    }
     attachDocument();
 }
 
@@ -127,6 +168,8 @@ MediaReadinessBridge::~MediaReadinessBridge() {
         m_cacheGate->bridge = nullptr;
     }
     m_poll.stop();
+    m_autoEnforce.stop();
+    m_deleteJob.stop(); // joins a render-file delete
     m_render.stop();   // joins the render worker
     m_manager.reset(); // joins the proxy worker
 }
@@ -134,7 +177,44 @@ MediaReadinessBridge::~MediaReadinessBridge() {
 MediaReadinessBridge* MediaReadinessBridge::create(QQmlEngine* qmlEngine, QJSEngine*) {
     auto* lifecycle = qmlEngine->singletonInstance<ProjectLifecycle*>("Wabcut", "ProjectFile");
     auto* playback = qmlEngine->singletonInstance<PlaybackBridge*>("Wabcut", "Playback");
-    return new MediaReadinessBridge(lifecycle, playback);
+    auto* bridge = new MediaReadinessBridge(lifecycle, playback);
+    bridge->setSourceMonitor(qmlEngine->singletonInstance<SourceMonitorBridge*>("Wabcut", "SourceMonitor"));
+    // P1 (#58): the automatic cache limits wait while an export runs (looked up when asked: the export queue is made
+    // by the editor's own first use).
+    bridge->setExportBusyProbe([engine = QPointer<QQmlEngine>(qmlEngine)] {
+        auto* exports = engine ? engine->singletonInstance<ExportController*>("Wabcut", "ExportController") : nullptr;
+        return exports && exports->busy();
+    });
+    return bridge;
+}
+
+void MediaReadinessBridge::setSourceMonitor(SourceMonitorBridge* source) {
+    if (m_source == source) {
+        return;
+    }
+    if (m_source) {
+        disconnect(m_source, nullptr, this, nullptr);
+    }
+    m_source = source;
+    if (source) {
+        connect(source, &SourceMonitorBridge::transportChanged, this, &MediaReadinessBridge::updatePlaying);
+        connect(source, &SourceMonitorBridge::sourceChanged, this, &MediaReadinessBridge::updatePlaying);
+    }
+    updatePlaying();
+}
+
+void MediaReadinessBridge::updatePlaying() {
+    const bool playing = (m_playback && m_playback->playing()) || (m_source && m_source->playing());
+    if (playing == m_monitorPlaying) {
+        return;
+    }
+    const int before = previewDivisor();
+    m_monitorPlaying = playing;
+    emit previewChanged();
+    if (previewDivisor() != before) {
+        applyPreview(); // the scheduler bumps its preview version: the parked frame is drawn again
+        updateBadge();
+    }
 }
 
 void MediaReadinessBridge::attachDocument() {
@@ -145,6 +225,7 @@ void MediaReadinessBridge::attachDocument() {
     applyPreview();
     updateProxyState();
     updateBadge();
+    emit locationsChanged(); // the proxy folder follows the project
 }
 
 // ---- Settings ---------------------------------------------------------------------------------------------------
@@ -218,6 +299,19 @@ void MediaReadinessBridge::setPreviewQuality(const QString& quality) {
     updateBadge();
 }
 
+void MediaReadinessBridge::setPausedQuality(const QString& quality) {
+    if (quality == m_pausedQuality ||
+        !QStringList{QStringLiteral("same"), QStringLiteral("full"), QStringLiteral("half"), QStringLiteral("quarter")}
+             .contains(quality)) {
+        return;
+    }
+    m_pausedQuality = quality;
+    QSettings().setValue(QStringLiteral("preview/pausedQuality"), quality);
+    emit previewChanged();
+    applyPreview();
+    updateBadge();
+}
+
 void MediaReadinessBridge::setDisplayScale(double scale) {
     if (!(scale > 0.0) || std::abs(scale - m_displayScale) < 1e-4) {
         return;
@@ -232,6 +326,22 @@ void MediaReadinessBridge::setDisplayScale(double scale) {
 }
 
 int MediaReadinessBridge::previewDivisor() const {
+    // P1 (#16): parked, the paused resolution (Premiere's Paused Resolution); "same" keeps the playback one.
+    if (!m_monitorPlaying) {
+        if (m_pausedQuality == QLatin1String("full")) {
+            return 1;
+        }
+        if (m_pausedQuality == QLatin1String("half")) {
+            return 2;
+        }
+        if (m_pausedQuality == QLatin1String("quarter")) {
+            return 4;
+        }
+    }
+    return playbackDivisor();
+}
+
+int MediaReadinessBridge::playbackDivisor() const {
     if (m_quality == QLatin1String("full")) {
         return 1;
     }
@@ -261,6 +371,7 @@ void MediaReadinessBridge::pollNow() {
     }
     EditSession& session = m_lifecycle->document().session();
     m_governor->setActive(editor::ResourceGovernor::Playback, m_playback && m_playback->playing());
+    updatePlaying(); // P1 (#16): normally already done on the transport's signal
     m_governor->setActive(editor::ResourceGovernor::Gesture, session.inGesture());
     if (session.revision() != m_seenRevision) {
         m_seenRevision = session.revision();
@@ -369,8 +480,57 @@ void MediaReadinessBridge::setPreviewRendererForTests(std::shared_ptr<PreviewRen
 }
 
 QString MediaReadinessBridge::renderInToOut() {
+    return startRender({}, QStringLiteral("inToOut"));
+}
+
+QString MediaReadinessBridge::renderSelection() {
     if (m_render.running()) {
         return tr("Already rendering");
+    }
+    const std::vector<TimeRange> ranges = selectionRanges();
+    if (ranges.empty()) {
+        ProjectController* controller = m_lifecycle ? m_lifecycle->controller() : nullptr;
+        return controller && controller->currentSequence() ? tr("Select a video clip first") : tr("Open a sequence first");
+    }
+    return startRender(ranges, QStringLiteral("selection"));
+}
+
+std::vector<TimeRange> MediaReadinessBridge::selectionRanges() const {
+    ProjectController* controller = m_lifecycle ? m_lifecycle->controller() : nullptr;
+    const SequencePtr seq = controller ? controller->currentSequence() : nullptr;
+    if (!seq || controller->selection().empty()) {
+        return {};
+    }
+    // Previews are pictures: the video clips count (a linked audio partner adds nothing beyond its video).
+    std::vector<TimeRange> ranges;
+    for (const TrackPtr& track : seq->videoTracks) {
+        if (!track) {
+            continue;
+        }
+        for (const Clip& clip : track->clips) {
+            if (controller->isSelected(clip.id) && clip.timelineRange.duration > Ticks{}) {
+                ranges.push_back(clip.timelineRange);
+            }
+        }
+    }
+    std::sort(ranges.begin(), ranges.end(), [](const TimeRange& a, const TimeRange& b) { return a.start < b.start; });
+    std::vector<TimeRange> merged;
+    for (const TimeRange& r : ranges) {
+        if (!merged.empty() && r.start <= merged.back().end()) {
+            merged.back() = TimeRange::fromStartEnd(merged.back().start, std::max(merged.back().end(), r.end()));
+        } else {
+            merged.push_back(r);
+        }
+    }
+    return merged;
+}
+
+QString MediaReadinessBridge::startRender(const std::vector<TimeRange>& ranges, const QString& scope) {
+    if (m_render.running()) {
+        return tr("Already rendering");
+    }
+    if (m_deleteJob.running()) {
+        return tr("Render files are being deleted");
     }
     ProjectController* controller = m_lifecycle ? m_lifecycle->controller() : nullptr;
     if (!controller) {
@@ -380,19 +540,57 @@ QString MediaReadinessBridge::renderInToOut() {
     if (!sequence.isValid()) {
         return tr("Open a sequence first");
     }
+    if (m_renderScope != scope) {
+        m_renderScope = scope;
+        emit renderChanged();
+    }
     ensurePreviewCache();
     std::error_code ec;
     std::filesystem::create_directories(m_previewFolder, ec);
     if (ec) {
         return tr("The preview folder cannot be made: %1").arg(QString::fromStdString(ec.message()));
     }
+    // P1 (#29, stream 1C): the previews (ProRes LT, about 102 Mb/s at 1080p30, scaled by the pixel rate) between In and
+    // Out need room on the preview folder's drive; when it is short the render does not start, and the toast says why.
+    if (const SequencePtr seq = controller->currentSequence()) {
+        double seconds = 0.0;
+        if (ranges.empty()) {
+            const Ticks in = seq->markIn.value_or(Ticks{});
+            const Ticks out = seq->markOut.value_or(std::max(seq->duration, seq->contentEnd()));
+            seconds = std::max(0.0, (out - in).toSeconds());
+        } else {
+            for (const TimeRange& r : ranges) { // P1 (#7): Render Selection's ranges
+                seconds += std::max(0.0, r.duration.toSeconds());
+            }
+        }
+        const double pixelRate = static_cast<double>(seq->width) * seq->height * seq->frameRate.toDouble();
+        const double bytes = 102e6 * pixelRate / (1920.0 * 1080.0 * 29.97) * seconds / 8.0;
+        const QString low = diskspace::lowSpaceMessage(toQString(m_previewFolder), bytes, tr("the previews"));
+        if (!low.isEmpty()) {
+            m_renderMessage = low;
+            emit renderChanged();
+            emit renderFinished(QStringLiteral("failed"), low);
+            return low;
+        }
+    }
     m_rendering = true;
     m_renderProgress = 0.0;
     m_renderMessage = tr("Rendering previews…");
     emit renderChanged();
     QPointer<MediaReadinessBridge> self(this);
-    const bool started = m_render.start(
-        this, controller, previewServices(), {"render.previewInOut", command::Json{{"sequence", sequence.value}}, "Render In to Out"},
+    // P1 (#7): Render Selection is one render.previewInOut per range, in one job (one progress, one Cancel).
+    std::vector<CommandJob::Request> requests;
+    if (ranges.empty()) {
+        requests.push_back({"render.previewInOut", command::Json{{"sequence", sequence.value}}, "Render In to Out"});
+    } else {
+        for (const TimeRange& r : ranges) {
+            requests.push_back({"render.previewInOut",
+                                command::Json{{"sequence", sequence.value}, {"start", r.start.value}, {"end", r.end().value}},
+                                "Render Selection"});
+        }
+    }
+    const bool started = m_render.startBatch(
+        this, controller, previewServices(), std::move(requests),
         [self](const QString& text, double progress) {
             if (!self)
                 return;
@@ -410,6 +608,7 @@ QString MediaReadinessBridge::renderInToOut() {
             self->applyPreview(true); // the monitor picks up the new files
             emit self->renderChanged();
             emit self->previewFilesChanged(); // the render bar turns green there (0.2)
+            self->updateRenderFilesRow();     // P1 (#58): Settings > Media & cache shows their size
             // UX rework (L): the toast's cue.
             const QString outcome = result.ok() ? QStringLiteral("done")
                                     : result.error->code == command::ErrorCode::Cancelled ? QStringLiteral("cancelled")
@@ -428,6 +627,146 @@ QString MediaReadinessBridge::renderInToOut() {
 
 void MediaReadinessBridge::cancelRender() {
     m_render.cancel();
+}
+
+// ---- Delete Render Files (P1 #7, #58) ---------------------------------------------------------------------------
+
+QVariantMap MediaReadinessBridge::previewFilesInfo(bool inToOut) {
+    QVariantMap info{{QStringLiteral("enabled"), false}, {QStringLiteral("reason"), QString()},
+                     {QStringLiteral("files"), 0},      {QStringLiteral("bytes"), 0.0},
+                     {QStringLiteral("sizeText"), QString::fromStdString(editor::formatBytes(0))},
+                     {QStringLiteral("sequenceName"), QString()}};
+    ProjectController* controller = m_lifecycle ? m_lifecycle->controller() : nullptr;
+    const SequencePtr seq = controller ? controller->currentSequence() : nullptr;
+    if (!seq) {
+        info[QStringLiteral("reason")] = tr("Open a sequence first");
+        return info;
+    }
+    info[QStringLiteral("sequenceName")] = QString::fromStdString(seq->name);
+    std::optional<TimeRange> range;
+    if (inToOut) {
+        if (!seq->markIn && !seq->markOut) {
+            info[QStringLiteral("reason")] = tr("Set an In or an Out in the sequence first");
+            return info;
+        }
+        // As Render In to Out reads them: a missing mark is the sequence's start or end.
+        const Ticks start = seq->markIn.value_or(Ticks{});
+        const Ticks end = seq->markOut.value_or(std::max(seq->duration, seq->contentEnd()));
+        if (end <= start) {
+            info[QStringLiteral("reason")] = tr("The Out mark is before the In mark");
+            return info;
+        }
+        range = TimeRange::fromStartEnd(start, end);
+    }
+    // What render.deletePreviewFiles deletes (its dry run counts the same entries).
+    int files = 0;
+    std::int64_t bytes = 0;
+    for (const PreviewEntry& e : previewCache()->entries()) {
+        if (e.sequence == seq->id && (!range || e.range.overlaps(*range))) {
+            ++files;
+            bytes += e.bytes;
+        }
+    }
+    info[QStringLiteral("files")] = files;
+    info[QStringLiteral("bytes")] = static_cast<double>(bytes);
+    info[QStringLiteral("sizeText")] = QString::fromStdString(editor::formatBytes(bytes));
+    if (files == 0) {
+        info[QStringLiteral("reason")] = inToOut ? tr("There are no render files between In and Out")
+                                                 : tr("This sequence has no render files");
+        return info;
+    }
+    if (m_render.running()) {
+        info[QStringLiteral("reason")] = tr("Wait for the render to finish");
+        return info;
+    }
+    if (m_deleteJob.running()) {
+        info[QStringLiteral("reason")] = tr("Render files are being deleted");
+        return info;
+    }
+    info[QStringLiteral("enabled")] = true;
+    return info;
+}
+
+QString MediaReadinessBridge::deleteRenderFiles(bool inToOut) {
+    const QVariantMap info = previewFilesInfo(inToOut);
+    if (!info.value(QStringLiteral("enabled")).toBool()) {
+        return info.value(QStringLiteral("reason")).toString();
+    }
+    ProjectController* controller = m_lifecycle->controller();
+    const SequencePtr seq = controller->currentSequence();
+    command::Json params{{"sequence", seq->id.value}};
+    if (inToOut) {
+        params["start"] = seq->markIn.value_or(Ticks{}).value;
+        params["end"] = seq->markOut.value_or(std::max(seq->duration, seq->contentEnd())).value;
+    }
+    return startDelete(std::move(params));
+}
+
+QString MediaReadinessBridge::startDelete(command::Json params) {
+    if (m_render.running()) {
+        return tr("Wait for the render to finish");
+    }
+    if (m_deleteJob.running()) {
+        return tr("Render files are being deleted");
+    }
+    ProjectController* controller = m_lifecycle ? m_lifecycle->controller() : nullptr;
+    if (!controller) {
+        return tr("No project is open");
+    }
+    QPointer<MediaReadinessBridge> self(this);
+    // Off the GUI thread: a long sequence can have thousands of files, on a slow drive. PreviewCache is thread-safe; a
+    // file the monitor's decoder still has open is deleted once it is let go (PreviewCache::retryDeletes).
+    const bool started = m_deleteJob.start(
+        this, controller, previewServices(), {"render.deletePreviewFiles", std::move(params), "Delete Render Files"}, {},
+        [self](const command::CommandResult& result) {
+            if (!self)
+                return;
+            self->applyPreview(true);         // the monitor composites live where the files went
+            emit self->previewFilesChanged(); // the render bar turns red or yellow again
+            self->updateRenderFilesRow();
+            if (!result.ok()) {
+                emit self->renderFilesDeleted(false, tr("The render files could not be deleted: %1").arg(commandErrorText(result)));
+                return;
+            }
+            const command::Json& data = result.data;
+            const int files = data.is_object() ? data.value("files", 0) : 0;
+            const std::int64_t bytes = data.is_object() ? data.value("bytes", std::int64_t{0}) : 0;
+            const QString count = files == 1 ? tr("1 file") : tr("%1 files").arg(files);
+            //: %1 is a size such as "1.2 GB", %2 how many files ("12 files")
+            emit self->renderFilesDeleted(true, tr("Deleted %1 of render files (%2).")
+                                                    .arg(QString::fromStdString(editor::formatBytes(bytes)), count));
+        });
+    return started ? QString() : tr("Render files are being deleted");
+}
+
+bool MediaReadinessBridge::handlesCommand(const QString& id) {
+    return id == QLatin1String("sequence.renderSelection") || id == QLatin1String("sequence.deleteRenderFiles") ||
+           id == QLatin1String("sequence.deleteRenderFilesInToOut");
+}
+
+QVariantMap MediaReadinessBridge::commandAvailability(const QString& id) {
+    const auto state = [](bool enabled, const QString& reason) {
+        return QVariantMap{{QStringLiteral("handled"), true}, {QStringLiteral("enabled"), enabled},
+                           {QStringLiteral("reason"), enabled ? QString() : reason}};
+    };
+    if (!handlesCommand(id)) {
+        return {};
+    }
+    if (id == QLatin1String("sequence.renderSelection")) {
+        ProjectController* controller = m_lifecycle ? m_lifecycle->controller() : nullptr;
+        if (!controller || !controller->currentSequence()) {
+            return state(false, tr("Open a sequence first"));
+        }
+        if (m_render.running()) {
+            return state(false, tr("A render is running"));
+        }
+        if (m_deleteJob.running()) {
+            return state(false, tr("Render files are being deleted"));
+        }
+        return state(!selectionRanges().empty(), tr("Select a video clip first"));
+    }
+    const QVariantMap info = previewFilesInfo(id == QLatin1String("sequence.deleteRenderFilesInToOut"));
+    return state(info.value(QStringLiteral("enabled")).toBool(), info.value(QStringLiteral("reason")).toString());
 }
 
 void MediaReadinessBridge::updateProxyState() {
@@ -476,6 +815,11 @@ void MediaReadinessBridge::updateProxyState() {
     const bool working = c.generating + c.queued > 0;
     if (states != m_mediaStates || text != m_statusText || detail != m_statusDetail || working != m_working ||
         paused != m_pausedForForeground) {
+        // P1 (#58): a proxy batch finished: the caches are brought within their limits again (soon, quietly).
+        if (m_working && !working && autoEnforce() &&
+            (!m_autoEnforce.isActive() || m_autoEnforce.remainingTime() > kAutoEnforceAfterBatchMs)) {
+            m_autoEnforce.start(kAutoEnforceAfterBatchMs);
+        }
         m_mediaStates = std::move(states);
         m_statusText = text;
         m_statusDetail = detail;
@@ -492,9 +836,13 @@ void MediaReadinessBridge::updateBadge() {
             s = controller->stats();
         }
     }
-    const int preview = previewDivisor();
+    // P1 (#16): the badge shows the playback resolution, so it does not change at every play and pause (the paused one
+    // is in the tooltip).
+    const int preview = playbackDivisor();
     const bool decoded = s.proxyLayers + s.originalLayers > 0;
-    const int res = decoded ? std::max(preview, s.decodeDivisor) : preview;
+    // A coarser paused resolution's decodes do not count (the badge would change at every pause).
+    const int decodedDivisor = !m_monitorPlaying && previewDivisor() > preview ? preview : s.decodeDivisor;
+    const int res = decoded ? std::max(preview, decodedDivisor) : preview;
     const QString resText = res == 1 ? tr("Full") : QStringLiteral("1/%1").arg(res);
     QString badge;
     QString state;
@@ -515,6 +863,12 @@ void MediaReadinessBridge::updateBadge() {
                             : m_quality == QLatin1String("half") ? QStringLiteral("1/2")
                                                                  : QStringLiteral("1/4");
     tip << tr("Preview quality: %1").arg(setting);
+    if (m_pausedQuality != QLatin1String("same")) {
+        //: Monitor quality tooltip: Premiere's Paused Resolution, e.g. "Paused: Full"
+        tip << tr("Paused: %1").arg(m_pausedQuality == QLatin1String("full")   ? tr("Full")
+                                    : m_pausedQuality == QLatin1String("half") ? QStringLiteral("1/2")
+                                                                               : QStringLiteral("1/4"));
+    }
     if (decoded) {
         tip << tr("Decoded from %1 proxy layer(s) and %2 original layer(s), at %3 of full resolution")
                    .arg(s.proxyLayers)
@@ -539,6 +893,29 @@ void MediaReadinessBridge::updateBadge() {
 int MediaReadinessBridge::generateProxies(const QStringList& mediaIds) {
     if (!m_manager) {
         return 0;
+    }
+    // P1 (#29, stream 1C): the proxies (ProRes Proxy about 45 Mb/s, DNxHR LB about 36 Mb/s at 1080p30, at the proxy size)
+    // need room on the proxy folder's drive; when it is short none is queued and a toast says why.
+    if (ProjectController* controller = m_lifecycle ? m_lifecycle->controller() : nullptr) {
+        if (const ProjectSnapshot snap = controller->snapshot()) {
+            const double rate = proxyFormat() == QLatin1String("prores") ? 45e6 : 36e6;
+            const int divisor = std::max(1, proxyDivisor());
+            double bytes = 0;
+            for (const MediaId id : parseIds(mediaIds)) {
+                const MediaItem* item = snap->findMedia(id);
+                if (!item || item->info.video.empty())
+                    continue;
+                const VideoStreamInfo& v = item->info.video.front();
+                const double fps = v.frameRate.isValid() ? v.frameRate.toDouble() : 30.0;
+                const double pixelRate = static_cast<double>(v.width / divisor) * (v.height / divisor) * fps;
+                bytes += rate * pixelRate / (1920.0 * 1080.0 * 29.97) * std::max(0.0, item->info.duration.toSeconds()) / 8.0;
+            }
+            const QString low = diskspace::lowSpaceMessage(proxyFolder(), bytes, tr("the proxies"));
+            if (!low.isEmpty()) {
+                emit diskSpaceLow(low);
+                return 0;
+            }
+        }
     }
     const int queued = m_manager->generate(parseIds(mediaIds));
     updateProxyState();
@@ -590,18 +967,167 @@ void MediaReadinessBridge::openSettings() {
     emit settingsRequested();
 }
 
+// ---- Cache locations (P1 #48) -----------------------------------------------------------------------------------
+
+namespace {
+
+/// ai::userCacheDir() without WABCUT_CACHE_DIR (the rule in ModelStore.cpp).
+QString platformAiCacheFolder() {
+#if defined(Q_OS_WIN)
+    const QString local = qEnvironmentVariable("LOCALAPPDATA");
+    return local.isEmpty() ? QDir::tempPath() + QStringLiteral("/Wabcut/cache")
+                           : QDir::fromNativeSeparators(local) + QStringLiteral("/Wabcut/cache");
+#elif defined(Q_OS_MACOS)
+    return QDir::homePath() + QStringLiteral("/Library/Caches/Wabcut");
+#else
+    const QString xdg = qEnvironmentVariable("XDG_CACHE_HOME");
+    return xdg.isEmpty() ? QDir::homePath() + QStringLiteral("/.cache/wabcut") : xdg + QStringLiteral("/wabcut");
+#endif
+}
+
+} // namespace
+
+QString MediaReadinessBridge::mediaCacheFolder() const {
+    return QDir::toNativeSeparators(cachefolders::chosenMediaCacheFolder());
+}
+
+void MediaReadinessBridge::setMediaCacheFolder(const QString& folder) {
+    if (cachefolders::localFolder(folder) == cachefolders::chosenMediaCacheFolder()) {
+        return;
+    }
+    cachefolders::setChosenMediaCacheFolder(folder);
+    emit locationsChanged();
+}
+
+QString MediaReadinessBridge::defaultMediaCacheFolder() const {
+    return QDir::toNativeSeparators(cachefolders::defaultMediaCacheFolder());
+}
+
+QString MediaReadinessBridge::mediaCacheFolderInUse() const {
+    const QString inUse = m_lifecycle && m_lifecycle->controller() ? m_lifecycle->controller()->mediaCacheDirectory()
+                                                                   : m_startMediaCache;
+    return QDir::toNativeSeparators(inUse);
+}
+
+QString MediaReadinessBridge::aiCacheFolder() const {
+    return QDir::toNativeSeparators(cachefolders::chosenAiCacheFolder());
+}
+
+void MediaReadinessBridge::setAiCacheFolder(const QString& folder) {
+    if (cachefolders::localFolder(folder) == cachefolders::chosenAiCacheFolder()) {
+        return;
+    }
+    cachefolders::setChosenAiCacheFolder(folder);
+    emit locationsChanged();
+}
+
+QString MediaReadinessBridge::defaultAiCacheFolder() const {
+    return QDir::toNativeSeparators(platformAiCacheFolder());
+}
+
+QString MediaReadinessBridge::proxyLocation() const {
+    return cachefolders::proxyLocation();
+}
+
+void MediaReadinessBridge::setProxyLocation(const QString& location) {
+    if (location == cachefolders::proxyLocation()) {
+        return;
+    }
+    cachefolders::setProxyLocation(location);
+    applyProxyRoot();
+}
+
+QString MediaReadinessBridge::proxyRootFolder() const {
+    return QDir::toNativeSeparators(cachefolders::proxyFolderSetting());
+}
+
+void MediaReadinessBridge::setProxyRootFolder(const QString& folder) {
+    if (cachefolders::localFolder(folder) == cachefolders::proxyFolderSetting()) {
+        return;
+    }
+    cachefolders::setProxyFolderSetting(folder);
+    applyProxyRoot();
+}
+
+void MediaReadinessBridge::applyProxyRoot() {
+    const QString root = cachefolders::proxyRoot();
+    if (m_manager && toPath(root) != m_manager->proxyRoot()) {
+        m_manager->setProxyRoot(toPath(root));
+        m_manager->refresh(true);
+        updateProxyState();
+        emit proxiesChanged(); // proxyFolder
+    }
+    emit locationsChanged();
+    scanCaches();
+}
+
+QString MediaReadinessBridge::mediaCacheFreeText() const {
+    return cachefolders::freeSpaceText(cachefolders::mediaCacheFolder());
+}
+
+QString MediaReadinessBridge::aiCacheFreeText() const {
+    const QString chosen = cachefolders::chosenAiCacheFolder();
+    return cachefolders::freeSpaceText(chosen.isEmpty() ? platformAiCacheFolder() : chosen);
+}
+
+QString MediaReadinessBridge::proxyFreeText() const {
+    return m_manager ? cachefolders::freeSpaceText(toQString(m_manager->proxyFolder())) : QString();
+}
+
+bool MediaReadinessBridge::restartNeeded() const {
+    if (QString::compare(cachefolders::mediaCacheFolder(), m_startMediaCache, Qt::CaseInsensitive) != 0) {
+        return true;
+    }
+    const QString ai = cachefolders::chosenAiCacheFolder();
+    if (ai.isEmpty() && qEnvironmentVariableIsSet("WABCUT_CACHE_DIR")) {
+        return false; // a folder set by hand in the environment, not by this setting
+    }
+    const QString wantedAi = QDir::cleanPath(ai.isEmpty() ? platformAiCacheFolder() : ai);
+    return QString::compare(wantedAi, m_startAiCache, Qt::CaseInsensitive) != 0;
+}
+
+bool MediaReadinessBridge::revealLocation(const QString& which) {
+    QString folder;
+    if (which == QLatin1String("media")) {
+        folder = QDir::fromNativeSeparators(mediaCacheFolderInUse());
+    } else if (which == QLatin1String("ai")) {
+        folder = toQString(ai::userCacheDir());
+    } else if (which == QLatin1String("proxies") && m_manager) {
+        folder = toQString(m_manager->proxyFolder());
+    }
+    if (folder.isEmpty()) {
+        return false;
+    }
+    QDir().mkpath(folder);
+    return QDesktopServices::openUrl(QUrl::fromLocalFile(folder));
+}
+
 // ---- Caches -----------------------------------------------------------------------------------------------------
 
 void MediaReadinessBridge::configureCaches() {
     QSettings settings;
-    const auto limit = [&](const char* id) {
-        return settings.value(QStringLiteral("cache/limit/") + QLatin1String(id), 0).toLongLong();
+    const auto limit = [&](const char* id) -> qlonglong {
+        // Fix F1A: no limit at all on a cache whose files projects may still use (keptByLimit).
+        return keptByLimit(id) ? settings.value(QStringLiteral("cache/limit/") + QLatin1String(id), 0).toLongLong() : 0;
     };
     const QString media = m_lifecycle && m_lifecycle->controller() ? m_lifecycle->controller()->mediaCacheDirectory()
                                                                    : QString();
     std::vector<editor::CacheLocation> locations;
+    // Fix F2C: the proxy rows list (and Clean deletes) only the proxies Wabcut made there (CacheKind::WabcutProxies):
+    // never a user's own file in the folder.
     locations.push_back({"proxies", tr("Proxies").toStdString(), m_manager ? m_manager->proxyFolder() : std::filesystem::path{},
-                         limit("proxies"), {".mov"}});
+                         limit("proxies"), {".mov"}, editor::CacheKind::WabcutProxies});
+    // P1 (#48): the proxy folder moved elsewhere; the proxies made next to the project before stay there and can be
+    // cleaned from here (the row shows only while that folder holds any).
+    if (m_manager && !m_manager->proxyRoot().empty() && m_lifecycle && !m_lifecycle->document().file().empty()) {
+        const std::filesystem::path& file = m_lifecycle->document().file();
+        std::filesystem::path name = file.stem();
+        name += " Proxies";
+        if (const std::filesystem::path near = file.parent_path() / name; near != m_manager->proxyFolder()) {
+            locations.push_back({"proxiesNearProject", tr("Proxies next to the project").toStdString(), near,
+                                 limit("proxies"), {".mov"}, editor::CacheKind::WabcutProxies});
+        }
+    }
     locations.push_back({"thumbnails", tr("Thumbnails").toStdString(),
                          media.isEmpty() ? std::filesystem::path{} : toPath(media) / "thumbnails", limit("thumbnails"),
                          {".wthumb"}});
@@ -609,7 +1135,11 @@ void MediaReadinessBridge::configureCaches() {
                          media.isEmpty() ? std::filesystem::path{} : toPath(media) / "peaks", limit("peaks"),
                          {".wpeaks"}});
     locations.push_back({"analysis", tr("Analysis results").toStdString(), ai::userCacheDir() / "analysis",
-                         limit("analysis"), {}});
+                         limit("analysis"), {}, editor::CacheKind::Analysis});
+    // Fix F2C: AI object mask mattes and imported chat logs cannot be rebuilt from the media: their own row, never part
+    // of "Clean regenerable data", and their Clean asks first (MediaCacheSettings.qml).
+    locations.push_back({"analysisKept", tr("AI masks and chat logs").toStdString(), ai::userCacheDir() / "analysis", 0, {},
+                         editor::CacheKind::KeptAnalysis});
     m_inspector.setLocations(std::move(locations));
 }
 
@@ -631,8 +1161,15 @@ void MediaReadinessBridge::runCacheJob(std::function<std::vector<editor::CacheUs
                 QVariantList list;
                 std::int64_t total = 0;
                 for (const editor::CacheUsage& u : usage) {
+                    if ((u.id == "proxiesNearProject" || u.id == "analysisKept") && u.files == 0) {
+                        continue; // nothing left next to the project; no AI mask or chat log kept
+                    }
+                    // Fix F2C: what Clean deletes (the confirmations say how much) and whether it can be made again.
+                    const std::int64_t cleanableBytes = u.bytes - u.inUseBytes;
+                    const std::int64_t cleanableFiles = u.files - u.inUseFiles;
                     total += u.bytes;
                     list.append(QVariantMap{
+                        {QStringLiteral("freeText"), u.dir.empty() ? QString() : cachefolders::freeSpaceText(toQString(u.dir))},
                         {QStringLiteral("id"), QString::fromStdString(u.id)},
                         {QStringLiteral("name"), QString::fromStdString(u.name)},
                         {QStringLiteral("folder"), QDir::toNativeSeparators(toQString(u.dir))},
@@ -643,11 +1180,22 @@ void MediaReadinessBridge::runCacheJob(std::function<std::vector<editor::CacheUs
                          u.inUseBytes > 0 ? tr("%1 in use").arg(QString::fromStdString(editor::formatBytes(u.inUseBytes)))
                                           : QString()},
                         {QStringLiteral("limitBytes"), static_cast<double>(u.limitBytes)},
+                        {QStringLiteral("limited"), keptByLimit(u.id)},
+                        {QStringLiteral("cleanableBytes"), static_cast<double>(cleanableBytes)},
+                        {QStringLiteral("cleanableFiles"), static_cast<double>(cleanableFiles)},
+                        {QStringLiteral("cleanableText"), QString::fromStdString(editor::formatBytes(cleanableBytes))},
+                        {QStringLiteral("rebuildable"), u.kind != editor::CacheKind::KeptAnalysis},
+                        {QStringLiteral("proxies"), u.kind == editor::CacheKind::WabcutProxies},
                         {QStringLiteral("limitText"), u.limitBytes > 0
                                                           ? QString::fromStdString(editor::formatBytes(u.limitBytes))
                                                           : tr("No limit")},
                     });
                 }
+                // P1 (#58): the project's render files, listed with the caches (their own Clean; no size limit).
+                const QVariantMap render = self->renderFilesRow();
+                self->m_measuredBytes = total;
+                list.append(render);
+                total += static_cast<std::int64_t>(render.value(QStringLiteral("bytes")).toDouble());
                 self->m_caches = std::move(list);
                 self->m_cacheTotal = QString::fromStdString(editor::formatBytes(total));
                 self->m_cacheBusy = false;
@@ -658,14 +1206,21 @@ void MediaReadinessBridge::runCacheJob(std::function<std::vector<editor::CacheUs
 }
 
 void MediaReadinessBridge::scanCaches() {
+    // Fix F1A (ARGON-04): measuring never deletes anything (Settings opening, a limit or a folder changed): only the
+    // automatic keeper does, with its switch on and nothing running (autoEnforceCaches).
     const auto inUse = m_manager ? m_manager->filesInUse() : std::set<std::filesystem::path>{};
-    runCacheJob([inUse](editor::CacheInspector& inspector) {
-        inspector.enforceLimits(inUse);
-        return inspector.scan(inUse);
-    });
+    runCacheJob([inUse](editor::CacheInspector& inspector) { return inspector.scan(inUse); });
 }
 
 void MediaReadinessBridge::cleanCache(const QString& id) {
+    if (id == kRenderFilesId) {
+        // P1 (#58): every render file of the project (not only the current sequence's), through the command.
+        const QString why = startDelete(command::Json{{"all", true}});
+        if (!why.isEmpty()) {
+            emit renderFilesDeleted(false, why);
+        }
+        return;
+    }
     const auto inUse = m_manager ? m_manager->filesInUse() : std::set<std::filesystem::path>{};
     runCacheJob([inUse, id = id.toStdString()](editor::CacheInspector& inspector) {
         inspector.clean(id, inUse);
@@ -673,9 +1228,112 @@ void MediaReadinessBridge::cleanCache(const QString& id) {
     });
 }
 
+QString MediaReadinessBridge::sizeText(double bytes) const {
+    return QString::fromStdString(editor::formatBytes(static_cast<std::int64_t>(std::max(0.0, bytes))));
+}
+
 void MediaReadinessBridge::setCacheLimit(const QString& id, double bytes) {
     QSettings().setValue(QStringLiteral("cache/limit/") + id, static_cast<qlonglong>(std::max(0.0, bytes)));
     scanCaches();
+    // Fix F1A: a new limit is kept by the automatic keeper (soon, with its switch on and nothing running), never here.
+    if (autoEnforce() && (!m_autoEnforce.isActive() || m_autoEnforce.remainingTime() > kAutoEnforceAfterBatchMs)) {
+        m_autoEnforce.start(kAutoEnforceAfterBatchMs);
+    }
+}
+
+// ---- Render files as a cache, automatic limits (P1 #58) -----------------------------------------------------------
+
+QVariantMap MediaReadinessBridge::renderFilesRow() {
+    // From the preview cache's index (it sweeps files it does not name when it loads): no folder walk, and never a
+    // file deleted behind its back - the size limits do not apply to render files.
+    const std::shared_ptr<PreviewCache> cache = previewCache();
+    const std::vector<PreviewEntry> entries = cache ? cache->entries() : std::vector<PreviewEntry>{};
+    std::int64_t bytes = 0;
+    for (const PreviewEntry& e : entries) {
+        bytes += e.bytes;
+    }
+    const QString folder = cache ? toQString(cache->folder()) : QString();
+    return QVariantMap{
+        {QStringLiteral("freeText"), folder.isEmpty() ? QString() : cachefolders::freeSpaceText(folder)},
+        {QStringLiteral("id"), kRenderFilesId},
+        {QStringLiteral("name"), tr("Render files (this project)")},
+        {QStringLiteral("folder"), QDir::toNativeSeparators(folder)},
+        {QStringLiteral("bytes"), static_cast<double>(bytes)},
+        {QStringLiteral("sizeText"), QString::fromStdString(editor::formatBytes(bytes))},
+        {QStringLiteral("files"), static_cast<double>(entries.size())},
+        {QStringLiteral("inUseText"), QString()},
+        {QStringLiteral("limitBytes"), 0.0},
+        {QStringLiteral("limited"), false},
+        {QStringLiteral("limitText"), QString()},
+        {QStringLiteral("cleanableBytes"), static_cast<double>(bytes)},
+        {QStringLiteral("cleanableFiles"), static_cast<double>(entries.size())},
+        {QStringLiteral("cleanableText"), QString::fromStdString(editor::formatBytes(bytes))},
+        {QStringLiteral("rebuildable"), true},
+        {QStringLiteral("proxies"), false},
+    };
+}
+
+void MediaReadinessBridge::updateRenderFilesRow() {
+    if (m_caches.isEmpty()) {
+        return; // not measured yet: the next scan lists them
+    }
+    const QVariantMap render = renderFilesRow();
+    bool replaced = false;
+    for (QVariant& row : m_caches) {
+        if (row.toMap().value(QStringLiteral("id")).toString() == kRenderFilesId) {
+            row = render;
+            replaced = true;
+        }
+    }
+    if (!replaced) {
+        m_caches.append(render);
+    }
+    m_cacheTotal = QString::fromStdString(
+        editor::formatBytes(m_measuredBytes + static_cast<std::int64_t>(render.value(QStringLiteral("bytes")).toDouble())));
+    emit cachesChanged();
+}
+
+bool MediaReadinessBridge::autoEnforce() const {
+    return QSettings().value(kAutoEnforceKey, true).toBool();
+}
+
+void MediaReadinessBridge::setAutoEnforce(bool on) {
+    if (on == autoEnforce()) {
+        return;
+    }
+    QSettings().setValue(kAutoEnforceKey, on);
+    if (on) {
+        m_autoEnforce.start(kAutoEnforceAfterBatchMs);
+    } else {
+        m_autoEnforce.stop();
+    }
+    emit settingsChanged();
+}
+
+bool MediaReadinessBridge::cacheWorkRunning() const {
+    return m_cacheBusy || m_render.running() || m_deleteJob.running() || m_working ||
+           (m_playback && m_playback->playing()) || (m_source && m_source->playing()) || (m_exportBusy && m_exportBusy());
+}
+
+bool MediaReadinessBridge::autoEnforceCaches() {
+    m_autoEnforce.stop();
+    if (!autoEnforce()) {
+        return false;
+    }
+    // Never while something may be reading or writing the caches: a render, a proxy job, playback, an export (it keeps
+    // the disk quiet for them; files in use are never deleted anyway).
+    if (cacheWorkRunning()) {
+        m_autoEnforce.start(kAutoEnforceRetryMs);
+        return false;
+    }
+    // enforceLimits(inUse) + scan, on the thread pool. Only the caches no project refers to have a limit here
+    // (keptByLimit, configureCaches): proxies and analysis results are never deleted by it (fix F1A, ARGON-04).
+    const auto inUse = m_manager ? m_manager->filesInUse() : std::set<std::filesystem::path>{};
+    runCacheJob([inUse](editor::CacheInspector& inspector) {
+        inspector.enforceLimits(inUse);
+        return inspector.scan(inUse);
+    });
+    return true;
 }
 
 } // namespace wabcut::app

@@ -296,6 +296,22 @@ EditOutcome rippleTrimPreviousEditToPlayhead(const ProjectState& state, Sequence
 /// where the next edit is the earliest end of the clip (or gap) under the playhead.
 EditOutcome rippleTrimNextEditToPlayhead(const ProjectState& state, SequenceId sequence, Ticks playhead);
 
+/// 0.6, Ctrl+Alt+Q (Premiere's Trim Previous Edit to Playhead): on each unlocked targeted track with a clip under the
+/// playhead (one that starts before it), that clip's head is trimmed to the playhead (a regular trim: nothing moves, a
+/// gap is left before it). Linked partners follow; a partner on another targeted track is trimmed once. Fails when no
+/// targeted track has a clip under the playhead.
+EditOutcome trimPreviousEditToPlayhead(const ProjectState& state, SequenceId sequence, Ticks playhead);
+/// 0.6, Ctrl+Alt+W (Trim Next Edit to Playhead): the same with the clip's tail (it ends at the playhead).
+EditOutcome trimNextEditToPlayhead(const ProjectState& state, SequenceId sequence, Ticks playhead);
+/// 0.6, Shift+Q (Extend Previous Edit to Playhead): the nearest edit point before the playhead across the unlocked
+/// targeted tracks (a clip start or end, as Q finds it) rolls to the playhead on each of those tracks with a cut there
+/// (rollEdit: two clips meeting there change length together; a clip next to a gap grows into it or leaves one; a
+/// track without a cut there is left alone). Clamped to the media, as a roll is. Linked partners follow. Fails when no
+/// targeted track has an edit before the playhead. Nothing else moves; the playhead stays.
+EditOutcome extendPreviousEditToPlayhead(const ProjectState& state, SequenceId sequence, Ticks playhead);
+/// 0.6, Shift+W (Extend Next Edit to Playhead): the nearest edit point after the playhead rolls back to it.
+EditOutcome extendNextEditToPlayhead(const ProjectState& state, SequenceId sequence, Ticks playhead);
+
 /// Regular trim (selection tool on an edge): moves the clip's head or tail by `delta` without moving
 /// anything else; clamps to neighbours, source media and one frame minimum.
 EditOutcome trimEdge(const ProjectState& state, SequenceId sequence, ClipId clip, Edge edge, Ticks delta,
@@ -413,5 +429,15 @@ std::vector<TrackId> targetedTracks(const Sequence& sequence);
 std::vector<TrackId> allTracks(const Sequence& sequence);
 /// The clips plus every clip linked to one of them (input order first, then partners by track order).
 std::vector<ClipId> withLinkedClips(const Sequence& sequence, std::span<const ClipId> clips);
+
+/// 0.6 (Premiere's out-of-sync indicators): how far `clip` has slid against a linked partner playing the same media
+/// (picture against sound): (clip start - partner start) - (clip source In - partner source In) / speed, rounded to
+/// whole frames of the sequence; positive = the clip plays later than its partner says. The partner is the first one
+/// of the other kind (video / audio) in track order, else the first of the same kind. nullopt when the clip has no
+/// partner it can be compared with: not linked, nested or multi-camera, time-remapped, a frame hold, or a different
+/// speed or direction. 0 when in sync.
+std::optional<Ticks> syncOffset(const Sequence& sequence, ClipId clip);
+/// Every linked clip that is out of sync (syncOffset() not 0), with its offset, in track order.
+std::vector<std::pair<ClipId, Ticks>> outOfSyncClips(const Sequence& sequence);
 
 } // namespace wabcut::edit

@@ -47,6 +47,12 @@ add_dependencies(wabcut_export_tests wabcut-cli) # test_cli_render.cpp runs it
 # P.2 (E6): Export Frame's stills (every format, OpenEXR by the spec) and sequence.exportFrame / source.exportFrame.
 target_sources(wabcut_export_tests PRIVATE test_still_export.cpp)
 target_link_libraries(wabcut_export_tests PRIVATE wabcut_editor)
+# 0.6 (#72): the output colour space and SDR Conform in exports and wabcut-cli render.
+target_sources(wabcut_export_tests PRIVATE test_sdr_conform_export.cpp)
+# 0.6 (#73): MXF OP1a / OP-Atom, XDCAM HD422, AVC-Intra 100, embedded CEA-608 / 708 (SMPTE 436M, SEI, c608).
+target_sources(wabcut_export_tests PRIVATE test_mxf_export.cpp)
+# 0.6 (#52): dialogue / music / effects stems with the master, by track role.
+target_sources(wabcut_export_tests PRIVATE test_stems_export.cpp)
 
 # Export UI: ExportController and the Export workspace on the real QML shell, through tests/app's ShellFixture
 # (one QGuiApplication per process, Qt message capture, Main.qml created hidden). The screenshot lands in
@@ -68,4 +74,8 @@ if(TARGET wabcut_ui)
         # copied next to the binaries.
         WABCUT_QT_QML_DIR="${QT6_INSTALL_PREFIX}/${QT6_INSTALL_QML}")
     wabcut_allow_qt_generated_code(wabcut_export_ui_tests)
+endif()
+# 0.6 (#73): MXF delivery and Embedded captions in the Export workspace (summary, job report, drawer screenshots).
+if(TARGET wabcut_export_ui_tests)
+    target_sources(wabcut_export_ui_tests PRIVATE ui/test_mxf_export_ui.cpp)
 endif()

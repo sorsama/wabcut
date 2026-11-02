@@ -95,6 +95,7 @@ WabcutDialog {
 
             Label { text: qsTr("Captions") }
             PillTabs {
+                Accessible.name: qsTr("Captions") // P1 #61
                 objectName: "translateTrack"
                 Layout.fillWidth: true
                 compact: true
@@ -184,6 +185,7 @@ WabcutDialog {
             Label { text: qsTr("Translated by") }
             PillTabs {
                 id: providerTabs
+                Accessible.name: qsTr("Translated by") // P1 #61
                 objectName: "translateProvider"
                 Layout.fillWidth: true
                 compact: true
@@ -198,6 +200,7 @@ WabcutDialog {
             Label { text: qsTr("Tone") }
             PillTabs {
                 id: toneTabs
+                Accessible.name: qsTr("Tone") // P1 #61
                 objectName: "translateTone"
                 Layout.fillWidth: true
                 compact: true

@@ -11,10 +11,11 @@ import QtCore
 //   editing/fitClipChoice — the Fit Clip dialog's remembered answer ("" = ask; M5h)
 //   monitor/safeMargins — action/title safe guides over the monitors (M5h)
 //   timeline/* — the timeline display settings, linked selection, trim offsets and track height presets (M5i)
-//   appearance/uiScale — the interface size in percent (100 / 125 / 150), read by main.cpp at launch (M5j)
+//   appearance/uiScale — the interface size in percent (90 / 100 / 125 / 150), read by main.cpp at launch (M5j, P1 #47)
 //   review/author — the name review notes are signed with (M5m)
 //   onboarding/welcomeDone, onboarding/trainerBest — the first-run welcome was completed or skipped; the Keyboard
 //     Trainer's best streak (M5j)
+//   onboarding/lastSeenVersion — the version that last started here: What's New once after an update (0.6)
 //   appearance/launchIntro — the echo mark's intro plays when Wabcut starts (design language v3; reduce motion skips it)
 //   home/starred — the projects starred on Home, as a JSON list of file paths (design language v3)
 //   home/projectFilter, home/projectSort, home/projectView, home/advancedOpen, home/newProjectChoices — the Projects
@@ -28,6 +29,8 @@ import QtCore
 //   mediaBrowser/lastFolder, highlights/shortLeadIn, shortTail, shortMinLength, shortCaptionPreset,
 //     shorts/captionPreset — the Media Browser's folder, Highlights' and the Shorts panel's Short options (0.4)
 //   power/keepAwake — keep the computer awake while exports and long jobs run (0.4)
+//   layout/lastOptions, highlights/shortOptions, highlights/audioRoles — the layout picker's last options, Highlights'
+//     Short options and the audio stream roles (0.6; LayoutBridge keeps layout/facecamRegions itself)
 // The singleton is created when Main first reads it, which applies the saved appearance before the panels bind
 // to Theme, then turns on Theme.colorTransitions (start-up never animates).
 QtObject {
@@ -76,13 +79,15 @@ QtObject {
     property real trimPostroll: 2
     // Track height presets: a JSON list of { name, video: [...], audio: [...] } (TimelineView.trackHeightPreset()).
     property string trackHeightPresets: "[]"
-    // The interface size in percent (M5j): 100, 125 or 150. Applies when Wabcut next starts (main.cpp).
+    // The interface size in percent (M5j): 90 (P1 #47), 100, 125 or 150. Applies when Wabcut next starts (main.cpp).
     property int uiScale: 100
-    /// The stored size as Wabcut applies it: 125 or 150, anything else 100 (UiScale.cpp, savedUiScale).
-    readonly property int effectiveUiScale: uiScale === 125 || uiScale === 150 ? uiScale : 100
+    /// The stored size as Wabcut applies it: 90, 125 or 150, anything else 100 (UiScale.cpp, savedUiScale).
+    readonly property int effectiveUiScale: uiScale === 90 || uiScale === 125 || uiScale === 150 ? uiScale : 100
     // Onboarding (M5j): the welcome ran (completed or skipped), and the Keyboard Trainer's best streak.
     property bool welcomeDone: false
     property int trainerBest: 0
+    // P1 round (#5): the Wabcut version that last started here ("" before 0.6): What's New shows once after an update.
+    property string lastSeenVersion: ""
     // Review notes (M5m): the name the notes and replies are signed with ("" = "Editor").
     property string reviewAuthor: ""
     // Design language v3: the echo mark's launch intro (onboarding/LaunchIntro.qml), and Home's starred projects as a
@@ -131,6 +136,7 @@ QtObject {
         category: "onboarding"
         property alias welcomeDone: prefs.welcomeDone
         property alias trainerBest: prefs.trainerBest
+        property alias lastSeenVersion: prefs.lastSeenVersion
     }
 
     readonly property Settings _appearance: Settings {
@@ -266,6 +272,31 @@ QtObject {
         category: "timeline"
         property alias showCaptionTracks: prefs.timelineShowCaptionTracks
     }
+    // 0.6, stream D9 (#8): Timeline Display > Beat grid (timeline/showBeatGrid): thin ticks on the ruler at each beat of
+    // the sequence's beat grid, taller on downbeats.
+    property bool timelineShowBeatGrid: true
+    readonly property Settings _timelineD9: Settings {
+        category: "timeline"
+        property alias showBeatGrid: prefs.timelineShowBeatGrid
+    }
+    // 0.6, stream 1A: Settings > Appearance > Timeline corners ("rounded" | "square", appearance/timelineCorners),
+    // mirrored into Theme.squareTimeline; and Settings > Timeline's Clip Mismatch Warning ("ask" | "change" | "keep",
+    // editing/clipMismatch): what the first clip dropped into an empty sequence of another size or rate does.
+    property string timelineCorners: "rounded"
+    property string clipMismatch: "ask"
+    readonly property Settings _appearance06: Settings {
+        category: "appearance"
+        property alias timelineCorners: prefs.timelineCorners
+    }
+    readonly property Settings _editing06: Settings {
+        category: "editing"
+        property alias clipMismatch: prefs.clipMismatch
+    }
+    readonly property Binding _squareTimeline: Binding {
+        target: Theme
+        property: "squareTimeline"
+        value: prefs.timelineCorners === "square"
+    }
     // 0.4, stream B: the Program Monitor's platform safe zones on portrait sequences ("off", "shorts", "tiktok", "reels").
     property string platformSafeZone: "off"
     // 0.4, stream C: Effect Controls' Masks section open while the clip has no mask; the Transcript follows the playhead.
@@ -293,6 +324,23 @@ QtObject {
     readonly property Settings _shorts: Settings {
         category: "shorts"
         property alias captionPreset: prefs.shortsCaptionPreset
+    }
+    // 0.6, stream 3A (P1 #51, #56): the layout picker's last applied options (layout/lastOptions, a JSON object; Make
+    // Shorts version takes its split and facecam side from it), Highlights' Short options beyond the length
+    // (highlights/shortOptions, a JSON object: layout, split, facecamOnTop, zoom, useRegion, captions, hookTitle) and the
+    // audio stream roles set in the Find options (highlights/audioRoles, a JSON list by stream: "auto", "game", "mic",
+    // "mixed" or "ignore").
+    property string layoutLastOptions: ""
+    property string highlightsShortOptions: ""
+    property string highlightsAudioRoles: ""
+    readonly property Settings _layout06: Settings {
+        category: "layout"
+        property alias lastOptions: prefs.layoutLastOptions
+    }
+    readonly property Settings _highlights06: Settings {
+        category: "highlights"
+        property alias shortOptions: prefs.highlightsShortOptions
+        property alias audioRoles: prefs.highlightsAudioRoles
     }
     // 0.4, stream E: keep the computer awake while exports and long jobs run (Windows; Settings > General).
     property bool keepAwake: true

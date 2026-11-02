@@ -11,13 +11,17 @@
 //         (the graphics white), PQ or HLG masters; the monitor shows a tone-mapped SDR preview.
 //       - Wide Gamut (Tone Mapped): ACES 1.3 - an ACEScg working space, the grade in ACEScct, the ACES output transforms.
 //       - Wide Gamut (No Tone Mapping): the ACEScg working space without output tone mapping (Rec.709 out, clipped).
+//       - Wide Gamut (Minimal Tone Mapping, 0.6): the same, with scene-referred layers gamut compressed and their
+//         highlights rolled off gently as they are read; SDR media and graphics pass unchanged.
+//     0.6: gamut compression (ACES 1.3 RGC) of scene-referred layers, the output colour space of exports and SDR
+//     Conform (how an HDR or Wide Gamut setup becomes an SDR file) are part of it too.
 //       - Disable Color Management: every picture as its code values say, no conversion and no tone mapping at all.
 //     Saved only when it is not the default.
 //   * InputColorSpace (ClipContent::inputColorSpace, Premiere's "Override Media Color Space"): how a clip's decoded
 //     code values are read. Auto (unset) follows the stream's tags (BT.709 / BT.2020, PQ / HLG, sRGB, linear) and, with
 //     ColorManagement::autoDetectLog, the camera log the media's metadata names (VideoStreamInfo::logColorSpace); other
-//     camera log formats are chosen here (S-Log3, V-Log, LogC3/4, Canon Log 2/3, RED Log3G10, Apple Log). Saved only
-//     when set.
+//     camera log formats are chosen here (S-Log3, S-Log2, V-Log, LogC3/4, Canon Log / 2 / 3, RED Log3G10 / Log Film,
+//     Apple Log, D-Log, F-Log / F-Log2, N-Log, L-Log). Saved only when set.
 //
 // Plain data with string names for the project file and the commands; render/color applies it.
 
@@ -37,6 +41,54 @@ enum class ColorManagementMode : std::uint8_t {
     HdrHlg,        ///< "Direct HLG (HDR)": HDR Rec.2100, HLG master (the same working space)
     WideGamut,     ///< "Wide Gamut (No Tone Mapping)": ACEScg working space, Rec.709 out without tone mapping (clipped)
     Disabled,      ///< "Disable Color Management": no input or output conversion, no tone mapping
+    /// 0.6 (appended: a project file stores the id): "Wide Gamut (Minimal Tone Mapping)": the ACEScg working space and
+    /// outputs of No Tone Mapping, but scene-referred layers (camera log, PQ, HLG, linear, ACES pictures) are gamut
+    /// compressed and their highlights rolled off gently above a knee as they are read (ColorSpaces.h kMinimalKnee);
+    /// display-referred pictures (SDR media, titles, captions) pass unchanged.
+    WideGamutMinimal,
+};
+
+/// 0.6: the colour space an output writes (Premiere's Sequence Settings > Output color space, and the export's override).
+/// Automatic is the colour setup's own (Rec.709 SDR; PQ or HLG for the HDR setups' HDR exports).
+enum class OutputColorSpace : std::uint8_t {
+    Automatic,
+    Rec709,     ///< ITU-R BT.709 primaries, the BT.709 curve (the SDR default)
+    Rec2020,    ///< ITU-R BT.2020 primaries, SDR: the BT.709 curve (BT.2020 10-bit transfer), BT.2020 NCL matrix
+    P3D65,      ///< P3 primaries, D65 white, a pure 2.6 power (SMPTE EG 432-1 primaries; no H.273 transfer code)
+    Rec2100Pq,  ///< BT.2100 PQ (an HDR export: needs a managed setup and a 10-bit HDR format)
+    Rec2100Hlg, ///< BT.2100 HLG (the same)
+};
+
+/// 0.6: SDR Conform's tone-mapping operator.
+enum class ToneMapOperator : std::uint8_t {
+    Bt2390,   ///< ITU-R BT.2390 EETF on the luminance (PQ domain): mid-tones kept below its knee, the peak lands on white
+    Aces,     ///< the ACES SDR filmic curve (Narkowicz's fit of the RRT + SDR ODT) on the luminance, peak normalised
+    Reinhard, ///< extended Reinhard on the luminance: L (1 + L / peak^2) / (1 + L)
+};
+/// 0.6: how SDR Conform brings colours outside the output's gamut in.
+enum class GamutMapping : std::uint8_t {
+    AcesRgc,    ///< ACES 1.3 Reference Gamut Compression in the output's primaries, then clipped
+    Saturation, ///< desaturated towards the pixel's luminance until it fits (hue and luminance kept)
+    Clip,       ///< each channel clipped to [0, 1]
+};
+
+/// 0.6: SDR Conform (Premiere's Export > Effects > SDR Conform): how an HDR or Wide Gamut sequence becomes an SDR file.
+/// The working space's luminance (1.0 = the reference white) lands at `paperWhiteNits` on an SDR display whose white is
+/// `targetPeakNits`; the operator rolls everything above into that white (the HDR peak, peakNits, lands on it), the gamut
+/// mapping brings colours outside the output's primaries in, and `legalRange` soft-clips the encoded components above
+/// 95 % so nothing piles up at 100 %.
+struct SdrConform {
+    static constexpr double kMinNits = 48.0;
+    static constexpr double kMaxNits = 400.0;
+
+    bool enabled = false;
+    double targetPeakNits = 100.0; ///< the SDR display's white: 100 (BT.1886) or 203 (HDR-referenced SDR, BT.2408)
+    double paperWhiteNits = 100.0; ///< where the working space's reference white lands on it
+    ToneMapOperator toneMap = ToneMapOperator::Bt2390;
+    GamutMapping gamut = GamutMapping::AcesRgc;
+    bool legalRange = false;
+
+    bool operator==(const SdrConform&) const = default;
 };
 
 enum class InputColorSpace : std::uint8_t {
@@ -58,6 +110,16 @@ enum class InputColorSpace : std::uint8_t {
     CanonLog2,        ///< Canon Log 2 / Cinema Gamut (0.2)
     RedLog3G10,       ///< RED Log3G10 / REDWideGamutRGB (0.2)
     AcesCct,          ///< ACEScct (log AP1) renders and grades (0.2)
+    // 0.6: more camera log formats (appended: a project file stores the id, and old values keep their meaning).
+    DLogDGamut,          ///< DJI D-Log / D-Gamut
+    FLogFGamut,          ///< Fujifilm F-Log / F-Gamut (Rec.2020 primaries)
+    FLog2FGamut,         ///< Fujifilm F-Log2 / F-Gamut
+    NLogNGamut,          ///< Nikon N-Log / N-Gamut (Rec.2020 primaries)
+    SLog2SGamut,         ///< Sony S-Log2 / S-Gamut (S-Gamut3's primaries)
+    SLog2SGamut3Cine,    ///< Sony S-Log2 / S-Gamut3.Cine
+    CanonLogCinemaGamut, ///< Canon Log (the original) / Cinema Gamut
+    LLogRec2020,         ///< Leica L-Log / Rec.2020 (the gamut Leica's L-Log cameras record)
+    RedLogFilm,          ///< RED Log Film / REDWideGamutRGB
 };
 
 /// The project's colour management. Default = Direct Rec.709 (SDR).
@@ -77,9 +139,31 @@ struct ColorManagement {
     /// Premiere's "Color Manage Auto Detected Log and Raw Media": a clip without an override whose media names its camera
     /// log in its metadata (VideoStreamInfo::logColorSpace) is read as that log. Saved only when off.
     bool autoDetectLog = true;
+    /// 0.6: ACES 1.3 Reference Gamut Compression of scene-referred layers in the working space (managed setups; always
+    /// on in Wide Gamut (Minimal Tone Mapping)), at `gamutCompressionStrength` (0..1: a mix of the original and the
+    /// compressed colour). With it, working values below 0 are kept (a grade can still bring them back). Saved only
+    /// when on / not 1.
+    bool gamutCompression = false;
+    double gamutCompressionStrength = 1.0;
+    /// 0.6: what exports write (the program monitor always shows the Rec.709 picture). Saved only when not Automatic.
+    OutputColorSpace outputSpace = OutputColorSpace::Automatic;
+    /// 0.6: SDR Conform of the setup's SDR exports (HDR and Wide Gamut setups but Tone Mapped, whose ACES output
+    /// transform already tone-maps). Saved only when not the default.
+    SdrConform sdrConform;
 
     bool isDefault() const { return *this == ColorManagement{}; }
     bool isHdr() const { return mode == ColorManagementMode::HdrPq || mode == ColorManagementMode::HdrHlg; }
+    /// 0.6: an ACEScg working space without the ACES output transforms (Wide Gamut, No or Minimal Tone Mapping).
+    bool isWideGamutDirect() const {
+        return mode == ColorManagementMode::WideGamut || mode == ColorManagementMode::WideGamutMinimal;
+    }
+    /// 0.6: scene-referred layers are gamut compressed (a managed setup with compression on, or Minimal Tone Mapping).
+    bool compressesGamut() const {
+        return managed() && (gamutCompression || mode == ColorManagementMode::WideGamutMinimal);
+    }
+    /// 0.6: SDR Conform applies to this setup's SDR exports (it is on, and the setup is HDR or Wide Gamut without the
+    /// ACES output transforms).
+    bool conformsSdr() const { return sdrConform.enabled && (isHdr() || isWideGamutDirect()); }
     /// A managed working space (Wide Gamut or HDR): every layer goes through an input plan, every output through an
     /// output plan. Direct Rec.709 and Disable Color Management keep the display-referred pipeline.
     bool managed() const { return mode != ColorManagementMode::DisplayRec709 && mode != ColorManagementMode::Disabled; }
@@ -118,5 +202,24 @@ bool isRgbPixelFormat(std::string_view pixelFormat);
 
 /// What is wrong with a colour-management setting (a value out of range), or nullopt.
 std::optional<std::string_view> colorManagementProblem(const ColorManagement& management);
+
+// ---- 0.6: output colour space and SDR Conform names ----
+
+/// "auto", "rec709", "rec2020", "p3-d65", "rec2100-pq", "rec2100-hlg".
+std::string_view toString(OutputColorSpace space);
+std::optional<OutputColorSpace> outputColorSpaceFromString(std::string_view text);
+/// "Automatic", "Rec.709", "Rec.2020 (SDR)", "P3-D65", "Rec.2100 PQ", "Rec.2100 HLG".
+std::string_view displayName(OutputColorSpace space);
+/// Every output colour space, in menu order (Automatic first).
+std::span<const OutputColorSpace> allOutputColorSpaces();
+/// "bt2390", "aces", "reinhard"; "aces-rgc", "saturation", "clip".
+std::string_view toString(ToneMapOperator op);
+std::optional<ToneMapOperator> toneMapOperatorFromString(std::string_view text);
+std::string_view displayName(ToneMapOperator op); ///< "BT.2390", "ACES", "Reinhard"
+std::string_view toString(GamutMapping mapping);
+std::optional<GamutMapping> gamutMappingFromString(std::string_view text);
+std::string_view displayName(GamutMapping mapping); ///< "ACES gamut compression", "Saturation", "Clip"
+/// What is wrong with SDR Conform settings (nits out of range), or nullopt.
+std::optional<std::string_view> sdrConformProblem(const SdrConform& conform);
 
 } // namespace wabcut

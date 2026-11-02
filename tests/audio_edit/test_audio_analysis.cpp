@@ -480,3 +480,66 @@ TEST_CASE("Channel levels of a real file: a recording with sound on the left onl
     auto r = h.ok("audio.channelLevels", {{"clips", Json::array({h.clip("A1@0").value})}});
     CHECK(r.data["clips"][0]["silentChannels"] == Json::array({2}));
 }
+
+// 0.6 (P1 round, #54, loudness QC): on the real render path the measurement says where - the loudest windows and the
+// true peak, as offsets from the measured range - keeps the hot blocks, and the cache (v2) gives them back.
+TEST_CASE("Loudness QC on the real render path: where the loudest moments are and the true-peak overs, cached",
+          "[audio][edit][analysis][qc]") {
+    Rig rig;
+    // A1's media at -0.5 dBFS in two bursts (6-7 s and 12-12.3 s source = timeline), -50 dB room tone elsewhere;
+    // measured on A1 alone.
+    rig.feed->setSignal(rig.tl.media('A'), 0, tone(-0.5));
+    const std::vector<TimeRange> bursts{TimeRange::fromStartEnd(s(6.0), s(7.0)), TimeRange::fromStartEnd(s(12.0), s(12.3))};
+    auto burst = std::make_shared<BurstFeed>(rig.feed, rig.tl.media('A'), bursts);
+    const auto dir = std::filesystem::path(WABCUT_TEST_OUTPUT_DIR) / "audio-edit-qc-cache";
+    std::filesystem::remove_all(dir);
+    RenderAnalysisOptions o;
+    o.cache = std::make_shared<ai::AnalysisCache>(dir);
+    auto analyzer = std::make_shared<RenderLoudnessAnalyzer>([burst](const ProjectState&) { return burst; }, o);
+    const auto target = LoudnessTarget::ofTrack(rig.tl.track("A1"));
+
+    const auto stats = analyzer->measure(rig.tl.state, rig.tl.seq, target, std::nullopt, nullptr);
+    REQUIRE(stats);
+    CHECK(stats->start == Ticks{});
+    REQUIRE(stats->truePeakAt);
+    REQUIRE(stats->maxMomentaryAt);
+    REQUIRE(stats->maxShortTermAt);
+    const auto in = [](Ticks t, double from, double to) { return t >= s(from) && t <= s(to); };
+    CHECK((in(*stats->truePeakAt, 6.0, 7.1) || in(*stats->truePeakAt, 12.0, 12.4)));
+    CHECK(in(*stats->maxMomentaryAt, 5.9, 6.7)); // the 400 ms window inside the 1 s burst
+    CHECK(in(*stats->maxShortTermAt, 3.9, 6.1)); // the 3 s window holding all of it
+    // Above -1 dBTP: the two bursts.
+    const auto overs = truePeakOvers(*stats, -1.0);
+    REQUIRE(overs.size() == 2);
+    CHECK(std::fabs((overs[0].range.start - s(6.0)).toSeconds()) <= 0.11);
+    CHECK(std::fabs((overs[0].range.end() - s(7.0)).toSeconds()) <= 0.11);
+    CHECK(std::fabs((overs[1].range.start - s(12.0)).toSeconds()) <= 0.11);
+    CHECK(std::fabs((overs[1].range.end() - s(12.3)).toSeconds()) <= 0.11);
+    CHECK(overs[0].truePeakDbtp == Approx(-0.5).margin(0.4));
+    // A ceiling above the peak: none.
+    CHECK(truePeakOvers(*stats, 0.0).empty());
+
+    // A range from 5 s: the places are offsets from the range's start, the same timeline time.
+    const auto part = analyzer->measure(rig.tl.state, rig.tl.seq, target, TimeRange::fromStartEnd(s(5.0), s(15.0)), nullptr);
+    REQUIRE(part);
+    CHECK(part->start == s(5.0));
+    REQUIRE(part->maxMomentaryAt);
+    CHECK(in(part->start + *part->maxMomentaryAt, 5.9, 6.7));
+    REQUIRE(truePeakOvers(*part, -1.0).size() == 2);
+    CHECK(std::fabs((truePeakOvers(*part, -1.0)[0].range.start - s(6.0)).toSeconds()) <= 0.11);
+
+    // The cache gives the same places and blocks back.
+    const auto again = analyzer->measure(rig.tl.state, rig.tl.seq, target, std::nullopt, nullptr);
+    REQUIRE(again);
+    CHECK(analyzer->cacheHits() >= 1);
+    CHECK(again->maxMomentaryAt == stats->maxMomentaryAt);
+    CHECK(again->maxShortTermAt == stats->maxShortTermAt);
+    CHECK(again->truePeakAt == stats->truePeakAt);
+    REQUIRE(again->peakBlocks.size() == stats->peakBlocks.size());
+    for (std::size_t i = 0; i < again->peakBlocks.size(); ++i) {
+        CHECK(again->peakBlocks[i].at == stats->peakBlocks[i].at);
+        CHECK(again->peakBlocks[i].duration == stats->peakBlocks[i].duration);
+        CHECK(again->peakBlocks[i].truePeakDbtp == Approx(stats->peakBlocks[i].truePeakDbtp).margin(0.006));
+    }
+    CHECK(truePeakOvers(*again, -1.0).size() == 2);
+}

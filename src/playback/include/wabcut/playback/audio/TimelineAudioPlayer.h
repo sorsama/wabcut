@@ -84,8 +84,8 @@ private:
 
 /// Plays the audio tracks of one sequence of an EditSession through an AudioEngine.
 ///
-/// Pipeline: a feeder thread acquires the session snapshot once per pass (Principle 3), renders each audio
-/// track ahead of the playhead with renderTrack() (clip volume/pan, sample-accurate edges, cut fades) through
+/// Pipeline: a feeder thread acquires the session's shown state (EditSession::shown) once per pass (Principle 3),
+/// renders each audio track ahead of the playhead with renderTrack() (clip volume/pan, sample-accurate edges, cut fades) through
 /// the AudioFeed, and writes it into a per-track SPSC ring tagged with timeline times, before the track's fader. The
 /// audio callback runs the player's source, which reads every track's ring at the transport's timeline time, applies
 /// each track's fader and panner (Track::volume / Track::pan, published by the feeder; an automation pass's live

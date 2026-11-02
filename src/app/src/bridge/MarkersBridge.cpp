@@ -8,8 +8,11 @@
 #include <wabcut/model/EditOps.h>
 #include <wabcut/model/Timecode.h>
 
+#include <QClipboard>
+#include <QCoreApplication>
 #include <QFile>
 #include <QFileInfo>
+#include <QGuiApplication>
 #include <QQmlEngine>
 
 #include <algorithm>
@@ -448,7 +451,7 @@ bool MarkersBridge::seek(int index) {
 
 // ---- Export ----------------------------------------------------------------------------------------------------------
 
-QVariantMap MarkersBridge::exportText(const QString& format) const {
+QVariantMap MarkersBridge::exportText(const QString& format, const QString& range, bool chaptersOnly) const {
     if (!m_controller || !m_controller->currentSequenceId().isValid())
         return {};
     command::EnginePolicy policy;
@@ -457,6 +460,11 @@ QVariantMap MarkersBridge::exportText(const QString& format) const {
     command::CommandRequest request;
     request.command = "sequence.exportMarkers";
     request.params = command::Json{{"format", format.toStdString()}, {"sequence", m_controller->currentSequenceId().value}};
+    // P1 (#24): From In to Out, chapters only.
+    if (range == QLatin1String("inOut"))
+        request.params["range"] = "inOut";
+    if (chaptersOnly)
+        request.params["chaptersOnly"] = true;
     const command::CommandResult r = engine.execute(request);
     if (!r.ok())
         return {{QStringLiteral("error"), QString::fromStdString(r.error->message)}};
@@ -468,8 +476,39 @@ QVariantMap MarkersBridge::exportText(const QString& format) const {
             {QStringLiteral("warnings"), warnings}};
 }
 
-QString MarkersBridge::exportToFile(const QString& format, const QUrl& file) {
-    const QVariantMap result = exportText(format);
+bool MarkersBridge::copyToClipboard(const QString& format, const QString& range, bool chaptersOnly) {
+    const QVariantMap result = exportText(format, range, chaptersOnly);
+    if (result.isEmpty()) {
+        setMessage(tr("Open a sequence first"));
+        return false;
+    }
+    if (result.contains(QStringLiteral("error"))) {
+        setMessage(result.value(QStringLiteral("error")).toString());
+        return false;
+    }
+    const QString text = result.value(QStringLiteral("text")).toString();
+    const QStringList warnings = result.value(QStringLiteral("warnings")).toStringList();
+    if (text.isEmpty()) {
+        setMessage(warnings.isEmpty() ? tr("There are no markers to copy")
+                                      : tr("Nothing copied: %1").arg(warnings.join(QStringLiteral("; "))));
+        return false;
+    }
+    QClipboard* clipboard =
+        qobject_cast<QGuiApplication*>(QCoreApplication::instance()) ? QGuiApplication::clipboard() : nullptr;
+    if (!clipboard) {
+        setMessage(tr("The clipboard is not available"));
+        return false;
+    }
+    clipboard->setText(text);
+    const int count = result.value(QStringLiteral("count")).toInt();
+    const QString copied = format == QLatin1String("youtube") ? tr("Copied %n chapter(s)", "", count)
+                                                              : tr("Copied %n marker(s)", "", count);
+    setMessage(warnings.isEmpty() ? copied : tr("%1 with warnings: %2").arg(copied, warnings.join(QStringLiteral("; "))));
+    return true;
+}
+
+QString MarkersBridge::exportToFile(const QString& format, const QUrl& file, const QString& range, bool chaptersOnly) {
+    const QVariantMap result = exportText(format, range, chaptersOnly);
     if (result.contains(QStringLiteral("error"))) {
         setMessage(result.value(QStringLiteral("error")).toString());
         return {};
@@ -509,6 +548,85 @@ bool MarkersBridge::runCommand(const QString& commandId) {
         return true;
     }
     return false;
+}
+
+// ---- 0.6 (P1 round, stream 1A) ---------------------------------------------------------------------------------------
+
+QVariantMap MarkersBridge::markerAtPlayhead(bool timelineFocused) const {
+    const SequencePtr seq = m_controller ? m_controller->currentSequence() : nullptr;
+    if (!seq)
+        return {};
+    const Ticks playhead = m_controller->playhead();
+    const Rate rate = seq->frameRate;
+    const auto sameFrame = [](Ticks a, Ticks b, Rate r) { return ticksToFrames(a, r) == ticksToFrames(b, r); };
+    // Where M would add a clip marker (add(true)), it opens that clip's marker on the frame.
+    if (timelineFocused) {
+        for (const ClipId id : m_controller->selection()) {
+            const auto loc = seq->findClip(id);
+            if (!loc || loc->track->kind != TrackKind::Video || loc->clip().start() > playhead || playhead >= loc->clip().end())
+                continue;
+            const Clip& clip = loc->clip();
+            const MediaItem* media = m_controller->snapshot()->findMedia(clip.media);
+            if (!media)
+                return {};
+            const Rate sourceRate = command::sourceTimecodeRate(*m_controller->snapshot(), *media);
+            const Ticks source = snapToFrame(clip.sourceTimeAt(std::clamp(playhead, clip.start(), clip.end() - Ticks{1})), sourceRate);
+            for (std::size_t i = 0; i < media->markers.size(); ++i) {
+                if (sameFrame(media->markers[i].start, source, sourceRate))
+                    return {{QStringLiteral("scope"), QStringLiteral("clip")}, {QStringLiteral("index"), static_cast<int>(i)}};
+            }
+            return {};
+        }
+    }
+    for (std::size_t i = 0; i < seq->markers.size(); ++i) {
+        if (sameFrame(seq->markers[i].start, playhead, rate))
+            return {{QStringLiteral("scope"), QStringLiteral("sequence")}, {QStringLiteral("index"), static_cast<int>(i)}};
+    }
+    return {};
+}
+
+int MarkersBridge::addChapterMarker() {
+    const SequencePtr seq = m_controller ? m_controller->currentSequence() : nullptr;
+    if (!seq)
+        return -1;
+    Marker marker;
+    marker.start = snapToFrame(m_controller->playhead(), seq->frameRate);
+    marker.type = MarkerType::Chapter;
+    const std::size_t before = seq->markers.size();
+    const bool ok = m_controller->applyEditFn("Add Chapter Marker", [&](const ProjectState& st) {
+        return edit::addMarker(st, seq->id, marker);
+    });
+    if (!ok) {
+        setMessage(m_controller->lastError());
+        return -1;
+    }
+    // The new one: the first marker that differs from the list before the edit (markers stay in time order).
+    const SequencePtr now = m_controller->currentSequence();
+    if (!now || now->markers.size() != before + 1)
+        return -1;
+    for (std::size_t i = 0; i < now->markers.size(); ++i) {
+        if (i == before || now->markers[i].start != seq->markers[i].start || now->markers[i].type != seq->markers[i].type)
+            return static_cast<int>(i);
+    }
+    return -1;
+}
+
+bool MarkersBridge::handlesCommand(const QString& commandId) {
+    return commandId == QLatin1String("marker.edit") || commandId == QLatin1String("marker.addChapter");
+}
+
+QVariantMap MarkersBridge::commandAvailability(const QString& commandId) const {
+    const auto state = [](bool handled, bool enabled, const QString& reason = {}) {
+        return QVariantMap{{QStringLiteral("handled"), handled}, {QStringLiteral("enabled"), enabled},
+                           {QStringLiteral("reason"), reason}};
+    };
+    if (!handlesCommand(commandId))
+        return state(false, false);
+    if (!m_controller || !m_controller->currentSequence())
+        return state(true, false, tr("Open a sequence first"));
+    if (commandId == QLatin1String("marker.edit") && markerAtPlayhead(true).isEmpty())
+        return state(true, false, tr("No marker at the playhead"));
+    return state(true, true);
 }
 
 } // namespace wabcut::app

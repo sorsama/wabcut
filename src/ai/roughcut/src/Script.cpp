@@ -240,6 +240,20 @@ std::vector<std::string> splitProse(std::string_view line) {
         if (k < line.size() && line[k] != ' ' && line[k] != '\t') {
             return false; // "3.5", "e.g.x", a URL
         }
+        // 0.6 (P1 round, #37): a title or a common abbreviation does not end the sentence ("Dr. Somchai", "vs. the").
+        if (line[i] == '.' && k == i + 1 && k < line.size()) {
+            std::size_t start = i;
+            while (start > 0 && line[start - 1] != ' ' && line[start - 1] != '\t' && line[start - 1] != '(') {
+                --start;
+            }
+            std::string word(line.substr(start, i - start));
+            std::ranges::transform(word, word.begin(), [](char ch) { return static_cast<char>(std::tolower(static_cast<unsigned char>(ch))); });
+            static constexpr std::string_view kAbbreviations[] = {"dr", "mr", "mrs", "ms", "prof", "st", "mt", "jr", "sr",
+                                                                   "vs", "e.g", "i.e", "approx"};
+            if (std::ranges::find(kAbbreviations, std::string_view(word)) != std::end(kAbbreviations)) {
+                return false;
+            }
+        }
         length = k - i;
         return true;
     };

@@ -33,7 +33,7 @@ Item {
         anchors.fill: parent
         anchors.topMargin: Theme.hairline
         anchors.bottomMargin: Theme.hairline
-        radius: height / 2
+        radius: Theme.timelinePill(height)
         color: Theme.raised
     }
     // A click on the header (not its chip or eye) shows the track in the Captions page.
@@ -68,7 +68,7 @@ Item {
         }
 
         background: Rectangle {
-            radius: height / 2
+            radius: Theme.timelinePill(height)
             color: root.targeted ? Theme.accentFill : chip.hovered ? Theme.hover : Theme.well
             opacity: root.trackEnabled ? 1 : Theme.disabledOpacity
 
@@ -76,7 +76,7 @@ Item {
                 visible: root.targeted
                 anchors.fill: parent
                 anchors.margins: -Theme.space(0.75)
-                radius: height / 2
+                radius: Theme.timelinePill(height)
                 color: "transparent"
                 border.width: Theme.selectionWidth
                 border.color: Theme.textPrimary
@@ -99,7 +99,7 @@ Item {
         }
         FocusRing {
             anchors.fill: parent
-            targetRadius: height / 2
+            targetRadius: Theme.timelinePill(height)
             visible: chip.visualFocus
         }
         HoverHandler {

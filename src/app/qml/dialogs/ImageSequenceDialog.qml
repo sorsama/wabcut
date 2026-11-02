@@ -73,6 +73,7 @@ WabcutDialog {
     }
     PillTabs {
         objectName: "imageSequenceRate"
+        Accessible.name: qsTr("Frame rate (fps)") // P1 #61
         Layout.fillWidth: true
         compact: true
         model: dialog.rates.map(r => String(r))

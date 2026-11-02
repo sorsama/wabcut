@@ -88,6 +88,7 @@ std::expected<void, Error> ClipAudioRenderer::render(const ProjectState& project
         content.properties.set(ParamId::VolumeDb, 0.0); // the file carries the clip's gain
         if (!request.clipEffects) {
             content.effects.clear();
+            content.masterEffectsOff = true; // fix F1A (card #71): its media's Master Clip Effects stay out too
         }
         c.setContent(std::move(content));
     }

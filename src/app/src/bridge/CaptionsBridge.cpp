@@ -8,7 +8,11 @@
 #include "TranscriptBridge.h"
 
 #include <wabcut/ai/edit/CaptionBuilder.h>
+#include <wabcut/ai/edit/TranscriptCommands.h>
 #include <wabcut/ai/translate/Languages.h>
+#include <wabcut/command/Engine.h>
+#include <wabcut/export/AudioPostHost.h>
+#include <wabcut/interchange/CaptionFiles.h>
 #include <wabcut/model/CaptionOps.h>
 #include <wabcut/model/CaptionText.h>
 #include <wabcut/model/FinishingOps.h>
@@ -18,6 +22,8 @@
 #include <wabcut/model/Timecode.h>
 
 #include <QColor>
+#include <QDir>
+#include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QQmlEngine>
@@ -26,6 +32,7 @@
 #include <algorithm>
 #include <cmath>
 #include <fstream>
+#include <set>
 
 namespace wabcut::app {
 
@@ -942,6 +949,17 @@ QString CaptionsBridge::addCueAtPlayhead(const QString& text) {
         return edit::addCaptionCue(s, seq, track, cue);
     });
     endEdit();
+    // P1 round (#35): the new cue (the cues stay in time order: the first one that starts at the playhead).
+    if (error.isEmpty()) {
+        if (const CaptionTrack* added = shownTrack()) {
+            for (std::size_t i = 0; i < added->cues.size(); ++i) {
+                if (added->cues[i].start == at) {
+                    emit cueAdded(static_cast<int>(i));
+                    break;
+                }
+            }
+        }
+    }
     return error;
 }
 
@@ -1026,6 +1044,106 @@ void CaptionsBridge::seekToCue(int index) {
     m_controller->setPlayhead(seq ? seekPointIn(TimeRange{cue.start, cue.duration}, seq->frameRate) : cue.start);
 }
 
+// ---- P1 round (#35): Premiere's caption keys -----------------------------------------------------------------------
+
+bool CaptionsBridge::handlesCommand(const QString& commandId) {
+    return commandId == QLatin1String("sequence.addCaptionTrack") || commandId == QLatin1String("sequence.addCaptionAtPlayhead")
+        || commandId == QLatin1String("sequence.nextCaptionSegment")
+        || commandId == QLatin1String("sequence.previousCaptionSegment")
+        || commandId == QLatin1String("transcript.correctFromScript"); // #37: Main opens the sheet; availability here
+}
+
+int CaptionsBridge::cueToGo(int direction) const {
+    const CaptionTrack* t = shownTrack();
+    const SequencePtr seq = m_controller ? m_controller->currentSequence() : nullptr;
+    if (!t || !seq || direction == 0)
+        return -1;
+    // Where seekToCue puts the playhead for each cue (a frame inside it), so a cue the playhead already went to is not
+    // found again: the next one starts strictly after the playhead, the previous one strictly before.
+    const Ticks playhead = m_controller->playhead();
+    int found = -1;
+    Ticks foundAt{};
+    for (std::size_t i = 0; i < t->cues.size(); ++i) {
+        const CaptionCue& c = t->cues[i];
+        const Ticks at = seekPointIn(TimeRange{c.start, c.duration}, seq->frameRate);
+        const bool candidate = direction > 0 ? at > playhead : at < playhead;
+        if (candidate && (found < 0 || (direction > 0 ? at < foundAt : at > foundAt))) {
+            found = static_cast<int>(i);
+            foundAt = at;
+        }
+    }
+    return found;
+}
+
+QVariantMap CaptionsBridge::commandAvailability(const QString& commandId) const {
+    const auto state = [](bool handled, bool enabled, const QString& reason = {}) {
+        return QVariantMap{{QStringLiteral("handled"), handled}, {QStringLiteral("enabled"), enabled},
+                           {QStringLiteral("reason"), enabled ? QString() : reason}};
+    };
+    if (!handlesCommand(commandId))
+        return state(false, false);
+    if (!m_controller || !m_controller->currentSequence())
+        return state(true, false, tr("Open a sequence first"));
+    if (commandId == QLatin1String("sequence.addCaptionTrack"))
+        return state(true, true);
+    if (commandId == QLatin1String("transcript.correctFromScript")) // #37: the transcript has words to correct
+        return state(true, canGenerate(), tr("Transcribe the sequence first"));
+    const CaptionTrack* t = shownTrack();
+    if (!t)
+        return state(true, false, tr("Add a caption track first"));
+    if (commandId == QLatin1String("sequence.addCaptionAtPlayhead")) {
+        if (!t->style.allowOverlap) {
+            const Ticks p = m_controller->playhead();
+            for (const CaptionCue& c : t->cues) {
+                if (c.start <= p && p < c.end())
+                    return state(true, false, tr("A caption is already at the playhead"));
+            }
+        }
+        return state(true, true);
+    }
+    const bool next = commandId == QLatin1String("sequence.nextCaptionSegment");
+    return state(true, cueToGo(next ? 1 : -1) >= 0,
+                 next ? tr("No caption after the playhead") : tr("No caption before the playhead"));
+}
+
+bool CaptionsBridge::goToCue(int direction) {
+    const int cue = cueToGo(direction);
+    if (cue < 0) {
+        setMessage(direction > 0 ? tr("No caption after the playhead") : tr("No caption before the playhead"));
+        return false;
+    }
+    seekToCue(cue);
+    setSelectedCue(cue); // Premiere selects the caption it goes to: the lane outlines it, the list scrolls to it
+    return true;
+}
+
+bool CaptionsBridge::runCommand(const QString& commandId) {
+    if (!handlesCommand(commandId) || commandId == QLatin1String("transcript.correctFromScript"))
+        return false; // the sheet is Main's
+    const QVariantMap can = commandAvailability(commandId);
+    if (!can.value(QStringLiteral("enabled")).toBool()) {
+        setMessage(can.value(QStringLiteral("reason")).toString());
+        return false;
+    }
+    if (commandId == QLatin1String("sequence.addCaptionTrack")) {
+        // Premiere names new caption tracks after their format; Wabcut's are "Captions", then "Captions 2", ...
+        const QString base = tr("Captions");
+        QString name = base;
+        const QVariantList existing = tracks();
+        const auto taken = [&](const QString& candidate) {
+            return std::ranges::any_of(existing, [&](const QVariant& v) {
+                return v.toMap().value(QStringLiteral("name")).toString().compare(candidate, Qt::CaseInsensitive) == 0;
+            });
+        };
+        for (int n = 2; taken(name) && n < 1000; ++n)
+            name = QStringLiteral("%1 %2").arg(base).arg(n);
+        return addTrack(name, {}).isEmpty();
+    }
+    if (commandId == QLatin1String("sequence.addCaptionAtPlayhead"))
+        return addCueAtPlayhead({}).isEmpty();
+    return goToCue(commandId == QLatin1String("sequence.nextCaptionSegment") ? 1 : -1);
+}
+
 QString CaptionsBridge::shiftCues(const QString& delta, const QString& scope) {
     const CaptionTrack* t = shownTrack();
     if (!m_controller || !t) {
@@ -1085,18 +1203,118 @@ QString CaptionsBridge::exportFile(const QUrl& file, const QString& format) {
         return m_message;
     }
     const QString path = file.isLocalFile() ? file.toLocalFile() : file.toString();
-    std::ofstream out(pathFromUtf8(path.toStdString()), std::ios::binary);
-    if (!out) {
-        setMessage(tr("Cannot write %1").arg(path));
+    // 0.6 (#57): through captions.export, so the words the soundtrack bleeps are replaced as in exports.
+    const command::CommandResult result = exportCaptionTrack(m_track, path, format);
+    if (!result.ok()) {
+        setMessage(tr("Cannot write %1: %2").arg(QDir::toNativeSeparators(path), fromStd(result.error->message)));
         return m_message;
     }
-    const std::string text = exportText(format).toStdString();
-    out.write(text.data(), static_cast<std::streamsize>(text.size()));
-    if (!out) {
-        setMessage(tr("Cannot write %1").arg(path));
+    setMessage(tr("Saved %1").arg(QFileInfo(path).fileName()));
+    return {};
+}
+
+namespace {
+
+/// 0.6 (#57): a caption file name part (interchange.export's rule): characters file systems refuse replaced, no
+/// leading or trailing spaces or dots.
+QString captionFileNamePart(QString text) {
+    static const QString kRefused = QStringLiteral("<>:\"/\\|?*");
+    for (QChar& ch : text) {
+        if (ch.unicode() < 32 || kRefused.contains(ch)) {
+            ch = QLatin1Char('_');
+        }
+    }
+    while (!text.isEmpty() && (text.endsWith(QLatin1Char('.')) || text.endsWith(QLatin1Char(' ')))) {
+        text.chop(1);
+    }
+    while (!text.isEmpty() && (text.startsWith(QLatin1Char('.')) || text.startsWith(QLatin1Char(' ')))) {
+        text.remove(0, 1);
+    }
+    return text;
+}
+
+} // namespace
+
+command::CommandResult CaptionsBridge::exportCaptionTrack(CaptionTrackId track, const QString& path, const QString& format) {
+    command::CommandResult result;
+    if (!m_controller) {
+        result.error = command::CommandError{command::ErrorCode::InvalidRequest, "no project", nullptr};
+        return result;
+    }
+    command::EnginePolicy policy;
+    policy.services = exporter::interchangeServices(m_controller->projectFile()); // the redaction of bleeped words
+    command::CommandEngine engine(m_controller->session(), ai::edit::editingCommands(), policy);
+    command::CommandRequest request;
+    request.command = "captions.export";
+    request.params = command::Json{{"sequence", m_controller->currentSequenceId().value},
+                                   {"captionTrack", track.value},
+                                   {"path", QDir::fromNativeSeparators(path).toStdString()},
+                                   {"format", format.toStdString()}};
+    try {
+        result = engine.execute(request);
+    } catch (const std::exception& e) {
+        result.error = command::CommandError{command::ErrorCode::Internal, e.what(), nullptr};
+    }
+    return result;
+}
+
+QString CaptionsBridge::exportAllTracks(const QUrl& folder, const QString& format) {
+    const SequencePtr seq = m_controller ? m_controller->currentSequence() : nullptr;
+    if (!seq) {
+        setMessage(tr("Open a sequence first"));
         return m_message;
     }
-    setMessage(tr("Saved %1").arg(QUrl::fromLocalFile(path).fileName()));
+    const QString dir = folder.isLocalFile() ? folder.toLocalFile() : folder.toString();
+    if (dir.isEmpty() || !QFileInfo(dir).isDir()) {
+        setMessage(tr("Choose a folder for the caption files"));
+        return m_message;
+    }
+    const auto captionFormat = interchange::captionFormatFromName(format.toStdString());
+    if (!captionFormat) {
+        setMessage(tr("Unknown caption format \"%1\"").arg(format));
+        return m_message;
+    }
+    const QString extension = QString::fromUtf8(interchange::extension(*captionFormat).data());
+    QString stem = captionFileNamePart(fromStd(seq->name));
+    if (stem.isEmpty()) {
+        stem = tr("Sequence");
+    }
+    // "<sequence> - <track name>[.<language>].<ext>", " (2)" when two tracks share a name (interchange.export's naming).
+    std::set<QString> taken;
+    int saved = 0;
+    QStringList failures;
+    for (const CaptionTrack& track : seq->captionTracks) {
+        if (track.cues.empty()) {
+            continue;
+        }
+        QString name = captionFileNamePart(fromStd(track.name));
+        if (name.isEmpty()) {
+            name = tr("Captions");
+        }
+        const QString language = captionFileNamePart(fromStd(track.language));
+        const QString base = stem + QStringLiteral(" - ") + name + (language.isEmpty() ? QString() : QLatin1Char('.') + language);
+        QString fileName = base + extension;
+        for (int n = 2; n < 1000 && !taken.insert(fileName.toLower()).second; ++n) {
+            fileName = QStringLiteral("%1 (%2)%3").arg(base).arg(n).arg(extension);
+        }
+        const QString path = QDir(dir).filePath(fileName);
+        const command::CommandResult result = exportCaptionTrack(track.id, path, format);
+        if (result.ok()) {
+            ++saved;
+        } else {
+            failures << tr("%1: %2").arg(name, fromStd(result.error->message));
+        }
+    }
+    if (saved == 0 && failures.isEmpty()) {
+        setMessage(tr("No caption track has captions to save"));
+        return m_message;
+    }
+    if (!failures.isEmpty()) {
+        setMessage(tr("Saved %n caption file(s)", nullptr, saved) + QStringLiteral(" · ") +
+                   tr("not saved: %1").arg(failures.join(QStringLiteral("; "))));
+        return m_message;
+    }
+    setMessage(tr("Saved %n caption file(s)", nullptr, saved));
     return {};
 }
 

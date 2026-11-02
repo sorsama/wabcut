@@ -17,6 +17,16 @@ import QtQuick.Effects
 Popup {
     id: root
     objectName: "settingsWindow"
+    // P1 #61: the popup's own item (UI Automation's dialog window, which NVDA announces when the focus enters) takes
+    // the name its content has; Popup itself takes no Accessible.
+    readonly property string accessibleTitle: root.contentItem ? root.contentItem.Accessible.name : ""
+    function nameDialogElement() {
+        const shell = root.contentItem ? root.contentItem.parent : null
+        if (shell)
+            shell.Accessible.name = root.accessibleTitle
+    }
+    onAccessibleTitleChanged: root.nameDialogElement()
+    Component.onCompleted: root.nameDialogElement()
 
     /// The page shown: one of `categories`' keys.
     property string currentPage: "general"

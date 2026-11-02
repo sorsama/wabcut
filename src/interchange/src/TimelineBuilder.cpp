@@ -1,9 +1,11 @@
 #include "TimelineBuilder.h"
 
+#include "InterchangeEffects.h"
 #include "TextUtil.h"
 #include "TimeMath.h"
 
 #include <wabcut/interchange/FileUrl.h>
+#include <wabcut/model/Auditions.h>
 #include <wabcut/model/AudioChannelOps.h>
 #include <wabcut/model/EditOps.h>
 #include <wabcut/model/Effects.h>
@@ -11,12 +13,14 @@
 #include <wabcut/model/MediaLocator.h>
 #include <wabcut/model/Nesting.h>
 #include <wabcut/model/ProjectOps.h>
+#include <wabcut/model/Synthetic.h>
 #include <wabcut/model/Timecode.h>
 #include <wabcut/model/TitleOps.h>
 
 #include <algorithm>
 #include <map>
 #include <numeric>
+#include <set>
 #include <unordered_map>
 #include <utility>
 
@@ -140,6 +144,13 @@ private:
 
     std::vector<MediaUsage> scanUsage() const;
     std::expected<void, Error> addMediaItems();
+    /// 0.6 (card #69): a synthetic item or adjustment layer for generated media; false when it cannot be made.
+    bool addGeneratorItem(const IrMedia& media);
+    /// 0.6 (card #67): the clips' and tracks' effect stacks as they came (data, masks and placeholders too).
+    void applyEffects();
+    void applyTrackEffects(const IrSequence& ir);
+    /// Drops "asset:" references (they name assets of another project) from an instance; true when any were.
+    static bool stripAssets(EffectInstance& e);
     Ticks sourceOffsetFor(const IrMedia& media, const std::string& name, const RelinkResult& link);
     MediaItem makeMediaItem(const IrMedia& media, const MediaUsage& usage, RelinkResult& link);
     std::expected<void, Error> buildSequence(const IrSequence& ir);
@@ -172,6 +183,17 @@ private:
     std::expected<TrackId, Error> overflowTrack(TrackKind kind, TimeRange range, const std::string& from);
     std::expected<void, Error> applyClipAttributes();
     std::expected<void, Error> applyLinks();
+    /// 0.6 (card #74): where the other takes of the sequence's auditions are built (Builder::withAuditionTracks):
+    /// clips on scratch tracks above the video tracks and below the audio tracks, a pair of picture and sound linked as
+    /// they were. makeAuditions turns them into the takes of their clips (edit::addAuditionTakes) and removes the
+    /// scratch tracks.
+    struct AuditionScratch {
+        std::size_t videoTracks = 0; ///< the sequence's own track counts (the scratch tracks follow)
+        std::size_t audioTracks = 0;
+        bool any = false;
+    };
+    IrSequence withAuditionTracks(const IrSequence& ir, AuditionScratch& scratch) const;
+    void makeAuditions(const IrSequence& ir, const AuditionScratch& scratch);
     void importTransition(const IrTrack& track, std::size_t trackIndex, TrackId trackId,
                           const IrTransition& transition);
     void reportGaps(const IrTrack& track, TrackId trackId, std::size_t trackIndex);
@@ -206,40 +228,50 @@ private:
     std::vector<TrackId> m_audioIds;
     std::vector<TrackId> m_overflow;
     std::vector<Placed> m_placed;
+    /// 0.6: effects of m_placed clips applyEffects could not place as they came.
+    std::set<const EffectInstance*> m_effectFallbacks;
     std::vector<Pending> m_pending;
     std::unordered_map<std::uint64_t, Ticks> m_pendingEnd; ///< per destination track: where its pending clips end
+    /// 0.6 (card #74): the scratch tracks of the sequence being built (their clips are audition takes).
+    std::set<std::uint64_t> m_scratchTracks;
 };
 
 std::vector<MediaUsage> Builder::scanUsage() const {
     std::vector<MediaUsage> usage(m_doc.media.size());
+    const auto count = [&](const IrClip& c) {
+        if (c.media >= usage.size()) {
+            return;
+        }
+        MediaUsage& u = usage[c.media];
+        ++u.clips;
+        if (c.stream.kind == StreamKind::Video) {
+            u.video = true;
+        } else if (c.stream.index >= 0) {
+            u.audioStreams = std::max(u.audioStreams, c.stream.index + 1);
+        }
+        // A retimed clip is placed at 100% first, then retimed: it needs both extents.
+        Ticks used = c.duration;
+        if (c.speed && c.speed->ratio.num > 0) {
+            used = std::max(used, toSourceTicks(c.duration, c.speed->ratio));
+        }
+        if (c.remap) {
+            // Every position of the remap must be media (its last frame included).
+            for (const Keyframe& k : c.remap->curve.keys) {
+                const Ticks position{static_cast<std::int64_t>(k.value)};
+                used = std::max(used, position - std::max(c.sourceIn, Ticks{}));
+            }
+        }
+        if (const auto out = checkedAdd(std::max<std::int64_t>(c.sourceIn.value, 0), used.value)) {
+            u.maxSourceOut = std::max(u.maxSourceOut, Ticks{*out});
+        }
+    };
     for (const IrSequence& s : m_doc.sequences) {
         for (const auto* list : {&s.videoTracks, &s.audioTracks}) {
             for (const IrTrack& t : *list) {
                 for (const IrClip& c : t.clips) {
-                    if (c.media >= usage.size()) {
-                        continue;
-                    }
-                    MediaUsage& u = usage[c.media];
-                    ++u.clips;
-                    if (c.stream.kind == StreamKind::Video) {
-                        u.video = true;
-                    } else if (c.stream.index >= 0) {
-                        u.audioStreams = std::max(u.audioStreams, c.stream.index + 1);
-                    }
-                    // A retimed clip is placed at 100% first, then retimed: it needs both extents.
-                    Ticks used = c.duration;
-                    if (c.speed && c.speed->ratio.num > 0) {
-                        used = std::max(used, toSourceTicks(c.duration, c.speed->ratio));
-                    }
-                    if (c.remap) {
-                        // Every position of the remap must be media (its last frame included).
-                        for (const Keyframe& k : c.remap->curve.keys) {
-                            const Ticks position{static_cast<std::int64_t>(k.value)};
-                            used = std::max(used, position - std::max(c.sourceIn, Ticks{}));
-                        }
-                    }
-                    if (const auto out = checkedAdd(std::max<std::int64_t>(c.sourceIn.value, 0), used.value)) {
-                        u.maxSourceOut = std::max(u.maxSourceOut, Ticks{*out});
+                    count(c);
+                    for (const IrClip& take : c.alternates) { // 0.6 (card #74): an audition's other takes
+                        count(take);
                     }
                 }
             }
@@ -375,6 +407,9 @@ std::expected<void, Error> Builder::addMediaItems() {
     m_mediaIds.reserve(m_doc.media.size());
     for (std::size_t i = 0; i < m_doc.media.size(); ++i) {
         const IrMedia& m = m_doc.media[i];
+        if (m.generator && addGeneratorItem(m)) {
+            continue;
+        }
         RelinkResult link;
         MediaItem item = makeMediaItem(m, usage[i], link);
         const std::string name = item.name;
@@ -421,6 +456,64 @@ std::expected<void, Error> Builder::addMediaItems() {
     return {};
 }
 
+bool Builder::addGeneratorItem(const IrMedia& m) {
+    const IrGenerator& g = *m.generator;
+    // Made for the first sequence's format (as Premiere's New Item dialog makes it for the active sequence), or the
+    // item's own when the source says.
+    SyntheticFormat format;
+    if (!m_doc.sequences.empty()) {
+        const IrSequence& s = m_doc.sequences.front();
+        format.width = s.width;
+        format.height = s.height;
+        format.frameRate = s.frameRate;
+        format.audioRate = s.audioRate;
+    }
+    if (m.width > 0 && m.height > 0 && m.width <= 16384 && m.height <= 16384) {
+        format.width = m.width;
+        format.height = m.height;
+    }
+    if (m.frameRate && m.frameRate->isValid()) {
+        format.frameRate = *m.frameRate;
+    }
+    if (!format.frameRate.isValid() || !format.audioRate.isValid() || format.width < 1 || format.height < 1 ||
+        format.width > 16384 || format.height > 16384) {
+        format = SyntheticFormat{};
+    }
+    std::vector<std::string> dropped;
+    std::vector<EffectParam> params = cleanGeneratorParams(g.kind, g.params, dropped);
+    std::expected<MediaItem, Error> item = std::unexpected(Error{ErrorCode::InvalidArgument, "unknown generator"});
+    if (g.kind == kAdjustmentGenerator) {
+        item = adjustmentMediaItem(format, m.name);
+    } else if (const SyntheticDescriptor* d = findSynthetic(g.kind); d && d->generator == g.kind) {
+        item = syntheticMediaItem(d->kind, std::move(params), format, m.name);
+    }
+    if (!item) {
+        return false; // the caller imports it as an offline item by name
+    }
+    item->bin = binFor(m.bin, m.location);
+    const std::string name = item->name;
+    auto added = edit::addMedia(m_state, std::move(*item));
+    if (!added) {
+        return false;
+    }
+    m_state = std::move(added->state);
+    m_mediaIds.push_back(added->id);
+    m_result.media.push_back(added->id);
+    m_sourceOffset.push_back(Ticks{});
+    std::string reason = "generated " + inQuotes(name) + " (" + std::string(generatorDisplayName(g.kind)) + ", no file)";
+    std::string notes = g.approximation;
+    if (!dropped.empty()) {
+        std::string list;
+        for (const std::string& k : dropped) {
+            list += (list.empty() ? "" : ", ") + k;
+        }
+        notes += std::string(notes.empty() ? "" : "; ") + "settings out of range or unknown were left at their defaults: " + list;
+    }
+    report(notes.empty() ? ReportOutcome::Carried : ReportOutcome::Approximated, ReportCategory::Media,
+           notes.empty() ? reason : reason + "; " + notes, m.location);
+    return true;
+}
+
 Ticks Builder::sourceOffsetFor(const IrMedia& m, const std::string& name, const RelinkResult& link) {
     if (!m.absoluteSourceTimecode) {
         return {};
@@ -460,6 +553,9 @@ bool Builder::fits(TrackId trackId, TimeRange range) const {
 }
 
 std::string Builder::labelOf(TrackId trackId) const {
+    if (m_scratchTracks.contains(trackId.value)) {
+        return "the takes of an audition";
+    }
     if (const auto pos = sequence().trackPosition(trackId)) {
         return trackLabel(pos->kind, pos->index);
     }
@@ -488,14 +584,31 @@ std::expected<void, Error> Builder::applyTrackSettings(const IrSequence& ir) {
             if (t.role != TrackRole::None && kind == TrackKind::Audio) {
                 change.role = t.role;
             }
-            if (!change.name && !change.enabled && !change.targeted && !change.muted && !change.role) {
-                continue;
+            if (t.format && kind == TrackKind::Audio) { // 0.6: AAF / OMF tracks are mono (or 5.1 routed)
+                change.format = *t.format;
             }
-            auto changed = edit::setTrackState(m_state, m_seq, ids[i], change);
-            if (!changed) {
-                return std::unexpected(changed.error());
+            if (change.name || change.enabled || change.targeted || change.muted || change.role || change.format) {
+                auto changed = edit::setTrackState(m_state, m_seq, ids[i], change);
+                if (!changed) {
+                    return std::unexpected(changed.error());
+                }
+                m_state = std::move(changed->state);
             }
-            m_state = std::move(changed->state);
+            // 0.6: the track fader and panner (AAF / OMF track automation).
+            for (const auto& [param, value] : {std::pair{ParamId::VolumeDb, &t.volume}, std::pair{ParamId::Pan, &t.pan}}) {
+                if (!*value || kind != TrackKind::Audio) {
+                    continue;
+                }
+                auto set = edit::setParameter(m_state, m_seq, edit::EffectTarget::ofTrack(ids[i]), edit::ParamRef::of(param), **value);
+                if (!set) {
+                    report(ReportOutcome::Dropped, ReportCategory::Track,
+                           std::string(param == ParamId::Pan ? "track pan" : "track volume") + " of " +
+                               trackLabel(kind, i) + " was rejected: " + set.error().message,
+                           t.location, m_seqName);
+                    continue;
+                }
+                m_state = std::move(set->state);
+            }
         }
     }
     return {};
@@ -799,6 +912,11 @@ std::vector<std::size_t> Builder::buildOrder() {
                         if (const auto n = nestedIndex(c); n && mark[*n] == 0) {
                             out.push_back(*n);
                         }
+                        for (const IrClip& a : c.alternates) { // 0.6: a nested take
+                            if (const auto n = nestedIndex(a); n && mark[*n] == 0) {
+                                out.push_back(*n);
+                            }
+                        }
                     }
                 }
             }
@@ -1077,9 +1195,14 @@ std::expected<void, Error> Builder::applyClipAttributes() {
         }
         m_state = std::move(changed->state);
     }
-    // X.1: effect stacks, in order, each instance with its parameters (and switched off when it was).
+    // X.1: effect stacks, in order, each instance with its parameters (and switched off when it was). 0.6 (card #67):
+    // instances go in as they came (applyEffects); those the model's checks refuse are added from their parameters.
+    applyEffects();
     for (const Placed& p : m_placed) {
         for (const EffectInstance& e : p.ir->effects) {
+            if (!m_effectFallbacks.contains(&e)) {
+                continue;
+            }
             auto added = edit::addEffect(m_state, m_seq, std::span<const ClipId>(&p.id, 1), e.effect, e.params);
             if (!added) {
                 report(ReportOutcome::Dropped, ReportCategory::Effect,
@@ -1088,16 +1211,141 @@ std::expected<void, Error> Builder::applyClipAttributes() {
                 continue;
             }
             m_state = std::move(added->state);
-            if (!e.enabled && !added->createdEffects.empty()) {
-                edit::EffectChange off;
-                off.enabled = false;
-                if (auto changed = edit::setEffect(m_state, m_seq, p.id, added->createdEffects.front(), off)) {
+            // Switched off, and (0.6, card #66) its curves and other data.
+            if ((!e.enabled || !e.data.empty()) && !added->createdEffects.empty()) {
+                edit::EffectChange change;
+                if (!e.enabled) {
+                    change.enabled = false;
+                }
+                change.data = e.data;
+                if (auto changed = edit::setEffect(m_state, m_seq, p.id, added->createdEffects.front(), change)) {
                     m_state = std::move(changed->state);
+                } else if (!e.data.empty()) {
+                    report(ReportOutcome::Dropped, ReportCategory::Effect,
+                           "the curves of '" + e.effect + "' on '" + p.ir->name + "' were rejected: " + changed.error().message,
+                           p.ir->location, m_seqName);
                 }
             }
         }
     }
     return {};
+}
+
+bool Builder::stripAssets(EffectInstance& e) {
+    const auto before = e.data.size();
+    std::erase_if(e.data, [](const EffectData& d) {
+        const std::string* text = d.text();
+        return text && assetOfReference(*text).isValid();
+    });
+    return e.data.size() != before;
+}
+
+void Builder::applyEffects() {
+    m_effectFallbacks.clear();
+    std::unordered_map<std::uint64_t, EffectStack> stacks;
+    for (const Placed& p : m_placed) {
+        if (p.ir->effects.empty()) {
+            continue;
+        }
+        const auto location = sequence().findClip(p.id);
+        if (!location) {
+            continue;
+        }
+        const EffectKind kind = location->track->kind == TrackKind::Video ? EffectKind::Video : EffectKind::Audio;
+        EffectStack stack = location->clip().effects();
+        bool changed = false;
+        for (const EffectInstance& e : p.ir->effects) {
+            EffectInstance copy = e;
+            if (stripAssets(copy)) {
+                report(ReportOutcome::Approximated, ReportCategory::Effect,
+                       "effect " + inQuotes(effectLabel(e)) + " on " + inQuotes(p.ir->name) +
+                           " refers to a file of another project (a LUT); that reference was not imported",
+                       p.ir->location, m_seqName);
+            }
+            copy.id = m_state.ids.allocate<EffectInstanceId>();
+            stack.push_back(std::move(copy));
+            if (effectStackProblem(stack, kind, m_state.ids.next)) {
+                stack.pop_back();
+                m_effectFallbacks.insert(&e);
+                continue;
+            }
+            changed = true;
+        }
+        if (changed) {
+            stacks[p.id.value] = std::move(stack);
+        }
+    }
+    if (stacks.empty()) {
+        return;
+    }
+    auto seq = std::make_shared<Sequence>(sequence());
+    for (std::vector<TrackPtr>* tracks : {&seq->videoTracks, &seq->audioTracks}) {
+        for (TrackPtr& t : *tracks) {
+            std::shared_ptr<Track> copy;
+            for (std::size_t i = 0; i < t->clips.size(); ++i) {
+                const auto found = stacks.find(t->clips[i].id.value);
+                if (found == stacks.end()) {
+                    continue;
+                }
+                if (!copy) {
+                    copy = std::make_shared<Track>(*t);
+                }
+                copy->clips.mutableAt(i).setEffects(std::move(found->second));
+            }
+            if (copy) {
+                t = std::move(copy);
+            }
+        }
+    }
+    m_state = m_state.withSequence(std::move(seq));
+}
+
+void Builder::applyTrackEffects(const IrSequence& ir) {
+    bool any = false;
+    for (const auto* tracks : {&ir.videoTracks, &ir.audioTracks}) {
+        for (const IrTrack& t : *tracks) {
+            any = any || !t.effects.empty();
+        }
+    }
+    if (!any) {
+        return;
+    }
+    auto seq = std::make_shared<Sequence>(sequence());
+    for (const TrackKind kind : {TrackKind::Video, TrackKind::Audio}) {
+        const auto& irTracks = kind == TrackKind::Video ? ir.videoTracks : ir.audioTracks;
+        const auto& ids = kind == TrackKind::Video ? m_videoIds : m_audioIds;
+        std::vector<TrackPtr>& tracks = kind == TrackKind::Video ? seq->videoTracks : seq->audioTracks;
+        const EffectKind effectKind = kind == TrackKind::Video ? EffectKind::Video : EffectKind::Audio;
+        for (std::size_t i = 0; i < irTracks.size() && i < ids.size(); ++i) {
+            if (irTracks[i].effects.empty()) {
+                continue;
+            }
+            const auto at = std::find_if(tracks.begin(), tracks.end(), [&](const TrackPtr& t) { return t->id == ids[i]; });
+            if (at == tracks.end()) {
+                continue;
+            }
+            auto copy = std::make_shared<Track>(**at);
+            for (const EffectInstance& e : irTracks[i].effects) {
+                EffectInstance instance = e;
+                stripAssets(instance);
+                instance.id = m_state.ids.allocate<EffectInstanceId>();
+                copy->effects.push_back(std::move(instance));
+                if (const auto problem = effectStackProblem(copy->effects, effectKind, m_state.ids.next)) {
+                    copy->effects.pop_back();
+                    report(ReportOutcome::Dropped, ReportCategory::Effect,
+                           "track effect " + inQuotes(effectLabel(e)) + " of " + trackLabel(kind, i) + " was rejected: " + *problem,
+                           irTracks[i].location, m_seqName);
+                    continue;
+                }
+                report(isForeignPlaceholder(e) ? ReportOutcome::Approximated : ReportOutcome::Carried, ReportCategory::Effect,
+                       "track effect " + inQuotes(effectLabel(e)) + " of " + trackLabel(kind, i) +
+                           (isForeignPlaceholder(e) ? " (kept, not rendered: Wabcut does not know it)" : ""),
+                       irTracks[i].location, m_seqName);
+            }
+            *at = std::move(copy);
+        }
+    }
+    m_state = m_state.withSequence(std::move(seq));
 }
 
 std::expected<void, Error> Builder::applyLinks() {
@@ -1342,10 +1590,16 @@ std::expected<void, Error> Builder::applyLocks(const IrSequence& ir) {
     return {};
 }
 
-std::expected<void, Error> Builder::buildSequence(const IrSequence& ir) {
-    m_seqName = ir.name.empty() ? std::string("Sequence") : ir.name;
+std::expected<void, Error> Builder::buildSequence(const IrSequence& original) {
+    m_seqName = original.name.empty() ? std::string("Sequence") : original.name;
     m_overflow.clear();
     m_placed.clear();
+    m_scratchTracks.clear();
+    // 0.6 (card #74): the other takes of auditions are placed like clips on scratch tracks first (so they get their
+    // effects, speed, names and links like any clip), then become takes (makeAuditions).
+    AuditionScratch scratch;
+    const IrSequence withTakes = withAuditionTracks(original, scratch);
+    const IrSequence& ir = scratch.any ? withTakes : original;
 
     edit::SequenceSettings settings;
     settings.name = m_seqName;
@@ -1401,7 +1655,24 @@ std::expected<void, Error> Builder::buildSequence(const IrSequence& ir) {
     for (const auto& t : sequence().audioTracks) {
         m_audioIds.push_back(t->id);
     }
+    if (scratch.any) {
+        for (std::size_t i = scratch.videoTracks; i < m_videoIds.size(); ++i) {
+            m_scratchTracks.insert(m_videoIds[i].value);
+        }
+        for (std::size_t i = scratch.audioTracks; i < m_audioIds.size(); ++i) {
+            m_scratchTracks.insert(m_audioIds[i].value);
+        }
+    }
 
+    if (ir.masterFormat && *ir.masterFormat != ChannelFormat::Stereo) { // 0.6: a 5.1 layout (AAF / OMF)
+        if (auto master = edit::setMasterFormat(m_state, m_seq, *ir.masterFormat)) {
+            m_state = std::move(master->state);
+        } else {
+            report(ReportOutcome::Dropped, ReportCategory::AudioMapping,
+                   "the " + std::string(toString(*ir.masterFormat)) + " master was rejected: " + master.error().message,
+                   ir.location, m_seqName);
+        }
+    }
     if (auto r = applyTrackSettings(ir); !r) {
         return r;
     }
@@ -1416,14 +1687,18 @@ std::expected<void, Error> Builder::buildSequence(const IrSequence& ir) {
         }
     }
     applyMulticam(ir);
+    applyTrackEffects(ir); // 0.6 (card #67)
     if (auto r = applyClipAttributes(); !r) {
         return r;
     }
     if (auto r = applyLinks(); !r) {
         return r;
     }
+    if (scratch.any) {
+        makeAuditions(ir, scratch);
+    }
     for (const auto kind : {TrackKind::Video, TrackKind::Audio}) {
-        const auto& tracks = kind == TrackKind::Video ? ir.videoTracks : ir.audioTracks;
+        const auto& tracks = kind == TrackKind::Video ? original.videoTracks : original.audioTracks;
         const auto& ids = kind == TrackKind::Video ? m_videoIds : m_audioIds;
         for (std::size_t i = 0; i < tracks.size(); ++i) {
             for (const IrTransition& t : tracks[i].transitions) {
@@ -1432,25 +1707,175 @@ std::expected<void, Error> Builder::buildSequence(const IrSequence& ir) {
             reportGaps(tracks[i], ids[i], i);
         }
     }
-    if (auto r = applyMarkers(ir); !r) {
+    if (auto r = applyMarkers(original); !r) {
         return r;
     }
-    if (auto r = applyMarks(ir); !r) {
+    if (auto r = applyMarks(original); !r) {
         return r;
     }
-    if (ir.startTimecode && ir.startTimecode->value > 0) { // X.1
-        if (auto started = edit::setSequenceStartTimecode(m_state, m_seq, *ir.startTimecode)) {
+    if (original.startTimecode && original.startTimecode->value > 0) { // X.1
+        if (auto started = edit::setSequenceStartTimecode(m_state, m_seq, *original.startTimecode)) {
             m_state = std::move(started->state);
             report(ReportOutcome::Carried, ReportCategory::SequenceSetting,
-                   "start timecode " + timecodeLabel(*ir.startTimecode, m_rate, m_dropFrame), ir.location, m_seqName);
+                   "start timecode " + timecodeLabel(*original.startTimecode, m_rate, m_dropFrame), original.location,
+                   m_seqName);
         } else {
             report(ReportOutcome::Dropped, ReportCategory::SequenceSetting,
-                   "start timecode " + timecodeLabel(*ir.startTimecode, m_rate, m_dropFrame) + " is out of range",
-                   ir.location, m_seqName);
+                   "start timecode " + timecodeLabel(*original.startTimecode, m_rate, m_dropFrame) + " is out of range",
+                   original.location, m_seqName);
         }
     }
-    applySequenceDuration(ir);
-    return applyLocks(ir);
+    applySequenceDuration(original);
+    return applyLocks(original);
+}
+
+IrSequence Builder::withAuditionTracks(const IrSequence& ir, AuditionScratch& scratch) const {
+    scratch.videoTracks = ir.videoTracks.size();
+    scratch.audioTracks = ir.audioTracks.size();
+    const auto hasTakes = [](const std::vector<IrTrack>& tracks) {
+        return std::any_of(tracks.begin(), tracks.end(), [](const IrTrack& t) {
+            return std::any_of(t.clips.begin(), t.clips.end(), [](const IrClip& c) { return !c.alternates.empty(); });
+        });
+    };
+    scratch.any = hasTakes(ir.videoTracks) || hasTakes(ir.audioTracks);
+    if (!scratch.any) {
+        return {};
+    }
+    IrSequence out = ir;
+    // Take j of a linked picture and sound is linked again on the scratch tracks, in a group of its own.
+    std::int64_t nextLink = 0;
+    for (const auto* tracks : {&ir.videoTracks, &ir.audioTracks}) {
+        for (const IrTrack& t : *tracks) {
+            for (const IrClip& c : t.clips) {
+                nextLink = std::max(nextLink, c.linkGroup + 1);
+                for (const IrClip& a : c.alternates) {
+                    nextLink = std::max(nextLink, a.linkGroup + 1);
+                }
+            }
+        }
+    }
+    std::map<std::pair<std::int64_t, std::size_t>, std::int64_t> links;
+    for (const auto kind : {TrackKind::Video, TrackKind::Audio}) {
+        std::vector<IrTrack>& tracks = kind == TrackKind::Video ? out.videoTracks : out.audioTracks;
+        std::vector<IrTrack> added;
+        for (const IrTrack& t : tracks) {
+            std::size_t most = 0;
+            for (const IrClip& c : t.clips) {
+                most = std::max(most, c.alternates.size());
+            }
+            for (std::size_t j = 0; j < most; ++j) {
+                IrTrack takes;
+                takes.kind = kind;
+                takes.location = t.location;
+                for (const IrClip& c : t.clips) {
+                    if (j >= c.alternates.size()) {
+                        continue;
+                    }
+                    IrClip take = c.alternates[j];
+                    take.alternates.clear();
+                    take.linkGroup = -1;
+                    if (c.linkGroup >= 0) {
+                        const std::pair<std::int64_t, std::size_t> key{c.linkGroup, j};
+                        const auto [it, inserted] = links.try_emplace(key, nextLink);
+                        if (inserted) {
+                            ++nextLink;
+                        }
+                        take.linkGroup = it->second;
+                    }
+                    takes.clips.push_back(std::move(take));
+                }
+                added.push_back(std::move(takes));
+            }
+        }
+        for (IrTrack& t : added) {
+            tracks.push_back(std::move(t));
+        }
+    }
+    return out;
+}
+
+void Builder::makeAuditions(const IrSequence& ir, const AuditionScratch& scratch) {
+    std::unordered_map<const IrClip*, ClipId> placed;
+    for (const Placed& p : m_placed) {
+        placed.emplace(p.ir, p.id);
+    }
+    for (const auto kind : {TrackKind::Video, TrackKind::Audio}) {
+        const std::vector<IrTrack>& tracks = kind == TrackKind::Video ? ir.videoTracks : ir.audioTracks;
+        const std::size_t own = kind == TrackKind::Video ? scratch.videoTracks : scratch.audioTracks;
+        std::size_t next = own; // the first scratch track of the track being read
+        for (std::size_t t = 0; t < own; ++t) {
+            std::size_t most = 0;
+            for (const IrClip& c : tracks[t].clips) {
+                most = std::max(most, c.alternates.size());
+            }
+            // Where each clip's take j sits on scratch track next + j: in clip order, skipping clips without one.
+            std::vector<std::size_t> cursor(most, 0);
+            for (const IrClip& c : tracks[t].clips) {
+                std::vector<ClipId> takes;
+                for (std::size_t j = 0; j < c.alternates.size(); ++j) {
+                    const IrClip& take = tracks[next + j].clips[cursor[j]++];
+                    if (const auto it = placed.find(&take); it != placed.end()) {
+                        takes.push_back(it->second);
+                    }
+                }
+                if (c.alternates.empty()) {
+                    continue;
+                }
+                const auto active = placed.find(&c);
+                const std::string name = c.name.empty() ? std::string("clip") : c.name;
+                if (active == placed.end()) {
+                    report(ReportOutcome::Dropped, ReportCategory::Clip,
+                           "the other takes of audition " + inQuotes(name) + " were not imported (its clip was not)",
+                           c.location, m_seqName);
+                    continue;
+                }
+                const auto loc = sequence().findClip(active->second);
+                if (!loc || loc->clip().isAudition()) {
+                    continue; // made with its linked picture or sound
+                }
+                const TrackId trackId = loc->track->id; // `loc` points into the state the edit replaces
+                if (takes.empty()) {
+                    continue;
+                }
+                auto made = edit::addAuditionTakes(m_state, m_seq, active->second, takes, false);
+                if (!made) {
+                    report(ReportOutcome::Dropped, ReportCategory::Clip,
+                           "the other takes of audition " + inQuotes(name) + " were not imported: " + made.error().message,
+                           c.location, m_seqName);
+                    continue;
+                }
+                m_state = std::move(made->state);
+                const Clip& audition = sequence().findClip(active->second)->clip();
+                const std::size_t count = takeCount(audition);
+                if (c.activeTake > 0 && count > 1) {
+                    if (auto moved = edit::moveAuditionTake(m_state, m_seq, active->second, 0,
+                                                            std::min(c.activeTake, count - 1))) {
+                        m_state = std::move(moved->state);
+                    }
+                }
+                report(ReportOutcome::Carried, ReportCategory::Clip,
+                       "audition " + inQuotes(name) + " on " + labelOf(trackId) + " at " + at(c.start) + " with " +
+                           std::to_string(count) + " takes",
+                       c.location, m_seqName);
+            }
+            next += most;
+        }
+    }
+    // The scratch tracks go (with any take that could not join its audition, reported above).
+    std::vector<TrackId> remove;
+    for (std::size_t i = scratch.videoTracks; i < m_videoIds.size(); ++i) {
+        remove.push_back(m_videoIds[i]);
+    }
+    for (std::size_t i = scratch.audioTracks; i < m_audioIds.size(); ++i) {
+        remove.push_back(m_audioIds[i]);
+    }
+    for (const TrackId id : remove) {
+        if (auto removed = edit::removeTrack(m_state, m_seq, id)) {
+            m_state = std::move(removed->state);
+        }
+    }
+    m_videoIds.resize(std::min(m_videoIds.size(), scratch.videoTracks));
+    m_audioIds.resize(std::min(m_audioIds.size(), scratch.audioTracks));
 }
 
 std::expected<ImportResult, Error> Builder::run() {

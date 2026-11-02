@@ -42,6 +42,9 @@ Item {
     property bool advancedOpen: Preferences.homeAdvancedOpen
     /// "Start with media": [{ url, name, sizeText, kind }] (empty: a plain new project).
     property var files: []
+    /// P1 round (#63): the folders the files came from (Home.classifyImport's folderUrls): their files go into the
+    /// folders' bins, subfolders nested (Home.createFromMedia's `folders`).
+    property var folders: []
     property bool addClips: true
     // The arrows moved the chosen tile: the newly chosen tile takes the focus.
     property bool moveFocusToSelection: false
@@ -274,6 +277,7 @@ Item {
     function reset() {
         page.error = ""
         page.files = []
+        page.folders = []
         page.addClips = true
         page.audioTracksEdited = false
         GamingStart.clear()
@@ -296,6 +300,7 @@ Item {
         for (const f of classified.layered ?? [])
             list.push({ url: f.url, name: f.name, sizeText: f.sizeText ?? "", kind: "layered" })
         page.files = list
+        page.folders = classified.folderUrls ?? []
         if (String(classified.suggestedName ?? "") !== "")
             page.baseName = classified.suggestedName
         page.setDefaultName()
@@ -345,7 +350,7 @@ Item {
             page.createRequested(name, page.folder, page.currentSettings)
             return
         }
-        const options = { addToSequence: page.addClips }
+        const options = { addToSequence: page.addClips, folders: page.folders }
         if (media.showStreams)
             options.tracks = media.tracks()
         page.createFromMediaRequested(name, page.folder, page.currentSettings, page.files.map(f => f.url), options)

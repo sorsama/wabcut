@@ -8,6 +8,7 @@
 #include <wabcut/command/Engine.h>
 #include <wabcut/command/ExecutionContext.h>
 #include <wabcut/command/Registry.h>
+#include <wabcut/model/MasterClipEffects.h>
 #include <wabcut/model/EffectPresets.h>
 #include <wabcut/model/MediaLocator.h>
 
@@ -587,13 +588,25 @@ QString EffectPresetsBridge::savePreset(const QStringList& sections, const QStri
         if (std::find(instances.begin(), instances.end(), stack[i].id.value) != instances.end())
             indices.push_back(i);
     }
-    return run("effects.savePreset", Json{{"clip", clip->value},
-                                          {"effects", indices},
-                                          {"fixed", fixed},
-                                          {"name", name.trimmed().toStdString()},
-                                          {"type", type.isEmpty() ? std::string("scale") : type.toStdString()},
-                                          {"description", description.toStdString()},
-                                          {"bin", bin.toStdString()}});
+    // 0.6 (card #71): sections of the media's Master Clip Effects, by their index there.
+    Json master = Json::array();
+    if (const ProjectSnapshot state = m_controller->snapshot()) {
+        const EffectKind kind = loc->clip().stream.kind == StreamKind::Video ? EffectKind::Video : EffectKind::Audio;
+        const EffectStack masterStack = masterEffectsOf(*state, loc->clip().media, kind);
+        for (std::size_t i = 0; i < masterStack.size(); ++i) {
+            if (std::find(instances.begin(), instances.end(), masterStack[i].id.value) != instances.end())
+                master.push_back(i);
+        }
+    }
+    Json command{{"clip", clip->value}, {"effects", indices}};
+    if (!master.empty())
+        command["master"] = master;
+    command.update(Json{{"fixed", fixed},
+                        {"name", name.trimmed().toStdString()},
+                        {"type", type.isEmpty() ? std::string("scale") : type.toStdString()},
+                        {"description", description.toStdString()},
+                        {"bin", bin.toStdString()}});
+    return run("effects.savePreset", command);
 }
 
 QString EffectPresetsBridge::saveEffectOfClip(const QString& clip, const QString& effect, const QString& name,

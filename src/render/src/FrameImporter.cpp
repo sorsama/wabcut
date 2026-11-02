@@ -447,6 +447,15 @@ void FrameImporter::releaseResources() {
     ++m_deviceGeneration;
 }
 
+void FrameImporter::dropIdleNativeViews() {
+    std::erase_if(m_native, [](const std::unique_ptr<NativeSet>& set) { return !set->keepAlive; });
+}
+
+bool FrameImporter::holdsFrames() const {
+    return !m_native.empty() ||
+           std::ranges::any_of(m_sets, [](const std::unique_ptr<TextureSet>& set) { return set->keepAlive != nullptr; });
+}
+
 FrameImporterStats FrameImporter::stats() const {
     FrameImporterStats s = m_stats;
     s.liveSets = 0;

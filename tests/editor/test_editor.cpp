@@ -996,6 +996,126 @@ TEST_CASE("Document: moved media opens offline and relinks by name and fingerpri
           fs::absolute(elsewhere / "moved" / "deeper" / "clip.mp4").lexically_normal());
 }
 
+// 0.6 (P1 round, #42): Locate... on one file relinks the others under the same moved folder or beside it.
+TEST_CASE("Document: Locate relinks the other offline files beside it or under the moved folder", "[editor][relink]") {
+    if (!haveMedia() || !fs::exists(testMedia("ramp_48k.wav"))) {
+        SKIP("test media missing");
+    }
+    const fs::path dir = workDir("relink-locate");
+    fs::create_directories(dir / "shoot" / "day1");
+    fs::create_directories(dir / "shoot" / "day2");
+    fs::create_directories(dir / "elsewhere");
+    fs::copy_file(testMedia("h264_1080p60_aac.mp4"), dir / "shoot" / "day1" / "clip.mp4");
+    fs::copy_file(testMedia("sine_48k.wav"), dir / "shoot" / "day2" / "sound.wav");
+    fs::copy_file(testMedia("ramp_48k.wav"), dir / "elsewhere" / "ramp.wav");
+    const fs::path file = dir / "project" / "p.wabcut";
+    fs::create_directories(file.parent_path());
+    MediaId clip;
+    MediaId sound;
+    MediaId ramp;
+    {
+        SequenceId seqId;
+        EditSession session(projectWithSequence(&seqId));
+        ProjectDocument doc(session);
+        clip = importOne(session, dir / "shoot" / "day1" / "clip.mp4");
+        sound = importOne(session, dir / "shoot" / "day2" / "sound.wav");
+        ramp = importOne(session, dir / "elsewhere" / "ramp.wav");
+        REQUIRE(doc.saveAs(file));
+    }
+    // The shoot moves into an archive folder; the stray ramp.wav lands next to the clip.
+    fs::create_directories(dir / "archive");
+    fs::rename(dir / "shoot", dir / "archive" / "shoot");
+    fs::rename(dir / "elsewhere" / "ramp.wav", dir / "archive" / "shoot" / "day1" / "ramp.wav");
+
+    EditSession session;
+    ProjectDocument doc(session);
+    REQUIRE(doc.open(file));
+    REQUIRE(doc.offlineMedia().size() == 3);
+    // A different file is refused (it is not the clip).
+    CHECK_FALSE(doc.relinkAfterLocate(clip, dir / "archive" / "shoot" / "day2" / "sound.wav"));
+    const auto undo = session.undoCount();
+    const auto others = doc.relinkAfterLocate(clip, dir / "archive" / "shoot" / "day1" / "clip.mp4");
+    REQUIRE(others);
+    CHECK(*others == 2); // sound.wav by the moved root, ramp.wav beside the located file
+    CHECK(doc.offlineMedia().empty());
+    CHECK(session.undoCount() == undo + 1);
+    CHECK(session.undoLabel() == "Relink Media");
+    CHECK(pathFromUtf8(session.snapshot()->findMedia(sound)->locator.path) ==
+          fs::absolute(dir / "archive" / "shoot" / "day2" / "sound.wav").lexically_normal());
+    CHECK(pathFromUtf8(session.snapshot()->findMedia(ramp)->locator.path) ==
+          fs::absolute(dir / "archive" / "shoot" / "day1" / "ramp.wav").lexically_normal());
+    // One undo: all three offline again.
+    REQUIRE(session.undo());
+    CHECK(doc.offlineMedia().size() == 3);
+}
+
+// 0.6 (P1 round, #42): an OBS .mkv remuxed to .mp4 is the same recording in another container: it can never match by
+// name and fingerprint, so it is offered by its name without the extension and relinked after one confirmation.
+TEST_CASE("Document: a recording remuxed into another container relinks after one confirmation", "[editor][relink]") {
+    const fs::path mkv = testMedia("untitled_three_track.mkv");
+    const fs::path mp4 = testMedia("obs_hybrid_titled.mp4");
+    if (!haveMedia() || !fs::exists(mkv) || !fs::exists(mp4)) {
+        SKIP("test media missing");
+    }
+    const fs::path dir = workDir("relink-remux");
+    fs::create_directories(dir / "recordings");
+    fs::copy_file(mkv, dir / "recordings" / "Match 3.mkv");
+    const fs::path file = dir / "p.wabcut";
+    MediaId id;
+    {
+        SequenceId seqId;
+        EditSession session(projectWithSequence(&seqId));
+        ProjectDocument doc(session);
+        id = importOne(session, dir / "recordings" / "Match 3.mkv");
+        REQUIRE(dropMedia(session, {.media = id, .sequence = seqId, .at = Ticks{}}));
+        REQUIRE(doc.saveAs(file));
+    }
+    REQUIRE(fs::remove(dir / "recordings" / "Match 3.mkv"));
+    fs::copy_file(mp4, dir / "recordings" / "Match 3.mp4");
+    // Same name, another file type, but another recording (its picture differs): never offered.
+    fs::create_directories(dir / "other");
+    fs::copy_file(testMedia("h264_1080p60_aac.mp4"), dir / "other" / "Match 3.mov");
+
+    EditSession session;
+    ProjectDocument doc(session);
+    REQUIRE(doc.open(file));
+    REQUIRE(doc.offlineMedia() == std::vector<MediaId>{id});
+    // A plain search finds nothing: the name and the bytes differ.
+    const auto plain = doc.relinkAll({dir});
+    REQUIRE(plain);
+    CHECK(plain->empty());
+    // By the name without the extension: the .mp4 is the same recording, the .mov is not.
+    const auto candidates = doc.findRelinkCandidates(id, {dir}, true);
+    REQUIRE(candidates.size() == 2);
+    for (const RelinkCandidate& c : candidates) {
+        CHECK_FALSE(c.fingerprintMatches);
+        CHECK(c.sameRecording == (c.file.extension() == ".mp4"));
+    }
+    CHECK(doc.findRelinkCandidates(id, {dir}).empty()); // without matchStem: as before
+    // Locate... on the .mp4 says why it is refused.
+    const auto refused = doc.relinkAfterLocate(id, dir / "recordings" / "Match 3.mp4");
+    REQUIRE_FALSE(refused);
+    CHECK(refused.error().message.find("same recording") != std::string::npos);
+
+    const auto offers = doc.findSameRecordings({dir});
+    REQUIRE(offers.size() == 1);
+    CHECK(offers.front().media == id);
+    CHECK(offers.front().file == fs::absolute(dir / "recordings" / "Match 3.mp4").lexically_normal());
+    const auto undo = session.undoCount();
+    const auto relinked = doc.relinkSameRecordings(offers);
+    REQUIRE(relinked);
+    CHECK(*relinked == 1);
+    CHECK(doc.offlineMedia().empty());
+    CHECK(session.undoCount() == undo + 1);
+    CHECK(session.undoLabel() == "Relink Media");
+    const MediaItem& item = *session.snapshot()->findMedia(id);
+    CHECK(pathFromUtf8(item.locator.path).extension() == ".mp4");
+    CHECK(item.info.container.find("mp4") != std::string::npos); // the new container's media info
+    CHECK(item.info.audio.size() == 3);
+    REQUIRE(session.undo());
+    CHECK(doc.offlineMedia().size() == 1);
+}
+
 TEST_CASE("Playback session: the transport drives timeline audio on the Null engine", "[editor][playback]") {
     if (!haveMedia()) {
         SKIP("test media missing");

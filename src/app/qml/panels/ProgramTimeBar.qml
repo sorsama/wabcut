@@ -11,6 +11,8 @@ import QtQuick
 // UX rework (stream T): over a marker, the hover pill shows its name, comment, time and length (SequenceTimeBar.markerAt).
 // 0.5 (stream B): a press and drag is a scrub for Playback (Playback.beginScrub / endScrub): with audio scrubbing on, a
 // stopped transport plays a little of the mix at each new frame, as the timeline's ruler does.
+// 0.6 (stream 1A): a right click on a marker opens the marker menu (MarkerContextMenu); its Edit Marker… opens the marker
+// editor over the bar.
 FocusScope {
     id: root
     objectName: "programTimeBar"
@@ -160,6 +162,30 @@ FocusScope {
             else
                 Playback.stepFrames(delta > 0 ? -1 : 1)
         }
+    }
+
+    // 0.6 (stream 1A): a right click on a marker: its menu (the left button keeps seeking and scrubbing).
+    TapHandler {
+        objectName: "programTimeBarMarkerMenu"
+        acceptedButtons: Qt.RightButton
+        onTapped: eventPoint => {
+            const p = root.mapToItem(pointer, eventPoint.position.x, eventPoint.position.y)
+            const m = bar.markerAt(pointer.barX(p.x))
+            if (m.index === undefined)
+                return
+            Markers.scope = "sequence"
+            markerMenu.markerX = m.x ?? p.x
+            markerMenu.openAt(pointer, p, m.index)
+        }
+    }
+    MarkerContextMenu {
+        id: markerMenu
+        property real markerX: 0
+        onEditRequested: index => timeBarEditor.openFor(index, pointer, Qt.point(markerMenu.markerX + bar.x, pointer.height))
+    }
+    MarkerEditor {
+        id: timeBarEditor
+        parent: root
     }
 
     // The timecode under the pointer; over a marker (within a few pixels), the marker: name, comment, time and length,

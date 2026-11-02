@@ -1362,6 +1362,25 @@ void AudioMixerBridge::finishJob(const QString& kind, std::vector<command::Comma
                         name = QString::fromStdString(std::string(loc->clip().name()));
                 }
             }
+            // 0.6 (P1 round, #54): where the maxima are and the true-peak overs, in the sequence's own time display
+            // (formatTimecode: what ProjectController.seekToText reads back, so a click lands on that frame); "" when
+            // not known.
+            const auto timeText = [&](const Json& ticks) {
+                return m_controller && ticks.is_number_integer() ? m_controller->formatTimecode(Ticks{ticks.get<std::int64_t>()})
+                                                                  : QString();
+            };
+            const auto where = [&](const char* key) {
+                const Json& at = r.value(key, Json());
+                return at.is_object() ? timeText(at.value("ticks", Json())) : QString();
+            };
+            QVariantList overs;
+            for (const Json& o : r.value("overs", Json::array())) {
+                overs.append(QVariantMap{{QStringLiteral("start"), timeText(o.value("startTicks", Json()))},
+                                         {QStringLiteral("end"), timeText(o.value("endTicks", Json()))},
+                                         {QStringLiteral("startTicks"), QString::number(o.value("startTicks", std::int64_t{0}))},
+                                         {QStringLiteral("endTicks"), QString::number(o.value("endTicks", std::int64_t{0}))},
+                                         {QStringLiteral("truePeak"), lufsValue(o.value("truePeakDbtp", Json()))}});
+            }
             const QVariantMap row{{QStringLiteral("target"), name},
                                   {QStringLiteral("kind"), what},
                                   {QStringLiteral("integrated"), lufsValue(r.value("integratedLufs", Json()))},
@@ -1370,7 +1389,12 @@ void AudioMixerBridge::finishJob(const QString& kind, std::vector<command::Comma
                                   {QStringLiteral("samplePeak"), lufsValue(r.value("samplePeakDbfs", Json()))},
                                   {QStringLiteral("momentary"), lufsValue(r.value("maxMomentaryLufs", Json()))},
                                   {QStringLiteral("shortTerm"), lufsValue(r.value("maxShortTermLufs", Json()))},
-                                  {QStringLiteral("seconds"), lufsValue(r.value("seconds", Json()))}};
+                                  {QStringLiteral("seconds"), lufsValue(r.value("seconds", Json()))},
+                                  {QStringLiteral("momentaryAt"), where("maxMomentaryAt")},
+                                  {QStringLiteral("shortTermAt"), where("maxShortTermAt")},
+                                  {QStringLiteral("truePeakAt"), where("truePeakAt")},
+                                  {QStringLiteral("overs"), overs},
+                                  {QStringLiteral("overCount"), static_cast<int>(r.value("overCount", std::size_t{0}))}};
             rows.append(row);
             if (what == QLatin1String("mix")) {
                 QVariantMap mix = row;
@@ -1468,8 +1492,49 @@ QString AudioMixerBridge::analyze(const QString& scope) {
     }
     command::CommandRequest request;
     request.command = "audio.loudness";
-    request.params = Json{{"targets", targets}};
+    // 0.6 (#54): the overs above the delivery ceiling the target uses.
+    request.params = Json{{"targets", targets}, {"oversAbove", targetTruePeak()}};
     return startJob(QStringLiteral("analyze"), {request});
+}
+
+QString AudioMixerBridge::addOverMarkers() {
+    if (!m_controller || !m_mixLoudness)
+        return tx("Analyze the mix's loudness first");
+    if (m_controller->session().revision() != m_mixLoudness->second)
+        return tx("The project changed since the analysis: analyze the mix again");
+    const QVariantList overs = m_mixLoudness->first.value(QStringLiteral("overs")).toList();
+    if (overs.isEmpty())
+        return tx("No true-peak overs to mark");
+    // Red range markers (Premiere's colour 1), one batch: one undo step.
+    std::vector<command::CommandRequest> requests;
+    for (const QVariant& v : overs) {
+        const QVariantMap o = v.toMap();
+        const std::int64_t start = o.value(QStringLiteral("startTicks")).toString().toLongLong();
+        const std::int64_t end = o.value(QStringLiteral("endTicks")).toString().toLongLong();
+        if (end <= start)
+            continue;
+        const QString peak = QLocale().toString(o.value(QStringLiteral("truePeak")).toDouble(), 'f', 1);
+        command::CommandRequest r;
+        r.command = "marker.add";
+        r.params = Json{{"time", start},
+                        {"duration", end - start},
+                        {"name", tx("True-peak over %1 dBTP").arg(peak).toStdString()},
+                        {"comment", tx("Above the %1 dBTP ceiling").arg(QLocale().toString(targetTruePeak(), 'f', 1)).toStdString()},
+                        {"colorIndex", 1}};
+        requests.push_back(std::move(r));
+    }
+    if (requests.empty())
+        return tx("No true-peak overs to mark");
+    const int count = static_cast<int>(requests.size());
+    const command::CommandResult result = runBatch(std::move(requests), tx("Add True-Peak Over Markers").toStdString());
+    if (!result.ok())
+        return QString::fromStdString(result.error->message);
+    // Markers do not change the sound: the analysis still holds (and Add markers is not offered twice for it).
+    m_mixLoudness->second = m_controller->session().revision();
+    m_mixLoudness->first.insert(QStringLiteral("overMarkers"), true);
+    emit loudnessChanged();
+    setMessage(tx("%n true-peak over marker(s) added", "", count));
+    return {};
 }
 
 QString AudioMixerBridge::previewNormalize(const QString& scope) {

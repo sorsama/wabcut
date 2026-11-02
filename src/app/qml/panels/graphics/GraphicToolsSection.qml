@@ -143,6 +143,7 @@ ColumnLayout {
         spacing: Theme.space(1)
         PillTabs {
             objectName: "graphicRollKind"
+            Accessible.name: qsTr("Roll or crawl") // P1 #61
             Layout.fillWidth: true
             compact: true
             model: [qsTr("Roll"), qsTr("Crawl Left"), qsTr("Crawl Right")]

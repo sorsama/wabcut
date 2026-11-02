@@ -193,6 +193,38 @@ Premiere's Speech to Text **Hide profanity**: profane words in captions are show
   (Toggle Audio Scrubbing), Sequence > Audio Scrubbing and Settings > Timeline & editing > "Play audio while
   scrubbing" turn it on and off (remembered). The first scrub opens the audio device if playback has not yet.
 
+## Script prompter for voice-over (0.6)
+
+Settings > Audio > Script prompter shows a narration script on the Program Monitor while a voice-over records, so the
+script is not read from another window. **Open script...** reads a .txt, .md or .fountain file (UTF-8, up to 256 KB);
+**Paste...** takes typed or pasted text. Markdown headings, list markers, quotes and emphasis are stripped; a blank line
+or a heading starts a paragraph (a script without blank lines is one paragraph per line).
+
+The overlay shows a band along the bottom of the monitor with the paragraph being read, large, and the next one dimmed,
+from the count-in to the end of the take, and also while a track is armed for recording when **Show when armed** is on
+(the default). Right or Page Down moves on, Left or Page Up goes back during a take (a presentation clicker sends these
+keys); Space still stops the take. The band's arrows work at any time. **Text size** (16-96 px; smaller when the monitor is too small for it) and **Mirror** (for a
+teleprompter's glass) are options, and **Marker per paragraph** drops a marker at the playhead, named after the
+paragraph's first words, when a take starts and at each paragraph you move on to while recording (one undo step each).
+
+The script is not part of the project: it, the paragraph reached and the options are kept in the user's settings, by
+project file, so the place survives takes and reopening the project. A script opened from a file is read again from the
+file when the project reopens, if the file is still there.
+
+## Loudness QC: where the loudest moments and true-peak overs are (0.6)
+
+`audio.loudness` also reports where things happen: `maxMomentaryAt` and `maxShortTermAt` (where the loudest 400 ms and
+3 s windows start) and `truePeakAt` (the 100 ms block holding the true peak), each a timecode and ticks on the timeline,
+and the true-peak overs above `oversAbove` (default -1 dBTP; -6 to 0): neighbouring 100 ms blocks above the ceiling
+(gaps of one block bridged) merged into ranges with their highest peak, at most 200 listed, `overCount` counting them
+all. Results cached before 0.6 are measured again.
+
+In the Audio workspace, the master strip's loudness card and the Audio Tools card show the loudest short-term and
+momentary moments and the true peak with their times as links that move the playhead there, then "N true-peak overs
+above -1 dBTP" with a stepper through them. **Add markers for overs** puts a red range marker over each over, named with
+its peak, in one undo step "Add True-Peak Over Markers". The Audio Tools report has an Overs column (a link to the first
+over of each row). The ceiling is the delivery's -1 dBTP.
+
 ## Known gaps
 
 - Nested sequences mix their audio without their own submix routing: a nested sequence's submixes and sends are

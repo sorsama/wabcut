@@ -136,7 +136,8 @@ bool smartRenderEligible(const ExportSettings& s) {
     }
     // Embedded 608 captions (P.2) ride on each encoded frame: a copied packet carries none.
     return !s.effects.anyVideo() && s.captions.mode != CaptionExport::BurnIn && s.captions.mode != CaptionExport::Embed &&
-           !hasAlpha(s.video.pixelFormat) && s.container != Container::Image;
+           !hasAlpha(s.video.pixelFormat) && s.container != Container::Image &&
+           !isMxf(s.container); // 0.6 (#73): MXF's constant-size index wants every DNxHD frame from this encoder
 }
 
 SmartRenderPlan SmartRenderPlan::build(const Inputs& in, const std::stop_token& stop) {

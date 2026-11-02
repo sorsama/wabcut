@@ -187,6 +187,9 @@ QtObject {
 
     // ---- Media surfaces (independent of light/dark: they sit on imagery or clip colours) ----
     readonly property color scrim: Qt.rgba(0, 0, 0, 0.72)             // badges over thumbnails/video
+    // The backdrop behind a modal dialog or the command palette. The dark theme keeps the media weight; the light
+    // theme dims less, so the window behind still reads as the light theme (QA: a light dialog on a near-black window).
+    readonly property color scrimModal: dark ? Qt.rgba(0, 0, 0, 0.72) : Qt.rgba(0, 0, 0, 0.32)
     readonly property color scrimText: "#FFFFFF"
     readonly property color videoBlack: "#000000"                     // monitor letterbox
     // Monitor well: a dark neutral in BOTH themes, so picture contrast is judged against the same surround
@@ -238,6 +241,14 @@ QtObject {
     readonly property int radiusControl: 16    // buttons and segmented controls: a pill at control height
     readonly property int radiusPill: 999      // fully round: chips, tags, icon buttons
     readonly property int radiusClip: 9        // timeline clips, minimap
+    // 0.6 (Settings > Appearance > Timeline corners, Preferences.timelineCorners): square timeline clips, lanes, cues,
+    // chips and track header boxes (Premiere's look). The timeline reads these two, never radiusClip directly.
+    property bool squareTimeline: false
+    readonly property int radiusTimeline: squareTimeline ? 0 : radiusClip
+    /// A timeline pill of height `h` (track header boxes, chips): round ends, or square with Square corners.
+    function timelinePill(h: real): real {
+        return theme.squareTimeline ? 0 : h / 2
+    }
     readonly property int radiusBadge: 6       // keycaps, tiny chips
     readonly property int radiusTab: 12        // the top corners of a panel tab
     readonly property int radiusMonitor: 12    // the picture well in a monitor

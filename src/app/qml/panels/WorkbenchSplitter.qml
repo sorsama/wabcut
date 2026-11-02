@@ -18,6 +18,8 @@ Item {
     /// How far the guide may go (px from where the drag started); the layout clamps the same way.
     property real minDelta: -Infinity
     property real maxDelta: Infinity
+    /// P1 round (#32): the workspace is locked - the gutter does not drag (no resize cursor either).
+    property bool locked: false
     /// A drag is in progress (layouts can hold their animations meanwhile).
     readonly property bool active: area.pressed
     /// The distance dragged so far that the layout has not been given yet (the guide's offset while deferred).
@@ -53,6 +55,8 @@ Item {
     MouseArea {
         id: area
         anchors.fill: parent
+        // Hidden, not disabled: a disabled MouseArea still sets the cursor.
+        visible: !root.locked
         hoverEnabled: true
         preventStealing: true
         // Where the pointer was when the layout last heard of it, and the distance since (clamped to the limits).

@@ -1,9 +1,12 @@
+pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls.Basic
 
 // Row of a ContextMenu (design language v3: a pill that lights up under the pointer): optional icon, label, keyboard
 // shortcut and a check mark for checkable items. A submenu's row (a ContextMenu declared or inserted into another)
 // ends in a chevron.
+// P1 round (#31): a disabled row with a `disabledReason` shows it in a tooltip while the pointer rests on it (a Menu
+// does not highlight disabled rows, so a hover handler of the row's own sees the pointer).
 MenuItem {
     id: control
 
@@ -13,6 +16,8 @@ MenuItem {
     // Keymap command id (docs/keymap.md); the tooltip shows its current shortcut from KeymapDispatcher.
     property string command: ""
     property string shortcut: command !== "" && KeymapDispatcher.revision >= 0 ? KeymapDispatcher.shortcutText(command) : ""
+    /// Why the row cannot be chosen now ("Select a clip first"): its tooltip and accessible description while disabled.
+    property string disabledReason: ""
 
     implicitHeight: Theme.controlHeightSmall + Theme.space(1)
     leftPadding: Theme.space(3.5)
@@ -21,6 +26,7 @@ MenuItem {
     hoverEnabled: true
     font.family: Theme.fontSans
     font.pixelSize: Theme.textMd
+    Accessible.description: !enabled ? disabledReason : ""
 
     indicator: null
     arrow: null
@@ -94,5 +100,18 @@ MenuItem {
     HoverHandler {
         enabled: control.enabled
         cursorShape: Qt.PointingHandCursor
+    }
+    // Sees the pointer on a disabled row too, for its reason; no cursor of its own.
+    HoverHandler {
+        id: hoverAll
+    }
+    Loader {
+        objectName: "menuItemReasonTip"
+        active: !control.enabled && control.disabledReason !== "" && hoverAll.hovered
+        sourceComponent: Tooltip {
+            parent: control
+            visible: true
+            text: control.disabledReason
+        }
     }
 }

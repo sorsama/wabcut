@@ -11,6 +11,33 @@ Column {
     objectName: "libraryBinBar"
     spacing: Theme.space(1)
 
+    /// P1 round (#41): the bin a Library drag of bins would drop into ("" = the root, "none" = none): its tab or crumb
+    /// lights up.
+    property string dropTarget: "none"
+    /// The bin of the tab or crumb under the scene point (null: none): { key } ("" = the project's root). The delegates
+    /// name their bin: "libraryBinTab_<key>" and "libraryCrumbRow_<key>" ("root" for the root).
+    function binAt(sceneX: real, sceneY: real): var {
+        const keyOf = (name, prefix) => {
+            const key = name.substring(prefix.length)
+            return { key: key === "root" ? "" : key }
+        }
+        if (tabStrip.visible) {
+            const p = tabStrip.contentItem.mapFromItem(null, sceneX, sceneY)
+            const tab = tabStrip.itemAt(p.x, p.y)
+            if (tab !== null)
+                return keyOf(tab.objectName, "libraryBinTab_")
+        }
+        for (let i = 0; i < crumbRepeater.count; ++i) {
+            const crumb = crumbRepeater.itemAt(i)
+            if (crumb === null)
+                continue
+            const p = crumb.mapFromItem(null, sceneX, sceneY)
+            if (p.x >= 0 && p.y >= 0 && p.x < crumb.width && p.y < crumb.height)
+                return keyOf(crumb.objectName, "libraryCrumbRow_")
+        }
+        return null
+    }
+
     // Bin tabs: only when a bin was opened as a tab.
     ListView {
         id: tabStrip
@@ -75,6 +102,8 @@ Column {
                 // A pill: the current tab in the accent fill (design language v3), the others light up on hover.
                 radius: height / 2
                 color: tab.modelData.current ? Theme.accentFill : tab.hovered ? Theme.hover : "transparent"
+                border.width: root.dropTarget === tab.modelData.key ? Theme.selectionWidth : 0
+                border.color: Theme.accentStroke
 
                 Behavior on color { ColorAnimation { duration: Theme.durFast } }
 
@@ -134,11 +163,13 @@ Column {
             font.pixelSize: Theme.textSm
         }
         Repeater {
+            id: crumbRepeater
             model: Library.filtering ? [] : Library.breadcrumb
             delegate: Row {
                 id: crumb
                 required property var modelData
                 required property int index
+                objectName: "libraryCrumbRow_" + (crumb.modelData.key === "" ? "root" : crumb.modelData.key)
                 anchors.verticalCenter: parent ? parent.verticalCenter : undefined
                 Icon {
                     anchors.verticalCenter: parent.verticalCenter
@@ -168,9 +199,11 @@ Column {
                         font.weight: crumbButton.last ? Font.DemiBold : Font.Normal
                     }
                     background: Rectangle {
+                        id: crumbBackground
+                        readonly property bool lit: crumbDrop.containsDrag || root.dropTarget === crumb.modelData.key
                         radius: Theme.radiusField
-                        color: crumbDrop.containsDrag ? Theme.accentWash : crumbButton.hovered ? Theme.hover : "transparent"
-                        border.width: crumbDrop.containsDrag ? Theme.hairline : 0
+                        color: crumbBackground.lit ? Theme.accentWash : crumbButton.hovered ? Theme.hover : "transparent"
+                        border.width: crumbBackground.lit ? Theme.hairline : 0
                         border.color: Theme.accentStroke
                         FocusRing {
                             targetRadius: Theme.radiusField

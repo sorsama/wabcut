@@ -206,7 +206,7 @@ bool PlaybackController::isPlaying() const {
 
 Rate PlaybackController::sequenceRate() const {
     if (const EditSession* session = m_session.load()) {
-        const ProjectSnapshot snapshot = session->snapshot();
+        const ProjectSnapshot snapshot = session->shown();
         if (const Sequence* seq = snapshot ? snapshot->findSequence(m_sequence.load()) : nullptr;
             seq && seq->frameRate.isValid() && seq->frameRate.isExact()) {
             return seq->frameRate;

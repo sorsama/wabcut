@@ -197,7 +197,9 @@ grade, keeping that grade's place in the stack and its local masks (a mask is dr
 gets one added. Clips on locked tracks, audio clips and the source clip are skipped; the selection does not change. One
 undo step, "Apply Grade", and the panel's status says "Grade applied to 7 clips". Premiere does this with Paste
 Attributes or master clip effects, and Paste Attributes stacks a second Lumetri; Wabcut replaces the grade, so there is
-never a duplicate (Paste Attributes itself is unchanged).
+never a duplicate (Paste Attributes itself is unchanged). 0.6: for a look that stays live, use Master Clip Effects
+([effects](effects.md#master-clip-effects-06)): a Color Grade applied to the master clip (Effects panel > Apply to Master
+Clip) plays on every clip of that media, new ones included, and a change to it changes them all.
 
 From the CLI, MCP and the assistant it is `color.grade.copy`: `from` (the clip whose grade is copied), `clips` (the
 targets) or `scope: "media"` (every video clip of `from`'s source), `replace` (default true; false appends a second
@@ -224,6 +226,7 @@ It is set in the Color panel's **Color Management** dialog (the gear in the pane
 | **Direct HLG (HDR)** (`hdr-hlg`) | linear Rec.2020, 1.0 = the graphics white | ACEScct | tone-mapped SDR preview (labelled) | HLG (10-bit) or its SDR version |
 | **Direct PQ (HDR)** (`hdr-pq`) | the same | ACEScct | tone-mapped SDR preview (labelled) | PQ (10-bit, HDR10 metadata) or its SDR version |
 | **Wide Gamut (Tone Mapped)** (`aces`) | ACES 1.3: ACEScg (linear AP1) | ACEScct | ACES 1.0 SDR Video output transform | SDR: the same; PQ / HLG: the ACES 1.1 HDR Video (1000 nits) output transform |
+| **Wide Gamut (Minimal Tone Mapping)** (`wide-gamut-minimal`, 0.6) | ACEScg | ACEScct | Rec.709 (scene-referred highlights rolled off on input) | Rec.709; PQ / HLG at 1.0 = 203 nits |
 | **Wide Gamut (No Tone Mapping)** (`wide-gamut`) | ACEScg | ACEScct | Rec.709, clipped above white | Rec.709; PQ / HLG at 1.0 = 203 nits |
 | **Disable Color Management** (`off`) | Rec.709 | BT.709 encoding | code values as they are | the same |
 
@@ -246,7 +249,17 @@ It is set in the Color panel's **Color Management** dialog (the gear in the pane
   designed. *Deviation:* Premiere's own wide gamut working space and tone mapping algorithms (Hue Preservation, By
   Channel, Max RGB) are Adobe's; Wabcut uses ACES for the same job.
 - **Wide Gamut (No Tone Mapping)**: the ACEScg working space with a straight conversion to Rec.709 (SDR media comes back
-  unchanged; anything above white clips). Premiere's third wide gamut preset, "Minimal Tone Mapping", is not offered.
+  unchanged; anything above white clips).
+- **Wide Gamut (Minimal Tone Mapping)** (0.6): the same ACEScg working space and outputs, but camera log, HDR (PQ / HLG),
+  linear and ACES pictures are gamut compressed (below) and their highlights rolled off gently as they are read: a
+  working value up to the knee (0.8) passes unchanged, and from there to the HDR peak (`peakNits` / `referenceWhiteNits`,
+  1000 / 203 by default) the largest of R, G and B rolls smoothly into white (extended Reinhard with slope 1 at the knee;
+  the colour is scaled along, so hue and saturation stay). PQ and HLG are read with 1.0 = the graphics white, as in the
+  HDR setups, so an HDR clip's diffuse white sits near white and its highlights up to the peak keep their detail instead
+  of clipping. Display-referred pictures (Rec.709, sRGB and Rec.2020 SDR media, titles, captions, graphics) are not
+  touched: they come out exactly as in No Tone Mapping. *Deviation:* Premiere describes its preset as output tone mapping
+  of the highlights; Wabcut rolls off each scene-referred layer as it is read, so SDR media and graphics stay exact and
+  an HDR export of the same sequence keeps 1.0 = the graphics white.
 - **Disable Color Management**: no conversion at all - HDR media shows its code values through the BT.709 curve (washed
   out, as Premiere shows it), log stays flat (grade it by hand, e.g. with the Input LUT), overrides do nothing.
 
@@ -258,19 +271,34 @@ the top of Basic Correction (Premiere's "Override Media Color Space"), `color.in
 primaries → Rec.2020, sRGB and linear transfers, an untagged RGB still → sRGB, anything else → Rec.709 - and, when
 **Color manage auto-detected log media** is on (the default; `autoDetectLog`, Premiere's "Color Manage Auto Detected
 Log and Raw Media"), the camera log the media's metadata names. The choices: Rec.709, sRGB, Rec.2020 (SDR), Rec.2100 PQ /
-HLG, **Sony S-Log3 / S-Gamut3.Cine and S-Gamut3, Panasonic V-Log / V-Gamut, ARRI LogC3 (EI 800) / AWG3, LogC4 / AWG4,
-Canon Log 3 and Canon Log 2 / Cinema Gamut, RED Log3G10 / REDWideGamutRGB, Apple Log**, linear Rec.709, ACEScg, ACEScct,
-ACES2065-1. Log curves are defined on full-range code values: a file the decoder reports as video range is mapped back
-to its code values first.
+HLG, **Sony S-Log3 / S-Gamut3.Cine and S-Gamut3, Sony S-Log2 / S-Gamut3.Cine and S-Gamut, Panasonic V-Log / V-Gamut,
+ARRI LogC3 (EI 800) / AWG3, LogC4 / AWG4, Canon Log 3, Canon Log 2 and Canon Log / Cinema Gamut, RED Log3G10 and RED Log
+Film / REDWideGamutRGB, Apple Log, DJI D-Log / D-Gamut, Fujifilm F-Log and F-Log2 / F-Gamut, Leica L-Log / Rec.2020,
+Nikon N-Log / N-Gamut**, linear Rec.709, ACEScg, ACEScct, ACES2065-1. Log curves are defined on full-range code values:
+a file the decoder reports as video range is mapped back to its code values first (Leica records L-Log at full range in
+H.264 / H.265 and video range in ProRes; the file's own range flag decides).
+
+The camera logs added in 0.6 (S-Log2, the original Canon Log, D-Log, F-Log, F-Log2, N-Log, L-Log, RED Log Film) cover
+drone and mirrorless footage. Each follows its maker's published document: DJI's "White Paper on D-Log and D-Gamut of
+DJI Cinema Color System" (2017), Fujifilm's "F-Log Data Sheet" Ver.1.1 and "F-Log2 Data Sheet" Ver.1.0 (F-Gamut is
+Rec.2020), Nikon's "N-Log Specification Document" 1.0.0 (N-Gamut is Rec.2020), Sony's "S-Log2 Technical Paper" (2012;
+S-Gamut has S-Gamut3's primaries), Canon's "Canon-Log Transfer Characteristic" (2012) with Cinema Gamut, and Leica's
+"L-Log Reference Manual" V1.9 (Leica's L-Log cameras record ITU-R BT.2020; there is no separate "L-Gamut"; the SL
+(Typ 601) records BT.709 and is not covered). RED Log Film is OpenColorIO's own RED transform. *Not included:* **DJI
+D-Log M** (DJI publishes LUTs for it but no equation, so it cannot be verified) and **Fujifilm F-Log2 C** (F-Gamut C).
+Choose another space for those by hand only if you know the footage matches it.
 
 **Log auto-detection** (`src/media/src/CameraLog.cpp`, at import: `VideoStreamInfo::logColorSpace`): log footage is
 never in the colour tags FFmpeg reads, so the probe reads what cameras write instead - Sony's NonRealTimeMeta XML
 (`CaptureGammaEquation` / `CaptureColorPrimaries`) in an MP4 / QuickTime file's metadata boxes (`meta`, `uuid`, `udta`
 inside `moov`; never the media data; at most 4 MB) or in the clip's `<name>M01.XML` sidecar, and key / value metadata
 (QuickTime `mdta` keys, Matroska tags) whose key is about the gamma, transfer or log and whose value names a log curve
-(ARRI's `ColorGammaSxS = LOG-C`, ...). *Limits:* verified on synthetic files (Sony XML embedded and as a sidecar); other
-vendors' metadata (Panasonic, Canon MP4, Apple Log) is recognised only where it appears as such a key / value tag -
-otherwise choose the space in the menu. Camera raw formats (R3D, BRAW, ARRIRAW, ProRes RAW) are not decoded at all.
+(ARRI's `ColorGammaSxS = LOG-C`, ...; 0.6: `D-Log`, `F-Log`, `F-Log2`, `N-Log`, `S-Log2` (with Sony's
+`s-gamut3-cine` primaries: S-Log2 / S-Gamut3.Cine), `C-Log` / `Canon Log`, `L-Log`, `REDlogFilm`). A curve with no space
+here is left to the stream's tags rather than guessed: `D-Log M`, `F-Log2 C`. *Limits:* verified on synthetic files
+(Sony XML embedded and as a sidecar); other vendors' metadata (Panasonic, Canon MP4, Apple Log, DJI, Fujifilm, Nikon,
+Leica) is recognised only where it appears as such a key / value tag - otherwise choose the space in the menu. Camera
+raw formats (R3D, BRAW, ARRIRAW, ProRes RAW) are not decoded at all.
 
 ### How it runs
 
@@ -279,9 +307,14 @@ otherwise choose the space in the menu. Camera raw formats (R3D, BRAW, ARRIRAW, 
   transforms** (`Config::CreateRaw()`, no config file to ship): `SONY_SLOG3-SGAMUT3[.CINE]_to_ACES2065-1`,
   `PANASONIC_VLOG-VGAMUT_to_ACES2065-1`, `ARRI_ALEXA-LOGC-EI800-AWG_to_ACES2065-1`, `ARRI_LOGC4_to_ACES2065-1`,
   `CANON_CLOG3-CGAMUT_to_ACES2065-1`, `CANON_CLOG2-CGAMUT_to_ACES2065-1`, `RED_LOG3G10-RWG_to_ACES2065-1`,
-  `APPLE_LOG_to_ACES2065-1`, `ACEScct_to_ACES2065-1`, the ACES 1.0 SDR / 1.1 HDR 1000-nit output transforms and the
-  Rec.1886 / PQ / HLG displays. `src/render/color/src/ColorSpaces.cpp` (library `wabcut_colorspaces`, full builds
-  only) plans every input and output.
+  `APPLE_LOG_to_ACES2065-1`, `RED_REDLOGFILM-RWG_to_ACES2065-1`, `ACEScct_to_ACES2065-1`, the ACES 1.0 SDR / 1.1 HDR
+  1000-nit output transforms and the Rec.1886 / PQ / HLG displays. The camera logs OpenColorIO does not build in (D-Log,
+  F-Log, F-Log2, N-Log, S-Log2, Canon Log, L-Log) are OpenColorIO transforms made in code: the maker's decoding equation
+  as a 4096-sample 1D LUT (within 3e-6 of the equation; LogCameraTransform cannot hold these toes - N-Log's cube root,
+  Canon Log's mirrored log, the white papers' own linear segments) and the gamut's matrix to ACES2065-1, CAT02-adapted
+  as the ACES camera transforms are (S-Gamut, Cinema Gamut and D-Gamut give exactly Sony's, Canon's and DJI's ACES
+  matrices). `src/render/color/src/ColorSpaces.cpp` (library `wabcut_colorspaces`, full builds only) plans every input
+  and output.
 - **On the GPU**: BT.709 / sRGB / BT.2020 / PQ / HLG / linear / ACEScg / ACES2065-1 inputs, the PQ / HLG outputs and
   the tone-mapped SDR preview are short analytic curves plus a 3×3 matrix in `layer.frag` / `output.frag` (HLG with its
   luminance-dependent OOTF, system gamma 1.2 + 0.42 log10(peak / 1000)), exact. The OpenColorIO transforms are **baked
@@ -305,9 +338,10 @@ otherwise choose the space in the menu. Camera raw formats (R3D, BRAW, ARRIRAW, 
 - **Direct Rec.709's log** is the camera-log LUT to scene-linear Rec.2020, then the HDR capture tone map in
   `layer.frag` (`TF_LUT_SDR`, analytic): within 1.3 / 1023 of the CPU reference on greys and 1.03 / 1023 for 99 % of
   colours in the output's code values (the worst, 51 / 1023, on colours far outside every display gamut).
-- **Out-of-gamut colours**: the layer pass clips working values below 0 (camera colours outside the working gamut, e.g.
-  a saturated LED in S-Gamut3 read into ACEScg) to 0 before compositing and grading; no gamut compression (ACES 1.3's
-  reference gamut compression is not applied).
+- **Out-of-gamut colours**: by default the layer pass clips working values below 0 (camera colours outside the working
+  gamut, e.g. a saturated LED in S-Gamut3 read into ACEScg) to 0 before compositing and grading. 0.6: with **gamut
+  compression** on (always on in Wide Gamut (Minimal Tone Mapping)), scene-referred layers go through ACES 1.3's
+  Reference Gamut Compression first and nothing is clipped at 0 any more (below).
 - **The grade** (all its display-referred stages, the HSL qualifier, curves, wheels) works on ACEScct values in a
   managed project, as colourists grade ACES; the CPU reference follows `GradeSpec::encoding`.
 - **Nested sequences** stay in the working space and in float (values above the reference white survive a nest).
@@ -350,9 +384,65 @@ The waveform of an HDR project reads the working values as **PQ code values with
 preview (`color::ScopeData::scale`). ACES projects' scopes read the working values through the BT.709 curve (not the
 output transform).
 
+### HDR finishing (0.6)
+
+Four pieces finish the HDR pipeline (`src/render/color/src/ColorSpaces.cpp` has the CPU references; `layer.frag` and
+`output.frag` run the same formulas; `tests/render/test_color_management.cpp` compares them on the GPU).
+
+- **Gamut compression** (`gamutCompression`, `gamutCompressionStrength` 0..1, default 1): ACES 1.3 Reference Gamut
+  Compression (the LMT of S-2020-001) in the working space, right after a layer's input conversion. Each channel's
+  distance from the achromatic axis, (max(R, G, B) - c) / |max|, is compressed beyond its threshold (cyan 0.815,
+  magenta 0.803, yellow 0.880) with power 1.2 so the limit (1.147, 1.264, 1.312) lands on the gamut boundary; the
+  largest channel (the achromatic value) is kept. The strength mixes the original (0) and the compressed colour (1).
+  It applies to scene-referred layers (camera log, PQ, HLG, linear and ACES pictures) of the managed setups (Wide Gamut,
+  ACES, HDR); display-referred pictures are inside every working gamut and stay exact. With it on the canvas keeps
+  working values below 0, so a grade can still bring an out-of-gamut colour back. Direct Rec.709 and Disable Color
+  Management never compress. The monitor badge adds "· gamut compression".
+- **Output colour space** (`outputSpace`; the sequence's, and each export's override): **Automatic** (the setup's own:
+  Rec.709, or PQ / HLG for the HDR setups' HDR exports), **Rec.709**, **Rec.2020 (SDR)** (BT.2020 primaries, the BT.709
+  curve, tagged BT.2020 primaries / BT.709 transfer / BT.2020 NCL matrix), **P3-D65** (P3 primaries, D65 white, a pure
+  2.6 power; tagged SMPTE EG 432-1 primaries, transfer left unspecified because ITU-T H.273 has no code for a pure 2.6
+  power, BT.709 matrix), **Rec.2100 PQ** and **Rec.2100 HLG**. The Rec.2100 spaces are the existing HDR exports: with the
+  export's Dynamic range on Auto they make an HDR master of any managed setup (Wide Gamut too) when the format can carry
+  it (10-bit HEVC, ProRes or AV1) and its SDR version otherwise; an export that asks for PQ / HLG itself in a format that
+  cannot carry it is refused. An explicit Dynamic range wins over the output space. A Direct Rec.709 project can export
+  Rec.2020 SDR and P3-D65 too (a primaries matrix and the curve); Disable Color Management converts nothing (Rec.709).
+  An ACES setup's Rec.2020 and P3-D65 SDR exports use the ACES SDR output transform onto those displays (OpenColorIO's
+  `CIE-XYZ-D65_to_REC.1886-REC.2020` and `CIE-XYZ-D65_to_G2.6-P3-D65`). The program monitor always shows the Rec.709
+  picture. The export drawer's details show the transform chain ("ACEScg → highlights above white clipped → Rec.709",
+  "Rec.2020 HDR → SDR Conform (BT.2390, ACES gamut compression) → P3-D65 (2.6) · gamut compression on input").
+- **SDR Conform** (`sdrConform`: `enabled`, `targetPeakNits`, `paperWhiteNits`, `toneMap`, `gamut`, `legalRange`; the
+  sequence's, and each export preset's override): how an HDR or Wide Gamut (No / Minimal Tone Mapping) sequence becomes
+  an SDR file. Wide Gamut (Tone Mapped) keeps its ACES SDR output transform, and HDR masters are never conformed. The
+  working luminance (Rec.2020, 1.0 = the reference white) lands at the **paper white** on an SDR display whose white is
+  the **target peak** (100 nits, BT.1886; or 203 nits, HDR-referenced SDR as in ITU-R BT.2408) - only their ratio
+  matters to an SDR file - and the **tone-mapping operator** rolls everything above into white with the HDR peak
+  landing on it: **BT.2390** (the EETF in PQ, exact below its knee; at paper white = target peak = graphics white it is
+  exactly the tone-mapped SDR preview's curve, which a test checks), **ACES** (Narkowicz's fit of the ACES RRT + SDR ODT
+  on the luminance, normalised so the peak lands on white; not the ACES transform itself) or **Reinhard** (extended,
+  L (1 + L / peak²) / (1 + L)). The colour is scaled along its luminance (hue kept), converted to the output's primaries,
+  then the **gamut mapping** brings what lies outside them in: **ACES gamut compression** (the RGC above, in the output's
+  primaries, then clipped), **Saturation** (desaturated towards the pixel's own luminance until it fits; luminance and
+  hue kept) or **Clip**. **Legal range** soft-clips the largest component above 90 % (white lands near 95 % linear) so
+  nothing piles up at 100 %; *decision:* Wabcut's Y'CbCr exports are always video (legal) range already, so "legal
+  range" here is the soft clip, not a levels change.
+  - *What was mapped:* every SDR Conform export counts, per pixel, whether it was brighter than the SDR white
+    (tone-mapped) and outside the output's gamut (gamut-mapped); the export job's details say "SDR Conform: 4.2 %
+    tone-mapped, 1.3 % gamut-mapped" and `ExportResult::sdrConform` has the totals and the worst frame. The output pass
+    writes the two flags into the alpha of the export's opaque frames, which the export reads back and then discards.
+  - *Before / after:* the Color panel's Compare & Match > **SDR Conform** (Off, Before / After, After) previews the saved
+    SDR Conform settings on the program monitor: the setup's own SDR preview left of the middle, SDR Conform right of it,
+    or SDR Conform on the whole picture. The badge says so. It is a view (not saved, not an undo step).
+  - *CLI:* `wabcut-cli render ... --output-space auto|rec709|rec2020|p3-d65|rec2100-pq|rec2100-hlg`, `--sdr-conform`
+    (the sequence's settings) with `--sdr-conform-operator bt2390|aces|reinhard`, `--sdr-conform-gamut
+    aces-rgc|saturation|clip`, `--sdr-conform-peak <nits>`, `--sdr-conform-paper-white <nits>`, `--sdr-conform-legal`,
+    and `--no-sdr-conform`; it prints the colour space written and what SDR Conform mapped. Export presets and `--set`
+    take `"outputSpace"` (and presets `"sdrConform"`).
+
 ### Project files
 
-`colorManagement` (project: `mode`, `peakNits`, `referenceWhiteNits`, `autoDetectLog` when off), `inputColorSpace`
+`colorManagement` (project: `mode`, `peakNits`, `referenceWhiteNits`, `autoDetectLog` when off; 0.6: `gamutCompression`,
+`gamutCompressionStrength`, `outputSpace` and `sdrConform`, each only when not the default), `inputColorSpace`
 (clip) and `logColorSpace` (a media's video stream: the detected camera log) are written only when set, so other
 projects save byte-identical apart from the schema number (17); a file that sets them needs the new schema (older
 builds refuse it rather than show it unmanaged). Unknown names and out-of-range values fail to load. Merges pick
@@ -360,7 +450,9 @@ the side that changed the colour management (a conflict when both did).
 
 ### In the app
 
-- **Color Management dialog** (the gear in the Color panel's header; `ColorManagementDialog.qml`): the Color Setup
+- **Color Management dialog** (0.6: also gamut compression and its strength for the managed setups, the Output color
+  space menu, and the SDR Conform section of HDR and Wide Gamut (No / Minimal) setups; the settings scroll in a short
+  window) (the gear in the Color panel's header; `ColorManagementDialog.qml`): the Color Setup
   presets with what each does, the HDR peak and graphics white (HDR setups), and "Color manage auto-detected log
   media". OK is one undo step (`Color.setColorManagement`, `color.management.set`).
 - **Media color space** (Color panel, Basic Correction): Auto (showing what Auto reads, e.g. "Auto (Sony S-Log3 /
@@ -424,6 +516,12 @@ The grade and scope shaders are precompiled to DXBC at build time (`qt_add_shade
   `tests/color/test_color_commands.cpp` (the six setups, `autoDetectLog`, the "off" warning),
   `tests/export/ui/test_export_ui.cpp` (the dynamic range override) and `tests/app/test_color_management_ui.cpp` (the
   dialog in the shell, one undo step, the monitor badge).
+- 0.6 camera logs: `tests/color/test_color_spaces.cpp` (each new log's 18 % grey and 90 % white code values from its
+  maker's table decode to 0.18 / 0.90, exposures from 6 stops under to 5 over round-trip through the documents'
+  encodings, the gamut matrices against OpenColorIO's Sony, Canon and Apple transforms and D-Log against the D-Log
+  transform in OpenColorIO's studio config, RED Log Film's neutrals), `tests/model/test_color_management.cpp` (ids,
+  names, menu, camera-log flags, older projects' ids unchanged), `tests/media/test_camera_log.cpp` (the vendor names
+  and tags, D-Log M and F-Log2 C left alone).
 - e2e `[color]`: the workspace (grade, scopes update and draw traces, stop outside the workspace, before/after,
   reference, Auto, Match, a LUT asset imported, moved, listed offline and relinked; screenshots `color_workspace.png`, `color_scopes.png`, `color_panel.png`,
   `color_graded_vs_ungraded.png`, `color_before_after.png`, `color_reference.png`) and the playback measurement above.

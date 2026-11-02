@@ -3,13 +3,17 @@
 #include "BridgeIds.h"
 
 #include <wabcut/model/EditOps.h>
+#include <wabcut/model/MasterClipEffects.h>
 #include <wabcut/model/Timecode.h>
 
 #include <QDateTime>
 #include <QDir>
+#include <QLocale>
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
+#include <utility>
 
 namespace wabcut::app {
 
@@ -46,6 +50,10 @@ constexpr std::array<LibraryColumnInfo, kLibraryColumnCount> kColumns{{
     {LibraryColumn::CameraModel, "cameraModel", 120, false, true},
     {LibraryColumn::ShotDate, "shotDate", 120, false, true},
     {LibraryColumn::ShotLocation, "shotLocation", 140, false, true},
+    {LibraryColumn::FileSize, "size", 96, true, false},
+    {LibraryColumn::DataRate, "dataRate", 104, false, false},
+    {LibraryColumn::VideoUsage, "videoUsage", 104, false, false},
+    {LibraryColumn::AudioUsage, "audioUsage", 104, false, false},
 }};
 
 QString text(const std::string& s) { return QString::fromStdString(s); }
@@ -199,6 +207,14 @@ QString libraryColumnTitle(LibraryColumn column) {
         return LibraryModel::tr("Shot Date");
     case LibraryColumn::ShotLocation:
         return LibraryModel::tr("Shot Location");
+    case LibraryColumn::FileSize:
+        return LibraryModel::tr("File Size");
+    case LibraryColumn::DataRate:
+        return LibraryModel::tr("Data Rate");
+    case LibraryColumn::VideoUsage:
+        return LibraryModel::tr("Video Usage");
+    case LibraryColumn::AudioUsage:
+        return LibraryModel::tr("Audio Usage");
     }
     return {};
 }
@@ -274,6 +290,34 @@ QString libraryAudioText(const MediaItem& media) {
     return out;
 }
 
+std::int64_t libraryFileBytes(const MediaItem& media) {
+    if (media.isGenerator())
+        return 0;
+    if (media.info.fileSize > 0)
+        return media.info.fileSize;
+    return std::max<std::int64_t>(0, media.locator.fingerprint.size);
+}
+
+QString librarySizeText(std::int64_t bytes) {
+    if (bytes <= 0)
+        return {};
+    // Explorer's and Premiere's units (1 KB = 1024 bytes, "KB / MB / GB"), one decimal.
+    return QLocale().formattedDataSize(bytes, 1, QLocale::DataSizeTraditionalFormat);
+}
+
+QString libraryDataRateText(const MediaItem& media) {
+    if (media.isGenerator() || media.info.isStillImage)
+        return {};
+    const std::int64_t bytes = libraryFileBytes(media);
+    const double seconds = media.info.duration.toSeconds();
+    if (bytes <= 0 || seconds <= 0.0)
+        return {};
+    const double bitsPerSecond = static_cast<double>(bytes) * 8.0 / seconds;
+    if (bitsPerSecond >= 1.0e6)
+        return LibraryModel::tr("%1 Mbps").arg(QLocale().toString(bitsPerSecond / 1.0e6, 'f', 1));
+    return LibraryModel::tr("%1 kbps").arg(QLocale().toString(std::max(1.0, std::round(bitsPerSecond / 1.0e3)), 'f', 0));
+}
+
 LibraryModel::LibraryModel(QObject* parent) : QAbstractTableModel(parent) {
     for (const LibraryColumnInfo& info : kColumns) {
         if (info.defaultVisible)
@@ -317,6 +361,14 @@ QHash<int, QByteArray> LibraryModel::roleNames() const {
         {SearchBinRole, "searchBin"},
         {GoodRole, "good"},
         {MarksRole, "marks"},
+        {CutRole, "cut"},
+        {UsageRole, "uses"},
+        {VideoUsageRole, "videoUsage"},
+        {AudioUsageRole, "audioUsage"},
+        {DepthRole, "depth"},
+        {ExpandableRole, "expandable"},
+        {ExpandedRole, "expanded"},
+        {MasterEffectsRole, "masterEffects"}, // 0.6 (#71)
     };
 }
 
@@ -379,6 +431,31 @@ QString LibraryModel::binPath(BinId bin) const {
     }
     return parts.join(QStringLiteral(" › "));
 }
+
+namespace {
+
+/// P1 round (#40): the uses of a media or sequence row (null: none known, or a bin).
+const LibraryUsage* usageIn(const LibraryModel::Context& context, const LibraryModel::Row& row) {
+    const auto* map = row.kind == LibraryModel::Row::Kind::Media      ? context.usage
+                      : row.kind == LibraryModel::Row::Kind::Sequence ? context.sequenceUsage
+                                                                      : nullptr;
+    if (!map)
+        return nullptr;
+    const auto it = map->find(row.id);
+    return it == map->end() ? nullptr : &it->second;
+}
+
+/// Whether a usage column applies to the row: sequences always, media with a picture (Video Usage) or sound (Audio).
+bool usageApplies(const LibraryModel::Row& row, bool video) {
+    if (row.kind == LibraryModel::Row::Kind::Sequence)
+        return true;
+    if (row.kind != LibraryModel::Row::Kind::Media)
+        return false;
+    const MediaItem& m = *row.media;
+    return video ? (m.isGenerator() || m.info.hasVideo()) : m.info.hasAudio();
+}
+
+} // namespace
 
 QString LibraryModel::cellText(int rowIndex, LibraryColumn column) const {
     if (rowIndex < 0 || static_cast<std::size_t>(rowIndex) >= m_rows.size())
@@ -507,6 +584,19 @@ QString LibraryModel::cellText(int rowIndex, LibraryColumn column) const {
         return row.kind == Row::Kind::Media ? text(row.media->metadata.shotDate) : QString();
     case LibraryColumn::ShotLocation:
         return row.kind == Row::Kind::Media ? text(row.media->metadata.shotLocation) : QString();
+    case LibraryColumn::FileSize:
+        return row.kind == Row::Kind::Media ? librarySizeText(libraryFileBytes(*row.media)) : QString();
+    case LibraryColumn::DataRate:
+        return row.kind == Row::Kind::Media ? libraryDataRateText(*row.media) : QString();
+    case LibraryColumn::VideoUsage:
+    case LibraryColumn::AudioUsage: {
+        // P1 round (#40): how many clips play it on video / audio tracks (blank where it has no such stream).
+        const bool video = column == LibraryColumn::VideoUsage;
+        if (!usageApplies(row, video))
+            return {};
+        const LibraryUsage* u = usageIn(m_context, row);
+        return QString::number(u ? (video ? u->video : u->audio) : 0);
+    }
     }
     return {};
 }
@@ -613,6 +703,29 @@ QVariant LibraryModel::data(const QModelIndex& index, int role) const {
         return row.kind == Row::Kind::Bin && row.bin->isSearch();
     case GoodRole:
         return row.kind == Row::Kind::Media && row.media->metadata.good;
+    case CutRole:
+        return !m_cut.isEmpty() && m_cut.contains(keyFor(row));
+    case UsageRole: {
+        const LibraryUsage* u = usageIn(m_context, row);
+        return u ? u->uses : 0;
+    }
+    case VideoUsageRole:
+    case AudioUsageRole: {
+        if (row.kind == Row::Kind::Bin)
+            return -1;
+        const LibraryUsage* u = usageIn(m_context, row);
+        return u ? (role == VideoUsageRole ? u->video : u->audio) : 0;
+    }
+    case DepthRole:
+        return row.depth;
+    case ExpandableRole:
+        return m_tree && row.kind == Row::Kind::Bin && !row.bin->isSearch() && childCount(row.id) > 0;
+    case ExpandedRole:
+        return m_tree && row.kind == Row::Kind::Bin && m_context.expanded && m_context.expanded->contains(row.id);
+    case MasterEffectsRole: // 0.6 (#71): the item's Master Clip Effects (a subclip's with its master item's)
+        if (row.kind != Row::Kind::Media)
+            return 0;
+        return static_cast<int>(m_snapshot ? masterEffectsOf(*m_snapshot, row.media->id).size() : row.media->masterEffects.size());
     case MarksRole: {
         // 0.2 UX (stream T): the In/Out band on the card.
         if (row.kind != Row::Kind::Media || row.media->isGenerator())
@@ -649,15 +762,7 @@ QVariant LibraryModel::data(const QModelIndex& index, int role) const {
             return 0;
         if (row.bin->isSearch())
             return searchCount(*row.bin->search);
-        const BinId bin{row.id};
-        int count = 0;
-        for (const Bin& b : m_snapshot->bins)
-            count += b.parent == bin ? 1 : 0;
-        for (const MediaPtr& m : m_snapshot->media)
-            count += m->bin == bin ? 1 : 0;
-        for (const SequencePtr& s : m_snapshot->sequences)
-            count += s->bin == bin ? 1 : 0;
-        return count;
+        return childCount(row.id); // counted once per refresh (P1 round, #46)
     }
     default:
         break;
@@ -701,6 +806,21 @@ QVariant LibraryModel::sortKey(const Row& row, LibraryColumn column) const {
         return m && m->generated ? 1 : 0;
     case LibraryColumn::Good:
         return m && m->metadata.good ? 1 : 0;
+    case LibraryColumn::FileSize: // P1 round (#45): by bytes, not by the text
+        return m ? static_cast<qlonglong>(libraryFileBytes(*m)) : -1LL;
+    case LibraryColumn::DataRate: {
+        if (!m || m->isGenerator() || m->info.isStillImage || m->info.duration.toSeconds() <= 0.0)
+            return -1.0;
+        return static_cast<double>(libraryFileBytes(*m)) * 8.0 / m->info.duration.toSeconds();
+    }
+    case LibraryColumn::VideoUsage:
+    case LibraryColumn::AudioUsage: { // P1 round (#40): by count
+        const bool video = column == LibraryColumn::VideoUsage;
+        if (!usageApplies(row, video))
+            return -1;
+        const LibraryUsage* u = usageIn(m_context, row);
+        return u ? (video ? u->video : u->audio) : 0;
+    }
     default:
         break;
     }
@@ -876,53 +996,111 @@ int LibraryModel::searchCount(const BinSearch& search) const {
     return count;
 }
 
-void LibraryModel::refresh(ProjectSnapshot snapshot, BinId bin, const LibraryFilter& filter, const Context& context) {
+std::vector<LibraryModel::Row> LibraryModel::buildRows() const {
     std::vector<Row> rows;
+    if (!m_snapshot)
+        return rows;
+    const ProjectState& state = *m_snapshot;
+    const LibraryFilter& filter = m_filter;
+    if (m_tree) {
+        // P1 round (#46): a depth-first walk from the bin shown; each level sorted on its own, so children stay under
+        // their bin. Every bin is walked once (a guard against a cycle).
+        std::unordered_map<std::uint64_t, std::vector<Row>> children;
+        const auto add = [&](const Row& row, BinId parent) {
+            if (inScope(row, filter))
+                children[parent.value].push_back(row);
+        };
+        for (const Bin& b : state.bins)
+            add({Row::Kind::Bin, b.id.value, &b, nullptr, nullptr}, b.parent);
+        for (const SequencePtr& sq : state.sequences)
+            add({Row::Kind::Sequence, sq->id.value, nullptr, sq.get(), nullptr}, sq->bin);
+        for (const MediaPtr& m : state.media)
+            add({Row::Kind::Media, m->id.value, nullptr, nullptr, m.get()}, m->bin);
+        rows.reserve(state.bins.size() + state.sequences.size() + state.media.size());
+        std::function<void(std::uint64_t, int)> visit = [&](std::uint64_t parent, int depth) {
+            const auto it = children.find(parent);
+            if (it == children.end())
+                return;
+            std::vector<Row> level = std::move(it->second);
+            children.erase(it);
+            sortRows(level);
+            for (Row& row : level) {
+                row.depth = depth;
+                rows.push_back(row);
+                if (row.kind == Row::Kind::Bin && !row.bin->isSearch() && m_context.expanded &&
+                    m_context.expanded->contains(row.id))
+                    visit(row.id, depth + 1);
+            }
+        };
+        visit(m_bin.value, 0);
+        return rows;
+    }
     // 0.2 (P.3): a search bin's query lists the whole project (and an active Find narrows it).
-    const Bin* searchBin = snapshot && bin.isValid() ? snapshot->findBin(bin) : nullptr;
+    const Bin* searchBin = m_bin.isValid() ? state.findBin(m_bin) : nullptr;
     const std::optional<LibraryFilter> query =
         searchBin && searchBin->isSearch() ? std::optional<LibraryFilter>(LibraryFilter::fromSearch(*searchBin->search))
                                            : std::nullopt;
     const bool filtering = filter.active() || query.has_value();
-    // The new context goes in first: matches() and the sort read it.
-    m_context = context;
-    if (snapshot) {
-        rows.reserve(snapshot->media.size() + snapshot->bins.size() + snapshot->sequences.size());
-        const auto take = [&](const Row& row, BinId parent) {
-            if (query) {
-                // A search bin never lists search bins (nor itself).
-                if (row.kind == Row::Kind::Bin && row.bin->isSearch())
-                    return;
-                if (inScope(row, filter) && matches(row, *query) && (!filter.active() || matches(row, filter)))
-                    rows.push_back(row);
+    rows.reserve(state.media.size() + state.bins.size() + state.sequences.size());
+    const auto take = [&](const Row& row, BinId parent) {
+        if (query) {
+            // A search bin never lists search bins (nor itself).
+            if (row.kind == Row::Kind::Bin && row.bin->isSearch())
                 return;
-            }
-            if (inScope(row, filter) && (filtering ? matches(row, filter) : parent == bin))
+            if (inScope(row, filter) && matches(row, *query) && (!filter.active() || matches(row, filter)))
                 rows.push_back(row);
-        };
-        for (const Bin& b : snapshot->bins)
-            take({Row::Kind::Bin, b.id.value, &b, nullptr, nullptr}, b.parent);
-        for (const SequencePtr& s : snapshot->sequences)
-            take({Row::Kind::Sequence, s->id.value, nullptr, s.get(), nullptr}, s->bin);
-        for (const MediaPtr& m : snapshot->media)
-            take({Row::Kind::Media, m->id.value, nullptr, nullptr, m.get()}, m->bin);
-    }
-    // Sorting reads the new snapshot through the rows' pointers (binPath reads m_snapshot: not used while sorting).
+            return;
+        }
+        if (inScope(row, filter) && (filtering ? matches(row, filter) : parent == m_bin))
+            rows.push_back(row);
+    };
+    for (const Bin& b : state.bins)
+        take({Row::Kind::Bin, b.id.value, &b, nullptr, nullptr}, b.parent);
+    for (const SequencePtr& sq : state.sequences)
+        take({Row::Kind::Sequence, sq->id.value, nullptr, sq.get(), nullptr}, sq->bin);
+    for (const MediaPtr& m : state.media)
+        take({Row::Kind::Media, m->id.value, nullptr, nullptr, m.get()}, m->bin);
     sortRows(rows);
+    return rows;
+}
+
+int LibraryModel::childCount(std::uint64_t bin) const {
+    const auto it = m_childCounts.find(bin);
+    return it == m_childCounts.end() ? 0 : it->second;
+}
+
+void LibraryModel::refresh(ProjectSnapshot snapshot, BinId bin, const LibraryFilter& filter, const Context& context) {
+    const Bin* searchBin = snapshot && bin.isValid() ? snapshot->findBin(bin) : nullptr;
+    const bool filtering = filter.active() || (searchBin && searchBin->isSearch());
+    // The new inputs go in first: matches(), the sort and the tree read them. The snapshot the rows point into now
+    // stays alive (`previous`) until they are replaced.
+    const ProjectSnapshot previous = std::exchange(m_snapshot, std::move(snapshot));
+    m_context = context;
+    m_bin = bin;
+    m_filter = filter;
+    m_tree = context.tree && !filtering; // P1 round (#46): Find and search bins stay flat
+    m_childCounts.clear();
+    if (m_snapshot) {
+        for (const Bin& b : m_snapshot->bins)
+            ++m_childCounts[b.parent.value];
+        for (const SequencePtr& sq : m_snapshot->sequences)
+            ++m_childCounts[sq->bin.value];
+        for (const MediaPtr& m : m_snapshot->media)
+            ++m_childCounts[m->bin.value];
+    }
+    std::vector<Row> rows = buildRows();
 
     const bool sameRows = rows.size() == m_rows.size() &&
                           std::equal(rows.begin(), rows.end(), m_rows.begin(), [](const Row& a, const Row& b) {
-                              return a.kind == b.kind && a.id == b.id;
+                              return a.kind == b.kind && a.id == b.id && a.depth == b.depth;
                           });
     if (sameRows && filtering == m_filtering) {
-        m_snapshot = std::move(snapshot);
         m_rows = std::move(rows);
         if (!m_rows.empty())
             emit dataChanged(index(0, 0), index(static_cast<int>(m_rows.size()) - 1, std::max(0, columnCount() - 1)));
         return;
     }
     beginResetModel();
-    m_snapshot = std::move(snapshot);
     m_rows = std::move(rows);
     m_filtering = filtering;
     m_index.clear();
@@ -951,7 +1129,10 @@ void LibraryModel::setSort(LibraryColumn column, bool ascending) {
     if (m_rows.empty())
         return;
     beginResetModel();
-    sortRows(m_rows);
+    if (m_tree)
+        m_rows = buildRows(); // P1 round (#46): each level sorted on its own
+    else
+        sortRows(m_rows);
     m_index.clear();
     for (std::size_t i = 0; i < m_rows.size(); ++i)
         m_index.insert(keyFor(m_rows[i]), static_cast<int>(i));
@@ -968,6 +1149,19 @@ void LibraryModel::setSelection(const QSet<QString>& keys) {
         const int row = rowOf(key);
         if (row >= 0)
             emit dataChanged(index(row, 0), index(row, std::max(0, columnCount() - 1)), {SelectedRole});
+    }
+}
+
+void LibraryModel::setCut(const QSet<QString>& keys) {
+    if (keys == m_cut)
+        return;
+    QSet<QString> changed = keys;
+    changed.unite(m_cut);
+    m_cut = keys;
+    for (const QString& key : std::as_const(changed)) {
+        const int row = rowOf(key);
+        if (row >= 0)
+            emit dataChanged(index(row, 0), index(row, std::max(0, columnCount() - 1)), {CutRole});
     }
 }
 

@@ -25,6 +25,12 @@
 //   * The Program Monitor's view settings: Premiere's zoom levels (Fit, 10 % to 1600 %), Show Dropped Frame Indicator,
 //     Overlays (the sequence and source timecode over the picture) and Show Audio Time Units (the readout counts audio
 //     samples instead of frames).
+//   * P1 (#19): Toggle Proxies (View > Use Proxies) and Playback Resolution: Auto / Full / 1/2 / 1/4 (View > Playback
+//     Resolution): the same two preview settings as the Program Monitor's quality menu (the singleton MediaReadiness),
+//     so the keys, the View menu and that menu show the same state. P1 (#16): Paused Resolution: Full / 1/2 / 1/4 /
+//     Same as Playback (View > Paused Resolution, MediaReadiness.pausedQuality).
+//   * P1 (#17): the Program Monitor's edit overlay (EditOverlay.qml): where an Overlay drop goes (overlayTrack), the
+//     sequence's end for Append at End (sequenceEndText) and the clip Replace replaces (replaceTarget).
 
 #include "MonitorGuides.h"
 
@@ -37,6 +43,7 @@
 #include <QVariantList>
 #include <QtQml/qqmlregistration.h>
 
+#include <memory>
 #include <vector>
 
 class QJSEngine;
@@ -44,7 +51,9 @@ class QQmlEngine;
 
 namespace wabcut::app {
 
+class CommandJob;
 class GraphicCanvasBridge;
+class MediaReadinessBridge;
 class MotionBridge;
 class PlaybackBridge;
 class ProjectController;
@@ -105,9 +114,14 @@ class MonitorBridge : public QObject {
     Q_PROPERTY(QVariantList zoomLevels READ zoomLevels CONSTANT FINAL)
     /// The last problem (a template that cannot be saved, a file that cannot be read), "" otherwise.
     Q_PROPERTY(QString message READ message NOTIFY messageChanged FINAL)
+    /// P1 (#23, stream 1C): Export Frames at Markers runs (in the background): its progress (0..1, -1 unknown) and text.
+    Q_PROPERTY(bool framesBusy READ framesBusy NOTIFY framesChanged FINAL)
+    Q_PROPERTY(double framesProgress READ framesProgress NOTIFY framesChanged FINAL)
+    Q_PROPERTY(QString framesStatus READ framesStatus NOTIFY framesChanged FINAL)
 
 public:
     explicit MonitorBridge(QObject* parent = nullptr);
+    ~MonitorBridge() override;
     static MonitorBridge* create(QQmlEngine* qmlEngine, QJSEngine* jsEngine);
 
     void setPlayback(PlaybackBridge* playback);
@@ -115,6 +129,8 @@ public:
     void setController(ProjectController* controller);
     void setSourceMonitor(SourceMonitorBridge* source);
     void setGraphicCanvas(GraphicCanvasBridge* canvas);
+    /// P1 (#19): the preview settings Toggle Proxies and Playback Resolution change (singleton `MediaReadiness`).
+    void setMediaReadiness(MediaReadinessBridge* readiness);
 
     bool fullScreen() const { return m_fullScreen; }
     void setFullScreen(bool on);
@@ -196,13 +212,47 @@ public:
     /// `format` to `folder`/`name` (the extension added); with `importIntoProject` the still joins the project (one undo
     /// step). Returns the file written, or "" (the reason in `message`).
     Q_INVOKABLE QString exportFrame(bool source, const QString& name, const QString& format, const QUrl& folder,
-                                    bool importIntoProject);
+                                    bool importIntoProject, const QVariantMap& options = {});
+
+    // ---- P1 (#23, stream 1C): Export Frame sizes and Export Frames at Markers ----
+    // exportFrame's `options`: { size: "sequence" | "thumbnail" (1280 x 720) | "vertical" (1080 x 1920) | "custom",
+    // width, height (custom), fill (crop to fill instead of black bars), quality (JPEG 1..100), keepUnder (JPEG under
+    // 2 MB) } - remembered with the rest; exportFrameDefaults() adds them and `sizes` ([{ value, label, width, height }]).
+    /// Markers > Export Frames at Markers… and the Highlights panel: the host opens the dialog in its markers mode
+    /// (`highlights`: the highlight markers' peaks).
+    Q_INVOKABLE void requestExportFramesAtMarkers(bool highlights) {
+        emit dialogRequested(QStringLiteral("exportFramesAtMarkers"), highlights ? 1 : 0);
+    }
+    /// How many of the current sequence's markers each choice exports: { all, chapters, highlights }.
+    Q_INVOKABLE QVariantMap markerFrameCounts() const;
+    /// Export Frames at Markers (sequence.exportFramesAtMarkers) in the background: `options` = exportFrame's plus
+    /// { format, folder (URL), markers: "all" | "chapters" | "highlights", importIntoProject }. False (why in `message`)
+    /// when it cannot start; framesFinished(ok, message) when done.
+    Q_INVOKABLE bool exportFramesAtMarkers(const QVariantMap& options);
+    Q_INVOKABLE void cancelFramesAtMarkers();
+    bool framesBusy() const { return m_framesBusy; }
+    double framesProgress() const { return m_framesProgress; }
+    QString framesStatus() const { return m_framesStatus; }
+    /// Tests: exportFramesAtMarkers runs on the calling thread.
+    void setFramesSynchronous(bool synchronous) { m_framesSynchronous = synchronous; }
 
     /// The keymap commands runCommand() runs (the command palette lists them as available).
     static bool handlesCommand(const QString& id);
     /// Runs a monitor keymap command; false when it is not one (the caller routes it on). `sourceFocused`: the Source
     /// Monitor has the focus (Export Frame exports its frame then).
     Q_INVOKABLE bool runCommand(const QString& id, bool sourceFocused = false);
+
+    // ---- P1 (#17): the Program Monitor's edit overlay ----
+    /// Overlay: the first unlocked video track, from the topmost targeted one (else V1) up, with nothing where the drop
+    /// lands - at the playhead, as long as the clip the drop makes (`mediaKey`, a Library media or sequence key, with
+    /// its Source Monitor marks; `fromSource`: the Source Monitor's clip, `mediaKey` ignored). "" when every one is
+    /// taken there (the overlay then adds a video track on top in the same undo step) or nothing can be dropped.
+    Q_INVOKABLE QString overlayTrack(const QString& mediaKey, bool fromSource) const;
+    /// Append at End: the timecode where the sequence's last clip ends (00:00:00:00 when it is empty).
+    Q_INVOKABLE QString sequenceEndText() const;
+    /// Replace: the clip under the playhead on the topmost targeted video track that has one there, else on the
+    /// topmost video track that has one ("" when there is none).
+    Q_INVOKABLE QString replaceTarget() const;
 
 signals:
     void outputChanged();
@@ -213,8 +263,12 @@ signals:
     void messageChanged();
     void timeChanged();
     /// The keys and menus ask the host (MonitorHost.qml) for a dialog: "addGuide", "editGuide" (of guide `index`),
-    /// "saveGuides", "manageGuides", "exportFrame" (index 1: the Source Monitor's).
+    /// "saveGuides", "manageGuides", "exportFrame" (index 1: the Source Monitor's), P1 (#23): "exportFramesAtMarkers"
+    /// (index 1: the highlight markers).
     void dialogRequested(const QString& dialog, int index);
+    /// P1 (#23): framesBusy, framesProgress or framesStatus changed; Export Frames at Markers finished.
+    void framesChanged();
+    void framesFinished(bool ok, const QString& message);
 
 private:
     bool nudge(double dx, double dy);
@@ -228,6 +282,8 @@ private:
     QPointer<PlaybackBridge> m_playback;
     QPointer<MotionBridge> m_motion;
     QPointer<GraphicCanvasBridge> m_canvas;
+    /// P1 (#19): the preview settings Toggle Proxies and Playback Resolution change.
+    QPointer<MediaReadinessBridge> m_readiness;
     bool m_fullScreen = false;
     bool m_transmit = false;
     int m_transmitScreen = -1;
@@ -250,6 +306,12 @@ private:
     std::vector<guides::Guide> m_guides;
     std::vector<guides::Template> m_templates;
     QString m_message;
+    // P1 (#23, 1C): Export Frames at Markers.
+    std::unique_ptr<CommandJob> m_framesJob;
+    bool m_framesBusy = false;
+    double m_framesProgress = -1.0;
+    QString m_framesStatus;
+    bool m_framesSynchronous = false;
 };
 
 struct MonitorBridgeSingleton {

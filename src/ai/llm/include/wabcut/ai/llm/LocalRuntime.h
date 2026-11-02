@@ -6,6 +6,7 @@
 #include <wabcut/ai/llm/SystemProbe.h>
 #include <mutex>
 namespace wabcut::ai::llm {
+struct Admission; // Tiers.h
 struct LaunchPlan {
     std::string runtimeId;
     std::uint64_t ramNeeded = 0, vramNeeded = 0;
@@ -14,7 +15,19 @@ struct LaunchPlan {
     std::string reason;
     int context = 8192;        ///< --ctx-size: the tier's context (Tiers.h)
     bool reasoningOff = false; ///< --reasoning off: hybrid-thinking models answer directly
+    /// 0.6: the adapter admission measured (Admission::gpuName / gpuFreeBytes); start() pins llama-server to it with
+    /// --device, so a machine with an integrated GPU and a discrete one (or two cards) runs on the card that was checked.
+    std::string gpuName;
+    std::uint64_t gpuFreeBytes = 0;
 };
+/// The launch plan for an admission (Tiers.h admit()) that fits.
+LaunchPlan launchPlanFor(const Admission& admission);
+/// The llama.cpp device for `gpuName` in `llama-server --list-devices` output ("  Vulkan1: NVIDIA GeForce RTX 3060
+/// (12329 MiB, 11551 MiB free)"): the device whose description is that adapter's name (case, "(R)" and "(TM)" and
+/// spacing aside); among identical cards the one whose free memory is nearest `gpuFreeBytes`. nullopt when none matches
+/// (llama.cpp then chooses: its discrete GPUs, never an integrated one next to them). Pure.
+std::optional<std::string> pickLlamaDevice(std::string_view listDevicesOutput, std::string_view gpuName,
+                                           std::uint64_t gpuFreeBytes);
 // One slot at the model's tier context (wabcut/ai/llm/Tiers.h admit(): weights, KV cache, compute buffers and the
 // editor's reserve); a model that is not a tier is planned with a 32-layer shape. The user picked the model, so a
 // large one may run on the CPU when RAM allows. Unknown memory fails closed.
@@ -24,6 +37,7 @@ struct RuntimeStatus {
     enum class State { Stopped, Starting, Ready, Failed, Suspended };
     State state = State::Stopped;
     std::string model, backend, message, baseUrl;
+    std::string device; ///< the llama.cpp device it runs on ("Vulkan0", "CUDA0"); empty: the CPU or llama.cpp's choice
 };
 // start runs on a worker thread. Host calls tick periodically, touch during use, pressure before playback/export.
 class LocalRuntime {

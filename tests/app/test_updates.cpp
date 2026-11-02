@@ -322,6 +322,18 @@ TEST_CASE("Updates: the manifest format the release tool writes and the built-in
     CHECK(update::compareVersions(QStringLiteral("0.10.0"), QStringLiteral("0.9.9")) > 0);
     CHECK(update::compareVersions(QStringLiteral("0.4.0"), QStringLiteral("0.4.0")) == 0);
     CHECK(update::compareVersions(QStringLiteral("0.4.0"), QStringLiteral("1.0.0")) < 0);
+    // P1 round (#5): a leading v, missing parts, pre-releases (older than their release, compared as SemVer says) and
+    // build metadata.
+    CHECK(update::compareVersions(QStringLiteral("v0.6.0"), QStringLiteral("0.5.3")) > 0);
+    CHECK(update::compareVersions(QStringLiteral("V0.6"), QStringLiteral("0.6.0")) == 0);
+    CHECK(update::compareVersions(QStringLiteral("0.6.0-beta.2"), QStringLiteral("0.6.0")) < 0);
+    CHECK(update::compareVersions(QStringLiteral("0.6.0"), QStringLiteral("v0.6.0-rc.1")) > 0);
+    CHECK(update::compareVersions(QStringLiteral("0.6.0-beta.2"), QStringLiteral("0.6.0-beta.10")) < 0);
+    CHECK(update::compareVersions(QStringLiteral("0.6.0-alpha"), QStringLiteral("0.6.0-beta")) < 0);
+    CHECK(update::compareVersions(QStringLiteral("0.6.0-1"), QStringLiteral("0.6.0-alpha")) < 0);
+    CHECK(update::compareVersions(QStringLiteral("0.6.0-alpha"), QStringLiteral("0.6.0-alpha.1")) < 0);
+    CHECK(update::compareVersions(QStringLiteral("0.6.0+build.7"), QStringLiteral("0.6.0")) == 0);
+    CHECK(update::compareVersions(QStringLiteral("0.6.0-rc.1"), QStringLiteral("0.5.9")) > 0);
     CHECK(update::releasePage(QStringLiteral("https://github.com/sorsama/wabcut/releases/"), QStringLiteral("0.5.0")) ==
           QUrl(QStringLiteral("https://github.com/sorsama/wabcut/releases/tag/v0.5.0")));
     CHECK(update::releasePage(QStringLiteral("https://github.com/sorsama/wabcut/releases"), QStringLiteral("0.5.0/../x")).isEmpty());
@@ -717,6 +729,7 @@ TEST_CASE("Updates: automatic checks are off by default, at most daily and quiet
     REQUIRE(waitFor([&] { return rig.settled(); }, 30'000));
     CHECK(rig.bridge.state() == QStringLiteral("available"));
     CHECK(announced == QStringList{QStringLiteral("9.9.9")});
+    CHECK(rig.bridge.updateNotice()); // P1 round (#5): the Help menu's dot
     // Within the day: no second request.
     rig.bridge.setConfig(rig.bridge.config()); // back to idle, as at the next start
     const qsizetype requests = rig.server.requests.size();
@@ -727,7 +740,12 @@ TEST_CASE("Updates: automatic checks are off by default, at most daily and quiet
     // Skipped: an automatic check stays quiet about it; a check by hand still shows it.
     rig.bridge.check();
     REQUIRE(waitFor([&] { return rig.settled(); }, 30'000));
+    CHECK(rig.bridge.updateNotice());
+    int stateSignals = 0;
+    QObject::connect(&rig.bridge, &UpdateBridge::stateChanged, [&] { ++stateSignals; });
     rig.bridge.skipThisVersion();
+    CHECK_FALSE(rig.bridge.updateNotice()); // skipped: the dot goes
+    CHECK(stateSignals == 1);
     rig.bridge.setConfig(rig.bridge.config());
     rig.bridge.checkAutomatically(true);
     REQUIRE(waitFor([&] { return rig.settled(); }, 30'000));
@@ -795,6 +813,26 @@ TEST_CASE("Updates: Help > Check for Updates and the dialog in the window", "[ap
     QObject* dialog = loader->property("item").value<QObject*>();
     REQUIRE(waitFor([&] { return dialog->property("opened").toBool(); }));
     REQUIRE(waitFor([&] { return dialog->property("stage").toString() == QStringLiteral("available"); }, 30'000));
+    // P1 round (#5): the Help menu's title shows a dot and its row names the version found.
+    CHECK(help->property("badge").toBool());
+    CHECK(item->property("text").toString() == QStringLiteral("Wabcut 9.9.9 Is Available…"));
+    QObject* helpTitle = nullptr;
+    for (QObject* o : shell.window->findChildren<QObject*>(QStringLiteral("menuBar_help")))
+        helpTitle = o;
+    if (helpTitle == nullptr) {
+        std::function<QQuickItem*(QQuickItem*)> find = [&](QQuickItem* root) -> QQuickItem* {
+            if (root->objectName() == QLatin1String("menuBar_help"))
+                return root;
+            for (QQuickItem* child : root->childItems()) {
+                if (QQuickItem* found = find(child))
+                    return found;
+            }
+            return nullptr;
+        };
+        helpTitle = find(shell.window->contentItem());
+    }
+    REQUIRE(helpTitle != nullptr);
+    CHECK(helpTitle->property("badge").toBool());
     auto* downloadButton = qobject_cast<QQuickItem*>(inDialog(dialog, "updateDownload"));
     REQUIRE(downloadButton != nullptr);
     CHECK(downloadButton->isVisible());

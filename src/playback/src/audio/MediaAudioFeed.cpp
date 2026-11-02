@@ -124,7 +124,7 @@ struct MediaAudioFeed::Impl {
             return fail(Error{ErrorCode::InvalidArgument, "bad channel count or span size"});
         }
         // Resolve through the current snapshot: the item's locator and the container index of the stream.
-        const ProjectSnapshot snapshot = session.snapshot();
+        const ProjectSnapshot snapshot = session.shown();
         const MediaItem* item = snapshot ? snapshot->findMedia(media) : nullptr;
         const Key key{media.value, ordinal, rate.num, rate.den, channels};
         auto it = std::ranges::find_if(entries, [&](const Entry& e) { return e.key == key; });

@@ -270,6 +270,7 @@ ColumnLayout {
         }
         PillTabs {
             objectName: "objectPreviewTabs"
+            Accessible.name: qsTr("Preview") // P1 #61
             compact: true
             model: [qsTr("Off"), qsTr("Colour"), qsTr("Alpha")]
             currentIndex: ["off", "colour", "alpha"].indexOf(ObjectMasks.preview)

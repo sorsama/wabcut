@@ -10,6 +10,7 @@
 #include <wabcut/model/EditOps.h>
 #include <wabcut/model/Effects.h>
 #include <wabcut/model/FinishingOps.h>
+#include <wabcut/model/MasterClipEffects.h>
 #include <wabcut/model/MotionOps.h>
 
 #include <algorithm>
@@ -87,9 +88,12 @@ ParamValue keysOf(std::span<const Ticks> times, std::span<const double> values, 
     return ParamValue(std::move(curve));
 }
 
-/// What an Analyze command works on: the clip, its media's video stream, the frames of the media it shows.
+/// What an Analyze command works on: the clip, its media's video stream, the frames of the media it shows. Fix F3
+/// (NEW-01): for an effect of the clip's media's Master Clip Effects (`master`: the item holding it), the analysis
+/// belongs to the media: the frames are those every clip playing that effect shows (see masterSpan).
 struct Target {
     ClipId clip;
+    MediaId master;
     const MediaItem* item = nullptr;
     int streamIndex = 0;
     const VideoStreamInfo* stream = nullptr;
@@ -98,6 +102,48 @@ struct Target {
     std::int64_t last = 0;
     std::vector<Ticks> times;
 };
+
+/// The instance `id` of `clip`'s stack, else of its media's Master Clip Effects, in `state`.
+const EffectInstance* playedInstance(const ProjectState& state, const Clip& clip, EffectInstanceId id) {
+    if (const EffectInstance* own = findInstance(clip, id)) {
+        return own;
+    }
+    const MediaItem* holder = clip.media.isValid() ? masterEffectHolder(state, clip.media, id) : nullptr;
+    if (!holder) {
+        return nullptr;
+    }
+    const auto it = std::ranges::find_if(holder->masterEffects, [&](const EffectInstance& e) { return e.id == id; });
+    return it != holder->masterEffects.end() ? &*it : nullptr;
+}
+
+/// Fix F3 (NEW-01): the source frames [first, last] that the clips playing master clip effect `effect` (of `holder`)
+/// show, over every sequence of the project (nested and multicam sources too): one contiguous span, so every instance
+/// is keyed. Clips that turned their master clip effects off, nested clips and other streams do not count. False when
+/// no clip plays it.
+bool masterSpan(const ProjectState& state, MediaId holder, EffectInstanceId effect, int streamIndex, Rate rate,
+                std::int64_t& first, std::int64_t& last) {
+    bool any = false;
+    for (const SequencePtr& seq : state.sequences) {
+        for (const TrackPtr& track : seq->videoTracks) {
+            for (const Clip& clip : track->clips) {
+                if (clip.isNested() || clip.hasUnknownSource() || clip.stream.kind != StreamKind::Video ||
+                    clip.stream.index != streamIndex || clip.content().masterEffectsOff || !clip.media.isValid()) {
+                    continue;
+                }
+                const MediaItem* played = masterEffectHolder(state, clip.media, effect);
+                if (!played || played->id != holder) {
+                    continue;
+                }
+                const std::int64_t a = ticksToFrames(clip.sourceIn, rate);
+                const std::int64_t b = std::max(a, ticksToFrames(clip.sourceOut() - Ticks{1}, rate));
+                first = any ? std::min(first, a) : a;
+                last = any ? std::max(last, b) : b;
+                any = true;
+            }
+        }
+    }
+    return any;
+}
 
 Target targetOf(ExecutionContext& c, std::string_view what) {
     Target t;
@@ -108,6 +154,14 @@ Target targetOf(ExecutionContext& c, std::string_view what) {
         fail(ErrorCode::NotFound, "the clip is not in this sequence");
     }
     const Clip& clip = location->clip();
+    if (c.has("effect") && clip.media.isValid()) {
+        const EffectInstanceId id{static_cast<std::uint64_t>(c.integer("effect"))};
+        if (!findInstance(clip, id)) {
+            if (const MediaItem* holder = masterEffectHolder(c.state(), clip.media, id)) {
+                t.master = holder->id;
+            }
+        }
+    }
     if (clip.stream.kind != StreamKind::Video) {
         fail(ErrorCode::InvalidParams, "only video clips have " + std::string(what));
     }
@@ -119,18 +173,30 @@ Target targetOf(ExecutionContext& c, std::string_view what) {
         static_cast<std::size_t>(clip.stream.index) >= t.item->info.video.size()) {
         fail(ErrorCode::EditRejected, "the clip shows no camera footage to analyse");
     }
-    if (clip.isRemapped()) {
+    // A master clip effect is analysed on the media, whatever this one clip does with its time.
+    if (clip.isRemapped() && !t.master.isValid()) {
         fail(ErrorCode::EditRejected, "analysing a time-remapped clip is not supported: analyse it, then remap");
     }
-    if (clip.isFreeze()) {
+    if (clip.isFreeze() && !t.master.isValid()) {
         fail(ErrorCode::EditRejected, "a freeze frame does not move");
     }
     t.streamIndex = clip.stream.index;
     t.stream = &t.item->info.video[static_cast<std::size_t>(clip.stream.index)];
     t.rate = t.stream->frameRate.isValid() ? t.stream->frameRate : seq.frameRate;
-    // Every frame of the media the clip shows.
+    // Every frame of the media the clip shows (a master clip effect: that every clip playing it shows).
     t.first = ticksToFrames(clip.sourceIn, t.rate);
     t.last = std::max(t.first, ticksToFrames(clip.sourceOut() - Ticks{1}, t.rate));
+    if (t.master.isValid()) {
+        const EffectInstanceId id{static_cast<std::uint64_t>(c.integer("effect"))};
+        std::int64_t first = 0;
+        std::int64_t last = 0;
+        if (masterSpan(c.state(), t.master, id, t.streamIndex, t.rate, first, last)) {
+            t.first = std::min(t.first, first);
+            t.last = std::max(t.last, last);
+        }
+        t.first = std::max<std::int64_t>(t.first, 0);
+        t.last = std::max(t.first, t.last);
+    }
     if (t.last - t.first + 1 > static_cast<std::int64_t>(kMaxAnalysisFrames)) {
         fail(ErrorCode::EditRejected, "the clip is too long to analyse in one analysis");
     }
@@ -146,7 +212,7 @@ EffectInstanceId instanceOf(ExecutionContext& c, ProjectState& state, const Targ
     const Clip& clip = c.sequence().findClip(t.clip)->clip();
     if (c.has("effect")) {
         const EffectInstanceId id{static_cast<std::uint64_t>(c.integer("effect"))};
-        const EffectInstance* e = findInstance(clip, id);
+        const EffectInstance* e = playedInstance(state, clip, id); // a master clip effect too (F3)
         if (!e || e->effect != effectId) {
             fail(ErrorCode::NotFound, "the clip has no " + std::string(effectId) + " with that id");
         }
@@ -241,7 +307,7 @@ CommandOutput analyzeStabilization(ExecutionContext& c) {
     ProjectState state = c.state();
     const EffectInstanceId instance = instanceOf(c, state, t, kWarpStabilizerEffect);
     const Clip& current = state.findSequence(c.sequenceId())->findClip(t.clip)->clip();
-    const EffectInstance& effect = *findInstance(current, instance);
+    const EffectInstance& effect = *playedInstance(state, current, instance);
     const auto setting = [&](std::string_view key, double fallback) { return effectParameterAt(effect, key, Ticks{}, fallback); };
     const Method method = methodOf(setting("method", 3.0)); // Premiere's default: Subspace Warp
     const bool detailed = setting("detailedAnalysis", 0.0) >= 0.5;
@@ -341,7 +407,7 @@ CommandOutput analyzeRollingShutter(ExecutionContext& c) {
     ProjectState state = c.state();
     const EffectInstanceId instance = instanceOf(c, state, t, kRollingShutterRepairEffect);
     const Clip& current = state.findSequence(c.sequenceId())->findClip(t.clip)->clip();
-    const EffectInstance& effect = *findInstance(current, instance);
+    const EffectInstance& effect = *playedInstance(state, current, instance);
     const bool detailed = effectParameterAt(effect, "detailedAnalysis", Ticks{}, 0.0) >= 0.5;
     bool cached = false;
     const MotionAnalysis analysis = motionOf(c, t, Method::Position, detailed, cached);
@@ -379,10 +445,12 @@ void registerStabilizeCommands(command::CommandRegistry& registry) {
         "Additional Scale, Detailed Analysis, Rolling Shutter Ripple, Crop Less Smooth More) and keys the compensating "
         "transform per frame into the clip's Warp Stabilizer (added at the top of its stack when it has none), with the "
         "crop or auto-scale that hides the moving borders. The keys stay editable. Changing a setting and running it "
-        "again re-smooths from the cached analysis. Runs as a job with progress and cancel; a dry run analyses and "
-        "previews the keys.",
+        "again re-smooths from the cached analysis. A Warp Stabilizer in the clip's media's Master Clip Effects (named by "
+        "`effect`) is analysed over the frames every clip of that media shows, so every instance plays it stabilized. "
+        "Runs as a job with progress and cancel; a dry run analyses and previews the keys.",
         command::Capability::EditSequence,
-        analyzeSchema("Its Warp Stabilizer instance (id). Default: the clip's first (or a new one)."),
+        analyzeSchema("Its Warp Stabilizer instance (id), in the clip's stack or its media's Master Clip Effects. Default: "
+                      "the clip's first (or a new one)."),
         Json{{"clip", 42}}, {}, analyzeStabilization};
     [[maybe_unused]] const auto addedStabilization = registry.add(std::move(stabilization));
     command::CommandSpec shutter{
@@ -390,9 +458,11 @@ void registerStabilizeCommands(command::CommandRegistry& registry) {
         "Rolling Shutter Repair's analysis: measures the picture's motion per frame of a video clip's footage and keys it "
         "(motion.x, motion.y: source pixels per frame) into the clip's Rolling Shutter Repair (added at the top of its "
         "stack when it has none), which then skews each line back by its share of the scan (Rolling Shutter Rate, Scan "
-        "Direction). Shares the cached analysis with Warp Stabilizer's Position method.",
+        "Direction). Shares the cached analysis with Warp Stabilizer's Position method. One in the clip's media's Master "
+        "Clip Effects (named by `effect`) is analysed over the frames every clip of that media shows.",
         command::Capability::EditSequence,
-        analyzeSchema("Its Rolling Shutter Repair instance (id). Default: the clip's first (or a new one)."),
+        analyzeSchema("Its Rolling Shutter Repair instance (id), in the clip's stack or its media's Master Clip Effects. "
+                      "Default: the clip's first (or a new one)."),
         Json{{"clip", 42}}, {}, analyzeRollingShutter};
     [[maybe_unused]] const auto addedShutter = registry.add(std::move(shutter));
 }

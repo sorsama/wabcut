@@ -1,12 +1,18 @@
 // TimelineView (M5i): track heights, display settings, trim edit points, marker items for the ruler and the zoom and
-// scroll each sequence keeps (sequence tabs). 0.4: the clip speed, fx badge and playhead snap switches. Drawing is in
-// TimelineView.cpp.
+// scroll each sequence keeps (sequence tabs). 0.4: the clip speed, fx badge and playhead snap switches. 0.6: the Clip
+// Mismatch Warning's look and match, and the input modifiers for Shift-clicks. Drawing is in TimelineView.cpp.
 
 #include "TimelineView.h"
 
 #include "BridgeIds.h"
+#include "ProjectController.h"
 
+#include <wabcut/model/ChangeSet.h>
+#include <wabcut/model/SequenceSettings.h>
 #include <wabcut/model/Timecode.h>
+
+#include <QCoreApplication>
+#include <QGuiApplication>
 
 #include <algorithm>
 #include <cmath>
@@ -300,6 +306,39 @@ QVariantList TimelineView::markerItems() const {
     return list;
 }
 
+void TimelineView::setShowBeatGrid(bool on) {
+    if (on == m_showBeatGrid)
+        return;
+    m_showBeatGrid = on;
+    emit displayChanged();
+    emit viewChanged(); // the ruler re-reads beatTicks
+    update();
+}
+
+QVariantList TimelineView::beatTicks() const {
+    QVariantList list;
+    if (!m_showBeatGrid || !m_sequence || !m_sequence->beatGrid)
+        return list;
+    const BeatGrid& grid = *m_sequence->beatGrid;
+    const Ticks left = ticksAtX(-8.0);
+    const Ticks right = ticksAtX(width() + 8.0);
+    if (right <= left)
+        return list;
+    double lastX = -std::numeric_limits<double>::infinity();
+    constexpr int kMaxTicks = 600; // a zoomed-out hour of music stays a handful of delegates
+    for (const Beat& beat : grid.beatsIn(TimeRange::fromStartEnd(std::max(Ticks{}, left), right))) {
+        const double x = xOfTicks(beat.time);
+        // Thin ticks: one every few pixels at most, so a dense grid does not smear the ruler; downbeats always show.
+        if (!beat.isDownbeat() && x - lastX < 4.0)
+            continue;
+        lastX = x;
+        list << QVariantMap{{QStringLiteral("x"), x}, {QStringLiteral("downbeat"), beat.isDownbeat()}};
+        if (list.size() >= kMaxTicks)
+            break;
+    }
+    return list;
+}
+
 int TimelineView::markerAt(double x) const {
     if (!m_sequence)
         return -1;
@@ -323,6 +362,105 @@ QString TimelineView::timeKeyAt(double x) const {
     const Ticks t = ticksAtX(x);
     const Ticks frame = framesToTicks(ticksToFrames(t, rate), rate);
     return QString::number(frame.value);
+}
+
+// ---- 0.6 (P1 round, stream 1A) ------------------------------------------------------------------------------------
+
+int TimelineView::keyboardModifiers() const {
+    return static_cast<int>(QGuiApplication::keyboardModifiers());
+}
+
+bool TimelineView::sequenceEmpty() const {
+    const SequencePtr seq = m_controller ? m_controller->currentSequence() : nullptr;
+    if (!seq)
+        return false;
+    bool empty = true;
+    seq->forEachTrack([&](const Track& t) { empty = empty && t.clips.empty(); });
+    return empty;
+}
+
+namespace {
+
+/// "1920 x 1080, 29.97 fps" for the Clip Mismatch Warning.
+QString shapeText(std::int32_t width, std::int32_t height, Rate rate) {
+    const double fps = rate.isValid() ? rate.toDouble() : 0.0;
+    const bool whole = std::abs(fps - std::round(fps)) < 0.005;
+    const QString fpsText = whole ? QString::number(std::lround(fps)) : QString::number(fps, 'f', 2);
+    return QCoreApplication::translate("wabcut::app::TimelineView", "%1 x %2, %3 fps").arg(width).arg(height).arg(fpsText);
+}
+
+/// The media of the first video clip (track order) and the change that matches the sequence to it.
+std::optional<std::pair<const MediaItem*, edit::SequenceSettingsChange>> mismatchOf(const ProjectState& state,
+                                                                                   const Sequence& seq) {
+    for (const TrackPtr& t : seq.videoTracks) {
+        for (const Clip& c : t->clips) {
+            if (c.isNested() || !c.media.isValid())
+                continue;
+            const MediaItem* media = state.findMedia(c.media);
+            if (!media)
+                continue;
+            if (auto change = edit::settingsToMatchMedia(seq, *media))
+                return std::pair{media, std::move(*change)};
+            return std::nullopt; // the first clip matches (or is a still): nothing to ask
+        }
+    }
+    return std::nullopt;
+}
+
+} // namespace
+
+QVariantMap TimelineView::clipMismatch() const {
+    const ProjectSnapshot snap = m_controller ? m_controller->snapshot() : nullptr;
+    const SequencePtr seq = m_controller ? m_controller->currentSequence() : nullptr;
+    if (!snap || !seq)
+        return {};
+    const auto found = mismatchOf(*snap, *seq);
+    if (!found)
+        return {};
+    const auto& [media, change] = *found;
+    return {{QStringLiteral("media"), mediaKey(media->id)},
+            {QStringLiteral("name"), QString::fromStdString(media->name)},
+            {QStringLiteral("mediaText"), shapeText(change.width.value_or(seq->width), change.height.value_or(seq->height),
+                                                    change.frameRate.value_or(seq->frameRate))},
+            {QStringLiteral("sequenceText"), shapeText(seq->width, seq->height, seq->frameRate)}};
+}
+
+bool TimelineView::matchSequenceToClip(bool withLastStep, int revision) {
+    const ProjectSnapshot snap = m_controller ? m_controller->snapshot() : nullptr;
+    const SequencePtr seq = m_controller ? m_controller->currentSequence() : nullptr;
+    if (!snap || !seq)
+        return false;
+    const auto found = mismatchOf(*snap, *seq);
+    if (!found)
+        return false;
+    const SequenceId seqId = seq->id;
+    const edit::SequenceSettingsChange change = found->second;
+    EditSession& session = m_controller->session();
+    const bool merge = withLastStep && session.canUndo() && (revision < 0 || revision == m_controller->revision());
+    if (!merge) {
+        return m_controller->applyEditFn(QT_TRANSLATE_NOOP("wabcut::app::ProjectController", "Sequence Settings"),
+                                         [&](const ProjectState& s) { return edit::setSequenceSettings(s, seqId, change); });
+    }
+    // The drop and the new settings as one step: back to before the drop, then both at once (the clips keep their ids,
+    // so the selection the drop made comes back).
+    auto next = edit::setSequenceSettings(*snap, seqId, change);
+    if (!next)
+        return m_controller->applyEditFn(QT_TRANSLATE_NOOP("wabcut::app::ProjectController", "Sequence Settings"),
+                                         [&](const ProjectState& s) { return edit::setSequenceSettings(s, seqId, change); });
+    const std::string label = session.undoLabel().value_or("Sequence Settings");
+    const std::vector<ClipId> selection = m_controller->selection();
+    const ClipId primary = m_controller->primaryClip();
+    m_controller->undo();
+    const ProjectState combined = std::move(next->state);
+    const bool ok = m_controller->applyEditFn(label.c_str(), [&](const ProjectState& s) -> edit::EditOutcome {
+        edit::EditResult result;
+        result.changes = diff(s, combined);
+        result.state = combined;
+        return result;
+    });
+    if (ok)
+        m_controller->setSelection(selection, primary);
+    return ok;
 }
 
 } // namespace wabcut::app

@@ -36,6 +36,7 @@ WabcutDialog {
     PillTabs {
         id: pageTabs
         objectName: "exportQueuePages"
+        Accessible.name: qsTr("Export queue page") // P1 #61
         Layout.fillWidth: true
         compact: true
         tabs: true

@@ -226,6 +226,28 @@ TEST_CASE("Ripple trim to the playhead (Q and W)", "[command][edit][trim]") {
     }
 }
 
+TEST_CASE("Extend and Trim Previous and Next Edit to Playhead through the engine", "[command][edit][trim]") {
+    CommandHarness h(R"(
+        V1 tgt |AaaaB4bbbb|
+    )");
+    SECTION("extend previous edit: the cut rolls to the playhead") {
+        h.ok("sequence.extendPreviousToPlayhead", Json{{"time", tc(6)}});
+        CHECK_SESSION(h, "V1 |AaaaaaB6bb|");
+    }
+    SECTION("extend next edit") {
+        h.ok("sequence.extendNextToPlayhead", Json{{"time", tc(2)}});
+        CHECK_SESSION(h, "V1 |AaB2bbbbbb|");
+    }
+    SECTION("trim previous edit: a gap before the clip") {
+        h.ok("sequence.trimPreviousToPlayhead", Json{{"time", tc(6)}});
+        CHECK_SESSION(h, "V1 |Aaaa..B6bb|");
+    }
+    SECTION("trim next edit: a gap after the clip") {
+        h.ok("sequence.trimNextToPlayhead", Json{{"time", tc(6)}});
+        CHECK_SESSION(h, "V1 |AaaaB4....|");
+    }
+}
+
 TEST_CASE("Trim, ripple, roll, slip, slide and move by a delta", "[command][edit][trim]") {
     SECTION("trim reports the delta it applied") {
         CommandHarness h(R"(

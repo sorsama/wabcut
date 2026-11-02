@@ -12,6 +12,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <limits>
 #include <string>
 #include <vector>
@@ -41,7 +42,7 @@ ProjectState roundTrip(const ProjectState& state) {
 } // namespace
 
 TEST_CASE("Colour management names, display names, menu order and bounds", "[model][colormanagement]") {
-    REQUIRE(allColorManagementModes().size() == 6);
+    REQUIRE(allColorManagementModes().size() == 7); // 0.6: Wide Gamut (Minimal Tone Mapping)
     for (const ColorManagementMode m : allColorManagementModes()) {
         CHECK(colorManagementModeFromString(toString(m)) == m);
         CHECK_FALSE(displayName(m).empty());
@@ -50,7 +51,7 @@ TEST_CASE("Colour management names, display names, menu order and bounds", "[mod
     CHECK(toString(ColorManagementMode::Aces13) == "aces");
     CHECK(toString(ColorManagementMode::HdrPq) == "hdr-pq");
     CHECK_FALSE(colorManagementModeFromString("ACES").has_value()); // ids are exact
-    CHECK(allInputColorSpaces().size() == 18);
+    CHECK(allInputColorSpaces().size() == 27);
     for (const InputColorSpace s : allInputColorSpaces()) {
         CHECK(inputColorSpaceFromString(toString(s)) == s);
         CHECK_FALSE(displayName(s).empty());
@@ -80,8 +81,8 @@ TEST_CASE("Colour setups are Premiere's: Direct Rec.709 first and the default, t
         names.push_back(displayName(m));
     }
     CHECK(names == std::vector<std::string_view>{"Direct Rec.709 (SDR)", "Direct HLG (HDR)", "Direct PQ (HDR)",
-                                                 "Wide Gamut (Tone Mapped)", "Wide Gamut (No Tone Mapping)",
-                                                 "Disable Color Management"});
+                                                 "Wide Gamut (Tone Mapped)", "Wide Gamut (Minimal Tone Mapping)",
+                                                 "Wide Gamut (No Tone Mapping)", "Disable Color Management"});
     CHECK(ColorManagement{}.mode == ColorManagementMode::DisplayRec709);
     CHECK(toString(ColorManagementMode::WideGamut) == "wide-gamut");
     CHECK(toString(ColorManagementMode::Disabled) == "off");
@@ -90,7 +91,8 @@ TEST_CASE("Colour setups are Premiere's: Direct Rec.709 first and the default, t
         ColorManagement cm;
         cm.mode = m;
         const bool managed = m == ColorManagementMode::HdrPq || m == ColorManagementMode::HdrHlg ||
-                             m == ColorManagementMode::Aces13 || m == ColorManagementMode::WideGamut;
+                             m == ColorManagementMode::Aces13 || m == ColorManagementMode::WideGamut ||
+                             m == ColorManagementMode::WideGamutMinimal;
         CHECK(cm.managed() == managed);
     }
     CHECK(isCameraLog(InputColorSpace::SLog3SGamut3Cine));
@@ -98,6 +100,94 @@ TEST_CASE("Colour setups are Premiere's: Direct Rec.709 first and the default, t
     CHECK(isCameraLog(InputColorSpace::AcesCct));
     CHECK_FALSE(isCameraLog(InputColorSpace::Rec2100Pq));
     CHECK_FALSE(isCameraLog(InputColorSpace::AcesCg));
+}
+
+TEST_CASE("More camera log inputs have ids and names and are camera logs (0.6)", "[model][colormanagement]") {
+    struct Expected {
+        InputColorSpace space;
+        std::string_view id;
+        std::string_view name;
+    };
+    const Expected added[] = {
+        {InputColorSpace::DLogDGamut, "d-log", "DJI D-Log / D-Gamut"},
+        {InputColorSpace::FLogFGamut, "f-log", "Fujifilm F-Log / F-Gamut"},
+        {InputColorSpace::FLog2FGamut, "f-log2", "Fujifilm F-Log2 / F-Gamut"},
+        {InputColorSpace::NLogNGamut, "n-log", "Nikon N-Log / N-Gamut"},
+        {InputColorSpace::SLog2SGamut, "s-log2", "Sony S-Log2 / S-Gamut"},
+        {InputColorSpace::SLog2SGamut3Cine, "s-log2-cine", "Sony S-Log2 / S-Gamut3.Cine"},
+        {InputColorSpace::CanonLogCinemaGamut, "canon-log", "Canon Log / Cinema Gamut"},
+        {InputColorSpace::LLogRec2020, "l-log", "Leica L-Log / Rec.2020"},
+        {InputColorSpace::RedLogFilm, "red-log-film", "RED Log Film / REDWideGamutRGB"},
+    };
+    const auto menu = allInputColorSpaces();
+    for (const Expected& e : added) {
+        INFO(e.id);
+        CHECK(toString(e.space) == e.id);
+        CHECK(inputColorSpaceFromString(e.id) == e.space);
+        CHECK(displayName(e.space) == e.name);
+        CHECK(isCameraLog(e.space));
+        CHECK(std::find(menu.begin(), menu.end(), e.space) != menu.end());
+        // Auto-detection reads it from a media's metadata.
+        VideoStreamInfo stream;
+        stream.pixelFormat = "yuv420p10le";
+        stream.logColorSpace = std::string(e.id);
+        CHECK(detectedLogSpace(stream) == e.space);
+        CHECK(autoInputColorSpace(stream) == e.space);
+    }
+    // Appended after the 0.5 spaces, so the stored values of older projects keep their meaning.
+    CHECK(static_cast<int>(InputColorSpace::DLogDGamut) == static_cast<int>(InputColorSpace::AcesCct) + 1);
+    CHECK_FALSE(inputColorSpaceFromString("d-log-m").has_value()); // DJI publishes no D-Log M equation: not a space
+    CHECK_FALSE(inputColorSpaceFromString("D-Log").has_value());   // ids are exact
+}
+
+TEST_CASE("Input colour space ids of older projects keep their meaning (0.6)", "[model][colormanagement][io]") {
+    // Every 0.5 id, its enum value and its display name, as the 0.5 files and commands used them.
+    struct Old {
+        std::string_view id;
+        InputColorSpace space;
+        int value;
+        std::string_view name;
+    };
+    const Old old[] = {
+        {"rec709", InputColorSpace::Rec709, 0, "Rec.709"},
+        {"srgb", InputColorSpace::Srgb, 1, "sRGB"},
+        {"linear-rec709", InputColorSpace::LinearRec709, 2, "Linear Rec.709"},
+        {"rec2020", InputColorSpace::Rec2020, 3, "Rec.2020 (SDR)"},
+        {"rec2100-pq", InputColorSpace::Rec2100Pq, 4, "Rec.2100 PQ"},
+        {"rec2100-hlg", InputColorSpace::Rec2100Hlg, 5, "Rec.2100 HLG"},
+        {"s-log3", InputColorSpace::SLog3SGamut3, 6, "Sony S-Log3 / S-Gamut3"},
+        {"s-log3-cine", InputColorSpace::SLog3SGamut3Cine, 7, "Sony S-Log3 / S-Gamut3.Cine"},
+        {"v-log", InputColorSpace::VLogVGamut, 8, "Panasonic V-Log / V-Gamut"},
+        {"logc3", InputColorSpace::LogC3, 9, "ARRI LogC3 (EI 800) / AWG3"},
+        {"logc4", InputColorSpace::LogC4, 10, "ARRI LogC4 / AWG4"},
+        {"canon-log3", InputColorSpace::CanonLog3, 11, "Canon Log 3 / Cinema Gamut"},
+        {"apple-log", InputColorSpace::AppleLog, 12, "Apple Log"},
+        {"acescg", InputColorSpace::AcesCg, 13, "ACEScg"},
+        {"aces2065-1", InputColorSpace::Aces2065, 14, "ACES2065-1"},
+        {"canon-log2", InputColorSpace::CanonLog2, 15, "Canon Log 2 / Cinema Gamut"},
+        {"red-log3g10", InputColorSpace::RedLog3G10, 16, "RED Log3G10 / REDWideGamutRGB"},
+        {"acescct", InputColorSpace::AcesCct, 17, "ACEScct"},
+    };
+    for (const Old& o : old) {
+        INFO(o.id);
+        CHECK(inputColorSpaceFromString(o.id) == o.space);
+        CHECK(static_cast<int>(o.space) == o.value);
+        CHECK(toString(o.space) == o.id);
+        CHECK(displayName(o.space) == o.name);
+    }
+
+    // A clip saved with an old id loads as before; one with a new id is written by id and read back.
+    Timeline tl(kPicture);
+    const ClipId one[] = {tl.clip("V1@0")};
+    auto old2 = ok(edit::setClipInputColorSpace(tl.state, tl.seq, one, InputColorSpace::CanonLog2));
+    const std::string json = jsonOf(old2.state);
+    CHECK(json.find("\"inputColorSpace\": \"canon-log2\"") != std::string::npos);
+    CHECK(roundTrip(old2.state).findSequence(tl.seq)->findClip(one[0])->clip().inputColorSpace() == InputColorSpace::CanonLog2);
+    auto fuji = ok(edit::setClipInputColorSpace(tl.state, tl.seq, one, InputColorSpace::FLog2FGamut));
+    CHECK(jsonOf(fuji.state).find("\"inputColorSpace\": \"f-log2\"") != std::string::npos);
+    const ProjectState back = roundTrip(fuji.state);
+    CHECK(back == fuji.state);
+    CHECK(back.findSequence(tl.seq)->findClip(one[0])->clip().inputColorSpace() == InputColorSpace::FLog2FGamut);
 }
 
 TEST_CASE("Auto reads the camera log the media's metadata names when log is auto-detected (0.2)", "[model][colormanagement]") {
@@ -275,4 +365,69 @@ TEST_CASE("Three-way merge of the colour management", "[model][colormanagement][
     auto chosen = mergeProjects(base, mine, theirs, {{"colorManagement", MergeChoice::Theirs}});
     REQUIRE(chosen);
     CHECK(chosen->merged.colorManagement == hlg);
+}
+
+TEST_CASE("Project files: gamut compression the output colour space and SDR Conform round-trip and are written only when set (0.6)",
+          "[model][colormanagement][io]") {
+    Timeline tl(kPicture);
+    // The names.
+    REQUIRE(allOutputColorSpaces().size() == 6);
+    for (const OutputColorSpace s : allOutputColorSpaces()) {
+        CHECK(outputColorSpaceFromString(toString(s)) == s);
+        CHECK_FALSE(displayName(s).empty());
+    }
+    CHECK(toString(OutputColorSpace::P3D65) == "p3-d65");
+    CHECK(toneMapOperatorFromString("bt2390") == ToneMapOperator::Bt2390);
+    CHECK(gamutMappingFromString("aces-rgc") == GamutMapping::AcesRgc);
+    CHECK(toString(ColorManagementMode::WideGamutMinimal) == "wide-gamut-minimal");
+    // Defaults write nothing new: a Wide Gamut project saves as it did.
+    ColorManagement wide;
+    wide.mode = ColorManagementMode::WideGamut;
+    auto plain = edit::setColorManagement(tl.state, wide);
+    REQUIRE(plain);
+    const std::string before = jsonOf(*plain);
+    CHECK(before.find("gamutCompression") == std::string::npos);
+    CHECK(before.find("outputSpace") == std::string::npos);
+    CHECK(before.find("sdrConform") == std::string::npos);
+
+    ColorManagement m;
+    m.mode = ColorManagementMode::WideGamutMinimal;
+    m.gamutCompression = true;
+    m.gamutCompressionStrength = 0.5;
+    m.outputSpace = OutputColorSpace::Rec2020;
+    m.sdrConform.enabled = true;
+    m.sdrConform.targetPeakNits = 203.0;
+    m.sdrConform.paperWhiteNits = 150.0;
+    m.sdrConform.toneMap = ToneMapOperator::Aces;
+    m.sdrConform.gamut = GamutMapping::Clip;
+    m.sdrConform.legalRange = true;
+    CHECK(m.compressesGamut());
+    auto set = edit::setColorManagement(tl.state, m);
+    REQUIRE(set);
+    const std::string json = jsonOf(*set);
+    CHECK(json.find("\"wide-gamut-minimal\"") != std::string::npos);
+    CHECK(json.find("\"outputSpace\": \"rec2020\"") != std::string::npos);
+    const ProjectState back = roundTrip(*set);
+    CHECK(back == *set);
+    CHECK(back.colorManagement == m);
+    // A Direct Rec.709 project with only an output colour space keeps it too.
+    ColorManagement direct;
+    direct.outputSpace = OutputColorSpace::P3D65;
+    CHECK_FALSE(direct.isDefault());
+    auto p3 = edit::setColorManagement(tl.state, direct);
+    REQUIRE(p3);
+    CHECK(roundTrip(*p3).colorManagement.outputSpace == OutputColorSpace::P3D65);
+    // Bad values are refused, not half-loaded.
+    std::string unknownSpace = json;
+    unknownSpace.replace(unknownSpace.find("\"rec2020\""), 9, "\"rec601\"");
+    CHECK_FALSE(io::fromJson(unknownSpace).has_value());
+    std::string badPeak = json;
+    badPeak.replace(badPeak.find("\"targetPeakNits\": 203"), 22, "\"targetPeakNits\": 9000");
+    CHECK_FALSE(io::fromJson(badPeak).has_value());
+    ColorManagement strong = m;
+    strong.gamutCompressionStrength = 1.5;
+    CHECK_FALSE(edit::setColorManagement(tl.state, strong).has_value());
+    // An edit and its undo: the change set says the colour management changed.
+    const ChangeSet changes = diff(tl.state, *set);
+    CHECK(changes.colorManagementChanged);
 }

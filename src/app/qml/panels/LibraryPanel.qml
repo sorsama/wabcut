@@ -29,6 +29,14 @@ import QtQuick.Dialogs
 // buttons around it; the same steps as Ctrl+wheel, = / - and Shift+] / Shift+[), and the Project panel's selection
 // keys (Home, End, Page Up / Down, the arrows when a toolbar button has the focus): Library.selectionMoveRequested,
 // answered by moveSelection() in the view that shows.
+// P1 round (0.6): bins drag into bins with the Library's own drag (no system drag: the bin, crumb or tab under the
+// pointer lights up and a chip follows it; Escape-free, a release elsewhere does nothing), Cut / Paste and Move to Bin
+// from the item menu (cut items dim; Escape forgets them), Link Media… and a double-click on an offline item open the
+// Relink dialog for it (Library.requestLinkMedia), Properties… (Library.requestProperties), and the footer's summary
+// line (Library.summaryText: items, selection, size, length).
+// P1 round (0.6, stream 2D): the cards' usage badge and "Unused" mark with the usage menu (Find in Timeline, #40), the
+// delete confirmation for items sequences use (#38: their clips go too, one undo step), and twirl-down bins in the list
+// view (#46, LibraryListView).
 Panel {
     id: root
 
@@ -45,6 +53,57 @@ Panel {
     /// 0.2 (P.3): show the Metadata panel / the Production panel.
     signal metadataPanelRequested()
     signal productionPanelRequested()
+
+    // P1 round (#41): a bin dragged inside the Library (LibraryCard.binDragMoved): where the pointer is, the bin under it
+    // (binDropTarget, "" = the root; binDropValid: there is one and the selection may go there).
+    property bool binDragging: false
+    property point binDragPoint: Qt.point(0, 0)
+    property string binDropTarget: ""
+    property bool binDropValid: false
+    /// The bin under the scene point: the bin bar's crumbs and tabs, else a bin card or row of the view that shows.
+    /// Null when there is none, or when it is one of the bins being dragged (a bin cannot go into itself).
+    function binAt(sceneX: real, sceneY: real): var {
+        let found = binBar.visible ? binBar.binAt(sceneX, sceneY) : null
+        if (found === null && content.visible) {
+            let key = ""
+            if (grid.visible) {
+                const p = grid.mapFromItem(null, sceneX, sceneY)
+                if (p.x >= 0 && p.y >= 0 && p.x < grid.width && p.y < grid.height)
+                    key = Library.items.keyOf(grid.indexAt(p.x + grid.contentX, p.y + grid.contentY))
+            } else if (list.visible) {
+                key = list.keyAt(sceneX, sceneY)
+            } else if (freeform.visible) {
+                key = freeform.keyAt(sceneX, sceneY)
+            }
+            const d = key !== "" ? Library.details(key) : ({})
+            if (d.kind === "bin" && d.searchBin !== true)
+                found = { key: key }
+        }
+        if (found === null || (found.key !== "" && Library.isSelected(found.key)))
+            return null
+        return found
+    }
+    function binDragMoved(scenePosition: point) {
+        root.binDragging = true
+        root.binDragPoint = root.mapFromItem(null, scenePosition.x, scenePosition.y)
+        const found = root.binAt(scenePosition.x, scenePosition.y)
+        root.binDropValid = found !== null
+        root.binDropTarget = found !== null ? found.key : ""
+    }
+    /// The release: into the bin under the pointer (one undo step), else (the Freeform view) by `dx`, `dy` there.
+    function binDragFinished(scenePosition: point, dx: real, dy: real) {
+        const found = root.binAt(scenePosition.x, scenePosition.y)
+        root.binDragging = false
+        root.binDropValid = false
+        root.binDropTarget = ""
+        // After the dragged card's handler has returned: the move re-lists the bin (the card goes away).
+        const keys = Library.selection
+        if (found !== null)
+            Qt.callLater(() => Library.moveItems(keys, found.key))
+        else if (freeform.visible && (dx !== 0 || dy !== 0))
+            Qt.callLater(() => Library.moveFreeform(keys, dx, dy))
+    }
+    readonly property string binDropShown: root.binDropValid ? root.binDropTarget : "none"
 
     title: qsTr("Library")
 
@@ -82,7 +141,10 @@ Panel {
             SequenceTabs.open(key)
         } else {
             MediaReadiness.setLibrarySelection([key])
-            if (!(Library.details(key).offline ?? true))
+            const d = Library.details(key)
+            if (d.offline === true)
+                Library.requestLinkMedia([key]) // P1 round (#43): Premiere's Link Media… on a double-click
+            else if (d.key !== undefined)
                 SourceMonitor.load(key)
         }
     }
@@ -156,6 +218,12 @@ Panel {
                                                             Qt.Key_PageUp, Qt.Key_PageDown, Qt.Key_Equal, Qt.Key_Minus,
                                                             Qt.Key_BracketLeft, Qt.Key_BracketRight, Qt.Key_BraceLeft,
                                                             Qt.Key_BraceRight].includes(event.key)
+    // P1 round (#41): Escape forgets what Cut marked.
+    Keys.onEscapePressed: event => {
+        event.accepted = Library.cutKeys.length > 0
+        if (event.accepted)
+            Library.clearCut()
+    }
 
     Connections {
         target: Library
@@ -174,6 +242,10 @@ Panel {
         function onSelectionChanged() {
             if (!root.movingSelection)
                 root.selectionLead = "" // a click or another change: the keys start over from it
+        }
+        // P1 round (#38): Delete (and Delete with Options) of items sequences use asks first.
+        function onDeleteConfirmRequested(keys, impact, withOptions) {
+            deletePopover.openFor(keys, impact, withOptions)
         }
     }
 
@@ -310,6 +382,7 @@ Panel {
         anchors.topMargin: Theme.space(1)
         visible: tabs.currentIndex !== 2 && !smartResults.visible
         height: visible ? implicitHeight : 0
+        dropTarget: root.binDropShown
     }
 
     // Text: Essential Graphics (New Title and the title style, M5d).
@@ -415,6 +488,10 @@ Panel {
                 required property string derivedFrom
                 required property bool searchBin
                 required property var marks // UX rework (stream T): the In/Out band
+                required property bool cut // P1 round (#41)
+                required property int uses // P1 round (#40): the usage badge
+                required property bool unused
+                required property int masterEffects // 0.6 (#71): the fx badge
                 width: grid.cellWidth
                 height: grid.cellHeight
 
@@ -442,8 +519,16 @@ Panel {
                     derivedFrom: cell.derivedFrom
                     searchBin: cell.searchBin
                     marks: cell.marks
+                    cut: cell.cut
+                    uses: cell.uses
+                    unused: cell.unused
+                    masterEffects: cell.masterEffects
+                    dropHighlight: root.binDropShown === cell.key
                     onActivated: root.activate(cell.key, cell.kind)
                     onMenuRequested: point => root.showMenu(cell.key, cell.kind, card, point, card.scrubFraction)
+                    onUsageRequested: position => usageMenu.openFor(cell.key, card, position.x, position.y)
+                    onBinDragMoved: scenePosition => root.binDragMoved(scenePosition)
+                    onBinDragFinished: scenePosition => root.binDragFinished(scenePosition, 0, 0)
                 }
                 // Inline rename under the thumbnail.
                 Loader {
@@ -488,18 +573,25 @@ Panel {
             id: list
             anchors.fill: parent
             visible: Library.view === "list"
+            dropTarget: root.binDropShown
             onStepRequested: (delta, extend) => list.showRow(root.stepSelection(delta, extend))
             onActivated: (key, kind) => root.activate(key, kind)
             onMenuRequested: (key, target, position) => root.showMenu(key, Library.details(key).kind ?? "", target, position, -1)
+            onBinDragMoved: scenePosition => root.binDragMoved(scenePosition)
+            onBinDragFinished: scenePosition => root.binDragFinished(scenePosition, 0, 0)
         }
 
         LibraryFreeformView {
             id: freeform
             anchors.fill: parent
             visible: Library.view === "freeform" && Library.freeformAvailable
+            dropTarget: root.binDropShown
             onActivated: (key, kind) => root.activate(key, kind)
             onMenuRequested: (key, kind, target, position, fraction) => root.showMenu(key, kind, target, position, fraction)
             onSaveLayoutRequested: layoutPopover.open()
+            onUsageRequested: (key, target, position) => usageMenu.openFor(key, target, position.x, position.y)
+            onBinDragMoved: scenePosition => root.binDragMoved(scenePosition)
+            onBinDragFinished: (scenePosition, dx, dy) => root.binDragFinished(scenePosition, dx, dy)
         }
     }
 
@@ -518,11 +610,33 @@ Panel {
                                          : SmartSearch.results
     }
 
+    // P1 round (#45): "48 items · 3 selected · 12.4 GB · 1:22:10" at the left of the row under the views, in every view;
+    // it elides before the proxy pill.
+    Text {
+        id: summary
+        objectName: "librarySummary"
+        anchors.left: parent.left
+        anchors.right: proxyPill.visible ? proxyPill.left : zoomRow.visible ? zoomRow.left : parent.right
+        anchors.rightMargin: Theme.space(2)
+        anchors.bottom: parent.bottom
+        height: Theme.controlHeightSmall
+        visible: tabs.currentIndex !== 2 && !smartResults.visible
+        verticalAlignment: Text.AlignVCenter
+        text: Library.summaryText
+        elide: Text.ElideRight
+        color: Theme.textTertiary
+        font.family: Theme.fontSans
+        font.pixelSize: Theme.textXs
+        Accessible.role: Accessible.StaticText
+        Accessible.name: text
+    }
+
     // "Proxies 3/12": proxies the project has / wants, under the grid; a click opens Media & cache settings.
     StatusPill {
         id: proxyPill
         objectName: "proxyStatusPill"
-        anchors.left: parent.left
+        anchors.right: zoomRow.visible ? zoomRow.left : parent.right
+        anchors.rightMargin: zoomRow.visible ? Theme.space(2) : 0
         anchors.bottom: parent.bottom
         // Never under the card-size buttons (a very narrow Library cuts the pill's text at its edge).
         width: Math.min(implicitWidth, parent.width - (zoomRow.visible ? zoomRow.width + Theme.space(2) : 0))
@@ -613,9 +727,45 @@ Panel {
             onClicked: Library.thumbnailScale += Library.thumbnailScaleStep
         }
     }
-    // The row under the views (the proxy pill, the card size): the views end above it.
+    // The row under the views (the summary, the proxy pill, the card size): the views end above it.
     readonly property real footerHeight: Math.max(proxyPill.visible ? proxyPill.height : 0,
-                                                  zoomRow.visible ? zoomRow.height : 0)
+                                                  zoomRow.visible ? zoomRow.height : 0,
+                                                  summary.visible ? summary.height : 0)
+
+    // P1 round (#41): the chip that follows a bin dragged inside the Library.
+    Rectangle {
+        objectName: "libraryBinDragChip"
+        visible: root.binDragging
+        x: root.binDragPoint.x + Theme.space(3)
+        y: root.binDragPoint.y + Theme.space(3)
+        z: 1000
+        width: chipRow.implicitWidth + Theme.space(4)
+        height: chipRow.implicitHeight + Theme.space(2)
+        radius: height / 2
+        color: root.binDropValid ? Theme.accentFill : Theme.raised
+        border.width: Theme.hairline
+        border.color: Theme.borderStrong
+        Row {
+            id: chipRow
+            anchors.centerIn: parent
+            spacing: Theme.space(1)
+            Icon {
+                anchors.verticalCenter: parent.verticalCenter
+                name: "folder"
+                size: Theme.iconXs
+                color: root.binDropValid ? Theme.accentOnFill : Theme.textSecondary
+            }
+            Text {
+                anchors.verticalCenter: parent.verticalCenter
+                //: The chip following bins dragged in the Library, e.g. "Move 2 items"
+                text: qsTr("Move %n item(s)", "", Library.selectionCount)
+                color: root.binDropValid ? Theme.accentOnFill : Theme.textPrimary
+                font.family: Theme.fontSans
+                font.pixelSize: Theme.textXs
+                font.weight: Font.DemiBold
+            }
+        }
+    }
 
     LibraryItemMenu {
         id: itemMenu
@@ -626,6 +776,8 @@ Panel {
         onSubclipRequested: key => subclipPopover.openMakeOf(key, searchRow)
         onEditSubclipRequested: key => subclipPopover.openEdit(key, searchRow)
         onOpenRequested: (key, kind) => root.activate(key, kind)
+        onLinkMediaRequested: keys => Library.requestLinkMedia(keys)
+        onPropertiesRequested: key => Library.requestProperties(key)
         onRevealSourceRequested: key => {
             const shown = Production.revealSource(key)
             if (shown.ok && !shown.switched)
@@ -647,6 +799,123 @@ Panel {
 
     SearchBinPopover {
         id: searchBinPopover
+    }
+
+    // P1 round (#40): the usage badge's list of places (Find in Timeline).
+    UsageMenu {
+        id: usageMenu
+    }
+
+    // P1 round (#38): deleting items whose media (or nested sequence) sequences use: "Hero.mp4 is used by 14 clips in 3
+    // sequences. Delete it and remove those clips?" - Delete takes the items and their clips (gaps stay) in one undo
+    // step. Delete with Options (Ctrl/Cmd+Delete) shows it every time, with the clips' removal as a switch: off, only the
+    // items no sequence uses go and the used ones stay (fix round 1, ARGON-12: never a dead-end switch).
+    Popover {
+        id: deletePopover
+        objectName: "libraryDeletePopover"
+        parent: searchRow
+        property var keys: []
+        property var impact: ({})
+        property bool withOptions: false
+        readonly property int clips: deletePopover.impact.clips ?? 0
+        readonly property bool removeClips: deletePopover.clips > 0 && (!deletePopover.withOptions || removeClipsToggle.checked)
+        /// Delete with Options with the switch off: the used items stay; `unusedKeys` (deleteImpact) go.
+        readonly property bool keepUsed: deletePopover.withOptions && deletePopover.clips > 0 && !removeClipsToggle.checked
+        readonly property var unusedKeys: deletePopover.impact.unusedKeys ?? []
+        /// "“Main edit”" for one sequence, else "3 sequences"; "1 clip", "14 clips" (whole words: read at a glance).
+        readonly property string sequencesText: (deletePopover.impact.sequences ?? 0) === 1
+                                                ? qsTr("“%1”").arg((deletePopover.impact.sequenceNames ?? [""])[0])
+                                                : qsTr("%1 sequences").arg(deletePopover.impact.sequences ?? 0)
+        readonly property string clipsText: deletePopover.clips === 1 ? qsTr("1 clip") : qsTr("%1 clips").arg(deletePopover.clips)
+        function openFor(keys: var, impact: var, withOptions: bool) {
+            deletePopover.keys = keys
+            deletePopover.impact = impact
+            deletePopover.withOptions = withOptions
+            removeClipsToggle.checked = true
+            deletePopover.open()
+            deleteConfirm.forceActiveFocus()
+        }
+        title: deletePopover.withOptions ? qsTr("Delete with Options") : qsTr("Delete items in use?")
+        Column {
+            width: Theme.space(84)
+            spacing: Theme.space(2)
+            Text {
+                objectName: "libraryDeleteText"
+                width: parent.width
+                wrapMode: Text.WordWrap
+                text: deletePopover.clips === 0
+                      ? ((deletePopover.impact.items ?? 0) === 1
+                         ? qsTr("Delete this item from the project? No sequence uses it. The files stay on disk, and Undo brings it back.")
+                         : qsTr("Delete these %1 items from the project? No sequence uses them. The files stay on disk, and Undo brings them back.").arg(deletePopover.impact.items ?? 0))
+                      : (deletePopover.impact.usedItems ?? 0) <= 1
+                        //: "“Hero.mp4” is used by 14 clips in 3 sequences. ..."
+                        ? qsTr("“%1” is used by %2 in %3. Delete it and remove those clips? The gaps stay, the files stay on disk, and Undo brings everything back.")
+                              .arg(deletePopover.impact.firstName ?? "").arg(deletePopover.clipsText).arg(deletePopover.sequencesText)
+                        //: "3 of these items are used by 14 clips in 2 sequences. ..."
+                        : qsTr("%1 of these items are used by %2 in %3. Delete them and remove those clips? The gaps stay, the files stay on disk, and Undo brings everything back.")
+                              .arg(deletePopover.impact.usedItems ?? 0).arg(deletePopover.clipsText).arg(deletePopover.sequencesText)
+                color: Theme.textSecondary
+                font.family: Theme.fontSans
+                font.pixelSize: Theme.textSm
+            }
+            // 0.6 (card #74): an audition that keeps other takes loses only the takes that play what goes.
+            Text {
+                objectName: "libraryDeleteTakesText"
+                visible: (deletePopover.impact.takes ?? 0) > 0
+                width: parent.width
+                wrapMode: Text.WordWrap
+                text: (deletePopover.impact.takes ?? 0) === 1
+                      ? qsTr("Of those, an audition loses only 1 take and keeps its other takes.")
+                      : qsTr("Of those, auditions lose only %1 takes and keep their other takes.").arg(deletePopover.impact.takes ?? 0)
+                color: Theme.textSecondary
+                font.family: Theme.fontSans
+                font.pixelSize: Theme.textSm
+            }
+            Toggle {
+                id: removeClipsToggle
+                objectName: "libraryDeleteRemoveClips"
+                visible: deletePopover.withOptions && deletePopover.clips > 0
+                text: qsTr("Remove their clips from sequences")
+                checked: true
+            }
+            Text {
+                objectName: "libraryDeleteKeepUsedText"
+                visible: deletePopover.keepUsed
+                width: parent.width
+                wrapMode: Text.WordWrap
+                text: deletePopover.unusedKeys.length === 0
+                      ? qsTr("Every item here is used by a sequence: nothing would be deleted.")
+                      : qsTr("Only the items no sequence uses are deleted (%1 of %2); the used ones stay in the project.")
+                            .arg(deletePopover.unusedKeys.length).arg(deletePopover.keys.length)
+                color: Theme.textTertiary
+                font.family: Theme.fontSans
+                font.pixelSize: Theme.textXs
+            }
+            Row {
+                spacing: Theme.space(2)
+                PillButton {
+                    id: deleteConfirm
+                    objectName: "libraryDeleteConfirm"
+                    variant: "primary"
+                    text: deletePopover.removeClips ? qsTr("Delete and Remove Clips")
+                          : deletePopover.keepUsed ? qsTr("Delete Unused Items") : qsTr("Delete")
+                    enabled: deletePopover.clips === 0 || deletePopover.removeClips || deletePopover.unusedKeys.length > 0
+                    disabledReason: qsTr("Every item here is used by a sequence: turn on Remove their clips to delete them")
+                    onClicked: {
+                        const keys = deletePopover.keepUsed ? deletePopover.unusedKeys : deletePopover.keys
+                        const removeClips = deletePopover.removeClips
+                        deletePopover.close()
+                        Library.deleteItems(keys, removeClips)
+                    }
+                }
+                PillButton {
+                    objectName: "libraryDeleteCancel"
+                    variant: "ghost"
+                    text: qsTr("Cancel")
+                    onClicked: deletePopover.close()
+                }
+            }
+        }
     }
 
     FileDialog {
