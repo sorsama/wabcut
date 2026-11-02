@@ -683,7 +683,7 @@ class StallingSource final : public IVideoFrameSource {
 public:
     StallingSource(std::unique_ptr<IVideoFrameSource> inner, std::int64_t stallAt)
         : m_inner(std::move(inner)), m_stallAt(stallAt) {}
-    ~StallingSource() override { StallingSource::stop(); } // non-virtual: the class is final
+    ~StallingSource() override { shutdown(); }
     std::string description() const override { return "stalling"; }
     int maxInFlight() const override { return m_inner->maxInFlight(); }
     std::expected<void, Error> request(std::int64_t frameIndex) override {
@@ -697,7 +697,9 @@ public:
         }
         return m_inner->next();
     }
-    void stop() override {
+    void stop() override { shutdown(); }
+    /// stop()'s body, not virtual, so the destructor can call it.
+    void shutdown() {
         {
             std::lock_guard lock(m_mutex);
             m_stopped = true;

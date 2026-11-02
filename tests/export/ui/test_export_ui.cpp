@@ -125,7 +125,7 @@ class GatedSource final : public ex::IVideoFrameSource {
 public:
     GatedSource(std::unique_ptr<ex::IVideoFrameSource> inner, std::int64_t gate, std::shared_ptr<Gate> state)
         : m_inner(std::move(inner)), m_gate(gate), m_state(std::move(state)) {}
-    ~GatedSource() override { GatedSource::stop(); } // non-virtual: the class is final
+    ~GatedSource() override { shutdown(); }
     std::string description() const override { return m_inner->description(); }
     int maxInFlight() const override { return m_inner->maxInFlight(); }
     std::expected<void, Error> request(std::int64_t frameIndex) override {
@@ -140,7 +140,9 @@ public:
         }
         return m_inner->next();
     }
-    void stop() override {
+    void stop() override { shutdown(); }
+    /// stop()'s body, not virtual, so the destructor can call it.
+    void shutdown() {
         {
             std::lock_guard lock(m_state->mutex);
             m_stopped = true;

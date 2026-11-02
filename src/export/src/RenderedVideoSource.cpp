@@ -108,7 +108,7 @@ public:
         : m_project(std::move(project)), m_sequence(std::move(sequence)), m_format(format),
           m_options(std::move(options)), m_maxInFlight(std::clamp(m_options.maxInFlight, 1, 16)) {}
 
-    ~RenderedVideoSource() override { RenderedVideoSource::stop(); } // non-virtual: the class is final
+    ~RenderedVideoSource() override { shutdown(); }
 
     /// Starts the threads; every render thread has created its QRhi before this returns.
     std::expected<void, Error> start() {
@@ -179,7 +179,9 @@ public:
         return std::move(node.mapped());
     }
 
-    void stop() override {
+    void stop() override { shutdown(); }
+    /// stop()'s body, not virtual, so the destructor can call it.
+    void shutdown() {
         // Callable from any thread, also concurrently (a cancel and the job's own teardown): one caller
         // joins, the others wait for it.
         std::lock_guard stopping(m_stopMutex);
