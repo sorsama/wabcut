@@ -94,7 +94,7 @@ public:
         }
     }
 
-    ~SyntheticVideoSource() override { stop(); }
+    ~SyntheticVideoSource() override { SyntheticVideoSource::stop(); } // non-virtual: the class is final
 
     std::string description() const override { return "synthetic 3-layer test pattern"; }
     int maxInFlight() const override { return m_maxInFlight; }

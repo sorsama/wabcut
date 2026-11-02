@@ -108,7 +108,7 @@ public:
         : m_project(std::move(project)), m_sequence(std::move(sequence)), m_format(format),
           m_options(std::move(options)), m_maxInFlight(std::clamp(m_options.maxInFlight, 1, 16)) {}
 
-    ~RenderedVideoSource() override { stop(); }
+    ~RenderedVideoSource() override { RenderedVideoSource::stop(); } // non-virtual: the class is final
 
     /// Starts the threads; every render thread has created its QRhi before this returns.
     std::expected<void, Error> start() {

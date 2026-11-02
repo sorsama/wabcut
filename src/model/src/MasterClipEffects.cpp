@@ -101,7 +101,7 @@ ProjectState flattenMasterEffects(const ProjectState& state, std::size_t* clips)
             return false;
         }
         Audition takes = *audition;
-        bool any = false;
+        bool foldedAny = false;
         for (AuditionTake& take : takes.others) {
             EffectStack folded = takePlaysMaster(take) ? masterEffectsOf(state, take.media, kind) : EffectStack{};
             if (folded.empty()) {
@@ -111,14 +111,14 @@ ProjectState flattenMasterEffects(const ProjectState& state, std::size_t* clips)
             folded.insert(folded.end(), content.effects.begin(), content.effects.end());
             content.effects = std::move(folded);
             take.content = std::make_shared<const ClipContent>(std::move(content));
-            any = true;
+            foldedAny = true;
         }
-        if (any) {
+        if (foldedAny) {
             ClipContent content = clip.content();
             content.audition = std::make_shared<const Audition>(std::move(takes));
             clip.setContent(std::move(content));
         }
-        return any;
+        return foldedAny;
     };
     const auto foldTracks = [&](std::vector<TrackPtr>& tracks, EffectKind kind) {
         for (TrackPtr& trackPtr : tracks) {

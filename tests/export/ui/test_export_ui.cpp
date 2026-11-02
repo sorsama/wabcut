@@ -125,7 +125,7 @@ class GatedSource final : public ex::IVideoFrameSource {
 public:
     GatedSource(std::unique_ptr<ex::IVideoFrameSource> inner, std::int64_t gate, std::shared_ptr<Gate> state)
         : m_inner(std::move(inner)), m_gate(gate), m_state(std::move(state)) {}
-    ~GatedSource() override { stop(); }
+    ~GatedSource() override { GatedSource::stop(); } // non-virtual: the class is final
     std::string description() const override { return m_inner->description(); }
     int maxInFlight() const override { return m_inner->maxInFlight(); }
     std::expected<void, Error> request(std::int64_t frameIndex) override {

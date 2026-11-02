@@ -683,7 +683,7 @@ class StallingSource final : public IVideoFrameSource {
 public:
     StallingSource(std::unique_ptr<IVideoFrameSource> inner, std::int64_t stallAt)
         : m_inner(std::move(inner)), m_stallAt(stallAt) {}
-    ~StallingSource() override { stop(); }
+    ~StallingSource() override { StallingSource::stop(); } // non-virtual: the class is final
     std::string description() const override { return "stalling"; }
     int maxInFlight() const override { return m_inner->maxInFlight(); }
     std::expected<void, Error> request(std::int64_t frameIndex) override {

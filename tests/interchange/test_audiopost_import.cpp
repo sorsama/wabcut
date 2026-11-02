@@ -145,8 +145,6 @@ std::string rationalBytes(std::int32_t num, std::int32_t den) {
     return out;
 }
 
-std::string int32Bytes(std::int32_t v) { return rationalBytes(v, 0).substr(0, 4); }
-
 /// Builds AAF files the way other applications lay them out.
 struct AafWriter {
     aaf::File file;
