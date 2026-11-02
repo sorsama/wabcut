@@ -9,6 +9,16 @@ import QtQuick.Effects
 // someone else took it meanwhile: a field the user clicked into, or a dialog the popover opened (review P1-8).
 Popup {
     id: control
+    // P1 #61: the popup's own item (UI Automation's dialog window, which NVDA announces when the focus enters) takes
+    // the name its content has; Popup itself takes no Accessible.
+    readonly property string accessibleTitle: control.contentItem ? control.contentItem.Accessible.name : ""
+    function nameDialogElement() {
+        const shell = control.contentItem ? control.contentItem.parent : null
+        if (shell)
+            shell.Accessible.name = control.accessibleTitle
+    }
+    onAccessibleTitleChanged: control.nameDialogElement()
+    Component.onCompleted: control.nameDialogElement()
 
     property string title: ""
     default property alias bodyData: body.data

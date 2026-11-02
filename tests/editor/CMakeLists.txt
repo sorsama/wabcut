@@ -4,6 +4,7 @@ find_package(ZLIB REQUIRED) # ../media/PsdWriter.h
 wabcut_add_test_suite(editor
     SOURCES
         test_activity.cpp
+        test_audiopost_import.cpp # 0.6: AAF / OMF import (card #68)
         test_autosave_job.cpp
         test_camera_cards.cpp # 0.2: the Media Browser, spanned clips, layered files
         test_capsule.cpp

@@ -171,6 +171,18 @@ MenuBarMenu {
             available: ProjectController.sequenceNames.length > 0
             onTriggered: root.request("exportTimeline", null)
         }
+        // P1 (#25, 2C): every source the sequence uses, with record and source timecodes (clearances, credits).
+        BarMenuItem {
+            objectName: "mediaUsageReportMenuItem"
+            text: qsTr("Media Usage Report…")
+            available: ProjectController.sequenceNames.length > 0
+            onTriggered: root.request("mediaUsageReport", null)
+        }
+    }
+    // 0.6 (1D, #39): Premiere's File > Get Properties for > Selection (Ctrl/Cmd+Shift+H): the Properties dialog.
+    BarMenuItem {
+        text: qsTr("Get Properties for Selection…")
+        command: "file.getProperties"
     }
     ContextMenuSeparator {}
     BarMenuItem {

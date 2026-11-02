@@ -1,6 +1,7 @@
 // Small lifecycle helper; no LLM and no external network. Owns the requested loopback port until terminated.
 #include <wabcut/platform/DllSearch.h>
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <string>
@@ -14,6 +15,14 @@
 #endif
 int main(int argc, char** argv) {
     wabcut::platform::hardenDllSearch(); // first: no DLL from the current directory or PATH (S5-P2-5)
+    // 0.6: a hybrid-graphics machine as llama.cpp's Vulkan build lists it, the integrated GPU first (not DXGI's order).
+    if (argc == 2 && std::string(argv[1]) == "--list-devices") {
+        std::fputs("Available devices:\n"
+                   "  Vulkan0: Intel(R) UHD Graphics 770 (16270 MiB, 15502 MiB free)\n"
+                   "  Vulkan1: NVIDIA GeForce RTX 3060 (12329 MiB, 11551 MiB free)\n",
+                   stdout);
+        return 0;
+    }
     int port = 0; std::string mode;
     for (int i = 1; i + 1 < argc; i += 2) {
         const std::string name = argv[i];

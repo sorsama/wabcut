@@ -2,6 +2,7 @@
 
 #include <wabcut/model/EditingOps.h>
 
+#include <wabcut/model/Auditions.h>
 #include <wabcut/model/ChangeSet.h>
 #include <wabcut/model/FinishingOps.h>
 
@@ -194,6 +195,19 @@ std::expected<ProjectState, Error> replaceFootage(const ProjectState& state, Med
         std::optional<std::string> problem;
         s->forEachTrack([&](const Track& t) {
             for (const Clip& c : t.clips) {
+                // 0.6 (card #74): an audition's other takes must find their streams too (they may be short: no bounds).
+                const Audition* audition = c.audition();
+                for (std::size_t k = 0; audition && k < audition->others.size(); ++k) {
+                    const AuditionTake& take = audition->others[k];
+                    const MediaItem* item = take.media.isValid() ? next.findMedia(take.media) : nullptr;
+                    if (!problem && item && (item->id == media || (item->subclip && item->subclip->master == media)) &&
+                        !item->hasStream(take.stream)) {
+                        problem = "the new file has no " +
+                                  std::string(take.stream.kind == StreamKind::Video ? "video" : "audio") + " stream " +
+                                  std::to_string(take.stream.index + 1) + " for take '" + take.name() + "' of " +
+                                  clipLabel(c) + " in '" + s->name + "'";
+                    }
+                }
                 if (problem || !c.media.isValid()) {
                     continue;
                 }

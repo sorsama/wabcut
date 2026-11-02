@@ -48,6 +48,8 @@ ContextMenu {
             onTriggered: MediaReadiness.useProxies = !MediaReadiness.useProxies
         }
     }
+    // P1 (#16): Premiere's wrench has Paused Resolution under Playback Resolution.
+    PausedResolutionMenu { namePrefix: "program_" }
     ContextMenuSeparator {}
     ContextMenuItem {
         objectName: "showRulersItem"

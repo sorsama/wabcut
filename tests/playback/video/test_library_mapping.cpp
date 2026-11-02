@@ -555,3 +555,128 @@ TEST_CASE("Animations: Fold keeps its hinge edge in place while the clip swings 
         }
     }
 }
+
+TEST_CASE("Effect library: the 0.6 generators take keyed parameters and the curve time", "[playback][evaluate][library]") {
+    // Fractal Noise's Evolution and Glow's Radius keyframed: the compositor gets their values at the frame; Lightning
+    // and Scribble animate by themselves (Speed, Wiggles/Second), so they get the curve time too.
+    ProjectState s;
+    auto media = fakeVideo(s, "game");
+    s.media = {media};
+    Clip clip = clipAt(s, media->id, 0, 120);
+    clip.setEffects({effectOf(s, "wabcut.generate.fractalNoise",
+                              {{"evolution", ParamValue(Curve{{Keyframe{Ticks{}, 0.0}, Keyframe{Ticks::fromSeconds(1), 360.0}}})},
+                               {"seed", ParamValue(7.0)}}),
+                     effectOf(s, "wabcut.stylize.glow",
+                              {{"radius", ParamValue(Curve{{Keyframe{Ticks{}, 10.0}, Keyframe{Ticks::fromSeconds(2), 50.0}}})}}),
+                     effectOf(s, "wabcut.generate.lightning", {{"segments", ParamValue(12.0)}}),
+                     effectOf(s, "wabcut.generate.scribble"),
+                     effectOf(s, "wabcut.generate.paintBucket", {{"tolerance", ParamValue(40.0)}})});
+    const Sequence seq = sequenceOf(s, {trackWith(s, {clip})});
+    std::vector<LayerSpec> layers;
+    evaluateVideoLayers(s, seq, frame(30), layers); // 0.5 s
+    REQUIRE(layers.size() == 1);
+    const auto& fx = layers[0].effects;
+    REQUIRE(fx.size() == 5);
+    CHECK(fx[0].op == static_cast<std::uint16_t>(render::LibraryOp::FractalNoise));
+    CHECK(fx[0].params[14] == Approx(180.0)); // Evolution half way
+    CHECK(fx[0].params[17] == Approx(7.0));
+    CHECK(fx[0].params[render::kLibraryTimeParam] == 0.0); // not a self-animating effect
+    CHECK(fx[1].op == static_cast<std::uint16_t>(render::LibraryOp::Glow));
+    CHECK(fx[1].params[2] == Approx(20.0));
+    CHECK(fx[2].op == static_cast<std::uint16_t>(render::LibraryOp::Lightning));
+    CHECK(fx[2].params[4] == Approx(12.0));
+    CHECK(fx[2].params[render::kLibraryTimeParam] == Approx(0.5));
+    CHECK(fx[3].op == static_cast<std::uint16_t>(render::LibraryOp::Scribble));
+    CHECK(fx[3].params[render::kLibraryTimeParam] == Approx(0.5));
+    CHECK(fx[4].op == static_cast<std::uint16_t>(render::LibraryOp::PaintBucket));
+    CHECK(fx[4].params[3] == Approx(40.0));
+    evaluateVideoLayers(s, seq, frame(90), layers); // 1.5 s
+    CHECK(layers[0].effects[0].params[14] == Approx(360.0));
+    CHECK(layers[0].effects[1].params[2] == Approx(40.0));
+    CHECK(layers[0].effects[2].params[render::kLibraryTimeParam] == Approx(1.5));
+}
+
+TEST_CASE("Master Clip Effects: every clip of a source plays them first and a clip can turn them off (0.6)",
+          "[playback][evaluate][library][master]") {
+    // Card #71: the media item's Glow (keyed in media time) plays on each of its clips before the clip's own Tint, in
+    // preview and export alike (one evaluator); a clip with the master clip effects off plays its own stack only.
+    ProjectState s;
+    auto media = fakeVideo(s, "game");
+    media->masterEffects = {effectOf(
+        s, "wabcut.stylize.glow", {{"radius", ParamValue(Curve{{Keyframe{Ticks{}, 10.0}, Keyframe{Ticks::fromSeconds(2), 50.0}}})}})};
+    s.media = {media};
+    Clip first = clipAt(s, media->id, 0, 60);
+    Clip second = clipAt(s, media->id, 60, 60, 60);
+    second.setEffects({effectOf(s, "wabcut.color.tint")});
+    Clip third = clipAt(s, media->id, 120, 60);
+    ClipContent content = third.content();
+    content.masterEffectsOff = true;
+    third.setContent(std::move(content));
+    const Sequence seq = sequenceOf(s, {trackWith(s, {first, second, third})});
+    std::vector<LayerSpec> layers;
+
+    evaluateVideoLayers(s, seq, frame(30), layers); // the first clip at media time 0.5 s
+    REQUIRE(layers.size() == 1);
+    REQUIRE(layers[0].effects.size() == 1);
+    CHECK(layers[0].effects[0].op == static_cast<std::uint16_t>(render::LibraryOp::Glow));
+    CHECK(layers[0].effects[0].params[2] == Approx(20.0));
+
+    evaluateVideoLayers(s, seq, frame(90), layers); // the second clip at media time 1.5 s: the master's Glow, then Tint
+    REQUIRE(layers.size() == 1);
+    REQUIRE(layers[0].effects.size() == 2);
+    CHECK(layers[0].effects[0].op == static_cast<std::uint16_t>(render::LibraryOp::Glow));
+    CHECK(layers[0].effects[0].params[2] == Approx(40.0));
+    CHECK(layers[0].effects[1].op == static_cast<std::uint16_t>(render::LibraryOp::Tint));
+
+    evaluateVideoLayers(s, seq, frame(150), layers); // the third clip: off
+    REQUIRE(layers.size() == 1);
+    CHECK(layers[0].effects.empty());
+}
+
+TEST_CASE("Master Clip Effects: Posterize Time and the stabilizers on the master clip play like a clip's (fix F1A)",
+          "[playback][evaluate][library][master]") {
+    // ARGON-06: the evaluator plays Posterize Time, Warp Stabilizer and Rolling Shutter Repair outside the effect stack;
+    // on the master clip they were skipped (every instance played at full rate and unstabilized).
+    ProjectState s;
+    auto media = fakeVideo(s, "game");
+    media->masterEffects = {effectOf(s, "wabcut.time.posterizeTime", {{"frameRate", ParamValue(12.0)}})};
+    s.media = {media};
+    const Clip clip = clipAt(s, media->id, 30, 120, 100);
+    Clip off = clipAt(s, media->id, 150, 60, 300);
+    ClipContent content = off.content();
+    content.masterEffectsOff = true;
+    off.setContent(std::move(content));
+    const Sequence seq = sequenceOf(s, {trackWith(s, {clip, off})});
+    std::vector<LayerSpec> layers;
+    // 12 fps in a 60 fps sequence: each picture held for 5 frames from the clip's start (frame 30), as on the clip.
+    const std::vector<std::pair<std::int64_t, std::int64_t>> held = {{30, 100}, {34, 100}, {35, 105}, {39, 105}};
+    for (const auto& [at, source] : held) {
+        INFO("frame " << at);
+        evaluateVideoLayers(s, seq, frame(at), layers);
+        REQUIRE(layers.size() == 1);
+        CHECK(layers[0].sourceTime == frame(source));
+    }
+    // The clip that turned them off plays every frame.
+    evaluateVideoLayers(s, seq, frame(154), layers);
+    REQUIRE(layers.size() == 1);
+    CHECK(layers[0].sourceTime == frame(304));
+
+    // Warp Stabilizer on the master clip: the stabilizer group (the warped frame inside a group), 19.2 px of 1920.
+    media->masterEffects = {effectOf(s, "wabcut.stabilize.warp",
+                                     {{"method", ParamValue(1.0)},
+                                      {"transform.x", ParamValue(19.2)},
+                                      {"framing", ParamValue(1.0)},
+                                      {"crop.left", ParamValue(0.02)}})};
+    evaluateVideoLayers(s, seq, frame(60), layers);
+    REQUIRE(layers.size() == 2);
+    CHECK(layers[0].nested);
+    CHECK(layers[1].warp[2] == Approx(0.01));
+    evaluateVideoLayers(s, seq, frame(160), layers); // off on this clip: the plain layer
+    CHECK(layers.size() == 1);
+
+    // Rolling Shutter Repair the same.
+    media->masterEffects = {effectOf(s, "wabcut.stabilize.rollingShutter", {{"motion.x", ParamValue(19.2)}})};
+    evaluateVideoLayers(s, seq, frame(60), layers);
+    REQUIRE(layers.size() == 2);
+    CHECK(layers[1].warp[1] == Approx(-0.005));
+}

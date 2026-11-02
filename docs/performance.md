@@ -219,6 +219,42 @@ Hotspots found in other owners' code, routed (the sampler's profile of the timel
 - Export decodes 4K HEVC in software; NVENC 1080p export runs at 90 fps, short of its 120 fps budget, with the encoder
   far from busy.
 
+## Memory after closing a project
+
+Closing a project (File > New, Open, Close, switching to another) frees it, and since 0.6 the app also gives the
+memory back to the system; what stays is reused by the next project. Measured by `memory` (the 1-hour project) and
+`longvod.memory` (the A.10 recordings). Both now also record where the private bytes are: the process heaps'
+allocated and committed bytes (`heaps` in each point), so "kept" splits into blocks still held, freed pages a heap
+kept, and memory outside the heaps.
+
+What closing does (fix round 2):
+- The closed project's snapshots are freed on SnapshotReleaser's thread, as before. ProjectController no longer keeps
+  the previous project in its last change (`TimelineChange::before`), which held the whole closed project until the
+  next edit.
+- 250 ms after the last reset, the QML engine collects its garbage (the closed project's models) and the releaser,
+  after freeing what is queued, gives the heaps' free pages back (`SnapshotReleaser::trimFreedMemory`: Windows
+  HeapOptimizeResources and `_heapmin`, glibc `malloc_trim`, macOS `malloc_zone_pressure_relief`).
+- The program monitor, showing a picture without media (black once the project closed), draws a few more frames until
+  its compositor holds no media frame and no view of a decoder surface; a frame without media drops the views the GPU
+  is done with. Each view kept its decoder's whole surface array alive, for up to 240 frames that an idle monitor may
+  never draw.
+
+What stays, on purpose (bounded, process-wide):
+- **Freed heap pages that still hold a live block.** A heap gives back only wholly free pages; a few blocks allocated
+  while the project was open (by the shell, QML, caches) pin the pages around them. This is most of what the 1-hour
+  project leaves: +31 MB committed over the empty shell, with 1 MB more allocated. Separating the project's nodes from
+  everything else (a heap of their own) is the way to remove it; not done in 0.6.
+- **The GPU decode path's first use** of a codec and size: media's process-wide hardware device contexts (created once,
+  never destroyed: tearing GPU devices down races driver threads) and the driver's own allocations, reused by the next
+  pipeline: about 110-120 MB of private memory for 1440p H.264 and 230 MB for 1080p240 HEVC on the test machine.
+- **The scene graph's caches** of the windows (glyph and texture atlases, batch buffers): the 1-hour project's
+  editing grows the timeline's GPU memory by about 35 MB, which closing keeps.
+- **The monitor's texture pool** (FrameImporter, at most 48 frames, for CPU-decoded frames): empty after zero-copy
+  playback; sets are reused by frames of the same size.
+
+Current numbers (fix round 2, 2 November 2026): the 1-hour project keeps **48.5-58 MB** after closing over two passes
+(budget < 50 MB; D6: 135 MB); the long recordings keep nothing against a warmed-up start (-15 / -196 MB).
+
 ## Budgets
 
 `tests/perf/budgets.json` holds the product targets, each with its reason. The main ones:
@@ -239,6 +275,149 @@ Hotspots found in other owners' code, routed (the sampler's profile of the timel
 | H.264 1080p export on NVENC | ≥ 120 fps (4x realtime at 30 fps) |
 | Shot detection | ≥ 4x realtime |
 | Search query (p95) | < 50 ms |
+
+## Measured in 0.6 (2 November 2026)
+
+A fresh run of the same suite on the 0.6 tree, to check that the P.1 numbers above still hold and to fill in the
+long-file table the 0.1 freeze left blank. Every number below is one pass of the benchmark on the 0.6 binaries, with
+the same definitions as the P.1 tables (compare with the **13 Oct baseline** column, the stored per-machine baseline,
+not with the "before" column above).
+
+### Conditions
+
+- Machine class: a 16-thread desktop CPU, 32 GB RAM, a GeForce RTX 3060 12 GB, Windows 11, the `win-msvc` preset
+  (RelWithDebInfo). The same machine id as "The machine" above.
+- Every process on this machine - builds, tests and these benchmarks - runs in one Windows job object hard-capped at
+  **80 % of the CPU**, at BelowNormal priority (the owner's rule for this round). A benchmark never sees more than 80 %
+  of the machine, and other work on the machine shares that budget.
+- The playback, project, startup, memory, export and analysis benchmarks ran in a quiet moment: each attempt records
+  2.8-15 % CPU busy, 0 compilers and no other tests (`test-output/perf/*.json`, `attempts[].before`). A whole-tree gate
+  (3,979 tests) then held the test queue for the rest of the window, so the long-file cases below ran beside it; their
+  rows say so.
+- GPU: the owner's desktop applications held about 1.4 GB of the 12 GB and used 6 % of the GPU when the window opened,
+  and were idle apart from that. The benchmark records CPU load but not GPU load per attempt: the export row below is
+  the one this can matter for.
+
+### Results
+
+| Area | Metric | 0.6 (2 Nov) | 13 Oct baseline | Budget |
+|---|---|---|---|---|
+| Startup | warm, to an interactive window | 1,670 ms | 1,071 ms | < 2 s |
+| | cold (fresh caches and settings) | 1,690 ms | 997 ms | < 3.5 s |
+| | warm, a 10,000-clip project as the last one | 1,691 ms | 1,146 ms | < 2.5 s |
+| | opening that project from the command line | 1,948 ms | 1,279 ms | < 4 s |
+| Project (1 hour, 10,000 clips) | save / load | 177 / 127 ms | 199 / 128 ms | < 1 s each |
+| | the editor's Open / Save | 127 / 171 ms | 167 / 226 ms | < 1.5 / 1 s |
+| | autosave on the GUI thread (the write on a worker) | 0.01 ms (202 ms on the worker) | 0.01 ms | < 50 ms |
+| | move / trim / ripple trim through the command engine (p95) | 4.1 / 3.8 / 4.3 ms | 7.1 / 4.9 / 5.6 ms | < 16 ms |
+| | history checkpoint, next | 532 ms | 622 ms | < 1 s |
+| Memory | 1,800 scripted edits on the 1-hour project: growth | 140 MB | 103 MB | < 500 MB |
+| | kept after closing it | **135 MB** (F2P: 48.5-58 MB) | 112 MB | **< 50 MB** |
+| Playback | play to the first picture, warm / cold (H.264 1080p) | 0.31 / 51.8 ms | 0.31 / 54.2 ms | < 150 / 500 ms |
+| | play to the first picture, cold (HEVC 4K / ProRes / proxy) | 56.0 / 32.7 / 15.5 ms | 50.4 / 34.1 / 18.1 ms | < 500 ms |
+| | play to the first sound (H.264 / HEVC / ProRes / proxy) | 51.8 / 11.6 / 11.8 / 11.7 ms | 56.2 / 16.3 / 12.0 / 16.2 ms | < 200 ms |
+| | L to moving pictures (H.264 / HEVC / ProRes / proxy) | 33.4 / 32.4 / 34.5 / 36.3 ms | 34.6 / 36.1 / 34.9 / 36.6 ms | < 150 ms |
+| | J to reverse pictures (H.264 / HEVC / ProRes / proxy) | 7.5 / 17.4 / 173 / 66.8 ms | 8.3 / 28.3 / 193 / 73.8 ms | < 250 ms |
+| | frame step (p95: H.264 / HEVC / ProRes / proxy) | 0.7 / 2.6 / 15.1 / 10.7 ms | 1.0 / 2.8 / 17.3 / 10.7 ms | < 50 ms |
+| | the picture following a scrub drag (p95: H.264 / proxy) | **102 / 81.8 ms** | 102 / 185 ms | **< 100 / 50 ms** |
+| Export (4 s 1080p, 2 s 4K) | H.264 1080p NVENC / x264 | **44.8 / 30.2 fps** | 78.3 / 39.5 fps | **>= 120 / 30 fps** |
+| | HEVC 1080p NVENC / x265 | 44.7 / 18.2 fps | 74.6 / 17.1 fps | - / - |
+| | H.264 4K NVENC / x265 | 16.7 / 8.5 fps | 24.9 / 10.9 fps | - / - |
+| | HEVC 4K NVENC / x265 | **16.2 / 5.0 fps** | 23.2 / 5.8 fps | **>= 30 fps** |
+| Analysis | shot detection | 20.5x realtime | 19.7x | >= 4x |
+| | search query over 1,000 shots (p95) | 5.4 ms | 8.6 ms | < 50 ms |
+
+The full set with every metric is `build/<preset>/test-output/perf/*.json`; the baseline they were compared with is
+`tests/perf/baselines/4dc96eaa790eeafc.json`.
+
+### What is not within budget
+
+- **Memory kept after closing the 1-hour project: 135 MB against a < 50 MB budget** (and 112 MB on 13 October). The
+  P.1 releaser fix took it to 53 MB; 0.6 holds more again - private bytes after closing are 712 MB against the empty
+  shell's 577 MB. The growth over 1,800 edits (140 MB) is inside its 500 MB budget. This is a real regression of the
+  "closing gives memory back" promise and the first thing to profile next round (the SnapshotReleaser A/B that P.1
+  asked for would start here; no code was changed for this measurement).
+  **Fix round 2 (F2P): 48.5-58 MB** over two passes (see "Memory after closing a project"). The project itself was never what
+  stayed: after closing, the heaps hold 1 MB more than the empty shell. What stayed was freed memory the heaps kept
+  committed (90+ MB), the QML engine's garbage, and - until an edit came - the whole closed project, kept by the
+  controller's last change. Closing now drops that reference, runs the QML garbage collector and gives the heaps'
+  free pages back. At the edge of the budget: what remains is heap pages pinned by a few live blocks (+28-31 MB committed) and the
+  timeline's scene-graph GPU caches (+35 MB GPU, +27 MB private outside the heaps). Growth over the 1,800 edits is
+  137-145 MB, 32-40 % over its 103 MB baseline (D6: 140 MB): not touched here.
+- **NVENC export: H.264 1080p 44.8 fps against >= 120, HEVC 4K 16.2 fps against >= 30** - and 43 % / 30 % below the
+  13 October baseline on the same GPU. Software x264 (30.2 fps) fell only 24 %, which is what the 80 % CPU cap alone
+  would do. The benchmark does not record GPU load per attempt (the owner's desktop apps and the round's own runs share
+  the card), so **treat the NVENC numbers as a lower bound** until they are re-measured on an idle GPU; the two rows
+  are the only ones where GPU contention can hide in the number. Even the P.1 quiet window saw 87 fps, well under the
+  120 fps budget, so the budget itself is also not met on a quiet machine.
+- **Scrubbing on camera originals: p95 102 ms against < 100 ms** (the baseline is 102.35 ms: unchanged since P.1, still
+  2 ms over) and **on proxies 81.8 ms against < 50 ms** (better than the 185 ms baseline, still 1.6x the budget).
+  Everything else in playback is inside its budget, most of it well inside.
+
+### Within budget, but slower than the baseline
+
+- Startup is within budget everywhere but 52-69 % above 13 October: 1.67 s warm and 1.69 s cold against a 2 s budget,
+  and opening the 10,000-clip project 1.95 s against 4 s. 1.63 s of a start is QML loading.
+- Everything in the project suite is within budget and mostly faster than 13 October (save 177 vs 199 ms, command
+  p95 4.1 vs 7.1 ms, autosave keeps its write on a worker).
+
+### Long files (the A.10 recordings)
+
+Both recordings were generated on this machine with `tests/perf/gen_longvod_media.py`, outside git, in
+`build/<preset>/test-output/perf-longvod-media`: 22.02 GB - 2 hours of 2560x1440 60 fps H.264 (h264_nvenc, 24 Mb/s,
+GOP 120) with three AAC tracks - and 11.31 GB - 30 minutes of 1920x1080 240 fps HEVC (hevc_nvenc, 50 Mb/s, GOP 480)
+with two. Generated in about 5 minutes each; the 2-hour one needs ~24 GB of free disk (the generator checks first).
+
+One pass, on the same shared machine as above (other streams' tests were running in the same job object):
+
+| Area | Metric | 2 h 1440p60 H.264 (F2P) | 30 min 1080p240 HEVC | Budget |
+|---|---|---|---|---|
+| Open | the file to an editable sequence holding it (p50) | **75 ms** (F2P: 72 ms) | **132 ms** | < 2 s |
+| | probe of the container and headers (p50) | 37 ms | 48 ms | - |
+| First frame | the first picture after opening (p50) | 49 ms | 65 ms | < 500 ms |
+| | a jump into the middle right after opening (p50) | 51 ms | 366 ms | < 500 ms |
+| | a decoder's first picture / one in the middle | 67 / 83 ms, 3 frames decoded | 83 / 84 ms, 3 frames decoded | - |
+| Scrub | a jump anywhere to its picture (p50 / p95) | 88 / 228 ms | **187 / 311 ms** | p95 < 250 ms |
+| | frames decoded per jump | 55 | 273 | - |
+| | a drag in the middle: the picture following it (p50 / p95) | 681 / 1131 ms | 677 / 1127 ms | - |
+| | frame step (p95) | 4.9 ms | 4.5 ms | < 50 ms |
+| Play | dropped / late frames in 20 s of play | 0 / 0 | 0 / 0 | 0 dropped |
+| | CPU time | 104 ms per second | 173 ms per second | - |
+| Peaks | the first waveform visible, cold | 338 ms | 343 ms | < 1 s |
+| | every track's peaks, cold / warm | 22.3 s / 37 ms | 2.43 s / 12 ms | - |
+| | the GUI thread's timer while they build, latest tick | 3.4 ms | 2.4 ms | < 16 ms |
+| Memory | kept after closing it (closed - before, F2P method) | -16 MB | -198 MB (D6's method: 230 MB) | < 50 MB |
+| | closed - never used (what the GPU decode path keeps once used) | +106 MB | +233 MB | - |
+
+The 2-hour column and the memory rows were measured by fix round 2 (F2P) on the same machine and conditions, after
+the hang below was fixed; the rest of the 30-minute column is D6's pass. The F2P memory method warms the GPU decode
+path up first (a pipeline shows the first picture, jumps to the middle and plays 2 s) and, like the app's program
+monitor once a project closed, shows black until the compositor holds no media frames (see "Memory after closing a
+project"). A negative "kept" means the warm-up's own driver allocations went only later.
+
+- **Opening is not what costs.** A 22 GB, 2-hour recording becomes a sequence in 75 ms: the container is read, not the
+  file. The 30-minute 240 fps one takes 132 ms.
+- **A jump anywhere in 30 minutes of 240 fps costs 187 ms p50 / 311 ms p95, over the 250 ms budget.** Each jump decodes
+  273 frames from its keyframe on average (a 2-second GOP at 240 fps is up to 479), the price of the format, not a
+  regression; nothing was missed (0 requests without a picture). Frame stepping is 4.5 ms p95.
+- **Playback is clean**: 20 s from the middle of the 240 fps recording in a 60 fps sequence, 0 dropped and 0 late
+  frames, 59.6 delivered and 60.05 presented fps, 4 frames decoded per frame shown, 17 % of one core of CPU.
+- **Peaks are progressive**: the first waveform is visible in 343 ms and every track's peaks are done in 2.43 s (12 ms
+  warm, from the cache), while the GUI thread's 5 ms timer is never later than 2.4 ms.
+- **Memory kept after closing: D6 measured 230 MB** for the 30-minute recording. Fix round 2 found the process heaps
+  back at their baseline after closing (15-18 MB committed) and the rest outside them: the program monitor kept the
+  closed project's last frames and its views of the decoder's surfaces (each view keeps the decoder's whole surface
+  array alive) until it drew again - possibly never, on an idle monitor - and the GPU decode path's first use of a codec
+  and size stays with the driver and media's process-wide device contexts. The monitor now lets them go once it shows
+  black; the first-use part is kept on purpose (see "Memory after closing a project").
+- **The 2-hour recording's pipeline cases hung** (D6: "first frame" ran its whole 15-minute timeout at about 12 % of
+  one core). Fixed in fix round 2: Matroska reads its index (the Cues, at the end of the file) only on the first seek,
+  and it indexes only the video track. A new decoder had decoded its first frame at open with an index that knew only
+  the keyframes the probe had read, so asked for 1:00:00 it found no keyframe in between and decoded forward from the
+  start (216,000 frames); every audio track's decoder, asked to seek, made FFmpeg read the file from its start up to
+  the target (its generic search: about 11 GB per track for the middle). Decoders now read the Cues when they open,
+  a video decoder whose index ends where it has read seeks rather than decoding forward, and audio seeks through the
+  indexed video track. The case passes in 4-7 s; a jump into the middle decodes 3 frames, an audio jump reads 30-70 KB.
 
 ## Long VODs and high frame rates (A.10)
 
@@ -303,10 +482,15 @@ is decoded twice (alone, then as the app requests them), six passes over 22 GB.
 
 ### Results
 
-Machine `4dc96eaa790eeafc` (see "The machine"), median of three quiet passes. **Not measured yet**: the v0.1 feature
-freeze (2026-10-13) came before a quiet window for the 33 GB recordings, so every `LONGVOD-...` below is still to be
-measured (the benchmarks, the generator and the fixes they were written for are in the tree; the fixes are covered by
-their unit tests). Delete the recordings when done (`build\win-msvc\test-output\perf-longvod-media`, about 33 GB).
+**Measured once on 2 November 2026 (0.6)**: the recordings were generated on this machine and the cases run; see
+"Measured in 0.6: long files" below for the numbers and for the cases that did not complete. The rest of this section
+still describes the table as the 2026-10-13 freeze left it.
+
+Machine `4dc96eaa790eeafc` (see "The machine"), median of three quiet passes. **Not measured at the freeze**: the v0.1
+feature freeze (2026-10-13) came before a quiet window for the 33 GB recordings, so every `LONGVOD-...` below was still
+to be measured then (the benchmarks, the generator and the fixes they were written for are in the tree; the fixes are
+covered by their unit tests). Delete the recordings when done (`build\win-msvc\test-output\perf-longvod-media`, about
+33 GB).
 
 | Area | Metric | 2 hours, 1440p60 H.264, 3 tracks | 30 minutes, 1080p240 HEVC, 2 tracks | Budget |
 |---|---|---|---|---|

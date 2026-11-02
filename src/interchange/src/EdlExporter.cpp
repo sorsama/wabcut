@@ -29,6 +29,7 @@
 // source). Lines end in CRLF.
 
 #include "Exporters.h"
+#include "InterchangeEffects.h"
 #include "TextUtil.h"
 #include "TimeMath.h"
 
@@ -351,7 +352,7 @@ private:
     // ---- sources -------------------------------------------------------------------------------------------------
 
     std::optional<Source> sourceOf(const IrClip& c) const {
-        if (c.title) {
+        if (c.title || generatorOf(c)) {
             return std::nullopt;
         }
         if (c.sequence != kNoSequence && c.sequence < m_doc.sequences.size()) {
@@ -384,6 +385,14 @@ private:
             return s;
         }
         return std::nullopt;
+    }
+
+    /// 0.6 (card #69): the generator of a synthetic item's clip, or null.
+    const IrGenerator* generatorOf(const IrClip& c) const {
+        if (c.title || c.sequence != kNoSequence || c.media >= m_doc.media.size() || !m_doc.media[c.media].generator) {
+            return nullptr;
+        }
+        return &*m_doc.media[c.media].generator;
     }
 
     /// The source's reel: made from its name, unique per source (a number replaces its end when another source has
@@ -678,6 +687,15 @@ private:
         std::map<const IrClip*, Side> sides;
         for (const IrClip* c : clips) {
             const std::optional<Source> s = sourceOf(*c);
+            if (const IrGenerator* g = s ? nullptr : generatorOf(*c)) {
+                // An EDL has no generators: black (or silence) with the generator named in the report.
+                report(ReportOutcome::Dropped, ReportCategory::Clip,
+                       "generated '" + c->name + "' (" + std::string(generatorDisplayName(g->kind)) + ", " +
+                           framesLabel(c->duration, m_rate) + ") on " + label +
+                           ": an EDL has no generators; its time is left " + (channel == 0 ? "black" : "silent"),
+                       c->location);
+                continue;
+            }
             if (!s) {
                 report(ReportOutcome::Dropped, ReportCategory::Clip,
                        std::string(c->title ? "title '" : "'") + c->name + "' on " + label + ": " +
@@ -1043,6 +1061,13 @@ private:
         report(ReportOutcome::Dropped, ReportCategory::Track,
                label + (t.name.empty() ? std::string() : " '" + t.name + "'") + ": " + why, t.location);
         for (const IrClip& c : t.clips) {
+            if (const IrGenerator* g = generatorOf(c)) { // 0.6 (card #69): named with its kind and length
+                report(ReportOutcome::Dropped, ReportCategory::Clip,
+                       "generated '" + c.name + "' (" + std::string(generatorDisplayName(g->kind)) + ", " +
+                           framesLabel(c.duration, m_rate) + ") on " + label + ": " + why,
+                       c.location);
+                continue;
+            }
             report(ReportOutcome::Dropped, ReportCategory::Clip, noun(c) + " '" + c.name + "' on " + label + ": " + why,
                    c.location);
         }

@@ -49,6 +49,23 @@ std::expected<QImage, Error> renderStill(const ProjectState& state, SequenceId s
 /// empty picture), Unsupported (no encoder), IoError.
 std::expected<void, Error> writeStill(const QImage& picture, const std::filesystem::path& file, StillFormat format);
 
+/// P1 (#23): a size, a JPEG quality and a size cap for a still (command::FrameExportServices::Options).
+using StillOptions = command::FrameExportServices::Options;
+
+/// `picture` scaled to `width` x `height` (smooth): `fill` crops its centre to fill the frame, else it fits whole with
+/// black bars around it. 0 x 0, or the picture's own size: unchanged.
+QImage scaleStill(const QImage& picture, int width, int height, bool fill);
+
+/// P1 (#23): writeStill() with `options`: scaled first (scaleStill), JPEG at options.quality (1..100; 0 = high, 95),
+/// and with options.maxBytes a JPEG is written again at lower qualities (down to 30) until it fits. Returns what was
+/// written: its size in pixels and bytes, and the JPEG quality used (Written::bytes > maxBytes: it never fit). Same
+/// errors as writeStill(), plus InvalidArgument for a bad size.
+std::expected<command::FrameExportServices::Written, Error>
+writeStill(const QImage& picture, const std::filesystem::path& file, StillFormat format, const StillOptions& options);
+
+/// The JPEG quality (1..100) as the encoder's quantiser scale (2 = best .. 31).
+int jpegQscale(int quality);
+
 /// The command services behind sequence.exportFrame / source.exportFrame: renderStill + writeStill, and a describer
 /// that turns the written file into a media item to import (the host's probe and locator rules; empty: no import).
 std::shared_ptr<command::FrameExportServices> stillExportServices(command::FrameExportServices::Describer describer = {});

@@ -14,6 +14,9 @@ import QtQuick.Dialogs
 // all the shown track's captions, or those from the playhead on, in one undo step (captions.shiftCues).
 // 0.5: the cue selected on the timeline's caption lanes is outlined and scrolled to; a double-click there opens its text
 // (editCue).
+// 0.6 (#57): All tracks… saves every caption track with captions at once (a caption format, then a folder) as
+// "<sequence> - <track>.<language>.<ext>"; every export from here goes through captions.export, so bleeped words stay
+// replaced.
 Item {
     id: root
     objectName: "captionsPage"
@@ -49,12 +52,26 @@ Item {
     /// time (a second at most).
     property int pendingCue: -1
     property bool pendingEdit: false
+    /// P1 round (#35): a new caption's text is selected, not just focused (typing replaces "New caption").
+    property bool pendingSelect: false
     property int pendingTries: 0
     function showCue(index: int, edit: bool) {
         if (index < 0 || index >= Captions.cues.length)
             return
         pendingCue = index
         pendingEdit = edit
+        pendingSelect = false
+        pendingTries = 0
+        revealCue()
+    }
+    /// P1 round (#35, stream 2E): a cue just added (Add Caption at Playhead, Ctrl+Alt+C, or At playhead): shown, its
+    /// text selected for typing.
+    function showNewCue(index: int) {
+        if (index < 0 || index >= Captions.cues.length)
+            return
+        pendingCue = index
+        pendingEdit = true
+        pendingSelect = true
         pendingTries = 0
         revealCue()
     }
@@ -83,6 +100,9 @@ Item {
         pendingCue = -1
         if (pendingEdit)
             row.editText()
+        if (pendingSelect)
+            row.selectText()
+        pendingSelect = false
     }
     Timer {
         id: revealTimer
@@ -141,7 +161,8 @@ Item {
                         objectName: "captionsNewTrack"
                         text: qsTr("New caption track")
                         iconName: "plus"
-                        onTriggered: Captions.addTrack(qsTr("Captions"), "")
+                        command: "sequence.addCaptionTrack" // P1 round (#35): its key (Ctrl+Alt+A) on the row
+                        onTriggered: Captions.runCommand("sequence.addCaptionTrack") // "Captions", "Captions 2", ...
                     }
                     // 0.2: a caption track from an .srt, .vtt, timed .txt or .docx file (captions.import).
                     ContextMenuItem {
@@ -384,6 +405,7 @@ Item {
                 iconName: "plus"
                 text: qsTr("At playhead")
                 tooltip: qsTr("A new caption at the playhead")
+                command: "sequence.addCaptionAtPlayhead" // P1 round (#35): its key (Ctrl+Alt+C) in the tooltip
                 onClicked: Captions.addCueAtPlayhead("")
             }
         }
@@ -471,6 +493,21 @@ Item {
                     saveDialog.open()
                 }
             }
+            // 0.6 (#57): every caption track at once: pick the format, then the folder.
+            CaptionFormatButton {
+                objectName: "captionsExportAllTracks"
+                text: qsTr("All tracks…")
+                iconName: "upload"
+                variant: "secondary"
+                LayoutMirroring.enabled: false
+                tooltip: qsTr("Save every caption track as a caption file, in a format you pick")
+                Accessible.name: qsTr("Export all caption tracks")
+                format: allTracksDialog.format
+                onPicked: id => {
+                    allTracksDialog.format = id
+                    allTracksDialog.open()
+                }
+            }
         }
     }
 
@@ -481,6 +518,15 @@ Item {
         defaultSuffix: format
         nameFilters: format === "vtt" ? [qsTr("WebVTT captions (*.vtt)")] : [qsTr("SubRip captions (*.srt)")]
         onAccepted: Captions.exportFile(selectedFile, format)
+    }
+
+    // 0.6 (#57): All tracks… - the folder the caption files go to.
+    FolderDialog {
+        id: allTracksDialog
+        objectName: "captionsAllTracksFolder"
+        property string format: "srt"
+        title: qsTr("Save all caption tracks")
+        onAccepted: Captions.exportAllTracks(selectedFolder, format)
     }
 
     // 0.2: Find and Replace, Check Spelling, Import captions, Export transcript.

@@ -113,6 +113,105 @@ Premiere checks the spelling of captions; Wabcut checks captions and the text of
   `graphic.checkSpelling` (a graphic clip's text layers) and `spelling.check` (any text). They only read; corrections
   are `captions.updateCue`, `captions.findReplace` and `graphic.updateLayer` edits.
 
+## Speakers on the Transcript tab (0.6)
+
+A paragraph of the Transcript tab is labelled and coloured by its project speaker - the name given in the Captions tab
+or here, an assignment or a merge - and falls back to "Speaker 1", "Speaker 2"... (the transcriber's diarization label)
+while nobody has named it. A new paragraph starts wherever the speaker changes. The label is a button; its menu has:
+
+- **Rename or recolour...** - a name field and six colour swatches in the paragraph (Enter applies, Esc closes). A label
+  nobody named yet becomes a project speaker for that label of the clip's media, so every paragraph the label speaks
+  follows (`transcript.renameSpeaker` by media and label).
+- **This paragraph is** - a project speaker, or **New speaker...** (a name field): the paragraph's words belong to them
+  (`transcript.assignSpeaker` over the words' timeline range, on their audio track when they share one).
+- **Merge into** - the speaker becomes the chosen one wherever it speaks, and goes (`transcript.mergeSpeakers`; a label
+  with no speaker yet is named and merged in the same step).
+
+With words selected, the actions bar has a **Speaker** button with the same choice for the selection. Each change is
+one undo step; captions made from the transcript show the new names after "Update from transcript".
+
+## Correct from your script (0.6)
+
+When you read a script, you already have the exact words; the transcriber still misspells names and jargon ("web cut"
+for Wabcut, "cooper nettie's" for Kubernetes). **Sequence > Captions > Correct Transcript from Script...** (also the
+spell-check button at the top of the Transcript tab, and the command palette) opens a sheet: paste the script or open a
+.txt, .md or .fountain file, then **Find corrections**.
+
+- Every line of the script is looked for in the sequence's transcript (fuzzy, on this computer; Thai and other languages
+  written without spaces too). Lines said more than once (retakes) are corrected in every take about as good as the best
+  one. A line with a long aside in the middle, or half of it skipped, is found in parts near where it was said.
+- Where the speech follows a line, the words the transcriber got wrong take the script's spelling, capitals and
+  punctuation. That covers names and jargon, numbers and abbreviations written another way ("25" for "twenty-five",
+  "Doctor" for "Dr."), and names or terms in the wrong capitals ("kubernetes" becomes "Kubernetes", "github" becomes
+  "GitHub"; a capital that only starts a sentence is not copied).
+- Only substitutions that sound like the script are made. A word you skipped is not added, a word you added (a filler,
+  an aside) is not removed, and a word you changed ("great" where the script says "good") is left as you said it. The
+  sheet lists those under **Left as said**.
+- The sheet lists each correction as "time  before → after" (Capitals marks one that only changes capitals), the
+  differences left as said, and the lines not found closely enough, which are left alone. Click a row to move the
+  playhead there. Finding runs in the background with its progress, and **Stop** ends it. An hour of speech and a long
+  script take a second or two.
+- **Apply** makes all the corrections as one undo step ("Correct from Script"). If the project changed since you found
+  them, they are found again so you can check them first. Corrections are saved with the project on top of the
+  transcript, like a correction you type yourself, so transcribing again keeps them. A correction that overlaps one you
+  made earlier is merged with it, so your earlier fix is kept.
+- Captions made before this still read the old words. After Apply the sheet offers **Update captions**, and the Captions
+  tab offers it too. It rewrites the cues' text from the corrected transcript and keeps their timing.
+
+There is no accept or reject per change: undo, adjust the script and find the corrections again. The command is
+`transcript.correctFromScript` (`text`, `split`, `minMatch` from 0.3 to 0.99, default 0.7, and `fixCase`); a dry run lists
+up to 200 changes, 50 lines not found and 50 differences left as said.
+
+## The caption keys and Sequence > Captions (0.6)
+
+Premiere's four caption keys act on the caption track the Captions tab shows (the one the Program Monitor draws):
+
+| Keys (Windows / macOS) | Row | What it does |
+|---|---|---|
+| Ctrl+Alt+A / Opt+Cmd+A | Add New Caption Track (Sequence > Captions, the Captions track menu) | A new empty track named "Captions", then "Captions 2", ...; it becomes the shown track, and the Transcript panel opens on its Captions tab. One undo step. |
+| Ctrl+Alt+C / Opt+Cmd+C | Add Caption at Playhead (Sequence > Captions, the Captions page's At playhead) | A caption at the playhead (two seconds long, or up to the next caption), its text selected in the Captions tab so typing replaces "New caption". One undo step. |
+| Ctrl+Alt+Down / Opt+Cmd+Down | Go to Next Caption Segment (Sequence > Captions) | The playhead to the next caption of the shown track, and that caption is selected (the timeline lane outlines it). It does not change the project. |
+| Ctrl+Alt+Up / Opt+Cmd+Up | Go to Previous Caption Segment (Sequence > Captions) | The same, to the previous caption. |
+
+The rows are in the Sequence menu's Captions submenu, with their keys, and in the command palette. A row greys out and
+says why it cannot run: "Open a sequence first", "Add a caption track first", "A caption is already at the playhead",
+"No caption after the playhead" or "No caption before the playhead". A key that cannot run shows the same sentence as a
+toast. The palette used to mark these keymap rows "Not available yet"; it now gives the real reason.
+
+## Captions in the Program Monitor (0.6)
+
+With the captions shown in the picture, the Program Monitor treats the caption under the playhead as an object, as it
+does titles and clips:
+
+- **Click** a caption to select its cue: it is outlined in the picture, the Captions tab's list scrolls to it and the
+  timeline's caption lane outlines it. A cue and clips are selected one or the other, as on the caption lanes.
+- **Double-click** it to open its text in the Captions panel (the panel comes up if it was hidden).
+- **Drag** the outlined caption to move the caption track's text block: its placement becomes Custom at the new place
+  (Caption Style's Centre X / Y), kept inside the style's safe area. The whole drag is one undo step, "Move Caption". A
+  keyframed position is changed in Caption Style instead (the monitor says so).
+
+Typing the text in the monitor itself is for later. See docs/monitors.md.
+
+## Caption files for every track, and with timeline hand-offs (0.6)
+
+A multi-language delivery no longer means one save per language:
+
+- **Captions page > All tracks…** picks a caption format (SRT, WebVTT, SCC, MCC, EBU STL, TTML, SMPTE-TT, DFXP, iTT),
+  then a folder, and writes every caption track of the sequence that has captions as
+  `<sequence> - <track name>[.<language>].<ext>` (`Episode 3 - English.en.srt`, `Episode 3 - Thai.th.srt`; characters a
+  file name cannot hold become `_`, a second track of the same name gets ` (2)`). The page says "Saved 3 caption
+  file(s)". Empty tracks are skipped.
+- **File > Export Timeline… > Captions > Sidecar files** writes the same files next to the FCP7 XML, FCPXML, OTIO, EDL,
+  AAF or OMF file (named after it), and the export report lists each track as carried with its file. Without it the
+  report lists each caption track as dropped ("caption track 'English' (en, 214 cues) is not carried by timeline
+  files"): none of these formats carries captions. The choice and the format are remembered.
+- Every caption file the app writes goes through `captions.export`, so words the soundtrack bleeps (Hide profanity with
+  a bleep, redactions) are replaced in the file as in exports; the Captions page's SRT and VTT buttons did not do this
+  before 0.6.
+
+Commands: `interchange.export` `"captionSidecars": "<format>"` (result `"captionFiles"`), `captions.export` per track;
+the bridge call is `Captions.exportAllTracks(folder, format)`. See [interchange.md](interchange.md).
+
 ## Not yet
 
 - Premiere's `.prtranscript` files are not read or written.

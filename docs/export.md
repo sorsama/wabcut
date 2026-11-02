@@ -105,10 +105,10 @@ row-mt; quality maps onto CRF 0..63) or AV1 video, Opus audio (libopus, 48 kHz).
 **Captions** (`CaptionExportSettings`; I.4, P.2 as Premiere's Export Options): `None`; `BurnIn` (drawn as the program
 monitor draws them); a sidecar file next to the output in Premiere's formats: `Srt`, `Vtt`, `Scc`, `Mcc`, `EbuStl`,
 `Ttml` (.xml), `Dfxp`, `SmpteTt` (.xml), `Itt` (interchange/CaptionFiles.h; timecode-based formats from the sequence's
-start timecode at the export's first frame; `display608` picks pop-on, roll-up or paint-on for SCC and MCC); or `Embed`:
-CEA-608 in the H.264 / HEVC stream as A/53 caption SEI, written by encoders that support it (libx264, libx265, NVENC,
-Quick Sync H.264, VA-API, VideoToolbox; automatic selection skips the others). Redacted words are replaced in every
-mode. docs/interchange.md, "Caption files".
+start timecode at the export's first frame; `display608` picks pop-on, roll-up or paint-on for SCC and MCC); or `Embed`
+(Embedded captions, 0.6): CEA-608 and / or CEA-708 inside the file - in the picture stream (H.264 / HEVC caption SEI,
+MPEG-2 user data), in an MXF SMPTE 436M track or in a QuickTime c608 track. See "Broadcast delivery: MXF and embedded
+captions" below. Redacted words are replaced in every mode. docs/interchange.md, "Caption files".
 
 **High frame rates and VFR** (I.9, gaming): sequences and exports run up to 240 fps; every output frame k shows the
 sequence at start + k frame periods, so 120 / 144 / 240 fps captures in a sequence of their rate export frame for frame,
@@ -140,6 +140,99 @@ in vcpkg.json since M0), so no port feature changed.
   without alpha, TIFF (LZW), DPX 8 / 10 / 16-bit, JPEG (the 0..51 quality scale), Targa, OpenEXR half float (ZIP).
   Export As Sequence off: a single still of the range's first frame, named as the output.
 
+## Broadcast delivery: MXF and embedded captions (0.6)
+
+(#73.) For broadcasters and Avid workflows: **MXF OP1a** (one file) and **MXF OP-Atom** (Avid MediaFiles: a file per
+essence), and closed captions inside the file as CEA-608 and CEA-708. Everything goes through the vcpkg FFmpeg 9 build's
+own muxers (`mxf`, `mxf_opatom`), encoders (`dnxhd`, `mpeg2video`, `libx264`) and bitstream filter (`eia608_to_smpte436m`);
+no new dependency.
+
+**Formats** (Settings > Format > **MXF**, then **OP1a** or **OP-Atom (Avid)**; or the presets in Formats):
+
+| Preset | Pattern | Video | Notes |
+|---|---|---|---|
+| MXF OP1a XDCAM HD422 | OP1a | MPEG-2 4:2:2P@HL long GOP, 50 Mb/s CBR, 8-bit 4:2:2 | 1920×1080 at 23.976-30 fps or 1280×720 at 23.976-60 fps; GOP 12 (24/25/50 Hz) or 15 (30/60 Hz), M = 3, closed |
+| MXF OP1a DNxHD HQ | OP1a | DNxHD HQ at Avid's bitrate for the rate | 1920×1080 |
+| MXF OP1a DNxHR HQ | OP1a | DNxHR HQ (any DNxHR profile) | any size (DNxHR needs at least 256×120) |
+| MXF OP-Atom DNxHD HQ (Avid) | OP-Atom | DNxHD / DNxHR | a file for the picture, one per audio channel |
+| MXF OP1a AVC-Intra 100 | OP1a | AVC-Intra 100 (libx264, SMPTE RP 2027 class 100), 10-bit 4:2:2 intra | 1920×1080 at 25 / 29.97 or 1280×720 at 50 / 59.94 |
+
+XDCAM HD422 and AVC-Intra 100 also go into QuickTime. MXF is written at 23.976, 24, 25, 29.97, 30, 50, 59.94 or 60 fps;
+other rates, rasters a codec does not define, and non-PCM audio are refused with the reason before the export starts.
+
+**Every MXF file has**: a timecode track (the export's start timecode - Set Start Timecode, else the sequence's start
+timecode plus the range start; drop-frame `;` at 29.97 / 59.94 when the sequence uses it), the material package name
+(the Metadata title, else the sequence's name), a **reel** (tape) source package when Settings > **Reel** has a name
+(Avid's Tape column; `reelName`, at most 64 bytes), the signal standard (SMPTE 274M at 1080 lines, 296M at 720), and the
+UMIDs FFmpeg generates (unique per file). The finished job's details show the operational pattern, the timecode, the
+audio layout, the material package UMID and the embedded captions.
+
+**Audio**: 16 or 24-bit PCM at 48 kHz (Settings > **Audio**). Settings > **Audio channels** offers 2, 4 or 8 tracks (or
+as the master: 2, or 6 for a 5.1 master). OP1a writes **mono tracks** (one per channel: AS-11 / DPP delivery, Avid) or
+**one multichannel track** (Settings > **Audio tracks**); OP-Atom always writes one mono file per channel,
+"<name>_A1.mxf", "<name>_A2.mxf", … next to "<name>.mxf" (the video). The mix is rendered at its own channel count
+(stereo, or 5.1 for a 5.1 master into 6 or more tracks) and spread over the tracks: track n carries mix channel n, the
+tracks after the mix are silent (a stereo programme in 8 tracks: 1-2 the mix, 3-8 silence), and the details say so.
+The OP-Atom audio files are moved into place only after the picture file is, so a failed or cancelled export never
+leaves audio files without their picture.
+
+**OP-Atom and Media Composer: separate clips.** Media Composer makes one master clip of OP-Atom files that share one
+material package: the same material package UMID in every file, each file's material package listing every track of
+the clip (picture and each audio channel) while it holds the essence of one. FFmpeg 9's `mxf_opatom` muxer cannot write
+that: each file gets a material package of its own, listing only its own track, with a random UMID (there is no option
+to set it; its bit-exact mode gives every file of every export the same fixed UMID, which would collide in Avid's media
+database, so Wabcut does not use it). Wabcut does not patch the files afterwards either (files that claim one clip but
+disagree on its tracks cannot be checked without Media Composer). So the picture and each audio channel come into Media
+Composer as separate clips with the same name and start timecode: sync them there by timecode (AutoSync or a group by
+source timecode). For one clip with every track, export **MXF OP1a** instead, which Media Composer links (Source Browser)
+as one clip. The job's details show the picture file's UMID ("picture UMID … (each file has its own)").
+
+**Where OP-Atom files go**: next to each other in the folder you export to, as Premiere and DaVinci Resolve write them.
+Media Composer indexes media it finds in a drive's `Avid MediaFiles/MXF/<number>` folder: export into such a folder
+(for example `Avid MediaFiles/MXF/1`) to have the files show up in its Media Tool without importing them.
+
+**Embedded captions** (Settings > Captions > **Embed**; `ClosedCaptions.h`): the caption track the program monitor
+shows, as
+
+- **Standard**: **608 + 708** (default: digital 708 with the 608 fallback older decoders read), **608** or **708**.
+- **608 channel**: CC1 / CC2 (field 1) or CC3 / CC4 (field 2; their miscellaneous control codes are 15h / 1Dh).
+- **708 service**: 1-63 (1 is the primary language; 7-63 use the extended service block header).
+- **Carry in**: **Auto** - MXF: the SMPTE 436M track; QuickTime: the H.264 / HEVC stream plus a c608 track for CC1 /
+  CC2 (other codecs: the c608 track alone); MP4 / MKV: the video stream - or **Video stream**, **Caption track**,
+  **Both**.
+- **Display**: pop-on (default), roll-up (3 rows; the `captionDisplay` key also takes 2 and 4) or paint-on, for 608 and
+  708 alike.
+
+Each frame carries the same ATSC A/53 `cc_data`: 600 / fps triplets (25 at 23.976, 24 at 25, 20 at 29.97, 12 at 50, 10
+at 59.94; the 9600 bit/s of a DTVCC channel): the 608 byte pairs of the SCC writer's timing and a null pair on each field
+not in use, then one DTVCC packet of the 708 service, then 708 padding. 708 pop-on captions are loaded ahead of time into
+a hidden window - windows 0 and 1 take turns, shown on the caption's first frame and hidden at its end (a gap) or when
+the next one shows; roll-up is one window of 2-4 rows that scrolls a line up per line; paint-on writes into a visible
+window. Windows sit at the bottom or top of the safe area, justified as the track is aligned, at most 32 columns and 4
+rows (pop-on); the pen takes the track's text colour, the box colour and opacity as its background, and an outline as a
+uniform edge, on 708's 64-colour palette. Text is ASCII, Latin-1, the music note and 708's G2 symbols (curly quotes,
+ellipsis, bullet, ™, Š, Œ, …); other characters become `?`. A caption that cannot be loaded before it starts is shown
+late; a missing caption track, or one without captions in the range, gives a warning and a file without captions -
+never a silent success. Each problem (late, rewrapped, replaced characters) is in the job's warnings.
+
+Where they go: in the picture through encoders that write caption data (libx264, libx265, NVENC, Quick Sync H.264,
+VA-API, VideoToolbox, mpeg2video; AVC-Intra does not); an MXF OP1a file's last stream is an SMPTE 436M ANC track (one CDP
+per edit unit: ANC DID 61h / SDID 01h on line 9, the CDP frame-rate code of the export's rate); a QuickTime file gets a
+`c608` closed caption track (`clcp` handler; field 1 pairs, one sample per frame, two frames at 50 / 59.94).
+
+**Refused, with the reason** (validate / resolve): 708 where nothing can carry it (QuickTime with ProRes, DNxHR, …: only
+c608 is written - choose 608); captions in the picture of a codec that has no caption data (ProRes, DNxHR, AV1, VP9,
+AVC-Intra); a caption track in MP4 / MKV; CC3 / CC4 in a QuickTime caption track; any embedded captions in OP-Atom (one
+essence per file: write an SCC or MCC sidecar, or export OP1a).
+
+Override keys (`ExportController.queueExport`, the export commands, `wabcut-cli render --set`): `container` "mxf" /
+"mxf-opatom", `videoCodec` "xdcam-hd422" / "avc-intra-100", `audioChannels` 4 / 8, `reelName`, `mxfAudioLayout` "mono" /
+"multichannel", `captions` "embed", `captionStandard` "608+708" / "608" / "708", `cc608Channel` 1-4, `cc708Service`
+1-63, `captionCarriage` "auto" / "video" / "track" / "both", `captionDisplay` "pop-on" / "roll-up-2" / "roll-up-3" /
+"roll-up-4" / "paint-on". Settings JSON: `captions.standard` / `channel608` / `service708` / `carriage` / `display608`
+and `mxf.audioLayout` / `reelName`, written only when set (older presets stay byte for byte). Smart rendering is off for
+MXF (its constant-size DNxHD index wants every frame from one encoder).
+
 ## Quick Export
 
 Premiere's header Quick Export: the top bar's ⚡ button opens a popover with every preset (built-in and the user's;
@@ -164,6 +257,45 @@ Per user, not per project (QSettings `export/*`, `ExportController` `lastPreset`
   Out", "Export Work Area"). The range stays when you pick another preset: it belongs to the sequence.
 - **Reset to defaults** (the Save to card) forgets all of it: Match Source, next to the project, the whole sequence
   unless the sequence is marked.
+- **Vertical sequences (0.6).** A 9:16 sequence (taller than wide) remembers presets of its own - the Export workspace's,
+  the gaming card's and Quick Export's (`export/lastPresetPortrait`, `lastGamingPresetPortrait`,
+  `lastQuickPresetPortrait`; `ExportController.rememberedFor(sequenceId)`) - so YouTube 1080p60 picked for a landscape
+  video is never preselected for a Short: a vertical sequence with nothing remembered starts on Match Source (its own
+  size). Switching between sequences of the two shapes switches the choice; a pick made for a sequence in this session
+  stays with it.
+
+## Before an export starts (0.6)
+
+- **The estimate covers every format.** The tiles' and the panel's "≈ size · time" prices AV1 and VP9 like H.264 /
+  HEVC (a size target, a bitrate, or constant quality with the codec's factor: AV1 0.55, VP9 and HEVC 0.65 of H.264's
+  bits), GIF by its palette (about 0.8 bits a pixel), stills and image sequences per frame from the pixel format and the
+  format's compression (PNG about half, TIFF LZW and OpenEXR 0.6, DPX and Targa as they are, JPEG a quarter byte a
+  pixel; a single still is one frame), CineForm like ProRes HQ, QuickTime Animation at about half its RGBA bytes, and
+  Opus and MP3 sound at their bitrate. Estimates of the picture-dependent formats say so.
+- **Shapes.** A 16:9 gaming preset on a 9:16 sequence says the sequence is pillarboxed (black bars at the sides) and
+  points at Shorts / TikTok / Reels; any vertical export longer than 3:00 says YouTube will treat it as a regular video,
+  not a Short. Neither blocks the export.
+- **Size limit.** The settings drawer's **Size limit** row (H.264, HEVC, AV1 and VP9): Off, 8, 25, 100 or 500 MB, or your
+  own (1-4000 MB, typed and Enter; the last one typed is remembered) - WhatsApp, email, X, Discord Nitro. The whole file
+  stays under that many decimal megabytes (the export's target size: the video gets what the sound and the container
+  leave, and a file that still ends over it is encoded once more). The Quality row waits while a limit is set; the
+  summary says "Fits 25 MB (≈ 6.4 Mb/s)", a range too long for the size is refused with how much fits, and under 0.03
+  bits a pixel the panel warns that the picture will block up (a smaller frame, a lower rate or a shorter range looks
+  better). Override key `targetMB`.
+- **Offline media.** The export never uses proxies, so an offline or missing original file would stop it. The Export
+  panel and Quick Export find them before you start (the media the range plays, nested and multicam clips included):
+  "1 offline file(s) in this export: A001.mov. Relink to export." with **Relink…** (the Relink dialog), and Export and
+  Send to Queue wait until they are relinked.
+- **Disk space.** The estimate is checked against the free space of the drive the file goes to (the chosen file, else
+  the default one): when the file needs more than is free (with a 20 % margin) the panel and Quick Export say "Only
+  2.1 GB is free on Data; about 3.4 GB is needed for the export." The export stays allowed (the estimate can be high).
+  While exports run their drives are checked every 30 seconds and a drive under 2 GB is said once in a toast. Render In
+  to Out (ProRes LT previews) and Create proxy check their folders the same way and do not start when the drive is
+  short (the toast says why).
+- **Retry.** A failed or cancelled export from the Export workspace, Quick Export or Send to Queue has **Retry** on its
+  queue row: the same sequence, preset and settings on the project as it is now (relinked media is found), into the
+  same file, or "name (2).mp4" when that name is taken by then. A job that stopped on offline media also has
+  **Relink…** on its row.
 
 When an export ends anywhere in the app, a toast says so: "Exported <file>" with **Open** (the file in its default
 app) and **Show in Explorer** beside it (Finder on macOS; both still find the file after the queue's **Clear
@@ -243,8 +375,13 @@ under it while it is applied, then Metadata and the render options (`effects` / 
   through the gain (none within the tolerance) and the lookahead true-peak limiter of wabcut.audio.limiter, its delay
   compensated, so the export stays sample-exact. The log ("<output>.loudness.txt") says what was measured and done.
 - Overlays on HDR exports are drawn at reference white (PQ 0.58, HLG 0.75), not at the format's peak.
-- *Not built*: SDR Conform (Wabcut tone-maps HDR to SDR itself) and Time Tuner. The overlays are export-only, as in
-  Premiere: the program monitor does not show them.
+- 0.6: **SDR Conform** (an HDR or Wide Gamut sequence delivered as SDR: target peak, paper white, BT.2390 / ACES /
+  Reinhard tone mapping, ACES / saturation / clip gamut mapping, legal range) and the **output colour space** (Rec.709,
+  Rec.2020 SDR, P3-D65, Rec.2100 PQ / HLG) are the sequence's (Color Management) and each export preset's
+  (`video.outputSpace`, `video.sdrConform`; `--set '{"outputSpace": "p3-d65"}'`; the CLI's `--output-space` and
+  `--sdr-conform*`). The drawer's details show the colour chain, the job's details what SDR Conform mapped; see
+  [color.md](color.md) "HDR finishing (0.6)".
+- *Not built*: Time Tuner. The overlays are export-only, as in Premiere: the program monitor does not show them.
 
 ## Metadata
 
@@ -260,6 +397,36 @@ under it while it is applied, then Metadata and the render options (`effects` / 
   "include markers" the range's sequence markers as `xmpDM:Tracks` (start and duration in output frames, name,
   comment, Chapter / Segmentation / WebLink type and URL).
 - **Title** and **Description** also go into the file's own tags (MP4 / MOV / MKV; WAV: the comment).
+
+## Audio stems: dialogue, music and effects (0.6)
+
+Export settings > **Audio stems** > **By track role** (Premiere's multichannel stems, Resolve's Deliver stems; a DME or
+M&E delivery) also writes one audio-only file per **track role** next to the export: the audio tracks' roles from the
+Audio Track Mixer / Essential Sound (Dialogue, Music, Effects; tracks without a role are "Other"). A line under the row
+names the files the export will write, e.g. "Also writes 3 stem(s), 24-bit WAV, next to the export: Dialogue
+(Episode 12_DX.wav), Music (Episode 12_MX.wav), Other (Episode 12_OTHER.wav)."
+
+* **Which stems.** A role is written when at least one of its audio tracks is played by the export: enabled, not
+  muted, soloed when any track is soloed, and with a clip on it. So the stems split exactly what the master plays.
+  Nested sequences go with the role of the track they sit on. A multicam source sequence has no stems.
+* **What a stem is.** An ordinary export of a copy of the project in which that role's tracks are soloed and every other
+  track (and submix) is not, through the same mix path as the master: WAV, 24-bit PCM, the master's sample rate (48 kHz
+  when the export has no audio), the master's channel format (a 5.1 master gives 5.1 stems), the same range and the same
+  Broadcast WAV start timecode. So the stems line up with the master sample for sample, and without master effects
+  they add up to it. Stems are never loudness-normalised (Effects > Loudness Normalization applies to the master only)
+  and carry no captions, XMP or Content Credentials.
+* **Master effects.** The master bus's effects (a limiter, an EQ) stay on by default, as Premiere renders stems through
+  the master. **Stems without master effects** leaves them out (the master fader stays).
+* **Names and the queue.** `<export name>_DX.wav`, `_MX.wav`, `_FX.wav`, `_OTHER.wav` next to the export. They are
+  queued right after the export (held with it when sent to the queue). Each is a job of its own in the queue
+  ("Dialogue stem"), so a failed stem can be retried on its own. Send to Queue with several destinations writes one set,
+  after the first destination.
+* **Overrides and commands.** `ExportController.queueExport(..., { stems: "role", stemsMasterEffects: false })`;
+  `describe` returns `stems` (`[{ key, name, suffix, tracks, path, file }]`), `stemsOn` and `stemsText`. A stem's own
+  request carries `stemOnly: "dialogue" | "music" | "effects" | "other"` (with `output` its file). `export.quick` and
+  `export.queue` take `"stems": "role"` and `"stemsMasterEffects"`; the stems appear in `"exports"` with a `"stem"` key
+  (with `"ranges"`, each range gets its own stems). The C++ side is `wabcut/export/Stems.h`.
+* **Not built.** Stems by submix (each submix track as a stem) would need routing changes and is left for later.
 
 ## Captions: soft subtitle track
 
@@ -299,6 +466,70 @@ stops between two frames, `ExportPhase::Paused`, through its `PauseGate`), `resu
 **Export Queue** dialog (the queue header's Queue…) lists every job with its progress and per-job start / pause /
 resume / cancel, Start Queue, Stop All, Clear Finished; **several destinations** from one export: `sendToQueue(sequence,
 [presets…], overrides, hold)` / `export.queue` with several presets (each its own default name, all checked first).
+
+### The queue is kept across restarts (0.6)
+
+As Adobe Media Encoder keeps its queue between sessions, Wabcut keeps every export that has not finished. At each change
+of the queue (an export queued, started, paused, finished, cancelled or removed; not its progress) the app writes the
+queue folder in its settings folder (`Export Queue`): `queue.json` with one entry per unfinished export (its file,
+preset, settings, sequence and state) and a copy of the project as it was when the export was queued (it may hold edits
+that were never saved; exports queued from one version share one copy). On the next start:
+
+- Exports that were waiting (held or queued) come back **held**: Ready, waiting for **Start Queue**. Nothing starts by
+  itself after a restart, so an export can't overwrite a file or fill a drive by surprise.
+- An export that was running or paused (Wabcut was closed, or crashed, during it) comes back **interrupted**: a
+  finished row with **Retry**, which exports it again from the start into the same file (also when that file is the one
+  it was replacing; a file written there by something else since it started gets a numbered name, "Film (2).mp4"). It
+  keeps exporting the project it was queued with, not the project open now. If its file was completed before Wabcut
+  closed, it comes back done - never when the file there is still the one it was replacing, or when its temporary file
+  (`<name>.wabcut-partial-…`) is still next to it.
+- A toast says what came back ("3 export(s) from last time are waiting"), with **Start Queue** and **Clear** (Clear
+  cancels them).
+
+A finished, cancelled or removed export leaves the folder, and its project copy goes with the last export that uses
+it. Ingest transcodes and watch-folder exports are not kept (a watch folder queues again from its folder). Only one
+Wabcut keeps the queue: a second one running at the same time keeps its queue in memory as before. When you quit with
+exports in the queue, the quit question says they are kept and offers **Keep Queue and Quit**; **Cancel Exports and
+Quit** cancels them for good. API: `ExportController.restoreQueue()` → `{ count, held, interrupted, done, skipped }`
+(once per run), `clearRestored()`, `keepsQueue`; queue rows have a `restored` role and the state `"interrupted"`.
+
+### Export several sequences at once (0.6)
+
+Select sequences in the Library and choose **Export…** (one sequence: it opens in the Export workspace) or **Send to
+Export Queue…** in the item menu, or press **Send to Media Encoder** (Alt+Shift+M) while the Library has the focus. The
+**Export Sequences** dialog shows what each sequence becomes before anything is queued:
+
+- **Preset**: one preset for every sequence, or **Match each sequence's shape** (each sequence's last preset for its
+  shape; else YouTube 1080p60 for landscape and Shorts / TikTok / Reels 1080×1920 for vertical sequences).
+- **Folder**: each file is named after its sequence ("Long edit.mp4"), numbered when the name is taken on disk or in the
+  queue; the folder becomes the next default.
+- **Wait for Start Queue** (on for Send to Export Queue…).
+
+A sequence that cannot export (offline media, a preset that does not fit) says why in the list, and then nothing is
+queued. API: `sequenceExports(keys, options)`, `queueSequences(keys, { preset | gaming | matchShape, folder, hold })`.
+
+### Each marker or clip as its own file (0.6)
+
+For highlight clips, client selects or Discord uploads: **Export each marker range…** in the Markers panel's export menu,
+or **Each marker…** / **Each selected clip…** under Range in the Export panel's settings. Every marker with a duration
+(optionally of one colour), or every selected clip (a linked video and audio clip counts once), becomes one export,
+named "<sequence> - <marker or clip name>.<ext>" and numbered when taken. The dialog says "12 file(s) · ≈ 240 MB · 3:20"
+before anything is queued, warns when the drive is short, and an empty range refuses the whole batch. API:
+`queueRanges(sequence, preset, [{ in, out, name }], overrides, hold)`, `markerRanges(sequence, colorIndex)`,
+`selectedClipRanges()`, `describeRanges(...)`; command `export.queue` with `ranges` (one preset) and `folder`.
+
+### Media usage report (0.6)
+
+**File > Export > Media Usage Report…** lists every source the sequence uses, for archive clearances, music licensing
+and credits: one row per use with the media's name, file, tape (reel) name, scene / shot / take, whether it is
+AI-generated, the track, the record In / Out (the sequence's timecode from its start time), the source In / Out (the
+media's own timecode, at the clip's speed), the duration, seconds and speed; then a totals block per source (uses,
+seconds on screen, seconds of the source shown, overlapping uses counted once). Options: the whole sequence or In to
+Out; **Report through nested sequences and multicam clips** (on: nested clips are listed in the top sequence's
+timecode, a multicam clip by its active angle; off: a nested clip is one row); CSV (UTF-8 with a byte order mark, so
+spreadsheets read accents and non-Latin names) or JSON. A linked video and audio clip is one use; titles, mattes and
+graphics are not listed; a time-remapped clip is reported as its whole range with the note "remapped". Command:
+`sequence.mediaUsage { sequence, range, format, flatten }` (read only; it returns the text and the report).
 
 ## Watch Folders
 
@@ -378,6 +609,9 @@ snapshot and runs jobs on its own export queue (one at a time, off the GUI threa
 | `presets` (0.2: NOTIFY `presetsChanged`) | also `category` ("general", "hdr", "formats", "user") and `user`; the user's presets after the built-in ones |
 | `quickExport(presetId, output, overrides)`, `sendToQueue(sequenceId, presetIds, overrides, hold)` | 0.2: Quick Export (UX rework: optional `overrides`, e.g. the range); Send to Media Encoder / several destinations |
 | `lastPreset`, `lastGamingPreset`, `lastQuickPreset`, `lastFolder` (+ `lastFolderUrl`), `lastRange`; `suggestedRange(sequenceId)`, `folderUrlOf(path)`, `forgetExportChoices()` | UX rework: [the last choices](#export-remembers-the-last-choices), NOTIFY `exportMemoryChanged` |
+| `rememberedFor(sequenceId)`, `lastTargetMB` | 0.6: the last choices for the sequence's shape `{ portrait, preset, gamingPreset, quickPreset }` ([vertical sequences](#export-remembers-the-last-choices)); the last custom size limit |
+| `retry(jobId)`, the `jobs` role `retryable` | 0.6: queues a failed or cancelled job again (its sequence, preset and overrides) into the same file - also when a file was there before the job was queued (the one it was to replace); a numbered file ("name (2).ext") when another job writes that name or a file was written there since → the new job id, or "" with `lastError` |
+| `relinkRequested()`, `diskSpaceLow(message)` | 0.6 signals: the panel, Quick Export or a job row asks Main for the Relink dialog (QML emits it); a running export's drive is under 2 GB (once per drive) |
 | `job(jobId)`, `openOutput(jobId)` | UX rework: one job for its toast `{ jobId, title, outputPath, outputUrl, folderUrl, presetName, state, detail, finished, origin, exists, errorKind }` (`origin`: export, quick, queue, transcode, watch, command; also a `jobs` role; 0.4 `errorKind` as the role); opens a done job's file in its app (0.4: `jobId` may also be the absolute path of an export's file, so Open works after Clear Finished; false when the file is gone) |
 | `start(jobId)`, `startQueue()`, `pause(jobId)`, `resume(jobId)` | 0.2: the queue |
 | `savePreset(name, description, presetId, overrides, overwrite)`, `importPreset(file, overwrite)`, `exportPreset(id, file)`, `deletePreset(id)` | 0.2: Premiere's preset manager → `{ ok, id, name, error }` / bool |
@@ -386,7 +620,7 @@ snapshot and runs jobs on its own export queue (one at a time, off the GUI threa
 | `busy` | a job is queued or running |
 | `autoEncoders` | `{ h264, hevc, prores, dnxhr }` → the encoder "auto" picks, after `probeEncoders()` |
 | `queueExport(sequenceId, presetId, overrides)` | queues an export; returns the job id, or "" with `lastError` (plain language) |
-| `describe(sequenceId, presetId, overrides)` | what it would write: `{ ok, error, container, videoCodec, format, resolution, frameRate, duration, frames, encoder, quality, audio, range, output, rangeAvailable, dynamicRange (text), dynamicRangeSetting, hdr, hdrAvailable }` |
+| `describe(sequenceId, presetId, overrides)` | what it would write: `{ ok, error, container, videoCodec, format, resolution, frameRate, duration, frames, encoder, quality, audio, range, output, rangeAvailable, dynamicRange (text), dynamicRangeSetting, hdr, hdrAvailable }`; 0.6: `offline` (names) and `offlineCount`, `targetMB`, `targetMbps`, `lowBitrate`, `lowBitrateNote`; `stems`, `stemsOn`, `stemsText` ([audio stems](#audio-stems-dialogue-music-and-effects-06)) |
 | `contentCredentials` | "off", "ai" (the default: exports that contain AI-generated media) or "always"; persisted ([Content Credentials](#content-credentials)) |
 | `credentialsProducer`, `credentialsThumbnail`, `credentialsDoNotTrain`, `credentialsCertificate`, `credentialsKey`, `signingIdentity()` | what the credentials say and who signs them; persisted |
 | `defaultOutputPath(sequenceId, presetId, overrides)` | in `lastFolder` when it exists, else next to the project file (else the Videos folder), named after the sequence, numbered when taken |
@@ -404,8 +638,10 @@ cineform), 0.2: `alpha` (Include Alpha Channel), `pixelFormat`, `proresProfile`,
 FFmpeg name), `quality` (0..51), `bitrateMbps`, `width` + `height` (0 = the sequence size), `scaleMode`
 (fit/fill/stretch), `range` (whole/inOut/workArea), `video` / `audio` (bool), `audioCodec` (aac/pcm16/pcm24),
 `sampleRate`, `audioBitrateKbps`, `dynamicRange` (auto/sdr/pq/hlg; PQ / HLG move HEVC and AV1 to 10-bit),
-`contentCredentials` (off/ai/always, this export only), `output` (local path or file URL; its extension follows the
-container).
+`contentCredentials` (off/ai/always, this export only), 0.6: `targetMB` (a size limit, 1-4000 decimal MB; 0 = off),
+`output` (local path or file URL; its extension follows the container).
+GamingExport's `estimate(sequenceId, presetId, overrides)` (0.6) also returns `freeBytes` (-1 unknown), `freeText`,
+`folder`, `lowSpace` and `lowSpaceNote` for the output's drive.
 Changing the codec or container also moves the dependent defaults (pixel format, PCM in WAV, AAC in MP4).
 
 C++ only: `setProjectFile(path)` (relative media paths and the default output folder; until ExportController
@@ -507,15 +743,32 @@ file's packets); Maximum Render Quality (the source asked at the sequence size);
 Save / Delete Preset, custom range, watch folders, CPU limit), Send to Media Encoder from the keymap (held, the queue
 shown), and the new QML sections, every effect applied, without a Qt warning.
 
+0.6 (#73): `tests/export/test_mxf_export.cpp` checks the files with ffprobe and libavformat and reads the captions back:
+XDCAM HD422 720p50 OP1a with 8 mono PCM tracks (track 1 the mix, 3 and 8 silent), timecode, reel, material package UMID,
+OP1a UL and an SMPTE 436M track (one CDP per frame, DID / SDID, frame-rate code); DNxHD at 23.976, 25, 29.97, 50 and
+59.94 fps (rate, drop-frame timecode, CDP rate code, cc_count, 608 and 708 back at each rate); OP-Atom (OP-Atom UL, a
+DNxHR file and four mono PCM files, timecode and reel on each); AVC-Intra 100 720p50 (High 4:2:2 Intra, 10-bit) with
+one 4-channel track; H.264 in QuickTime at 29.97 and 59.94 with 708 service 2 in the caption SEI and 608 in a c608
+track; a 708 service with two pop-on windows, back-to-back captions and a gap; roll-up on an extended service with 608
+on CC3; paint-on at 59.94; a late caption reported; the refusals; missing and empty caption tracks; JSON and overrides.
+608 is decoded by FFmpeg's own `cc_dec` (a reference independent of the writer), 708 by `readCea708`.
+`tests/export/ui/test_mxf_export_ui.cpp`: the summary and the finished job's details, and the drawer's MXF and
+Embedded captions rows (screenshots `export-mxf-{dark,light}.png`, `export-mxf-captions-{dark,light}.png`).
+
 ## Known limits
 
-- Embedded captions are CEA-608 CC1 only (no CEA-708 services, no second field), in the video stream (no QuickTime
-  caption track, no MXF), as docs/interchange.md says. A smart-rendered export renders every frame when it embeds them
-  (copied packets carry no caption data).
+- Embedded captions (0.6): one caption track a file (one 608 channel and one 708 service; no bilingual CC1 + CC3 /
+  service 1 + 2 yet); QuickTime `c708` tracks are not written (FFmpeg's MOV muxer has no c708 writer: 708 goes into the
+  H.264 / HEVC stream instead); OP-Atom files carry no captions; 708 windows are at most 32 columns (4:3 safe title) and
+  use the predefined window and pen styles with the track's colours (no per-cue positions, fonts or italics). A
+  smart-rendered export renders every frame when it embeds them (copied packets carry no caption data).
+- MXF (0.6): progressive pictures only (no interlaced 1080i XDCAM / AVC-Intra); OP-Atom files are separate clips in
+  Media Composer (FFmpeg gives each file its own material package; Avid's own MediaFiles list every track in one) - an
+  Avid import has not been tried here (no Media Composer); no D-10 (IMX), AS-11 / DPP metadata or AVC-Intra 50.
 - 0.2: MP3 uses Windows' Media Foundation encoder (other platforms need FFmpeg's LAME feature); an MP3 export runs on a
   thread of its own (Media Foundation refuses a GUI thread's single-threaded COM apartment). DNxHD is 1920×1080 only.
   The export overlays are export-only (as in Premiere). Smart rendering covers intra-only ProRes and DNx exports of
-  untouched single clips and preview segments, not H.264 / HEVC passthrough. No SDR Conform or Time Tuner. Watch folders
+  untouched single clips and preview segments, not H.264 / HEVC passthrough. No Time Tuner. Watch folders
   poll (no file-system notifications) and are not recursive.
 - Retimed audio (speed ≠ 1) exports as silence, like playback today; HDR export needs an HDR or
   Wide Gamut colour setup (docs/color.md); HEVC Main 10 needs a hardware encoder (vcpkg's x265 is 8-bit).

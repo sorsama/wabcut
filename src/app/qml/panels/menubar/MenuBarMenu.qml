@@ -19,6 +19,8 @@ ContextMenu {
     property string mnemonic: ""
     /// A submenu (declared inside another menu, or one of the collapsed bar's menus).
     property bool nested: false
+    /// P1 round (#5): its title shows a dot (Help: a newer Wabcut is out).
+    property bool badge: false
 
     // A press on the menu's own title (its parent while it is open) leaves it to the title, which closes it; a press
     // anywhere else closes it.

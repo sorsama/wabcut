@@ -3,6 +3,11 @@
 
 #include <wabcut/model/FinishingOps.h>
 
+#include <wabcut/model/ChangeSet.h>
+#include <wabcut/model/GraphicOps.h>
+#include <wabcut/model/MasterClipEffects.h>
+#include <wabcut/model/TitleOps.h>
+
 #include "SequenceEditor.h"
 
 #include <algorithm>
@@ -46,6 +51,20 @@ struct ParamSlot {
 std::expected<ParamSlot, Error> effectSlotOf(const EffectStack& stack, const ParamRef& ref, std::string_view owner);
 
 std::expected<ParamSlot, Error> slotOf(const ClipContent& content, TrackKind kind, const ParamRef& ref) {
+    if (ref.layer != 0) {
+        // 0.6: a graphic layer's number (GraphicOps.h layerParam).
+        const GraphicLayer* layer = content.graphic ? content.graphic->findLayer(ref.layer) : nullptr;
+        if (!layer) {
+            return std::unexpected(detail::notFound(content.graphic ? "the graphic has no layer " + std::to_string(ref.layer)
+                                                                    : std::string("the clip is not a graphic")));
+        }
+        const auto info = layerParamInfo(*layer, ref.key);
+        const auto value = layerParam(*layer, ref.key);
+        if (!info || !value) {
+            return std::unexpected(detail::notFound("layer " + std::to_string(ref.layer) + " has no parameter \"" + ref.key + "\""));
+        }
+        return ParamSlot{info->minValue, info->maxValue, true, *value};
+    }
     if (ref.intrinsic) {
         const ParameterInfo& info = parameterInfo(*ref.intrinsic);
         if (isVideoParam(*ref.intrinsic) != (kind == TrackKind::Video)) {
@@ -87,6 +106,17 @@ void storeEffectParam(EffectStack& stack, const ParamRef& ref, ParamValue value)
 }
 
 void storeParam(ClipContent& content, const ParamRef& ref, ParamValue value) {
+    if (ref.layer != 0) {
+        if (!content.graphic) {
+            return;
+        }
+        Graphic graphic = *content.graphic;
+        if (GraphicLayer* layer = graphic.findLayer(ref.layer)) {
+            setLayerParam(*layer, ref.key, std::move(value));
+            content.graphic = std::make_shared<const Graphic>(std::move(graphic));
+        }
+        return;
+    }
     if (ref.intrinsic) {
         content.properties[*ref.intrinsic] = std::move(value);
         return;
@@ -95,11 +125,25 @@ void storeParam(ClipContent& content, const ParamRef& ref, ParamValue value) {
 }
 
 std::string paramName(const ParamRef& ref) {
+    if (ref.layer != 0) {
+        return "layer " + std::to_string(ref.layer) + " " + ref.key;
+    }
     return ref.intrinsic ? std::string(parameterInfo(*ref.intrinsic).key)
                          : "effect " + std::to_string(ref.effect.value) + " " + ref.key;
 }
 
 using ValueEdit = std::function<std::expected<ParamValue, Error>(const ParamValue& current)>;
+
+EditOutcome editTargetParam(const ProjectState& state, SequenceId sequence, const EffectTarget& target,
+                            const ParamRef& ref, const ValueEdit& edit);
+
+/// 0.6 (card #71): the media item whose Master Clip Effects hold `effect` when the clip's own stack does not.
+const MediaItem* masterHolderOf(const ProjectState& state, const Clip& clip, EffectInstanceId effect) {
+    if (std::any_of(clip.effects().begin(), clip.effects().end(), [&](const EffectInstance& e) { return e.id == effect; })) {
+        return nullptr;
+    }
+    return masterEffectHolder(state, clip.media, effect);
+}
 
 /// Reads a parameter of one clip, applies `edit`, validates and stores the result.
 EditOutcome editParam(const ProjectState& state, SequenceId sequenceId, ClipId clipId, const ParamRef& ref,
@@ -115,6 +159,12 @@ EditOutcome editParam(const ProjectState& state, SequenceId sequenceId, ClipId c
     SequenceEditor ed(state, **seq);
     const Track& track = ed.track(site->track);
     const Clip& clip = track.clips[site->index];
+    if (!ref.intrinsic && ref.layer == 0) {
+        // 0.6: a master clip effect of the clip's media is edited on the media item (every instance has it).
+        if (const MediaItem* holder = masterHolderOf(state, clip, ref.effect)) {
+            return editTargetParam(state, sequenceId, EffectTarget::ofMedia(holder->id), ref, edit);
+        }
+    }
     const auto slot = slotOf(clip.content(), track.kind, ref);
     if (!slot) {
         return std::unexpected(slot.error());
@@ -134,6 +184,14 @@ EditOutcome editParam(const ProjectState& state, SequenceId sequenceId, ClipId c
     }
     ClipContent content = clip.content();
     storeParam(content, ref, std::move(*next));
+    if (ref.layer != 0 && content.graphic) {
+        if (const auto problem = graphicProblem(*content.graphic)) {
+            return std::unexpected(detail::invalidArgument("the graphic " + *problem));
+        }
+        if (*content.graphic == *clip.content().graphic) {
+            return detail::unchanged(state);
+        }
+    }
     ed.mutableClip(site->track, site->index).setContent(std::move(content));
     return ed.finish();
 }
@@ -232,6 +290,8 @@ struct StackSite {
     EffectStack stack;
     TrackKind kind = TrackKind::Video;
     std::string owner;
+    /// 0.6: a media item's master stack takes the kinds of its streams: bit 0 video, bit 1 audio (0: `kind` only).
+    std::uint8_t kinds = 0;
 };
 
 std::expected<StackSite, Error> stackSite(const Sequence& seq, const EffectTarget& target) {
@@ -255,15 +315,60 @@ std::expected<StackSite, Error> stackSite(const Sequence& seq, const EffectTarge
     case EffectTarget::Kind::MasterAudio:
         return StackSite{seq.audioEffects, TrackKind::Audio, "the audio master"};
     case EffectTarget::Kind::Clip:
+    case EffectTarget::Kind::Media:
         break;
     }
     return std::unexpected(detail::invalidArgument("not a track or master target"));
 }
 
-/// Edits a track or master stack: `edit` gets the site and the editor (for new instance ids).
-using SiteEdit = std::function<std::expected<void, Error>(StackSite& site, SequenceEditor& ed)>;
+/// Edits a track, master or (0.6) master clip stack: `edit` gets the site and where new instance ids come from.
+using NewEffectId = std::function<EffectInstanceId()>;
+using SiteEdit = std::function<std::expected<void, Error>(StackSite& site, const NewEffectId& newId)>;
+
+/// 0.6 (card #71): a media item's Master Clip Effects, edited as one step on the item (the sequences stay as they are).
+/// Bounded like a preset's effects (project files are untrusted input).
+constexpr std::size_t kMaxMasterEffects = 64;
+
+EditOutcome editMediaSite(const ProjectState& state, MediaId media, const SiteEdit& edit) {
+    const auto it = std::lower_bound(state.media.begin(), state.media.end(), media,
+                                     [](const MediaPtr& m, MediaId value) { return m->id < value; });
+    if (it == state.media.end() || (*it)->id != media) {
+        return std::unexpected(detail::notFound("media " + std::to_string(media.value) + " does not exist"));
+    }
+    const MediaItem& item = **it;
+    StackSite site{item.masterEffects, TrackKind::Video, "the master clip of " + item.name, 0};
+    site.kinds = static_cast<std::uint8_t>((item.info.video.empty() ? 0 : 1) | (item.info.audio.empty() ? 0 : 2));
+    if (site.kinds == 0) {
+        site.kinds = 3; // nothing probed yet (an offline item): either kind
+    }
+    EditResult result;
+    result.state = state;
+    const NewEffectId newId = [&] {
+        const auto id = result.state.ids.allocate<EffectInstanceId>();
+        result.createdEffects.push_back(id);
+        return id;
+    };
+    if (auto ok = edit(site, newId); !ok) {
+        return std::unexpected(ok.error());
+    }
+    if (site.stack == item.masterEffects) {
+        return detail::unchanged(state);
+    }
+    if (site.stack.size() > kMaxMasterEffects) {
+        return std::unexpected(detail::invalidArgument("a master clip may hold at most " + std::to_string(kMaxMasterEffects) +
+                                                       " effects"));
+    }
+    MediaItem changed = item;
+    changed.masterEffects = std::move(site.stack);
+    result.state.media[static_cast<std::size_t>(it - state.media.begin())] = std::make_shared<const MediaItem>(std::move(changed));
+    result.changes = diff(state, result.state);
+    return result;
+}
 
 EditOutcome editSite(const ProjectState& state, SequenceId sequenceId, const EffectTarget& target, const SiteEdit& edit) {
+    if (target.kind == EffectTarget::Kind::Media) {
+        return editMediaSite(state, target.media, edit);
+    }
     const auto seq = detail::findSequence(state, sequenceId);
     if (!seq) {
         return std::unexpected(seq.error());
@@ -274,7 +379,7 @@ EditOutcome editSite(const ProjectState& state, SequenceId sequenceId, const Eff
     }
     SequenceEditor ed(state, **seq);
     const EffectStack before = site->stack;
-    if (auto ok = edit(*site, ed); !ok) {
+    if (auto ok = edit(*site, [&] { return ed.newEffectId(); }); !ok) {
         return std::unexpected(ok.error());
     }
     if (site->stack == before) {
@@ -291,6 +396,7 @@ EditOutcome editSite(const ProjectState& state, SequenceId sequenceId, const Eff
         ed.header().audioEffects = std::move(site->stack);
         break;
     case EffectTarget::Kind::Clip:
+    case EffectTarget::Kind::Media:
         break;
     }
     return ed.finish();
@@ -358,10 +464,13 @@ EditOutcome editFaderParam(const ProjectState& state, SequenceId sequenceId, con
 /// A parameter edit on a track or master effect (or, A.3, fader).
 EditOutcome editSiteParam(const ProjectState& state, SequenceId sequenceId, const EffectTarget& target,
                           const ParamRef& ref, const ValueEdit& edit) {
+    if (ref.intrinsic && target.kind == EffectTarget::Kind::Media) {
+        return std::unexpected(detail::invalidArgument("a master clip has effects only; Motion, Opacity and Volume are each clip's"));
+    }
     if (ref.intrinsic) {
         return editFaderParam(state, sequenceId, target, *ref.intrinsic, edit);
     }
-    return editSite(state, sequenceId, target, [&](StackSite& site, SequenceEditor&) -> std::expected<void, Error> {
+    return editSite(state, sequenceId, target, [&](StackSite& site, const NewEffectId&) -> std::expected<void, Error> {
         const auto slot = effectSlotOf(site.stack, ref, site.owner);
         if (!slot) {
             return std::unexpected(slot.error());
@@ -569,13 +678,24 @@ EditOutcome editClipStack(const ProjectState& state, SequenceId sequence, ClipId
                      [&](EffectStack& stack, TrackKind) -> std::expected<void, Error> { return edit(stack, "the clip"); });
 }
 
+/// 0.6: the master stack that holds `effect` for a clip whose own stack does not (the clip operations act there).
+std::optional<MediaId> masterTargetOf(const ProjectState& state, SequenceId sequence, ClipId clip, EffectInstanceId effect) {
+    const auto seq = detail::findSequence(state, sequence);
+    const auto loc = seq ? (*seq)->findClip(clip) : std::nullopt;
+    if (!loc) {
+        return std::nullopt;
+    }
+    const MediaItem* holder = masterHolderOf(state, loc->clip(), effect);
+    return holder ? std::optional<MediaId>(holder->id) : std::nullopt;
+}
+
 EditOutcome editTargetStack(const ProjectState& state, SequenceId sequence, const EffectTarget& target,
                             const InstanceEdit& edit) {
     if (target.kind == EffectTarget::Kind::Clip) {
         return editClipStack(state, sequence, target.clip, edit);
     }
     return editSite(state, sequence, target,
-                    [&](StackSite& site, SequenceEditor&) -> std::expected<void, Error> { return edit(site.stack, site.owner); });
+                    [&](StackSite& site, const NewEffectId&) -> std::expected<void, Error> { return edit(site.stack, site.owner); });
 }
 
 } // namespace
@@ -729,16 +849,25 @@ EditOutcome addEffect(const ProjectState& state, SequenceId sequenceId, std::spa
 }
 
 EditOutcome removeEffect(const ProjectState& state, SequenceId sequence, ClipId clip, EffectInstanceId effect) {
+    if (const auto media = masterTargetOf(state, sequence, clip, effect)) {
+        return editTargetStack(state, sequence, EffectTarget::ofMedia(*media), removeInstance(effect));
+    }
     return editClipStack(state, sequence, clip, removeInstance(effect));
 }
 
 EditOutcome moveEffect(const ProjectState& state, SequenceId sequence, ClipId clip, EffectInstanceId effect,
                        std::size_t index) {
+    if (const auto media = masterTargetOf(state, sequence, clip, effect)) {
+        return editTargetStack(state, sequence, EffectTarget::ofMedia(*media), moveInstance(effect, index));
+    }
     return editClipStack(state, sequence, clip, moveInstance(effect, index));
 }
 
 EditOutcome setEffect(const ProjectState& state, SequenceId sequence, ClipId clip, EffectInstanceId effect,
                       const EffectChange& change) {
+    if (const auto media = masterTargetOf(state, sequence, clip, effect)) {
+        return editTargetStack(state, sequence, EffectTarget::ofMedia(*media), changeInstance(effect, change));
+    }
     return editClipStack(state, sequence, clip, changeInstance(effect, change));
 }
 
@@ -754,16 +883,21 @@ EditOutcome addEffect(const ProjectState& state, SequenceId sequence, const Effe
         return std::unexpected(descriptor.error());
     }
     const EffectDescriptor* d = *descriptor;
-    return editSite(state, sequence, target, [&](StackSite& site, SequenceEditor& ed) -> std::expected<void, Error> {
+    return editSite(state, sequence, target, [&](StackSite& site, const NewEffectId& newId) -> std::expected<void, Error> {
         const TrackKind wanted = d->kind == EffectKind::Video ? TrackKind::Video : TrackKind::Audio;
-        if (site.kind != wanted) {
+        if (site.kinds != 0 && (site.kinds & (wanted == TrackKind::Video ? 1 : 2)) == 0) {
+            return std::unexpected(detail::invalidArgument(effect + " is a " + std::string(toString(d->kind)) + " effect; " +
+                                                           site.owner + " has no " +
+                                                           (wanted == TrackKind::Video ? "picture" : "sound")));
+        }
+        if (site.kinds == 0 && site.kind != wanted) {
             return std::unexpected(detail::invalidArgument(effect + " is a " + std::string(toString(d->kind)) +
                                                            " effect; " + site.owner + " takes " +
                                                            (site.kind == TrackKind::Video ? "video" : "audio") +
                                                            " effects"));
         }
         EffectInstance instance;
-        instance.id = ed.newEffectId();
+        instance.id = newId();
         instance.effect = effect;
         instance.version = d->version;
         instance.params = params;
@@ -835,8 +969,151 @@ const EffectStack* effectStackOf(const Sequence& sequence, const EffectTarget& t
         return &sequence.effects;
     case EffectTarget::Kind::MasterAudio:
         return &sequence.audioEffects;
+    case EffectTarget::Kind::Media:
+        break; // a media item's stack: the ProjectState overload
     }
     return nullptr;
+}
+
+// --- Master Clip Effects (0.6, card #71) ---------------------------------------------------------------------
+
+const EffectStack* effectStackOf(const ProjectState& state, SequenceId sequence, const EffectTarget& target) {
+    if (target.kind == EffectTarget::Kind::Media) {
+        const MediaItem* item = state.findMedia(target.media);
+        return item ? &item->masterEffects : nullptr;
+    }
+    const auto seq = detail::findSequence(state, sequence);
+    return seq ? effectStackOf(**seq, target) : nullptr;
+}
+
+namespace {
+
+/// The clip (on an unlocked track) and its media item for a master clip edit.
+struct MasterClipSite {
+    ClipRef ref;
+    const Clip* clip = nullptr;
+    const MediaItem* item = nullptr;
+};
+
+std::expected<MasterClipSite, Error> masterClipSite(const ProjectState& state, const Sequence& seq, ClipId clipId) {
+    const auto site = editableClip(seq, clipId);
+    if (!site) {
+        return std::unexpected(site.error());
+    }
+    const Clip& clip = seq.findTrack(site->track)->clips[site->index];
+    if (clip.isNested() || !clip.media.isValid()) {
+        return std::unexpected(detail::invalidArgument(
+            "nested sequences and multicam clips have no master clip effects yet: add the effect to the clip"));
+    }
+    const MediaItem* item = state.findMedia(clip.media);
+    if (!item) {
+        return std::unexpected(detail::notFound("the clip's media is not in the project"));
+    }
+    return MasterClipSite{*site, &clip, item};
+}
+
+} // namespace
+
+EditOutcome moveEffectToMaster(const ProjectState& state, SequenceId sequence, ClipId clipId, EffectInstanceId effect) {
+    const auto seq = detail::findSequence(state, sequence);
+    if (!seq) {
+        return std::unexpected(seq.error());
+    }
+    const auto site = masterClipSite(state, **seq, clipId);
+    if (!site) {
+        return std::unexpected(site.error());
+    }
+    const EffectStack& own = site->clip->effects();
+    const auto it = std::find_if(own.begin(), own.end(), [&](const EffectInstance& e) { return e.id == effect; });
+    if (it == own.end()) {
+        return std::unexpected(noSuchEffect(effect));
+    }
+    if (it->effect == kTitleStyleEffect) {
+        return std::unexpected(detail::invalidArgument("a title's text style belongs to the clip"));
+    }
+    // The clip without it, then the master stack with it at the end (the same instance: its keys and masks are in
+    // media time, which every instance shares).
+    EffectInstance moved = *it;
+    auto removed = editClipStack(state, sequence, clipId, removeInstance(effect));
+    if (!removed) {
+        return std::unexpected(removed.error());
+    }
+    auto added = editMediaSite(removed->state, site->item->id, [&](StackSite& media, const NewEffectId&) -> std::expected<void, Error> {
+        const EffectDescriptor* d = EffectRegistry::builtin().find(moved.effect);
+        const int bit = d && d->kind == EffectKind::Audio ? 2 : 1;
+        if ((media.kinds & bit) == 0) {
+            return std::unexpected(detail::invalidArgument(media.owner + " has no " + (bit == 1 ? "picture" : "sound")));
+        }
+        media.stack.push_back(moved);
+        return {};
+    });
+    if (!added) {
+        return std::unexpected(added.error());
+    }
+    added->changes = diff(state, added->state);
+    return added;
+}
+
+EditOutcome moveEffectToClip(const ProjectState& state, SequenceId sequence, ClipId clipId, EffectInstanceId effect) {
+    const auto seq = detail::findSequence(state, sequence);
+    if (!seq) {
+        return std::unexpected(seq.error());
+    }
+    const auto site = masterClipSite(state, **seq, clipId);
+    if (!site) {
+        return std::unexpected(site.error());
+    }
+    const MediaItem* holder = masterEffectHolder(state, site->clip->media, effect);
+    if (!holder) {
+        return std::unexpected(detail::notFound("the master clip has no effect " + std::to_string(effect.value)));
+    }
+    const auto it = std::find_if(holder->masterEffects.begin(), holder->masterEffects.end(),
+                                 [&](const EffectInstance& e) { return e.id == effect; });
+    EffectInstance moved = *it;
+    const EffectDescriptor* d = EffectRegistry::builtin().find(moved.effect);
+    const TrackKind wanted = d && d->kind == EffectKind::Audio ? TrackKind::Audio : TrackKind::Video;
+    if ((*seq)->findTrack(site->ref.track)->kind != wanted) {
+        return std::unexpected(detail::invalidArgument(moved.effect + " is not an effect of this clip's kind; select the " +
+                                                       (wanted == TrackKind::Video ? "video" : "audio") + " clip"));
+    }
+    auto removed = editMediaSite(state, holder->id, [&](StackSite& media, const NewEffectId&) -> std::expected<void, Error> {
+        return removeInstance(effect)(media.stack, media.owner);
+    });
+    if (!removed) {
+        return std::unexpected(removed.error());
+    }
+    // First in the clip's stack, so it still plays before the clip's own effects.
+    auto added = editClipStack(removed->state, sequence, clipId, [&](EffectStack& stack, std::string_view) -> std::expected<void, Error> {
+        stack.insert(stack.begin(), moved);
+        return {};
+    });
+    if (!added) {
+        return std::unexpected(added.error());
+    }
+    added->changes = diff(state, added->state);
+    return added;
+}
+
+EditOutcome setMasterEffectsOff(const ProjectState& state, SequenceId sequence, std::span<const ClipId> clips, bool off) {
+    const auto seq = detail::findSequence(state, sequence);
+    if (!seq) {
+        return std::unexpected(seq.error());
+    }
+    const auto refs = detail::resolveClips(**seq, clips, LinkMode::IgnoreLinks);
+    if (!refs) {
+        return std::unexpected(refs.error());
+    }
+    SequenceEditor ed(state, **seq);
+    for (const ClipRef& r : *refs) {
+        const Clip& clip = ed.track(r.track).clips[r.index];
+        if (clip.content().masterEffectsOff == off) {
+            continue;
+        }
+        ClipContent content = clip.content();
+        content.masterEffectsOff = off;
+        ed.mutableClip(r.track, r.index).setContent(std::move(content));
+    }
+    return ed.finish();
 }
 
 } // namespace wabcut::edit

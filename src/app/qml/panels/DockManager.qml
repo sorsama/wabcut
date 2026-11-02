@@ -21,6 +21,8 @@ import QtQuick.Window
 //     hide) and restored. A tab's menu closes, undocks and maximizes (tabMenuAction).
 //   * Every change is kept in the workspace (Workspaces.update): its layout and its floating windows' places. The active
 //     and the maximized group are not kept.
+//   * P1 round (#32): while the workspace is locked (`locked`, Window > Workspaces > Lock Workspace) nothing moves: drags
+//     do not start, panels do not close, undock or pop out, and the gutters do not resize; opening a panel still works.
 QtObject {
     id: manager
 
@@ -55,6 +57,8 @@ QtObject {
     /// Restored by toggling again, and when a workspace loads, a new group appears, its group goes away or floats, or a
     /// panel of another group is shown.
     property string maximizedGroup: ""
+    /// P1 round (#32): the workspace is locked (see the header).
+    readonly property bool locked: Workspaces.find(manager.workspace)?.locked === true
 
     // A grip or tab being dragged: its group's slot, the one panel being dragged ("": the whole group), the pointer
     // (work-area and screen coordinates), whether it left the main window, and what a drop would do now:
@@ -485,17 +489,17 @@ QtObject {
         manager.setTree(manager.withTabs(manager.tree, host.group, [key]))
         return host.group
     }
-    /// Closes the panel `key` (it waits outside the layout until it is opened again).
+    /// Closes the panel `key` (it waits outside the layout until it is opened again). Not while the workspace is locked.
     function closePanel(key: string) {
         const g = manager.groupOfPanel(key)
-        if (!g)
+        if (!g || manager.locked)
             return
         manager.setTree(manager.withoutPanel(manager.tree, key))
     }
     /// Closes the other panels of `key`'s group (the tab menu's Close Other Panels in Group); `key` shows.
     function closeOthers(key: string) {
         const g = manager.groupOfPanel(key)
-        if (!g || g.panels.length < 2)
+        if (!g || g.panels.length < 2 || manager.locked)
             return
         let next = manager.tree
         for (const k of g.panels) {
@@ -519,6 +523,41 @@ QtObject {
                 return ((p as DockHolder).dockSlot as DockSlot)?.dockKey ?? ""
         }
         return ""
+    }
+    /// P1 round (#30): the group with the keyboard focus - a floating group whose window is active, else the group of the
+    /// main window's focus item - or "".
+    function focusedGroup(): string {
+        for (const id of Object.keys(manager.docked)) {
+            const slot = manager.slotOf(id)
+            if (slot && slot.floating && slot.floatWindow.active)
+                return id
+        }
+        return manager.mainWindow ? manager.groupOfItem(manager.mainWindow.activeFocusItem) : ""
+    }
+    /// P1 round (#30), Next / Previous Panel Group (Ctrl+F6 / Ctrl+Shift+F6): the group after (`delta` 1) or before (-1)
+    /// `from` (Main: the active group, else the focused one) in layout order, the docked groups first and the floating ones last, wrapping
+    /// round. Groups with nothing to show, and the hidden ones while a frame is maximized, are skipped. It becomes the
+    /// active group; returns its id ("" when there is none). Main.qml then focuses its panel.
+    function cycleGroup(delta: int, from: string): string {
+        const docked = []
+        const floating = []
+        for (const g of Workspaces.groupsOf(manager.tree)) {
+            if (manager.shownPanel(g.group) === "")
+                continue
+            const slot = manager.slotOf(g.group)
+            if (slot && slot.floating)
+                floating.push(g.group)
+            else if (manager.maximizedGroup === "" || g.group === manager.maximizedGroup)
+                docked.push(g.group)
+        }
+        const order = docked.concat(floating)
+        if (order.length === 0)
+            return ""
+        const at = order.indexOf(from !== "" ? from : manager.activeGroup)
+        const step = delta < 0 ? -1 : 1
+        const next = at < 0 ? (step > 0 ? 0 : order.length - 1) : (at + step + order.length) % order.length
+        manager.setActiveGroup(order[next])
+        return order[next]
     }
     /// The docked group under the mouse pointer (its slot's glass is hovered), or "".
     function groupUnderPointer(): string {
@@ -574,6 +613,8 @@ QtObject {
     /// panel in a window of its own), "undockGroup" (the group in a window, or docked back from one) or "maximize".
     function tabMenuAction(what: string, gid: string, key: string) {
         const slot = manager.slotOf(gid)
+        if (manager.locked && what !== "maximize")
+            return
         switch (what) {
         case "close":
             manager.closePanel(key)
@@ -615,6 +656,8 @@ QtObject {
     /// Moves a gutter between two children (`before`, `after`: their indexes in the split at `path`, sizes in px) by
     /// `delta` px, each keeping at least `least`.
     function shiftWeight(path: var, before: int, after: int, delta: real, sizeBefore: real, sizeAfter: real, least: real) {
+        if (manager.locked)
+            return
         const next = Workspaces.copy(manager.tree)
         let node = next
         for (const i of path) {
@@ -636,6 +679,8 @@ QtObject {
     }
     /// The two children either side of a gutter get even shares again.
     function evenWeights(path: var, before: int, after: int) {
+        if (manager.locked)
+            return
         const next = Workspaces.copy(manager.tree)
         let node = next
         for (const i of path) {
@@ -783,6 +828,8 @@ QtObject {
 
     /// The grip of `slot` (`panel` "") or the tab of its panel `panel` starts to be dragged.
     function beginDrag(slot: DockSlot, panel: string) {
+        if (manager.locked)
+            return // the grips and tabs do not drag while the workspace is locked
         manager.dragged = slot
         manager.draggedPanel = panel
         manager.drop = { kind: "none" }
@@ -956,6 +1003,8 @@ QtObject {
 
     /// Pops `slot` out into a window of its own, a little offset from where it is docked.
     function popOut(slot: DockSlot) {
+        if (manager.locked)
+            return
         const g = slot.mapToGlobal(0, 0)
         manager.popOutAt(slot, Qt.rect(g.x + Theme.space(8), g.y + Theme.space(8), slot.width, slot.height))
     }

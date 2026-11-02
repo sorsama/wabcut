@@ -24,6 +24,12 @@
 //   * Latency: measureLatency() runs a loopback pass (the output wired, or held, to the input) and sets the
 //     calibration from what came back.
 //   * Takes: takesOf(clip) lists a recorded slot's takes; useTake(clip, take) is record.useTake.
+//   * 0.6 (P1 round, #53) the script prompter: a narration script (a .txt / .md file, or pasted text; Markdown headings
+//     and decoration stripped, at most 256 KiB) shown on the voice-over overlay a paragraph at a time while a pass runs,
+//     or while a track is armed with showScript on. Right / Page Down and Left / Page Up (presentation clickers) move
+//     through it during a pass; with markerPerParagraph each new paragraph read while recording drops a marker named
+//     after its first words. Kept out of the project (no schema change): the script, the paragraph reached and the
+//     options are the user's settings, by project file, so the place survives takes and reopening the project.
 //
 // Keys cross into QML as opaque strings ("t12", "c7"); levels in dB; no ticks (principle 9).
 
@@ -32,7 +38,9 @@
 #include <QObject>
 #include <QPointer>
 #include <QString>
+#include <QStringList>
 #include <QTimer>
+#include <QUrl>
 #include <QVariantList>
 #include <QVariantMap>
 #include <QtQml/qqmlregistration.h>
@@ -92,6 +100,27 @@ class VoiceOverBridge : public QObject {
     /// (cut off by a crash: repaired when placed), track ("A2"), startText, placeable }]. Empty when there is nothing.
     Q_PROPERTY(QVariantList recoveredTakes READ recoveredTakes NOTIFY recoveredTakesChanged FINAL)
 
+    // ---- 0.6 (P1 round, #53): the script prompter ----
+    /// The script's file ("" for pasted text or none) and its text as shown (headings and decoration stripped).
+    Q_PROPERTY(QString scriptPath READ scriptPath NOTIFY scriptChanged FINAL)
+    Q_PROPERTY(QString scriptText READ scriptText NOTIFY scriptChanged FINAL)
+    /// The script's paragraphs (split at blank lines; a heading starts one).
+    Q_PROPERTY(QStringList paragraphs READ paragraphs NOTIFY scriptChanged FINAL)
+    /// The paragraph being read (clamped; kept across takes and reopening the project).
+    Q_PROPERTY(int paragraphIndex READ paragraphIndex WRITE setParagraphIndex NOTIFY paragraphChanged FINAL)
+    /// The overlay shows the prompter: there is a script, and a pass runs (count-in, pre-roll, recording, post-roll; not
+    /// a latency test) or a track of the sequence is armed and `showScript` is on.
+    Q_PROPERTY(bool prompterVisible READ prompterVisible NOTIFY prompterChanged FINAL)
+    /// A track of the current sequence is armed for recording (R).
+    Q_PROPERTY(bool armed READ armed NOTIFY prompterChanged FINAL)
+    /// Options (Settings > Audio > Script prompter): show the script while a track is armed, not only during a pass; the
+    /// current paragraph's text size in pixels (16..96; the next one is smaller); mirrored for a teleprompter's glass; a
+    /// marker per paragraph read while recording.
+    Q_PROPERTY(bool showScript READ showScript WRITE setShowScript NOTIFY prompterOptionsChanged FINAL)
+    Q_PROPERTY(int prompterTextSize READ prompterTextSize WRITE setPrompterTextSize NOTIFY prompterOptionsChanged FINAL)
+    Q_PROPERTY(bool mirror READ mirror WRITE setMirror NOTIFY prompterOptionsChanged FINAL)
+    Q_PROPERTY(bool markerPerParagraph READ markerPerParagraph WRITE setMarkerPerParagraph NOTIFY prompterOptionsChanged FINAL)
+
 public:
     explicit VoiceOverBridge(QObject* parent = nullptr);
     ~VoiceOverBridge() override;
@@ -145,6 +174,39 @@ public:
     /// Stops offering the listed takes (their journals go; the files stay in the folder).
     Q_INVOKABLE void dismissRecoveredTakes();
 
+    // ---- 0.6 (P1 round, #53): the script prompter ----
+    QString scriptPath() const { return m_scriptPath; }
+    QString scriptText() const { return m_scriptText; }
+    QStringList paragraphs() const { return m_paragraphs; }
+    int paragraphIndex() const { return m_paragraphIndex; }
+    void setParagraphIndex(int index);
+    bool prompterVisible() const;
+    bool armed() const;
+    bool showScript() const { return m_showScript; }
+    void setShowScript(bool on);
+    int prompterTextSize() const { return m_prompterTextSize; }
+    void setPrompterTextSize(int px);
+    bool mirror() const { return m_mirror; }
+    void setMirror(bool on);
+    bool markerPerParagraph() const { return m_markerPerParagraph; }
+    void setMarkerPerParagraph(bool on);
+    /// Reads a .txt / .md / .fountain script (UTF-8, at most 256 KiB) and starts at its first paragraph. "" or why not.
+    Q_INVOKABLE QString loadScript(const QUrl& file);
+    /// Pasted text as the script (the same limits), from its first paragraph. "" or why not.
+    Q_INVOKABLE QString setScriptText(const QString& text);
+    Q_INVOKABLE void clearScript();
+    /// The next / previous paragraph; false at the end / start. While recording with markerPerParagraph, the next one
+    /// drops a marker at the playhead named after its first words (marker.add, one undo step).
+    Q_INVOKABLE bool nextParagraph();
+    Q_INVOKABLE bool previousParagraph();
+    /// The paragraphs of a script text (exposed for tests): Markdown headings and decoration stripped, split at blank
+    /// lines and headings, empty ones dropped.
+    static QStringList scriptParagraphs(const QString& text);
+    /// The marker a paragraph gets as it is read while recording with markerPerParagraph (exposed for tests): marker.add
+    /// at the playhead named after the current paragraph's first words (at most six, or 40 characters, then "…"), the
+    /// paragraph as its comment; one undo step.
+    void markParagraph();
+
 signals:
     void inputDevicesChanged();
     void inputChanged();
@@ -158,6 +220,11 @@ signals:
     void latencyMeasured(double roundTripMs, int clips);
     /// `recoveredTakes` changed: show (or update) the recovery prompt when it is not empty.
     void recoveredTakesChanged();
+    // 0.6 (#53): the script prompter.
+    void scriptChanged();
+    void paragraphChanged();
+    void prompterChanged();
+    void prompterOptionsChanged();
 
 private:
     /// Playback runs past the sequence end while a pass runs (PlaybackController::setStopAtEnd), restored however
@@ -185,6 +252,10 @@ private:
     void setError(const QString& message);
     bool ensureInput();
     void releaseInputIfUnheld();
+    // 0.6 (#53): the script of the project file that is open now (the settings by project), and saving it back.
+    void syncScript();
+    void saveScript() const;
+    QString useScript(const QString& text, const QString& path, int index);
 
     QPointer<ProjectController> m_controller;
     QPointer<PlaybackBridge> m_playback;
@@ -213,6 +284,20 @@ private:
     double m_monitorGainDb = 0.0;
     double m_calibrationMs = 0.0;
     double m_roundTripMs = 0.0;
+    // 0.6 (#53): the script prompter.
+    QString m_scriptPath;
+    QString m_scriptText;
+    QStringList m_paragraphs;
+    int m_paragraphIndex = 0;
+    QString m_scriptProject;        ///< the project file the script belongs to ("" while it has none)
+    bool m_showScript = true;
+    int m_prompterTextSize = 36;
+    bool m_mirror = false;
+    bool m_markerPerParagraph = false;
+    bool m_armed = false;
+    QString m_lastPassState;        ///< for the marker of the paragraph read when recording starts
+    void updateArmed();
+    void onPassStateChanged();
 };
 
 struct VoiceOverSingleton {

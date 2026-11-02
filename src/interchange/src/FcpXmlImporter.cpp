@@ -16,12 +16,17 @@
 // are back to back; transitions overlap the cut between them and take no time.
 // Connected clips (lane > 0 above, < 0 below) become tracks: lanes in order, packed onto extra tracks
 // where clips of one lane (anchored to different parents) overlap.
+// 0.6: <video ref="effect"> generators become synthetic items (card #69: Wabcut's own exactly, Final Cut's solids as
+// colour mattes), and <filter-video> / <filter-audio> become effects (card #67, InterchangeEffects.h): Wabcut's own
+// exactly, well-known ones mapped by name, the rest kept as disabled placeholders an export writes back.
 
 #include "ImporterCommon.h"
 #include "Importers.h"
+#include "InterchangeEffects.h"
 #include "TimeMath.h"
 #include "XmlUtil.h"
 
+#include <wabcut/model/Synthetic.h>
 #include <wabcut/model/Timecode.h>
 
 #include <algorithm>
@@ -131,6 +136,16 @@ private:
                       Ticks duration, Ticks localStart, int lane, std::optional<TimeRange> window,
                       std::int64_t linkGroup, const std::string& name);
     std::optional<ClipProperties> propertiesOf(const pugi::xml_node& node, const std::string& name);
+    /// 0.6 (card #67): an element's <filter-video> / <filter-audio> as the effects of the clips it makes.
+    void filtersOf(const pugi::xml_node& node, const std::string& name, bool video, bool audio,
+                   std::vector<EffectInstance>& videoEffects, std::vector<EffectInstance>& audioEffects);
+    std::optional<EffectInstance> filterOf(const pugi::xml_node& filter, EffectKind kind, const std::string& name);
+    /// A <param>'s value, or its <keyframeAnimation> as a curve in the clip's own time; divided by `scale`.
+    std::optional<ParamValue> paramValueOf(const pugi::xml_node& param, double scale);
+    /// 0.6 (card #69): a <video ref="effect"> generator as a synthetic item's clip; false when it is not one.
+    bool addGenerator(const pugi::xml_node& item, const pugi::xml_node& effect, Ticks seqStart, Ticks duration,
+                      Ticks localStart, int lane, std::optional<TimeRange> window, std::int64_t linkGroup,
+                      const std::string& name);
     /// The keyframes of an adjustment's <param name="..."><keyframeAnimation> as a curve in the clip's own time (X.1),
     /// each value read by `value`; nullopt when there are none or they are unusable (reported).
     template <class Read>
@@ -479,15 +494,6 @@ std::optional<ClipProperties> FcpXmlParser::propertiesOf(const pugi::xml_node& n
                            std::string(attribute) + " of '" + name + "' is out of range and was not imported", child);
                 }
             }
-        } else if (tag == "filter-video" || tag == "filter-audio") {
-            std::string effectName = child.attribute("name").value();
-            if (effectName.empty()) {
-                if (const auto it = m_effects.find(child.attribute("ref").value()); it != m_effects.end()) {
-                    effectName = it->second.attribute("name").value();
-                }
-            }
-            report(ReportOutcome::Dropped, ReportCategory::Effect,
-                   "effect '" + effectName + "' on '" + name + "' is not supported yet", child);
         } else if (tag.starts_with("adjust-") && tag != "adjust-conform") {
             report(ReportOutcome::Dropped, ReportCategory::Effect,
                    std::string(tag) + " on '" + name + "' is not supported yet", child);
@@ -692,6 +698,9 @@ void FcpXmlParser::addMediaClip(const pugi::xml_node& node, const Asset& asset, 
         sourceIn -= mediaFor(range.duration);
     }
     const auto properties = propertiesOf(node, name);
+    std::vector<EffectInstance> videoEffects;
+    std::vector<EffectInstance> audioEffects;
+    filtersOf(node, name, video, audio, videoEffects, audioEffects); // 0.6 (card #67)
     const auto channels = audio ? channelMapOf(node, name) : std::nullopt; // A.9
     const bool enabled = attrInt(node, "enabled").value_or(1) != 0;
     auto make = [&](StreamKind kind) {
@@ -725,6 +734,7 @@ void FcpXmlParser::addMediaClip(const pugi::xml_node& node, const Asset& asset, 
             }
         }
         c.speed = speed;
+        c.effects = kind == StreamKind::Video ? videoEffects : audioEffects;
         if (kind == StreamKind::Audio) {
             c.channels = channels;
         }
@@ -792,6 +802,14 @@ void FcpXmlParser::processItem(const pugi::xml_node& item, const TimeContext& ct
 
     if (tag == "asset-clip" || tag == "video" || tag == "audio") {
         const auto it = m_assets.find(item.attribute("ref").value());
+        if (const auto effect = m_effects.find(item.attribute("ref").value());
+            it == m_assets.end() && effect != m_effects.end() && tag != "audio" && duration && duration->value > 0) {
+            if (addGenerator(item, effect->second, seqStart, *duration, localStart, lane, window, linkGroup, name)) {
+                processMarkers(item, inner, TimeRange{seqStart, *duration}, name);
+                processAnchored(item, inner, depth);
+                return;
+            }
+        }
         if (it == m_assets.end()) {
             const bool generator = m_effects.contains(item.attribute("ref").value());
             report(ReportOutcome::Dropped, ReportCategory::Clip,
@@ -881,17 +899,99 @@ void FcpXmlParser::processItem(const pugi::xml_node& item, const TimeContext& ct
         return;
     }
     if (tag == "audition") {
-        // The first child is the active pick.
+        // 0.6 (card #74): the first pick is the active one (it plays); the others become its takes (IrClip::alternates)
+        // when they have its picture and sound. Only the active pick's connected clips and markers are kept.
+        std::vector<pugi::xml_node> picks;
         for (const pugi::xml_node child : item.children()) {
             if (child.type() == pugi::node_element) {
-                report(ReportOutcome::Approximated, ReportCategory::Clip,
-                       "audition: only the active pick '" + std::string(child.attribute("name").value()) +
-                           "' was imported",
-                       item);
-                processItem(child, ctx, lane, depth + 1, window, linkGroup, insideClip);
-                break;
+                picks.push_back(child);
             }
         }
+        if (picks.empty()) {
+            return;
+        }
+        const auto counts = [&] {
+            std::map<std::pair<int, int>, std::size_t> out;
+            for (const auto& [number, l] : m_state->videoLanes) {
+                out[{0, number}] = l.clips.size();
+            }
+            for (const auto& [number, l] : m_state->audioLanes) {
+                out[{1, number}] = l.clips.size();
+            }
+            return out;
+        };
+        const auto countOf = [](const std::map<std::pair<int, int>, std::size_t>& m, int kind, int number) {
+            const auto it = m.find({kind, number});
+            return it == m.end() ? std::size_t{0} : it->second;
+        };
+        const auto before = counts();
+        processItem(picks.front(), ctx, lane, depth + 1, window, linkGroup, insideClip);
+        const std::size_t videoFrom = countOf(before, 0, lane);
+        const std::size_t audioFrom = countOf(before, 1, lane);
+        const std::size_t videoTo = m_state->videoLanes[lane].clips.size();
+        const std::size_t audioTo = m_state->audioLanes[lane].clips.size();
+        if (videoFrom == videoTo && audioFrom == audioTo) {
+            return; // the active pick made nothing (reported)
+        }
+        const std::string activeName = picks.front().attribute("name").value();
+        std::size_t takes = 1;
+        for (std::size_t k = 1; k < picks.size(); ++k) {
+            const auto mark = counts();
+            const std::size_t markers = m_state->markers.size();
+            processItem(picks[k], ctx, lane, depth + 1, window, -1, insideClip);
+            // Take the pick's clips off the lanes again: its picture and sound on this lane become takes, anything
+            // else (its connected clips) goes.
+            const auto takeOff = [&](std::map<int, Lane>& lanes, int kind, std::vector<IrClip>* keep) {
+                bool others = false;
+                for (auto& [number, l] : lanes) {
+                    const std::size_t from = countOf(mark, kind, number);
+                    if (l.clips.size() <= from) {
+                        continue;
+                    }
+                    if (number == lane && keep) {
+                        for (std::size_t i = from; i < l.clips.size(); ++i) {
+                            keep->push_back(std::move(l.clips[i]));
+                        }
+                    } else {
+                        others = true;
+                    }
+                    l.clips.erase(l.clips.begin() + static_cast<std::ptrdiff_t>(from), l.clips.end());
+                }
+                return others;
+            };
+            std::vector<IrClip> video;
+            std::vector<IrClip> audio;
+            const bool connectedVideo = takeOff(m_state->videoLanes, 0, &video);
+            const bool connectedAudio = takeOff(m_state->audioLanes, 1, &audio);
+            const bool connected = connectedVideo || connectedAudio;
+            m_state->markers.resize(markers);
+            const std::string pickName = picks[k].attribute("name").value();
+            if (video.size() != videoTo - videoFrom || audio.size() != audioTo - audioFrom) {
+                report(ReportOutcome::Dropped, ReportCategory::Clip,
+                       "audition pick '" + pickName + "' does not have the picture and sound of the active pick '" +
+                           activeName + "'; it was not imported",
+                       picks[k]);
+                continue;
+            }
+            for (std::size_t j = 0; j < video.size(); ++j) {
+                video[j].alternates.clear();
+                m_state->videoLanes[lane].clips[videoFrom + j].alternates.push_back(std::move(video[j]));
+            }
+            for (std::size_t j = 0; j < audio.size(); ++j) {
+                audio[j].alternates.clear();
+                m_state->audioLanes[lane].clips[audioFrom + j].alternates.push_back(std::move(audio[j]));
+            }
+            ++takes;
+            if (connected) {
+                report(ReportOutcome::Dropped, ReportCategory::Clip,
+                       "the connected clips of audition pick '" + pickName + "' were not imported (only the active pick's)",
+                       picks[k]);
+            }
+        }
+        report(takes > 1 ? ReportOutcome::Carried : ReportOutcome::Approximated, ReportCategory::Clip,
+               "audition '" + activeName + "' with " + std::to_string(takes) + (takes == 1 ? " take" : " takes") +
+                   " (the first pick is the active take)",
+               item);
         return;
     }
     if (tag == "ref-clip" || tag == "mc-clip") {
@@ -959,9 +1059,13 @@ void FcpXmlParser::processItem(const pugi::xml_node& item, const TimeContext& ct
         const bool video = enable != "audio" && (!multicam || !videoAngles.empty());
         const bool audio = enable != "video" && (!multicam || !audioAngles.empty());
         const std::int64_t group = video && audio && linkGroup < 0 ? m_nextLink++ : linkGroup;
+        std::vector<EffectInstance> videoEffects;
+        std::vector<EffectInstance> audioEffects;
+        filtersOf(item, c.name, video, audio, videoEffects, audioEffects); // 0.6 (card #67)
         if (video) {
             IrClip v = c;
             v.stream = {StreamKind::Video, 0};
+            v.effects = std::move(videoEffects);
             v.angles = videoAngles;
             v.linkGroup = group;
             m_state->videoLanes[lane].clips.push_back(std::move(v));
@@ -969,6 +1073,7 @@ void FcpXmlParser::processItem(const pugi::xml_node& item, const TimeContext& ct
         if (audio) {
             IrClip a = c;
             a.stream = {StreamKind::Audio, 0};
+            a.effects = std::move(audioEffects);
             a.angles = audioAngles;
             a.linkGroup = group;
             m_state->audioLanes[lane].clips.push_back(std::move(a));
@@ -1058,6 +1163,361 @@ std::optional<ParamValue> FcpXmlParser::keyframesOf(const pugi::xml_node& adjust
     return std::nullopt;
 }
 
+std::optional<ParamValue> FcpXmlParser::paramValueOf(const pugi::xml_node& p, double scale) {
+    const auto firstNumber = [](std::string_view text) -> std::optional<double> {
+        const auto words = splitWords(text);
+        return words.empty() ? std::nullopt : parseDouble(words.front());
+    };
+    if (scale == 0.0) {
+        scale = 1.0;
+    }
+    if (const pugi::xml_node animation = p.child("keyframeAnimation")) {
+        Curve curve;
+        for (const pugi::xml_node key : animation.children("keyframe")) {
+            const auto t = time(key, "time");
+            const auto v = firstNumber(key.attribute("value").value());
+            if (!t || !v || !std::isfinite(*v) || curve.keys.size() >= 10'000) {
+                continue;
+            }
+            Keyframe k{*t, *v / scale};
+            const std::string_view interp = key.attribute("interp").value();
+            if (interp == "hold") {
+                k.interpolation = Interpolation::Hold;
+            } else if (!interp.empty() && interp != "linear") {
+                k.interpolation = Interpolation::EaseInOut;
+            }
+            if (const auto at = curve.keyAt(k.time)) {
+                curve.keys[*at] = k;
+            } else {
+                curve.keys.insert(curve.keys.begin() + static_cast<std::ptrdiff_t>(curve.insertionIndex(k.time)), k);
+            }
+        }
+        if (!curve.keys.empty()) {
+            return ParamValue(curve);
+        }
+    }
+    if (const auto v = firstNumber(p.attribute("value").value()); v && std::isfinite(*v)) {
+        return ParamValue(*v / scale);
+    }
+    return std::nullopt;
+}
+
+std::optional<EffectInstance> FcpXmlParser::filterOf(const pugi::xml_node& f, EffectKind kind, const std::string& clipName) {
+    pugi::xml_node resource;
+    if (const auto it = m_effects.find(f.attribute("ref").value()); it != m_effects.end()) {
+        resource = it->second;
+    }
+    std::string effectName = f.attribute("name").value();
+    if (effectName.empty()) {
+        effectName = resource.attribute("name").value();
+    }
+    const std::string uid = resource.attribute("uid").value();
+    const std::string label = !effectName.empty() ? effectName : !uid.empty() ? uid : std::string("effect");
+    const bool enabled = attrInt(f, "enabled").value_or(1) != 0;
+    const std::string prefix(kWabcutEffectUid);
+    std::string wabcutId;
+    for (const pugi::xml_node p : f.children("param")) {
+        if (std::string_view(p.attribute("key").value()) == prefix) {
+            wabcutId = p.attribute("value").value();
+        }
+    }
+    if (wabcutId.empty() && uid.starts_with(prefix + "/")) {
+        wabcutId = uid.substr(prefix.size() + 1);
+    }
+    EffectInstance e;
+    e.enabled = enabled;
+    std::vector<std::string> matched;
+    std::vector<std::string> kept;
+    std::vector<std::string> lost;
+    // A setting another editor has that Wabcut does not use: kept as text for the export.
+    const auto keep = [&](const pugi::xml_node& p) {
+        const std::string pname = p.attribute("name").value();
+        std::string value = p.attribute("value").value();
+        if (value.empty()) {
+            if (const pugi::xml_node first = p.child("keyframeAnimation").child("keyframe")) {
+                value = first.attribute("value").value();
+                lost.push_back(pname + " keyframes");
+            }
+        }
+        if (pname.empty() || value.empty()) {
+            return;
+        }
+        if (!addDataText(e, std::string(kSourceParam) + pname, value)) {
+            lost.push_back(pname);
+            return;
+        }
+        if (const std::string_view key = p.attribute("key").value(); !key.empty()) {
+            addDataText(e, "key:" + pname, std::string(key));
+        }
+        kept.push_back(pname);
+    };
+    const EffectDescriptor* descriptor = nullptr;
+    const auto setChecked = [&](const std::string& key, ParamValue value) {
+        const EffectParamInfo* info = descriptor ? descriptor->param(key) : nullptr;
+        if (info && (!value.isValid(info->minValue, info->maxValue) || (!info->animatable && value.isCurve()))) {
+            return false;
+        }
+        e.set(key, std::move(value));
+        return true;
+    };
+    if (!wabcutId.empty()) {
+        // Wabcut's own (Wabcut wrote it): its id, keys, keyframes and data exactly; Final Cut's shared settings win, in
+        // case they were changed there.
+        e.effect = wabcutId;
+        descriptor = EffectRegistry::builtin().find(wabcutId);
+        const ForeignEffect* known = foreignEffectFor(wabcutId);
+        std::vector<std::pair<const ForeignParam*, pugi::xml_node>> shared;
+        for (const pugi::xml_node p : f.children("param")) {
+            const std::string key = p.attribute("key").value();
+            const std::string pname = p.attribute("name").value();
+            if (key == prefix) {
+                continue;
+            }
+            if (key == prefix + ".version") {
+                if (const auto v = parseInt64(p.attribute("value").value()); v && *v >= 1 && *v <= 1'000'000) {
+                    e.version = static_cast<std::int32_t>(*v);
+                }
+            } else if (key.starts_with(prefix + "/")) {
+                if (auto v = paramValueOf(p, 1.0)) {
+                    e.set(key.substr(prefix.size() + 1), std::move(*v));
+                } else {
+                    lost.push_back(key.substr(prefix.size() + 1));
+                }
+            } else if (key.starts_with(prefix + ".data/")) {
+                const std::string dataKey = key.substr(prefix.size() + 6);
+                const std::string_view value = p.attribute("value").value();
+                if (value.starts_with("text:")) {
+                    addDataText(e, dataKey, std::string(value.substr(5)));
+                } else if (value.starts_with("points:")) {
+                    std::vector<EffectPoint> points;
+                    std::string_view rest = value.substr(7);
+                    while (!rest.empty() && points.size() < kMaxEffectPoints) {
+                        const auto semi = rest.find(';');
+                        const std::string_view pair = rest.substr(0, semi);
+                        const auto comma = pair.find(',');
+                        const auto x = parseDouble(pair.substr(0, comma));
+                        const auto y = comma == std::string_view::npos ? std::nullopt : parseDouble(pair.substr(comma + 1));
+                        if (x && y) {
+                            points.push_back({*x, *y});
+                        }
+                        rest = semi == std::string_view::npos ? std::string_view() : rest.substr(semi + 1);
+                    }
+                    EffectData d{dataKey, std::move(points)};
+                    if (!effectDataProblem(d) && (e.findData(dataKey) || e.data.size() < kMaxEffectDataEntries)) {
+                        e.setData(std::move(d));
+                    } else {
+                        lost.push_back(dataKey);
+                    }
+                }
+            } else if (const ForeignParam* fp = [&]() -> const ForeignParam* {
+                           if (known) {
+                               for (const ForeignParam& x : known->params) {
+                                   if (iequals(x.name, pname)) {
+                                       return &x;
+                                   }
+                               }
+                           }
+                           return nullptr;
+                       }()) {
+                shared.emplace_back(fp, p);
+            } else {
+                keep(p);
+            }
+        }
+        for (const auto& [fp, p] : shared) {
+            if (auto v = paramValueOf(p, fp->scale); !v || !setChecked(std::string(fp->key), std::move(*v))) {
+                lost.push_back(p.attribute("name").value());
+            }
+        }
+        std::string reason = "effect '" + effectLabel(e) + "' on '" + clipName + "'";
+        if (!lost.empty()) {
+            reason += "; not imported:";
+            for (const std::string& l : lost) {
+                reason += " " + l;
+            }
+        }
+        report(lost.empty() ? ReportOutcome::Carried : ReportOutcome::Approximated, ReportCategory::Effect, reason, f);
+        return e;
+    }
+    if (const std::string id = wabcutEffectNamed(effectName, uid, kind); !id.empty()) {
+        // A well-known effect: Wabcut's equivalent, with the settings both mean the same by.
+        e.effect = id;
+        descriptor = EffectRegistry::builtin().find(id);
+        const ForeignEffect* known = foreignEffectFor(id);
+        for (const pugi::xml_node p : f.children("param")) {
+            const std::string pname = p.attribute("name").value();
+            const ForeignParam* fp = nullptr;
+            if (known) {
+                for (const ForeignParam& x : known->params) {
+                    if (iequals(x.name, pname)) {
+                        fp = &x;
+                    }
+                }
+            }
+            if (fp) {
+                if (auto v = paramValueOf(p, fp->scale); v && setChecked(std::string(fp->key), std::move(*v))) {
+                    matched.push_back(pname);
+                    continue;
+                }
+            }
+            keep(p);
+        }
+        addDataText(e, std::string(kSourceName), effectName);
+        addDataText(e, std::string(kSourceUid), uid);
+        std::string reason = "effect '" + label + "' on '" + clipName + "' as Wabcut's '" + effectLabel(e) + "'";
+        if (!matched.empty()) {
+            reason += "; settings matched by name:";
+            for (const std::string& m : matched) {
+                reason += " " + m;
+            }
+        } else {
+            reason += "; its settings were not translated (Wabcut's defaults)";
+        }
+        if (!kept.empty()) {
+            reason += "; kept for export but not applied:";
+            for (const std::string& k : kept) {
+                reason += " " + k;
+            }
+        }
+        if (!lost.empty()) {
+            reason += "; not kept:";
+            for (const std::string& l : lost) {
+                reason += " " + l;
+            }
+        }
+        report(ReportOutcome::Approximated, ReportCategory::Effect, reason, f);
+        return e;
+    }
+    // Unknown: a disabled placeholder that keeps the effect's name, id and settings for the export.
+    e.effect = std::string(kFcpxPlaceholder) + label;
+    e.enabled = false;
+    addDataText(e, std::string(kSourceName), effectName);
+    addDataText(e, std::string(kSourceUid), uid);
+    addDataText(e, std::string(kSourceEnabled), enabled ? "1" : "0");
+    for (const pugi::xml_node p : f.children("param")) {
+        keep(p);
+    }
+    std::string reason = "effect '" + label + "' on '" + clipName +
+                         "' kept as a placeholder: Wabcut does not render it, and an export writes it back";
+    if (!lost.empty()) {
+        reason += "; not kept:";
+        for (const std::string& l : lost) {
+            reason += " " + l;
+        }
+    }
+    report(ReportOutcome::Approximated, ReportCategory::Effect, reason, f);
+    return e;
+}
+
+void FcpXmlParser::filtersOf(const pugi::xml_node& node, const std::string& name, bool video, bool audio,
+                             std::vector<EffectInstance>& videoEffects, std::vector<EffectInstance>& audioEffects) {
+    constexpr std::size_t kMaxFilters = 1'000;
+    for (const pugi::xml_node child : node.children()) {
+        const std::string_view tag = child.name();
+        if (tag != "filter-video" && tag != "filter-audio") {
+            continue;
+        }
+        const bool picture = tag == "filter-video";
+        std::vector<EffectInstance>& list = picture ? videoEffects : audioEffects;
+        if (!(picture ? video : audio) || list.size() >= kMaxFilters) {
+            std::string effectName = child.attribute("name").value();
+            report(ReportOutcome::Dropped, ReportCategory::Effect,
+                   "effect '" + effectName + "' on '" + name + "' was not imported: " +
+                       (list.size() >= kMaxFilters ? std::string("too many effects")
+                                                   : std::string("the clip's ") + (picture ? "picture" : "sound") +
+                                                         " is not imported"),
+                   child);
+            continue;
+        }
+        if (auto e = filterOf(child, picture ? EffectKind::Video : EffectKind::Audio, name)) {
+            list.push_back(std::move(*e));
+        }
+    }
+}
+
+bool FcpXmlParser::addGenerator(const pugi::xml_node& item, const pugi::xml_node& effect, Ticks seqStart, Ticks duration,
+                                Ticks localStart, int lane, std::optional<TimeRange> window, std::int64_t linkGroup,
+                                const std::string& name) {
+    const std::string effectName = effect.attribute("name").value();
+    const std::string uid = effect.attribute("uid").value();
+    const std::string prefix(kWabcutGeneratorUid);
+    IrGenerator g;
+    bool sound = false;
+    for (const pugi::xml_node p : item.children("param")) {
+        const std::string key = p.attribute("key").value();
+        const std::string_view value = p.attribute("value").value();
+        if (key == prefix) {
+            g.kind = std::string(value);
+        } else if (key == prefix + ".audio") {
+            sound = value == "1";
+        } else if (key.starts_with(prefix + "/")) {
+            if (const auto v = parseDouble(value)) {
+                g.params.push_back(EffectParam{key.substr(prefix.size() + 1), ParamValue(*v)});
+            }
+        }
+    }
+    if (g.kind.empty() && uid.starts_with(prefix + "/")) {
+        g.kind = uid.substr(prefix.size() + 1);
+    }
+    const bool foreign = g.kind.empty();
+    if (foreign) {
+        const std::string lowerName = toLowerAscii(effectName);
+        if (uid.find("/Solids.localized/") != std::string::npos || lowerName == "solid color" || lowerName == "color solid" ||
+            lowerName == "color matte") {
+            // Final Cut's solids: a colour matte of their Color ("r g b a", 0..1).
+            g.kind = std::string(kColorMatteGenerator);
+            for (const pugi::xml_node p : item.children("param")) {
+                if (!iequals(p.attribute("name").value(), "Color")) {
+                    continue;
+                }
+                const auto words = splitWords(p.attribute("value").value());
+                const char* keys[] = {"color.r", "color.g", "color.b"};
+                for (std::size_t i = 0; i < 3 && i < words.size(); ++i) {
+                    if (const auto v = parseDouble(words[i])) {
+                        g.params.push_back(EffectParam{keys[i], ParamValue(std::clamp(*v, 0.0, 1.0))});
+                    }
+                }
+                if (words.size() >= 4) {
+                    if (const auto a = parseDouble(words[3]); a && *a < 1.0) {
+                        g.approximation = "its transparency was not carried (a colour matte is opaque)";
+                    }
+                }
+            }
+            if (g.approximation.empty()) {
+                g.approximation = "Final Cut's '" + effectName + "' became a Color Matte";
+            } else {
+                g.approximation = "Final Cut's '" + effectName + "' became a Color Matte; " + g.approximation;
+            }
+        } else if (lowerName.find("bars") != std::string::npos) {
+            g.kind = std::string(kBarsAndToneGenerator);
+            g.approximation = "'" + effectName + "' became Wabcut's SMPTE bars (HD) and 1 kHz tone at -20 dBFS";
+        }
+    }
+    if (generatorDisplayName(g.kind).empty()) {
+        return false;
+    }
+    std::sort(g.params.begin(), g.params.end(), [](const EffectParam& a, const EffectParam& b) { return a.key < b.key; });
+    const std::string kind = g.kind;
+    IrMedia media = generatorMedia(std::move(g), foreign ? std::string() : name);
+    media.location = m_loc.locate(item);
+    Asset asset;
+    asset.id = "generator:" + std::string(item.attribute("ref").value());
+    asset.name = media.name;
+    asset.hasVideo = true;
+    asset.hasAudio = sound && generatorHasAudio(kind);
+    // Final Cut's generators start anywhere (3600s); an unbounded one starts its clip at its own start. Wabcut's
+    // start is the clip's source In.
+    asset.start = foreign && kind != kCountingLeaderGenerator ? localStart : Ticks{};
+    asset.media = m_media.add(std::move(media));
+    std::int64_t group = linkGroup;
+    if (asset.hasAudio && group < 0) {
+        group = m_nextLink++;
+    }
+    addMediaClip(item, asset, true, asset.hasAudio, seqStart, duration, localStart, lane, window, group,
+                 name.empty() ? asset.name : name);
+    return true;
+}
+
 void FcpXmlParser::addTitle(const pugi::xml_node& item, Ticks seqStart, Ticks duration, int lane, const std::string& name) {
     IrTitle title;
     for (const pugi::xml_node run : item.child("text").children("text-style")) {
@@ -1119,6 +1579,8 @@ void FcpXmlParser::addTitle(const pugi::xml_node& item, Ticks seqStart, Ticks du
     c.location = m_loc.locate(item);
     c.title = std::move(title);
     c.properties = propertiesOf(item, name);
+    std::vector<EffectInstance> noAudio;
+    filtersOf(item, name.empty() ? std::string("title") : name, true, false, c.effects, noAudio); // 0.6 (card #67)
     m_state->videoLanes[lane].clips.push_back(std::move(c));
 }
 

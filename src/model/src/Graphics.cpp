@@ -45,6 +45,12 @@ constexpr Names<PaintKind, 4> kPaintKinds{{{{PaintKind::None, "none"}, {PaintKin
                                             {PaintKind::Linear, "linear"}, {PaintKind::Radial, "radial"}}}};
 constexpr Names<TextAlign, 4> kTextAligns{{{{TextAlign::Left, "left"}, {TextAlign::Center, "center"},
                                             {TextAlign::Right, "right"}, {TextAlign::Justify, "justify"}}}};
+constexpr Names<TextVerticalAlign, 3> kVerticalAligns{{{{TextVerticalAlign::Top, "top"}, {TextVerticalAlign::Center, "center"},
+                                                       {TextVerticalAlign::Bottom, "bottom"}}}};
+constexpr Names<TextCaps, 3> kTextCaps{{{{TextCaps::Normal, "normal"}, {TextCaps::AllCaps, "allCaps"},
+                                         {TextCaps::SmallCaps, "smallCaps"}}}};
+constexpr Names<StrokePosition, 3> kStrokePositions{{{{StrokePosition::Outside, "outside"}, {StrokePosition::Center, "center"},
+                                                      {StrokePosition::Inside, "inside"}}}};
 constexpr Names<TextUnit, 3> kTextUnits{{{{TextUnit::Character, "character"}, {TextUnit::Word, "word"},
                                           {TextUnit::Line, "line"}}}};
 constexpr Names<TextSelectorShape, 2> kSelectorShapes{{{{TextSelectorShape::Square, "square"},
@@ -187,16 +193,41 @@ bool isLanguageTag(std::string_view s) {
            });
 }
 
-void checkText(Checker& c, const TextContent& t, const std::string& where) {
-    c.require(t.runs.size() <= kMaxTextRuns, where, "more than " + std::to_string(kMaxTextRuns) + " text runs");
+void checkRuns(Checker& c, const std::vector<TextRun>& runs, const std::string& where, const std::string& name) {
+    c.require(runs.size() <= kMaxTextRuns, where, "more than " + std::to_string(kMaxTextRuns) + " text runs");
     std::size_t bytes = 0;
-    for (std::size_t i = 0; i < t.runs.size() && c.ok(); ++i) {
-        const TextRun& r = t.runs[i];
+    for (std::size_t i = 0; i < runs.size() && c.ok(); ++i) {
+        const TextRun& r = runs[i];
         bytes += r.text.size();
         c.require(edit::isValidUtf8(r.text) && r.text.find('\0') == std::string::npos, where, "text must be UTF-8 without NUL");
-        checkTextStyle(c, r.style, where + ".runs[" + std::to_string(i) + "]");
+        checkTextStyle(c, r.style, where + name + "[" + std::to_string(i) + "]");
     }
     c.require(bytes <= kMaxGraphicTextBytes, where, "more than " + std::to_string(kMaxGraphicTextBytes / 1024) + " KiB of text");
+}
+
+void checkText(Checker& c, const TextContent& t, const std::string& where) {
+    checkRuns(c, t.runs, where, ".runs");
+    // 0.6: strokes, Source Text versions and keys, and the size and spacing keys.
+    c.require(t.strokes.size() <= kMaxTextStrokes, where, "more than " + std::to_string(kMaxTextStrokes) + " text strokes");
+    for (std::size_t i = 0; i < t.strokes.size() && c.ok(); ++i) {
+        const std::string at = where + ".strokes[" + std::to_string(i) + "]";
+        c.color(t.strokes[i].color, at + ".color");
+        c.param(t.strokes[i].width, 0.0, 1000.0, at + ".width");
+    }
+    c.require(t.sources.size() <= kMaxTextSources, where, "more than " + std::to_string(kMaxTextSources) + " source texts");
+    for (std::size_t i = 0; i < t.sources.size() && c.ok(); ++i) {
+        checkRuns(c, t.sources[i], where, ".sources[" + std::to_string(i) + "]");
+    }
+    c.param(t.sourceKey, 0.0, static_cast<double>(t.sources.size()), where + ".sourceKey");
+    const auto keys = [&](const std::optional<Curve>& curve, double lo, double hi, const char* name) {
+        if (curve) {
+            c.param(ParamValue(*curve), lo, hi, where + "." + name);
+        }
+    };
+    keys(t.sizeKeys, 1.0, 2000.0, "sizeKeys");
+    keys(t.trackingKeys, -1000.0, 10000.0, "trackingKeys");
+    keys(t.leadingKeys, 0.0, 10000.0, "leadingKeys");
+    keys(t.baselineKeys, -10000.0, 10000.0, "baselineKeys");
     c.require(within(t.boxWidth, 0.0, kMaxGraphicCoordinate) && within(t.boxHeight, 0.0, kMaxGraphicCoordinate), where,
               "the text box must be 0..1e6 pixels");
     c.require(isLanguageTag(t.language), where, "language must be a language tag such as \"th\"");
@@ -286,8 +317,9 @@ void checkLayers(Walk& w, const std::vector<GraphicLayer>& layers, std::size_t d
         checkTransform(c, l.transform, at + ".transform");
         c.color(l.shadow.color, at + ".shadow");
         c.require(within(l.shadow.opacity, 0.0, 1.0) && within(l.shadow.angle, -1e6, 1e6) &&
-                      within(l.shadow.distance, 0.0, 10000.0) && within(l.shadow.softness, 0.0, 10000.0),
-                  at, "shadow opacity 0..1, distance and softness 0..10000 pixels");
+                      within(l.shadow.distance, 0.0, 10000.0) && within(l.shadow.softness, 0.0, 10000.0) &&
+                      within(l.shadow.size, 0.0, 1000.0),
+                  at, "shadow opacity 0..1, distance and softness 0..10000 pixels, size 0..1000");
         if (auto problem = masksProblem(l.masks)) {
             c.fail(at + ".masks", *problem);
         }
@@ -298,7 +330,9 @@ void checkLayers(Walk& w, const std::vector<GraphicLayer>& layers, std::size_t d
         if (l.kind == LayerKind::Text) {
             checkText(c, l.text, at + ".text");
         } else {
-            c.require(l.text.runs.empty() && l.text.animators.empty() && !l.text.path, at, "only a text layer has text");
+            c.require(l.text.runs.empty() && l.text.animators.empty() && !l.text.path && l.text.strokes.empty() &&
+                          l.text.sources.empty(),
+                      at, "only a text layer has text");
         }
         if (l.kind == LayerKind::Shape) {
             checkShape(c, l.shape, at + ".shape");
@@ -481,6 +515,12 @@ std::string_view toString(PaintKind v) { return kPaintKinds.name(v); }
 std::optional<PaintKind> paintKindFromString(std::string_view t) { return kPaintKinds.parse(t); }
 std::string_view toString(TextAlign v) { return kTextAligns.name(v); }
 std::optional<TextAlign> textAlignFromString(std::string_view t) { return kTextAligns.parse(t); }
+std::string_view toString(TextVerticalAlign v) { return kVerticalAligns.name(v); }
+std::optional<TextVerticalAlign> textVerticalAlignFromString(std::string_view t) { return kVerticalAligns.parse(t); }
+std::string_view toString(TextCaps v) { return kTextCaps.name(v); }
+std::optional<TextCaps> textCapsFromString(std::string_view t) { return kTextCaps.parse(t); }
+std::string_view toString(StrokePosition v) { return kStrokePositions.name(v); }
+std::optional<StrokePosition> strokePositionFromString(std::string_view t) { return kStrokePositions.parse(t); }
 std::string_view toString(TextUnit v) { return kTextUnits.name(v); }
 std::optional<TextUnit> textUnitFromString(std::string_view t) { return kTextUnits.parse(t); }
 std::string_view toString(TextSelectorShape v) { return kSelectorShapes.name(v); }

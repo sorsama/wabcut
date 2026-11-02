@@ -306,8 +306,29 @@ void ExtensionHost::stop() {
     if (m_watcher) {
         send(Json{{"type", "shutdown"}});
         m_watcher->child().wait(std::chrono::milliseconds(500));
+        // P1 round (#65): a storage change can still be on its way when a stop follows the call that made it: read
+        // what the helper wrote before it ended, then save.
+        drainStorage(std::chrono::milliseconds(500));
     }
     ended(HostState::Stopped, "stopped", true);
+}
+
+void ExtensionHost::drainStorage(std::chrono::milliseconds limit) {
+    const auto until = Clock::now() + limit;
+    for (;;) {
+        bool closed = false;
+        bool overflow = false;
+        for (const std::string& line : m_watcher->take(closed, overflow)) {
+            const auto parsed = parseHostMessage(line);
+            if (parsed && (parsed->type == HostMessageType::StorageSet || parsed->type == HostMessageType::StorageRemove)) {
+                applyStorage(*parsed, Clock::now());
+            }
+        }
+        if (closed || overflow || Clock::now() >= until) {
+            return;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
 }
 
 void ExtensionHost::ended(HostState state, std::string reason, bool killed, bool timeLimit) {
@@ -708,28 +729,9 @@ void ExtensionHost::handle(const std::string& line) {
         }
         break;
     case HostMessageType::StorageSet:
-    case HostMessageType::StorageRemove: {
-        if (!takeToken(m_storageTokens, m_storageRefilled, m_setup.limits.storageWritesPerSecond,
-                       m_setup.limits.storageWriteBurst, now)) {
-            if (!m_storageDropped) {
-                addLog("warn", "storage: too many writes at once: some were dropped");
-            }
-            m_storageDropped = true;
-            break;
-        }
-        m_storageDropped = false;
-        const std::string key = m.at("key").get<std::string>();
-        if (parsed->type == HostMessageType::StorageRemove) {
-            m_storage->kv.remove(key);
-        } else if (auto stored = m_storage->kv.set(key, m.at("value")); !stored) {
-            addLog("warn", "storage: " + stored.error().message);
-            break;
-        }
-        if (!m_storageSaveAt) {
-            m_storageSaveAt = now + kStorageSaveDelay; // many changes, one write
-        }
+    case HostMessageType::StorageRemove:
+        applyStorage(*parsed, now);
         break;
-    }
     case HostMessageType::Log:
         addLog(m.at("level").get<std::string>(), m.at("message").get<std::string>());
         break;
@@ -810,6 +812,29 @@ void ExtensionHost::sendReply(const Json& id, Json body) {
     }
     if (!m_watcher->send(std::move(text))) {
         ended(HostState::Crashed, "it stopped reading what the editor sends", true);
+    }
+}
+
+void ExtensionHost::applyStorage(const HostMessage& message, Clock::time_point now) {
+    if (!takeToken(m_storageTokens, m_storageRefilled, m_setup.limits.storageWritesPerSecond,
+                   m_setup.limits.storageWriteBurst, now)) {
+        if (!m_storageDropped) {
+            addLog("warn", "storage: too many writes at once: some were dropped");
+        }
+        m_storageDropped = true;
+        return;
+    }
+    m_storageDropped = false;
+    const Json& m = message.body;
+    const std::string key = m.at("key").get<std::string>();
+    if (message.type == HostMessageType::StorageRemove) {
+        m_storage->kv.remove(key);
+    } else if (auto stored = m_storage->kv.set(key, m.at("value")); !stored) {
+        addLog("warn", "storage: " + stored.error().message);
+        return;
+    }
+    if (!m_storageSaveAt) {
+        m_storageSaveAt = now + kStorageSaveDelay; // many changes, one write
     }
 }
 

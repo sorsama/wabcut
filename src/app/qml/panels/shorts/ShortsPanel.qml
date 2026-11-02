@@ -93,6 +93,7 @@ Panel {
             PillTabs {
                 id: countTabs
                 objectName: "shortsCountTabs"
+                Accessible.name: qsTr("How many Shorts") // P1 #61
                 Layout.fillWidth: true
                 compact: true
                 model: [qsTr("3"), qsTr("5"), qsTr("10")]

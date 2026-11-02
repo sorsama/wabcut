@@ -999,7 +999,7 @@ struct TimelineAudioPlayer::Impl {
             sequence = req.sequence;
             lastSnapshot = nullptr;
         }
-        const ProjectSnapshot snapshot = session != nullptr ? session->snapshot() : nullptr; // once per pass
+        const ProjectSnapshot snapshot = session != nullptr ? session->shown() : nullptr; // once per pass
         const Sequence* seq = snapshot ? snapshot->findSequence(sequence) : nullptr;
         // A.9: a master of another format mixes in another channel count.
         std::erase_if(retiredSources, [](const RetiredSource& r) { return r.source.use_count() == 1; });

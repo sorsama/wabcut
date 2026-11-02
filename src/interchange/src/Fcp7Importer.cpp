@@ -16,11 +16,14 @@
 // transition has <start> or <end> -1: the transition's alignment then gives the edit point.
 
 #include "EffectMap.h"
+#include "FilterMap.h"
 #include "ImporterCommon.h"
 #include "Importers.h"
+#include "InterchangeEffects.h"
 #include "TimeMath.h"
 #include "XmlUtil.h"
 
+#include <wabcut/model/Synthetic.h>
 #include <wabcut/model/Timecode.h>
 
 #include <algorithm>
@@ -150,6 +153,10 @@ private:
     /// A <multiclip> as a multicam source sequence (C.8), once per multiclip id: its slot.
     std::optional<std::size_t> parseMulticlip(const pugi::xml_node& multiclip, Rate rate, int depth);
     /// A nested-sequence or multiclip clipitem as an IR clip playing `slot` (C.8).
+    /// 0.6 (card #69): a <generatoritem> of a generator Wabcut makes (Color, Slug, Bars and Tone, Wabcut's own) as a
+    /// synthetic item's clip; false when it is none of them.
+    bool addGeneratorClip(SequenceState& state, const TrackItem& item, IrTrack& track, TrackKind kind, std::size_t index,
+                          const std::string& name, const std::string& label);
     void addNestedClip(SequenceState& state, const TrackItem& item, IrTrack& track, TrackKind kind, std::size_t index,
                        std::size_t slot, std::vector<std::size_t> angles, const std::string& name,
                        const std::string& label);
@@ -390,6 +397,74 @@ std::optional<ClipProperties> Fcp7Parser::propertiesOf(SequenceState& state, con
                                                        const std::string& name, std::vector<EffectInstance>& effects) {
     ClipProperties props;
     bool any = false;
+    // 0.6 (card #66): a filter as FilterMap.h reads it: every parameter's constant or keyframes (curve time: the clip's
+    // media frames, as below), or its text, colour or point.
+    const Rate filterRate = parseRate(clip.child("rate")).value_or(state.rate);
+    const auto describeFilter = [&](const pugi::xml_node& node) {
+        FcpFilter f;
+        f.id = std::string(childText(node, "effectid"));
+        f.name = std::string(childText(node, "name"));
+        f.mediaType = std::string(childText(node, "mediatype"));
+        for (const pugi::xml_node p : node.children("parameter")) {
+            if (f.params.size() >= 1024) {
+                break;
+            }
+            FcpFilterParam fp;
+            fp.id = std::string(childText(p, "parameterid"));
+            fp.name = std::string(childText(p, "name"));
+            if (p.child("keyframe")) {
+                Curve curve;
+                for (const pugi::xml_node key : p.children("keyframe")) {
+                    const auto when = childDouble(key, "when");
+                    auto v = childDouble(key, "value");
+                    if (!v) { // PF: a Premiere key-list value inside a keyframe: its value
+                        if (const auto keyList = premiereKeyList(childText(key, "value"))) {
+                            v = keyList->constant();
+                        }
+                    }
+                    if (!when || !v || !std::isfinite(*when) || !std::isfinite(*v) || std::abs(*when) > 1e12 ||
+                        curve.keys.size() >= 10'000) {
+                        continue;
+                    }
+                    const auto time = frames(std::llround(*when), filterRate);
+                    if (!time) {
+                        continue;
+                    }
+                    const Keyframe k{*time, *v};
+                    if (const auto at = curve.keyAt(k.time)) {
+                        curve.keys[*at] = k;
+                    } else {
+                        curve.keys.insert(curve.keys.begin() + static_cast<std::ptrdiff_t>(curve.insertionIndex(k.time)), k);
+                    }
+                }
+                if (!curve.keys.empty()) {
+                    fp.value = ParamValue(curve);
+                }
+            } else if (const pugi::xml_node v = p.child("value")) {
+                if (v.child("red") || v.child("green") || v.child("blue")) {
+                    fp.color = std::array<double, 3>{childDouble(v, "red").value_or(0.0), childDouble(v, "green").value_or(0.0),
+                                                     childDouble(v, "blue").value_or(0.0)};
+                } else if (v.child("horiz") || v.child("vert")) {
+                    fp.point = std::array<double, 2>{childDouble(v, "horiz").value_or(0.0), childDouble(v, "vert").value_or(0.0)};
+                } else if (const auto number = childDouble(p, "value"); number && std::isfinite(*number)) {
+                    fp.value = ParamValue(*number);
+                } else if (auto keyList = premiereKeyList(v.text().get())) {
+                    // PF: Premiere's own value form, "ticks,value,0,0,0,0,0,0" keys (FilterMap.h).
+                    fp.value = std::move(*keyList);
+                } else {
+                    const std::string_view text = trim(v.text().get());
+                    if (iequals(text, "true") || iequals(text, "false")) {
+                        fp.value = ParamValue(iequals(text, "true") ? 1.0 : 0.0);
+                    } else {
+                        // Up to 4 MB: Premiere's Lumetri state block (base64) is read for its LUTs and curves.
+                        fp.text = std::string(text.substr(0, 4 * 1024 * 1024));
+                    }
+                }
+            }
+            f.params.push_back(std::move(fp));
+        }
+        return f;
+    };
     for (const pugi::xml_node filter : clip.children("filter")) {
         const pugi::xml_node effect = filter.child("effect");
         const std::string id = toLowerAscii(childText(effect, "effectid"));
@@ -397,12 +472,20 @@ std::optional<ClipProperties> Fcp7Parser::propertiesOf(SequenceState& state, con
         if (id == "timeremap" || iequals(effectName, "Time Remap")) {
             continue; // handled as speed
         }
-        const bool disabled = childBool(filter, "enabled") == false || childBool(effect, "enabled") == false;
+        // PF: Premiere switches its own effects off with <pproBypass>TRUE</pproBypass>.
+        const bool disabled = childBool(filter, "enabled") == false || childBool(effect, "enabled") == false ||
+                              childBool(effect, "pproBypass") == true;
         const std::string originalId(childText(effect, "effectid"));
         const NativeEffect* native = nativeEffectFromFcp(id, effectName);
         const EffectDescriptor* own =
             originalId.starts_with("wabcut.") ? EffectRegistry::builtin().find(originalId) : nullptr;
-        if (disabled && !native && !own) {
+        // 0.6 (card #66): other editors' colour and audio filters (Lumetri Color, colour correctors, RGB Curves, EQ,
+        // Dynamics, compressors) and Wabcut's own effects written beside them (FilterMap.h).
+        std::optional<MappedFilter> mapped;
+        if (!native && !own && id != "opacity" && id != "basic" && id != "audiolevels" && id != "audiopan") {
+            mapped = mapFcpFilter(describeFilter(effect));
+        }
+        if (disabled && !native && !own && !mapped) {
             report(ReportOutcome::Dropped, ReportCategory::Effect,
                    "disabled effect '" + effectName + "' on '" + name + "' was not imported", effect,
                    state.name);
@@ -530,6 +613,37 @@ std::optional<ClipProperties> Fcp7Parser::propertiesOf(SequenceState& state, con
             set(ParamId::VolumeDb, value("level", ParamId::VolumeDb, decibels));
         } else if (id == "audiopan") {
             set(ParamId::Pan, value("pan", ParamId::Pan, same));
+        } else if (mapped) {
+            // 0.6 (card #66): the Wabcut effect of another editor's colour or audio filter, with what changed.
+            EffectInstance instance = std::move(mapped->effect);
+            instance.enabled = !disabled;
+            const bool keyframed = std::any_of(instance.params.begin(), instance.params.end(),
+                                               [](const EffectParam& p) { return p.value.isCurve(); });
+            const EffectDescriptor* target = EffectRegistry::builtin().find(instance.effect);
+            const std::string what = "'" + (effectName.empty() ? mapped->label : effectName) + "' on '" + name + "' -> " +
+                                     std::string(target ? target->displayName : std::string_view(instance.effect));
+            auto joined = [](const std::vector<std::string>& items) {
+                std::string out;
+                for (const std::string& i : items) {
+                    out += (out.empty() ? "" : "; ") + i;
+                }
+                return out;
+            };
+            if (mapped->approximated.empty()) {
+                report(ReportOutcome::Carried, ReportCategory::Effect,
+                       what + (keyframed ? " (keyframed)" : " (static values)"), effect, state.name);
+            } else {
+                report(ReportOutcome::Approximated, ReportCategory::Effect, what + ": " + joined(mapped->approximated), effect,
+                       state.name);
+            }
+            if (!mapped->dropped.empty()) {
+                report(ReportOutcome::Dropped, ReportCategory::Effect,
+                       "'" + (effectName.empty() ? mapped->label : effectName) + "' on '" + name +
+                           "': not carried: " + joined(mapped->dropped),
+                       effect, state.name);
+            }
+            effects.push_back(std::move(instance));
+            continue;
         } else if (native || own) {
             // X.1: an effect of the clip's stack. A native FCP7 filter in its units; Wabcut's own by parameter key.
             EffectInstance instance;
@@ -577,6 +691,12 @@ std::optional<ClipProperties> Fcp7Parser::propertiesOf(SequenceState& state, con
             } else {
                 for (const pugi::xml_node p : effect.children("parameter")) {
                     const std::string key(childText(p, "parameterid"));
+                    if (key.starts_with(kWabcutDataParam)) { // 0.6: curves and other effect data
+                        if (auto data = effectDataFromText(key.substr(kWabcutDataParam.size()), childText(p, "value"))) {
+                            instance.setData(std::move(*data));
+                        }
+                        continue;
+                    }
                     const EffectParamInfo* info = infoOf(key);
                     if (!info) {
                         report(ReportOutcome::Dropped, ReportCategory::Effect,
@@ -599,9 +719,12 @@ std::optional<ClipProperties> Fcp7Parser::propertiesOf(SequenceState& state, con
             understood = false;
         }
         if (!understood) {
+            // 0.6 (card #66): named, with its parameter count, so it can be applied again by hand.
+            const auto parameters = static_cast<std::size_t>(std::distance(effect.children("parameter").begin(),
+                                                                           effect.children("parameter").end()));
             report(ReportOutcome::Dropped, ReportCategory::Effect,
-                   "effect '" + (effectName.empty() ? id : effectName) + "' on '" + name +
-                       "' is not supported yet",
+                   "effect '" + (effectName.empty() ? id : effectName) + "' (" + std::to_string(parameters) +
+                       (parameters == 1 ? " parameter" : " parameters") + ") on '" + name + "' is not supported: not imported",
                    effect, state.name);
         } else {
             report(ReportOutcome::Carried, ReportCategory::Effect,
@@ -941,6 +1064,12 @@ void Fcp7Parser::parseTrack(SequenceState& state, const pugi::xml_node& trackNod
                     continue;
                 }
             }
+            if (mergeInto) {
+                continue; // the primary track of an exploded stereo pair already has the generator's sound
+            }
+            if (addGeneratorClip(state, item, track, kind, index, name, label)) {
+                continue;
+            }
             report(ReportOutcome::Dropped, ReportCategory::Clip,
                    "generated clip '" + name + "' on " + label +
                        " (no media file) is not supported yet; its time is left as a gap",
@@ -1171,6 +1300,108 @@ void Fcp7Parser::parseTrack(SequenceState& state, const pugi::xml_node& trackNod
         (kind == TrackKind::Video ? state.seq.videoTracks : state.seq.audioTracks)
             .push_back(std::move(local));
     }
+}
+
+bool Fcp7Parser::addGeneratorClip(SequenceState& state, const TrackItem& item, IrTrack& track, TrackKind kind,
+                                  std::size_t index, const std::string& name, const std::string& label) {
+    const pugi::xml_node node = item.node;
+    const pugi::xml_node effect = node.child("effect");
+    const std::string id = toLowerAscii(childText(effect, "effectid"));
+    const std::string effectName = toLowerAscii(childText(effect, "name"));
+    const auto is = [&](std::string_view a) { return id == a || effectName == a; };
+    IrGenerator g;
+    for (const pugi::xml_node p : effect.children("parameter")) {
+        const std::string pid(childText(p, "parameterid"));
+        if (pid == "wabcut:generator") {
+            g.kind = std::string(childText(p, "value"));
+        } else if (pid.starts_with("wabcut:")) {
+            if (const auto v = childDouble(p, "value")) {
+                g.params.push_back(EffectParam{pid.substr(7), ParamValue(*v)});
+            }
+        }
+    }
+    if (g.kind.empty()) {
+        g.params.clear();
+        if (is("color") || is("color matte") || is("colormatte")) {
+            g.kind = std::string(kColorMatteGenerator);
+            for (const pugi::xml_node p : effect.children("parameter")) {
+                const std::string pid = toLowerAscii(childText(p, "parameterid"));
+                if (pid != "fillcolor" && pid != "color" && toLowerAscii(childText(p, "name")) != "color") {
+                    continue;
+                }
+                const pugi::xml_node value = p.child("value");
+                const char* channels[][2] = {{"red", "color.r"}, {"green", "color.g"}, {"blue", "color.b"}};
+                for (const auto& [channel, key] : channels) {
+                    if (const auto v = childDouble(value, channel)) {
+                        g.params.push_back(EffectParam{key, ParamValue(std::clamp(*v / 255.0, 0.0, 1.0))});
+                    }
+                }
+                if (const auto a = childDouble(value, "alpha"); a && *a < 255.0) {
+                    g.approximation = "its transparency was not carried (a colour matte is opaque)";
+                }
+            }
+        } else if (is("slug") || is("black video") || is("black")) {
+            g.kind = std::string(kBlackVideoGenerator);
+        } else if (is("transparent video")) {
+            g.kind = std::string(kTransparentVideoGenerator);
+        } else if (id.find("bars") != std::string::npos || effectName.find("bars") != std::string::npos) {
+            g.kind = std::string(kBarsAndToneGenerator);
+            // Premiere's "HD Bars and Tone" is SMPTE RP 219; its "Bars and Tone" (and FCP7's NTSC / PAL ones) EG 1.
+            const bool hd = id.find("hd") != std::string::npos || effectName.find("hd") != std::string::npos;
+            if (!hd) {
+                g.params.push_back(EffectParam{"pattern", ParamValue(1.0)});
+            }
+        } else if (is("universal counting leader") || is("counting leader")) {
+            g.kind = std::string(kCountingLeaderGenerator);
+        } else if (is("adjustment layer")) {
+            g.kind = std::string(kAdjustmentGenerator);
+        }
+    }
+    if (generatorDisplayName(g.kind).empty()) {
+        return false;
+    }
+    const auto start = item.startTicks;
+    const auto end = item.endTicks;
+    if (!start || !end || *end <= *start || start->value < 0) {
+        report(ReportOutcome::Dropped, ReportCategory::Clip,
+               "generated clip '" + name + "' on " + label + " has no valid position (start/end)", node, state.name);
+        return true;
+    }
+    std::sort(g.params.begin(), g.params.end(), [](const EffectParam& a, const EffectParam& b) { return a.key < b.key; });
+    const auto clipRate = parseRate(node.child("rate")).value_or(state.rate);
+    const auto ticksIn = childInt(node, "pproTicksIn");
+    const auto in = ticksIn && *ticksIn >= 0 ? std::optional<Ticks>(Ticks{*ticksIn})
+                                             : frames(std::max<std::int64_t>(childInt(node, "in").value_or(0), 0), clipRate);
+    const std::string kindName = g.kind;
+    // A Premiere-named item keeps its name; FCP7's default names give way to Wabcut's.
+    const bool defaultName = name.empty() || iequals(name, childText(effect, "name"));
+    IrMedia media = generatorMedia(std::move(g), defaultName ? std::string() : name);
+    media.location = m_loc.locate(node);
+    IrClip clip;
+    clip.media = m_media.add(std::move(media));
+    clip.name = name.empty() ? m_doc.media[clip.media].name : name;
+    clip.stream = {kind == TrackKind::Video ? StreamKind::Video : StreamKind::Audio, 0};
+    clip.start = *start;
+    clip.duration = *end - *start;
+    clip.sourceIn = (kindName == kCountingLeaderGenerator ? in.value_or(Ticks{}) : Ticks{}) + item.headHandle;
+    if (ticksIn && *ticksIn >= 0) {
+        clip.sourceIn = Ticks{*ticksIn} + item.headHandle; // Wabcut's (and Premiere's) exact In
+    }
+    clip.enabled = childBool(node, "enabled").value_or(true);
+    clip.location = m_loc.locate(node);
+    clip.properties = propertiesOf(state, node, clip.name, clip.effects);
+    if (const std::string nodeId = node.attribute("id").value(); !nodeId.empty()) {
+        state.links.idOf(nodeId);
+        for (const pugi::xml_node link : node.children("link")) {
+            const std::string other(childText(link, "linkclipref"));
+            if (!other.empty()) {
+                state.links.unite(nodeId, other);
+            }
+        }
+        state.clipsById[nodeId] = {kind == TrackKind::Video, index, track.clips.size()};
+    }
+    track.clips.push_back(std::move(clip));
+    return true;
 }
 
 void Fcp7Parser::addNestedClip(SequenceState& state, const TrackItem& item, IrTrack& track, TrackKind kind,

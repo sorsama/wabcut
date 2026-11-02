@@ -113,10 +113,13 @@ class AudioMixerBridge : public QObject {
     Q_PROPERTY(double targetLufs READ targetLufs NOTIFY targetChanged FINAL)
     Q_PROPERTY(double targetTruePeak READ targetTruePeak NOTIFY targetChanged FINAL)
     /// The mix's last analysis: { valid, stale (the project changed since), integrated, range, truePeak, samplePeak,
-    /// momentary, shortTerm (maxima), seconds, deltaText ("2.3 LU below the target"), whenText }.
+    /// momentary, shortTerm (maxima), seconds, deltaText ("2.3 LU below the target"), whenText }. 0.6 (P1 round, #54):
+    /// also where - momentaryAt, shortTermAt, truePeakAt ("00:01:02:03" timecodes, "" when not known) - and the
+    /// true-peak overs above targetTruePeak: overs [{ start, end (timecodes), truePeak }] (at most 200), overCount.
     Q_PROPERTY(QVariantMap loudness READ loudness NOTIFY loudnessChanged FINAL)
     /// Rows of the last analysis: [{ target, kind ("mix" | "track" | "clip"), integrated, range, truePeak,
-    /// samplePeak, momentary, shortTerm }] (numbers, or null for silence).
+    /// samplePeak, momentary, shortTerm }] (numbers, or null for silence); 0.6 (#54): with momentaryAt, shortTermAt,
+    /// truePeakAt, overs and overCount as `loudness` has them.
     Q_PROPERTY(QVariantList report READ report NOTIFY reportChanged FINAL)
     /// A running job: "" | "analyze" | "normalize" | "autoDuck".
     Q_PROPERTY(QString busy READ busy NOTIFY jobChanged FINAL)
@@ -299,6 +302,9 @@ public:
     // ---- Audio tools ----
     /// Measures "mix", "tracks" (every audio track and the mix) or "clips" (the selected audio clips).
     Q_INVOKABLE QString analyze(const QString& scope);
+    /// 0.6 (P1 round, #54, loudness QC): a red range marker over every true-peak over of the mix's last analysis (above
+    /// targetTruePeak), named with its peak, in one undo step "Add True-Peak Over Markers". "" or why not.
+    Q_INVOKABLE QString addOverMarkers();
     /// Dry run of normalizing "mix", "tracks" or "clips" to the target; applyPending() applies it.
     Q_INVOKABLE QString previewNormalize(const QString& scope);
     /// Dry run of ducking the music tracks under the dialogue tracks (roles); its keys show on the timeline. 0.4: in

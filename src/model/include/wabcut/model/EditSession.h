@@ -2,14 +2,19 @@
 
 // EditSession: the current project snapshot plus undo/redo history.
 //
-// Threading: snapshot() may be called from any thread at any time (an atomic shared_ptr load; acquire it
-// once per job, never on the audio callback). releasePending() may run on any thread (a worker or the
+// Threading: snapshot() and shown() may be called from any thread at any time (atomic shared_ptr loads; acquire
+// them once per job, never on the audio callback). releasePending() may run on any thread (a worker or the
 // job queue). Every other member (apply, commit, undo, redo, gestures, reset, listeners) belongs to one
 // thread, the GUI thread. Undo/redo swap whole snapshots, so there are no inverse operations to get wrong.
 //
 // Ids: the session remembers the highest id ever handed out, outside the undo history, and starts every
 // edit from it. Undoing an edit and then editing again therefore never reuses the ids of the undone
 // branch. Save stateForSave(), which carries that high-water mark, rather than snapshot().
+//
+// Previews (0.6, an audition's take playing in place): snapshot() is always the committed state, the one the history
+// holds and every edit, save, export, command and analysis reads. shown() is what plays: the preview while one is
+// shown (showPreview), else snapshot(). Only playback (the Program Monitor's picture and the sequence's sound) reads
+// shown(), so a preview can never reach a file, a saved project or the next edit.
 //
 // Memory: the undo history is capped by entry count and by an estimate of the memory its snapshots
 // keep alive (only the nodes not shared with the next revision count). Snapshots the session lets go
@@ -58,14 +63,15 @@ struct EditSessionOptions {
     bool deferRelease = true;
 };
 
-enum class ChangeKind { Edit, Undo, Redo, Reset, GestureCancelled };
+/// Preview: a state shown with showPreview() or taken back with endPreview() (no undo step either way).
+enum class ChangeKind { Edit, Undo, Redo, Reset, GestureCancelled, Preview };
 
 struct ChangeEvent {
     ChangeKind kind = ChangeKind::Edit;
     /// Label of the edit that was applied, undone or redone (the gesture label inside a gesture; empty
     /// for Reset).
     std::string_view label;
-    /// The new current snapshot.
+    /// The new current snapshot (for a Preview change: the state shown(), the committed one stays snapshot()).
     ProjectSnapshot state;
     /// What changed from the previous snapshot.
     const ChangeSet& changes;
@@ -114,11 +120,16 @@ public:
     EditSession(const EditSession&) = delete;
     EditSession& operator=(const EditSession&) = delete;
 
-    /// The current snapshot. Thread-safe; the returned state stays valid as long as it is held.
+    /// The current committed snapshot (never a preview). Thread-safe; the returned state stays valid as long as it is
+    /// held.
     ProjectSnapshot snapshot() const noexcept;
+    /// What plays: the state a preview shows (showPreview), else snapshot(). Thread-safe. For playback only: anything
+    /// that edits, saves, exports or analyses reads snapshot().
+    ProjectSnapshot shown() const noexcept;
 
     /// Increases by one each time the current snapshot changes (edit, undo, redo, reset, cancelled
-    /// gesture). Thread-safe. External clients (commands, agents) compare it to detect a stale view.
+    /// gesture; not a preview, which changes only shown()). Thread-safe. External clients (commands, agents)
+    /// compare it to detect a stale view.
     std::uint64_t revision() const noexcept { return m_revision.load(std::memory_order_acquire); }
 
     /// Runs `fn(state)` and commits the state it returns. `fn` returns std::expected<T, Error> where T is
@@ -132,6 +143,7 @@ public:
     template <class Fn>
     auto apply(std::string_view label, Fn&& fn, std::string_view mergeKey = {})
         -> std::invoke_result_t<Fn&, const ProjectState&> {
+        endPreview(); // an edit starts from the state the history holds
         const ProjectSnapshot before = snapshot();
         const ProjectState* input = before.get();
         ProjectState raised;
@@ -170,6 +182,25 @@ public:
     std::vector<std::string> redoLabels() const;
     /// Estimated bytes the undo history keeps alive.
     std::size_t undoMemoryBytes() const noexcept { return m_undoBytes; }
+    /// P1 round (the History panel's Delete): drops the redo steps; the current state stays. Their snapshots go the
+    /// deferred-release way (releasePending). False (nothing changes) during a gesture.
+    bool discardRedo();
+    /// P1 round (the History panel's Clear History): drops every undo and redo step; the current state stays and
+    /// becomes the oldest one. Snapshots are released like discardRedo(). False (nothing changes) during a gesture.
+    bool clearHistory();
+
+    /// 0.6 (auditions' Play): shows `next` (shown(), what plays) WITHOUT an undo step: the undo and redo history stay
+    /// as they are, and snapshot() stays the committed state they hold - the one every edit, save (stateForSave),
+    /// export and command reads. Listeners see a Preview change (its `state` is the shown one); revision() stays. endPreview() takes it back; so does any edit, commit, undo, redo, gesture, reset or park, before doing
+    /// its own work. A second preview replaces the first (both shown over the same committed state). Fails, changing
+    /// nothing, during a gesture or when validation is on and `next` breaks an invariant.
+    std::expected<ChangeSet, Error> showPreview(std::string_view label, const ProjectState& next);
+    /// Takes a preview back: the committed state is current again (listeners see a Preview change). Returns what
+    /// changed, or nullopt when no preview is shown.
+    std::optional<ChangeSet> endPreview();
+    bool inPreview() const noexcept { return m_preview != nullptr; }
+    /// The state the history holds: snapshot() (also during a preview).
+    ProjectSnapshot committed() const { return snapshot(); }
 
     /// Ends the current merge group: the next edit starts a new undo step even with the same key.
     void endMerge() noexcept { m_mergeOpen = false; }
@@ -196,7 +227,7 @@ public:
 
     /// The lowest id the next edit may hand out (the high-water mark, never lowered by undo).
     std::uint64_t idHighWater() const noexcept { return m_idHighWater; }
-    /// The current state with its id generator at the high-water mark: what to save.
+    /// The committed state (never a preview) with its id generator at the high-water mark: what to save.
     ProjectState stateForSave() const;
 
     /// Snapshots waiting to be freed. Thread-safe.
@@ -215,6 +246,8 @@ private:
     std::expected<ChangeSet, Error> commitFrom(const ProjectState& base, std::string_view label,
                                                const ProjectState& next, std::string_view mergeKey);
     void publish(ProjectSnapshot state, ChangeKind kind, std::string_view label, const ChangeSet& changes);
+    /// A preview shown or taken back: only shown() changes (listeners see a Preview change).
+    void publishShown(ProjectSnapshot state, std::string_view label, const ChangeSet& changes);
     void pushUndo(Step step, const ProjectState& successor);
     void enforceBudget();
     void retire(ProjectSnapshot snapshot);
@@ -231,6 +264,8 @@ private:
     std::string m_gestureLabel;
     bool m_gestureStarted = false;
     std::uint64_t m_idHighWater = 1;
+    platform::AtomicSharedPtr<const ProjectState> m_shown; // what plays: m_current, or the preview
+    ProjectSnapshot m_preview;                            // the preview while one is shown, else null
     std::vector<std::pair<ListenerId, Listener>> m_listeners;
     ListenerId m_nextListenerId = 1;
     mutable std::mutex m_releaseMutex;

@@ -363,7 +363,7 @@ TEST_CASE("Review P2-47: the interface size shows what was applied, not a raw st
     spin(50);
     QQuickItem* tabs = findNamed(settings->property("contentItem").value<QQuickItem*>(), QStringLiteral("uiScaleTabs"));
     REQUIRE(tabs);
-    CHECK(tabs->property("currentIndex").toInt() == 0);
+    CHECK(tabs->property("currentIndex").toInt() == 1); // 100 % (P1 #47: 90 % comes first)
     resetSettings();
     takeMessages();
 }

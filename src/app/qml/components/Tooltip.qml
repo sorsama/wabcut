@@ -4,10 +4,14 @@ import QtQuick.Controls.Basic
 // Tooltip with a keyboard-shortcut slot: "Play/Stop  [Space]" (design language v3: an inverted pill, light on the dark
 // theme, with the key in an accent chip). The shortcut text comes from the keymap (KeymapDispatcher.shortcutText, via
 // the buttons' `command`). It pops from its trigger with a short fade + scale.
+// P1 round (#31): a long text wraps at `maxTextWidth` (the pill becomes a rounded box); the shortcut chip stays on the
+// first line.
 ToolTip {
     id: control
 
     property string shortcut: ""
+    /// Where a long text wraps.
+    property real maxTextWidth: Theme.space(80)
 
     delay: Theme.tooltipDelay
     timeout: -1
@@ -20,19 +24,40 @@ ToolTip {
     font.pixelSize: Theme.textSm
     font.weight: Font.DemiBold
 
-    contentItem: Row {
-        spacing: Theme.space(2)
+    contentItem: Item {
+        implicitWidth: label.width + (chip.visible ? Theme.space(2) + chip.width : 0)
+        implicitHeight: Math.max(label.y + label.height, chip.visible ? chip.y + chip.height : 0)
+
+        FontMetrics {
+            id: metrics
+            font: control.font
+        }
+        // The text on one line: how wide the label is before it wraps.
+        Text {
+            id: natural
+            visible: false
+            text: control.text
+            font: control.font
+        }
 
         Text {
-            anchors.verticalCenter: parent.verticalCenter
+            id: label
+            objectName: "tooltipText"
+            y: chip.visible ? Math.max(0, (chip.height - metrics.height) / 2) : 0
+            width: Math.min(Math.ceil(natural.implicitWidth), control.maxTextWidth)
             text: control.text
             font: control.font
             color: Theme.canvas
+            wrapMode: Text.Wrap
         }
 
+        // The shortcut chip, centred on the first line.
         Rectangle {
+            id: chip
+            objectName: "tooltipShortcut"
             visible: control.shortcut !== ""
-            anchors.verticalCenter: parent.verticalCenter
+            x: label.width + Theme.space(2)
+            y: Math.max(0, (metrics.height - height) / 2)
             width: Math.max(height, keyText.implicitWidth + Theme.space(3))
             height: keyText.implicitHeight + Theme.space(1)
             radius: height / 2
@@ -51,7 +76,7 @@ ToolTip {
     }
 
     background: Rectangle {
-        radius: height / 2
+        radius: label.lineCount > 1 ? Theme.radiusControl : height / 2
         color: Theme.textPrimary
     }
 

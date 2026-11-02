@@ -107,6 +107,17 @@ bool isAttachedPicture(const AVStream* stream);
 /// Resolves `streamIndex` (-1 = best) to a stream of `type`, or InvalidArgument / NotFound.
 std::expected<AVStream*, Error> selectStream(AVFormatContext* fmt, AVMediaType type, int streamIndex);
 
+/// Whether `fmt` is a Matroska / WebM input (its index covers the video track only, read on the first seek).
+bool isMatroska(const AVFormatContext* fmt);
+
+/// Makes the demuxer's seek index (avformat_index_*) complete before anything relies on it. Matroska reads its Cues,
+/// usually at the end of the file, only on the first seek: until then the index holds just the keyframes the probe
+/// read, and a "seek or decode forward?" decision made from it decoded a long recording from its start to a jump
+/// (F2P, 0.6: minutes for a jump into a 2-hour OBS MKV). Seeks `stream` to its start once, which reads them without
+/// a search (the first packets are there). Nothing for other containers. False when that seek failed: the demuxer's
+/// position is then unknown, reopen it before decoding from the start.
+bool loadSeekIndex(AVFormatContext* fmt, AVStream* stream);
+
 // ---- Decoding
 // --------------------------------------------------------------------------------------------------
 

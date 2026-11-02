@@ -4,6 +4,7 @@
 #include "TimelineFixture.h"
 
 #include <wabcut/model/AudioChannelOps.h>
+#include <wabcut/model/Auditions.h>
 #include <wabcut/model/ColorManagementOps.h>
 #include <wabcut/model/CaptionOps.h>
 #include <wabcut/model/EditOps.h>
@@ -735,6 +736,30 @@ TEST_CASE("Every key a project file uses is in the key list of its schema (E5-P2
     title.id = 1;
     title.kind = LayerKind::Text;
     title.text.runs = {TextRun{"Title", TextStyle{}}};
+    // 0.6 (schema 19, card #75): kerning off, capitals, faux styles, vertical alignment, a stroke, Source Text keys with
+    // a second version, the size and spacing keys and the shadow's size.
+    {
+        TextStyle& style = title.text.runs.front().style;
+        style.kerning = false;
+        style.caps = TextCaps::AllCaps;
+        style.fauxBold = true;
+        style.fauxItalic = true;
+        title.text.verticalAlign = TextVerticalAlign::Center;
+        TextStroke stroke;
+        stroke.enabled = false;
+        stroke.width = ParamValue(2.0);
+        stroke.position = StrokePosition::Inside;
+        title.text.strokes = {stroke};
+        title.text.sources = {{TextRun{"Title later", TextStyle{}}}};
+        title.text.sourceKey =
+            ParamValue(Curve{{Keyframe{f(0), 0.0, Interpolation::Hold}, Keyframe{f(1), 1.0, Interpolation::Hold}}});
+        title.text.sizeKeys = Curve{{Keyframe{f(0), 60.0}, Keyframe{f(1), 80.0}}};
+        title.text.trackingKeys = Curve{{Keyframe{f(0), 0.0}, Keyframe{f(1), 50.0}}};
+        title.text.leadingKeys = Curve{{Keyframe{f(0), 0.0}, Keyframe{f(1), 90.0}}};
+        title.text.baselineKeys = Curve{{Keyframe{f(0), 0.0}, Keyframe{f(1), 4.0}}};
+        title.shadow.enabled = true;
+        title.shadow.size = 3.0;
+    }
     g.layers = {title};
     s = ok(edit::addGraphic(s, seq, v1, f(8), f(2), g)).state;
     BrandKit kit;
@@ -889,6 +914,11 @@ TEST_CASE("Every key a project file uses is in the key list of its schema (E5-P2
     hdr.mode = ColorManagementMode::HdrPq;
     hdr.peakNits = 4000.0;
     hdr.autoDetectLog = false; // 0.2 (schema 17): written only when off
+    // 0.6 (schema 19, card #72): gamut compression, an output colour space and SDR Conform.
+    hdr.gamutCompression = true;
+    hdr.gamutCompressionStrength = 0.5;
+    hdr.outputSpace = OutputColorSpace::Rec709;
+    hdr.sdrConform.enabled = true;
     auto managed = edit::setColorManagement(s, hdr);
     REQUIRE(managed);
     s = *managed;
@@ -905,6 +935,54 @@ TEST_CASE("Every key a project file uses is in the key list of its schema (E5-P2
         auto masked = edit::addMask(s, seq, video, {}, object);
         REQUIRE(masked);
         s = masked->state;
+    }
+
+    // 0.6 (schema 19): an audition (card #74) whose active take is short at both ends (its head and tail trims), in a
+    // sequence of its own; Master Clip Effects on A (card #71) and a clip that plays without them.
+    {
+        MediaItem twoFrames = **named("A");
+        twoFrames.name = "Z";
+        twoFrames.info.duration = f(2);
+        for (VideoStreamInfo& stream : twoFrames.info.video) {
+            stream.duration = f(2);
+            stream.frameCount = 2;
+        }
+        for (AudioStreamInfo& stream : twoFrames.info.audio) {
+            stream.duration = f(2);
+        }
+        auto z = edit::addMedia(s, twoFrames);
+        REQUIRE(z);
+        s = z->state;
+        edit::SequenceSettings takesSettings;
+        takesSettings.name = "Takes";
+        takesSettings.frameRate = s.findSequence(seq)->frameRate;
+        takesSettings.videoTracks = 1;
+        takesSettings.audioTracks = 0;
+        auto takes = edit::addSequence(s, takesSettings);
+        REQUIRE(takes);
+        s = takes->state;
+        const MediaId a = (*named("A"))->id;
+        const Sequence& takesSeq = *s.findSequence(takes->id);
+        // The picture only (A's audio is routed by stream name to new tracks: not wanted here).
+        const edit::SourceClip source{
+            a, TimeRange{f(0), f(4)}, {edit::SourcePatch{StreamRef{StreamKind::Video, 0}, takesSeq.videoTracks.front()->id, {}}}};
+        const edit::EditResult placed = ok(edit::overwriteEdit(s, takes->id, source, f(0)));
+        REQUIRE(placed.placed.size() == 1);
+        const ClipId take = placed.placed.front();
+        s = placed.state;
+        edit::TakeSource shortTake;
+        shortTake.media = z->id;
+        shortTake.sourceIn = Ticks{} - f(1); // one frame before Z starts: short at the head, and at the tail
+        shortTake.name = "Short";
+        s = ok(edit::addAuditionSource(s, takes->id, take, shortTake)).state;
+        s = ok(edit::setActiveTake(s, takes->id, take, 1)).state;
+        const Audition* audition = s.findSequence(takes->id)->findClip(take)->clip().audition();
+        REQUIRE(audition != nullptr);
+        CHECK(audition->headTrim == f(1));
+        CHECK(audition->tailTrim == f(1));
+        s = ok(edit::addEffect(s, seq, edit::EffectTarget::ofMedia(a), "wabcut.color.grade")).state;
+        s = ok(edit::setMasterEffectsOff(s, takes->id, std::span(&take, 1), true)).state;
+        requireValid(s);
     }
 
     const auto text = io::toJson(s);

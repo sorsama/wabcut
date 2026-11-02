@@ -6,8 +6,9 @@ import QtQuick
 // Punch In, Punch In and Hold, Shake. Each is one undo step of ordinary time remap keys or Motion keyframes
 // (MomentsBridge), editable afterwards. Instant Replay (C.16, when the catalog has it; 0.4) replays In to Out when both
 // marks are on the clip, else the 5 seconds before the playhead on a long clip, else the whole clip, with the speed,
-// Sound and Stinger options remembered from the Moments popover (MomentsBridge applies them). Its own file, importing
-// only QtQuick, so QtQuick.Controls' ContextMenu does not shadow ours.
+// Sound and Stinger options remembered from the Moments popover (MomentsBridge applies them). 0.6 (D2 #9): Make a Short
+// from In to Out turns the sequence's marks into a 1080x1920 Short with the Highlights Short options, without a find.
+// Its own file, importing only QtQuick, so QtQuick.Controls' ContextMenu does not shadow ours.
 ContextMenu {
     id: menu
     objectName: "momentsSubmenu"
@@ -107,6 +108,7 @@ ContextMenu {
     // C.16's gaming edits, when the catalog has them.
     ContextMenuSeparator {
         visible: Moments.gamingEdits.replay === true || Moments.gamingEdits.version === true
+                 || Highlights.shortAvailable
     }
     ContextMenuItem {
         objectName: "momentsInstantReplay"
@@ -121,6 +123,21 @@ ContextMenu {
         visible: Moments.gamingEdits.version === true
         text: qsTr("Make Shorts Version")
         iconName: "crop"
+        // 0.6 (P1 #55): a job; its progress and Cancel show in a toast (Main.qml) while the menu is gone.
+        enabled: Moments.version.busy !== true
         onTriggered: menu.run("shortsVersion")
+    }
+    // 0.6 (P1 round, D2 #9): the In to Out range as a Short, with the Highlights Short options (no find, no subsequence).
+    ContextMenuItem {
+        objectName: "momentsShortFromInOut"
+        visible: Highlights.shortAvailable
+        text: qsTr("Make a Short from In to Out")
+        iconName: "crop"
+        command: "sequence.makeShortFromInOut"
+        enabled: Highlights.commandAvailability("sequence.makeShortFromInOut").enabled === true
+        onTriggered: {
+            menu.error = Highlights.makeShortFromInOut()
+            menu.close()
+        }
     }
 }

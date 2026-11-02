@@ -11,6 +11,7 @@
 #include <wabcut/editor/SourceEdit.h>
 
 #include <wabcut/media/VideoDecoder.h>
+#include <wabcut/model/Auditions.h>
 #include <wabcut/model/EditSession.h>
 #include <wabcut/model/MediaLocator.h>
 #include <wabcut/model/ProjectIO.h>
@@ -529,4 +530,68 @@ TEST_CASE("Capsule: its folder name must be one plain name", "[editor][capsule][
         CHECK(r.error().code == ErrorCode::InvalidArgument);
     }
     CHECK_FALSE(fs::exists(dir / "escape"));
+}
+
+// Fix round 1 (ARGON-03): media only an audition's other take plays is used. Collect Files used to leave it out (with
+// "exclude unused") and save a project whose take pointed at nothing; trimmed, the take's In follows its own copy.
+TEST_CASE("Capsule: an audition's other take keeps its media and its In follows the trimmed copy",
+          "[editor][capsule][auditions]") {
+    if (!haveClips()) {
+        SKIP("test media not generated");
+    }
+    const fs::path dir = workDir("capsule-audition");
+    EditSession session;
+    ProjectDocument doc(session);
+    const Project p = makeProject(session, doc, dir / "source");
+    fs::copy_file(testMedia("prores_422.mov"), dir / "source" / "media" / "alt.mov", fs::copy_options::overwrite_existing);
+    const MediaId alt = importOne(session, dir / "source" / "media" / "alt.mov", p.file);
+    edit::TakeSource source;
+    source.media = alt;
+    source.sourceIn = Ticks{kTicksPerSecond / 2};
+    source.name = "Alt";
+    auto added = session.apply("Add take", [&](const ProjectState& s) -> std::expected<ProjectState, Error> {
+        auto r = edit::addAuditionSource(s, p.sequence, p.h264Clip, source);
+        if (!r) {
+            return std::unexpected(r.error());
+        }
+        return r->state;
+    });
+    REQUIRE(added);
+    REQUIRE(doc.save());
+    const ProjectState original = session.stateForSave();
+    const Audition* before = clipOf(original, p.sequence, p.h264Clip).audition();
+    REQUIRE(before != nullptr);
+    REQUIRE(before->others.size() == 1);
+    REQUIRE(before->others.front().media == alt);
+
+    CapsuleOptions options;
+    options.destination = dir / "out";
+    options.name = "Takes";
+    options.trim = true;
+    options.handles = Ticks{kTicksPerSecond / 4};
+    auto r = collectProject(original, p.file, options);
+    INFO((r ? std::string() : r.error().message));
+    REQUIRE(r);
+    INFO("offline after reopen " << r->offlineAfterReopen << ", notes " << (r->notes.empty() ? std::string() : r->notes.front()));
+    CHECK(r->verified);
+    CHECK(r->mediaFiles == 3); // H.264, ProRes and the take's file; the WAV is not used
+    CHECK(fs::is_regular_file(r->folder / "Media" / "alt.mov"));
+
+    EditSession reopened;
+    ProjectDocument copy(reopened);
+    REQUIRE(copy.open(r->projectFile));
+    CHECK(copy.offlineMedia().empty());
+    const ProjectState& state = *reopened.snapshot();
+    REQUIRE(state.findMedia(alt) != nullptr);
+    const Audition* after = clipOf(state, p.sequence, p.h264Clip).audition();
+    REQUIRE(after != nullptr);
+    REQUIRE(after->others.size() == 1);
+    // The take shows source 0.5 s to 1.5 s; its copy keeps 0.25 s to 1.75 s, so its In moves 0.25 s earlier (to the
+    // frame the copy starts on).
+    if (r->trimmedFiles == 3) {
+        const Ticks shift = before->others.front().sourceIn - after->others.front().sourceIn;
+        CHECK(shift > Ticks{});
+        CHECK(shift < Ticks{kTicksPerSecond / 2});
+        CHECK(after->others.front().sourceIn >= Ticks{});
+    }
 }

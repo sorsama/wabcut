@@ -18,6 +18,11 @@
 //   * apply(options): layout.apply on the project, one undo step.
 //   * available: the catalog has layout.apply (C.15 on master). Until then the picker shows its schematics and says
 //     layouts arrive with the next engine update; Apply is off.
+//   * 0.6 (P1 #51): the facecam region is remembered per gameplay file (QSettings layout/facecamRegions: a JSON map
+//     keyed by the media's fingerprint - size and sample hash -, else its path; the most recent 200 kept). Drawing or
+//     clearing it updates the gameplay media's entry; when the gameplay's media changes, its stored region comes back
+//     (or none: a region never leaks into another file or project). storedRegionFor() reads it for other bridges
+//     (Make Shorts version), lastOptions() the options the picker last applied (layout/lastOptions, saved by the QML).
 
 #include <wabcut/model/Ids.h>
 
@@ -34,6 +39,12 @@
 
 class QJSEngine;
 class QQmlEngine;
+
+namespace wabcut {
+struct MediaItem;
+struct ProjectState;
+struct Sequence;
+}
 
 namespace wabcut::command {
 class CommandRegistry;
@@ -131,6 +142,21 @@ public:
     Q_INVOKABLE QString createShortsSequence();
     /// Asks the window to open the picker (the clip menu's Layout…, the timeline toolbar).
     Q_INVOKABLE void open() { emit openRequested(); }
+    /// 0.6 (P1 #51): the facecam region stored for a media item ("m12") of the project, or {}.
+    Q_INVOKABLE QVariantMap regionForMedia(const QString& media) const;
+
+    /// 0.6 (P1 #51): the key a media item's region is stored under ("fp:<size>:<hash>", else "path:<path>"; "" for
+    /// generated media, which has neither).
+    static QString regionKey(const MediaItem& media);
+    /// The region stored for `media` ({ x, y, width, height } in fractions of its frame), or {}.
+    static QVariantMap storedRegionFor(const MediaItem& media);
+    /// Stores `region` for `media` ({} removes it); keeps the most recent 200 files.
+    static void storeRegionFor(const MediaItem& media, const QVariantMap& region);
+    /// The options the picker last applied (QSettings layout/lastOptions, a JSON object), or {}.
+    static QVariantMap lastOptions();
+    /// The gameplay's media of a sequence (whose region Make Shorts version and a Short use): on the lowest video track
+    /// with a clip of footage (sequence.makeVersion's gameplay), the media that plays the longest there; null if none.
+    static const MediaItem* gameplayMediaOf(const ProjectState& state, const Sequence& sequence);
 
 signals:
     void catalogChanged();
@@ -153,6 +179,8 @@ private:
     void setMessage(const QString& message);
     void runPreview();
     double facecamAspect() const;
+    /// Sets the region; `store`: also for the gameplay's media (a user's drawing or clearing, not a reload).
+    void applyRegion(const QVariantMap& region, bool store);
 
     QPointer<ProjectController> m_controller;
     const command::CommandRegistry* m_registry = nullptr;
@@ -167,6 +195,7 @@ private:
     QString m_gameplayName;
     QVariantList m_candidates;
     QVariantMap m_region;
+    QString m_regionMedia; ///< regionKey of the gameplay's media the region belongs to ("" = none)
     bool m_drawing = false;
     bool m_previewShown = false;
     QVariantMap m_previewOptions;

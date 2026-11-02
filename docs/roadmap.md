@@ -8,6 +8,56 @@ will change as people use the editor and tell us what matters to them.
 
 ## Shipped
 
+### 0.6.0 (1 November 2026)
+Every open P0 and P1 card on the roadmap, and a settings and accessibility pass:
+- **Timeline.** Selected edit points drive E, Ctrl+D / Ctrl+Shift+D and Effects-panel transitions; Edit Marker and Add
+  Chapter Marker, M on an existing marker opens it, and a right-click menu on markers; the non-ripple Q/W that extend or
+  trim the previous and next edit to the playhead; Shift-click track toggles, a Sync Lock button and target-all keys;
+  the Clip Mismatch Warning when the first clip lands in an empty sequence; out-of-sync badges with Move into Sync and
+  Slip into Sync; auditions, so several takes share one cut; square timeline corners in Settings > Appearance.
+- **Render and beats.** Render Selection, Delete Render Files and Delete Render Files In to Out; the beat grid, with
+  Detect Beats, Snap to Beats, Cut to Beats and Show beat grid.
+- **Effects and colour.** Copy and paste keyframes in Effect Controls; Motion, Opacity and Volume on several selected
+  clips at once; DJI D-Log, F-Log and F-Log2, N-Log, S-Log2, Canon Log and L-Log; Glow, Colorama, Fractal Noise, Cell
+  Pattern, Lightning, Scribble and Paint Bucket; Master Clip Effects shared by every instance of a source; HDR
+  finishing with Minimal Tone Mapping, gamut compression, an output colour space and SDR Conform; text in Effect
+  Controls, with fonts, strokes, capitals, the background box, the shadow and keyframed Source Text.
+- **Graphics.** Install Motion Graphics Template… and Export Template… for .mogrt and Wabcut templates.
+- **Export and delivery.** Size estimates for every format; an export queue kept across restarts; separate Export and
+  Quick Export presets for landscape and vertical; several selected sequences, every selected clip or every ranged
+  marker as its own file; a YouTube thumbnail option and frames at highlight markers; YouTube chapters to the
+  clipboard, chapters only and counted from the export range; a media usage report (CSV); offline media caught before
+  an export, with Relink and Retry after a failure; a target file size for any export; low disk space warnings;
+  dialogue, music and effects stems beside the master; MXF OP1a and OP-Atom with CEA-608/708 captions; cache limits
+  enforced automatically, with render files listed as a cache.
+- **Library and Home.** Relink in the import report; deleting media in use with its clips and Ctrl+Delete; Get
+  Properties for Selection; Library usage counts, Video Usage and Audio Usage columns and Find in Timeline; Move to Bin,
+  Cut/Paste and bin-into-bin drags; relinking that finds the rest of a moved folder, and OBS .mkv to .mp4; Link Media…
+  on offline items; proxies for every selected item and for a bin; file size and data rate columns with a selection
+  total; twirl-down bins; Home's Rename, Duplicate, Versions and Move to Recycle Bin, and recovery for a project that
+  fails to open; Home's Import folder keeps subfolders as bins.
+- **Captions, transcript and audio.** Premiere's caption keys and a Sequence > Captions submenu; speakers renamed,
+  reassigned and merged from the Transcript tab; correcting the transcript from a script and updating the captions; a
+  script prompter on the voice-over overlay; loudness QC with the loudest moments and true-peak overs.
+- **Monitors.** Paused Resolution; dropping a Library clip on the Program Monitor to insert, overwrite, overlay, replace
+  or append; clicking, editing and dragging captions in the Program Monitor; commands, View menu rows and a monitor
+  button for Toggle Proxies and Playback Resolution.
+- **AI and gaming.** Make a Short from In to Out; gaming actions in the Sequence and Clip menus, the command palette and
+  Keyboard Shortcuts; a remembered facecam layout and region; Make Shorts/square version as a job with progress and
+  Cancel; audio roles from OBS track names in the highlight finder, with corrections; Creator Autopilot with auto
+  B-roll, a publishing kit and pacing match.
+- **Interchange.** Caption sidecars with timeline hand-offs and Export all tracks; colour grades and audio EQ and
+  compressor filters through FCP7 XML both ways; FCPXML filters and OTIO effects; AAF and OMF import; generators carried
+  through interchange.
+- **Shell, settings and accessibility.** History as a dockable panel with Delete and Clear History; Check for Updates…
+  with an opt-in notice and What's New once after an update; Ctrl+F in the active panel and Ctrl+F6 between panel
+  groups; tooltips that explain why a row is disabled; workspaces you can save, reset and lock; Clip and Sequence menu
+  rows grey out; the 90 % interface size, with a window that always fits the screen; a chosen folder for the media cache
+  and proxies with the free space shown; extension storage that keeps its last change; real measurements of long-file
+  performance and local AI; and a screen-reader pass with an automated test and an NVDA checklist.
+
+The full list is in the [0.6 release notes](release-notes-0.6.md).
+
 ### 0.5.3 (30 October 2026)
 - The Linux and macOS downloads start: the Linux packages carry every library they need (X11 or Wayland), the preview
   draws with OpenGL, VA-API decoding finds the system's drivers, and the macOS DMG asks for macOS 15.
@@ -125,10 +175,12 @@ The full list is in the [release notes](release-notes-0.1.md).
 ## Next: toward a beta
 
 Make Wabcut safe to trust with real projects:
-- Fix what people find in real projects, starting with the [pilot](pilot.md). 0.1 to 0.5 were tested with a demo
+- Fix what people find in real projects, starting with the [pilot](pilot.md). 0.1 to 0.6 were tested with a demo
   project and scripted test media, not yet with real users' projects.
 - Check AAF, OMF and broadcast caption files in Pro Tools, Media Composer and Resolve.
-- A code-signing certificate, so Windows SmartScreen stops warning (0.5 has the signing steps and opt-in updates).
+- A code-signing certificate, so Windows SmartScreen stops warning (0.6 has the signing steps and opt-in updates).
+- Check the 0.4 drag gestures with a real mouse: Alt-drag copy, Ctrl+Alt-drag rearrange, Shift-drag and folder drops
+  are covered by simulated input only.
 - Measure local AI quality and live cloud providers on real footage.
 - Manual screen-reader checks (NVDA) on top of the automated keyboard and accessibility tests.
 

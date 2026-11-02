@@ -344,6 +344,17 @@ std::expected<ProjectState, QString> newProjectState(const QVariantMap& values) 
     return state;
 }
 
+/// 0.6 (fix round 1, ARGON-08): where an AAF / OMF's embedded audio goes when neither the project's folder nor the
+/// file's can be written (an unsaved project, the file on a read-only share or disc): Documents/Wabcut/Imported Media,
+/// like the Voice-over takes of an unsaved project. It is the user's media, so it is not a cache that may be cleared.
+std::filesystem::path importedMediaFallback() {
+    const QString documents = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+    if (documents.isEmpty()) {
+        return {};
+    }
+    return toPath(QUrl::fromLocalFile(documents + QStringLiteral("/Wabcut/Imported Media")));
+}
+
 QVariantMap reportToMap(const interchange::ImportResult& result, const std::filesystem::path& file) {
     using interchange::ReportOutcome;
     QVariantList entries;
@@ -367,8 +378,21 @@ QVariantMap reportToMap(const interchange::ImportResult& result, const std::file
         unresolved.append(QVariantMap{{QStringLiteral("name"), QString::fromStdString(m.name)},
                                       {QStringLiteral("path"), QString::fromStdString(m.path)}});
     }
-    interchange::SummaryOptions summary;
-    summary.listClips = false;
+    // P1 round (#6): one line ("Final Cut Pro 7 XML · 2 sequences · 12 media files · 3 offline"); the entries and the
+    // offline line show the detail. The full summary (formatSummary) stays the CLI's: in the dialog it pushed the
+    // buttons below the window.
+    const int sequenceCount = static_cast<int>(result.sequences.size());
+    const int mediaCount = static_cast<int>(result.media.size());
+    QString summary = QStringLiteral("%1 · %2 · %3")
+                          .arg(QString::fromUtf8(interchange::displayName(result.format).data()),
+                               sequenceCount == 1 ? ProjectLifecycle::tr("1 sequence")
+                                                  : ProjectLifecycle::tr("%1 sequences").arg(sequenceCount),
+                               mediaCount == 1 ? ProjectLifecycle::tr("1 media file")
+                                               : ProjectLifecycle::tr("%1 media files").arg(mediaCount));
+    if (!unresolved.isEmpty())
+        summary += QStringLiteral(" · ") + (unresolved.size() == 1
+                                                ? ProjectLifecycle::tr("1 offline")
+                                                : ProjectLifecycle::tr("%1 offline").arg(unresolved.size()));
     return {
         {QStringLiteral("file"), toQString(file.filename())},
         {QStringLiteral("format"), QString::fromUtf8(interchange::displayName(result.format).data())},
@@ -379,7 +403,7 @@ QVariantMap reportToMap(const interchange::ImportResult& result, const std::file
         {QStringLiteral("approximated"), static_cast<int>(result.report.count(ReportOutcome::Approximated))},
         {QStringLiteral("dropped"), static_cast<int>(result.report.count(ReportOutcome::Dropped))},
         {QStringLiteral("entries"), entries},
-        {QStringLiteral("summary"), QString::fromStdString(interchange::formatSummary(result, summary))},
+        {QStringLiteral("summary"), summary},
     };
 }
 
@@ -400,10 +424,22 @@ ProjectLifecycle::ProjectLifecycle(ProjectController* controller, QObject* paren
     m_autosaveOk = true;
 
     connect(controller, &ProjectController::revisionChanged, this, &ProjectLifecycle::onRevisionChanged);
+    // 0.6 (fix round 1): new / open / switching projects replace the session's state (a Reset change): a background
+    // AAF / OMF import started on the project before never lands in this one.
+    m_resetListener = controller->session().addListener([this](const ChangeEvent& event) {
+        if (event.kind == ChangeKind::Reset) {
+            ++m_projectEpoch;
+        }
+    });
     // 0.4: importFolder falls back to `folder`, which follows the document.
     connect(this, &ProjectLifecycle::documentChanged, this, &ProjectLifecycle::importFolderChanged);
     connect(controller, &ProjectController::sessionClosing, this, [this] {
         m_autosaveTimer.stop();
+        cancelTimelineImport();
+        if (m_controller && m_resetListener != 0) {
+            m_controller->session().removeListener(m_resetListener);
+            m_resetListener = 0;
+        }
         cleanExit();
         m_document.reset();
         m_open.clear();
@@ -425,6 +461,13 @@ ProjectLifecycle::~ProjectLifecycle() {
     {
         std::lock_guard lock(m_scanGate->mutex);
         m_scanGate->owner = nullptr;
+    }
+    if (m_timelineCancel) {
+        m_timelineCancel->store(true); // the worker stops at its next checkpoint; its result is dropped
+    }
+    if (m_controller && m_resetListener != 0) {
+        m_controller->session().removeListener(m_resetListener);
+        m_resetListener = 0;
     }
     cleanExit();
 }
@@ -795,16 +838,20 @@ QVariantMap versionMap(const editor::RecoveryEntry& e, const editor::ProjectSumm
         {QStringLiteral("newer"), e.newerThanProject},
         {QStringLiteral("poster"), QString()},
     };
-    if (current && e.kind != Kind::Current && e.kind != Kind::UntitledAutosave && s.loadable) {
+    // Compared with the saved version only when that one could be read (fix round 1, ARGON-10: an unreadable saved file
+    // counts as 0 clips, and every version would look like "+14 clips").
+    if (current && current->loadable && e.kind != Kind::Current && e.kind != Kind::UntitledAutosave && s.loadable) {
         QStringList diff;
-        const auto delta = [&](int a, int b, const QString& what) {
-            if (a != b) {
-                diff << QStringLiteral("%1%2 %3").arg(a > b ? QStringLiteral("+") : QString()).arg(a - b).arg(what);
-            }
+        const auto delta = [&](int value, int currentValue, const QString& one, const QString& many) {
+            const int d = value - currentValue;
+            if (d == 0)
+                return;
+            //: A recovery version's difference from the saved one: "+2 clips", "-1 sequence".
+            diff << QStringLiteral("%1%2 %3").arg(d > 0 ? QStringLiteral("+") : QString()).arg(d).arg(d == 1 || d == -1 ? one : many);
         };
-        delta(s.sequences, current->sequences, QObject::tr("sequences"));
-        delta(s.clips, current->clips, QObject::tr("clips"));
-        delta(s.media, current->media, QObject::tr("media"));
+        delta(s.sequences, current->sequences, QObject::tr("sequence"), QObject::tr("sequences"));
+        delta(s.clips, current->clips, QObject::tr("clip"), QObject::tr("clips"));
+        delta(s.media, current->media, QObject::tr("media item"), QObject::tr("media items"));
         if (s.duration != current->duration) {
             const double d = (s.duration - current->duration).toSeconds();
             diff << QObject::tr("%1%2 s long").arg(d > 0 ? QStringLiteral("+") : QString()).arg(d, 0, 'f', 1);
@@ -823,15 +870,49 @@ QVariantMap versionMap(const editor::RecoveryEntry& e, const editor::ProjectSumm
 
 } // namespace
 
-void ProjectLifecycle::scanRecoveryVersions() {
-    std::filesystem::path project = m_document ? m_document->file() : std::filesystem::path{};
+bool ProjectLifecycle::hasRecoveryVersions(const QUrl& file) const {
+    // P1 round (#49): an autosave ("<file>.autosave", rotated "...autosave2", ...) or a backup ("<file>.bak1"..) next
+    // to it; nothing is read.
+    const std::filesystem::path project = toPath(file);
+    if (project.empty()) {
+        return false;
+    }
+    const auto exists = [](const std::filesystem::path& p) {
+        std::error_code ec;
+        return std::filesystem::is_regular_file(p, ec);
+    };
+    const int autosaves = m_document ? std::max(1, m_document->autosaveCopies()) : 3;
+    for (int n = 1; n <= autosaves; ++n) {
+        std::filesystem::path autosave = io::autosavePath(project);
+        if (n > 1) {
+            autosave += std::to_string(n);
+        }
+        if (exists(autosave)) {
+            return true;
+        }
+    }
+    for (int n = 1; n <= io::kDefaultBackupCount; ++n) {
+        if (exists(io::backupPath(project, n))) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void ProjectLifecycle::scanRecoveryVersions(const QUrl& file) {
+    // P1 round (#49): the versions of `file` (a project that failed to open, Home's Versions…), else of the open (else
+    // the last) project.
+    std::filesystem::path project = !file.isEmpty() ? toPath(file)
+                                    : m_document ? m_document->file() : std::filesystem::path{};
     if (project.empty()) {
         const QString last = QSettings().value(QStringLiteral("project/lastFile")).toString();
         if (!last.isEmpty()) {
             project = toPath(QUrl::fromLocalFile(last));
         }
     }
-    const std::filesystem::path untitledDir = m_untitledAutosaveDir;
+    // Untitled autosaves belong to no project: listed for File > Recover… (the open project), not under the versions of
+    // one named project (Home's Versions…, a project that failed to open; fix round 1, ARGON-10).
+    const std::filesystem::path untitledDir = file.isEmpty() ? m_untitledAutosaveDir : std::filesystem::path{};
     const std::filesystem::path posters =
         toPath(QUrl::fromLocalFile(QStandardPaths::writableLocation(QStandardPaths::CacheLocation))) / "recovery-posters";
     const std::uint64_t scan = ++m_versionsScan;
@@ -1277,9 +1358,9 @@ int ProjectLifecycle::offlineCount() const {
 QStringList ProjectLifecycle::importNameFilters() const {
     return {
         tr("Media, timelines and captions (*.mp4 *.mov *.mkv *.mxf *.avi *.m4v *.webm *.wav *.mp3 *.aac *.m4a *.flac "
-           "*.png *.jpg *.jpeg *.tif *.tiff *.xml *.fcpxml *.otio *.edl *.prproj *.srt *.vtt *.scc *.mcc *.stl *.ttml "
+           "*.png *.jpg *.jpeg *.tif *.tiff *.xml *.fcpxml *.otio *.edl *.prproj *.aaf *.omf *.srt *.vtt *.scc *.mcc *.stl *.ttml "
            "*.dfxp *.itt)"),
-        tr("Timelines (*.xml *.fcpxml *.otio *.edl *.prproj)"),
+        tr("Timelines (*.xml *.fcpxml *.otio *.edl *.prproj *.aaf *.omf)"),
         // P.2: a caption file becomes a caption track of the current sequence.
         tr("Caption files (*.srt *.vtt *.scc *.mcc *.stl *.ttml *.dfxp *.itt *.xml)"),
         tr("All files (*)"),
@@ -1696,6 +1777,42 @@ QVariantMap ProjectLifecycle::importFiles(const QList<QUrl>& files, const QVaria
     const bool experimentalPremiere = options.value(QStringLiteral("experimentalPremiereProject")).toBool();
     QList<QUrl> media;
     std::vector<std::vector<std::string>> mediaBins; // 0.4: per entry of `media`, its bins under the target bin
+    // P1 round (#63): folders the media files given came from (Home's Import folder…): such a file goes into bins as
+    // if the folder had been given - the folder's bin, then its subfolders'.
+    std::vector<QString> binRoots;
+    {
+        QVariant roots = options.value(QStringLiteral("binsFrom"));
+        if (roots.metaType() == QMetaType::fromType<QJSValue>()) {
+            roots = roots.value<QJSValue>().toVariant();
+        }
+        for (const QVariant& root : roots.toList()) {
+            const QUrl url = root.metaType() == QMetaType::fromType<QUrl>() ? root.toUrl() : QUrl::fromUserInput(root.toString());
+            const QString path = url.isLocalFile() ? url.toLocalFile() : root.toString();
+            if (!path.isEmpty() && QFileInfo(path).isDir()) {
+                binRoots.push_back(QDir::cleanPath(QFileInfo(path).absoluteFilePath()));
+            }
+        }
+    }
+    const auto binsFromRoots = [&](const QUrl& url) {
+        std::vector<std::string> bins;
+        const QString folder = QFileInfo(url.toLocalFile()).absolutePath();
+        for (const QString& root : binRoots) {
+            const QString relative = QDir(root).relativeFilePath(folder);
+            if (relative.startsWith(QLatin1String("..")) || QDir::isAbsolutePath(relative)) {
+                continue;
+            }
+            const QFileInfo rootInfo(root);
+            bins.push_back((rootInfo.fileName().isEmpty() ? QDir::toNativeSeparators(root) : rootInfo.fileName()).toStdString());
+            for (const QString& part : relative.split(QLatin1Char('/'), Qt::SkipEmptyParts)) {
+                if (part != QLatin1String(".")) {
+                    bins.push_back(part.toStdString());
+                }
+            }
+            break;
+        }
+        return bins;
+    };
+    bool binsFromUsed = false;
     QList<QUrl> timelines;
     QList<QUrl> captions;
     QVariantList projects;
@@ -1712,7 +1829,8 @@ QVariantMap ProjectLifecycle::importFiles(const QList<QUrl>& files, const QVaria
         switch (editor::classifyImportFile(toPath(url))) {
         case editor::ImportFileKind::Media:
             media.append(url);
-            mediaBins.emplace_back();
+            mediaBins.push_back(binRoots.empty() ? std::vector<std::string>{} : binsFromRoots(url));
+            binsFromUsed = binsFromUsed || !mediaBins.back().empty();
             break;
         case editor::ImportFileKind::Captions:
             captions.append(url);
@@ -1810,7 +1928,8 @@ QVariantMap ProjectLifecycle::importFiles(const QList<QUrl>& files, const QVaria
                                       .scaling = EditingBridge::defaultMediaScalingSetting(),
                                       .stillDuration = EditingBridge::stillDurationSetting(), // P.2
                                       .binPaths = mediaBins,
-                                      .undoLabel = folderNames.isEmpty() ? std::string() : std::string("Import Folder"),
+                                      .undoLabel = folderNames.isEmpty() && !binsFromUsed ? std::string()
+                                                                                          : std::string("Import Folder"),
                                       .readChapters = EditingBridge::chapterMarkersSetting()}); // P0 round
         m_importedMedia.clear();
         for (std::size_t i = 0; i < result.byFile.size(); ++i) {
@@ -1832,12 +1951,29 @@ QVariantMap ProjectLifecycle::importFiles(const QList<QUrl>& files, const QVaria
         }
     }
     int imported = 0;
+    // 0.6 (fix round 1, ARGON-08): AAF and OMF files can carry gigabytes of embedded audio: they are imported on a
+    // worker after this call (startNextTimelineImport), the other timelines here as before.
+    std::vector<PendingTimelineImport> background;
+    QList<QUrl> here;
     for (const QUrl& url : timelines) {
+        const std::filesystem::path path = toPath(url);
+        const interchange::Format format = interchange::ImportRouter::detect(path).format;
+        if (!m_syncTimelineImport && (format == interchange::Format::Aaf || format == interchange::Format::Omf)) {
+            background.push_back({.path = path, .openImported = openImported});
+        } else {
+            here.append(url);
+        }
+    }
+    if (placeholder && here.isEmpty() && !background.empty()) {
+        background.front().dropSequence = placeholder;
+    }
+    for (const QUrl& url : here) {
         const std::filesystem::path path = toPath(url);
         editor::TimelineImportOptions timelineOptions;
         timelineOptions.projectFile = m_document->file();
         timelineOptions.mediaSearchRoots = {path.parent_path()};
         timelineOptions.experimentalPremiereProject = experimentalPremiere;
+        timelineOptions.embeddedMediaFolder = editor::embeddedMediaFolderFor(path, m_document->file(), importedMediaFallback());
         if (placeholder && imported == 0) {
             timelineOptions.dropSequences = {*placeholder};
         }
@@ -1903,7 +2039,8 @@ QVariantMap ProjectLifecycle::importFiles(const QList<QUrl>& files, const QVaria
             {QStringLiteral("dropped"), counts.value("dropped", 0)},
             {QStringLiteral("entries"), entries},
             //: e.g. "214 captions on a new caption track of Main Edit"
-            {QStringLiteral("summary"), tr("%n caption(s) on a new caption track of %1", "", cues)
+            {QStringLiteral("summary"), (cues == 1 ? tr("1 caption on a new caption track of %1")
+                                                   : tr("%1 captions on a new caption track of %2").arg(cues))
                                             .arg(QString::fromStdString(sequence->name))},
         });
     }
@@ -1923,7 +2060,8 @@ QVariantMap ProjectLifecycle::importFiles(const QList<QUrl>& files, const QVaria
     if (failed.isEmpty()) {
         setError({});
     } else {
-        setError(tr("%n file(s) could not be imported", "", static_cast<int>(failed.size())));
+        setError(failed.size() == 1 ? tr("1 file could not be imported")
+                                    : tr("%1 files could not be imported").arg(failed.size()));
     }
     adoptDocument();
     summary.insert(QStringLiteral("added"), added);
@@ -1985,7 +2123,169 @@ QVariantMap ProjectLifecycle::importFiles(const QList<QUrl>& files, const QVaria
         folderSummary = sentences.join(QLatin1Char(' '));
     }
     summary.insert(QStringLiteral("folderSummary"), folderSummary);
+    summary.insert(QStringLiteral("pendingTimelines"), static_cast<int>(background.size()));
+    if (!background.empty()) {
+        for (PendingTimelineImport& job : background) {
+            m_timelineQueue.push_back(std::move(job));
+        }
+        if (!m_timelineCancel) {
+            startNextTimelineImport();
+        } else {
+            QVariantMap state = m_timelineImport;
+            state.insert(QStringLiteral("queued"), static_cast<int>(m_timelineQueue.size()));
+            setTimelineImport(state);
+        }
+    }
     return summary;
+}
+
+// ---- Background AAF / OMF import (0.6 fix round 1, ARGON-08) ----------------------------------------
+
+void ProjectLifecycle::setTimelineImport(QVariantMap state) {
+    if (state == m_timelineImport) {
+        return;
+    }
+    m_timelineImport = std::move(state);
+    emit timelineImportChanged();
+}
+
+void ProjectLifecycle::cancelTimelineImport() {
+    m_timelineQueue.clear();
+    if (m_timelineCancel) {
+        m_timelineCancel->store(true);
+    }
+}
+
+void ProjectLifecycle::startNextTimelineImport() {
+    if (m_timelineCancel || m_timelineQueue.empty() || !m_document) {
+        return;
+    }
+    PendingTimelineImport job = std::move(m_timelineQueue.front());
+    m_timelineQueue.pop_front();
+    const std::filesystem::path path = job.path;
+    const QString fileName = toQString(path.filename());
+    editor::TimelineImportOptions options;
+    options.projectFile = m_document->file();
+    options.mediaSearchRoots = {path.parent_path()};
+    options.embeddedMediaFolder = editor::embeddedMediaFolderFor(path, m_document->file(), importedMediaFallback());
+    if (job.dropSequence) {
+        options.dropSequences = {*job.dropSequence};
+    }
+    auto cancel = std::make_shared<std::atomic<bool>>(false);
+    m_timelineCancel = cancel;
+    //: The background import's toast: "Importing mix.aaf · 40 %"
+    const auto textAt = [fileName](int percent) { return tr("Importing %1 · %2 %").arg(fileName).arg(percent); };
+    setTimelineImport(QVariantMap{{QStringLiteral("busy"), true},
+                                  {QStringLiteral("file"), fileName},
+                                  {QStringLiteral("text"), textAt(0)},
+                                  {QStringLiteral("progress"), 0.0},
+                                  {QStringLiteral("queued"), static_cast<int>(m_timelineQueue.size())}});
+    // Progress reaches the GUI thread when the whole percent changes.
+    QPointer<ProjectLifecycle> self(this);
+    auto lastPercent = std::make_shared<std::atomic<int>>(0);
+    options.progress = [self, cancel, lastPercent, textAt](double share) {
+        const int percent = std::clamp(static_cast<int>(share * 100.0), 0, 100);
+        if (lastPercent->exchange(percent) != percent) {
+            QMetaObject::invokeMethod(
+                QCoreApplication::instance(),
+                [self, cancel, percent, share, textAt] {
+                    if (!self || self->m_timelineCancel != cancel || cancel->load()) {
+                        return;
+                    }
+                    QVariantMap state = self->m_timelineImport;
+                    state.insert(QStringLiteral("text"), textAt(percent));
+                    state.insert(QStringLiteral("progress"), share);
+                    self->setTimelineImport(state);
+                },
+                Qt::QueuedConnection);
+        }
+        return !cancel->load();
+    };
+    const ProjectState base = m_document->session().stateForSave();
+    const std::uint64_t revision = m_document->session().revision();
+    const std::uint64_t epoch = m_projectEpoch;
+    QThreadPool::globalInstance()->start([self, cancel, base, path, options, job, revision, epoch, fileName] {
+        std::expected<interchange::ImportResult, Error> prepared = std::unexpected(Error{ErrorCode::Unknown, {}});
+        try {
+            prepared = editor::prepareTimelineImport(base, path, options);
+        } catch (const std::exception& e) {
+            prepared = std::unexpected(Error{ErrorCode::Unknown, e.what()});
+        }
+        QMetaObject::invokeMethod(
+            QCoreApplication::instance(),
+            [self, cancel, prepared = std::move(prepared), path, job, revision, epoch, fileName]() mutable {
+                if (!self || self->m_timelineCancel != cancel) {
+                    return;
+                }
+                self->m_timelineCancel.reset();
+                QVariantMap state{{QStringLiteral("busy"), false}, {QStringLiteral("file"), fileName}};
+                const bool cancelled = cancel->load() || (!prepared && prepared.error().code == ErrorCode::Cancelled);
+                const bool sameProject = self->m_document && self->m_projectEpoch == epoch;
+                if (cancelled || !sameProject) {
+                    // Nothing changed. A project that was closed or replaced meanwhile drops the import (and the queue).
+                    self->m_timelineQueue.clear();
+                    state.insert(QStringLiteral("cancelled"), true);
+                    if (!cancelled) {
+                        state.insert(QStringLiteral("error"),
+                                     tr("%1 was not imported: another project was opened meanwhile").arg(fileName));
+                    }
+                    self->setTimelineImport(state);
+                    return;
+                }
+                if (!prepared) {
+                    const QString error = tr("%1 could not be imported: %2")
+                                              .arg(fileName, QString::fromStdString(prepared.error().message));
+                    state.insert(QStringLiteral("error"), error);
+                    self->setError(error);
+                    self->setTimelineImport(state);
+                    self->startNextTimelineImport();
+                    return;
+                }
+                EditSession& session = self->m_document->session();
+                if (session.revision() != revision) {
+                    // The project was edited meanwhile: imported again into the project as it is now (the embedded
+                    // audio written the first time is found again), so the edits are kept. Never on the GUI thread.
+                    if (job.attempt < 3) {
+                        PendingTimelineImport again = job;
+                        ++again.attempt;
+                        again.dropSequence.reset(); // the empty first sequence may have been used by now
+                        self->m_timelineQueue.push_front(std::move(again));
+                        self->startNextTimelineImport();
+                        return;
+                    }
+                    const QString error = tr("%1 was not imported: the project kept changing while it was read. Import it again.").arg(fileName);
+                    state.insert(QStringLiteral("error"), error);
+                    self->setError(error);
+                    self->setTimelineImport(state);
+                    self->startNextTimelineImport();
+                    return;
+                }
+                if (auto committed = editor::commitTimelineImport(session, path, *prepared); !committed) {
+                    const QString error = tr("%1 could not be imported: %2")
+                                              .arg(fileName, QString::fromStdString(committed.error().message));
+                    state.insert(QStringLiteral("error"), error);
+                    self->setError(error);
+                    self->setTimelineImport(state);
+                    self->startNextTimelineImport();
+                    return;
+                }
+                if (job.openImported && !prepared->sequences.empty() && self->m_controller) {
+                    const auto& sequences = self->m_controller->snapshot()->sequences;
+                    const SequenceId first = prepared->sequences.front();
+                    const auto it = std::ranges::find_if(sequences, [&](const SequencePtr& s) { return s->id == first; });
+                    if (it != sequences.end()) {
+                        self->m_controller->setCurrentSequenceIndex(static_cast<int>(it - sequences.begin()));
+                        self->m_controller->setPlayhead({});
+                    }
+                }
+                self->adoptDocument();
+                state.insert(QStringLiteral("done"), fileName);
+                self->setTimelineImport(state);
+                emit self->importReport(reportToMap(*prepared, path));
+                self->startNextTimelineImport();
+            },
+            Qt::QueuedConnection);
+    });
 }
 
 // ---- Home screen (M5f) ------------------------------------------------------------------------------
@@ -2073,23 +2373,31 @@ bool ProjectLifecycle::exportTimeline(const QString& format, int sequenceIndex, 
                                    {"format", format.toStdString()},
                                    {"path", QDir::fromNativeSeparators(local).toStdString()}};
     const bool forAudioPost = format == QLatin1String("aaf") || format == QLatin1String("omf");
-    if (forAudioPost && !audioPost.isEmpty()) {
+    // 0.6 (#57): the dialog's "captionSidecars" (a caption file format) rides in the same options map.
+    QVariantMap audioPostOptions = audioPost;
+    const QString sidecars = audioPostOptions.take(QStringLiteral("captionSidecars")).toString();
+    if (forAudioPost && !audioPostOptions.isEmpty()) {
         request.params["audioPost"] = command::Json::parse(
-            QJsonDocument(QJsonObject::fromVariantMap(audioPost)).toJson(QJsonDocument::Compact).toStdString());
+            QJsonDocument(QJsonObject::fromVariantMap(audioPostOptions)).toJson(QJsonDocument::Compact).toStdString());
     }
-    // P.2: AAF / OMF render the clips' audio (and Mixdown Video) through this host's playback and export paths.
+    if (!sidecars.isEmpty()) {
+        request.params["captionSidecars"] = sidecars.toStdString();
+    }
+    // P.2: AAF / OMF render the clips' audio (and Mixdown Video) through this host's playback and export paths; 0.6
+    // (#57): caption sidecars replace the bleeped words through them too.
+    const bool withServices = forAudioPost || !sidecars.isEmpty();
     const std::filesystem::path projectFile = toPath(QUrl::fromLocalFile(filePath()));
     setError({});
     m_exportingTimeline = true;
     QPointer<ProjectLifecycle> self(this);
     const QString fileName = QFileInfo(local).fileName();
     // The command runs on a worker, on a scratch session over the snapshot: the GUI thread only gets the report.
-    QThreadPool::globalInstance()->start([self, base, request, fileName, format, local, forAudioPost, projectFile] {
+    QThreadPool::globalInstance()->start([self, base, request, fileName, format, local, forAudioPost, withServices, projectFile] {
         command::CommandResult result;
         try {
             EditSession scratch(*base);
             command::EnginePolicy policy;
-            if (forAudioPost) {
+            if (withServices) {
                 policy.services = exporter::interchangeServices(projectFile);
             }
             command::CommandEngine engine(scratch, ai::edit::editingCommands(), policy);
@@ -2138,16 +2446,34 @@ bool ProjectLifecycle::exportTimeline(const QString& format, int sequenceIndex, 
                     const int clips = data.value("clips", 0);
                     const int files = static_cast<int>(data.value("audioFiles", command::Json::array()).size());
                     //: e.g. "AAF · 4 audio tracks · 12 clips · C:\Projects\mix.aaf"
-                    QString summary = tr("%1 · %n audio track(s)", "", tracks).arg(exportFormatName(format)) + QStringLiteral(" · ") +
-                                      tr("%n clip(s)", "", clips) + QStringLiteral(" · ") + QDir::toNativeSeparators(local);
+                    QString summary = exportFormatName(format) + QStringLiteral(" · ") +
+                                      (tracks == 1 ? tr("1 audio track") : tr("%1 audio tracks").arg(tracks)) +
+                                      QStringLiteral(" · ") + (clips == 1 ? tr("1 clip") : tr("%1 clips").arg(clips)) +
+                                      QStringLiteral(" · ") + QDir::toNativeSeparators(local);
                     if (files > 0) {
-                        summary += QStringLiteral(" · ") + tr("%n audio file(s) next to it", "", files);
+                        summary += QStringLiteral(" · ") + (files == 1 ? tr("1 audio file next to it")
+                                                                      : tr("%1 audio files next to it").arg(files));
                     }
                     report.insert(QStringLiteral("summary"), summary);
                 } else {
                     //: e.g. "Final Cut Pro 7 XML · 2 sequences · C:\Projects\cut.xml"
-                    report.insert(QStringLiteral("summary"), tr("%1 · %n sequence(s) · %2", "", sequences)
-                                                                 .arg(exportFormatName(format), QDir::toNativeSeparators(local)));
+                    report.insert(QStringLiteral("summary"),
+                                  tr("%1 · %2 · %3").arg(exportFormatName(format),
+                                                          sequences == 1 ? tr("1 sequence") : tr("%1 sequences").arg(sequences),
+                                                          QDir::toNativeSeparators(local)));
+                }
+                // 0.6 (#57): the caption tracks written next to it.
+                QStringList captionFiles;
+                for (const command::Json& f : data.value("captionFiles", command::Json::array())) {
+                    captionFiles << QString::fromStdString(f.get<std::string>());
+                }
+                report.insert(QStringLiteral("captionFiles"), captionFiles);
+                if (!captionFiles.isEmpty()) {
+                    report.insert(QStringLiteral("summary"),
+                                  report.value(QStringLiteral("summary")).toString() + QStringLiteral(" · ") +
+                                      (captionFiles.size() == 1
+                                           ? tr("1 caption file next to it")
+                                           : tr("%1 caption files next to it").arg(captionFiles.size())));
                 }
                 emit self->timelineExported(report);
             },
@@ -2181,11 +2507,14 @@ bool ProjectLifecycle::exportTimelines(const QString& format, const QVariantList
         return false;
     }
     const bool forAudioPost = format == QLatin1String("aaf") || format == QLatin1String("omf");
+    QVariantMap audioPostOptions = audioPost;
+    const QString sidecars = audioPostOptions.take(QStringLiteral("captionSidecars")).toString(); // 0.6 (#57)
     command::Json audioPostJson;
-    if (forAudioPost && !audioPost.isEmpty()) {
+    if (forAudioPost && !audioPostOptions.isEmpty()) {
         audioPostJson = command::Json::parse(
-            QJsonDocument(QJsonObject::fromVariantMap(audioPost)).toJson(QJsonDocument::Compact).toStdString());
+            QJsonDocument(QJsonObject::fromVariantMap(audioPostOptions)).toJson(QJsonDocument::Compact).toStdString());
     }
+    const bool withServices = forAudioPost || !sidecars.isEmpty();
     // One file per sequence, named after it ("Name.xml", "Name (2).xml" when two sequences share a name).
     struct Job {
         command::CommandRequest request;
@@ -2214,6 +2543,8 @@ bool ProjectLifecycle::exportTimelines(const QString& format, const QVariantList
                                            {"path", QDir::fromNativeSeparators(job.path).toStdString()}};
         if (!audioPostJson.is_null())
             job.request.params["audioPost"] = audioPostJson;
+        if (!sidecars.isEmpty())
+            job.request.params["captionSidecars"] = sidecars.toStdString();
         jobs.push_back(std::move(job));
     }
     const std::filesystem::path projectFile = toPath(QUrl::fromLocalFile(filePath()));
@@ -2221,14 +2552,14 @@ bool ProjectLifecycle::exportTimelines(const QString& format, const QVariantList
     m_exportingTimeline = true;
     QPointer<ProjectLifecycle> self(this);
     // One worker writes the files one after another, on a scratch session over the snapshot; one combined report.
-    QThreadPool::globalInstance()->start([self, base, jobs, format, dir, forAudioPost, projectFile] {
+    QThreadPool::globalInstance()->start([self, base, jobs, format, dir, withServices, projectFile] {
         std::vector<command::CommandResult> results;
         for (const Job& job : jobs) {
             command::CommandResult result;
             try {
                 EditSession scratch(*base);
                 command::EnginePolicy policy;
-                if (forAudioPost) {
+                if (withServices) {
                     policy.services = exporter::interchangeServices(projectFile);
                 }
                 command::CommandEngine engine(scratch, ai::edit::editingCommands(), policy);
@@ -2251,6 +2582,7 @@ bool ProjectLifecycle::exportTimelines(const QString& format, const QVariantList
                 int approximated = 0;
                 int dropped = 0;
                 int written = 0;
+                QStringList captionFiles; // 0.6 (#57)
                 for (std::size_t i = 0; i < jobs.size(); ++i) {
                     const Job& job = jobs[i];
                     const command::CommandResult& result = results[i];
@@ -2268,6 +2600,9 @@ bool ProjectLifecycle::exportTimelines(const QString& format, const QVariantList
                     }
                     ++written;
                     files.append(file);
+                    for (const command::Json& f : result.data.value("captionFiles", command::Json::array())) {
+                        captionFiles << QString::fromStdString(f.get<std::string>());
+                    }
                     const command::Json counts = result.data.value("report", command::Json::object());
                     carried += counts.value("carried", 0);
                     approximated += counts.value("approximated", 0);
@@ -2288,7 +2623,8 @@ bool ProjectLifecycle::exportTimelines(const QString& format, const QVariantList
                 QVariantMap report{{QStringLiteral("exported"), true},
                                    {QStringLiteral("ok"), ok},
                                    //: The export report's title after Export Timeline of several sequences: "Exported 3 timelines"
-                                   {QStringLiteral("file"), tr("%n timeline(s)", "", static_cast<int>(jobs.size()))},
+                                   {QStringLiteral("file"), jobs.size() == 1 ? tr("1 timeline")
+                                                                             : tr("%1 timelines").arg(jobs.size())},
                                    {QStringLiteral("path"), dir},
                                    {QStringLiteral("format"), exportFormatName(format)},
                                    {QStringLiteral("files"), files},
@@ -2298,11 +2634,23 @@ bool ProjectLifecycle::exportTimelines(const QString& format, const QVariantList
                                    {QStringLiteral("dropped"), dropped},
                                    {QStringLiteral("entries"), entries}};
                 //: e.g. "Final Cut Pro 7 XML · 3 timelines · C:\Projects\Exports"
-                report.insert(QStringLiteral("summary"), tr("%1 · %n timeline(s) · %2", "", written)
-                                                             .arg(exportFormatName(format), QDir::toNativeSeparators(dir)));
+                report.insert(QStringLiteral("summary"),
+                              tr("%1 · %2 · %3").arg(exportFormatName(format),
+                                                      written == 1 ? tr("1 timeline") : tr("%1 timelines").arg(written),
+                                                      QDir::toNativeSeparators(dir)));
+                report.insert(QStringLiteral("captionFiles"), captionFiles);
+                if (!captionFiles.isEmpty()) {
+                    report.insert(QStringLiteral("summary"),
+                                  report.value(QStringLiteral("summary")).toString() + QStringLiteral(" · ") +
+                                      (captionFiles.size() == 1
+                                           ? tr("1 caption file next to them")
+                                           : tr("%1 caption files next to them").arg(captionFiles.size())));
+                }
                 if (!ok) {
-                    const QString error = tr("%n timeline(s) could not be exported: %1", "", static_cast<int>(failures.size()))
-                                              .arg(failures.join(QStringLiteral("; ")));
+                    const QString why = failures.join(QStringLiteral("; "));
+                    const QString error = failures.size() == 1
+                                              ? tr("1 timeline could not be exported: %1").arg(why)
+                                              : tr("%1 timelines could not be exported: %2").arg(failures.size()).arg(why);
                     report.insert(QStringLiteral("error"), error);
                     self->setError(error);
                 }
@@ -2413,6 +2761,76 @@ int ProjectLifecycle::relinkAll(const QList<QUrl>& folders) {
     setError({});
     adoptDocument();
     return static_cast<int>(relinked->size());
+}
+
+// P1 round (#42): Locate... relinks the rest, and recordings remuxed into another container.
+int ProjectLifecycle::relinkLocated(const QString& mediaId, const QUrl& file, bool force) {
+    const auto id = parseMediaKey(mediaId);
+    if (!id) { // a LUT asset: its own relink
+        return relink(mediaId, file, force) ? 0 : -1;
+    }
+    if (!m_document) {
+        return -1;
+    }
+    auto relinked = m_document->relinkAfterLocate(*id, toPath(file), force);
+    if (!relinked) {
+        setError(QString::fromStdString(relinked.error().message));
+        return -1;
+    }
+    setError({});
+    adoptDocument();
+    return *relinked;
+}
+
+QVariantList ProjectLifecycle::sameRecordings(const QList<QUrl>& folders) const {
+    QVariantList out;
+    if (!m_document) {
+        return out;
+    }
+    std::vector<std::filesystem::path> roots;
+    for (const QUrl& url : folders) {
+        roots.push_back(toPath(url));
+    }
+    const ProjectSnapshot snap = m_controller->snapshot();
+    for (const editor::SameRecording& offer : m_document->findSameRecordings(roots)) {
+        const MediaItem* item = snap ? snap->findMedia(offer.media) : nullptr;
+        if (!item) {
+            continue;
+        }
+        const QString was = QString::fromStdString(item->locator.path);
+        out.append(QVariantMap{
+            {QStringLiteral("id"), mediaKey(offer.media)},
+            {QStringLiteral("name"), QString::fromStdString(item->name)},
+            {QStringLiteral("path"), QDir::toNativeSeparators(toQString(offer.file))},
+            {QStringLiteral("url"), toUrl(offer.file)},
+            {QStringLiteral("from"), QLatin1Char('.') + QFileInfo(was).suffix().toLower()},
+            {QStringLiteral("to"), QLatin1Char('.') + QFileInfo(toQString(offer.file)).suffix().toLower()},
+        });
+    }
+    return out;
+}
+
+int ProjectLifecycle::relinkSameRecordings(const QVariantList& offers) {
+    if (!m_document) {
+        return 0;
+    }
+    std::vector<editor::SameRecording> list;
+    for (const QVariant& value : offers) {
+        const QVariantMap offer = value.toMap();
+        const auto id = parseMediaKey(offer.value(QStringLiteral("id")).toString());
+        const QUrl url = offer.value(QStringLiteral("url")).toUrl();
+        if (id && url.isValid()) {
+            list.push_back({*id, toPath(url)});
+        }
+    }
+    auto relinked = m_document->relinkSameRecordings(list);
+    if (!relinked) {
+        setError(QString::fromStdString(relinked.error().message));
+        return 0;
+    }
+    setError({});
+    adoptDocument();
+    return *relinked;
 }
 
 // ---- Library -> timeline ----------------------------------------------------------------------------

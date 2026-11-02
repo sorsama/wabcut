@@ -60,6 +60,8 @@ Item {
         // 0.5: the caption tracks as lanes (Timeline Display > Show caption tracks); a selected cue lives in Captions,
         // so the Captions page follows it.
         showCaptionTracks: Preferences.timelineShowCaptionTracks
+        // 0.6 (P1 round, D9 #8): the sequence's beat grid as thin ruler ticks (Timeline Display > Beat grid).
+        showBeatGrid: Preferences.timelineShowBeatGrid
         captions: Captions
         trimPoints: Trim.points
         trimType: Trim.type
@@ -90,8 +92,12 @@ Item {
             labelFont: Qt.font({ family: Theme.fontSans, pixelSize: Theme.textSm, weight: Font.ExtraBold }),
             microSize: Theme.textMicro,
             microTracking: Theme.microTracking,
-            laneRadius: Theme.radiusClip,
-            clipRadius: Theme.radiusClip,
+            // 0.6: Settings > Appearance > Timeline corners (Square: Premiere's look) squares lanes, clips, transitions,
+            // selection rings, caption cues and the chips on clips.
+            laneRadius: Theme.radiusTimeline,
+            clipRadius: Theme.radiusTimeline,
+            chipRadius: Theme.squareTimeline ? 0 : Theme.radiusPill,
+            syncColor: Theme.danger,
             selectionWidth: Theme.selectionWidth,
             selectionGap: Theme.selectionWidth,
             liftOffset: Theme.liftOffset,

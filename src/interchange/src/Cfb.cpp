@@ -9,6 +9,7 @@
 #include <fstream>
 #include <functional>
 #include <limits>
+#include <memory>
 #include <system_error>
 
 namespace wabcut::interchange::detail::cfb {
@@ -541,11 +542,90 @@ std::expected<void, Error> Builder::write(const std::filesystem::path& file) con
 // ---------------------------------------------------------------------------------------------------------------------
 // Reader
 
+/// Where the reader's bytes come from: the whole file in memory, or the file on disk read on demand.
+class Reader::Source {
+public:
+    std::string bytes;
+    std::ifstream file;
+    bool onDisk = false;
+
+    std::uint64_t size() const { return m_size; }
+    void setSize(std::uint64_t size) { m_size = size; }
+
+    /// Appends [offset, offset + n): zeros past the end; false on a read error.
+    bool append(std::uint64_t offset, std::size_t n, std::string& out) {
+        const std::size_t at = out.size();
+        out.resize(at + n, '\0');
+        if (offset >= m_size || n == 0) {
+            return true;
+        }
+        const std::size_t take = static_cast<std::size_t>(std::min<std::uint64_t>(n, m_size - offset));
+        if (!onDisk) {
+            std::memcpy(out.data() + at, bytes.data() + offset, take);
+            return true;
+        }
+        file.clear();
+        file.seekg(static_cast<std::streamoff>(offset));
+        file.read(out.data() + at, static_cast<std::streamsize>(take));
+        return file.gcount() == static_cast<std::streamsize>(take);
+    }
+
+private:
+    std::uint64_t m_size = 0;
+};
+
 std::expected<Reader, Error> Reader::open(std::string bytes) {
     Reader r;
-    r.m_bytes = std::move(bytes);
-    const std::string_view in = r.m_bytes;
-    if (in.size() < 512 || std::memcmp(in.data(), kMagic, sizeof kMagic) != 0) {
+    r.m_source = std::make_shared<Source>();
+    r.m_source->setSize(bytes.size());
+    r.m_source->bytes = std::move(bytes);
+    return parse(std::move(r));
+}
+
+std::expected<Reader, Error> Reader::openFile(const std::filesystem::path& file) {
+    Reader r;
+    r.m_source = std::make_shared<Source>();
+    r.m_source->onDisk = true;
+    r.m_source->file.open(file, std::ios::binary);
+    std::error_code ec;
+    const auto size = std::filesystem::file_size(file, ec);
+    if (!r.m_source->file || ec) {
+        return std::unexpected(Error{ErrorCode::IoError, "cannot read " + utf8FromPath(file)});
+    }
+    r.m_source->setSize(size);
+    return parse(std::move(r));
+}
+
+std::expected<void, Error> Reader::fetch(std::uint64_t offset, std::size_t size, std::string& out) const {
+    if (!m_source->append(offset, size, out)) {
+        return std::unexpected(Error{ErrorCode::IoError, "compound file: the file cannot be read"});
+    }
+    return {};
+}
+
+std::expected<void, Error> Reader::charge(std::uint64_t bytes) const {
+    // Well-formed files never read a sector twice; a hostile one can point many streams at the same chain. A few times
+    // the file's size (and a floor for tests that read streams again) bounds the work to the file's size.
+    const std::uint64_t budget = 4 * m_fileSize + (64ull << 20);
+    m_bytesRead += bytes;
+    if (m_bytesRead > budget) {
+        return std::unexpected(parseFailure("streams share sectors (reading them would read the file many times over)"));
+    }
+    return {};
+}
+
+std::expected<Reader, Error> Reader::parse(Reader r) {
+    r.m_fileSize = r.m_source->size();
+    const std::uint64_t fileSize = r.m_fileSize;
+    std::string header;
+    if (fileSize < 512) {
+        return std::unexpected(parseFailure("not a compound file"));
+    }
+    if (auto got = r.fetch(0, 512, header); !got) {
+        return std::unexpected(got.error());
+    }
+    const std::string_view in = header;
+    if (std::memcmp(in.data(), kMagic, sizeof kMagic) != 0) {
         return std::unexpected(parseFailure("not a compound file"));
     }
     std::memcpy(r.m_headerClsid.data(), in.data() + 8, 16);
@@ -572,13 +652,14 @@ std::expected<Reader, Error> Reader::open(std::string bytes) {
         return std::unexpected(parseFailure("unsupported mini stream cutoff"));
     }
     const std::uint64_t ss = r.m_sectorSize;
-    if (in.size() < ss) {
+    if (fileSize < ss) {
         return std::unexpected(parseFailure("truncated header"));
     }
-    const std::uint64_t sectorCount = (in.size() - ss + ss - 1) / ss; // a short last sector reads as zeros
+    const std::uint64_t sectorCount = (fileSize - ss + ss - 1) / ss; // a short last sector reads as zeros
     if (fatCount > sectorCount || difatCount > sectorCount || miniFatCount > sectorCount) {
         return std::unexpected(parseFailure("sector counts larger than the file"));
     }
+    auto sector = [&](std::uint64_t s, std::string& out) { return r.fetch((s + 1) * ss, static_cast<std::size_t>(ss), out); };
 
     // The FAT's sectors: the header's DIFAT, then the DIFAT chain.
     std::vector<std::uint32_t> fatSectors;
@@ -586,18 +667,22 @@ std::expected<Reader, Error> Reader::open(std::string bytes) {
         fatSectors.push_back(getU32(in, 76 + 4 * i));
     }
     const std::uint64_t perSector = ss / 4;
+    std::string buffer;
     for (std::uint32_t d = 0; d < difatCount && fatSectors.size() < fatCount; ++d) {
         if (difatStart >= sectorCount) {
             return std::unexpected(parseFailure("DIFAT sector outside the file"));
         }
-        const std::size_t base = static_cast<std::size_t>((difatStart + 1) * ss);
-        if (base + ss > in.size()) {
+        if ((std::uint64_t{difatStart} + 2) * ss > fileSize) {
             return std::unexpected(parseFailure("truncated DIFAT"));
         }
-        for (std::uint64_t k = 0; k + 1 < perSector && fatSectors.size() < fatCount; ++k) {
-            fatSectors.push_back(getU32(in, base + static_cast<std::size_t>(4 * k)));
+        buffer.clear();
+        if (auto got = sector(difatStart, buffer); !got) {
+            return std::unexpected(got.error());
         }
-        difatStart = getU32(in, base + static_cast<std::size_t>(4 * (perSector - 1)));
+        for (std::uint64_t k = 0; k + 1 < perSector && fatSectors.size() < fatCount; ++k) {
+            fatSectors.push_back(getU32(buffer, static_cast<std::size_t>(4 * k)));
+        }
+        difatStart = getU32(buffer, static_cast<std::size_t>(4 * (perSector - 1)));
     }
     if (fatSectors.size() != fatCount) {
         return std::unexpected(parseFailure("FAT sector list is short"));
@@ -607,15 +692,18 @@ std::expected<Reader, Error> Reader::open(std::string bytes) {
         if (s >= sectorCount) {
             return std::unexpected(parseFailure("FAT sector outside the file"));
         }
-        const std::size_t base = static_cast<std::size_t>((std::uint64_t{s} + 1) * ss);
+        buffer.clear();
+        if (auto got = sector(s, buffer); !got) {
+            return std::unexpected(got.error());
+        }
+        const std::uint64_t base = (std::uint64_t{s} + 1) * ss;
         for (std::uint64_t k = 0; k < perSector; ++k) {
-            const std::size_t at = base + static_cast<std::size_t>(4 * k);
-            r.m_fat.push_back(at + 4 <= in.size() ? getU32(in, at) : kFreeSector);
+            r.m_fat.push_back(base + 4 * k + 4 <= fileSize ? getU32(buffer, static_cast<std::size_t>(4 * k)) : kFreeSector);
         }
     }
 
     auto readChain = [&](std::uint32_t start, std::uint64_t maxBytes) -> std::expected<std::string, Error> {
-        auto sectors = r.chain(r.m_fat, start, sectorCount);
+        auto sectors = r.chain(r.m_fat, start, sectorCount, ceilDiv(maxBytes, ss));
         if (!sectors) {
             return std::unexpected(sectors.error());
         }
@@ -624,10 +712,9 @@ std::expected<Reader, Error> Reader::open(std::string bytes) {
             if (out.size() >= maxBytes) {
                 break;
             }
-            const std::size_t base = static_cast<std::size_t>((std::uint64_t{s} + 1) * ss);
-            const std::size_t take = static_cast<std::size_t>(std::min<std::uint64_t>(ss, in.size() - std::min<std::size_t>(base, in.size())));
-            out.append(in.substr(std::min(base, in.size()), take));
-            out.append(static_cast<std::size_t>(ss) - take, '\0');
+            if (auto got = sector(s, out); !got) {
+                return std::unexpected(got.error());
+            }
         }
         return out;
     };
@@ -748,7 +835,7 @@ std::expected<Reader, Error> Reader::open(std::string bytes) {
             r.m_miniFat.push_back(getU32(*miniFat, k));
         }
         const Entry& root = r.m_entries[0];
-        if (root.size > kMaxReadStreamBytes) {
+        if (root.size > kMaxReadStreamBytes || root.size > fileSize) {
             return std::unexpected(parseFailure("mini stream too large"));
         }
         if (root.startSector != kEndOfChain && root.size > 0) {
@@ -767,10 +854,10 @@ std::expected<Reader, Error> Reader::open(std::string bytes) {
 }
 
 std::expected<std::vector<std::uint32_t>, Error> Reader::chain(const std::vector<std::uint32_t>& table, std::uint32_t start,
-                                                               std::uint64_t limit) const {
+                                                               std::uint64_t limit, std::uint64_t maxCount) const {
     std::vector<std::uint32_t> out;
     std::uint32_t s = start;
-    while (s != kEndOfChain) {
+    while (s != kEndOfChain && out.size() < maxCount) {
         if (s >= table.size() || s >= limit) {
             return std::unexpected(parseFailure("sector chain leaves the file"));
         }
@@ -818,19 +905,41 @@ std::expected<std::string, Error> Reader::read(std::size_t stream) const {
     if (stream >= m_entries.size() || m_entries[stream].type != EntryType::Stream) {
         return std::unexpected(parseFailure("not a stream"));
     }
-    const Entry& e = m_entries[stream];
-    if (e.size > kMaxReadStreamBytes) {
+    if (m_entries[stream].size > kMaxReadStreamBytes) {
         return std::unexpected(Error{ErrorCode::Unsupported, "compound file: stream too large"});
     }
-    if (e.size == 0) {
-        return std::string{};
-    }
     std::string out;
+    auto done = copy(stream, [&](std::string_view block) {
+        out.append(block);
+        return true;
+    });
+    if (!done) {
+        return std::unexpected(done.error());
+    }
+    return out;
+}
+
+std::expected<void, Error> Reader::copy(std::size_t stream, const std::function<bool(std::string_view)>& sink) const {
+    if (stream >= m_entries.size() || m_entries[stream].type != EntryType::Stream) {
+        return std::unexpected(parseFailure("not a stream"));
+    }
+    const Entry& e = m_entries[stream];
+    if (e.size == 0) {
+        return {};
+    }
+    if (e.size > m_fileSize) {
+        return std::unexpected(parseFailure("stream \"" + e.name + "\" is longer than the file"));
+    }
+    if (auto charged = charge(e.size); !charged) {
+        return std::unexpected(charged.error());
+    }
+    auto stop = [] { return std::unexpected(Error{ErrorCode::Cancelled, "compound file: copy stopped"}); };
     if (e.size < m_miniCutoff) {
-        auto sectors = chain(m_miniFat, e.startSector, m_miniFat.size());
+        auto sectors = chain(m_miniFat, e.startSector, m_miniFat.size(), ceilDiv(e.size, m_miniSectorSize));
         if (!sectors) {
             return std::unexpected(sectors.error());
         }
+        std::string out;
         for (const std::uint32_t s : *sectors) {
             const std::size_t base = static_cast<std::size_t>(s) * m_miniSectorSize;
             if (base + m_miniSectorSize > m_miniStream.size()) {
@@ -838,28 +947,45 @@ std::expected<std::string, Error> Reader::read(std::size_t stream) const {
             }
             out.append(m_miniStream, base, m_miniSectorSize);
         }
-    } else {
-        const std::uint64_t ss = m_sectorSize;
-        const std::uint64_t sectorCount = (m_bytes.size() - ss + ss - 1) / ss;
-        auto sectors = chain(m_fat, e.startSector, sectorCount);
-        if (!sectors) {
-            return std::unexpected(sectors.error());
+        if (out.size() < e.size) {
+            return std::unexpected(parseFailure("stream \"" + e.name + "\" is longer than its sectors"));
         }
-        for (const std::uint32_t s : *sectors) {
-            if (out.size() >= e.size) {
-                break;
-            }
-            const std::size_t base = static_cast<std::size_t>((std::uint64_t{s} + 1) * ss);
-            const std::size_t take = base < m_bytes.size() ? std::min<std::size_t>(static_cast<std::size_t>(ss), m_bytes.size() - base) : 0;
-            out.append(m_bytes, std::min(base, m_bytes.size()), take);
-            out.append(static_cast<std::size_t>(ss) - take, '\0');
+        out.resize(static_cast<std::size_t>(e.size));
+        if (!sink(out)) {
+            return stop();
         }
+        return {};
     }
-    if (out.size() < e.size) {
+    const std::uint64_t ss = m_sectorSize;
+    const std::uint64_t sectorCount = (m_fileSize - ss + ss - 1) / ss;
+    auto sectors = chain(m_fat, e.startSector, sectorCount, ceilDiv(e.size, ss));
+    if (!sectors) {
+        return std::unexpected(sectors.error());
+    }
+    if (sectors->size() * ss < e.size) {
         return std::unexpected(parseFailure("stream \"" + e.name + "\" is longer than its sectors"));
     }
-    out.resize(static_cast<std::size_t>(e.size));
-    return out;
+    // Runs of consecutive sectors are read at once (a stream's chain is usually one run), in blocks of at most 1 MiB.
+    constexpr std::uint64_t kBlock = 1u << 20;
+    std::uint64_t left = e.size;
+    std::string block;
+    for (std::size_t i = 0; i < sectors->size() && left > 0;) {
+        std::size_t j = i + 1;
+        while (j < sectors->size() && (*sectors)[j] == (*sectors)[j - 1] + 1 && (j - i) * ss < kBlock) {
+            ++j;
+        }
+        const std::uint64_t take = std::min<std::uint64_t>((j - i) * ss, left);
+        block.clear();
+        if (auto got = fetch((std::uint64_t{(*sectors)[i]} + 1) * ss, static_cast<std::size_t>(take), block); !got) {
+            return std::unexpected(got.error());
+        }
+        if (!sink(block)) {
+            return stop();
+        }
+        left -= take;
+        i = j;
+    }
+    return {};
 }
 
 } // namespace wabcut::interchange::detail::cfb

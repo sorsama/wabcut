@@ -47,6 +47,9 @@
 #include <QVariantMap>
 #include <QtQml/qqmlregistration.h>
 
+#include <atomic>
+#include <cstdint>
+#include <deque>
 #include <filesystem>
 #include <future>
 #include <memory>
@@ -116,6 +119,10 @@ class ProjectLifecycle : public QObject {
     /// readOnly, demo }]; and the index of the active one (the one the panels show).
     Q_PROPERTY(QVariantList openProjects READ openProjects NOTIFY documentChanged FINAL)
     Q_PROPERTY(int activeProject READ activeProject NOTIFY documentChanged FINAL)
+    /// 0.6 (fix round 1, ARGON-08): the AAF / OMF imports importFiles started in the background (they can write GBs of
+    /// embedded audio): { busy, file (the one importing now), text ("Importing mix.aaf · 40 %"), progress (0..1),
+    /// queued (files waiting after it), done (the file imported last), error, cancelled }.
+    Q_PROPERTY(QVariantMap timelineImport READ timelineImport NOTIFY timelineImportChanged FINAL)
 
 public:
     explicit ProjectLifecycle(ProjectController* controller, QObject* parent = nullptr);
@@ -229,8 +236,13 @@ public:
     Q_INVOKABLE void discardAllRecovery();
     /// Re-scans for recovery files (startup does it once).
     void scanRecovery();
-    /// Lists every version (recoveryVersions) in the background, then renders their poster frames.
-    Q_INVOKABLE void scanRecoveryVersions();
+    /// Lists every version (recoveryVersions) in the background, then renders their poster frames. P1 round (#49): of
+    /// project `file` when given (a project that failed to open, Home's Versions…), else of the open (else the last)
+    /// project, as before.
+    Q_INVOKABLE void scanRecoveryVersions(const QUrl& file = QUrl());
+    /// P1 round (#49): whether project `file` has versions to recover from: an autosave or a backup next to it (cheap:
+    /// nothing is read). An open that failed offers "Recover a version…" then.
+    Q_INVOKABLE bool hasRecoveryVersions(const QUrl& file) const;
     /// Opens a version (from recoveryVersions) as an untitled copy with unsaved changes: the project file is not
     /// touched until the user saves somewhere.
     Q_INVOKABLE bool openRecoveryCopy(const QUrl& file);
@@ -251,6 +263,9 @@ public:
     ///                               it: the UI labels it experimental)
     ///   bin                         0.4: the bin for the media (a Library bin key "b12"; "" or unknown: the root; a
     ///                               search bin: its parent); ignored when this call starts a new project
+    ///   binsFrom                    P1 round (#63): folders (URLs) the media files given came from: a file inside
+    ///                               one goes into bins as if that folder had been given (its bin, subfolders
+    ///                               nested; the undo step is "Import Folder"). Home's Import folder… uses it.
     /// 0.4: folders given (Import Folder, folder drops) are expanded (editor::collectImportFolder): each becomes a bin
     /// of its name in `bin`, subfolders nested, in the same one undo step, named "Import Folder". The summary then also
     /// has folders (how many were given), bins (how many were made), skipped: [{ name, reason: "notMedia" | "hidden" |
@@ -258,7 +273,17 @@ public:
     /// folderSummary (the toast: "Imported 12 files from Session1 into 3 bins. ..."; "" when no folder was given).
     /// P0 round: chapterMarkers (clip markers made from the recordings' chapters, Editing.chapterMarkersOnImport) and
     /// chapterSummary (the toast's sentence for them, "" when none; also at the end of folderSummary).
+    /// 0.6 (fix round 1, ARGON-08): AAF and OMF files are imported off the GUI thread, one after another (progress and
+    /// Cancel: `timelineImport`, cancelTimelineImport()); the summary's `pendingTimelines` counts them (not in
+    /// `timelines`). Each still ends as one undo step "Import <file>" with its importReport; with openImported the first
+    /// one opens when no other timeline did. Their embedded audio goes to editor::embeddedMediaFolderFor (the project's
+    /// folder, else the file's, else Documents/Wabcut/Imported Media).
     Q_INVOKABLE QVariantMap importFiles(const QList<QUrl>& files, const QVariantMap& options = {});
+    QVariantMap timelineImport() const { return m_timelineImport; }
+    /// Stops the AAF / OMF import running (nothing is imported; the audio it wrote is removed) and drops the queued ones.
+    Q_INVOKABLE void cancelTimelineImport();
+    /// Tests: AAF / OMF imports run inside importFiles on the calling thread (`timelines` counts them).
+    void setSynchronousTimelineImport(bool synchronous) { m_syncTimelineImport = synchronous; }
     /// 0.4: an import dialog's choice (files or folders): import/lastFolder = the first one's folder (a folder's parent);
     /// import/recentFolders gets each file's folder / each folder (deduplicated, case-insensitive on Windows, 5 kept).
     Q_INVOKABLE void rememberImportFolder(const QList<QUrl>& chosen);
@@ -272,7 +297,10 @@ public:
     /// AAF / OMF settings of interchange.export (sampleRate, bitsPerSample, files, audioFormat, render, handleFrames,
     /// mixdownVideo, breakoutToMono, renderAudioClipEffects, includeClipCopiesWithoutEffects, omfTitle, includePan):
     /// the clips' audio is rendered by the playback engine. False when an export is running or nothing can be
-    /// exported (lastError says why); otherwise timelineExported follows.
+    /// exported (lastError says why); otherwise timelineExported follows. 0.6 (#57): `audioPost` may also hold
+    /// "captionSidecars" (a caption file format, "srt", "vtt", ...: any format): every caption track with cues is then
+    /// written next to the file (interchange.export's captionSidecars); the report gets captionFiles and the summary
+    /// says how many.
     Q_INVOKABLE bool exportTimeline(const QString& format, int sequenceIndex, const QUrl& file,
                                     const QVariantMap& audioPost = {});
     /// 0.2: Export Timeline of several sequences at once: one file per sequence (indices in sequenceNames) in `folder`
@@ -320,6 +348,14 @@ public:
     Q_INVOKABLE bool relink(const QString& mediaId, const QUrl& file, bool force = false);
     /// Relinks every offline item found (by name and fingerprint) under `folders`; returns how many.
     Q_INVOKABLE int relinkAll(const QList<QUrl>& folders);
+    /// P1 round (#42): Locate... that relinks the rest (ProjectDocument::relinkAfterLocate): -1 when refused (lastError;
+    /// a different file needs `force`), else how many other offline items it relinked with it.
+    Q_INVOKABLE int relinkLocated(const QString& mediaId, const QUrl& file, bool force = false);
+    /// P1 round (#42): offline items whose recording sits under `folders` in another container (an OBS .mkv remuxed to
+    /// .mp4): [{ id, name, path (the new file), url, from (".mkv"), to (".mp4") }].
+    Q_INVOKABLE QVariantList sameRecordings(const QList<QUrl>& folders) const;
+    /// Relinks offers from sameRecordings ([{ id, url }]) in one undo step; returns how many (0 with lastError).
+    Q_INVOKABLE int relinkSameRecordings(const QVariantList& offers);
 
     // ---- Library -> timeline ----
     /// Edits `mediaId` into the current sequence at `timecode` on the track `trackId` ("" = targeted tracks). A
@@ -345,6 +381,8 @@ signals:
     /// After importing a timeline: { file, format, sequences, media, unresolved: [{ name, path }],
     /// carried, approximated, dropped, entries: [{ outcome, category, reason, location }], summary }.
     void importReport(const QVariantMap& report);
+    /// 0.6 (fix round 1): `timelineImport` changed.
+    void timelineImportChanged();
     /// After exportTimeline: { ok, error, exported: true, path } and, when it worked, ImportReportDialog's map
     /// ({ file, format, summary, sequences, carried, approximated, dropped, entries }).
     void timelineExported(const QVariantMap& report);
@@ -385,6 +423,23 @@ private:
     QString m_lastError;
     bool m_demo = true;
     bool m_exportingTimeline = false;
+    // 0.6 (fix round 1, ARGON-08): the background AAF / OMF imports, one at a time.
+    struct PendingTimelineImport {
+        std::filesystem::path path;
+        bool openImported = false;
+        std::optional<SequenceId> dropSequence; ///< the new project's empty first sequence
+        int attempt = 0;                        ///< runs again when the project changed meanwhile (up to 3)
+    };
+    std::deque<PendingTimelineImport> m_timelineQueue;
+    std::shared_ptr<std::atomic<bool>> m_timelineCancel;
+    QVariantMap m_timelineImport;
+    bool m_syncTimelineImport = false;
+    /// Counts project replacements (new, open, switching projects: the session's Reset changes): an import started on
+    /// one project never lands in another.
+    std::uint64_t m_projectEpoch = 0;
+    std::uint64_t m_resetListener = 0;
+    void startNextTimelineImport();
+    void setTimelineImport(QVariantMap state);
     /// The media items the last importFiles gave its media files, in the order given (new or already there).
     std::vector<MediaId> m_importedMedia;
     mutable QVariantList m_recovery;

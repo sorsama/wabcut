@@ -143,6 +143,7 @@ std::size_t estimateExclusiveBytes(const ProjectState& older, const ProjectState
 
 EditSession::EditSession(ProjectState initial, EditSessionOptions options)
     : m_current(std::make_shared<const ProjectState>(std::move(initial))), m_options(options) {
+    m_shown.store(snapshot(), std::memory_order_release);
     raiseIdHighWater(*snapshot());
 }
 
@@ -150,12 +151,14 @@ EditSession::~EditSession() { releasePending(); }
 
 ProjectSnapshot EditSession::snapshot() const noexcept { return m_current.load(std::memory_order_acquire); }
 
+ProjectSnapshot EditSession::shown() const noexcept { return m_shown.load(std::memory_order_acquire); }
+
 void EditSession::raiseIdHighWater(const ProjectState& state) noexcept {
     m_idHighWater = std::max(m_idHighWater, state.ids.next);
 }
 
 ProjectState EditSession::stateForSave() const {
-    ProjectState state = *snapshot();
+    ProjectState state = *committed();
     state.ids.next = std::max(state.ids.next, m_idHighWater);
     return state;
 }
@@ -203,8 +206,46 @@ void EditSession::enforceBudget() {
 
 std::expected<ChangeSet, Error> EditSession::commit(std::string_view label, const ProjectState& next,
                                                     std::string_view mergeKey) {
+    endPreview();
     const ProjectSnapshot current = snapshot();
     return commitFrom(*current, label, next, mergeKey);
+}
+
+std::expected<ChangeSet, Error> EditSession::showPreview(std::string_view label, const ProjectState& next) {
+    if (inGesture()) {
+        return std::unexpected(Error{ErrorCode::InvalidArgument, "no preview during a gesture"});
+    }
+    if (m_options.validateEdits) {
+        if (auto valid = validate(next, Validation::Structure); !valid) {
+            return std::unexpected(Error{valid.error().code, "preview '" + std::string(label) +
+                                                                 "' rejected: " + valid.error().message});
+        }
+    }
+    // snapshot() stays the committed state: only shown() (what plays) changes. The preview never raises the id
+    // high-water mark: it hands out no ids the history would have to skip.
+    const ProjectSnapshot before = shown();
+    auto published = std::make_shared<const ProjectState>(next);
+    ChangeSet changes = diff(*before, *published);
+    if (m_preview) {
+        retire(std::move(m_preview)); // the previous preview
+    }
+    m_preview = published;
+    m_mergeOpen = false;
+    publishShown(std::move(published), label, changes);
+    return changes;
+}
+
+std::optional<ChangeSet> EditSession::endPreview() {
+    if (!m_preview) {
+        return std::nullopt;
+    }
+    ProjectSnapshot preview = std::move(m_preview);
+    m_preview.reset();
+    ProjectSnapshot current = snapshot();
+    ChangeSet changes = diff(*preview, *current);
+    retire(std::move(preview));
+    publishShown(std::move(current), {}, changes);
+    return changes;
 }
 
 std::expected<ChangeSet, Error> EditSession::commitFrom(const ProjectState& base, std::string_view label,
@@ -259,6 +300,7 @@ std::expected<ChangeSet, Error> EditSession::commitFrom(const ProjectState& base
 }
 
 std::optional<ChangeSet> EditSession::undo() {
+    endPreview();
     m_gestureDepth = 0;
     m_gestureStarted = false;
     if (m_undo.empty()) {
@@ -279,6 +321,7 @@ std::optional<ChangeSet> EditSession::undo() {
 }
 
 std::optional<ChangeSet> EditSession::redo() {
+    endPreview();
     m_gestureDepth = 0;
     m_gestureStarted = false;
     if (m_redo.empty()) {
@@ -324,6 +367,7 @@ std::vector<std::string> EditSession::redoLabels() const {
 }
 
 void EditSession::beginGesture(std::string label) {
+    endPreview();
     if (m_gestureDepth++ == 0) {
         m_gestureLabel = std::move(label);
         m_gestureStarted = false;
@@ -354,7 +398,32 @@ std::optional<ChangeSet> EditSession::cancelGesture() {
     return changes;
 }
 
+bool EditSession::discardRedo() {
+    if (m_gestureDepth > 0) {
+        return false;
+    }
+    for (Step& s : m_redo) {
+        retire(std::move(s.state));
+    }
+    m_redo.clear();
+    m_mergeOpen = false;
+    return true;
+}
+
+bool EditSession::clearHistory() {
+    if (m_gestureDepth > 0) {
+        return false;
+    }
+    for (Step& s : m_undo) {
+        retire(std::move(s.state));
+    }
+    m_undo.clear();
+    m_undoBytes = 0;
+    return discardRedo();
+}
+
 void EditSession::reset(ProjectState state) {
+    endPreview();
     for (Step& s : m_undo) {
         retire(std::move(s.state));
     }
@@ -376,6 +445,7 @@ void EditSession::reset(ProjectState state) {
 }
 
 EditSession::Parked EditSession::park(ProjectState replacement) {
+    endPreview(); // the committed state is parked
     m_gestureDepth = 0;
     m_gestureStarted = false;
     m_mergeOpen = false;
@@ -397,6 +467,7 @@ EditSession::Parked EditSession::park(ProjectState replacement) {
 }
 
 EditSession::Parked EditSession::exchange(Parked other) {
+    endPreview();
     m_gestureDepth = 0;
     m_gestureStarted = false;
     m_mergeOpen = false;
@@ -418,6 +489,7 @@ EditSession::Parked EditSession::exchange(Parked other) {
 }
 
 void EditSession::restore(Parked parked) {
+    endPreview();
     for (Step& s : m_undo) {
         retire(std::move(s.state));
     }
@@ -449,8 +521,22 @@ void EditSession::removeListener(ListenerId id) {
     std::erase_if(m_listeners, [&](const auto& entry) { return entry.first == id; });
 }
 
+void EditSession::publishShown(ProjectSnapshot state, std::string_view label, const ChangeSet& changes) {
+    m_shown.store(state, std::memory_order_release); // snapshot() and revision() stay: nothing was committed
+    const std::string labelCopy(label);
+    const auto listeners = m_listeners;
+    const ChangeEvent event{ChangeKind::Preview, labelCopy, std::move(state), changes};
+    for (const auto& entry : listeners) {
+        entry.second(event);
+    }
+}
+
 void EditSession::publish(ProjectSnapshot state, ChangeKind kind, std::string_view label, const ChangeSet& changes) {
+    if (m_preview) {
+        retire(std::exchange(m_preview, nullptr)); // every caller ended it first; never left showing a stale state
+    }
     m_current.store(state, std::memory_order_release);
+    m_shown.store(state, std::memory_order_release);
     m_revision.fetch_add(1, std::memory_order_acq_rel);
     // Copy first: a listener may add or remove listeners, or edit again.
     const std::string labelCopy(label);

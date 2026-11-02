@@ -457,4 +457,53 @@ EditOutcome applyDefaultTransitions(const ProjectState& state, SequenceId sequen
     return combined(state, std::move(current), std::move(created));
 }
 
+EditOutcome applyTransitionsAtEdges(const ProjectState& state, SequenceId sequenceId, std::span<const EdgePoint> points,
+                                    TrackKind kind, const DefaultTransitions& defaults, const std::string& effect) {
+    const auto seq = detail::findSequence(state, sequenceId);
+    if (!seq) {
+        return std::unexpected(seq.error());
+    }
+    const bool video = kind == TrackKind::Video;
+    const Ticks duration = (video ? defaults.videoDuration : defaults.audioDuration).value_or(oneSecond((*seq)->frameRate));
+    const std::string& chosen = !effect.empty() ? effect : video ? defaults.video : defaults.audio;
+    EditResult current = detail::unchanged(state);
+    std::vector<TransitionId> created;
+    std::string reason;
+    bool anyPoint = false;
+    for (const EdgePoint& p : points) {
+        const auto loc = (*seq)->findClip(p.clip);
+        if (!loc || loc->track->kind != kind) {
+            continue;
+        }
+        anyPoint = true;
+        if (loc->track->locked) {
+            reason = "track " + detail::trackLabel(**seq, loc->track->id) + " is locked";
+            continue;
+        }
+        const TransitionAlignment alignment = p.alignment.value_or(defaults.alignment);
+        auto spec = transitionAtEdge(current.state, sequenceId, p.clip, p.edge, duration, alignment, chosen);
+        if (!spec) {
+            reason = spec.error().message;
+            continue;
+        }
+        // A cut shared by two points (both sides selected) gets one transition: the second attempt is refused.
+        auto next = addTransition(current.state, sequenceId, spec->track, spec->spec, HandleFit::UseAvailable);
+        if (!next) {
+            reason = next.error().message;
+            continue;
+        }
+        created.insert(created.end(), next->createdTransitions.begin(), next->createdTransitions.end());
+        current = std::move(*next);
+    }
+    if (created.empty()) {
+        if (!anyPoint) {
+            return std::unexpected(detail::invalidArgument(std::string("no selected edit point is on a ") +
+                                                           (video ? "video" : "audio") + " track"));
+        }
+        return std::unexpected(detail::invalidArgument(reason.empty() ? std::string("no transition was added")
+                                                                      : "no transition was added: " + reason));
+    }
+    return combined(state, std::move(current), std::move(created));
+}
+
 } // namespace wabcut::edit

@@ -227,6 +227,7 @@ Panel {
                         Layout.fillWidth: true
                         compact: true
                         model: [qsTr("Master"), qsTr("Red"), qsTr("Green"), qsTr("Blue")]
+                        Accessible.name: qsTr("Curve") // P1 #61
                         currentIndex: ["master", "red", "green", "blue"].indexOf(root.curveName)
                         onActivated: index => root.curveName = ["master", "red", "green", "blue"][index]
                     }
@@ -244,6 +245,7 @@ Panel {
                         Layout.topMargin: Theme.space(2)
                         compact: true
                         model: [qsTr("Hue/Sat"), qsTr("Hue/Hue"), qsTr("Hue/Luma"), qsTr("Luma/Sat"), qsTr("Sat/Sat")]
+                        Accessible.name: qsTr("Hue curve") // P1 #61
                         currentIndex: ["hueSat", "hueHue", "hueLuma", "lumaSat", "satSat"].indexOf(root.hueCurveName)
                         onActivated: index => root.hueCurveName = ["hueSat", "hueHue", "hueLuma", "lumaSat", "satSat"][index]
                     }
@@ -349,6 +351,7 @@ Panel {
                             font.pixelSize: Theme.textMd
                         }
                         Toggle {
+                            Accessible.name: qsTr("Invert the qualifier") // P1 #61
                             checked: (Color.params["hsl.invert"] ?? 0) > 0.5
                             onToggled: Color.setParam("hsl.invert", checked ? 1 : 0)
                         }
@@ -364,6 +367,7 @@ Panel {
                         }
                         PillTabs {
                             objectName: "maskViewTabs"
+                            Accessible.name: qsTr("Show mask") // P1 #61
                             Layout.fillWidth: true
                             compact: true
                             model: [qsTr("Off"), qsTr("Grey"), qsTr("Black"), qsTr("White")]
@@ -418,8 +422,32 @@ Panel {
                         Layout.fillWidth: true
                         compact: true
                         model: [qsTr("Off"), qsTr("Before / After"), qsTr("Reference")]
+                        Accessible.name: qsTr("Compare") // P1 #61
                         currentIndex: Color.compareMode
                         onActivated: index => Color.compareMode = index
+                    }
+                    // 0.6 (#72): the program monitor's SDR Conform preview of an HDR or Wide Gamut setup (its saved
+                    // SDR Conform settings): the setup's own SDR picture left of the middle and SDR Conform right of it,
+                    // or SDR Conform on the whole picture.
+                    RowLayout {
+                        Layout.fillWidth: true
+                        visible: Color.colorManagement.conformable ?? false
+                        spacing: Theme.space(2)
+                        Text {
+                            text: qsTr("SDR Conform")
+                            color: Theme.textSecondary
+                            font.family: Theme.fontSans
+                            font.pixelSize: Theme.textMd
+                        }
+                        PillTabs {
+                            objectName: "conformPreviewTabs"
+                            Layout.fillWidth: true
+                            compact: true
+                            model: [qsTr("Off"), qsTr("Before / After"), qsTr("After")]
+                            currentIndex: Color.conformPreview
+                            onActivated: index => Color.conformPreview = index
+                            Accessible.name: qsTr("SDR Conform preview")
+                        }
                     }
                     RowLayout {
                         Layout.fillWidth: true
@@ -459,6 +487,7 @@ Panel {
                             font.pixelSize: Theme.textMd
                         }
                         Toggle {
+                            Accessible.name: qsTr("Skin tone priority") // P1 #61
                             checked: root.skinPriority
                             onToggled: root.skinPriority = checked
                         }

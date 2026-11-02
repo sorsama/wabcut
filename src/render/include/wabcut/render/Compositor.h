@@ -366,6 +366,15 @@ private:
         std::uint64_t lastUsedFrame = 0;
     };
     std::unordered_map<std::uint64_t, std::unique_ptr<MatteTexture>> m_matteTextures;
+    /// 0.6 Lightning / Scribble: their packed strokes (render/reference/LibraryGeometry.h) as RGBA32F data textures, by
+    /// effect owner; uploaded again only when the strokes change.
+    struct StrokeData {
+        std::unique_ptr<QRhiTexture> texture;
+        QSize size;
+        std::uint64_t content = 0;
+        std::uint64_t lastUsedFrame = 0;
+    };
+    std::unordered_map<std::uint64_t, std::unique_ptr<StrokeData>> m_strokeTextures;
 
     // P.2 flow mix: its pipeline, bindings per (A, B, motion), and the motion textures by their FlowPair.
     std::unique_ptr<QRhiGraphicsPipeline> m_flowPipeline;

@@ -25,6 +25,7 @@ add_library(wabcut_command STATIC
     src/CatalogMarkers.cpp
     src/CatalogMotion.cpp
     src/CatalogNesting.cpp
+    src/CatalogAuditions.cpp
     src/CatalogSource.cpp
     src/CatalogTimeline.cpp
     src/Cli.cpp
@@ -46,6 +47,8 @@ target_link_libraries(wabcut_command PUBLIC wabcut_interchange)
 wabcut_target_defaults(wabcut_command)
 # P.2 (E6): the Source and Program Monitors' commands (clip.setMotion, ...).
 target_sources(wabcut_command PRIVATE src/CatalogMonitor.cpp)
+# P1 (#25): sequence.mediaUsage, the media usage report.
+target_sources(wabcut_command PRIVATE src/CatalogMediaUsage.cpp)
 
 # The MCP server (wabcut-cli mcp).
 add_subdirectory(mcp)

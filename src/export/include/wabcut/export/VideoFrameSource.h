@@ -37,6 +37,26 @@ struct VideoSourceFormat {
     /// 0.2: an export with an alpha channel: RGBA8 frames with straight alpha (render::OutputAlpha::Straight), never
     /// 10-bit.
     bool alpha = false;
+    /// 0.6 (#72): the colour space written (ResolvedExport::outputSpace: a 10-bit Rec.2020 SDR picture is converted with
+    /// the BT.2020 matrix) and SDR Conform (ResolvedExport::sdrConform: it replaces the setup's own SDR output, and the
+    /// source counts what it mapped).
+    OutputColorSpace outputSpace = OutputColorSpace::Rec709;
+    std::optional<SdrConform> sdrConform;
+};
+
+/// 0.6 (#72): what SDR Conform mapped over the frames rendered: pixels brighter than the SDR white (rolled off by the
+/// tone-mapping operator) and outside the output's gamut (brought in by the gamut mapping), and the frame with the
+/// largest share of each.
+struct SdrConformReport {
+    std::int64_t frames = 0;
+    std::uint64_t pixels = 0;
+    std::uint64_t toneMapped = 0;
+    std::uint64_t gamutMapped = 0;
+    double worstToneMappedFrame = 0.0; ///< the largest share of one frame (0..1)
+    double worstGamutMappedFrame = 0.0;
+
+    double toneMappedShare() const { return pixels ? static_cast<double>(toneMapped) / static_cast<double>(pixels) : 0.0; }
+    double gamutMappedShare() const { return pixels ? static_cast<double>(gamutMapped) / static_cast<double>(pixels) : 0.0; }
 };
 
 /// The content light levels of an HDR (PQ) export, measured over every frame rendered (CTA-861.3): MaxCLL the
@@ -68,6 +88,9 @@ public:
     virtual void stop() = 0;
     /// I.9: the light levels of the frames rendered so far (PQ sources), or nullopt.
     virtual std::optional<ContentLightLevels> lightLevels() const { return std::nullopt; }
+    /// 0.6 (#72): what SDR Conform mapped in the frames rendered so far (sources with VideoSourceFormat::sdrConform),
+    /// or nullopt.
+    virtual std::optional<SdrConformReport> conformReport() const { return std::nullopt; }
 };
 
 /// Deterministic test pattern with three layers, rendered on its own thread (like the real renderer):

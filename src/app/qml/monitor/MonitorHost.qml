@@ -32,6 +32,8 @@ Item {
                 guideTemplates.openManage()
             else if (dialog === "exportFrame")
                 exportFrame.openFor(index === 1)
+            else if (dialog === "exportFramesAtMarkers") // P1 (#23): index 1 = the highlight markers
+                exportFrame.openForMarkers(index === 1)
         }
     }
 }

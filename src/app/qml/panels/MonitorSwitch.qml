@@ -4,6 +4,7 @@ import QtQuick
 PillTabs {
     id: root
     objectName: "monitorSwitch"
+    Accessible.name: qsTr("Monitor") // P1 #61
 
     // "source" or "program"
     property string current: "program"

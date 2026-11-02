@@ -11,6 +11,10 @@
 // Sorting is by any column within groups: bins first, then sequences, then media (folders first, like Explorer and
 // Finder; sequences next to them, where an editor looks for them); stable; a column's sort key is computed once per sort. Principle 9: rows are keyed "b12" / "s3" / "m7"; cells are display text (timecode, "1920 ×
 // 1080", "48 kHz stereo"), never ticks or ids.
+//
+// P1 round (0.6): the Video / Audio Usage columns and the usage badge (#40), and the list view's twirl-down bins
+// (#46): with Context::tree the rows are a depth-first walk from the bin shown, each expanded bin's contents right under
+// it (DepthRole), sorted within each level so children stay under their parent.
 
 #include <wabcut/model/EditSession.h>
 #include <wabcut/model/ProjectState.h>
@@ -87,8 +91,14 @@ enum class LibraryColumn : std::uint8_t {
     CameraModel,
     ShotDate,
     ShotLocation,
+    // P1 round (#45): Premiere's File Size and Data Rate (at the end, so saved column ids stay valid).
+    FileSize,
+    DataRate,
+    // P1 round (#40): Premiere's Video Usage and Audio Usage (hidden until chosen).
+    VideoUsage,
+    AudioUsage,
 };
-inline constexpr std::size_t kLibraryColumnCount = 30;
+inline constexpr std::size_t kLibraryColumnCount = 34;
 
 struct LibraryColumnInfo {
     LibraryColumn column;
@@ -109,6 +119,14 @@ struct LibraryMediaStatus {
     bool transcribed = false;
     bool indexed = false;   ///< in the smart-search index (AI-8)
     bool shots = false;     ///< shot detection cached (C.5)
+};
+
+/// P1 round (#40): where a media item (or a sequence, nested) is used in the project's sequences.
+struct LibraryUsage {
+    int video = 0; ///< clips on video tracks (Premiere's Video Usage)
+    int audio = 0; ///< clips on audio tracks (Audio Usage)
+    int uses = 0;  ///< placements: a linked video / audio pair counts once (the usage badge, Find in Timeline's rows)
+    bool operator==(const LibraryUsage&) const = default;
 };
 
 /// What the Find bar asks for. Empty fields do not filter.
@@ -178,6 +196,21 @@ public:
         /// subclip's range), inText, outText (the last marked frame), durationText (the marked length) }. A Library
         /// drag onto the timeline edits in that range (ProjectFile.dropMedia).
         MarksRole,
+        /// P1 round (#41): marked by Cut in the Library (the card or row dims until Paste moves it).
+        CutRole,
+        /// P1 round (#40): placements in sequences (the card's usage badge; 0 = none), and the Video / Audio Usage
+        /// counts (-1 for bins).
+        UsageRole,
+        VideoUsageRole,
+        AudioUsageRole,
+        /// P1 round (#46), the list view's twirl-down bins: the row's level under the bin shown (0 = in it), whether
+        /// it is a bin with something inside to show, and whether that bin is expanded.
+        DepthRole,
+        ExpandableRole,
+        ExpandedRole,
+        /// 0.6 (card #71, stream 2B): how many Master Clip Effects the item's clips play (a subclip's include its master
+        /// item's; 0 for bins and sequences): the card's and the Name cell's "fx" badge.
+        MasterEffectsRole,
     };
 
     explicit LibraryModel(QObject* parent = nullptr);
@@ -195,6 +228,7 @@ public:
         const Bin* bin = nullptr;
         const Sequence* sequence = nullptr;
         const MediaItem* media = nullptr;
+        int depth = 0; ///< P1 round (#46): the level under the bin shown (twirled-down bins of the list view)
     };
 
     /// Everything a refresh needs besides the snapshot.
@@ -207,6 +241,13 @@ public:
         const std::unordered_map<std::uint64_t, LibraryMediaStatus>* status = nullptr;
         const std::unordered_set<std::uint64_t>* used = nullptr;       ///< media used by some sequence
         const std::unordered_set<std::uint64_t>* duplicates = nullptr; ///< media sharing content with another
+        /// P1 round (#40): media id -> its uses; sequence id -> its nested uses.
+        const std::unordered_map<std::uint64_t, LibraryUsage>* usage = nullptr;
+        const std::unordered_map<std::uint64_t, LibraryUsage>* sequenceUsage = nullptr;
+        /// P1 round (#46): the list view lists a tree - each expanded bin's contents under it (sorted within each
+        /// level), the bins in `expanded` - instead of the bin shown alone. Find and search bins stay flat.
+        bool tree = false;
+        const std::unordered_set<std::uint64_t>* expanded = nullptr;
     };
 
     /// Lists `bin`'s contents (or, with an active `filter`, every matching item of the project) from `snapshot`.
@@ -235,16 +276,24 @@ public:
 
     /// Selection highlight (SelectedRole); the bridge owns the selection.
     void setSelection(const QSet<QString>& keys);
+    /// P1 round (#41): the items Cut marks (CutRole); the bridge owns them.
+    void setCut(const QSet<QString>& keys);
     /// Re-reads status-dependent cells (proxy, analysis) of every row.
     void statusChanged();
 
     static QString keyFor(const Row& row);
     static QString kindOf(const Row& row);
+    /// P1 round (#46): the rows list a tree (the list view with twirl-down bins, nothing filtered).
+    bool tree() const { return m_tree; }
+    /// The items directly inside bin `bin` of the last snapshot (0 = none).
+    int childCount(std::uint64_t bin) const;
 
 signals:
     void countChanged();
 
 private:
+    /// The rows of the last refresh's snapshot, bin, filter and context, sorted (a tree when it lists one).
+    std::vector<Row> buildRows() const;
     void sortRows(std::vector<Row>& rows) const;
     QVariant sortKey(const Row& row, LibraryColumn column) const;
     QString binPath(BinId bin) const;
@@ -261,6 +310,13 @@ private:
     bool m_filtering = false;
     Context m_context;
     QSet<QString> m_selection;
+    QSet<QString> m_cut;
+    // P1 round (#46): what the last refresh listed (setSort lists it again), whether it is a tree, and each bin's count
+    // of direct children (CountRole, ExpandableRole).
+    BinId m_bin;
+    LibraryFilter m_filter;
+    bool m_tree = false;
+    std::unordered_map<std::uint64_t, int> m_childCounts;
 };
 
 /// Premiere's label name of colour `index` (0..15: Violet .. Yellow), translated.
@@ -270,5 +326,11 @@ QString libraryLabelName(int index);
 QString libraryFrameRateText(const MediaItem& media);
 QString libraryResolutionText(const MediaItem& media);
 QString libraryAudioText(const MediaItem& media);
+/// P1 round (#45): the bytes of an item's file (MediaInfo::fileSize, else the fingerprint's size; 0 for titles and
+/// generators), its size as text ("1.2 GB"), and its overall data rate ("12.4 Mbps"; "" for stills, titles and items
+/// without a size or length).
+std::int64_t libraryFileBytes(const MediaItem& media);
+QString librarySizeText(std::int64_t bytes);
+QString libraryDataRateText(const MediaItem& media);
 
 } // namespace wabcut::app

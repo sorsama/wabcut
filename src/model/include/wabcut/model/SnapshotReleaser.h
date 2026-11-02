@@ -32,6 +32,18 @@ public:
     /// Snapshots freed so far.
     std::size_t released() const;
 
+    /// F2P (0.6): frees what is queued now, then gives the heaps' freed memory back to the system (trimFreedMemory),
+    /// on the releaser's thread. For after a project was closed or replaced. Any thread; returns at once.
+    void releaseAndTrim();
+    /// Trims releaseAndTrim() has run so far.
+    std::size_t trims() const;
+    /// Gives freed heap memory back to the system. Freeing a big project returns hundreds of MB of snapshot nodes to
+    /// the process heaps, which keep those pages committed for reuse. Windows: HeapOptimizeResources on every heap (the
+    /// low-fragmentation heap's caches) and _heapmin (the CRT heap's free ranges); glibc: malloc_trim; macOS: the
+    /// malloc zones' pressure relief. Only wholly free pages go back: a page still holding a live block stays
+    /// committed (docs/performance.md, "Memory after closing a project"). Any thread.
+    static void trimFreedMemory();
+
 private:
     void run(std::stop_token stop);
 
@@ -42,7 +54,9 @@ private:
     std::condition_variable m_idle;
     std::uint64_t m_requested = 0; ///< pokes so far
     std::uint64_t m_served = 0;    ///< pokes the thread has answered
+    std::uint64_t m_trimAfter = 0; ///< the poke whose pass ends with a trim (0: none asked)
     std::size_t m_released = 0;
+    std::size_t m_trims = 0;
     std::jthread m_thread;         ///< last: started once everything above exists
 };
 

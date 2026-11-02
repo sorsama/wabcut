@@ -6,6 +6,8 @@
 
 #include "EditingBridge.h"
 
+#include <wabcut/model/MasterClipEffects.h>
+#include <wabcut/model/GraphicOps.h>
 #include <wabcut/model/Timecode.h>
 
 #include <algorithm>
@@ -62,6 +64,11 @@ Ticks ProjectController::curveTimeAtPlayhead(const Clip& clip) const {
 }
 
 ParamValue ProjectController::parameterValue(const Clip& clip, const edit::ParamRef& param) {
+    if (param.layer != 0) { // 0.6: a graphic layer's number (Effect Controls' Text section)
+        const GraphicLayer* layer = clip.graphic() ? clip.graphic()->findLayer(param.layer) : nullptr;
+        const auto value = layer ? edit::layerParam(*layer, param.key) : std::nullopt;
+        return value ? *value : ParamValue(0.0);
+    }
     if (param.intrinsic)
         return clip.properties()[*param.intrinsic];
     for (const EffectInstance& instance : clip.effects()) {
@@ -84,7 +91,22 @@ bool ProjectController::setParameterAtPlayhead(ClipId clipId, const edit::ParamR
     if (!loc || !std::isfinite(value))
         return false;
     const Clip& clip = loc->clip();
-    const ParamValue current = parameterValue(clip, param);
+    ParamValue current = parameterValue(clip, param);
+    if (!param.intrinsic && param.layer == 0 &&
+        std::none_of(clip.effects().begin(), clip.effects().end(), [&](const EffectInstance& e) { return e.id == param.effect; })) {
+        // 0.6 (card #71): a master clip effect of the clip's media (its value lives on the media item).
+        const ProjectSnapshot snap = snapshot();
+        if (const MediaItem* holder = snap ? masterEffectHolder(*snap, clip.media, param.effect) : nullptr) {
+            for (const EffectInstance& e : holder->masterEffects) {
+                if (e.id != param.effect)
+                    continue;
+                const EffectDescriptor* d = EffectRegistry::builtin().find(e.effect);
+                const EffectParamInfo* info = d ? d->param(param.key) : nullptr;
+                const ParamValue* own = e.find(param.key);
+                current = own ? *own : ParamValue(info ? info->defaultValue : 0.0);
+            }
+        }
+    }
     ParamValue next(value);
     if (const Curve* curve = current.curve()) {
         // Animated: the value goes into the key at the playhead (Premiere's Effect Controls).
@@ -188,6 +210,9 @@ QVariantMap ProjectController::transitionInfo(const QString& transitionId) const
 }
 
 bool ProjectController::applyDefaultTransition(bool audio) {
+    // 0.6 (1A): selected edit points (Trim) take it, as in Premiere; else the edit nearest the playhead.
+    if (!m_trimEditPoints.empty())
+        return applyTransitionAtEditPoints(audio) > 0;
     const SequenceId seq = m_sequence;
     const Ticks playhead = m_playhead;
     const TrackKind kind = audio ? TrackKind::Audio : TrackKind::Video;

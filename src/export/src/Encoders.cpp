@@ -46,6 +46,8 @@ std::string_view codecPrefix(VideoCodec codec) {
     case VideoCodec::Exr:
     case VideoCodec::Animation:
     case VideoCodec::CineForm:
+    case VideoCodec::Xdcam: // 0.6 (#73)
+    case VideoCodec::AvcIntra:
         break; // 0.2: software only
     }
     return "none_";
@@ -56,7 +58,7 @@ bool isSoftware(std::string_view name) {
            name == "prores" || name == "dnxhd" || name == "libx264rgb" || name == "libsvtav1" || name == "libaom-av1" ||
            name == "librav1e" || name == "gif" || name == "libvpx-vp9" || name == "libvpx" || name == "png" ||
            name == "tiff" || name == "dpx" || name == "mjpeg" || name == "targa" || name == "exr" || name == "qtrle" ||
-           name == "cfhd";
+           name == "cfhd" || name == "mpeg2video";
 }
 
 /// Hardware encoder names that belong to `codec` ("h264_nvenc" for H264 …); software names are dropped.
@@ -198,6 +200,10 @@ std::string_view softwareEncoder(VideoCodec codec) {
         return "qtrle";
     case VideoCodec::CineForm:
         return "cfhd";
+    case VideoCodec::Xdcam: // 0.6 (#73): XDCAM HD422 (MPEG-2 4:2:2P@HL)
+        return "mpeg2video";
+    case VideoCodec::AvcIntra: // libx264's SMPTE RP 2027 AVC-Intra classes
+        return "libx264";
     }
     return "libx264";
 }

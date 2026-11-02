@@ -1542,4 +1542,343 @@ EditOutcome setTextPath(const ProjectState& state, SequenceId sequence, ClipId c
     return replaceGraphic(state, *at, std::move(g));
 }
 
+
+// ---- Layer parameters (0.6) -------------------------------------------------------------------------------------------
+
+namespace {
+
+ParamValue* transformParam(LayerTransform& t, std::string_view name) {
+    if (name == "x") {
+        return &t.x;
+    }
+    if (name == "y") {
+        return &t.y;
+    }
+    if (name == "anchorX") {
+        return &t.anchorX;
+    }
+    if (name == "anchorY") {
+        return &t.anchorY;
+    }
+    if (name == "scaleX" || name == "scale") {
+        return &t.scaleX;
+    }
+    if (name == "scaleY") {
+        return &t.scaleY;
+    }
+    if (name == "rotation") {
+        return &t.rotation;
+    }
+    if (name == "opacity") {
+        return &t.opacity;
+    }
+    return nullptr;
+}
+
+/// "text.stroke3.width" -> 3.
+std::optional<std::size_t> strokeIndex(std::string_view path) {
+    constexpr std::string_view prefix = "text.stroke";
+    constexpr std::string_view suffix = ".width";
+    if (!path.starts_with(prefix) || !path.ends_with(suffix) || path.size() <= prefix.size() + suffix.size()) {
+        return std::nullopt;
+    }
+    const std::string_view digits = path.substr(prefix.size(), path.size() - prefix.size() - suffix.size());
+    if (digits.size() > 2 || !std::all_of(digits.begin(), digits.end(), [](char c) { return c >= '0' && c <= '9'; })) {
+        return std::nullopt;
+    }
+    std::size_t n = 0;
+    for (const char c : digits) {
+        n = n * 10 + static_cast<std::size_t>(c - '0');
+    }
+    return n;
+}
+
+/// The whole-text numbers: their keys, the run style member, their range and default.
+struct TextNumber {
+    std::optional<Curve> TextContent::*keys;
+    double TextStyle::*member;
+    double minValue;
+    double maxValue;
+    double defaultValue;
+};
+
+std::optional<TextNumber> textNumber(std::string_view path) {
+    if (path == "text.fontSize") {
+        return TextNumber{&TextContent::sizeKeys, &TextStyle::fontSize, 1.0, 2000.0, 72.0};
+    }
+    if (path == "text.tracking") {
+        return TextNumber{&TextContent::trackingKeys, &TextStyle::tracking, -1000.0, 10000.0, 0.0};
+    }
+    if (path == "text.leading") {
+        return TextNumber{&TextContent::leadingKeys, &TextStyle::leading, 0.0, 10000.0, 0.0};
+    }
+    if (path == "text.baselineShift") {
+        return TextNumber{&TextContent::baselineKeys, &TextStyle::baselineShift, -10000.0, 10000.0, 0.0};
+    }
+    return std::nullopt;
+}
+
+std::size_t versionOf(double value, std::size_t versions) {
+    const double k = std::isfinite(value) ? std::floor(value + 1e-9) : 0.0;
+    return static_cast<std::size_t>(std::clamp(k, 0.0, static_cast<double>(versions)));
+}
+
+/// No Source Text keys any more: the version a constant shows becomes the runs, the others go.
+void flattenSources(TextContent& t) {
+    const std::size_t k = versionOf(t.sourceKey.constant(), t.sources.size());
+    if (k > 0) {
+        t.runs = t.sources[k - 1];
+    }
+    t.sources.clear();
+    t.sourceKey = ParamValue(0.0);
+}
+
+/// Source Text: keys hold, versions no key shows are dropped and the rest renumbered; when no key shows the runs
+/// (version 0), the first key's version becomes the runs.
+void normalizeSources(TextContent& t) {
+    const Curve* c = t.sourceKey.curve();
+    if (!c || c->keys.empty()) {
+        flattenSources(t);
+        return;
+    }
+    Curve curve = *c;
+    const std::size_t versions = t.sources.size();
+    for (Keyframe& k : curve.keys) {
+        k.value = static_cast<double>(versionOf(k.value, versions));
+        k.interpolation = Interpolation::Hold;
+        k.in = {};
+        k.out = {};
+    }
+    std::vector<bool> used(versions + 1, false);
+    for (const Keyframe& k : curve.keys) {
+        used[static_cast<std::size_t>(k.value)] = true;
+    }
+    if (!used[0]) {
+        // No key shows the runs: the first key's version takes their place.
+        const auto first = static_cast<std::size_t>(curve.keys.front().value);
+        t.runs = t.sources[first - 1];
+        for (Keyframe& k : curve.keys) {
+            if (static_cast<std::size_t>(k.value) == first) {
+                k.value = 0.0;
+            }
+        }
+        used[first] = false;
+        used[0] = true;
+    }
+    std::vector<std::vector<TextRun>> kept;
+    std::vector<std::size_t> renumber(versions + 1, 0);
+    for (std::size_t i = 1; i <= versions; ++i) {
+        if (used[i]) {
+            kept.push_back(std::move(t.sources[i - 1]));
+            renumber[i] = kept.size();
+        }
+    }
+    for (Keyframe& k : curve.keys) {
+        k.value = static_cast<double>(renumber[static_cast<std::size_t>(k.value)]);
+    }
+    t.sources = std::move(kept);
+    t.sourceKey = ParamValue(std::move(curve));
+}
+
+} // namespace
+
+std::optional<LayerParamInfo> layerParamInfo(const GraphicLayer& layer, std::string_view path) {
+    if (path.starts_with("transform.")) {
+        const std::string_view name = path.substr(10);
+        if (name == "x" || name == "y" || name == "anchorX" || name == "anchorY") {
+            return LayerParamInfo{-kMaxGraphicCoordinate, kMaxGraphicCoordinate, 0.0};
+        }
+        if (name == "scaleX" || name == "scaleY" || name == "scale") {
+            return LayerParamInfo{-100000.0, 100000.0, 100.0};
+        }
+        if (name == "rotation") {
+            return LayerParamInfo{-1e6, 1e6, 0.0};
+        }
+        if (name == "opacity") {
+            return LayerParamInfo{0.0, 100.0, 100.0};
+        }
+        return std::nullopt;
+    }
+    if (layer.kind != LayerKind::Text) {
+        return std::nullopt;
+    }
+    if (const auto n = textNumber(path)) {
+        return LayerParamInfo{n->minValue, n->maxValue, n->defaultValue};
+    }
+    if (path == "text.source") {
+        return LayerParamInfo{0.0, static_cast<double>(layer.text.sources.size()), 0.0};
+    }
+    if (const auto i = strokeIndex(path); i && *i < layer.text.strokes.size()) {
+        return LayerParamInfo{0.0, 1000.0, 4.0};
+    }
+    return std::nullopt;
+}
+
+std::optional<ParamValue> layerParam(const GraphicLayer& layer, std::string_view path) {
+    if (!layerParamInfo(layer, path)) {
+        return std::nullopt;
+    }
+    if (path.starts_with("transform.")) {
+        LayerTransform t = layer.transform;
+        return *transformParam(t, path.substr(10));
+    }
+    const TextContent& text = layer.text;
+    if (const auto n = textNumber(path)) {
+        if (const std::optional<Curve>& keys = text.*(n->keys)) {
+            return ParamValue(*keys);
+        }
+        return ParamValue(text.runs.empty() ? n->defaultValue : text.runs.front().style.*(n->member));
+    }
+    if (path == "text.source") {
+        return text.sourceKey;
+    }
+    return text.strokes[*strokeIndex(path)].width;
+}
+
+void editAllRuns(TextContent& text, const std::function<void(TextRun&)>& edit) {
+    for (TextRun& r : text.runs) {
+        edit(r);
+    }
+    for (std::vector<TextRun>& version : text.sources) {
+        for (TextRun& r : version) {
+            edit(r);
+        }
+    }
+}
+
+bool setLayerParam(GraphicLayer& layer, std::string_view path, ParamValue value) {
+    if (!layerParamInfo(layer, path)) {
+        return false;
+    }
+    if (path.starts_with("transform.")) {
+        const std::string_view name = path.substr(10);
+        if (name == "scale") {
+            layer.transform.scaleY = value;
+        }
+        *transformParam(layer.transform, name) = std::move(value);
+        return true;
+    }
+    TextContent& text = layer.text;
+    if (const auto n = textNumber(path)) {
+        if (const Curve* curve = value.curve()) {
+            text.*(n->keys) = *curve;
+            return true;
+        }
+        (text.*(n->keys)).reset();
+        // A constant: every version's first run takes it, the other runs follow (sizes in proportion).
+        const double v = std::clamp(value.constant(), n->minValue, n->maxValue);
+        const bool size = n->member == &TextStyle::fontSize;
+        const auto apply = [&](std::vector<TextRun>& runs) {
+            if (runs.empty()) {
+                return;
+            }
+            const double first = runs.front().style.*(n->member);
+            for (TextRun& r : runs) {
+                double& m = r.style.*(n->member);
+                m = std::clamp(size ? (first > 0.0 ? m * v / first : v) : m + (v - first), n->minValue, n->maxValue);
+            }
+        };
+        apply(text.runs);
+        for (std::vector<TextRun>& version : text.sources) {
+            apply(version);
+        }
+        return true;
+    }
+    if (path == "text.source") {
+        text.sourceKey = std::move(value);
+        if (text.sourceKey.isConstant()) {
+            flattenSources(text); // the stopwatch off: the version shown becomes the runs
+        } else {
+            normalizeSources(text);
+        }
+        return true;
+    }
+    text.strokes[*strokeIndex(path)].width = std::move(value);
+    return true;
+}
+
+bool pasteSourceTextKeys(TextContent& text, std::span<const Keyframe> keys, std::span<const std::vector<TextRun>> texts) {
+    if (keys.size() != texts.size()) {
+        return false;
+    }
+    if (keys.empty()) {
+        return true;
+    }
+    TextContent next = text;
+    if (!next.sourceKey.curve() || next.sourceKey.curve()->keys.empty()) {
+        flattenSources(next); // no keys yet: the text shown becomes the runs (version 0)
+    }
+    Curve curve = next.sourceKey.curve() ? *next.sourceKey.curve() : Curve{};
+    for (std::size_t i = 0; i < keys.size(); ++i) {
+        // Its text as a version of this layer: the runs, an identical version, or a new one.
+        std::size_t version = 0;
+        if (texts[i] != next.runs) {
+            const auto same = std::find(next.sources.begin(), next.sources.end(), texts[i]);
+            if (same != next.sources.end()) {
+                version = static_cast<std::size_t>(same - next.sources.begin()) + 1;
+            } else {
+                if (next.sources.size() >= kMaxTextSources) {
+                    return false;
+                }
+                next.sources.push_back(texts[i]);
+                version = next.sources.size();
+            }
+        }
+        Keyframe key = keys[i];
+        key.value = static_cast<double>(version);
+        key.interpolation = Interpolation::Hold;
+        key.in = {};
+        key.out = {};
+        if (const auto at = curve.keyAt(key.time)) {
+            curve.keys[*at] = key; // a key at the same time is replaced
+        } else {
+            curve.keys.insert(curve.keys.begin() + static_cast<std::ptrdiff_t>(curve.insertionIndex(key.time)), key);
+        }
+    }
+    next.sourceKey = ParamValue(std::move(curve));
+    normalizeSources(next);
+    text = std::move(next);
+    return true;
+}
+
+bool editSourceRunsAt(TextContent& text, Ticks time, const std::function<bool(std::vector<TextRun>&)>& edit) {
+    const Curve* keys = text.sourceKey.curve();
+    if (!keys || keys->keys.empty()) {
+        flattenSources(text);
+        return edit(text.runs);
+    }
+    Curve curve = *keys;
+    const std::size_t versions = text.sources.size();
+    if (const auto at = curve.keyAt(time)) {
+        const std::size_t v = versionOf(curve.keys[*at].value, versions);
+        const auto shared = std::count_if(curve.keys.begin(), curve.keys.end(),
+                                          [&](const Keyframe& k) { return versionOf(k.value, versions) == v; });
+        std::vector<TextRun>& runs = v == 0 ? text.runs : text.sources[v - 1];
+        if (shared <= 1) {
+            return edit(runs);
+        }
+        // Another key shows the same version (a duplicated key): this key gets a version of its own.
+        std::vector<TextRun> copy = runs;
+        if (versions >= kMaxTextSources || !edit(copy)) {
+            return false;
+        }
+        text.sources.push_back(std::move(copy));
+        curve.keys[*at].value = static_cast<double>(text.sources.size());
+        text.sourceKey = ParamValue(std::move(curve));
+        normalizeSources(text);
+        return true;
+    }
+    std::vector<TextRun> copy = sourceRunsAt(text, time);
+    if (versions >= kMaxTextSources || !edit(copy)) {
+        return false;
+    }
+    text.sources.push_back(std::move(copy));
+    Keyframe key{time, static_cast<double>(text.sources.size())};
+    key.interpolation = Interpolation::Hold;
+    curve.keys.insert(curve.keys.begin() + static_cast<std::ptrdiff_t>(curve.insertionIndex(time)), key);
+    text.sourceKey = ParamValue(std::move(curve));
+    normalizeSources(text);
+    return true;
+}
+
 } // namespace wabcut::edit

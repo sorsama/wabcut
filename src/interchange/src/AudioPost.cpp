@@ -5,8 +5,10 @@
 #include "Exporters.h"
 #include "TextUtil.h"
 
+#include <wabcut/interchange/CaptionTrackReport.h>
 #include <wabcut/interchange/FileUrl.h>
 #include <wabcut/model/Effects.h>
+#include <wabcut/model/MasterClipEffects.h>
 #include <wabcut/model/MediaLocator.h>
 
 #include <algorithm>
@@ -356,6 +358,9 @@ std::expected<Plan, Error> makePlan(const ProjectState& project, SequenceId sequ
             sequenceLocation());
     }
 
+    // 0.6 (#57): an audio-post file carries no caption track.
+    reportCaptionTracks(*seq, fileLabel, "AAF or OMF files", report);
+
     // --- Markers ---------------------------------------------------------------------------------------------------
     for (const Marker& m : seq->markers) {
         PlanMarker pm;
@@ -466,8 +471,10 @@ std::expected<Plan, Error> makePlan(const ProjectState& project, SequenceId sequ
             add(ReportOutcome::Dropped, ReportCategory::AudioMapping, "The track's 5.1 panner is not written", trackWhere);
         }
 
-        const bool anyEffects = std::any_of(track.clips.begin(), track.clips.end(), [](const Clip& c) {
-            return std::any_of(c.effects().begin(), c.effects().end(), [](const EffectInstance& e) { return e.enabled; });
+        // Fix F1A (card #71): a clip's effects are what it plays, its media's Master Clip Effects first.
+        const bool anyEffects = std::any_of(track.clips.begin(), track.clips.end(), [&](const Clip& c) {
+            const EffectStack played = playedEffects(project, c, EffectKind::Audio);
+            return std::any_of(played.begin(), played.end(), [](const EffectInstance& e) { return e.enabled; });
         });
         const bool cleanSet = options.breakout && options.clipEffects && options.cleanCopies && anyEffects;
         const int sets = cleanSet ? 2 : 1;
@@ -576,11 +583,12 @@ std::expected<Plan, Error> makePlan(const ProjectState& project, SequenceId sequ
             } else {
                 gain.constantDb = volume.constant();
             }
+            const EffectStack played = playedEffects(project, clip, EffectKind::Audio); // fix F1A: master effects too
             const bool hasEffects =
-                std::any_of(clip.effects().begin(), clip.effects().end(), [](const EffectInstance& e) { return e.enabled; });
+                std::any_of(played.begin(), played.end(), [](const EffectInstance& e) { return e.enabled; });
             if (hasEffects && !(options.breakout && options.clipEffects)) {
                 std::string names;
-                for (const EffectInstance& e : clip.effects()) {
+                for (const EffectInstance& e : played) {
                     if (e.enabled) {
                         const EffectDescriptor* d = EffectRegistry::builtin().find(e.effect);
                         names += (names.empty() ? "" : ", ") + std::string(d ? d->displayName : std::string_view(e.effect));

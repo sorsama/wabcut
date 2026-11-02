@@ -8,7 +8,8 @@ import QtQuick.Layouts
 // audio's channels and codec (A.9: as the master, mono, stereo, 5.1; AAC or AC-3). Labels sit beside their rows, or
 // above them in a narrow slot. The body grows by height over durCollapse and stays mounted. The rows are controlled:
 // they show `summary` (ExportController.describe) and report changes through overrideChanged(key, value)
-// (ExportController.queueExport keys).
+// (ExportController.queueExport keys). 0.6 (#73): MXF (OP1a or OP-Atom for Avid) with its codecs, PCM tracks and reel
+// name, and the Embedded captions rows: 608 / 708, the 608 channel, the 708 service, where they go, how they appear.
 Item {
     id: root
 
@@ -18,17 +19,37 @@ Item {
 
     signal overrideChanged(string key, var value)
 
-    readonly property var containers: ["mp4", "mov", "mkv", "wav"]
-    readonly property var codecs: ["h264", "hevc", "prores", "dnxhr"]
+    readonly property var containers: ["mp4", "mov", "mkv", "wav", "mxf"]
+    /// 0.6 (#73): MXF OP1a or OP-Atom (summary.container "mxf" / "mxf-opatom").
+    readonly property bool isMxf: summary.mxf ?? false
+    readonly property bool isOpAtom: (summary.container ?? "") === "mxf-opatom"
+    readonly property var codecs: isMxf ? ["dnxhr", "xdcam-hd422", "avc-intra-100"] : ["h264", "hevc", "prores", "dnxhr"]
     readonly property var qualities: [16, 20, 26] // CRF / CQ: high, balanced, small file
     readonly property var sizes: [[0, 0], [1280, 720], [1920, 1080], [3840, 2160]]
     readonly property var ranges: ["whole", "inOut", "workArea", "custom"] // 0.2: Premiere's Range
-    readonly property var audioChannels: [0, 1, 2, 6] // 0 = as the master
+    readonly property var audioChannels: isMxf ? [0, 2, 4, 8] : [0, 1, 2, 6] // 0 = as the master; MXF: tracks
     readonly property var dynamicRanges: ["auto", "sdr", "pq", "hlg"] // 0.2 (I.9)
+    /// 0.6 (#72): the SDR output colour spaces (override `outputSpace`; Auto = the preset's, else the sequence's Color
+    /// Management choice). Rec.2100 PQ / HLG are the Dynamic range row's.
+    readonly property var outputSpaces: ["auto", "rec709", "rec2020", "p3-d65"]
     readonly property bool hasVideo: !(summary.audioOnly ?? (summary.container === "wav"))
     readonly property bool isImage: summary.isImage ?? false // 0.2: stills and image sequences
     readonly property bool longGop: hasVideo && (summary.videoCodec === "h264" || summary.videoCodec === "hevc")
+    /// P1 (#28): the codecs a size limit works with (H.264, HEVC, AV1, VP9), and the chips (MB; 0 = off).
+    readonly property bool sizeLimitAvailable: hasVideo && !isImage && (longGop || summary.videoCodec === "av1"
+                                                                       || summary.videoCodec === "vp9")
+    readonly property var sizeLimits: [0, 8, 25, 100, 500]
+    /// The size limit this export has (overrides.targetMB; 0 = off).
+    readonly property real sizeLimit: Number(overrides.targetMB ?? 0)
     readonly property var credentialModes: ["off", "ai", "always"]
+    /// 0.6 (#52): "By track role" stems are on (overrides.stems "role").
+    readonly property bool stemsOn: (overrides.stems ?? "off") === "role"
+    /// 0.6 (#73): Embedded captions (also while the format refuses them: the rows stay to fix it).
+    readonly property bool embedding: hasVideo && (summary.captionMode ?? overrides.captions ?? "") === "embed"
+    readonly property var captionStandards: ["608+708", "608", "708"]
+    readonly property string captionStandard: overrides.captionStandard ?? summary.captionStandard ?? "608+708"
+    readonly property var captionCarriages: ["auto", "video", "track", "both"]
+    readonly property var captionDisplays: ["pop-on", "roll-up-3", "paint-on"]
     // AI-15: Content Credentials go into MP4 and MOV files, where this build can sign.
     readonly property bool signable: ExportController.contentCredentialsAvailable
                                      && ((summary.container ?? "mp4") === "mp4" || summary.container === "mov")
@@ -42,7 +63,9 @@ Item {
     // The pill rows are uncontrolled (they move their own indicator on click), so the summary is pushed into
     // them whenever it changes.
     function sync() {
-        containerTabs.currentIndex = containers.indexOf(summary.container ?? "mp4") // -1: a format preset's (0.2)
+        const container = summary.container ?? "mp4"
+        containerTabs.currentIndex = containers.indexOf(container === "mxf-opatom" ? "mxf" : container) // -1: a format preset's (0.2)
+        patternTabs.currentIndex = isOpAtom ? 1 : 0
         codecTabs.currentIndex = codecs.indexOf(summary.videoCodec ?? "h264")
         encoderTabs.currentIndex = (overrides.encoder ?? "auto") === "auto" ? 0 : 1
         const quality = overrides.quality ?? 16
@@ -52,10 +75,41 @@ Item {
         rangeTabs.currentIndex = Math.max(0, ranges.indexOf(summary.rangeSetting ?? overrides.range ?? "whole"))
         channelTabs.currentIndex = Math.max(0, audioChannels.indexOf(summary.audioChannels ?? 2))
         audioCodecTabs.currentIndex = summary.audioCodec === "ac3" ? 1 : 0
+        pcmTabs.currentIndex = summary.audioCodec === "pcm_s16le" ? 1 : 0
+        layoutTabs.currentIndex = (summary.mxfAudioLayout ?? "mono") === "multichannel" ? 1 : 0
+        captionStandardTabs.currentIndex = Math.max(0, captionStandards.indexOf(captionStandard))
+        cc608Tabs.currentIndex = Math.max(0, Number(overrides.cc608Channel ?? summary.cc608Channel ?? 1) - 1)
+        carriageTabs.currentIndex = Math.max(0, captionCarriages.indexOf(overrides.captionCarriage ?? summary.captionCarriage ?? "auto"))
+        const display = Number(summary.captionDisplay ?? 0)
+        captionDisplayTabs.currentIndex = display === 0 ? 0 : display === 4 ? 2 : 1
         dynamicRangeTabs.currentIndex = Math.max(0, dynamicRanges.indexOf(summary.dynamicRangeSetting ?? "auto"))
+        outputSpaceTabs.currentIndex = Math.max(0, outputSpaces.indexOf(overrides.outputSpace ?? "auto"))
         credentialsTabs.currentIndex = Math.max(0, credentialModes.indexOf(ExportController.contentCredentials))
+        stemsTabs.currentIndex = stemsOn ? 1 : 0
+        syncSizeLimit()
+    }
+    // (Read from `overrides` itself: `sizeLimit` may not have followed it yet in this handler.)
+    onOverridesChanged: {
+        syncSizeLimit()
+        stemsTabs.currentIndex = (overrides.stems ?? "off") === "role" ? 1 : 0
+    }
+    function syncSizeLimit() {
+        sizeLimitTabs.currentIndex = sizeLimits.indexOf(Number(overrides.targetMB ?? 0)) // -1: a custom size (the field)
+    }
+    /// P1 (#28): a size limit typed into the custom field (MB, 1-4000); remembered for the field.
+    function applyCustomSizeLimit(text: string): bool {
+        const value = Number(text.replace(",", ".").replace(/\s*MB\s*$/i, ""))
+        if (text.trim() === "" || !isFinite(value) || value < 1 || value > 4000)
+            return false
+        const megabytes = Math.round(value * 10) / 10
+        ExportController.lastTargetMB = megabytes
+        root.overrideChanged("targetMB", megabytes)
+        return true
     }
     onSummaryChanged: sync()
+    // 0.6 (#73): the codec and channel pills change their choices with the format.
+    onCodecsChanged: Qt.callLater(root.sync)
+    onAudioChannelsChanged: Qt.callLater(root.sync)
     Component.onCompleted: sync()
 
     ContentCredentialsSettings {
@@ -187,7 +241,7 @@ Item {
                 id: containerTabs
                 Layout.fillWidth: true
                 compact: true
-                model: [qsTr("MP4"), qsTr("MOV"), qsTr("MKV"), qsTr("WAV")]
+                model: [qsTr("MP4"), qsTr("MOV"), qsTr("MKV"), qsTr("WAV"), qsTr("MXF")]
                 Accessible.name: qsTr("Container")
                 onActivated: index => {
                     const container = root.containers[index]
@@ -198,19 +252,40 @@ Item {
                 }
             }
 
-            RowLabel { text: qsTr("Codec"); visible: root.hasVideo && !root.isImage }
+            // 0.6 (#73): MXF's operational pattern - OP1a, one file for broadcast delivery, or OP-Atom, Avid MediaFiles
+            // (a file for the picture and one per audio channel).
+            RowLabel { text: qsTr("MXF"); visible: root.isMxf }
             PillTabs {
-                id: codecTabs
-                visible: root.hasVideo && !root.isImage
+                id: patternTabs
+                objectName: "exportMxfPatternTabs"
+                visible: root.isMxf
                 Layout.fillWidth: true
                 compact: true
-                model: [qsTr("H.264"), qsTr("HEVC"), qsTr("ProRes"), qsTr("DNxHR")]
+                model: [qsTr("OP1a"), qsTr("OP-Atom (Avid)")]
+                Accessible.name: qsTr("MXF operational pattern")
+                onActivated: index => root.overrideChanged("container", index === 0 ? "mxf" : "mxf-opatom")
+            }
+
+            RowLabel { text: qsTr("Codec"); visible: root.hasVideo && !root.isImage && !root.isOpAtom }
+            PillTabs {
+                id: codecTabs
+                objectName: "exportCodecTabs"
+                visible: root.hasVideo && !root.isImage && !root.isOpAtom
+                Layout.fillWidth: true
+                compact: true
+                model: root.isMxf ? [qsTr("DNxHD / DNxHR"), qsTr("XDCAM HD422"), qsTr("AVC-Intra 100")]
+                                  : [qsTr("H.264"), qsTr("HEVC"), qsTr("ProRes"), qsTr("DNxHR")]
                 Accessible.name: qsTr("Video codec")
                 onActivated: index => {
                     const codec = root.codecs[index]
                     // ProRes and DNxHR masters go into QuickTime.
                     if ((codec === "prores" || codec === "dnxhr") && root.summary.container === "mp4")
                         root.overrideChanged("container", "mov")
+                    // 0.6 (#73): XDCAM HD422 and AVC-Intra 100 are HD rasters: 1080p unless a size is chosen.
+                    if ((codec === "xdcam-hd422" || codec === "avc-intra-100") && root.overrides.width === undefined) {
+                        root.overrideChanged("width", 1920)
+                        root.overrideChanged("height", 1080)
+                    }
                     root.overrideChanged("videoCodec", codec)
                 }
             }
@@ -275,12 +350,56 @@ Item {
             RowLabel { text: qsTr("Quality"); visible: root.longGop }
             PillTabs {
                 id: qualityTabs
+                objectName: "exportQualityTabs"
                 visible: root.longGop
+                // P1 (#28): a size limit decides the bitrate: the quality choice waits until it is off.
+                enabled: root.sizeLimit === 0
+                opacity: enabled ? 1 : 0.45
                 Layout.fillWidth: true
                 compact: true
                 model: [qsTr("High"), qsTr("Balanced"), qsTr("Small")]
                 Accessible.name: qsTr("Quality")
+                Accessible.description: enabled ? "" : qsTr("Set by the size limit")
                 onActivated: index => root.overrideChanged("quality", root.qualities[index])
+            }
+
+            // P1 (#28): a size limit for any export (WhatsApp, email, X, Nitro): the whole file at most that many MB
+            // (decimal, as upload limits are stated); two passes when the first ends over. Off = the preset's own.
+            RowLabel { text: qsTr("Size limit"); visible: root.sizeLimitAvailable }
+            RowLayout {
+                visible: root.sizeLimitAvailable
+                Layout.fillWidth: true
+                spacing: Theme.space(2)
+
+                PillTabs {
+                    id: sizeLimitTabs
+                    objectName: "exportSizeLimitTabs"
+                    Layout.fillWidth: true
+                    compact: true
+                    currentIndex: 0
+                    model: [qsTr("Off"), qsTr("8 MB"), qsTr("25 MB"), qsTr("100 MB"), qsTr("500 MB")]
+                    Accessible.name: qsTr("Size limit")
+                    onActivated: index => root.overrideChanged("targetMB", index === 0 ? undefined : root.sizeLimits[index])
+                }
+                FieldInput {
+                    id: sizeLimitField
+                    objectName: "exportSizeLimitCustom"
+                    Layout.preferredWidth: Theme.space(24)
+                    // A custom limit shows here; otherwise the last one typed, to use again with Enter.
+                    text: root.sizeLimit > 0 && root.sizeLimits.indexOf(root.sizeLimit) < 0 ? String(root.sizeLimit)
+                          : ExportController.lastTargetMB > 0 ? String(ExportController.lastTargetMB) : ""
+                    placeholderText: qsTr("MB")
+                    inputMethodHints: Qt.ImhFormattedNumbersOnly
+                    Accessible.name: qsTr("Custom size limit in MB")
+                    onAccepted: root.applyCustomSizeLimit(text)
+                    HoverHandler {
+                        id: sizeFieldHover
+                    }
+                    Tooltip {
+                        visible: sizeFieldHover.hovered && !sizeLimitField.activeFocus
+                        text: qsTr("A size of your own, 1 to 4000 MB: type it and press Enter")
+                    }
+                }
             }
 
             RowLabel { text: qsTr("Size"); visible: root.hasVideo }
@@ -309,6 +428,20 @@ Item {
                 model: [qsTr("Auto"), qsTr("SDR"), qsTr("HDR PQ"), qsTr("HDR HLG")]
                 Accessible.name: qsTr("Dynamic range")
                 onActivated: index => root.overrideChanged("dynamicRange", index === 0 ? undefined : root.dynamicRanges[index])
+            }
+
+            // 0.6 (#72): the output colour space of an SDR file (Premiere's Output Color Space): Rec.709, Rec.2020 (SDR)
+            // or P3-D65; the details line below shows the colour chain it makes.
+            RowLabel { text: qsTr("Color space"); visible: root.hasVideo && !root.isImage }
+            PillTabs {
+                id: outputSpaceTabs
+                objectName: "exportOutputSpaceTabs"
+                visible: root.hasVideo && !root.isImage
+                Layout.fillWidth: true
+                compact: true
+                model: [qsTr("Auto"), qsTr("Rec.709"), qsTr("Rec.2020"), qsTr("P3-D65")]
+                Accessible.name: qsTr("Output color space")
+                onActivated: index => root.overrideChanged("outputSpace", index === 0 ? undefined : root.outputSpaces[index])
             }
 
             // 0.2: Premiere's Include Alpha Channel (ProRes 4444, QuickTime Animation, CineForm, PNG, TIFF, Targa, OpenEXR)
@@ -368,6 +501,32 @@ Item {
                     onEditingFinished: root.overrideChanged("rangeOut", text)
                 }
             }
+            // P1 (#26, 2C): each marker range or each selected clip as its own file (the Export Ranges dialog).
+            RowLabel { text: qsTr("Separate files") }
+            Row {
+                objectName: "exportRangeBatches"
+                spacing: Theme.space(2)
+                PillButton {
+                    objectName: "exportRangeEachMarker"
+                    variant: "ghost"
+                    compact: true
+                    text: qsTr("Each marker…")
+                    tooltip: qsTr("One file per marker with a duration, named after it")
+                    enabled: ProjectController.markers.length >= 0 && ExportController.markerRanges("", -1).length > 0
+                    disabledReason: qsTr("No marker has a duration")
+                    onClicked: ExportController.rangesExportRequested("markers")
+                }
+                PillButton {
+                    objectName: "exportRangeEachClip"
+                    variant: "ghost"
+                    compact: true
+                    text: qsTr("Each selected clip…")
+                    tooltip: qsTr("One file per selected clip (linked video and audio as one), named after it")
+                    enabled: ProjectController.selectedClips.length > 0 && ExportController.selectedClipRanges().length > 0
+                    disabledReason: qsTr("Select clips in the timeline first")
+                    onClicked: ExportController.rangesExportRequested("clips")
+                }
+            }
 
             // A.9: the audio's channels (as the master: 5.1 for a 5.1 master when the codec takes it) and codec.
             RowLabel { text: qsTr("Audio channels") }
@@ -376,20 +535,100 @@ Item {
                 objectName: "exportAudioChannelsTabs"
                 Layout.fillWidth: true
                 compact: true
-                model: [qsTr("As the master"), qsTr("Mono"), qsTr("Stereo"), qsTr("5.1")]
+                model: root.isMxf ? [qsTr("As the master"), qsTr("2 tracks"), qsTr("4 tracks"), qsTr("8 tracks")]
+                                  : [qsTr("As the master"), qsTr("Mono"), qsTr("Stereo"), qsTr("5.1")]
                 Accessible.name: qsTr("Audio channels")
                 onActivated: index => root.overrideChanged("audioChannels", root.audioChannels[index])
             }
-            RowLabel { text: qsTr("Audio codec"); visible: root.hasVideo }
+            // 0.6 (#73): MXF audio - 24 or 16-bit PCM, one mono track per channel or one multichannel track (OP1a), and
+            // the reel (tape) name Avid shows in its Tape column.
+            RowLabel { text: qsTr("Audio"); visible: root.isMxf }
+            PillTabs {
+                id: pcmTabs
+                objectName: "exportMxfPcmTabs"
+                visible: root.isMxf
+                Layout.fillWidth: true
+                compact: true
+                model: [qsTr("PCM 24-bit"), qsTr("PCM 16-bit")]
+                Accessible.name: qsTr("MXF audio sample size")
+                onActivated: index => root.overrideChanged("audioCodec", index === 0 ? "pcm24" : "pcm16")
+            }
+            RowLabel { text: qsTr("Audio tracks"); visible: root.isMxf && !root.isOpAtom }
+            PillTabs {
+                id: layoutTabs
+                objectName: "exportMxfLayoutTabs"
+                visible: root.isMxf && !root.isOpAtom
+                Layout.fillWidth: true
+                compact: true
+                model: [qsTr("Mono tracks"), qsTr("One multichannel track")]
+                Accessible.name: qsTr("MXF audio track layout")
+                onActivated: index => root.overrideChanged("mxfAudioLayout", index === 0 ? "mono" : "multichannel")
+            }
+            RowLabel { text: qsTr("Reel"); visible: root.isMxf }
+            FieldInput {
+                objectName: "exportMxfReel"
+                visible: root.isMxf
+                Layout.fillWidth: true
+                text: root.overrides.reelName ?? root.summary.reelName ?? ""
+                placeholderText: qsTr("Tape or reel name (optional)")
+                maximumLength: 64
+                Accessible.name: qsTr("Reel name")
+                onEditingFinished: root.overrideChanged("reelName", text.trim() === "" ? undefined : text.trim())
+            }
+
+            RowLabel { text: qsTr("Audio codec"); visible: root.hasVideo && !root.isMxf }
             PillTabs {
                 id: audioCodecTabs
                 objectName: "exportAudioCodecTabs"
-                visible: root.hasVideo
+                visible: root.hasVideo && !root.isMxf
                 Layout.fillWidth: true
                 compact: true
                 model: [qsTr("AAC"), qsTr("AC-3")]
                 Accessible.name: qsTr("Audio codec")
                 onActivated: index => root.overrideChanged("audioCodec", index === 0 ? undefined : "ac3")
+            }
+            // 0.6 (#52): dialogue / music / effects stems with the master, by the audio tracks' roles: one 24-bit WAV per
+            // role next to the export ("_DX", "_MX", "_FX", "_OTHER"), queued after it. The line says which.
+            RowLabel { text: qsTr("Audio stems"); visible: !root.isImage }
+            PillTabs {
+                id: stemsTabs
+                objectName: "exportStemsTabs"
+                visible: !root.isImage
+                Layout.fillWidth: true
+                compact: true
+                model: [qsTr("Off"), qsTr("By track role")]
+                Accessible.name: qsTr("Audio stems")
+                Accessible.description: qsTr("Also write the dialogue, music and effects as WAV files next to the export")
+                onActivated: index => root.overrideChanged("stems", index === 0 ? undefined : "role")
+            }
+            Item {
+                visible: root.stemsOn && !root.stacked
+                implicitWidth: 1
+                implicitHeight: 1
+            }
+            Text {
+                objectName: "exportStemsPlan"
+                visible: root.stemsOn
+                Layout.fillWidth: true
+                text: root.summary.stemsText ?? ""
+                wrapMode: Text.WordWrap
+                color: (root.summary.stems ?? []).length > 0 ? Theme.textSecondary : Theme.warningText
+                font.family: Theme.fontSans
+                font.pixelSize: Theme.textXs
+                Accessible.role: Accessible.StaticText
+                Accessible.name: text
+            }
+            Item {
+                visible: root.stemsOn && (root.summary.stems ?? []).length > 0 && !root.stacked
+                implicitWidth: 1
+                implicitHeight: 1
+            }
+            Toggle {
+                objectName: "exportStemsWithoutMaster"
+                visible: root.stemsOn && (root.summary.stems ?? []).length > 0
+                text: qsTr("Stems without master effects")
+                checked: root.overrides.stemsMasterEffects === false
+                onToggled: root.overrideChanged("stemsMasterEffects", checked ? false : undefined)
             }
 
             // I.4: captions burned into the picture (as the monitor shows them) or as a sidecar file next to it; P.2:
@@ -398,7 +637,109 @@ Item {
             CaptionExportChooser {
                 visible: root.hasVideo
                 Layout.fillWidth: true
-                onChosen: value => root.overrideChanged("captions", value)
+                mode: root.summary.captionMode ?? root.overrides.captions ?? "none"
+                onChosen: value => {
+                    // 0.6 (#73): a format that can carry only 608 (QuickTime's c608 track) starts with 608 alone.
+                    if (value === "embed" && root.overrides.captionStandard === undefined && !(root.summary.mxf ?? false)
+                            && !(root.summary.captionInVideoAvailable ?? false))
+                        root.overrideChanged("captionStandard", "608")
+                    root.overrideChanged("captions", value)
+                }
+            }
+            // 0.6 (#73): Embedded captions - CEA-608 (CC1-CC4) and / or CEA-708 (services 1-63), in the picture stream
+            // and / or a caption track (MXF: SMPTE 436M; QuickTime: c608), pop-on, roll-up or paint-on.
+            RowLabel { text: qsTr("Standard"); visible: root.embedding }
+            PillTabs {
+                id: captionStandardTabs
+                objectName: "exportCaptionStandardTabs"
+                visible: root.embedding
+                Layout.fillWidth: true
+                compact: true
+                model: [qsTr("608 + 708"), qsTr("608"), qsTr("708")]
+                Accessible.name: qsTr("Closed caption standard")
+                onActivated: index => root.overrideChanged("captionStandard", root.captionStandards[index])
+            }
+            RowLabel { text: qsTr("608 channel"); visible: root.embedding && root.captionStandard !== "708" }
+            PillTabs {
+                id: cc608Tabs
+                objectName: "exportCc608Tabs"
+                visible: root.embedding && root.captionStandard !== "708"
+                Layout.fillWidth: true
+                compact: true
+                model: [qsTr("CC1"), qsTr("CC2"), qsTr("CC3"), qsTr("CC4")]
+                Accessible.name: qsTr("608 caption channel")
+                onActivated: index => root.overrideChanged("cc608Channel", index + 1)
+            }
+            RowLabel { text: qsTr("708 service"); visible: root.embedding && root.captionStandard !== "608" }
+            RowLayout {
+                visible: root.embedding && root.captionStandard !== "608"
+                Layout.fillWidth: true
+                spacing: Theme.space(2)
+                FieldInput {
+                    id: serviceField
+                    objectName: "exportCc708Service"
+                    Layout.preferredWidth: Theme.space(16)
+                    text: String(root.overrides.cc708Service ?? root.summary.cc708Service ?? 1)
+                    inputMethodHints: Qt.ImhDigitsOnly
+                    Accessible.name: qsTr("708 caption service number")
+                    onEditingFinished: {
+                        const n = Number(text)
+                        if (Number.isInteger(n) && n >= 1 && n <= 63)
+                            root.overrideChanged("cc708Service", n)
+                        else
+                            text = String(root.overrides.cc708Service ?? root.summary.cc708Service ?? 1)
+                    }
+                }
+                Text {
+                    Layout.fillWidth: true
+                    text: qsTr("1 to 63 (1 is the primary language)")
+                    elide: Text.ElideRight
+                    color: Theme.textTertiary
+                    font.family: Theme.fontSans
+                    font.pixelSize: Theme.textXs
+                }
+            }
+            RowLabel { text: qsTr("Carry in"); visible: root.embedding }
+            PillTabs {
+                id: carriageTabs
+                objectName: "exportCaptionCarriageTabs"
+                visible: root.embedding
+                Layout.fillWidth: true
+                compact: true
+                model: [qsTr("Auto"), qsTr("Video stream"), qsTr("Caption track"), qsTr("Both")]
+                Accessible.name: qsTr("Where the captions go")
+                Accessible.description: qsTr("Video stream: inside the H.264, HEVC or XDCAM picture. Caption track: an SMPTE 436M "
+                                             + "track in MXF, a c608 track in QuickTime.")
+                onActivated: index => root.overrideChanged("captionCarriage", index === 0 ? undefined : root.captionCarriages[index])
+            }
+            RowLabel { text: qsTr("Display"); visible: root.embedding }
+            PillTabs {
+                id: captionDisplayTabs
+                objectName: "exportCaptionDisplayTabs"
+                visible: root.embedding
+                Layout.fillWidth: true
+                compact: true
+                model: [qsTr("Pop-on"), qsTr("Roll-up"), qsTr("Paint-on")]
+                Accessible.name: qsTr("How the captions appear")
+                onActivated: index => root.overrideChanged("captionDisplay", index === 0 ? undefined : root.captionDisplays[index])
+            }
+            // What this export embeds, or why the format cannot.
+            Item {
+                visible: root.embedding
+                implicitWidth: 1
+                implicitHeight: 1
+            }
+            Text {
+                objectName: "exportEmbeddedCaptionsPlan"
+                visible: root.embedding
+                Layout.fillWidth: true
+                text: root.summary.ok ? (root.summary.embeddedCaptions ?? "") : (root.summary.error ?? "")
+                wrapMode: Text.WordWrap
+                color: root.summary.ok ? Theme.textSecondary : Theme.dangerText
+                font.family: Theme.fontSans
+                font.pixelSize: Theme.textXs
+                Accessible.role: Accessible.StaticText
+                Accessible.name: text
             }
             // 0.2: a soft subtitle track inside the file (3GPP Timed Text in MP4 / MOV, SubRip in MKV).
             RowLabel { text: qsTr("Subtitles"); visible: root.summary.subtitlesAvailable ?? false }

@@ -360,10 +360,11 @@ TEST_CASE("Extension storage persists between runs and keeps its bounds", "[scri
         wabcut.ui.registerCommand('remove', 'Remove', (args) => wabcut.storage.remove(args.key));
     )js";
     Rig rig("storage", {"Read"}, source);
-    CHECK(rig.run("set", {{"key", "every"}, {"value", {{"n", 4}}}}).result == Json::array({"every"}));
-    CHECK(rig.run("get", {{"key", "every"}}).result == Json{{"n", 4}});
     CHECK(rig.run("get", {{"key", "missing"}}).result == "none");
     CHECK(rig.run("big").result == "RangeError");
+    // P1 round (#65): the stop comes right after the call that changed storage - the change is still saved (the helper
+    // sends it before the call's answer, and a stop reads what the helper wrote before it ended).
+    CHECK(rig.run("set", {{"key", "every"}, {"value", {{"n", 4}}}}).result == Json::array({"every"}));
     rig.host->stop();
     REQUIRE(fs::exists(rig.dir / "storage.json"));
     rig.start();

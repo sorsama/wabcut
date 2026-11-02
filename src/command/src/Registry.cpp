@@ -87,6 +87,7 @@ void registerBuiltinCommands(CommandRegistry& registry) {
     detail::registerMarkerCommands(registry);
     detail::registerCaptionCommands(registry);
     detail::registerNestingCommands(registry);
+    detail::registerAuditionCommands(registry); // 0.6, card #74
     detail::registerCollaborationCommands(registry);
     detail::registerClipboardCommands(registry);
     detail::registerLibraryCommands(registry);

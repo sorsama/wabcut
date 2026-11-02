@@ -5,6 +5,7 @@
 #include <wabcut/editor/MediaImport.h>
 #include <wabcut/editor/ProjectDocument.h>
 #include <wabcut/export/TrimmedCopy.h>
+#include <wabcut/model/Auditions.h>
 #include <wabcut/model/ImageSequence.h>
 #include <wabcut/model/SpannedClip.h>
 #include <wabcut/model/MediaLocator.h>
@@ -88,17 +89,26 @@ std::map<std::uint64_t, TimeRange> usedRanges(const ProjectState& state) {
         if (!seq) {
             continue;
         }
+        const Rate rate = seq->frameRate.isValid() ? seq->frameRate : Rate{30, 1};
+        const Ticks frame = framesToTicks(1, rate, Rounding::Floor).value_or(Ticks{1});
+        const auto use = [&](const Clip& clip) {
+            if (!clip.media.isValid()) {
+                return;
+            }
+            const TimeRange r = shownMediaRange(clip, frame);
+            auto [it, inserted] = out.emplace(clip.media.value, r);
+            if (!inserted) {
+                it->second = TimeRange::fromStartEnd(std::min(it->second.start, r.start), std::max(it->second.end(), r.end()));
+            }
+        };
         seq->forEachTrack([&](const Track& track) {
             for (const Clip& clip : track.clips) {
-                if (!clip.media.isValid()) {
-                    continue;
-                }
-                const Rate rate = seq->frameRate.isValid() ? seq->frameRate : Rate{30, 1};
-                const Ticks frame = framesToTicks(1, rate, Rounding::Floor).value_or(Ticks{1});
-                const TimeRange r = shownMediaRange(clip, frame);
-                auto [it, inserted] = out.emplace(clip.media.value, r);
-                if (!inserted) {
-                    it->second = TimeRange::fromStartEnd(std::min(it->second.start, r.start), std::max(it->second.end(), r.end()));
+                use(clip);
+                // 0.6 (card #74): an audition's other takes are collected (and trimmed) with what they would play.
+                if (const Audition* a = clip.audition()) {
+                    for (const AuditionTake& take : a->others) {
+                        use(takeClip(take, auditionRange(clip)));
+                    }
                 }
             }
         });
@@ -143,6 +153,33 @@ void shiftMediaTime(Clip& clip, Ticks shift) {
         }
     }
     clip.setEffects(std::move(effects));
+}
+
+/// 0.6 (card #74): moves the media time of an audition's other takes whose media was trimmed (`shifts`: media id ->
+/// shift), each as shiftMediaTime moves a clip. True when a take changed.
+bool shiftTakesMediaTime(Clip& clip, const std::map<std::uint64_t, Ticks>& shifts) {
+    const Audition* a = clip.audition();
+    if (!a) {
+        return false;
+    }
+    Audition next = *a;
+    bool changed = false;
+    for (AuditionTake& take : next.others) {
+        const auto s = shifts.find(take.media.value);
+        if (!take.media.isValid() || s == shifts.end() || s->second.value == 0) {
+            continue;
+        }
+        Clip v = takeClip(take, auditionRange(clip));
+        shiftMediaTime(v, s->second);
+        take = takeFromClip(v);
+        changed = true;
+    }
+    if (changed) {
+        ClipContent content = clip.content();
+        content.audition = std::make_shared<const Audition>(std::move(next));
+        clip.setContent(std::move(content));
+    }
+    return changed;
 }
 
 /// Every path the capsule holds, case-folded (Codex wave-3 P1-4): on Windows and macOS "A.wav" and "a.wav" are one
@@ -300,8 +337,18 @@ std::set<std::string> referencedAssets(const ProjectState& state) {
             add(t.effects);
             for (const Clip& c : t.clips) {
                 add(c.effects());
+                if (const Audition* a = c.audition()) { // 0.6 (card #74): the other takes' effects
+                    for (const AuditionTake& take : a->others) {
+                        add(take.contentOrDefault().effects);
+                    }
+                }
             }
         });
+    }
+    for (const MediaPtr& m : state.media) { // 0.6 (card #71): Master Clip Effects
+        if (m) {
+            add(m->masterEffects);
+        }
     }
     return out;
 }
@@ -629,6 +676,7 @@ std::expected<CapsuleResult, Error> collectProject(const ProjectState& state, co
                             shiftMediaTime(clip, s->second);
                             changed = true;
                         }
+                        changed = shiftTakesMediaTime(clip, shifts) || changed; // 0.6 (card #74)
                     }
                     if (changed) {
                         auto track = std::make_shared<Track>(*trackPtr);

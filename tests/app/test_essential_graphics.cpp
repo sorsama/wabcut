@@ -765,6 +765,29 @@ TEST_CASE("Essential Graphics panel: Edit shows a lower third's fields, layers a
     REQUIRE_FALSE(image.isNull());
     saveCrop(image, panel.get(), QStringLiteral("essential-graphics-edit.png"));
 
+    // 0.6: the text layer's faux styles, capitals and kerning, its strokes and the shadow's size, scrolled into view.
+    REQUIRE(graphics->setTextStroke(2, -1, QStringLiteral("add")).isEmpty());
+    REQUIRE(graphics->updateLayer(2, {{QStringLiteral("shadow"), QVariantMap{{QStringLiteral("enabled"), true}}}}).isEmpty());
+    spin(50);
+    QQuickItem* textStyles = findNamed(properties, QStringLiteral("graphicTextStyles"));
+    REQUIRE(textStyles);
+    CHECK(textStyles->isVisible());
+    REQUIRE(findNamed(properties, QStringLiteral("graphicTextStrokePosition0")));
+    for (QQuickItem* p = textStyles->parentItem(); p; p = p->parentItem()) {
+        if (p->inherits("QQuickFlickable")) {
+            auto* content = p->property("contentItem").value<QQuickItem*>();
+            REQUIRE(content);
+            p->setProperty("contentY", textStyles->mapToItem(content, QPointF(0, 0)).y() - 40);
+            break;
+        }
+    }
+    spin(50);
+    const QImage styleImage = shell.grab();
+    REQUIRE_FALSE(styleImage.isNull());
+    saveCrop(styleImage, panel.get(), QStringLiteral("essential-graphics-text-style.png"));
+    REQUIRE(controller->undo()); // the shadow
+    REQUIRE(controller->undo()); // the stroke
+
     // The controls reach the graphic: bring the bar forward, Space on a layer's row selects it, the stopwatch, the eye,
     // Save as template from the dialog.
     auto before = controller->session().undoCount();

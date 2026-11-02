@@ -19,6 +19,9 @@ ContextMenu {
     readonly property bool several: menu.group !== null && menu.group.panels.length > 1
     readonly property bool floating: menu.owner !== null && menu.owner.floating
     readonly property bool maximized: menu.owner !== null && menu.owner.maximized
+    /// P1 round (#32): the workspace is locked - the panels stay where they are (the rows say why).
+    readonly property bool locked: menu.owner !== null && menu.owner.manager !== null && menu.owner.manager.locked
+    readonly property string lockedReason: menu.locked ? qsTr("The workspace is locked (Window > Workspaces)") : ""
 
     // The choice, run once the menu has closed.
     property string pending: ""
@@ -40,13 +43,16 @@ ContextMenu {
         objectName: "dockTabMenuClose"
         text: qsTr("Close Panel")
         iconName: "x"
+        enabled: !menu.locked
+        disabledReason: menu.lockedReason
         onTriggered: menu.choose("close")
     }
     ContextMenuItem {
         objectName: "dockTabMenuCloseOthers"
         text: qsTr("Close Other Panels in Group")
         iconName: "x"
-        enabled: menu.several
+        enabled: menu.several && !menu.locked
+        disabledReason: menu.lockedReason
         onTriggered: menu.choose("closeOthers")
     }
     ContextMenuSeparator {}
@@ -55,13 +61,16 @@ ContextMenu {
         text: qsTr("Undock Panel")
         iconName: "external-link"
         // A lone panel already in a window of its own has nowhere further to go.
-        enabled: menu.several || !menu.floating
+        enabled: (menu.several || !menu.floating) && !menu.locked
+        disabledReason: menu.lockedReason
         onTriggered: menu.choose("undock")
     }
     ContextMenuItem {
         objectName: "dockTabMenuUndockGroup"
         text: menu.floating ? qsTr("Dock Panel Group") : qsTr("Undock Panel Group")
         iconName: menu.floating ? "minimize-2" : "external-link"
+        enabled: !menu.locked
+        disabledReason: menu.lockedReason
         onTriggered: menu.choose("undockGroup")
     }
     ContextMenuSeparator {}

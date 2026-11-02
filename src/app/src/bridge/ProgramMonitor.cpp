@@ -215,6 +215,7 @@ protected:
         render::CompositeOutput out;
         out.target = renderTarget();
         out.role = render::OutputRole::Display;
+        const std::uint64_t importsBefore = m_compositor->importer().stats().imports;
         if (!m_hasFrame) {
             // Nothing presented yet: stay transparent so the placeholder underneath shows.
             out.surround = {0.0f, 0.0f, 0.0f, 0.0f};
@@ -246,6 +247,16 @@ protected:
         }
         if (m_selection.keepRefreshing || (m_wake && m_wake->published.load() != publishedBefore)) {
             update();
+        }
+        // F2P (0.6): a picture without media (black once a project closed, an empty sequence) draws a few more frames
+        // while the compositor still holds media frames or views of decoder surfaces: they go only once the GPU is
+        // done with them, and an idle monitor would keep a closed project's decoder memory until the next play.
+        const bool drewMedia = m_compositor->importer().stats().imports != importsBefore;
+        if (!drewMedia && m_compositor->importer().holdsFrames() && m_releaseFrames < kReleaseFrames) {
+            ++m_releaseFrames;
+            update();
+        } else if (drewMedia || !m_compositor->importer().holdsFrames()) {
+            m_releaseFrames = 0;
         }
     }
 
@@ -294,6 +305,8 @@ private:
     int m_previewDivisor = 1;
     std::int64_t m_latencyNs = 16'666'667;
     bool m_hasFrame = false; // render thread: a composite (or a seek's black) has been drawn
+    static constexpr int kReleaseFrames = 8; ///< F2P: the follow-up frames that let held media go (2-3 suffice)
+    int m_releaseFrames = 0;
     bool m_shareDevice = true;
     bool m_transparent = false;
 };

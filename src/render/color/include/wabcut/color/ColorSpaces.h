@@ -6,9 +6,11 @@
 //   working spaces: linear Rec.709 (display-referred Rec.709 projects: today's pipeline), ACEScg (ACES 1.3 projects),
 //                   linear Rec.2020 with 1.0 = the reference white (HDR Rec.2100 projects).
 //   inputs:  BT.709 / sRGB / BT.2020 / PQ / HLG / linear are short analytic curves and a primaries matrix, run by the
-//            layer shader; camera log formats (S-Log3, V-Log, LogC3/4, Canon Log 3, Apple Log), ACES renders and, in an
-//            ACES project, display-referred pictures (Rec.709 video, titles, captions: the inverse of the output
-//            transform, so they look as they did) are OpenColorIO 2 built-in transforms (no config file).
+//            layer shader; camera log formats (S-Log3, V-Log, LogC3/4, Canon Log 2/3, RED Log3G10 / Log Film, Apple
+//            Log), ACES renders and, in an ACES project, display-referred pictures (Rec.709 video, titles, captions: the
+//            inverse of the output transform, so they look as they did) are OpenColorIO 2 built-in transforms (no config
+//            file); camera logs OpenColorIO does not build in (0.6: D-Log, F-Log / F-Log2, N-Log, S-Log2, Canon Log,
+//            L-Log) are OpenColorIO transforms made here from the makers' published curves and gamut primaries.
 //   outputs: Rec.709 / sRGB as before; PQ and HLG analytic (SMPTE ST 2084, ITU-R BT.2100); the ACES output transforms
 //            (SDR video, HDR 1000 nits) through OpenColorIO up to display light, then the display's clamp and
 //            encoding (BT.1886, PQ, HLG) exactly; an HDR project shown on an SDR display through a tone-mapped
@@ -47,7 +49,17 @@ enum class OutputTarget : std::uint8_t {
     Sdr,  ///< an SDR Rec.709 display or file (the monitor; SDR exports)
     Pq,   ///< BT.2100 PQ, Rec.2020 (HDR exports, an HDR monitor)
     Hlg,  ///< BT.2100 HLG, Rec.2020
+    // 0.6 (#72): the other SDR output colour spaces of exports (OutputColorSpace).
+    Rec2020Sdr, ///< SDR in Rec.2020 primaries: the BT.709 curve (BT.2020's own), BT.2020 NCL
+    P3D65,      ///< SDR in P3 primaries with the D65 white, a 2.6 power
 };
+/// 0.6: an SDR target (Rec.709, Rec.2020 SDR, P3-D65).
+constexpr bool isSdrTarget(OutputTarget target) {
+    return target == OutputTarget::Sdr || target == OutputTarget::Rec2020Sdr || target == OutputTarget::P3D65;
+}
+/// 0.6: the export target of an output colour space for an SDR or HDR picture (`hdr`: PQ or HLG was chosen as the
+/// dynamic range): Rec.2020 / P3-D65 SDR, else Rec.709; PQ / HLG as given.
+OutputTarget outputTargetOf(OutputColorSpace space, OutputTarget dynamicRange);
 
 /// Row-major 3x3 matrix.
 using Matrix3 = std::array<double, 9>;
@@ -129,6 +141,10 @@ struct InputPlan {
     double scale = 1.0;                                  ///< Analytic, after the matrix (PQ, HLG: 1 / reference white)
     double hlgPeakNits = 1000.0;                         ///< Analytic HLG: the display the signal is read as
     std::shared_ptr<const BakedLut> lut;
+    // 0.6 (#72), after any kind, in the working space: a scene-referred layer of a setup that compresses gamut, and the
+    // highlight roll-off of Wide Gamut (Minimal Tone Mapping).
+    double gamutStrength = 0.0; ///< gamutCompress at this strength (0 = none)
+    double rolloffWhite = 0.0;  ///< minimalRolloff to this white (0 = none)
 };
 
 /// How the working space reaches an output.
@@ -141,10 +157,18 @@ struct OutputPlan {
         Lut,    ///< `lut` indexed by the log2 shaper of `matrix` * working (identity: the working space); its
                 ///< texels are linear display light in the display's primaries (1.0 = `displayNits`), then `finish`
         ToneMapSdr, ///< toneMapToSdr(max(working, 0)) (`matrix`: Rec.2020 -> Rec.709), BT.709 encoded
+        /// 0.6: SDR Conform (sdrConformPixel): `conformIn` (working -> Rec.2020), `conform`'s operator into the SDR
+        /// display, `matrix` (Rec.2020 -> the target's primaries), its gamut mapping, then `curve`.
+        Conform,
     } kind = Kind::Rec709;
     /// Lut: how display light becomes code values - as it is, BT.1886 (clamped to [0, 1], 1 / 2.4), PQ or HLG (a
-    /// `peakNits` display) of display light x `displayNits`.
-    enum class Finish : std::uint8_t { AsIs, Bt1886, Pq, Hlg } finish = Finish::AsIs;
+    /// `peakNits` display) of display light x `displayNits`; 0.6: Gamma26, a 2.6 power (P3-D65).
+    enum class Finish : std::uint8_t { AsIs, Bt1886, Pq, Hlg, Gamma26 } finish = Finish::AsIs;
+    /// 0.6: the encoding of Rec709, ToneMapSdr and Conform: the BT.709 OETF, or a 2.6 power (P3-D65).
+    enum class Curve : std::uint8_t { Bt709, Gamma26 } curve = Curve::Bt709;
+    /// 0.6, Conform: working -> linear Rec.2020, and the settings.
+    Matrix3 conformIn{1, 0, 0, 0, 1, 0, 0, 0, 1};
+    SdrConform conform;
     double displayNits = 100.0; ///< Lut: nits of display light 1.0 (OpenColorIO's convention)
     Matrix3 matrix{1, 0, 0, 0, 1, 0, 0, 0, 1};
     double referenceWhiteNits = 203.0;
@@ -167,8 +191,44 @@ InputColorSpace inputSpaceOf(const ColorInfo& color, bool isRgb);
 /// are). Errors: Unsupported (OpenColorIO cannot build the transform).
 std::expected<InputPlan, Error> planInput(const ColorManagement& management, InputColorSpace space, bool limitedRange,
                                           bool graphics);
-/// The plan for an output of `target`.
-std::expected<OutputPlan, Error> planOutput(const ColorManagement& management, OutputTarget target);
+/// The plan for an output of `target`. 0.6: with `conform`, an SDR target of an HDR or Wide Gamut (No / Minimal Tone
+/// Mapping) setup is an SDR Conform plan with the setup's sdrConform settings (exports pass conformsSdr(); the
+/// monitor's before / after preview passes true); a Direct Rec.709 setup plans the Rec.2020 / P3-D65 SDR targets
+/// too (a matrix and the curve).
+std::expected<OutputPlan, Error> planOutput(const ColorManagement& management, OutputTarget target, bool conform = false);
+
+// ---- 0.6 (#72): gamut compression, Minimal Tone Mapping, SDR Conform -------------------------------------------------
+
+/// ACES 1.3 Reference Gamut Compression (S-2020-001's LMT): each channel's distance from the achromatic axis
+/// (max(r, g, b) - c) / |max| beyond the threshold (cyan 0.815, magenta 0.803, yellow 0.880) compressed with power 1.2
+/// so the limit (1.147, 1.264, 1.312) lands on the gamut boundary; `strength` mixes the original (0) and the result (1).
+Rgb3 gamutCompress(const Rgb3& rgb, double strength = 1.0);
+/// Wide Gamut (Minimal Tone Mapping)'s knee: working values up to it pass unchanged.
+inline constexpr double kMinimalKnee = 0.8;
+/// The roll-off curve: v up to kMinimalKnee as it is, then extended Reinhard (slope 1 at the knee) so `white` lands
+/// on 1.0; above `white`, 1.0.
+double minimalRolloffCurve(double v, double white);
+/// The roll-off of a working colour on its max(r, g, b), the colour scaled along (hue and saturation kept).
+Rgb3 minimalRolloff(const Rgb3& rgb, double white);
+/// The roll-off's white for a setup: its HDR peak over its reference white (1000 / 203 by default).
+double minimalRolloffWhite(const ColorManagement& management);
+
+/// One pixel of SDR Conform: the code values, and whether it was brighter than the SDR white (tone-mapped) and
+/// outside the target's gamut (gamut-mapped) - what an export reports.
+struct ConformPixel {
+    Rgb3 code{};
+    bool toneMapped = false;
+    bool gamutMapped = false;
+};
+/// SDR Conform of a working value by `plan` (a Conform plan): the CPU reference of the output pass.
+ConformPixel sdrConformPixel(const OutputPlan& plan, const Rgb3& working);
+/// The tone-mapping operator on a luminance `s` (1.0 = the SDR display's white, `targetPeakNits`) whose source peak is
+/// `peak` (the same units): the display luminance, 0..1. BT.2390 works in PQ (absolute nits); ACES is normalised so the
+/// peak (at least the white) lands on 1; Reinhard and BT.2390 leave a source that fits (peak <= 1) as it is.
+double conformToneMap(ToneMapOperator op, double s, double peak, double targetPeakNits);
+/// What an output does, for the export details and the CLI: e.g. "ACEScg → Rec.709 · highlights above white clipped",
+/// "Rec.2020 HDR → SDR Conform (BT.2390, ACES gamut compression) → P3-D65 (2.6)".
+std::string describeOutput(const ColorManagement& management, OutputTarget target, bool conform);
 
 /// CPU references, double precision, exact (OCIO's CPU processor for OCIO transforms).
 std::expected<Rgb3, Error> applyInput(const ColorManagement& management, InputColorSpace space, bool limitedRange,
@@ -186,5 +246,12 @@ std::vector<std::string> builtinTransformsUsed();
 std::string ocioVersion();
 /// Applies one OpenColorIO built-in transform (forward or inverse) to `rgb` on the CPU (tests, references).
 std::expected<Rgb3, Error> applyBuiltin(const std::string& style, const Rgb3& rgb, bool inverse = false);
+/// A camera log's code values (full range: 10-bit code / 1023) -> ACES2065-1 on the CPU, through the OpenColorIO
+/// transform its input LUTs bake (a built-in, or the maker's curve and gamut matrix). Unsupported for a space that is not
+/// a camera format (tests, references).
+std::expected<Rgb3, Error> cameraToAces2065(InputColorSpace space, const Rgb3& code);
+/// Converts `rgb` from a colour space of one of OpenColorIO's built-in configs (e.g. "studio-config-latest") to its
+/// ACES2065-1 on the CPU (tests: cross-checks against the ACES camera transforms those configs carry).
+std::expected<Rgb3, Error> applyBuiltinConfigSpace(const std::string& config, const std::string& colorSpace, const Rgb3& rgb);
 
 } // namespace wabcut::color

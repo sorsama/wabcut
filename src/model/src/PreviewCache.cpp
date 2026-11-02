@@ -3,6 +3,7 @@
 #include <wabcut/model/PreviewCache.h>
 
 #include <wabcut/model/Effects.h>
+#include <wabcut/model/MasterClipEffects.h>
 #include <wabcut/model/MediaLocator.h>
 #include <wabcut/model/MotionOps.h>
 #include <wabcut/model/Nesting.h>
@@ -109,7 +110,12 @@ void tally(const ProjectState& state, Rate rate, const CompositePlan& plan, Tall
             t.cost += 1.0;
         }
         tallyMotion(state, rate, s, t);
-        tallyStack(s.clip->effects(), t);
+        if (playsMasterEffects(state, *s.clip)) {
+            // 0.6 (card #71, fix F1A): the media's Master Clip Effects play before the clip's own and cost the same.
+            tallyStack(playedEffects(state, *s.clip, EffectKind::Video), t);
+        } else {
+            tallyStack(s.clip->effects(), t);
+        }
         if (s.transition.transition) {
             t.transition = true;
             t.cost += 0.5;

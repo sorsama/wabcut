@@ -23,6 +23,11 @@ Panel {
     function focusContent() {
         tabs.forceActiveFocus(Qt.TabFocusReason)
     }
+    /// P1 round (#30): Edit > Find (Ctrl+F) while this panel is active - the notes' search.
+    function focusFind() {
+        tabs.currentIndex = 0
+        notesPage.focusFind()
+    }
 
     // The notes' author is the name in Preferences.
     Binding {
@@ -52,7 +57,9 @@ Panel {
             Layout.fillHeight: true
             currentIndex: tabs.currentIndex
 
-            ReviewNotesPage {}
+            ReviewNotesPage {
+                id: notesPage
+            }
             ReviewVersionsPage {}
         }
     }

@@ -29,6 +29,9 @@ import QtQuick.Layouts
 // (the media of an import, the name); Cancel, Esc and the back arrow drop it. The project-file flow (unsaved changes
 // first) lives in Main: Home asks with signals. While Main works it sets `busyText` (runBusy), and a cover with the
 // echo mark's chase loader says so.
+// P1 round (0.6, #49): the project menu's Rename… and Duplicate… (ProjectNameDialog), Versions… (the window's recovery
+// dashboard for that project: versionsRequested) and Move to Recycle Bin… (asks first; the status line's Undo brings
+// the files back from the Recycle Bin).
 FocusScope {
     id: root
     objectName: "homeScreen"
@@ -77,6 +80,8 @@ FocusScope {
     property bool statusUndo: false
     // A starred project Remove from List unstarred: Undo stars it again.
     property string removedStar: ""
+    // P1 round (#49): the status line's Undo puts back a project moved to the Recycle Bin (not only its list entry).
+    property bool trashUndo: false
     // The missing project Locate... is for.
     property var locating: null
     readonly property var pages: [
@@ -97,6 +102,8 @@ FocusScope {
     signal sampleRequested()
     signal helpRequested(string what)
     signal settingsRequested()
+    /// P1 round (#49): Versions… in the project menu - the recovery dashboard for `file` (Main's RecoveryDialog).
+    signal versionsRequested(url file)
 
     function open() {
         Home.refreshRecent()
@@ -312,15 +319,62 @@ FocusScope {
         if (starred)
             Preferences.setStarred(project.path, false)
         root.removedStar = starred ? project.path : ""
+        root.trashUndo = false
         Home.removeRecent(project.url)
         root.showStatus(qsTr("Removed %1 from the list").arg(project.name), true)
     }
     function undoRemove() {
-        Home.undoRemoveRecent()
+        if (root.trashUndo) {
+            root.trashUndo = false
+            if (!Home.undoTrash())
+                root.showMessage(Home.trashError(), "warning")
+        } else {
+            Home.undoRemoveRecent()
+        }
         if (root.removedStar !== "")
             Preferences.setStarred(root.removedStar, true)
         root.removedStar = ""
         root.status = ""
+    }
+    // ---- P1 round (#49): the project's files ----
+    readonly property string trashName: Qt.platform.os === "windows" ? qsTr("Recycle Bin") : qsTr("Trash")
+    function renameProject(project: var, name: string) {
+        const r = Home.renameProject(project.url, name)
+        if (!r.ok) {
+            root.showMessage(r.error, "danger")
+            return
+        }
+        if (Preferences.isStarred(r.oldPath)) {
+            Preferences.setStarred(r.oldPath, false)
+            Preferences.setStarred(r.path, true)
+        }
+        root.showStatus(qsTr("Renamed to %1").arg(r.name), false)
+        if (r.warning !== "")
+            root.showMessage(r.warning, "warning")
+    }
+    function duplicateProject(project: var, name: string) {
+        const r = Home.duplicateProject(project.url, name)
+        if (!r.ok) {
+            root.showMessage(r.error, "danger")
+            return
+        }
+        root.showStatus(qsTr("Duplicated as %1").arg(r.name), false)
+    }
+    function trashProject(project: var) {
+        const starred = Preferences.isStarred(project.path)
+        const r = Home.trashProject(project.url)
+        if (!r.ok) {
+            root.showMessage(r.error, "danger")
+            return
+        }
+        if (starred)
+            Preferences.setStarred(project.path, false)
+        root.removedStar = starred ? project.path : ""
+        root.trashUndo = true
+        //: "Moved Trailer to the Recycle Bin" (the Trash on macOS and Linux)
+        root.showStatus(qsTr("Moved %1 to the %2").arg(r.name).arg(root.trashName), true)
+        if (r.warning !== "")
+            root.showMessage(r.warning, "warning")
     }
     function projectAction(action: string, project: var) {
         switch (action) {
@@ -348,6 +402,20 @@ FocusScope {
             break
         case "remove":
             root.removeProject(project)
+            break
+        case "rename":
+            nameDialog.openRename(project)
+            break
+        case "duplicate":
+            nameDialog.openDuplicate(project)
+            break
+        case "versions":
+            root.versionsRequested(project.url)
+            break
+        case "trash":
+            trashConfirm.ask(qsTr("Move %1 to the %2?").arg(project.name).arg(root.trashName),
+                             qsTr("The project file goes there with its autosaves, backups and render previews. Its media files stay where they are. Undo brings it back right after; later, restore it from the %1.").arg(root.trashName),
+                             qsTr("Move to %1").arg(root.trashName), () => root.trashProject(project))
             break
         }
     }
@@ -900,7 +968,8 @@ FocusScope {
                     variant: "primary"
                     iconName: "undo-2"
                     text: qsTr("Undo")
-                    tooltip: qsTr("Put it back in the list")
+                    tooltip: root.trashUndo ? qsTr("Bring the project back from the %1").arg(root.trashName)
+                                            : qsTr("Put it back in the list")
                     shortcut: root.keyText("Z")
                     onClicked: root.undoRemove()
                 }
@@ -957,6 +1026,20 @@ FocusScope {
     ProjectMenu {
         id: projectMenu
         onChosen: (action, project) => root.projectAction(action, project)
+    }
+    // P1 round (#49): Rename… / Duplicate…, and Move to Recycle Bin…'s question.
+    ProjectNameDialog {
+        id: nameDialog
+        onNameChosen: (mode, project, name) => {
+            if (mode === "rename")
+                root.renameProject(project, name)
+            else
+                root.duplicateProject(project, name)
+        }
+    }
+    MenuConfirmDialog {
+        id: trashConfirm
+        objectName: "homeTrashConfirm"
     }
     WabcutDialog {
         id: clearConfirm

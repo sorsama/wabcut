@@ -36,6 +36,11 @@ Panel {
         else
             searchField.forceActiveFocus(Qt.TabFocusReason)
     }
+    /// P1 round (#30): Edit > Find (Ctrl+F) while this panel is active: the search, its text selected.
+    function focusFind() {
+        searchField.forceActiveFocus(Qt.ShortcutFocusReason)
+        searchField.selectAll()
+    }
     function reloadFile() {
         root.file = root.key !== "" ? Library.fileMetadata(root.key) : ({})
     }

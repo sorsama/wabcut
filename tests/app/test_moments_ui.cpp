@@ -10,6 +10,8 @@
 #include "TimelineFixture.h"
 
 #include "BridgeIds.h"
+#include "CommandPalette.h"
+#include "HighlightsBridge.h"
 #include "MomentsBridge.h"
 #include "ProjectController.h"
 #include "TimeRemapBridge.h"
@@ -17,6 +19,7 @@
 #include <wabcut/command/Engine.h>
 #include <wabcut/command/ExecutionContext.h>
 #include <wabcut/command/Registry.h>
+#include <wabcut/keymap/CommandRegistry.h>
 #include <wabcut/model/EditOps.h>
 #include <wabcut/model/FinishingOps.h>
 #include <wabcut/model/ProjectOps.h>
@@ -461,6 +464,7 @@ TEST_CASE("Moments: C.16's instant replay and Shorts version run when the catalo
     CHECK_FALSE(r.moments.makeVersion().isEmpty());
 
     r.moments.setRegistry(&c16Catalog());
+    r.moments.setSynchronous(true); // 0.6 (P1 #55): the versions are a job (test_gaming_versions.cpp)
     CHECK(r.moments.gamingEdits().value(QStringLiteral("replay")).toBool());
     CHECK(r.moments.gamingEdits().value(QStringLiteral("version")).toBool());
     r.controller.setPlayhead(f(100));
@@ -909,3 +913,318 @@ TEST_CASE("Moments: the clip menu submenu and the Tracks popover apply presets; 
     INFO(join(messages));
     CHECK(messages.isEmpty());
 }
+
+// ---- 0.6 (P1 round, D2 #34): the gaming actions as keymap commands, menu rows and palette rows ------------------------
+
+TEST_CASE("Gaming: every Moments preset is a keymap command that runs and says why it cannot", "[app][moments][keys]") {
+    static const command::CommandRegistry nothing;
+    // The registry: every gaming action is a keymap command in its menu's group, with no default key in either shipped
+    // key set (docs/keymap.md, [^d2]): the keys in Keyboard Shortcuts are the user's own.
+    const keymap::CommandRegistry& builtin = keymap::CommandRegistry::builtin();
+    for (const char* id : {"moments.slowMo", "moments.punchIn", "moments.rampIn", "moments.freezeReplay",
+                           "moments.fastForward", "moments.punchInHold", "moments.shake", "moments.instantReplay"}) {
+        INFO(id);
+        const keymap::CommandInfo* info = builtin.find(id);
+        REQUIRE(info != nullptr);
+        CHECK(info->group == "Clip");
+        CHECK(info->scope == keymap::Scope::Application);
+        CHECK(MomentsBridge::handlesCommand(QString::fromLatin1(id)));
+    }
+    for (const char* id : {"moments.shortsVersion", "moments.squareVersion", "moments.findDeadTime",
+                           "moments.findHighlights"}) {
+        INFO(id);
+        const keymap::CommandInfo* info = builtin.find(id);
+        REQUIRE(info != nullptr);
+        CHECK(info->group == "Sequence");
+        CHECK(MomentsBridge::handlesCommand(QString::fromLatin1(id)));
+    }
+    for (const char* id : {"sequence.makeShortFromInOut", "sequence.autoReframe"}) {
+        INFO(id);
+        const keymap::CommandInfo* info = builtin.find(id);
+        REQUIRE(info != nullptr);
+        CHECK(info->group == "Sequence");
+    }
+    CHECK(HighlightsBridge::handlesCommand(QStringLiteral("sequence.makeShortFromInOut")));
+
+    // Nothing under the playhead: each preset says so, as its menu row and palette row do.
+    {
+        MomentsRig r;
+        r.controller.setPlayhead(f(400));
+        const QString why = r.moments.target().value(QStringLiteral("reason")).toString();
+        REQUIRE_FALSE(why.isEmpty());
+        for (const char* id : {"moments.slowMo", "moments.punchIn", "moments.rampIn", "moments.freezeReplay",
+                               "moments.fastForward", "moments.punchInHold", "moments.shake",
+                               "moments.instantReplay"}) {
+            INFO(id);
+            const QVariantMap state = r.moments.commandAvailability(QString::fromLatin1(id));
+            CHECK(state.value(QStringLiteral("handled")).toBool());
+            CHECK_FALSE(state.value(QStringLiteral("enabled")).toBool());
+            CHECK(state.value(QStringLiteral("reason")).toString() == why);
+        }
+        // An id of another bridge: not answered, and not run.
+        CHECK_FALSE(r.moments.commandAvailability(QStringLiteral("timeline.zoomIn"))
+                        .value(QStringLiteral("handled"))
+                        .toBool());
+        CHECK_FALSE(r.moments.runCommand(QStringLiteral("timeline.zoomIn")));
+    }
+
+    // Each preset, through its keymap command: one undo step, on the clip under the playhead.
+    for (const char* id : {"moments.slowMo", "moments.punchIn", "moments.rampIn", "moments.freezeReplay",
+                           "moments.fastForward", "moments.punchInHold", "moments.shake"}) {
+        INFO(id);
+        MomentsRig r;
+        r.controller.setPlayhead(f(100));
+        CHECK(r.moments.commandAvailability(QString::fromLatin1(id)).value(QStringLiteral("enabled")).toBool());
+        const std::size_t before = r.undo();
+        CHECK(r.moments.runCommand(QString::fromLatin1(id)));
+        CHECK(r.undo() == before + 1);
+        CHECK(r.moments.message().isEmpty());
+    }
+    // A clip with sound only has nothing to retime or zoom: the reason says so (named, so the picture behind it does not
+    // answer for it).
+    {
+        MomentsRig r;
+        r.controller.setPlayhead(f(25));
+        const QVariantMap info = r.moments.targetFor(r.key("A2@20"));
+        CHECK_FALSE(info.value(QStringLiteral("available")).toBool());
+        CHECK_FALSE(info.value(QStringLiteral("reason")).toString().isEmpty());
+    }
+
+    // C.16's edits and the versions, through their commands.
+    {
+        MomentsRig r;
+        r.moments.setRegistry(&c16Catalog());
+        r.moments.setSynchronous(true); // 0.6 (P1 #55, stream 3A): the versions are a job
+        r.controller.setPlayhead(f(100));
+        std::size_t before = r.undo();
+        CHECK(r.moments.runCommand(QStringLiteral("moments.instantReplay")));
+        CHECK(r.undo() == before + 1);
+        CHECK(r.moments.commandAvailability(QStringLiteral("moments.shortsVersion"))
+                  .value(QStringLiteral("enabled"))
+                  .toBool());
+        before = r.undo();
+        CHECK(r.moments.runCommand(QStringLiteral("moments.shortsVersion")));
+        CHECK(r.undo() == before + 1);
+        CHECK(r.controller.currentSequence()->height == 1920);
+        before = r.undo();
+        CHECK(r.moments.runCommand(QStringLiteral("moments.squareVersion")));
+        CHECK(r.undo() == before + 1);
+        CHECK(r.controller.currentSequence()->height == 1080);
+        r.moments.setRegistry(nullptr);
+        // Without the catalog's version command the row says why.
+        r.moments.setRegistry(&nothing);
+        CHECK_FALSE(r.moments.commandAvailability(QStringLiteral("moments.shortsVersion"))
+                        .value(QStringLiteral("enabled"))
+                        .toBool());
+        CHECK_FALSE(r.moments.commandAvailability(QStringLiteral("moments.shortsVersion"))
+                        .value(QStringLiteral("reason"))
+                        .toString()
+                        .isEmpty());
+    }
+
+    // Find dead time: the review opens (the Highlights panel's sheet) and the find runs with it.
+    {
+        MomentsRig r;
+        r.moments.setRegistry(&c16Catalog());
+        r.moments.setSynchronous(true);
+        CHECK_FALSE(r.moments.deadTimeReviewing());
+        CHECK(r.moments.runCommand(QStringLiteral("moments.findDeadTime")));
+        CHECK(r.moments.deadTimeReviewing());
+        CHECK(r.moments.deadTime().value(QStringLiteral("found")).toBool());
+        r.moments.setRegistry(nullptr);
+        r.moments.setDeadTimeReviewing(false);
+    }
+
+    // Find highlights: the panel is asked to find with its own options (Main.qml shows it).
+    {
+        MomentsRig r;
+        bool asked = false;
+        QObject::connect(&r.moments, &MomentsBridge::findHighlightsRequested, &r.moments, [&] { asked = true; });
+        CHECK(r.moments.commandAvailability(QStringLiteral("moments.findHighlights"))
+                  .value(QStringLiteral("enabled"))
+                  .toBool());
+        CHECK(r.moments.runCommand(QStringLiteral("moments.findHighlights")));
+        CHECK(asked);
+        r.moments.setRegistry(&nothing);
+        CHECK_FALSE(r.moments.commandAvailability(QStringLiteral("moments.findHighlights"))
+                        .value(QStringLiteral("enabled"))
+                        .toBool());
+    }
+}
+
+TEST_CASE("Gaming: the presets reach the Clip and Sequence menus and the palette with their reasons; screenshots",
+          "[app][moments][qml][screenshot]") {
+    struct Shot {
+        bool dark;
+        const char* file;
+        const char* menus;
+    };
+    for (const Shot& shot :
+         {Shot{true, "p1-d2-palette-moments.png", "p1-d2-clip-moments.png"},
+          Shot{false, "p1-d2-palette-moments-light.png", "p1-d2-clip-moments-light.png"}}) {
+        INFO(shot.file);
+        resetSettings();
+        clearMessages();
+        QSettings().remove(QStringLiteral("moments"));
+        Shell shell;
+        REQUIRE(shell.window);
+        shell.resize(kShotWidth, kShotHeight);
+        shell.theme->setProperty("reduceMotion", true);
+        shell.setAppearance(shot.dark, "ultraviolet");
+        auto* controller = shell.engine.singletonInstance<ProjectController*>("Wabcut", "ProjectController");
+        auto* moments = shell.engine.singletonInstance<MomentsBridge*>("Wabcut", "Moments");
+        auto* palette = shell.engine.singletonInstance<CommandPalette*>("Wabcut", "CommandPalette");
+        REQUIRE(controller);
+        REQUIRE(moments);
+        REQUIRE(palette);
+        Timeline tl(picture());
+        tl.linkMatching();
+        controller->resetProject(tl.state, tl.seq);
+        controller->clearSelection();
+        controller->setPlayhead(f(400)); // past the last clip: nothing to act on
+        spin(200);
+
+        QObject* overlay = shell.object("commandPalette");
+        REQUIRE(overlay);
+        REQUIRE(QMetaObject::invokeMethod(overlay, "openPalette"));
+        REQUIRE(waitFor([&] { return overlay->property("opened").toBool(); }));
+        auto* field = qobject_cast<QQuickItem*>(shell.object("paletteField"));
+        REQUIRE(field);
+        field->setProperty("text", QStringLiteral("moments"));
+        palette->setQuery(QStringLiteral("moments"));
+        spin(600);
+        const auto row = [&](const char* id) {
+            const QString key = QStringLiteral("command:") + QString::fromLatin1(id);
+            for (const QVariant& item : palette->results()) {
+                if (item.toMap().value(QStringLiteral("key")).toString() == key)
+                    return item.toMap();
+            }
+            return QVariantMap{};
+        };
+        const QString nothingThere = moments->target().value(QStringLiteral("reason")).toString();
+        REQUIRE_FALSE(nothingThere.isEmpty());
+        for (const char* id : {"moments.slowMo", "moments.punchIn", "moments.rampIn", "moments.freezeReplay",
+                               "moments.fastForward", "moments.punchInHold", "moments.shake"}) {
+            INFO(id);
+            const QVariantMap listed = row(id);
+            REQUIRE_FALSE(listed.isEmpty()); // the keymap row, not only the typed catalog edit
+            CHECK_FALSE(listed.value(QStringLiteral("enabled")).toBool());
+            CHECK(listed.value(QStringLiteral("reason")).toString() == nothingThere);
+            CHECK(listed.value(QStringLiteral("shortcut")).toString().isEmpty()); // no default key
+        }
+        // On the clip: they can act, and the palette says so.
+        controller->setPlayhead(f(100));
+        controller->selectClipById(tl.clip("V1@0"), ProjectController::Replace);
+        spin(400);
+        palette->refresh();
+        spin(400);
+        for (const char* id : {"moments.slowMo", "moments.punchIn", "moments.rampIn", "moments.freezeReplay",
+                               "moments.fastForward", "moments.punchInHold", "moments.shake"}) {
+            INFO(id);
+            const QVariantMap listed = row(id);
+            REQUIRE_FALSE(listed.isEmpty());
+            CHECK(listed.value(QStringLiteral("enabled")).toBool());
+            CHECK(listed.value(QStringLiteral("reason")).toString().isEmpty());
+        }
+        // The gaming sequence actions: listed, and the Short from In to Out says what is missing.
+        for (const char* id : {"moments.shortsVersion", "moments.squareVersion", "moments.findDeadTime",
+                               "moments.findHighlights"}) {
+            INFO(id);
+            REQUIRE_FALSE(row(id).isEmpty());
+            CHECK(row(id).value(QStringLiteral("enabled")).toBool());
+        }
+        // Auto Reframe Sequence… is not a moments.* id: it is its own row, found by its name.
+        palette->setQuery(QStringLiteral("reframe"));
+        spin(400);
+        CHECK_FALSE(row("sequence.autoReframe").isEmpty());
+        CHECK(row("sequence.autoReframe").value(QStringLiteral("enabled")).toBool());
+        // The Short from In to Out: its own keymap row, and it says what is missing before the marks are set.
+        palette->setQuery(QStringLiteral("makeShortFromInOut"));
+        spin(400);
+        const QVariantMap shortRow = row("sequence.makeShortFromInOut");
+        REQUIRE_FALSE(shortRow.isEmpty());
+        CHECK_FALSE(shortRow.value(QStringLiteral("enabled")).toBool());
+        CHECK(shortRow.value(QStringLiteral("reason")).toString() == QStringLiteral("Set In and Out first"));
+        palette->setQuery(QStringLiteral("moments"));
+        spin(400);
+
+        const QImage image = shell.grab();
+        REQUIRE_FALSE(image.isNull());
+        REQUIRE(image.save(outputDir() + QLatin1Char('/') + QLatin1String(shot.file)));
+        REQUIRE(QMetaObject::invokeMethod(overlay, "close"));
+        REQUIRE(waitFor([&] { return !overlay->property("opened").toBool(); }));
+
+        // The Clip menu's Moments submenu: a row per preset (the three speeds without a command have none to show).
+        QObject* clipMenu = shell.object("clipMenu");
+        QObject* sequenceMenu = shell.object("sequenceMenuBar");
+        QObject* bar = shell.object("appMenuBar");
+        REQUIRE(clipMenu);
+        REQUIRE(sequenceMenu);
+        REQUIRE(bar);
+        QObject* clipMoments = clipMenu->findChild<QObject*>(QStringLiteral("clipMenuMoments"));
+        REQUIRE(clipMoments != nullptr);
+        CHECK(clipMoments->property("title").toString() == QStringLiteral("Moments"));
+        for (const char* id : {"moments.slowMo", "moments.punchIn", "moments.rampIn", "moments.freezeReplay",
+                               "moments.fastForward", "moments.punchInHold", "moments.shake",
+                               "moments.instantReplay", "moments.shortsVersion", "moments.squareVersion"}) {
+            INFO(id);
+            const QObject* rowItem =
+                clipMoments->findChild<QObject*>(QStringLiteral("menuCommand_") + QString::fromLatin1(id));
+            REQUIRE(rowItem != nullptr);
+            CHECK(rowItem->property("shortcut").toString().isEmpty());
+        }
+        // Sequence > Gaming: the versions, the finds and Auto Reframe Sequence…
+        QObject* gaming = sequenceMenu->findChild<QObject*>(QStringLiteral("sequenceMenuGaming"));
+        REQUIRE(gaming != nullptr);
+        CHECK(gaming->property("title").toString() == QStringLiteral("Gaming"));
+        for (const char* id : {"moments.shortsVersion", "moments.squareVersion", "moments.findDeadTime",
+                               "moments.findHighlights"}) {
+            INFO(id);
+            REQUIRE(gaming->findChild<QObject*>(QStringLiteral("menuCommand_") + QString::fromLatin1(id)) != nullptr);
+        }
+        REQUIRE(gaming->findChild<QObject*>(QStringLiteral("sequenceMenuAutoReframe")) != nullptr);
+        REQUIRE(sequenceMenu->findChild<QObject*>(QStringLiteral("sequenceMenuMakeShortFromInOut")) != nullptr);
+
+        // The Clip menu with its Moments submenu open, for the QA pass.
+        REQUIRE(QMetaObject::invokeMethod(bar, "open", Q_ARG(int, 2), Q_ARG(bool, false)));
+        REQUIRE(waitFor([&] { return clipMenu->property("opened").toBool(); }));
+        QMetaObject::invokeMethod(clipMoments, "open");
+        spin(400);
+        {
+            const QImage menus = shell.grab();
+            CHECK_FALSE(menus.isNull());
+            CHECK(menus.save(outputDir() + QLatin1Char('/') + QLatin1String(shot.menus)));
+        }
+        QMetaObject::invokeMethod(clipMoments, "close");
+        REQUIRE(QMetaObject::invokeMethod(clipMenu, "close"));
+        REQUIRE(waitFor([&] { return !clipMenu->property("visible").toBool(); }));
+
+        // The real row greys out with its reason; with the marks set it comes alive.
+        const auto openSequenceMenu = [&] {
+            REQUIRE(QMetaObject::invokeMethod(bar, "open", Q_ARG(int, 3), Q_ARG(bool, false)));
+            REQUIRE(waitFor([&] { return sequenceMenu->property("opened").toBool(); }));
+        };
+        openSequenceMenu();
+        auto* shortMenuRow =
+            qobject_cast<QQuickItem*>(sequenceMenu->findChild<QObject*>(QStringLiteral("sequenceMenuMakeShortFromInOut")));
+        REQUIRE(shortMenuRow != nullptr);
+        CHECK_FALSE(shortMenuRow->isEnabled());
+        CHECK(shortMenuRow->property("disabledReason").toString() == QStringLiteral("Set In and Out first"));
+        REQUIRE(QMetaObject::invokeMethod(sequenceMenu, "close"));
+        REQUIRE(waitFor([&] { return !sequenceMenu->property("visible").toBool(); }));
+        controller->setPlayhead(f(10));
+        controller->markInAtPlayhead();
+        controller->setPlayhead(f(60));
+        controller->markOutAtPlayhead();
+        spin(100);
+        CHECK(palette->commandState(QStringLiteral("sequence.makeShortFromInOut"))
+                  .value(QStringLiteral("enabled"))
+                  .toBool());
+
+        const QStringList messages = takeMessages();
+        INFO(join(messages));
+        CHECK(messages.isEmpty());
+    }
+    QSettings().remove(QStringLiteral("moments"));
+}
+

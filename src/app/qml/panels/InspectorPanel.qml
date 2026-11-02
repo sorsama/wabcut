@@ -17,6 +17,10 @@ import QtQuick.Controls.Basic
 // Lane zoom (0.5.1; Premiere's Effect Controls timeline): Ctrl/Alt+wheel over the lane or its ruler zooms at the pointer,
 // Shift+wheel (or a sideways wheel) pans; the zoom bar under a zoomed lane drags the view and a double-click on it shows
 // the whole clip again. A plain wheel still scrolls the rows; during playback the view pages along with the playhead.
+// 0.6: a graphic's text layers and a title show Text sections (EffectControlsRow's text rows; the colour and font pickers
+// live here, one each). Selected keys copy with Ctrl+C / Ctrl+X and paste at the playhead with Ctrl+V (the keymap's
+// edit.* commands reach EffectControls.runCommand while the panel has focus; the key menu has Cut / Copy / Paste too).
+// Several selected clips show their shared Transform / Opacity / Audio rows ("multi" mode): no lane, no stopwatches.
 Panel {
     id: root
     objectName: "effectControls"
@@ -59,6 +63,24 @@ Panel {
     }
 
     title: qsTr("Effect Controls")
+
+    /// 0.6: the Text sections' pickers, opened under a row's button for that row.
+    function pickColor(anchor: Item, rowKey: string, label: string, current: string) {
+        colorPicker.rowKey = rowKey
+        colorPicker.parent = anchor
+        colorPicker.x = 0
+        colorPicker.y = anchor.height + Theme.space(1)
+        colorPicker.edit(current, label)
+    }
+    function pickFont(anchor: Item, rowKey: string, current: string) {
+        fontPicker.rowKey = rowKey
+        fontPicker.current = current
+        fontPicker.families = root.controls.fontFamilies()
+        fontPicker.parent = anchor
+        fontPicker.x = 0
+        fontPicker.y = anchor.height + Theme.space(1)
+        fontPicker.open()
+    }
 
     /// Explain this frame (M5k) takes the side panel.
     signal explainRequested()
@@ -227,9 +249,12 @@ Panel {
                 ScrollBar.vertical: ThinScrollBar {}
 
                 delegate: EffectControlsRow {
+                    id: controlRow
                     laneWidth: root.laneWidth
                     viewStart: root.viewStart
                     viewSpan: root.viewSpan
+                    onColorRequested: anchor => root.pickColor(anchor, controlRow.rowKey, controlRow.title, controlRow.text)
+                    onFontRequested: anchor => root.pickFont(anchor, controlRow.rowKey, controlRow.text)
                 }
 
                 // Effect sections move with a spring when reordered; rows slide when sections open or close.
@@ -551,5 +576,116 @@ Panel {
     // Right-click on a key: its interpolation (all selected keys), or delete them.
     KeyframeMenu {
         id: keyMenu
+    }
+
+    // 0.6: a Text section's colour (fill, strokes, background, shadow): every change previews live, one undo step.
+    ColorPickerPopover {
+        id: colorPicker
+        objectName: "effectControlsColorPicker"
+        property string rowKey: ""
+        allowAlpha: false
+        onColorPicked: hex => {
+            if (rowKey !== "")
+                root.controls.setColor(rowKey, hex.length === 9 ? "#" + hex.slice(3) : hex)
+        }
+        onClosed: {
+            root.controls.endEdit()
+            rowKey = ""
+        }
+    }
+
+    // 0.6: a Text section's font: the installed families, filtered as you type; Enter or a click picks one.
+    Popover {
+        id: fontPicker
+        objectName: "effectControlsFontPicker"
+        title: qsTr("Font")
+        transformOrigin: Item.TopLeft
+        property string rowKey: ""
+        property string current: ""
+        property var families: []
+        readonly property var shown: {
+            const q = fontFilter.text.trim().toLowerCase()
+            const all = fontPicker.families ?? []
+            return q === "" ? all : all.filter(f => f.toLowerCase().indexOf(q) >= 0)
+        }
+        function choose(family: string) {
+            if (family !== "" && family !== fontPicker.current)
+                root.controls.setEffectText(fontPicker.rowKey, family)
+            fontPicker.close()
+        }
+        onOpened: {
+            fontFilter.text = ""
+            fontFilter.forceActiveFocus(Qt.PopupFocusReason)
+            const at = fontPicker.shown.indexOf(fontPicker.current)
+            fontList.currentIndex = at
+            if (at >= 0)
+                fontList.positionViewAtIndex(at, ListView.Center)
+        }
+
+        Column {
+            width: Theme.space(70)
+            spacing: Theme.space(2)
+
+            FieldInput {
+                id: fontFilter
+                objectName: "fontPickerFilter"
+                width: parent.width
+                iconName: "search"
+                clearOnEscape: true
+                placeholderText: qsTr("Find a font")
+                Accessible.name: qsTr("Find a font")
+                onTextChanged: fontList.currentIndex = fontPicker.shown.length > 0 ? 0 : -1
+                Keys.onDownPressed: fontList.currentIndex = Math.min(fontList.count - 1, fontList.currentIndex + 1)
+                Keys.onUpPressed: fontList.currentIndex = Math.max(0, fontList.currentIndex - 1)
+                onAccepted: fontPicker.choose(fontPicker.shown[Math.max(0, fontList.currentIndex)] ?? "")
+            }
+            ListView {
+                id: fontList
+                objectName: "fontPickerList"
+                width: parent.width
+                height: Theme.space(80)
+                clip: true
+                model: fontPicker.shown
+                boundsBehavior: Flickable.StopAtBounds
+                highlightMoveDuration: 0
+                ScrollBar.vertical: ThinScrollBar {}
+                Accessible.role: Accessible.List
+                Accessible.name: qsTr("Fonts")
+
+                delegate: Rectangle {
+                    id: fontItem
+                    required property string modelData
+                    required property int index
+                    width: ListView.view ? ListView.view.width : 0
+                    height: Theme.controlHeight
+                    radius: Theme.radiusField
+                    color: fontHover.hovered || fontItem.ListView.isCurrentItem ? Theme.hover : "transparent"
+                    border.width: fontItem.modelData === fontPicker.current ? Theme.hairline : 0
+                    border.color: Theme.accentStroke
+                    Accessible.role: Accessible.ListItem
+                    Accessible.name: fontItem.modelData
+                    Accessible.onPressAction: fontPicker.choose(fontItem.modelData)
+
+                    Text {
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.leftMargin: Theme.space(2)
+                        anchors.rightMargin: Theme.space(2)
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: fontItem.modelData
+                        elide: Text.ElideRight
+                        color: Theme.textPrimary
+                        font.family: fontItem.modelData
+                        font.pixelSize: Theme.textMd
+                    }
+                    HoverHandler {
+                        id: fontHover
+                    }
+                    TapHandler {
+                        onTapped: fontPicker.choose(fontItem.modelData)
+                    }
+                }
+            }
+        }
     }
 }

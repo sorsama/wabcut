@@ -87,6 +87,34 @@ inline Json statsJson(const LoudnessStats& s) {
 
 inline double round3(double v) { return std::round(v * 1000.0) / 1000.0; }
 
+/// 0.6 (P1 round, #54, loudness QC): where the loudest momentary / short-term windows start and the true peak is (a
+/// timecode and ticks on the timeline, null when not known), and the true-peak overs above `oversAbove` dBTP (at most
+/// 200 listed; overCount counts them all).
+inline Json whereJson(ExecutionContext& c, const LoudnessStats& s, double oversAbove) {
+    const auto at = [&](const std::optional<Ticks>& offset) -> Json {
+        if (!offset) {
+            return nullptr;
+        }
+        const Ticks t = s.start + *offset;
+        return Json{{"time", c.timecode(t)}, {"ticks", t.value}};
+    };
+    std::size_t total = 0;
+    Json overs = Json::array();
+    for (const TruePeakOver& o : truePeakOvers(s, oversAbove, 200, &total)) {
+        overs.push_back(Json{{"start", c.timecode(o.range.start)},
+                             {"startTicks", o.range.start.value},
+                             {"end", c.timecode(o.range.end())},
+                             {"endTicks", o.range.end().value},
+                             {"truePeakDbtp", std::round(o.truePeakDbtp * 100.0) / 100.0}});
+    }
+    return Json{{"maxMomentaryAt", at(s.maxMomentaryAt)},
+                {"maxShortTermAt", at(s.maxShortTermAt)},
+                {"truePeakAt", at(s.truePeakAt)},
+                {"oversAbove", oversAbove},
+                {"overCount", total},
+                {"overs", std::move(overs)}};
+}
+
 inline std::string utcNow() {
     const auto now = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
     return std::format("{:%Y-%m-%dT%H:%M:%SZ}", now);

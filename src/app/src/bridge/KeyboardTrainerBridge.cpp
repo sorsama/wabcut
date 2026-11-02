@@ -90,6 +90,10 @@ const std::vector<KeyboardTrainerBridge::Prompt>& KeyboardTrainerBridge::allProm
         {"sequence.trimForwardMany", "trim"},
         {"sequence.rippleTrimPreviousToPlayhead", "trim"},
         {"sequence.rippleTrimNextToPlayhead", "trim"},
+        {"sequence.extendPreviousToPlayhead", "trim"}, // 0.6: Shift+Q / Shift+W, Ctrl+Alt+Q / Ctrl+Alt+W
+        {"sequence.extendNextToPlayhead", "trim"},
+        {"sequence.trimPreviousToPlayhead", "trim"},
+        {"sequence.trimNextToPlayhead", "trim"},
         // Playback and navigation
         {"transport.playStop", "playback"},
         {"transport.shuttleForward", "playback"},

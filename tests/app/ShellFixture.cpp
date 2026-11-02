@@ -244,6 +244,9 @@ Shell::Shell() {
     resize(kShotWidth, kShotHeight);
     theme = engine.singletonInstance<QObject*>("Wabcut", "Theme");
     preferences = engine.singletonInstance<QObject*>("Wabcut", "Preferences");
+    // 0.6: drops into an empty sequence keep its settings without the Clip Mismatch Warning (its own tests ask for it).
+    if (preferences)
+        preferences->setProperty("clipMismatch", QStringLiteral("keep"));
 }
 
 void Shell::resize(int width, int height) {

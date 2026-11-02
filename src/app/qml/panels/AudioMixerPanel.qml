@@ -25,6 +25,7 @@ Panel {
             objectName: "mixerViewTabs"
             compact: true
             model: [qsTr("Tracks"), qsTr("Clips")]
+            Accessible.name: qsTr("Mixer view") // P1 #61
             currentIndex: root.view
             onActivated: index => root.view = index
         }

@@ -8,6 +8,7 @@
 #include <wabcut/interchange/AudioPostExport.h>
 #include <wabcut/model/ProjectIO.h>
 
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 #include <cmath>
@@ -22,7 +23,7 @@ using namespace wabcut;
 namespace {
 
 std::vector<float> renderClip(const TestProject& project, const Track& track, const Clip& clip, TimeRange range,
-                              std::expected<void, Error>* status = nullptr) {
+                              std::expected<void, Error>* status = nullptr, bool clipEffects = false) {
     exporter::ClipAudioRenderer renderer;
     interchange::AudioPostRenderRequest request;
     request.sequence = project.sequence;
@@ -31,6 +32,7 @@ std::vector<float> renderClip(const TestProject& project, const Track& track, co
     request.range = range;
     request.channels = 2;
     request.sampleRate = 48000;
+    request.clipEffects = clipEffects;
     std::vector<float> out;
     auto result = renderer.render(project.state, request, [&](std::span<const float> block) {
         out.insert(out.end(), block.begin(), block.end());
@@ -129,6 +131,31 @@ TEST_CASE("ClipAudioRenderer renders a clip from its media, with handles, withou
     renderClip(offline, *offline.seq().audioTracks[1], offline.seq().audioTracks[1]->clips.front(), sine.timelineRange, &status);
     REQUIRE_FALSE(status.has_value());
     CHECK(status.error().code == ErrorCode::NotFound);
+}
+
+TEST_CASE("ClipAudioRenderer leaves the Master Clip Effects out of a render without clip effects (fix F1A)",
+          "[export][media][master]") {
+    // ARGON-06: AAF/OMF without "Render Audio Clip Effects" (and the No FX clean copies) cleared the clip's own effects
+    // but still played its media's Master Clip Effects (card #71).
+    if (!haveTimelineMedia()) {
+        SKIP("test clips were not generated (tools/gen_test_media.py)");
+    }
+    TestProject project = threeLayerTimeline(640, 360, Rate{30, 1}, Ticks::fromSeconds(2));
+    const Track a2 = *project.seq().audioTracks[1];
+    const Clip sine = a2.clips.front();
+    const double dry = rms(renderClip(project, a2, sine, sine.timelineRange));
+    REQUIRE(dry > 0.01);
+    EffectInstance gain;
+    gain.id = project.state.ids.allocate<EffectInstanceId>();
+    gain.effect = "wabcut.audio.gain";
+    gain.set("gain", ParamValue(-20.0));
+    project.editMedia(sine.media, [&](MediaItem& m) { m.masterEffects = {gain}; });
+    // Without clip effects: as dry as before.
+    const double without = rms(renderClip(project, a2, sine, sine.timelineRange));
+    CHECK(std::abs(20.0 * std::log10(without / dry)) < 0.1);
+    // With them: the master clip's -20 dB.
+    const double with = rms(renderClip(project, a2, sine, sine.timelineRange, nullptr, true));
+    CHECK(20.0 * std::log10(with / dry) == Catch::Approx(-20.0).margin(0.5));
 }
 
 TEST_CASE("wabcut-cli export-timeline writes AAF and OMF with the clips' audio rendered (P.2)", "[export][media][cli][p2]") {

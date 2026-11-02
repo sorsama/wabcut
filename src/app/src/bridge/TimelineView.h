@@ -112,6 +112,7 @@ struct TimelineStats {
     /// 0.1.3: the dragged (or settling) clips as drawn, in view coordinates: a drag shows them where they will land.
     QHash<quint64, QRectF> liftedRects;
     QHash<quint64, QString> fxBadges; // 0.4: clip id -> "changed" | "effects" (the fx chips drawn)
+    QHash<quint64, QString> syncBadges; // 0.6: clip id -> its out-of-sync tag ("+5", "-12") as drawn
     // 0.5 (P0, stream A): caption lanes (captionKey(row, cue) keys) and the waveforms of nested audio clips.
     int captionCues = 0;                  // cue blocks drawn (built range)
     int dimmedCaptionCues = 0;            // of those, on a hidden (disabled) caption track
@@ -144,6 +145,7 @@ struct TimelineStyle {
     QFont labelFont;
     qreal microSize = 10, microTracking = 0.6; // Theme micro-tag typography
     qreal laneRadius = 6, clipRadius = 6, selectionWidth = 2, selectionGap = 1, glowSize = 12, shadowSize = 8;
+    qreal chipRadius = 999; // 0.6: the chips on clips (fx, out of sync): at most half their height (0: square corners)
     qreal liftOffset = 2, playheadWidth = 2, labelPadding = 8, labelTop = 4, waveTop = 16, waveBottom = 4;
     qreal markerWidth = 1, markerOpacity = 0.35;
     qreal videoTrackHeight = 40, audioTrackHeight = 44, trackGap = 2;
@@ -215,6 +217,8 @@ struct TimelineStyle {
     qreal captionTrackHeight = 28;
     QColor captionColor{0xBF, 0xB6, 0xD9};
     QColor captionInkColor{0x00, 0x00, 0x00};
+    // 0.6: the out-of-sync tag at the start of a linked clip's name (Premiere's red box): clipInk on this colour.
+    QColor syncColor{0xF4, 0x3F, 0x5E};
 
     QColor clipBody(int index) const;
     QColor clipColor(int index) const;
@@ -246,6 +250,8 @@ struct TimelineLaneFacts {
     /// 0.4: clip id -> Changed (Motion / Opacity / blend mode / Volume / Pan off their defaults or keyframed, or time
     /// remapping) or Effects (stack effects; wins). Untouched clips have no entry.
     std::unordered_map<std::uint64_t, ClipFx> fx;
+    /// 0.6: clip id -> frames out of sync with its linked partner (edit::outOfSyncClips; in-sync clips have no entry).
+    std::unordered_map<std::uint64_t, int> sync;
     std::vector<std::pair<ParamValue, ParamValue>> faders;      ///< audio tracks' volume / pan (lanes shown)
     bool operator==(const TimelineLaneFacts&) const = default;
 };
@@ -324,6 +330,10 @@ class TimelineView : public QQuickItem {
     /// timecode (its start), durationText ("" for a point marker), nextX (the next marker's x, +Infinity for the last:
     /// where the name label must end) }]. 0.2 UX (stream T): the ruler shows the names and a hover tooltip.
     Q_PROPERTY(QVariantList markerItems READ markerItems NOTIFY viewChanged FINAL)
+    /// 0.6 (P1 round, D9 #8): Timeline Display > Beat grid: a thin tick on the ruler at each beat of the sequence's
+    /// grid ([{ x, downbeat }]), [] while the display is off or the sequence has no grid. Beats closer than a few
+    /// pixels to the previous one are left out (downbeats always show), so a zoomed-out grid stays legible.
+    Q_PROPERTY(QVariantList beatTicks READ beatTicks NOTIFY viewChanged FINAL)
     /// Premiere's Video Head / Head and Tail / Continuous thumbnails: "off", "head", "headTail" or "continuous".
     Q_PROPERTY(QString filmstripMode READ filmstripMode WRITE setFilmstripMode NOTIFY displayChanged FINAL)
     /// Waveforms drawn from the bottom (Premiere's Rectified Audio Waveforms) and on a dB scale.
@@ -339,6 +349,9 @@ class TimelineView : public QQuickItem {
     /// Marks on cuts between clips that continue the same source (Premiere's Show Through Edits).
     Q_PROPERTY(bool showThroughEdits READ showThroughEdits WRITE setShowThroughEdits NOTIFY displayChanged FINAL)
     Q_PROPERTY(bool showClipMarkers READ showClipMarkers WRITE setShowClipMarkers NOTIFY displayChanged FINAL)
+    /// 0.6 (P1 round, D9 #8): Premiere has no beat grid; Wabcut's ruler shows the sequence's beats while this is on
+    /// (Timeline Display > Beat grid, on by default).
+    Q_PROPERTY(bool showBeatGrid READ showBeatGrid WRITE setShowBeatGrid NOTIFY displayChanged FINAL)
     /// M5l: the track fader or pan lane on audio tracks ("off", "volume", "pan"): the track's automation as a line
     /// across the row, its keys as squares.
     Q_PROPERTY(QString trackKeyframes READ trackKeyframes WRITE setTrackKeyframes NOTIFY displayChanged FINAL)
@@ -480,6 +493,8 @@ public:
     void setShowThroughEdits(bool on);
     bool showClipMarkers() const { return m_showClipMarkers; }
     void setShowClipMarkers(bool on);
+    bool showBeatGrid() const { return m_showBeatGrid; }
+    void setShowBeatGrid(bool on);
     QString trackKeyframes() const { return m_trackKeyframes; }
     void setTrackKeyframes(const QString& mode);
     bool showSnapIndicator() const { return m_showSnapIndicator; }
@@ -491,6 +506,7 @@ public:
     QString trimType() const { return m_trimType; }
     void setTrimType(const QString& type);
     QVariantList markerItems() const;
+    QVariantList beatTicks() const;
 
     // ---- 0.2 (TimelineViewRender.cpp) ----
     QObject* readiness() const { return m_readiness; }
@@ -669,6 +685,22 @@ public:
     Q_INVOKABLE bool releaseDropTrack(const QString& track);
     /// The label of the track addDropTrack(kind) would add: "V3" over V1 and V2, "A3" below A1 and A2.
     Q_INVOKABLE QString nextTrackLabel(const QString& kind) const;
+
+    // ---- 0.6 (P1 round, stream 1A; TimelineViewDisplay.cpp) ----
+    /// The keyboard modifiers of the input event being handled (a Shift-click on a track header toggle acts on every
+    /// track of its kind).
+    Q_INVOKABLE int keyboardModifiers() const;
+    /// The current sequence has no clip on any track (the Clip Mismatch Warning looks at the first clip dropped in).
+    Q_INVOKABLE bool sequenceEmpty() const;
+    /// Premiere's Clip Mismatch Warning, after the first clip landed in an empty sequence: the first video clip's
+    /// media when its frame size or frame rate differs from the sequence's - { media: "m12", name, mediaText
+    /// ("2560 x 1440, 60 fps"), sequenceText } - else {} (audio only, stills, nested clips, already matching).
+    Q_INVOKABLE QVariantMap clipMismatch() const;
+    /// Changes the sequence's settings to match clipMismatch()'s media (frame size, rate, pixel aspect, audio rate:
+    /// as New Sequence From Clip). `withLastStep`: the drop that put the clip there (the last undo step, unchanged
+    /// since revision `revision`) and the change become one undo step; otherwise the change is its own step ("Sequence
+    /// Settings"). False with ProjectController.lastError when nothing could change.
+    Q_INVOKABLE bool matchSequenceToClip(bool withLastStep, int revision = -1);
 
     // ---- C++ ----
     const TimelineStats& stats() const { return m_stats; }
@@ -1093,6 +1125,7 @@ private:
     bool m_showDuplicates = false;
     bool m_showThroughEdits = true;
     bool m_showClipMarkers = true;
+    bool m_showBeatGrid = true; ///< 0.6 (D9 #8): the beat grid's ticks on the ruler (Timeline Display > Beat grid)
     QString m_trackKeyframes = QStringLiteral("off");
     /// What the lanes draw beside the tracks themselves (nested names, multi-camera angles, Enhance Speech badges,
     /// the faders of the track lanes): a change to them rebuilds everything.

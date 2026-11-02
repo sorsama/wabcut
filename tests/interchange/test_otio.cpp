@@ -164,7 +164,7 @@ TEST_CASE("interchange: OTIO: odd and hostile values", "[interchange][otio]") {
             {"OTIO_SCHEMA", "Clip.1"},
             {"name", "bars"},
             {"source_range", range(0, 10)},
-            {"media_reference", {{"OTIO_SCHEMA", "GeneratorReference.1"}, {"generator_kind", "SMPTEBars"}}}};
+            {"media_reference", {{"OTIO_SCHEMA", "GeneratorReference.1"}, {"generator_kind", "FractalNoise"}}}};
         Json seqRef = {{"OTIO_SCHEMA", "Clip.1"},
                        {"name", "frames"},
                        {"source_range", range(0, 10)},
@@ -174,7 +174,8 @@ TEST_CASE("interchange: OTIO: odd and hostile values", "[interchange][otio]") {
                                       .dump(),
                                   Format::Otio);
         CHECK(hasEntry(r.report, D, ReportCategory::Track, "kind 'Data'"));
-        CHECK(hasEntry(r.report, D, ReportCategory::Clip, "generated media (SMPTEBars)"));
+        // 0.6 (card #69): SMPTEBars and SolidColor are carried (test_interchange_effects.cpp); others are not.
+        CHECK(hasEntry(r.report, D, ReportCategory::Clip, "generated media (FractalNoise)"));
         CHECK(hasEntry(r.report, D, ReportCategory::Clip, "image sequences are not supported yet"));
         CHECK(clips(sequenceAt(r, 0), "V1").empty());
     }

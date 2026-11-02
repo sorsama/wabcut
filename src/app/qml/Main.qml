@@ -158,7 +158,8 @@ Window {
                                            production: productionLoader, scopes: scopesLoader,
                                            captionStyle: captionStyleLoader, frameInspector: frameInspectorLoader,
                                            mixer: mixerLoader, export: exportLoader, color: colorLoader,
-                                           audioMeters: audioMetersLoader })
+                                           audioMeters: audioMetersLoader, history: historyLoader,
+                                           takeSelector: takeSelectorLoader })
     // UX rework (Premiere's Window menu): a closed panel opens as a tab of the active group (the group clicked last;
     // none: where it fits, DockManager.openPanel) and shows; an open one comes to the front where it is. Either way it
     // gets keyboard focus.
@@ -188,7 +189,8 @@ Window {
         }
     }
     // UX rework: Window > Workspaces > Reset to Saved Layout - the current workspace's preset layout again (its floating
-    // windows dock back); Undo on the toast puts the layout as it was back.
+    // windows dock back); Undo on the toast puts the layout as it was back. P1 round (#32): the layout Save Changes to
+    // This Workspace kept, when there is one (Workspaces.reset).
     function resetToSavedLayout() {
         const id = window.workspace
         const before = Workspaces.find(id)
@@ -204,6 +206,22 @@ Window {
                     Workspaces.update(id, { layout: layout, floating: floating })
             }
         })
+    }
+    // P1 round (#5): What's New once after an update - the version that last started here (Preferences.lastSeenVersion)
+    // is older than this one; a Wabcut from before 0.6 kept none, so one whose welcome ran counts as an update. The first
+    // run only remembers the version (the welcome shows instead). `show` false: remember it only. Returns whether it
+    // showed.
+    function whatsNewAfterUpdate(show: bool): bool {
+        const now = Qt.application.version
+        if (now === "")
+            return false
+        const seen = Preferences.lastSeenVersion
+        Preferences.lastSeenVersion = now
+        const updated = seen !== "" ? Updates.compareVersions(seen, now) < 0 : Preferences.welcomeDone
+        if (!show || !updated)
+            return false
+        onboarding.run("whatsNew")
+        return true
     }
     // UX rework: a problem the user must see (an open or save that failed): a warning toast, or Home's message strip
     // while Home is open (`options`: Toast.show's, e.g. a Save As… action; Home's strip offers it too).
@@ -303,8 +321,12 @@ Window {
 
     width: Theme.windowDefaultWidth
     height: Theme.windowDefaultHeight
-    minimumWidth: Theme.windowMinWidth
-    minimumHeight: Theme.windowMinHeight
+    // P1 #47 (stream 3E): the minimum never exceeds the screen's work area (a 1080p laptop at 150 % has about
+    // 1280 x 680), so the whole window always fits; main.cpp fits the size it opens at the same way.
+    readonly property size screenRoom: UiScaleInfo.screenRevision >= 0 && window.screen !== null
+                                       ? UiScaleInfo.availableSize(window) : Qt.size(0, 0)
+    minimumWidth: window.screenRoom.width > 0 ? Math.min(Theme.windowMinWidth, window.screenRoom.width) : Theme.windowMinWidth
+    minimumHeight: window.screenRoom.height > 0 ? Math.min(Theme.windowMinHeight, window.screenRoom.height) : Theme.windowMinHeight
     visible: true
     // "● name — Wabcut" while there are unsaved changes (ProjectFile, I.1).
     title: ProjectFile.windowTitle
@@ -331,7 +353,7 @@ Window {
                                        shortsLoader, takesLoader, essentialLoader, reviewLoader, scopesLoader,
                                        captionStyleLoader, frameInspectorLoader, mixerLoader, exportLoader, colorLoader,
                                        graphicsLoader, highlightsLoader, mediaBrowserLoader, metadataLoader,
-                                       productionLoader, audioMetersLoader]
+                                       productionLoader, audioMetersLoader, historyLoader, takeSelectorLoader]
     readonly property bool panelsReady: lazyPanels.every(p => p.ready)
     onPanelsReadyChanged: {
         if (panelsReady)
@@ -386,7 +408,7 @@ Window {
             if (ProjectFile.open(file))
                 home.close()
             else
-                home.showMessage(ProjectFile.lastError, "danger")
+                home.showMessageWithAction(ProjectFile.lastError, "danger", window.recoverOptions(file))
         })
     }
     Connections {
@@ -481,6 +503,32 @@ Window {
             if (files.length > 0)
                 window.openLaunchedProject(files[0])
         }
+        // P1 #47 (stream 3E): Restart now (Settings > Appearance > Interface size, Media & cache folders). The window
+        // closes through the normal path (unsaved changes, running exports); main() starts the new Wabcut afterwards,
+        // with the project open now. restartQuitWatch calls it off when the user keeps Wabcut open.
+        function onRestartRequested() {
+            AppShell.armRestart(ProjectFile.demo ? "" : ProjectFile.filePath)
+            window.lastCloseAccepted = false
+            window.restartQuitArmed = true
+            window.close()
+        }
+    }
+    property bool restartQuitArmed: false
+    Timer {
+        objectName: "restartQuitWatch"
+        interval: 250
+        repeat: true
+        running: window.restartQuitArmed
+        onTriggered: {
+            if (window.lastCloseAccepted) { // closing: main() restarts after the event loop
+                window.restartQuitArmed = false
+                return
+            }
+            if (unsavedDialog.visible || saveAsDialog.visible || backgroundWorkDialog.visible || window.quitWhenIdle)
+                return // still asking, or closing once the work in progress is done
+            window.restartQuitArmed = false
+            AppShell.cancelRestart()
+        }
     }
 
     // The Source Monitor's keymap scope (Premiere): with it focused, marks, transport and Reverse Match Frame act on
@@ -495,10 +543,28 @@ Window {
     function effectControlsHasFocus() {
         return window.activeFocusItem !== null && KeymapDispatcher.scopeAt(window.activeFocusItem) === "effectControls"
     }
+    // 0.6 (1D, #41 / #39): the Library's scope: Cut and Paste move its items between bins; Get Properties shows its item.
+    function libraryHasFocus() {
+        return window.activeFocusItem !== null && KeymapDispatcher.scopeAt(window.activeFocusItem) === "project"
+    }
+    // 0.6 (1D, #39): Get Properties for Selection: the Library's item (when it has the focus), else the Source
+    // Monitor's clip, else the selected timeline clip's media; nothing: why, as a toast.
+    function showProperties() {
+        const key = Library.propertiesTarget(window.libraryHasFocus())
+        if (key === "")
+            window.notify(qsTr("Select a clip in the Library, the Source Monitor or the Timeline first"), undefined, undefined)
+        else
+            propertiesDialog.openFor(key)
+    }
     // Insert / Overwrite from the Source Monitor. A four-point edit whose ranges differ asks how to fit, unless
     // "Always use this choice" was ticked (Preferences.fitClipChoice).
     function sourceEdit(insert, fit) {
-        const result = SourceMonitor.edit(insert, fit === undefined ? Preferences.fitClipChoice : fit)
+        // 0.6 (1A): the Clip Mismatch Warning when it is the first clip in an empty sequence (TimelinePanel.dropChecked).
+        let result = ""
+        timeline.dropChecked(() => {
+            result = SourceMonitor.edit(insert, fit === undefined ? Preferences.fitClipChoice : fit)
+            return result === ""
+        }, false)
         if (result === "fit")
             fitClipDialog.ask(insert)
         else if (result === "")
@@ -515,6 +581,16 @@ Window {
         if ((commandId.startsWith("effectControls.") || window.effectControlsHasFocus())
                 && ProjectController.effectControls.runCommand(commandId))
             return
+        // 0.6 (1D, #41): Cut and Paste of Library items between bins while the Library has the focus (with nothing
+        // selected or cut there, the timeline's Cut and Paste run as before).
+        if ((commandId === "edit.cut" || commandId === "edit.paste") && window.libraryHasFocus()
+                && Library.runCommand(commandId))
+            return
+        // 0.6 (1D, #39): File > Get Properties for Selection (Ctrl/Cmd+Shift+H).
+        if (commandId === "file.getProperties") {
+            window.showProperties()
+            return
+        }
         // P.2 (E6): the monitors' keys (Loop, Play In to Out, Nudge Selected Object, ...): the Monitors bridge.
         if (Monitors.runCommand(commandId, window.sourceHasFocus()))
             return
@@ -531,6 +607,15 @@ Window {
         if (Editing.runCommand(commandId))
             return
         switch (commandId) {
+        // 0.6 (D2 #9): Sequence > Make a Short from In to Out: the Highlights Short path (highlights.toShort with the
+        // Short options) on the In and Out marks; the bridge says and shows "Set In and Out first".
+        case "sequence.makeShortFromInOut":
+            Highlights.makeShortFromInOut()
+            return
+        // 0.6 (D2 #34): Sequence > Auto Reframe Sequence…: the reframe dialog the top bar's pill menu opens (AI-9).
+        case "sequence.autoReframe":
+            topBar.openReframe()
+            return
         // 0.2: Premiere's Show Video / Audio Fade Handles (Timeline Display Settings).
         case "timeline.showVideoFadeHandles":
             Preferences.showVideoFadeHandles = !Preferences.showVideoFadeHandles
@@ -544,6 +629,17 @@ Window {
                 MediaReadiness.cancelRender()
             else
                 MediaReadiness.renderInToOut()
+            return
+        // 0.6 (P1 round, 2A #7 #58): Render Selection; Delete Render Files (In to Out) ask first, with the size.
+        case "sequence.renderSelection": {
+            const why = MediaReadiness.renderSelection()
+            if (why !== "")
+                window.notify(why, Theme.warning)
+            return
+        }
+        case "sequence.deleteRenderFiles":
+        case "sequence.deleteRenderFilesInToOut":
+            window.askDeleteRenderFiles(commandId === "sequence.deleteRenderFilesInToOut")
             return
         // Source editing and the Program Monitor's buttons (M5h)
         case "clip.insert":
@@ -559,9 +655,33 @@ Window {
             ProgramTools.extract()
             return
         // Markers 2.0 (M5i): M marks the selected clip under the playhead from the Timeline, else the sequence.
-        case "marker.add":
-            Markers.add(window.timelineHasFocus())
+        // 0.6 (1A): with the playhead stopped on a marker, M opens it (Premiere: M twice); during playback M adds.
+        case "marker.add": {
+            const focused = window.timelineHasFocus()
+            const onMarker = Playback.playing ? ({}) : Markers.markerAtPlayhead(focused)
+            if ((onMarker.scope ?? "") !== "")
+                timeline.editMarker(onMarker.index, onMarker.scope)
+            else
+                Markers.add(focused)
             return
+        }
+        // 0.6 (1A): Markers > Edit Marker… (the marker at the playhead) and Add Chapter Marker… (then its editor).
+        case "marker.edit": {
+            let onMarker = Markers.markerAtPlayhead(window.timelineHasFocus())
+            if ((onMarker.scope ?? "") === "")
+                onMarker = Markers.markerAtPlayhead(true)
+            if ((onMarker.scope ?? "") !== "")
+                timeline.editMarker(onMarker.index, onMarker.scope)
+            return
+        }
+        case "marker.addChapter": {
+            const chapter = Markers.addChapterMarker()
+            if (chapter >= 0)
+                timeline.editMarker(chapter, "sequence")
+            else if (Markers.message !== "")
+                window.notify(Markers.message, Theme.warning, undefined)
+            return
+        }
         case "marker.goToNext":
         case "marker.goToPrevious":
             Markers.runCommand(commandId)
@@ -571,6 +691,38 @@ Window {
         case "marker.clearAll":
             Markers.runCommand(commandId)
             return
+        // 0.6 (P1 round, 2E, #35): Premiere's caption keys (Sequence > Captions) on the shown caption track. Add New
+        // Caption Track shows the Captions tab; Add Caption at Playhead opens the new caption's text there
+        // (Captions.cueAdded, below); Go to Next / Previous Caption Segment move the playhead and select the caption.
+        // Why one cannot run, as a toast.
+        case "sequence.addCaptionTrack":
+        case "sequence.addCaptionAtPlayhead":
+        case "sequence.nextCaptionSegment":
+        case "sequence.previousCaptionSegment":
+            if (!Captions.runCommand(commandId)) {
+                if (Captions.message !== "")
+                    window.notify(Captions.message, Theme.warning, undefined)
+            } else if (commandId === "sequence.addCaptionTrack") {
+                window.revealPanel("captions")
+                captionsLoader.withItem(panel => (panel as TranscriptPanel).showCaptions())
+            } else if (commandId !== "sequence.addCaptionAtPlayhead") {
+                timeline.revealPlayhead()
+            }
+            return
+        // 0.6 (P1 round, 2E, #37): Sequence > Captions > Correct Transcript from Script… (the sheet), once the sequence
+        // has a transcript; why not, as a toast.
+        // 0.6 (P1 round, 3A, #62): Sequence > Creator Autopilot... (the sheet).
+        case "sequence.creatorAutopilot":
+            Autopilot.open()
+            return
+        case "transcript.correctFromScript": {
+            const correctable = Captions.commandAvailability(commandId)
+            if (correctable.enabled === true)
+                window.openScriptCorrection()
+            else
+                window.notify(correctable.reason ?? "", Theme.warning, undefined)
+            return
+        }
         // Trim Edit (M5i): the edit points nearest the playhead, in the Trim view.
         case "sequence.trimEdit":
             Trim.runCommand(commandId)
@@ -632,6 +784,10 @@ Window {
         case "file.close": {
             const gid = docking.activeGroup !== "" ? docking.activeGroup : docking.groupOfItem(window.activeFocusItem)
             const key = docking.shownPanel(gid)
+            if (key !== "" && docking.locked) { // P1 round (#32)
+                toast.show(qsTr("The workspace is locked: unlock it in Window > Workspaces to close panels"))
+                return
+            }
             if (key !== "") {
                 docking.closePanel(key)
                 Qt.callLater(window.keepFocus)
@@ -648,6 +804,22 @@ Window {
         case "window.audioMeters":
             window.focusPanel("audioMeters")
             return
+        // P1 round (#30): Ctrl+F6 / Ctrl+Shift+F6, the keyboard focus to the next / previous panel group - from the
+        // active group (the one with the accent outline), else the one with the focus.
+        case "window.nextPanelGroup":
+        case "window.previousPanelGroup": {
+            const nextGroup = docking.cycleGroup(commandId === "window.nextPanelGroup" ? 1 : -1,
+                                                 docking.activeGroup || docking.focusedGroup())
+            if (nextGroup === "")
+                return
+            window.focusPanel(docking.shownPanel(nextGroup))
+            // A panel with nothing to focus yet (an empty Library): the group itself takes the keyboard.
+            Qt.callLater(() => {
+                if (docking.focusedGroup() !== nextGroup && docking.activeGroup === nextGroup)
+                    docking.hostOf(nextGroup)?.forceActiveFocus(Qt.TabFocusReason)
+            })
+            return
+        }
         // 0.5 (stream B): Premiere's Toggle Audio Scrubbing (Shift+S), with a readout.
         case "transport.toggleAudioScrubbing":
             Playback.audioScrubbing = !Playback.audioScrubbing
@@ -707,10 +879,17 @@ Window {
         case "file.exportMedia":
             window.openPreset("export")
             return
-        case "file.sendToMediaEncoder": // 0.2: into the export queue, waiting for Start Queue
+        case "file.sendToMediaEncoder": { // 0.2: into the export queue, waiting for Start Queue
+            // P1 (#22, 2C): from the Library with sequences selected, those sequences.
+            const fromLibrary = window.librarySequencesForExport()
+            if (fromLibrary.length > 0) {
+                sequencesExportDialog.openFor(fromLibrary, true)
+                return
+            }
             window.openPreset("export")
             exportLoader.withItem(panel => panel.sendToQueue())
             return
+        }
         case "clip.speedDuration":
             speedDialog.openDialog()
             return
@@ -731,6 +910,41 @@ Window {
             }
             sceneEditDialog.active = true;
             (sceneEditDialog.item as SceneEditDetectionDialog)?.openFor(scenes.clips, scenes.nested ?? 0)
+            return
+        }
+        // 0.6 (P1 round, D9 #8): the beat tools. Detect Beats… and Cut to Beats… open their dialogs (once the menu has
+        // closed: the menu rows set a pending command, KeymapDispatcher runs it), on what Beats says can act; a row or
+        // key with nothing to act on reports why as a toast. Snap to Beats and Clear Beat Grid run at once.
+        case "sequence.detectBeats": {
+            const info = Beats.detectInfo()
+            if (info.enabled !== true) {
+                window.notify(info.reason ?? "", undefined, undefined)
+                return
+            }
+            detectBeatsDialog.active = true;
+            (detectBeatsDialog.item as DetectBeatsDialog)?.openFor(info.clip, info.name)
+            return
+        }
+        case "sequence.cutToBeats": {
+            const info = Beats.cutInfo()
+            if (info.enabled !== true) {
+                window.notify(info.reason ?? "", undefined, undefined)
+                return
+            }
+            cutToBeatsDialog.active = true;
+            (cutToBeatsDialog.item as CutToBeatsDialog)?.openFor()
+            return
+        }
+        case "edit.snapToBeats": {
+            const why = Beats.snapSelection()
+            if (why !== "")
+                window.notify(why, undefined, undefined)
+            return
+        }
+        case "sequence.clearBeatGrid": {
+            const why = Beats.clearGrid()
+            if (why !== "")
+                window.notify(why, undefined, undefined)
             return
         }
         // C.11 (M5m): Paste Attributes… / Remove Attributes… open the attributes dialog (bridge `Clipboard`).
@@ -792,16 +1006,34 @@ Window {
             VoiceOver.stop()
             return
         // The Library (M5k): Find focuses its search bar; Make Subclip asks for a name.
-        case "edit.find":
+        case "edit.find": {
+            // P1 round (#30): the search of the panel with the keyboard focus (else of the active group's panel) when it
+            // has one (focusFind: Effects, Markers, Metadata, Transcript, Callouts, Review; false: nothing to search
+            // there yet), else the Library's.
+            const findGroup = docking.focusedGroup() || docking.activeGroup
+            const findKey = findGroup !== "" ? docking.shownPanel(findGroup) : ""
+            const findPanel = window.panelLoaders[findKey]?.item ?? null
+            if (findPanel !== null && typeof findPanel.focusFind === "function" && findPanel.focusFind() !== false) {
+                docking.setActiveGroup(findGroup)
+                return
+            }
             window.showBrowserPanel("library")
             Qt.callLater(() => libraryPanel.focusFind())
             return
+        }
         case "clip.makeSubclip":
             window.showBrowserPanel("library")
             libraryPanel.makeSubclip()
             return
         }
         if (commandId.startsWith("project.") && Library.runCommand(commandId))
+            return
+        // 0.6 (card #74): Clip > Auditions; Take Selector opens (or shows) its panel.
+        if (commandId === "audition.showTakeSelector") {
+            window.revealPanel("takeSelector")
+            return
+        }
+        if (commandId.startsWith("audition.") && Auditions.runCommand(commandId))
             return
         // M5l: the camera keys act while the Program Monitor shows the multi-camera view (Shift+0 toggles it).
         if (commandId.startsWith("multicam.") && Multicam.runCommand(commandId))
@@ -1087,8 +1319,12 @@ Window {
         const rest = []
         const lottie = []
         const layered = []
+        // P1 (#50): a Motion Graphics template (.mogrt) or a Wabcut template file becomes a template, not media.
+        const templates = []
         for (const url of urls) {
-            if (GraphicsImport.isLottie(url))
+            if (Graphics.isTemplateFile(url))
+                templates.push(url)
+            else if (GraphicsImport.isLottie(url))
                 lottie.push(url)
             else if (Library.isLayeredFile(url))
                 layered.push(url)
@@ -1109,6 +1345,8 @@ Window {
             GraphicsImport.importLottie(url)
         if (layered.length > 0)
             importLayeredFileDialog.openFor(layered)
+        if (templates.length > 0)
+            window.installTemplateFiles(templates, "project")
         if (after)
             after(result)
         return result
@@ -1124,6 +1362,26 @@ Window {
         else if ((result.chapterSummary ?? "") !== "") // P0 round (D): chapter markers that became clip markers
             window.notify(result.chapterSummary, undefined, undefined)
         return result
+    }
+    // P1 round (#50): template files (a .mogrt, or a .wabcut-template.json) go to a template library instead of the media
+    // import. Each one is one undo step ("Import Motion Graphics Template"); a .mogrt that was only approximated opens
+    // the import report, else a toast names it.
+    function installTemplateFiles(urls, library) {
+        const where = library === "user" ? "user" : "project"
+        for (const url of urls) {
+            const result = Graphics.importTemplate(url, where)
+            const error = result.error ?? ""
+            if (error !== "") {
+                window.showProblem(error)
+                continue
+            }
+            const report = result.report ?? ({})
+            if ((report.approximated ?? 0) > 0 || (report.dropped ?? 0) > 0)
+                importReportDialog.show(report)
+            else
+                window.notify(qsTr("Template \"%1\" added to %2").arg(result.name ?? "").arg(
+                                    where === "user" ? qsTr("My Templates") : qsTr("This project")), undefined, undefined)
+        }
     }
     // 0.4 (D): File > Import Folder… and the Library's ··· "Import folder…": the folder picker; the chosen folder comes
     // in as a bin (its subfolders nested) in the bin the Library shows.
@@ -1168,8 +1426,15 @@ Window {
             home.close()
             return true
         }
-        window.showProblem(ProjectFile.lastError)
+        window.showProblem(ProjectFile.lastError, window.recoverOptions(file))
         return false
+    }
+    /// 0.6 (2D, #49): a project that failed to open offers its versions (autosaves, backups) when it has any: the
+    /// problem's "Recover a version…" opens the recovery dashboard for it. Undefined (no action) otherwise.
+    function recoverOptions(file: url): var {
+        if (!ProjectFile.hasRecoveryVersions(file))
+            return undefined
+        return { actionText: qsTr("Recover a version…"), action: () => recoveryDialog.openDashboardFor(file) }
     }
 
     // 0.4: closing while exports or Render In to Out run or wait asks first (BackgroundWorkCloseDialog).
@@ -1303,6 +1568,30 @@ Window {
         function onImportReport(report) {
             importReportDialog.show(report)
         }
+        // 0.6 (fix round 1, ARGON-08): an AAF / OMF import runs in the background: its progress with a Cancel action in
+        // a toast (on Home: its message strip), then a failure or "Stopped"; the import report shows when it worked.
+        property bool timelineImportBusy: false
+        function onTimelineImportChanged() {
+            const state = ProjectFile.timelineImport
+            const wasBusy = timelineImportBusy
+            timelineImportBusy = state.busy === true
+            if (timelineImportBusy) {
+                const queued = Number(state.queued ?? 0)
+                const text = queued > 0 ? qsTr("%1 (%2 more waiting)").arg(String(state.text ?? "")).arg(queued)
+                                        : String(state.text ?? "")
+                toast.show(text, Theme.accentStroke,
+                           { replaceKey: "timelineImport", actionText: qsTr("Cancel"),
+                             action: () => ProjectFile.cancelTimelineImport(), timeoutMs: 3600000 })
+            } else if (wasBusy && String(state.error ?? "") !== "") {
+                window.notify(String(state.error), Theme.warning, { replaceKey: "timelineImport" })
+            } else if (wasBusy && state.cancelled === true) {
+                toast.show(qsTr("Import stopped: nothing was imported"), Theme.accentStroke,
+                           { replaceKey: "timelineImport", timeoutMs: 3000 })
+            } else if (wasBusy && String(state.done ?? "") !== "") {
+                toast.show(qsTr("Imported %1").arg(state.done), Theme.accentStroke,
+                           { replaceKey: "timelineImport", timeoutMs: 3000 })
+            }
+        }
         function onOfflineMediaFound(count) {
             relinkDialog.open()
         }
@@ -1364,6 +1653,9 @@ Window {
         case "exportTimeline":
             exportTimelineDialog.openForCurrent()
             return
+        case "mediaUsageReport": // P1 (#25, 2C)
+            mediaUsageReportDialog.openDialog()
+            return
         case "relink":
             relinkDialog.open()
             return
@@ -1395,6 +1687,41 @@ Window {
         case "renameWorkspace":
             topBar.renameWorkspace(Number(argument))
             return
+        // P1 round (#32): Save Changes to This Workspace, Save as New Workspace… (a copy whose saved layout is this one,
+        // named in place), Reset to <Preset> Preset… (asks first) and Lock Workspace.
+        case "saveWorkspaceChanges": {
+            const id = Number(argument)
+            docking.save() // the floating windows where they are now
+            Workspaces.saveChanges(id)
+            toast.show(qsTr("The %1 workspace's layout is saved: Reset to Saved Layout comes back to it").arg(Workspaces.label(id)))
+            return
+        }
+        case "saveAsNewWorkspace": {
+            docking.save()
+            const id = Workspaces.create(Number(argument), "")
+            Workspaces.saveChanges(id)
+            window.workspace = id
+            topBar.renameWorkspace(id)
+            return
+        }
+        case "resetWorkspaceToPreset": {
+            const id = Number(argument)
+            const preset = Workspaces.resolve(id).preset
+            menuConfirm.ask(qsTr("Reset the %1 workspace to the %2 preset?").arg(Workspaces.label(id)).arg(Workspaces.presetLabel(preset)),
+                            Workspaces.hasSaved(id)
+                            ? qsTr("Every panel goes back where the preset puts it. Your saved layout stays: Reset to Saved Layout brings it back.")
+                            : qsTr("Every panel goes back where the preset puts it."),
+                            qsTr("Reset"), () => Workspaces.resetToPreset(id))
+            return
+        }
+        case "lockWorkspace": {
+            const id = Number(argument)
+            const locked = !Workspaces.isLocked(id)
+            Workspaces.setLocked(id, locked)
+            toast.show(locked ? qsTr("The %1 workspace is locked: its panels stay where they are").arg(Workspaces.label(id))
+                              : qsTr("The %1 workspace is unlocked").arg(Workspaces.label(id)))
+            return
+        }
         case "deleteWorkspace": {
             const id = Number(argument)
             menuConfirm.ask(qsTr("Delete the %1 workspace?").arg(Workspaces.label(id)),
@@ -1418,6 +1745,27 @@ Window {
     }
     MenuConfirmDialog {
         id: menuConfirm
+    }
+    // 0.6 (P1 round, 2A #7 #58): Sequence > Delete Render Files (In to Out): the size first ("Delete 1.2 GB of render
+    // files?"), then MediaReadiness deletes them in the background (renderFilesDeleted: the toast).
+    function askDeleteRenderFiles(inToOut: bool) {
+        const info = MediaReadiness.previewFilesInfo(inToOut)
+        if (info.enabled !== true) {
+            window.notify(info.reason, Theme.warning)
+            return
+        }
+        const files = Number(info.files)
+        const count = files === 1 ? qsTr("1 file") : qsTr("%1 files").arg(files)
+        menuConfirm.ask(inToOut ? qsTr("Delete %1 of render files between In and Out?").arg(info.sizeText)
+                                : qsTr("Delete %1 of render files?").arg(info.sizeText),
+                        inToOut ? qsTr("The render files of %1 that meet In to Out go (%2). They can be rendered again; the edit does not change.").arg(info.sequenceName).arg(count)
+                                : qsTr("The render files of %1 go (%2). They can be rendered again; the edit does not change.").arg(info.sequenceName).arg(count),
+                        qsTr("Delete"),
+                        () => {
+                            const why = MediaReadiness.deleteRenderFiles(inToOut)
+                            if (why !== "")
+                                window.notify(why, Theme.warning)
+                        })
     }
     AboutDialog {
         id: aboutDialog
@@ -1576,22 +1924,117 @@ Window {
                 MediaReadiness.cancelRender()
             Qt.callLater(window.continueClose)
         }
+        // P1 (#20, 2C): quit now and keep the export queue for next time (nothing is cancelled for good: the exports
+        // that wait come back held, one stopped mid-export comes back interrupted, with Retry).
+        onKeepQueueAndQuitChosen: {
+            window.quitWhenIdle = false
+            window.backgroundWorkAnswered = true
+            if (MediaReadiness.rendering)
+                MediaReadiness.cancelRender()
+            Qt.callLater(window.continueClose)
+        }
     }
     ImportLayeredFileDialog {
         id: importLayeredFileDialog
     }
     ImportReportDialog {
         id: importReportDialog
+        onRelinkRequested: relinkDialog.open() // 0.6 (1D, #6): an import that left media offline
     }
     ExportTimelineDialog {
         id: exportTimelineDialog
         onExported: report => importReportDialog.show(report)
     }
+    // ---- P1 round (stream 2C): batch exports, the media usage report, the queue across restarts ----
+    // #22: several sequences (the Library); #26: each marker range / selected clip as its own file.
+    SequencesExportDialog {
+        id: sequencesExportDialog
+        onQueued: (count, held) => window.notifyExportsQueued(count, held)
+    }
+    ExportRangesDialog {
+        id: exportRangesDialog
+        onQueued: (count, held) => window.notifyExportsQueued(count, held)
+    }
+    // #25: File > Export > Media Usage Report…
+    MediaUsageReportDialog {
+        id: mediaUsageReportDialog
+        onWritten: (path, uses, media) => window.notify(
+            qsTr("Media usage report saved: %n use(s)", "", uses) + " · " + qsTr("%n source(s)", "", media), Theme.success,
+            { actionText: qsTr("Show in %1").arg(ExportController.fileManagerName),
+              action: () => ExportController.reveal(path) })
+    }
+    function notifyExportsQueued(count: int, held: bool) {
+        window.notify(held ? qsTr("Queued %n export(s): Start Queue runs them", "", count)
+                           : qsTr("Queued %n export(s)", "", count), Theme.accentStroke,
+                      { actionText: qsTr("Show the queue"), action: () => window.showExportQueue() })
+    }
+    /// #22: Export… on one sequence opens it in the Export workspace; more sequences, or Send to Export Queue…, open the
+    /// Export Sequences dialog.
+    function openSequencesExport(keys: var, queue: bool) {
+        const list = (keys ?? []).filter(k => String(k).startsWith("s"))
+        if (list.length === 0)
+            return
+        if (!queue && list.length === 1) {
+            SequenceTabs.open(list[0])
+            window.openPreset("export")
+            return
+        }
+        sequencesExportDialog.openFor(list, queue)
+    }
+    /// #22: the Library has the focus and its selection holds sequences: File > Send to Media Encoder queues those.
+    function librarySequencesForExport(): var {
+        if (window.activeFocusItem === null || KeymapDispatcher.scopeAt(window.activeFocusItem) !== "project")
+            return []
+        return Library.selection.filter(k => String(k).startsWith("s"))
+    }
+    /// #20: what came back from the last session (ExportController.restoreQueue()).
+    function announceRestoredQueue(result: var) {
+        const held = result?.held ?? 0
+        const interrupted = result?.interrupted ?? 0
+        const skipped = result?.skipped ?? []
+        if (held + interrupted === 0) {
+            if (skipped.length > 0)
+                window.notify(qsTr("%n export(s) from last time could not be brought back: %1", "", skipped.length)
+                                  .arg(skipped.join(", ")), Theme.warning, { untilSeen: true })
+            return
+        }
+        const parts = []
+        if (held > 0)
+            parts.push(qsTr("%n export(s) from last time are waiting", "", held))
+        if (interrupted > 0)
+            parts.push(qsTr("%n stopped when Wabcut closed (Retry in the queue)", "", interrupted))
+        window.notify(parts.join(" · "), Theme.accentStroke,
+                      held > 0 ? { actionText: qsTr("Start Queue"), action: () => ExportController.startQueue(),
+                                   secondaryActionText: qsTr("Clear"), secondaryAction: () => ExportController.clearRestored(),
+                                   untilSeen: true }
+                               : { actionText: qsTr("Show the queue"), action: () => window.showExportQueue(),
+                                   secondaryActionText: qsTr("Clear"), secondaryAction: () => ExportController.clearRestored(),
+                                   untilSeen: true })
+    }
     RelinkDialog {
         id: relinkDialog
     }
+    // 0.6 (1D, #39): Get Properties (Ctrl/Cmd+Shift+H, File menu, the Library's Properties…).
+    PropertiesDialog {
+        id: propertiesDialog
+    }
     RecoveryDialog {
         id: recoveryDialog
+        // 0.6 (2D, #49): "Open as copy" replaces the project shown: its unsaved changes are asked about first, and Home
+        // (Versions…, a project that failed to open) closes on the copy.
+        onOpenCopyRequested: version => window.whenSaved(() => {
+            if (ProjectFile.openRecoveryCopy(version))
+                home.close()
+            else
+                window.showProblem(ProjectFile.lastError)
+        })
+        // Fix round 1 (ARGON-10): Recover of unsaved work replaces the project shown the same way.
+        onRecoverRequested: autosave => window.whenSaved(() => {
+            if (ProjectFile.recover(autosave))
+                home.close()
+            else
+                window.showProblem(ProjectFile.lastError)
+        })
     }
     // "Wabcut closed unexpectedly" (I.7): Recovery, the crash reports folder and a diagnostic summary. Closed without
     // Recovery, the autosave prompt still follows when there is work to recover.
@@ -1624,6 +2067,24 @@ Window {
         objectName: "roughCutSheetLoader"
         active: false
         sourceComponent: RoughCutSheet {}
+    }
+    // 0.6 (P1 round, 3A, #62): the creator autopilot (Sequence > Creator Autopilot..., Autopilot.open()), loaded on first use.
+    Loader {
+        id: autopilotSheet
+        objectName: "autopilotSheetLoader"
+        active: false
+        sourceComponent: AutopilotSheet {}
+    }
+    // 0.6 (P1 round, 2E, #37): Correct the transcript from your script (Sequence > Captions, the Transcript tab's button).
+    Loader {
+        id: scriptCorrectionSheet
+        objectName: "scriptCorrectionSheetLoader"
+        active: false
+        sourceComponent: ScriptCorrectionSheet {}
+    }
+    function openScriptCorrection() {
+        scriptCorrectionSheet.active = true;
+        (scriptCorrectionSheet.item as ScriptCorrectionSheet)?.open()
     }
     Loader {
         id: autoZoomDialog
@@ -1733,6 +2194,71 @@ Window {
             lottieDialog.open()
         }
     }
+    // P1 round (#50): Graphics > Install Motion Graphics Template… and a template's "Export template…" (GraphicsBridge's
+    // installRequested / exportRequested): the native file dialogs. The chosen file goes through installTemplateFiles /
+    // exportTemplateNow; the menu rows ask for the dialog after their menu closed.
+    FileDialog {
+        id: installTemplateDialog
+        objectName: "installTemplateDialog"
+        /// The library the chosen template joins: "project" (This project) or "user" (My Templates).
+        property string library: "project"
+        fileMode: FileDialog.OpenFile
+        nameFilters: [qsTr("Motion Graphics templates (*.mogrt *.wabcut-template.json)"), qsTr("All files (*)")]
+        currentFolder: ProjectFile.importFolder
+        onAccepted: {
+            const where = library
+            library = "project"
+            window.installTemplateFiles([selectedFile], where)
+        }
+        onRejected: library = "project"
+    }
+    FileDialog {
+        id: exportTemplateDialog
+        objectName: "exportTemplateDialog"
+        /// The template being written ("project/<id>", "user/<id>", "builtin/<id>").
+        property string templateKey: ""
+        fileMode: FileDialog.SaveFile
+        defaultSuffix: "wabcut-template.json"
+        nameFilters: [qsTr("Wabcut templates (*.wabcut-template.json)")]
+        currentFolder: ProjectFile.folder
+        onAccepted: {
+            const key = templateKey
+            templateKey = ""
+            window.exportTemplateNow(key, selectedFile)
+        }
+        onRejected: templateKey = ""
+    }
+    /// The Install Motion Graphics Template file dialog for `library` (Graphics.openInstallDialog).
+    function openInstallTemplate(library) {
+        installTemplateDialog.library = library === "user" ? "user" : "project"
+        installTemplateDialog.open()
+    }
+    /// The file the Export template dialog suggests for `templateKey`: "<id>.wabcut-template.json".
+    function exportTemplateFileName(templateKey) {
+        const id = templateKey.slice(templateKey.indexOf("/") + 1)
+        return ProjectFile.folder.toString() + "/" + encodeURIComponent(id) + ".wabcut-template.json"
+    }
+    /// The Export template save dialog for `templateKey`, with that name suggested (Graphics.openExportDialog).
+    function openExportTemplate(templateKey) {
+        exportTemplateDialog.templateKey = templateKey
+        exportTemplateDialog.selectedFile = window.exportTemplateFileName(templateKey)
+        exportTemplateDialog.open()
+    }
+    /// Writes a template to the file chosen in the Export template dialog. The native dialog has already confirmed a
+    /// replace, so the file may be overwritten.
+    function exportTemplateNow(templateKey, file) {
+        const error = Graphics.exportTemplate(templateKey, file, true)
+        if (error !== "")
+            window.showProblem(error)
+        else
+            window.notify(Graphics.message, undefined, undefined)
+    }
+    Connections {
+        target: Graphics
+
+        function onInstallRequested(library) { window.openInstallTemplate(library) }
+        function onExportRequested(templateKey) { window.openExportTemplate(templateKey) }
+    }
     // M5o: Essential Graphics and the monitor's handles work on one layer.
     Connections {
         target: Graphics
@@ -1764,6 +2290,28 @@ Window {
         objectName: "audioGainDialogLoader"
         active: false
         sourceComponent: AudioGainDialog {}
+    }
+    // 0.6 (P1 round, D9 #8): the beat tools' dialogs (Detect Beats…, Cut Selected Clips to Beats…), loaded on first use;
+    // a finished run's toast (a failure the open dialog shows itself).
+    Loader {
+        id: detectBeatsDialog
+        objectName: "detectBeatsDialogLoader"
+        active: false
+        sourceComponent: DetectBeatsDialog {}
+    }
+    Loader {
+        id: cutToBeatsDialog
+        objectName: "cutToBeatsDialogLoader"
+        active: false
+        sourceComponent: CutToBeatsDialog {}
+    }
+    Connections {
+        target: Beats
+
+        function onFinished(ok: bool, cancelled: bool, message: string) {
+            if (!cancelled && message !== "")
+                window.notify(message, ok ? undefined : Theme.warning, undefined)
+        }
     }
     // 0.5 (stream C): Scene Edit Detection… (clip.sceneEditDetection), loaded on first use; a finished run's toast (an
     // error the open dialog shows itself).
@@ -1874,6 +2422,16 @@ Window {
         function onLibraryRequested() {
             window.showBrowserPanel("library")
         }
+        // P1 round (#4): Window > History (window.history) - the History panel opens as a tab of the active group and
+        // takes the focus; again while it shows (and the workspace is not locked), it closes.
+        function onHistoryRequested() {
+            if (workArea.panelShown("history") && !docking.locked) {
+                docking.closePanel("history")
+                Qt.callLater(window.keepFocus)
+            } else {
+                window.openPanelFromWindowMenu("history")
+            }
+        }
     }
     // M5m (C.9): a version checkpoint before the assistant's staged plan can be applied.
     Connections {
@@ -1898,6 +2456,20 @@ Window {
         function onOpenRequested() {
             roughCutSheet.active = true;
             (roughCutSheet.item as RoughCutSheet)?.open()
+        }
+    }
+    // 0.6 (P1 round, 3A, #62): the autopilot sheet, and its Generate... for a line nothing matched: the Generate panel
+    // is shown first, then prefilled (its proposal only reaches a loaded panel).
+    Connections {
+        target: Autopilot
+
+        function onOpenRequested() {
+            autopilotSheet.active = true;
+            (autopilotSheet.item as AutopilotSheet)?.open()
+        }
+        function onGenerateRequested(proposal) {
+            window.revealPanel("generate")
+            generateLoader.withItem(panel => Autopilot.proposeGeneration(proposal))
         }
     }
     Connections {
@@ -2175,6 +2747,11 @@ Window {
                     function onShowCueRequested(index: int) {
                         window.revealPanel("captions")
                         captionsLoader.withItem(panel => (panel as TranscriptPanel).showCaptionCue(index, false))
+                    }
+                    // P1 round (#35, 2E): a new caption (Ctrl+Alt+C, the page's At playhead): its text selected for typing.
+                    function onCueAdded(index: int) {
+                        window.revealPanel("captions")
+                        captionsLoader.withItem(panel => (panel as TranscriptPanel).showNewCaption(index))
                     }
                 }
                 // Audio Tools (M5g): loudness, normalize, auto-duck, reduce noise.
@@ -2462,6 +3039,39 @@ Window {
                     Behavior on opacity { NumberAnimation { duration: Theme.durState } }
                     sourceComponent: AudioMetersPanel {}
                 }
+                // P1 round (#4): History, a dockable panel (it was a popup).
+                LazyPanel {
+                    id: historyLoader
+                    name: "history"
+                    parent: workArea.hostOf("history")
+                    anchors.fill: parent
+                    shown: workArea.panelShown("history")
+                    preload: window.preloadPanels
+                    opacity: shown ? 1 : 0
+                    visible: opacity > 0
+                    enabled: shown
+                    Behavior on opacity { NumberAnimation { duration: Theme.durState } }
+                    sourceComponent: HistoryPanel {}
+                }
+                Binding {
+                    target: historyLoader.item as HistoryPanel
+                    property: "opened"
+                    value: historyLoader.shown
+                }
+                // 0.6 (card #74): the Take Selector (Clip > Auditions > Take Selector, Window > Take Selector).
+                LazyPanel {
+                    id: takeSelectorLoader
+                    name: "takeSelector"
+                    parent: workArea.hostOf("takeSelector")
+                    anchors.fill: parent
+                    shown: workArea.panelShown("takeSelector")
+                    preload: window.preloadPanels
+                    opacity: shown ? 1 : 0
+                    visible: opacity > 0
+                    enabled: shown
+                    Behavior on opacity { NumberAnimation { duration: Theme.durState } }
+                    sourceComponent: TakeSelectorPanel {}
+                }
                 LazyPanel {
                     id: exportLoader
                     name: "export"
@@ -2521,6 +3131,10 @@ Window {
                     single: monitorArea.single
                     onMonitorRequested: which => monitorArea.choose(which)
                     onPlayheadMoved: timeline.revealPlayhead() // UX rework (stream T): a typed time
+                    // P1 (#17, #18, 3B): the edit overlay's drops get the Clip Mismatch Warning like timeline drops; a
+                    // drop or caption drag that did nothing says why.
+                    checkDrop: drop => timeline.dropChecked(drop, false)
+                    onMessageRequested: text => toast.show(text, Theme.warning)
                 }
                 // The timeline, with what can be dropped on it.
                 Item {
@@ -2580,7 +3194,9 @@ Window {
                                     return
                                 }
                             }
-                            if (ProjectFile.dropMedia(mediaId, at.time, at.track, !ProjectFile.insertModifierHeld()))
+                            // 0.6 (1A): the Clip Mismatch Warning when it is the first clip in an empty sequence.
+                            if (timeline.dropChecked(() => ProjectFile.dropMedia(mediaId, at.time, at.track,
+                                                                                 !ProjectFile.insertModifierHeld()), false))
                                 drop.accept(Qt.CopyAction)
                         }
                     }
@@ -2607,11 +3223,14 @@ Window {
                                 return
                             drop.accept(Qt.CopyAction)
                             // C.13 (M5o): Lottie animations become graphic clips, with their own report - after the other
-                            // files, which may start a new project for them.
+                            // files, which may start a new project for them. P1 (#50): template files become templates.
                             const files = []
                             const lottie = []
+                            const templates = []
                             for (const url of drop.urls) {
-                                if (GraphicsImport.isLottie(url))
+                                if (Graphics.isTemplateFile(url))
+                                    templates.push(url)
+                                else if (GraphicsImport.isLottie(url))
                                     lottie.push(url)
                                 else
                                     files.push(url)
@@ -2621,7 +3240,13 @@ Window {
                             const overwrite = !ProjectFile.insertModifierHeld()
                             const dropNow = () => {
                                 if (files.length > 0) {
-                                    const result = ProjectFile.dropFiles(files, time, track, overwrite)
+                                    // 0.6 (1A): the Clip Mismatch Warning for the first clip in an empty sequence (files
+                                    // over the sample project start a new, empty one).
+                                    let result = ({})
+                                    timeline.dropChecked(() => {
+                                        result = ProjectFile.dropFiles(files, time, track, overwrite)
+                                        return (result.placed ?? 0) > 0
+                                    }, ProjectFile.demo)
                                     if (result.projects && result.projects.length > 0)
                                         window.whenSaved(() => window.openProjectNow(result.projects[0]))
                                     // 0.4 (D, fix round 1): folders come in as bins, not onto the timeline: the toast
@@ -2634,6 +3259,8 @@ Window {
                                 }
                                 for (const url of lottie)
                                     GraphicsImport.importLottie(url)
+                                if (templates.length > 0)
+                                    window.installTemplateFiles(templates, "project")
                             }
                             // UX rework: files over the edited sample project take its place (a new project, or the
                             // project dropped): whenSaved asks about its edits first, before anything is imported.
@@ -2668,8 +3295,9 @@ Window {
                                     return
                                 }
                             }
-                            if (SourceMonitor.dropAt(at.time, at.track, !ProjectFile.insertModifierHeld(),
-                                                     drop.getDataAsString("application/x-wabcut-source")))
+                            const source = drop.getDataAsString("application/x-wabcut-source")
+                            if (timeline.dropChecked(() => SourceMonitor.dropAt(at.time, at.track, !ProjectFile.insertModifierHeld(),
+                                                                                source), false))
                                 drop.accept(Qt.CopyAction)
                         }
                     }
@@ -2843,6 +3471,7 @@ Window {
                     minDelta: live || !gutter ? -Infinity : -Math.max(0, gutter.sizeBefore - workArea.leastFlexible)
                     maxDelta: live || !gutter ? Infinity : Math.max(0, gutter.sizeAfter - workArea.leastFlexible)
                     onActiveChanged: docking.resizing = active
+                    locked: docking.locked // P1 round (#32): Lock Workspace
                     onDragged: delta => docking.shiftWeight(gutter.path, gutter.before, gutter.after, delta, gutter.sizeBefore,
                                                            gutter.sizeAfter, workArea.leastFlexible)
                     onFinished: docking.save()
@@ -2966,6 +3595,20 @@ Window {
             function onNotice(text: string) {
                 toast.show(text)
             }
+            // 0.6 (1D): Properties… (#39) and Link Media… (#43) from the Library or a timeline clip.
+            function onPropertiesRequested(key: string) {
+                propertiesDialog.openFor(key)
+            }
+            function onLinkMediaRequested(keys) {
+                home.close()
+                relinkDialog.openFor(keys)
+            }
+            // 0.6 (2D, #40): Find in Timeline - the sequence is open with the clip selected at the playhead: the
+            // Timeline comes forward, scrolled to the clip.
+            function onRevealInTimelineRequested(clipId: string) {
+                window.focusPanel("timeline")
+                Qt.callLater(() => timeline.view.revealClip(clipId))
+            }
             // M5l: Reveal nested sequence in Library, a new multi-camera source: the Library comes forward.
             function onItemShown(key) {
                 window.showBrowserPanel("library")
@@ -3056,14 +3699,39 @@ Window {
         }
         Connections {
             target: Moments
+            // 0.6 (P1 #55): Make Shorts / square version is a job: its step and a Cancel action in a toast (the menus,
+            // keys and palette start it with no popover open), then what it made; an error comes as the message below.
+            property bool versionBusy: false
 
             function onMessageChanged() {
                 if (Moments.message !== "")
                     toast.show(Moments.message, Theme.warning)
             }
+            function onVersionChanged() {
+                const version = Moments.version
+                const wasBusy = versionBusy
+                versionBusy = version.busy === true
+                if (versionBusy) {
+                    toast.show(String(version.text ?? ""), Theme.accentStroke,
+                               { replaceKey: "momentsVersion", actionText: qsTr("Cancel"),
+                                 action: () => Moments.cancelVersion(), timeoutMs: 600000 })
+                } else if (wasBusy && String(version.done ?? "") !== "") {
+                    toast.show(qsTr("Made %1").arg(version.done), Theme.accentStroke,
+                               { replaceKey: "momentsVersion", timeoutMs: 4000 })
+                } else if (wasBusy && String(version.error ?? "") === "") {
+                    toast.show(qsTr("Stopped: nothing was changed"), Theme.accentStroke,
+                               { replaceKey: "momentsVersion", timeoutMs: 3000 })
+                }
+            }
             // 0.5 (stream C): Remove dead time's review is a sheet of the Highlights panel; its rows move the playhead.
             function onDeadTimeReviewRequested() {
                 window.focusPanel("highlights")
+            }
+            // 0.6 (D2 #34): Find Highlights (the Sequence menu, the key, the palette) shows the panel and finds with the
+            // options its popover last had; the panel is made first when it was not (LazyPanel withItem).
+            function onFindHighlightsRequested() {
+                window.focusPanel("highlights")
+                window.panelLoaders["highlights"].withItem(panel => panel.find())
             }
             function onRevealRequested() {
                 timeline.revealPlayhead()
@@ -3166,6 +3834,50 @@ Window {
                                         timeoutMs: 10000, untilSeen: true })
                 }
             }
+            // P1 (#27): Relink… from the Export panel, Quick Export or a failed job's row.
+            function onRelinkRequested() {
+                window.relinkOfflineMedia()
+            }
+            // P1 (#29): a running export's drive is nearly full.
+            function onDiskSpaceLow(message) {
+                window.notify(message, Theme.warning,
+                              { actionText: qsTr("Show the queue"), action: () => window.showExportQueue(),
+                                timeoutMs: 10000, untilSeen: true })
+            }
+            // P1 (#22, 2C): the Library's Export… / Send to Export Queue… on sequences.
+            function onSequencesExportRequested(keys, queue) {
+                window.openSequencesExport(keys, queue)
+            }
+            // P1 (#26, 2C): Export each marker range… / each selected clip.
+            function onRangesExportRequested(mode) {
+                // From the Export panel's range row: its preset; from the Markers panel: Quick Export's last one.
+                const panel = exportLoader.item
+                exportRangesDialog.openFor(mode, panel && workArea.panelShown("export") ? String(panel.effectivePresetId ?? "") : "")
+            }
+        }
+        // P1 (#20, 2C): the exports kept from the last session come back held (or interrupted, with Retry); the toast
+        // says so once the window is up, with Start Queue and Clear.
+        Timer {
+            objectName: "restoreExportQueueTimer"
+            interval: 600
+            running: true
+            onTriggered: window.announceRestoredQueue(ExportController.restoreQueue())
+        }
+        // P1 (#23, stream 1C): Export Frames at Markers ended (it runs in the background).
+        Connections {
+            target: Monitors
+            function onFramesFinished(ok, message) {
+                window.notify(message, ok ? Theme.success : Theme.warning, { untilSeen: true })
+            }
+        }
+        // P1 (#29, stream 1C): Create proxy did not start: the proxy folder's drive is short of space.
+        Connections {
+            target: MediaReadiness
+            function onDiskSpaceLow(message) {
+                window.notify(message, Theme.warning,
+                              { actionText: qsTr("Media & cache settings"), action: () => MediaReadiness.openSettings(),
+                                timeoutMs: 10000, untilSeen: true })
+            }
         }
         Connections {
             id: renderConnections
@@ -3184,16 +3896,24 @@ Window {
                     if (outcome === "failed")
                         window.exportFailedUnseen = true
                 }
+                // 0.6 (2A #7): Render Selection says so and tries the selection again.
+                const selection = MediaReadiness.renderScope === "selection"
                 if (outcome === "done") {
-                    window.notify(qsTr("Previews rendered: In to Out plays in real time"), Theme.success, { untilSeen: true })
+                    window.notify(selection ? qsTr("Previews rendered: the selected clips play in real time")
+                                            : qsTr("Previews rendered: In to Out plays in real time"), Theme.success, { untilSeen: true })
                 } else if (outcome === "failed") {
-                    let text = qsTr("Render In to Out failed: %1").arg(message)
+                    let text = (selection ? qsTr("Render Selection failed: %1") : qsTr("Render In to Out failed: %1")).arg(message)
                     if (window.callOffQuit())
                         text += qsTr(" Wabcut stayed open.")
                     window.notify(text, Theme.warning,
-                                  { actionText: qsTr("Try Again"), action: () => MediaReadiness.renderInToOut(),
+                                  { actionText: qsTr("Try Again"),
+                                    action: selection ? () => MediaReadiness.renderSelection() : () => MediaReadiness.renderInToOut(),
                                     timeoutMs: 10000, untilSeen: true })
                 }
+            }
+            // 0.6 (2A #7 #58): Delete Render Files ended.
+            function onRenderFilesDeleted(ok, message) {
+                window.notify(message, ok ? Theme.success : Theme.warning, { untilSeen: !ok })
             }
         }
         // 0.4: Windows stays awake while long work runs (Settings > General > Background work), and the taskbar button
@@ -3257,10 +3977,14 @@ Window {
         onOpenedChanged: {
             if (!opened) {
                 Qt.callLater(window.keepFocus)
-                // First run (M5j): the welcome follows the launch Home screen, never covers it.
+                // First run (M5j): the welcome follows the launch Home screen, never covers it. P1 round (#5): else What's
+                // New, once, after an update.
                 if (window.welcomeAfterHome) {
                     window.welcomeAfterHome = false
-                    Qt.callLater(onboarding.firstRun)
+                    Qt.callLater(() => {
+                        const welcomed = onboarding.firstRun()
+                        window.whatsNewAfterUpdate(!welcomed)
+                    })
                 }
                 performanceOffer.restart()
             }
@@ -3273,6 +3997,8 @@ Window {
                 toast.show(note, Theme.warning)
         }
         onSettingsRequested: window.openSettings("", "")
+        // 0.6 (2D, #49): the project menu's Versions…: the recovery dashboard for that project, over Home.
+        onVersionsRequested: file => recoveryDialog.openDashboardFor(file)
         // UX rework (Home's New project page): the backend creates, saves and opens. A refusal before the project
         // exists (the name, the folder - one that cannot be made too - the settings) keeps Home open with the error; a
         // failure after it exists (it replaced the project shown; only its first save can fail then) closes Home and
@@ -3322,7 +4048,7 @@ Window {
                         home.close()
                         home.showClosingNote(note)
                     } else {
-                        home.showMessage(ProjectFile.lastError, "danger")
+                        home.showMessageWithAction(ProjectFile.lastError, "danger", window.recoverOptions(file))
                     }
                 })
             })
@@ -3334,7 +4060,7 @@ Window {
                 if (ProjectFile.openAlongside(file))
                     home.close()
                 else
-                    home.showMessage(ProjectFile.lastError, "danger")
+                    home.showMessageWithAction(ProjectFile.lastError, "danger", window.recoverOptions(file))
             })
             if (ProjectFile.demo)
                 window.whenSaved(open)
@@ -3348,7 +4074,10 @@ Window {
             window.whenSaved(() => home.runBusy(qsTr("Importing"), () => {
                 const result = ProjectFile.importFiles(urls, { newProject: true, openImported: true,
                                                                experimentalPremiereProject: experimental })
-                if ((result.timelines ?? 0) > 0 || (result.added ?? 0) > 0 || (result.captionTracks ?? 0) > 0) {
+                // 0.6 (fix round 1): an AAF / OMF imports in the background (pendingTimelines): the editor shows its
+                // progress toast.
+                if ((result.timelines ?? 0) > 0 || (result.added ?? 0) > 0 || (result.captionTracks ?? 0) > 0
+                        || (result.pendingTimelines ?? 0) > 0) {
                     home.close()
                     home.showClosingNote(note)
                     if (deferred && deferred.length > 0)

@@ -420,6 +420,75 @@ std::expected<Created<MediaId>, Error> duplicateMedia(const ProjectState& state,
     return addMedia(state, std::move(copy));
 }
 
+namespace {
+
+/// What New Sequence From Clip takes from an item: frame size as displayed, frame rate (its interpretation; the nominal
+/// rate of a variable-rate file), pixel aspect and audio sample rate; 1920x1080 at 30 fps without a picture, the item's
+/// size at 30 fps for a still.
+struct MediaSequenceShape {
+    std::int32_t width = 1920;
+    std::int32_t height = 1080;
+    Rate frameRate = kRate30;
+    Rate pixelAspect{1, 1};
+    std::optional<Rate> audioRate;
+};
+
+MediaSequenceShape mediaSequenceShape(const MediaItem& item) {
+    MediaSequenceShape shape;
+    if (item.info.hasVideo()) {
+        const VideoStreamInfo& v = item.info.video.front();
+        if (v.width > 0 && v.height > 0) {
+            const int quarter = ((v.rotationDegrees / 90) % 4 + 4) % 4;
+            shape.width = quarter % 2 == 1 ? v.height : v.width;
+            shape.height = quarter % 2 == 1 ? v.width : v.height;
+        }
+        if (!item.info.isStillImage && v.frameRate.isValid()) {
+            const Rate interpreted =
+                item.interpretation && item.interpretation->frameRate ? *item.interpretation->frameRate : v.frameRate;
+            const Rate nominal = v.variableFrameRate ? nominalRate(interpreted) : interpreted.normalized();
+            if (nominal.isValid() && nominal.isExact() && ratio(nominal) >= 1.0 && ratio(nominal) <= 1000.0) {
+                shape.frameRate = nominal;
+            }
+        }
+        const Rate par = item.interpretation && item.interpretation->pixelAspect ? *item.interpretation->pixelAspect
+                                                                                  : v.sampleAspect;
+        if (par.isValid() && ratio(par) >= 0.1 && ratio(par) <= 10.0) {
+            shape.pixelAspect = par.normalized();
+        }
+    }
+    shape.width = std::clamp(shape.width, 16, 16384);
+    shape.height = std::clamp(shape.height, 16, 16384);
+    if (item.info.hasAudio() && item.info.audio.front().sampleRate.isValid() &&
+        item.info.audio.front().sampleRate.isExact()) {
+        shape.audioRate = item.info.audio.front().sampleRate;
+    }
+    return shape;
+}
+
+} // namespace
+
+std::optional<SequenceSettingsChange> settingsToMatchMedia(const Sequence& sequence, const MediaItem& media) {
+    if (!media.info.hasVideo() || media.info.isStillImage) {
+        return std::nullopt;
+    }
+    const VideoStreamInfo& v = media.info.video.front();
+    if (v.width <= 0 || v.height <= 0 || !v.frameRate.isValid()) {
+        return std::nullopt;
+    }
+    const MediaSequenceShape shape = mediaSequenceShape(media);
+    if (shape.width == sequence.width && shape.height == sequence.height &&
+        shape.frameRate.normalized() == sequence.frameRate.normalized()) {
+        return std::nullopt;
+    }
+    SequenceSettingsChange change;
+    change.width = shape.width;
+    change.height = shape.height;
+    change.frameRate = shape.frameRate;
+    change.pixelAspect = shape.pixelAspect;
+    change.audioRate = shape.audioRate;
+    return change;
+}
+
 std::expected<Created<SequenceId>, Error> newSequenceFromClip(const ProjectState& state, MediaId mediaId,
                                                               std::string name) {
     const MediaItem* item = state.findMedia(mediaId);
@@ -432,36 +501,13 @@ std::expected<Created<SequenceId>, Error> newSequenceFromClip(const ProjectState
     SequenceSettings settings;
     settings.name = name.empty() ? item->name : std::move(name);
     settings.bin = item->bin;
-    settings.width = 1920;
-    settings.height = 1080;
-    settings.frameRate = kRate30;
-    Rate pixelAspect{1, 1};
-    if (item->info.hasVideo()) {
-        const VideoStreamInfo& v = item->info.video.front();
-        if (v.width > 0 && v.height > 0) {
-            const int quarter = ((v.rotationDegrees / 90) % 4 + 4) % 4;
-            settings.width = quarter % 2 == 1 ? v.height : v.width;
-            settings.height = quarter % 2 == 1 ? v.width : v.height;
-        }
-        if (!item->info.isStillImage && v.frameRate.isValid()) {
-            const Rate interpreted =
-                item->interpretation && item->interpretation->frameRate ? *item->interpretation->frameRate : v.frameRate;
-            const Rate nominal = v.variableFrameRate ? nominalRate(interpreted) : interpreted.normalized();
-            if (nominal.isValid() && nominal.isExact() && ratio(nominal) >= 1.0 && ratio(nominal) <= 1000.0) {
-                settings.frameRate = nominal;
-            }
-        }
-        const Rate par = item->interpretation && item->interpretation->pixelAspect ? *item->interpretation->pixelAspect
-                                                                                    : v.sampleAspect;
-        if (par.isValid() && ratio(par) >= 0.1 && ratio(par) <= 10.0) {
-            pixelAspect = par.normalized();
-        }
-    }
-    settings.width = std::clamp(settings.width, 16, 16384);
-    settings.height = std::clamp(settings.height, 16, 16384);
-    if (item->info.hasAudio() && item->info.audio.front().sampleRate.isValid() &&
-        item->info.audio.front().sampleRate.isExact()) {
-        settings.audioRate = item->info.audio.front().sampleRate;
+    const MediaSequenceShape shape = mediaSequenceShape(*item);
+    settings.width = shape.width;
+    settings.height = shape.height;
+    settings.frameRate = shape.frameRate;
+    const Rate pixelAspect = shape.pixelAspect;
+    if (shape.audioRate) {
+        settings.audioRate = *shape.audioRate;
     }
     settings.dropFrame = false;
     settings.videoTracks = 3;

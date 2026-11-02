@@ -31,12 +31,34 @@ Code: `src/app/qml/monitor/` (QML), the `Monitors` (`MonitorBridge`) and `Progra
 - **Drop a clip on the Source Monitor**: drag a clip from the Library onto its picture to open it there (it joins the
   recent sources). Files dragged from File Explorer are imported first, as File > Import does, then the first one
   opens. Sequences cannot open in the Source Monitor.
+- **Drop a clip on the Program Monitor** (0.6, Premiere's edit overlay): drag a clip or a sequence from the Library, or
+  the Source Monitor's picture (or its video or audio handle), over the Program Monitor and five zones show what a drop
+  does, at the playhead and on the targeted tracks:
+  - **Overwrite** (the middle): over what is there.
+  - **Insert** (left): at the playhead; the clips after it move later.
+  - **Overlay** (top): on the first free video track at or above the targeted one, so nothing is cut; when every one is
+    taken there, a new video track on top (in the same undo step).
+  - **Replace** (bottom): the clip under the playhead on the targeted video track becomes the dragged one, from its In,
+    keeping its place and length (Replace Edit). Dimmed when there is no clip there.
+  - **Append at End** (right): after the last clip of the sequence.
+
+  A Library clip uses its Source Monitor In and Out, as a drag onto the timeline does; a Source Monitor drag uses its
+  marks. Each drop is one undo step named after the zone, and the first clip in an empty sequence gets the Clip Mismatch
+  Warning. A drop that cannot be done says why.
+- **Captions in the Program Monitor** (0.6): with the captions shown in the picture, a click on a caption selects its
+  cue (outlined; the Captions list scrolls to it; a cue and clips are selected one or the other, as on the timeline's
+  caption lanes), a double-click opens its text in the Captions panel, and dragging the outlined caption moves the
+  caption track's text block: its placement becomes Custom at the new place, kept inside the style's safe area, one
+  undo step (Move Caption). A keyframed caption position is changed in Caption Style instead. Typing in the monitor
+  itself is for later.
 - **Markers on the time bar**: point at a marker on the Program Monitor's time bar to read its name, comment, time and
   length.
 
 Code: `src/app/qml/components/TimecodeEntry.qml` (`ProjectController.seekToText`, `SourceMonitor.seekToText`),
-the drop area in `src/app/qml/panels/SourceMonitorPanel.qml` (`SourceMonitor.load` / `loadFileItem`) and
-`SequenceTimeBar.markerAt` in `src/app/qml/panels/ProgramTimeBar.qml`.
+the drop area in `src/app/qml/panels/SourceMonitorPanel.qml` (`SourceMonitor.load` / `loadFileItem`),
+`SequenceTimeBar.markerAt` in `src/app/qml/panels/ProgramTimeBar.qml`, the Program Monitor's edit overlay
+(`src/app/qml/monitor/EditOverlay.qml`, `MonitorPanel.programDrop`, `Monitors.overlayTrack` / `replaceTarget` /
+`sequenceEndText`) and caption picking (`GraphicCanvas` pick objects of kind `caption`, `MonitorPanel`'s pick area).
 
 ## Move, scale and rotate in the Program Monitor
 
@@ -145,9 +167,22 @@ In the Program Monitor:
   material by samples (docs/audio.md).
 
 All are off by default and remembered. Playback resolution (Auto, Full, 1/2, 1/4) and proxies are in the quality menu
-next to the zoom and (0.4) in the wrench menu's **Playback Resolution**, as in Premiere; the quality button gives way
-on a narrow monitor. Premiere's separate Paused Resolution and High Quality Playback have no counterpart yet (one
-resolution serves both, and Full is the high quality setting).
+next to the zoom, (0.4) in the wrench menu's **Playback Resolution**, and (0.6) in **View > Playback Resolution** and
+**View > Use Proxies**, as in Premiere; the Source Monitor's settings menu has the same rows. Both settings are keymap
+commands with no default key (`monitor.toggleProxies`, `monitor.playbackResolutionAuto` / `Full` / `Half` / `Quarter`),
+so they can be bound in Keyboard Shortcuts and are in the command palette; every row acts on both monitors (the setting is
+the app's, and the film icon beside the quality pill shows proxies). The quality button gives way on a narrow monitor.
+
+**Paused Resolution** (0.6, Premiere's): the resolution a monitor draws its picture at while neither monitor plays - Full
+(the default), 1/2, 1/4, or Same as playback (how Wabcut behaved before 0.6). Gameplay played at 1/2 or 1/4 is drawn
+sharp the moment you stop, and goes back to the playback resolution when you play again. It is in the quality menu and
+both wrenches (**Paused Resolution** under Playback Resolution), in **View > Paused Resolution** and in Settings > Media
+& cache (**Paused**), and its four rows are keymap commands with no default key (`monitor.pausedResolutionFull` /
+`Half` / `Quarter` / `Same`). The quality pill and badge keep showing the playback resolution, so they do not change at
+every play and pause; the badge's tooltip names the paused one. The switch happens when playback starts and stops: the
+decoders reopen at the new size then, which can add a moment to the start of playback on 4K media - choose Same as
+playback if that matters more than a sharp still. High Quality Playback has no counterpart yet (Full is the high quality
+setting).
 
 ## Platform safe zones (Shorts, TikTok, Reels)
 
@@ -199,7 +234,20 @@ The camera button in both monitors, or Ctrl+Shift+E (Shift+E on macOS), opens **
   project's at first, then the last one used). **Import into project** adds the still to the project (one undo step).
 - The Program Monitor exports the sequence frame at the playhead, rendered as an export renders it (original media, the
   export colour transform) at the sequence's size; the Source Monitor exports its clip's frame at its own size.
-- Commands: `sequence.exportFrame` and `source.exportFrame`, also in `wabcut-cli` and the assistant.
+- **Size (0.6)**: Sequence (the frame's own size), **YouTube thumbnail** 1280×720, **Vertical** 1080×1920 or Custom (16
+  to 16384 pixels a side), scaled smoothly; **Crop to fill** fills the size by cropping the frame's centre, else the
+  whole frame fits with black bars. **Quality** (JPEG): Best, High, Medium or Small. **Keep under 2 MB** (JPEG; on with
+  the thumbnail size, which also picks JPEG): the quality goes down until the file is under YouTube's 2 MB thumbnail
+  limit (the message says when even the lowest quality is over). All of it is remembered with the folder and format.
+- **Export Frames at Markers… (0.6)** (the Markers menu, `marker.exportFrames`; the Highlights panel's **Thumbnails…**):
+  the same dialog writes one still per sequence marker - **All**, **Chapters** or **Highlights** (a highlight marker's
+  still is taken at its peak) - named after the marker ("Marker 3" without a name; " (2)" for a name used twice) into
+  the folder, at the size above (from the Highlights panel: a YouTube thumbnail). It runs in the background with
+  progress and **Stop**; a toast says when it is done. **Import into project** puts the stills in a **Thumbnails** bin
+  (made when missing), one undo step.
+- Commands: `sequence.exportFrame` and `source.exportFrame` (0.6: `width`, `height`, `fit` "fit" / "fill", `quality`,
+  `maxBytes`), `sequence.exportFramesAtMarkers` (`folder`, `markers` all / chapters / highlights, `colorIndex`, `at`
+  peak / start, `importIntoProject`, `binName`, and the same size keys), also in `wabcut-cli` and the assistant.
 - PNG is written by Qt and OpenEXR by Wabcut's own writer: the FFmpeg build in use has no zlib, which FFmpeg's PNG and
   EXR coders need. For the same reason a PNG or EXR still cannot be imported back into the project there (the other
   formats can).
@@ -226,5 +274,6 @@ The camera button in both monitors, or Ctrl+Shift+E (Shift+E on macOS), opens **
 | Nudge Selected Object | Ctrl+arrows (Shift: by five) | Cmd+arrows | `programMonitor.nudge*` |
 | Toggle Crop Direct Manipulation | | | `monitor.toggleCropDirectManipulation` |
 | Export Frame | Ctrl+Shift+E | Shift+E | `file.exportFrame` |
+| Export Frames at Markers… (0.6) | | | `marker.exportFrames` |
 
 Keys without a default have none in Premiere's shipped key sets either; assign them in Keyboard Shortcuts.

@@ -1,4 +1,5 @@
 #include "AppShell.h"
+#include "CacheFolders.h"
 #include "CrashHandler.h"
 #include "CrashNotice.h"
 #include "GpuBridge.h"
@@ -61,6 +62,8 @@ int main(int argc, char* argv[]) {
     QCoreApplication::setOrganizationName(QStringLiteral("Wabcut"));
     QCoreApplication::setOrganizationDomain(QStringLiteral("wabcut.org"));
     wabcut::app::applySavedUiScale();
+    // P1 #48: Settings > Media & cache > AI models and analysis folder, before any AI service asks where its cache is.
+    wabcut::app::cachefolders::applyChosenAiCacheFolder();
     // Issue #10: Settings > Graphics card before anything asks which GPU to use (the decoders' order below already does).
     wabcut::app::GpuBridge::applySavedChoice();
     // Crash safety (I.7, docs/release.md): from here on a crash leaves a minidump and a redacted report in the app data
@@ -153,7 +156,7 @@ int main(int argc, char* argv[]) {
     QPointer<LaunchSplash> splash;
     if (!startupProbe.active() && qEnvironmentVariable("QT_QUICK_BACKEND") != QLatin1String("software") &&
         LaunchSplash::wanted()) {
-        const QVariantMap placed = restoredWindowProperties();
+        const QVariantMap placed = startWindowProperties(QStringLiteral("window"), kWindowMinimum, kWindowDefaultSize);
         const QPoint centre = placed.contains(QStringLiteral("width"))
                                   ? QRect(placed.value(QStringLiteral("x")).toInt(), placed.value(QStringLiteral("y")).toInt(),
                                           placed.value(QStringLiteral("width")).toInt(),
@@ -185,8 +188,9 @@ int main(int argc, char* argv[]) {
                              }
                          });
         // UX rework (stream S): the window opens where it was last time - size, position, maximized - fitted to the
-        // screens there are now (initial properties: set before it shows, so it does not jump).
-        engine->setInitialProperties(restoredWindowProperties());
+        // screens there are now (initial properties: set before it shows, so it does not jump). P1 #47: never larger
+        // than the work area, even with the 1100 x 700 minimum; a first run on a small screen opens maximized.
+        engine->setInitialProperties(startWindowProperties(QStringLiteral("window"), kWindowMinimum, kWindowDefaultSize));
         engine->loadFromModule("Wabcut", "Main");
         // Opt-in update checks (Settings > General > Updates; off by default): the daily one, if it is on.
         if (auto* updates = engine->singletonInstance<UpdateBridge*>("Wabcut", "Updates"))
@@ -252,7 +256,11 @@ int main(int argc, char* argv[]) {
     wabcut::crash::markCleanExit(); // the next start shows no notice for this run
     // An update the user agreed to install (Help > Check for Updates...): it starts once Wabcut has closed normally, so
     // never during an export (the close waited for those or cancelled them), and replaces this version (MSI upgrade).
-    if (code == 0)
-        UpdateBridge::launchPendingInstall();
+    if (code == 0 && !UpdateBridge::launchPendingInstall() && AppShell::restartPending()) {
+        // P1 #47: Restart now (a new interface size or cache folder). This one stops taking launches first, so the new
+        // Wabcut opens its project itself instead of handing it back here.
+        instance.close();
+        AppShell::launchPendingRestart();
+    }
     return code;
 }

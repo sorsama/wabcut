@@ -7,6 +7,10 @@
 #include <wabcut/render/Compositor.h>
 #include <wabcut/render/OffscreenRenderer.h>
 
+#include <QDir>
+#include <QFile>
+#include <rhi/qshader.h>
+
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
 #include <cmath>
@@ -431,4 +435,29 @@ TEST_CASE("Field options apply to RGBA pictures and nested canvases too", "[rend
     const RenderedImage canvas = renderOne(*renderer, compositeOf({16, 16}, {nested}));
     checkPixel(canvas, 8, 8, {1, 0, 0});
     checkPixel(canvas, 8, 9, {1, 0, 0});
+}
+
+// F3P (0.6): D3D11 compiles a shader that has no DXBC at its first use. The picture shaders (layer, output, fx) did, and
+// once SDR Conform grew output.frag the first picture of every new renderer (the Program Monitor's first frame, each
+// export) waited ~1.8 s for D3D's compiler. Every pack the compositor loads is DXBC at build time (PRECOMPILE).
+TEST_CASE("Every compositor shader pack ships DXBC so no first picture waits for the D3D compiler", "[render][shaders]") {
+#if defined(_WIN32)
+    const QDir dir(QStringLiteral(":/wabcut/render/shaders"));
+    const QStringList packs = dir.entryList({QStringLiteral("*.qsb")}, QDir::Files);
+    INFO("packs: " << packs.join(QStringLiteral(", ")).toStdString());
+    for (const char* name : {"layer.vert.qsb", "layer.frag.qsb", "layer_array.frag.qsb", "output.vert.qsb",
+                             "output.frag.qsb", "fx.vert.qsb", "fx.frag.qsb", "grade.frag.qsb", "mask.frag.qsb"}) {
+        CHECK(packs.contains(QLatin1String(name)));
+    }
+    for (const QString& name : packs) {
+        QFile file(dir.filePath(name));
+        REQUIRE(file.open(QIODevice::ReadOnly));
+        const QShader shader = QShader::fromSerialized(file.readAll());
+        INFO(name.toStdString());
+        REQUIRE(shader.isValid());
+        CHECK(shader.availableShaders().contains(QShaderKey(QShader::DxbcShader, QShaderVersion(50))));
+    }
+#else
+    SKIP("DXBC is the D3D backends' format (Windows only)");
+#endif
 }

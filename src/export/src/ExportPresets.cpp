@@ -523,6 +523,10 @@ OutputPixelFormat defaultPixelFormat(VideoCodec codec, bool alpha, const VideoSe
         return alpha ? F::Rgbaf : F::Rgbf;
     case VideoCodec::CineForm:
         return alpha ? F::Gbrap12 : F::Yuv422p10;
+    case VideoCodec::Xdcam: // 0.6 (#73)
+        return F::Yuv422p;
+    case VideoCodec::AvcIntra:
+        return F::Yuv422p10;
     default:
         return F::Yuv420p;
     }
@@ -592,6 +596,16 @@ Json settingsToJson(const ExportSettings& s) {
                {"keyframeInterval", v.keyframeInterval.value},
                {"dynamicRange", dynamicRangeName(v.dynamicRange)},
                {"exportAsSequence", v.exportAsSequence}};
+    // 0.6 (#72): the output colour space and SDR Conform, only when set (older presets stay byte for byte).
+    if (v.outputSpace != OutputColorSpace::Automatic) {
+        video["outputSpace"] = std::string(toString(v.outputSpace));
+    }
+    if (v.sdrConform) {
+        const SdrConform& c = *v.sdrConform;
+        video["sdrConform"] = Json{{"enabled", c.enabled}, {"targetPeakNits", c.targetPeakNits},
+                                   {"paperWhiteNits", c.paperWhiteNits}, {"toneMap", std::string(toString(c.toneMap))},
+                                   {"gamut", std::string(toString(c.gamut))}, {"legalRange", c.legalRange}};
+    }
     const AudioSettings& a = s.audio;
     Json audio{{"enabled", a.enabled},
                {"codec", audioCodecKey(a.codec)},
@@ -602,7 +616,25 @@ Json settingsToJson(const ExportSettings& s) {
                   {"track", s.captions.track ? Json(*s.captions.track) : Json(nullptr)},
                   {"karaoke", s.captions.karaoke},
                   {"redactedWord", s.captions.redactedWord}};
-    return Json{{"presetId", s.presetId},
+    // 0.6 (#73): the 608 display mode and the embedded caption choices, only when they differ from the defaults (older
+    // presets stay byte for byte).
+    const CaptionExportSettings defaults;
+    if (s.captions.display608 != defaults.display608) {
+        captions["display608"] = s.captions.display608;
+    }
+    if (s.captions.standard != defaults.standard) {
+        captions["standard"] = std::string(captionStandardName(s.captions.standard));
+    }
+    if (s.captions.channel608 != defaults.channel608) {
+        captions["channel608"] = s.captions.channel608;
+    }
+    if (s.captions.service708 != defaults.service708) {
+        captions["service708"] = s.captions.service708;
+    }
+    if (s.captions.carriage != defaults.carriage) {
+        captions["carriage"] = std::string(captionCarriageName(s.captions.carriage));
+    }
+    Json out{{"presetId", s.presetId},
                 {"container", containerName(s.container)},
                 {"video", std::move(video)},
                 {"audio", std::move(audio)},
@@ -614,6 +646,11 @@ Json settingsToJson(const ExportSettings& s) {
                 {"metadata", metadataJson(s.metadata)},
                 {"subtitles", {{"enabled", s.subtitles.enabled}, {"language", s.subtitles.language}}},
                 {"render", renderJson(s.render)}};
+    // 0.6 (#73): MXF delivery options, for MXF settings or when set.
+    if (isMxf(s.container) || s.mxf != MxfSettings{}) {
+        out["mxf"] = Json{{"audioLayout", std::string(mxfAudioLayoutName(s.mxf.audioLayout))}, {"reelName", s.mxf.reelName}};
+    }
+    return out;
 }
 
 std::expected<ExportSettings, Error> settingsFromJson(const Json& j) {
@@ -661,6 +698,20 @@ std::expected<ExportSettings, Error> settingsFromJson(const Json& j) {
         WABCUT_TRY(getIntAs(*v, "keyframeInterval", vs.keyframeInterval.value, 1, Ticks::fromSeconds(3600).value, p));
         WABCUT_TRY(getEnum(*v, "dynamicRange", vs.dynamicRange, dynamicRangeFromName, p));
         WABCUT_TRY(getBool(*v, "exportAsSequence", vs.exportAsSequence, p));
+        // 0.6 (#72): the output colour space and SDR Conform.
+        WABCUT_TRY(getEnum(*v, "outputSpace", vs.outputSpace, outputColorSpaceFromString, p));
+        if (const Json* c = member(*v, "sdrConform")) {
+            const std::string cp = p + ".sdrConform";
+            WABCUT_TRY(requireObject(*c, cp));
+            SdrConform conform;
+            WABCUT_TRY(getBool(*c, "enabled", conform.enabled, cp));
+            WABCUT_TRY(getDouble(*c, "targetPeakNits", conform.targetPeakNits, SdrConform::kMinNits, SdrConform::kMaxNits, cp));
+            WABCUT_TRY(getDouble(*c, "paperWhiteNits", conform.paperWhiteNits, SdrConform::kMinNits, SdrConform::kMaxNits, cp));
+            WABCUT_TRY(getEnum(*c, "toneMap", conform.toneMap, toneMapOperatorFromString, cp));
+            WABCUT_TRY(getEnum(*c, "gamut", conform.gamut, gamutMappingFromString, cp));
+            WABCUT_TRY(getBool(*c, "legalRange", conform.legalRange, cp));
+            vs.sdrConform = conform;
+        }
     }
     if (const Json* a = member(j, "audio")) {
         const std::string p = "audio";
@@ -688,6 +739,17 @@ std::expected<ExportSettings, Error> settingsFromJson(const Json& j) {
         }
         WABCUT_TRY(getBool(*c, "karaoke", s.captions.karaoke, "captions"));
         WABCUT_TRY(getString(*c, "redactedWord", s.captions.redactedWord, 64, "captions"));
+        // 0.6 (#73): the 608 display mode and the embedded caption choices.
+        WABCUT_TRY(getIntAs(*c, "display608", s.captions.display608, 0, 4, "captions"));
+        WABCUT_TRY(getEnum(*c, "standard", s.captions.standard, captionStandardFromName, "captions"));
+        WABCUT_TRY(getIntAs(*c, "channel608", s.captions.channel608, 1, 4, "captions"));
+        WABCUT_TRY(getIntAs(*c, "service708", s.captions.service708, 1, 63, "captions"));
+        WABCUT_TRY(getEnum(*c, "carriage", s.captions.carriage, captionCarriageFromName, "captions"));
+    }
+    if (const Json* m = member(j, "mxf")) { // 0.6 (#73)
+        WABCUT_TRY(requireObject(*m, "mxf"));
+        WABCUT_TRY(getEnum(*m, "audioLayout", s.mxf.audioLayout, mxfAudioLayoutFromName, "mxf"));
+        WABCUT_TRY(getString(*m, "reelName", s.mxf.reelName, 64, "mxf"));
     }
     if (const Json* fx = member(j, "effects")) {
         WABCUT_TRY(readEffects(*fx, s.effects, "effects"));
@@ -750,6 +812,27 @@ std::expected<void, Error> applyOverrides(ExportSettings& s, const Json& overrid
         }
         if (s.audio.codec == AudioCodec::Mp3 && *c != Container::Mp3) {
             s.audio.codec = AudioCodec::Aac;
+        }
+        // 0.6 (#73): MXF carries DNxHD / DNxHR (OP-Atom: only those), XDCAM HD422 or AVC-Intra 100, and PCM at 48 kHz;
+        // the broadcast codecs go back to H.264 in the delivery formats that do not take them.
+        const VideoCodec vc = s.video.codec;
+        if (isMxf(*c)) {
+            s.video.enabled = true;
+            if (vc != VideoCodec::DnxHR && (*c == Container::MxfOpAtom || (vc != VideoCodec::Xdcam && vc != VideoCodec::AvcIntra))) {
+                s.video.codec = VideoCodec::DnxHR;
+                s.video.encoder = "auto";
+                s.video.dnxhrProfile = DnxhrProfile::Hq;
+                s.video.pixelFormat = OutputPixelFormat::Yuv422p;
+            }
+            if (s.audio.codec != AudioCodec::Pcm16 && s.audio.codec != AudioCodec::Pcm24) {
+                s.audio.codec = AudioCodec::Pcm24;
+            }
+            s.audio.sampleRate = 48000;
+            s.subtitles.enabled = false;
+        } else if ((vc == VideoCodec::Xdcam || vc == VideoCodec::AvcIntra) && *c != Container::Mov) {
+            s.video.codec = VideoCodec::H264;
+            s.video.encoder = "auto";
+            s.video.pixelFormat = OutputPixelFormat::Yuv420p;
         }
     }
     if (has("videoCodec")) {
@@ -857,6 +940,16 @@ std::expected<void, Error> applyOverrides(ExportSettings& s, const Json& overrid
         }
         s.video.maxBitrate = *cap == 0 ? s.video.bitrate * 3 / 2 : std::llround(*cap * 1e6);
     }
+    if (has("targetMB")) { // P1 (#28): a size limit for any export (H.264, HEVC, AV1, VP9); 0 = off (the preset's own)
+        const auto mb = numberOf(value("targetMB"));
+        if (!mb || *mb < 0 || *mb > 4000 || (*mb > 0 && *mb < 1)) {
+            return std::unexpected(badOverride("targetMB", value("targetMB")));
+        }
+        if (*mb > 0) {
+            s.video.rateControl = RateControl::TargetSize;
+            s.video.targetBytes = std::llround(*mb * 1e6); // decimal megabytes, as upload limits are stated
+        }
+    }
     if (has("frameRate")) { // M5o: the output frame rate; 0 = the sequence's
         const auto rate = parseFrameRate(value("frameRate"));
         if (!rate) {
@@ -911,6 +1004,59 @@ std::expected<void, Error> applyOverrides(ExportSettings& s, const Json& overrid
         }
         s.captions.mode = *mode;
     }
+    // 0.6 (#73): embedded captions - the standards, the 608 channel, the 708 service, where they go - and the 608 / 708
+    // display mode (also SCC and MCC sidecars).
+    if (has("captionStandard")) {
+        const auto v = captionStandardFromName(textOf(value("captionStandard")));
+        if (!v) {
+            return std::unexpected(badOverride("captionStandard", value("captionStandard")));
+        }
+        s.captions.standard = *v;
+    }
+    if (has("cc608Channel")) {
+        const auto ch = numberOf(value("cc608Channel"));
+        if (!ch || *ch < 1 || *ch > 4 || *ch != std::floor(*ch)) {
+            return std::unexpected(badOverride("cc608Channel", value("cc608Channel")));
+        }
+        s.captions.channel608 = static_cast<std::uint8_t>(*ch);
+    }
+    if (has("cc708Service")) {
+        const auto sv = numberOf(value("cc708Service"));
+        if (!sv || *sv < 1 || *sv > 63 || *sv != std::floor(*sv)) {
+            return std::unexpected(badOverride("cc708Service", value("cc708Service")));
+        }
+        s.captions.service708 = static_cast<std::uint8_t>(*sv);
+    }
+    if (has("captionCarriage")) {
+        const auto v = captionCarriageFromName(textOf(value("captionCarriage")));
+        if (!v) {
+            return std::unexpected(badOverride("captionCarriage", value("captionCarriage")));
+        }
+        s.captions.carriage = *v;
+    }
+    if (has("captionDisplay")) { // "pop-on", "roll-up-2", "roll-up-3", "roll-up-4", "paint-on"
+        static constexpr std::string_view kDisplays[] = {"pop-on", "roll-up-2", "roll-up-3", "roll-up-4", "paint-on"};
+        const std::string d = textOf(value("captionDisplay"));
+        const auto it = std::find(std::begin(kDisplays), std::end(kDisplays), d);
+        if (it == std::end(kDisplays)) {
+            return std::unexpected(badOverride("captionDisplay", value("captionDisplay")));
+        }
+        s.captions.display608 = static_cast<std::uint8_t>(it - std::begin(kDisplays));
+    }
+    if (has("reelName")) { // 0.6 (#73): MXF's tape / reel name
+        const std::string reel = textOf(value("reelName"));
+        if (reel.size() > 64) {
+            return std::unexpected(badOverride("reelName", value("reelName")));
+        }
+        s.mxf.reelName = reel;
+    }
+    if (has("mxfAudioLayout")) {
+        const auto layout = mxfAudioLayoutFromName(textOf(value("mxfAudioLayout")));
+        if (!layout) {
+            return std::unexpected(badOverride("mxfAudioLayout", value("mxfAudioLayout")));
+        }
+        s.mxf.audioLayout = *layout;
+    }
     if (has("subtitles")) { // 0.2: a soft subtitle track inside the file
         if (value("subtitles").is_object()) {
             if (auto ok = readSubtitles(value("subtitles"), s.subtitles, "subtitles"); !ok) {
@@ -931,9 +1077,9 @@ std::expected<void, Error> applyOverrides(ExportSettings& s, const Json& overrid
             s.audio.codec = *codec;
         }
     }
-    if (has("audioChannels")) { // A.9: 0 = as the master, 1, 2, 6
+    if (has("audioChannels")) { // A.9: 0 = as the master, 1, 2, 6; 0.6 (#73): 4 and 8 (MXF tracks)
         const auto ch = numberOf(value("audioChannels"));
-        if (!ch || (*ch != 0 && *ch != 1 && *ch != 2 && *ch != 6)) {
+        if (!ch || (*ch != 0 && *ch != 1 && *ch != 2 && *ch != 4 && *ch != 6 && *ch != 8)) {
             return std::unexpected(badOverride("audioChannels", value("audioChannels")));
         }
         s.audio.channels = static_cast<int>(*ch);
@@ -951,6 +1097,13 @@ std::expected<void, Error> applyOverrides(ExportSettings& s, const Json& overrid
             return std::unexpected(badOverride("audioBitrateKbps", value("audioBitrateKbps")));
         }
         s.audio.bitrate = std::llround(*b * 1000.0);
+    }
+    if (has("outputSpace")) { // 0.6 (#72): auto (the sequence's), rec709, rec2020, p3-d65, rec2100-pq, rec2100-hlg
+        const auto space = outputColorSpaceFromString(textOf(value("outputSpace")));
+        if (!space) {
+            return std::unexpected(badOverride("outputSpace", value("outputSpace")));
+        }
+        s.video.outputSpace = *space;
     }
     if (has("dynamicRange")) { // 0.2 (I.9): Auto (the sequence's colour setup), SDR, HDR PQ or HDR HLG
         const auto d = dynamicRangeFromName(textOf(value("dynamicRange")));

@@ -357,9 +357,12 @@ CommandOutput loudness(ExecutionContext& c) {
     AudioServices& services = servicesOf(c, true, false);
     const auto range = rangeOf(c);
     Json results = Json::array();
+    const double oversAbove = c.has("oversAbove") ? c.number("oversAbove") : -1.0; // 0.6 (#54)
     for (const NamedTarget& t : loudnessTargets(c)) {
         c.checkpoint("measuring loudness");
-        Json r = statsJson(measureOrFail(c, services, c.state(), t.target, range));
+        const LoudnessStats stats = measureOrFail(c, services, c.state(), t.target, range);
+        Json r = statsJson(stats);
+        r.update(whereJson(c, stats, oversAbove));
         r["target"] = t.label;
         results.push_back(std::move(r));
     }
@@ -1276,12 +1279,17 @@ void registerAudioCommands(command::CommandRegistry& registry) {
                    Json{{"target", "A2"}, {"param", "volume"}, {"index", 1}, {"time", "00:00:12:00"}}, {}, moveKeyframe});
     add(registry, {"audio.loudness", 1, "Measure Loudness",
                    "EBU R128 / ITU-R BS.1770 loudness as it renders: integrated LUFS, loudness range (LU), true peak "
-                   "(dBTP), sample peak, loudest momentary and short-term LUFS. Targets: the mix (with mute/solo and the "
-                   "master effects: what export writes), a track (its clips and track effects) or a clip on its own.",
+                   "(dBTP), sample peak, loudest momentary and short-term LUFS, and where they are (maxMomentaryAt, "
+                   "maxShortTermAt: where the loudest 400 ms / 3 s window starts; truePeakAt: the 100 ms block of the "
+                   "true peak; each a timecode and ticks on the timeline) with the true-peak overs above \"oversAbove\" "
+                   "(default -1 dBTP; at most 200 listed, overCount counts them all). Targets: the mix (with mute/solo "
+                   "and the master effects: what export writes), a track (its clips and track effects) or a clip on its "
+                   "own.",
                    Capability::MediaAnalysis,
                    withSequence({{"targets", schema::array(Json{{"type", Json::array({"string", "object"})},
                                                                {"description", "\"mix\", {\"clip\": id} or {\"track\": \"A1\"}."}},
                                                           "What to measure (default: the mix).", 1)},
+                                 {"oversAbove", schema::number("List true-peak overs above this ceiling in dBTP (default -1; -6..0).", -6.0, 0.0)},
                                  {"from", rangeFrom},
                                  {"to", rangeTo}}),
                    Json{{"targets", Json::array({"mix", Json{{"track", "A1"}}})}}, {}, loudness});

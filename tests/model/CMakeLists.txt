@@ -36,6 +36,7 @@ wabcut_add_test_suite(model
         test_graphics.cpp
         test_graphics_roll.cpp
         test_graphics_styles.cpp
+        test_graphics_text.cpp
         test_history.cpp
         test_keyframes.cpp
         test_layouts.cpp
@@ -43,6 +44,8 @@ wabcut_add_test_suite(model
         test_project_panel.cpp
         test_locked_links.cpp
         test_marks_snap.cpp
+        test_master_clip_effects.cpp
+        test_auditions.cpp
         test_media_locator.cpp
         test_media_paths.cpp
         test_merge.cpp

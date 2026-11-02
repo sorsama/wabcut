@@ -413,7 +413,7 @@ TEST_CASE("Editing: the menus, dialogs and History panel in the shell", "[app][e
     spin(100);
 
     // The File menu's entries and the clip menu's submenus.
-    for (const char* name : {"newSequenceFromClipMenuItem", "sequenceSettingsMenuItem", "historyMenuItem",
+    for (const char* name : {"newSequenceFromClipMenuItem", "sequenceSettingsMenuItem", "windowMenu_history",
                              "editingPreferencesMenuItem", "videoOptionsSubmenu", "replaceWithClipSubmenu",
                              "makeSubsequenceMenuItem", "joinThroughEditsMenuItem", "scaleToFrameSizeMenuItem",
                              "frameHoldOptionsMenuItem", "replaceMatchFrameMenuItem"}) {
@@ -423,7 +423,7 @@ TEST_CASE("Editing: the menus, dialogs and History panel in the shell", "[app][e
     QObject* host = shell.window->findChild<QObject*>(QStringLiteral("editingHost"));
     REQUIRE(host);
 
-    // Window > History: the panel lists the steps; a click on the first goes back to it.
+    // Window > History: the panel (a docked panel since 0.6) lists the steps; a click on the first goes back to it.
     controller->selectClip(clipKey(tl.clip("V1@0")));
     REQUIRE(editing->scaleToFrameSize({}, true).isEmpty());
     REQUIRE(editing->runCommand(QStringLiteral("window.history")));

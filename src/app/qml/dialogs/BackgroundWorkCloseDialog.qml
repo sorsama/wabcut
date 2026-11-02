@@ -24,6 +24,8 @@ WabcutDialog {
     readonly property bool rendering: MediaReadiness.rendering
     /// Quit When Done is offered: something runs that ends on its own.
     readonly property bool canWait: dialog.running > 0 || dialog.rendering
+    /// P1 (#20, 2C): the export queue comes back next time (ExportController.keepsQueue): Keep Queue and Quit.
+    readonly property bool keepsQueue: ExportController.keepsQueue
     /// The body (one paragraph, only the lines that apply).
     readonly property string message: {
         const j = dialog.jobs
@@ -49,7 +51,10 @@ WabcutDialog {
                 lines.push(j.currentState === "paused"
                            ? (paused === 1 ? qsTr("1 more export is paused.") : qsTr("%1 more exports are paused.").arg(paused))
                            : (paused === 1 ? qsTr("1 export is paused.") : qsTr("%1 exports are paused.").arg(paused)))
-            if (j.heldCount > 0)
+            if (j.heldCount > 0 && dialog.keepsQueue) // P1 (#20, 2C): the queue is kept across restarts
+                lines.push(j.heldCount === 1 ? qsTr("1 export waits for Start Queue: it is kept for next time.")
+                                             : qsTr("%1 exports wait for Start Queue: they are kept for next time.").arg(j.heldCount))
+            else if (j.heldCount > 0)
                 lines.push(j.heldCount === 1 ? qsTr("1 export waits for Start Queue.")
                                              : qsTr("%1 exports wait for Start Queue.").arg(j.heldCount))
         }
@@ -57,7 +62,9 @@ WabcutDialog {
             lines.push(MediaReadiness.renderProgress >= 0
                        ? qsTr("Render In to Out is at %1 %.").arg(Math.round(MediaReadiness.renderProgress * 100))
                        : qsTr("Render In to Out is running."))
-        if (dialog.exporting)
+        if (dialog.exporting && dialog.keepsQueue)
+            lines.push(qsTr("Keep Queue and Quit keeps the unfinished exports for next time: they wait for Start Queue, and one stopped mid-export comes back with Retry."))
+        else if (dialog.exporting)
             lines.push(qsTr("Exports that have not finished are lost when Wabcut closes."))
         if (dialog.rendering)
             lines.push(qsTr("Previews rendered so far are kept."))
@@ -75,6 +82,7 @@ WabcutDialog {
     signal keepOpenChosen()
     signal quitWhenDoneChosen()
     signal cancelAndQuitChosen()
+    signal keepQueueAndQuitChosen()
 
     // A button answered (Esc and a click outside are "Keep Wabcut Open").
     property bool answered: false
@@ -85,6 +93,8 @@ WabcutDialog {
             dialog.quitWhenDoneChosen()
         else if (which === "cancel")
             dialog.cancelAndQuitChosen()
+        else if (which === "keepQueue")
+            dialog.keepQueueAndQuitChosen()
         else
             dialog.keepOpenChosen()
     }
@@ -122,6 +132,14 @@ WabcutDialog {
             text: dialog.exporting ? qsTr("Cancel Exports and Quit")
                 : dialog.rendering ? qsTr("Stop Rendering and Quit") : qsTr("Quit")
             onClicked: dialog.choose("cancel")
+        },
+        PillButton {
+            objectName: "backgroundWorkKeepQueueAndQuit"
+            visible: dialog.exporting && dialog.keepsQueue
+            variant: "ghost"
+            text: qsTr("Keep Queue and Quit")
+            tooltip: qsTr("Quit now; the unfinished exports come back next time")
+            onClicked: dialog.choose("keepQueue")
         },
         PillButton {
             objectName: "backgroundWorkQuitWhenDone"

@@ -102,7 +102,8 @@ void quantize(const QImage& rgba, AVFrame* frame) {
 
 // ---- FFmpeg's image encoders ----
 
-std::expected<void, Error> encodeWithFfmpeg(const QImage& rgba, const std::filesystem::path& file, StillFormat format) {
+std::expected<void, Error> encodeWithFfmpeg(const QImage& rgba, const std::filesystem::path& file, StillFormat format,
+                                            int jpegScale = 2) {
     media::detail::ensureFfmpegLogging();
     AVCodecID id = AV_CODEC_ID_NONE;
     AVPixelFormat pixels = AV_PIX_FMT_NONE;
@@ -149,8 +150,8 @@ std::expected<void, Error> encodeWithFfmpeg(const QImage& rgba, const std::files
     ctx->time_base = AVRational{1, 25};
     ctx->sample_aspect_ratio = AVRational{1, 1};
     if (format == StillFormat::Jpeg) {
-        ctx->flags |= AV_CODEC_FLAG_QSCALE; // high quality, as Premiere's JPEG frames
-        ctx->global_quality = FF_QP2LAMBDA * 2;
+        ctx->flags |= AV_CODEC_FLAG_QSCALE; // high quality (2), as Premiere's JPEG frames, unless asked otherwise
+        ctx->global_quality = FF_QP2LAMBDA * std::clamp(jpegScale, 2, 31);
         ctx->color_range = AVCOL_RANGE_JPEG;
     }
     if (format == StillFormat::Tiff) {
@@ -182,6 +183,9 @@ std::expected<void, Error> encodeWithFfmpeg(const QImage& rgba, const std::files
         sws_scale(sws.get(), src, stride, 0, rgba.height(), frame->data, frame->linesize);
     }
     frame->pts = 0;
+    if (format == StillFormat::Jpeg) {
+        frame->quality = ctx->global_quality; // QSCALE takes the frame's quantiser (as ffmpeg -q:v does)
+    }
 
     // One packet, into its file (image2; GIF has a muxer of its own for the header and trailer).
     const std::string path = pathToUtf8(file);
@@ -458,6 +462,84 @@ std::expected<void, Error> writeStill(const QImage& picture, const std::filesyst
     }
 }
 
+int jpegQscale(int quality) {
+    // 100 -> 2 (the best the encoder does), 1 -> 31; the IJG-style quality the dialogs show.
+    const int q = std::clamp(quality, 1, 100);
+    return std::clamp(static_cast<int>(std::lround(2.0 + (100.0 - q) * 29.0 / 99.0)), 2, 31);
+}
+
+QImage scaleStill(const QImage& picture, int width, int height, bool fill) {
+    if (picture.isNull() || width <= 0 || height <= 0 || (picture.width() == width && picture.height() == height)) {
+        return picture;
+    }
+    const QImage rgba = picture.format() == QImage::Format_RGBA8888 ? picture : picture.convertToFormat(QImage::Format_RGBA8888);
+    const QImage scaled = rgba.scaled(width, height, fill ? Qt::KeepAspectRatioByExpanding : Qt::KeepAspectRatio,
+                                      Qt::SmoothTransformation);
+    if (scaled.width() == width && scaled.height() == height) {
+        return scaled;
+    }
+    if (fill) { // the centre of the frame
+        return scaled.copy((scaled.width() - width) / 2, (scaled.height() - height) / 2, width, height);
+    }
+    QImage boxed(width, height, QImage::Format_RGBA8888); // the whole frame, black bars around it
+    boxed.fill(QColor(0, 0, 0, 255));
+    const int x = (width - scaled.width()) / 2;
+    const int y = (height - scaled.height()) / 2;
+    for (int row = 0; row < scaled.height(); ++row) {
+        std::memcpy(boxed.scanLine(y + row) + static_cast<std::ptrdiff_t>(x) * 4, scaled.constScanLine(row),
+                    static_cast<std::size_t>(scaled.width()) * 4);
+    }
+    return boxed;
+}
+
+std::expected<command::FrameExportServices::Written, Error>
+writeStill(const QImage& picture, const std::filesystem::path& file, StillFormat format, const StillOptions& options) {
+    if ((options.width > 0) != (options.height > 0) || options.width < 0 || options.height < 0 || options.width > 16384 ||
+        options.height > 16384) {
+        return std::unexpected(Error{ErrorCode::InvalidArgument, "set both the still's width and height (1..16384), or neither"});
+    }
+    if (picture.isNull() || picture.width() <= 0 || picture.height() <= 0) {
+        return std::unexpected(Error{ErrorCode::InvalidArgument, "no picture to write"});
+    }
+    const QImage sized = scaleStill(picture, options.width, options.height, options.fill);
+    command::FrameExportServices::Written out{file, sized.width(), sized.height()};
+    const auto sizeOf = [&]() -> std::int64_t {
+        std::error_code ec;
+        const auto bytes = std::filesystem::file_size(file, ec);
+        return ec ? 0 : static_cast<std::int64_t>(bytes);
+    };
+    if (format != StillFormat::Jpeg) {
+        if (auto written = writeStill(sized, file, format); !written) {
+            return std::unexpected(written.error());
+        }
+        out.bytes = sizeOf();
+        return out;
+    }
+    const QImage rgba = sized.format() == QImage::Format_RGBA8888 ? sized : sized.convertToFormat(QImage::Format_RGBA8888);
+    // JPEG: the quality asked for (95 by default when a size cap is set, else the encoder's best), then lower ones
+    // while the file is over the cap.
+    const int first = options.quality > 0 ? std::clamp(options.quality, 1, 100) : (options.maxBytes > 0 ? 95 : 100);
+    std::vector<int> qualities{first};
+    if (options.maxBytes > 0) {
+        for (const int q : {90, 85, 80, 75, 70, 60, 50, 40, 30}) {
+            if (q < first) {
+                qualities.push_back(q);
+            }
+        }
+    }
+    for (const int quality : qualities) {
+        if (auto written = encodeWithFfmpeg(rgba, file, StillFormat::Jpeg, jpegQscale(quality)); !written) {
+            return std::unexpected(written.error());
+        }
+        out.bytes = sizeOf();
+        out.quality = quality;
+        if (options.maxBytes <= 0 || out.bytes <= options.maxBytes) {
+            break;
+        }
+    }
+    return out;
+}
+
 std::shared_ptr<command::FrameExportServices> stillExportServices(command::FrameExportServices::Describer describer) {
     std::vector<std::string> names;
     for (const StillFormat f : stillFormats()) {
@@ -465,7 +547,8 @@ std::shared_ptr<command::FrameExportServices> stillExportServices(command::Frame
     }
     command::FrameExportServices::Writer writer =
         [](const ProjectState& state, SequenceId sequence, Ticks time, const std::filesystem::path& file,
-           const std::string& name) -> std::expected<command::FrameExportServices::Written, Error> {
+           const std::string& name,
+           const command::FrameExportServices::Options& options) -> std::expected<command::FrameExportServices::Written, Error> {
         const std::optional<StillFormat> format = stillFormatFromName(name);
         if (!format) {
             return std::unexpected(Error{ErrorCode::InvalidArgument, "unknown still format " + name});
@@ -474,10 +557,7 @@ std::shared_ptr<command::FrameExportServices> stillExportServices(command::Frame
         if (!picture) {
             return std::unexpected(picture.error());
         }
-        if (auto written = writeStill(*picture, file, *format); !written) {
-            return std::unexpected(written.error());
-        }
-        return command::FrameExportServices::Written{file, picture->width(), picture->height()};
+        return writeStill(*picture, file, *format, options);
     };
     return std::make_shared<command::FrameExportServices>(std::move(writer), std::move(describer), std::move(names));
 }

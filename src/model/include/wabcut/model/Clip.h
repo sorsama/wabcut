@@ -26,6 +26,7 @@
 namespace wabcut {
 
 struct Graphic; // Graphics.h
+struct Audition; // Auditions.h
 
 enum class StreamKind : std::uint8_t { Video, Audio };
 
@@ -138,6 +139,13 @@ struct ClipContent {
     /// 0.2, video clips: Premiere's Clip > Video Options > Field Options (FieldOptions.h). Saved only when not the
     /// default.
     ClipFieldOptions fieldOptions;
+    /// 0.6 (card #71): this clip plays without its media's Master Clip Effects (MediaItem::masterEffects); the other
+    /// clips of the media keep them. Saved only when set.
+    bool masterEffectsOff = false;
+    /// 0.6 (card #74): the clip is an audition (Auditions.h): its other takes. The clip itself is the active take, so
+    /// everything that plays, exports or edits it sees only that one. Immutable and shared; compared by value. Saved
+    /// only when set.
+    std::shared_ptr<const Audition> audition;
 
     bool operator==(const ClipContent& other) const;
 };
@@ -187,6 +195,9 @@ struct Clip {
     const Graphic* graphic() const { return content().graphic.get(); }
     /// I.9: the clip's input colour space override, or nullopt (Auto: from the stream's tags).
     std::optional<InputColorSpace> inputColorSpace() const { return content().inputColorSpace; }
+    /// 0.6: the clip's other takes when it is an audition (Auditions.h), or null.
+    const Audition* audition() const { return content().audition.get(); }
+    bool isAudition() const { return content().audition != nullptr; }
     /// Amount of source media the clip plays: [sourceIn, sourceOut). 0 for a freeze frame. A remapped clip: the
     /// curve time it spans (sourceIn is a curve time there).
     constexpr Ticks sourceDuration() const { return toSourceTicks(timelineRange.duration, speed); }
@@ -256,12 +267,15 @@ struct Clip {
     std::optional<Ticks> headRoom(Ticks start, std::optional<Ticks> end) const;
     std::optional<Ticks> tailRoom(Ticks start, std::optional<Ticks> end) const;
     /// Moves the clip's In point by `d` timeline ticks (positive = later), keeping the source under the rest
-    /// of the clip where it is: updates start, duration and sourceIn (direction-aware).
+    /// of the clip where it is: updates start, duration and sourceIn (direction-aware). An audition's takes follow
+    /// (Auditions.h): the audition then starts at the new In.
     void moveHead(Ticks d);
-    /// Moves the clip's Out point by `d` timeline ticks (positive = later), direction-aware.
+    /// Moves the clip's Out point by `d` timeline ticks (positive = later), direction-aware. An audition's takes
+    /// follow: the audition then ends at the new Out.
     void moveTail(Ticks d);
     /// Shortens this clip to [start, at) and returns [at, end) as a copy (same id: the caller sets one); both
-    /// keep showing the same source frames as before (direction-aware).
+    /// keep showing the same source frames as before (direction-aware). An audition: both pieces keep every take,
+    /// each over its own part.
     Clip splitOff(Ticks at);
 
     const ClipContent& content() const { return m_content ? *m_content : defaultContent(); }
@@ -305,6 +319,8 @@ struct Clip {
         next.effects = std::move(effects);
         setContent(std::move(next));
     }
+    /// The shared content block itself (null = default content): for copies that keep sharing it.
+    const std::shared_ptr<const ClipContent>& sharedContent() const { return m_content; }
     /// True when both clips share one content block (no deep compare).
     bool sharesContentWith(const Clip& other) const { return m_content == other.m_content; }
 

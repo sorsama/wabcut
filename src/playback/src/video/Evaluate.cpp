@@ -1,6 +1,7 @@
 #include <wabcut/playback/video/Evaluate.h>
 
 #include <wabcut/color/Looks.h>
+#include <wabcut/model/MasterClipEffects.h>
 #include <wabcut/model/Animations.h>
 #include <wabcut/model/Effects.h>
 #include <wabcut/model/FrameScaling.h>
@@ -498,11 +499,22 @@ std::shared_ptr<const render::GraphicImageSource> graphicPicturesOf(const Projec
     return files.empty() ? nullptr : std::make_shared<const FilePictures>(std::move(files));
 }
 
+/// The stack `clip` plays (0.6, card #71: its media's Master Clip Effects first), in `played` when that is not the clip's
+/// own stack. For the effects the evaluator plays outside the effect stack (Posterize Time, the stabilizers).
+const EffectStack& playedStackOf(const ProjectState& project, const Clip& clip, EffectStack& played) {
+    if (!playsMasterEffects(project, clip)) {
+        return clip.effects();
+    }
+    played = playedEffects(project, clip, EffectKind::Video);
+    return played;
+}
+
 /// Posterize Time (0.2): "wabcut.time.posterizeTime" plays the clip at its own Frame Rate - the timeline time held on
 /// steps of 1 / rate from the clip's start (the picture and every effect of the clip follow). Its first enabled
-/// instance decides; `time` itself without one.
-Ticks posterizedTime(const Clip& clip, Ticks time) {
-    for (const EffectInstance& e : clip.effects()) {
+/// instance decides (fix F1A: a Master Clip Effect's too); `time` itself without one.
+Ticks posterizedTime(const ProjectState& project, const Clip& clip, Ticks time) {
+    EffectStack played;
+    for (const EffectInstance& e : playedStackOf(project, clip, played)) {
         if (!e.enabled || e.effect != kPosterizeTimeEffect) {
             continue;
         }
@@ -851,6 +863,13 @@ void evaluateEffectStack(std::span<const EffectInstance> stack, Ticks curveTime,
 void evaluateEffects(const Clip& clip, Ticks curveTime, std::vector<render::LayerEffect>& out, int& bypassed,
                      const color::LutResolver* luts, double frameAspect, std::optional<Ticks> mediaTime,
                      const EffectContext* context) {
+    if (context && context->project && playsMasterEffects(*context->project, clip)) {
+        // 0.6 (card #71): the media's Master Clip Effects play first (MasterClipEffects.h), at the same curve time (media
+        // time) as the clip's own.
+        const EffectStack played = playedEffects(*context->project, clip, EffectKind::Video);
+        evaluateEffectStack(played, curveTime, out, bypassed, luts, frameAspect, mediaTime, context);
+        return;
+    }
     evaluateEffectStack(clip.effects(), curveTime, out, bypassed, luts, frameAspect, mediaTime, context);
 }
 
@@ -1904,10 +1923,12 @@ struct Stabilization {
     bool synthesizeEdges = false;
 };
 
-std::optional<Stabilization> stabilizationOf(const Clip& clip, Ticks curveTime, const VideoStreamInfo& stream) {
+std::optional<Stabilization> stabilizationOf(const ProjectState& project, const Clip& clip, Ticks curveTime,
+                                            const VideoStreamInfo& stream) {
     const EffectInstance* warp = nullptr;
     const EffectInstance* shutter = nullptr;
-    for (const EffectInstance& e : clip.effects()) {
+    EffectStack played; // fix F1A: a Master Clip Effect's stabilizer plays too (its keys are media time, as the clip's)
+    for (const EffectInstance& e : playedStackOf(project, clip, played)) {
         if (!e.enabled || !isEvaluable(e, EffectKind::Video)) {
             continue;
         }
@@ -2199,7 +2220,7 @@ int appendClip(const Level& level, const Clip& clip, Ticks time, int track, rend
     if (level.budget && --*level.budget < 0) {
         return -1; // past the frame's layer budget
     }
-    time = posterizedTime(clip, time); // 0.2 Posterize Time: the clip held at its own frame rate
+    time = posterizedTime(level.project, clip, time); // 0.2 Posterize Time: the clip held at its own frame rate
     if (!clip.isNested()) {
         auto spec = layerOf(level.project, clip, time, track, canvas, level.preview, level.luts, level.pathSpan(),
                             level.sequence, interpolate);
@@ -2213,7 +2234,7 @@ int appendClip(const Level& level, const Clip& clip, Ticks time, int track, rend
         if (needsDecode(*spec) && spec->item && spec->streamIndex >= 0 &&
             spec->streamIndex < static_cast<int>(spec->item->info.video.size())) {
             const VideoStreamInfo& stream = spec->item->info.video[static_cast<std::size_t>(spec->streamIndex)];
-            if (const auto stabilization = stabilizationOf(clip, curveTimeAround(clip, time), stream)) {
+            if (const auto stabilization = stabilizationOf(level.project, clip, curveTimeAround(clip, time), stream)) {
                 const int head = static_cast<int>(unit.size());
                 appendStabilizerGroup(std::move(*spec), *stabilization, unit); // P.2 Warp Stabilizer, Rolling Shutter Repair
                 return head;

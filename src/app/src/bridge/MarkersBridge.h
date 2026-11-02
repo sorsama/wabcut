@@ -90,13 +90,34 @@ public:
     Q_INVOKABLE bool goToPrevious();
     /// Moves the playhead to the marker (clip scope: where the primary clip shows it).
     Q_INVOKABLE bool seek(int index);
-    /// The sequence's markers as "csv" or "youtube": { text, count, warnings: [...] }.
-    Q_INVOKABLE QVariantMap exportText(const QString& format) const;
-    /// Writes exportText(format) to `file` (UTF-8); returns the path written, or "" (see `message`).
-    Q_INVOKABLE QString exportToFile(const QString& format, const QUrl& file);
+    /// The sequence's markers as "csv" or "youtube": { text, count, warnings: [...] }. P1 (#24): `range` "inOut" keeps
+    /// the markers inside the In/Out marks (YouTube times from the In mark; "" / "sequence" = all), `chaptersOnly` uses
+    /// chapter markers only.
+    Q_INVOKABLE QVariantMap exportText(const QString& format, const QString& range = QString(), bool chaptersOnly = false) const;
+    /// Writes exportText(format, range, chaptersOnly) to `file` (UTF-8); returns the path written, or "" (see `message`).
+    Q_INVOKABLE QString exportToFile(const QString& format, const QUrl& file, const QString& range = QString(),
+                                     bool chaptersOnly = false);
     /// Runs a keymap command this bridge owns (marker.goToNext / goToPrevious / clearSelected / clearAll); false for
     /// others.
     Q_INVOKABLE bool runCommand(const QString& commandId);
+
+    // ---- 0.6 (P1 round, stream 1A): Edit Marker..., Add Chapter Marker..., M on a marker opens it ----
+    /// The marker M would open instead of adding one: a sequence marker starting on the playhead's frame, or (with
+    /// `timelineFocused` and a selected video clip under the playhead, where M adds a clip marker) a clip marker on that
+    /// clip's source frame there. { scope: "sequence" | "clip", index } or {}.
+    Q_INVOKABLE QVariantMap markerAtPlayhead(bool timelineFocused = false) const;
+    /// Add Chapter Marker...: a sequence marker of type chapter at the playhead, one undo step. Returns its index (the
+    /// sequence scope), or -1 (see `message`).
+    Q_INVOKABLE int addChapterMarker();
+    /// The keymap commands Main routes here for the editor (marker.edit, marker.addChapter).
+    static bool handlesCommand(const QString& commandId);
+    /// { handled, enabled, reason } of those commands ("No marker at the playhead").
+    Q_INVOKABLE QVariantMap commandAvailability(const QString& commandId) const;
+
+    // ---- 0.6 (P1 round, stream 1C #24): YouTube chapters to the clipboard ----
+    /// Puts exportText(format, range, chaptersOnly) on the clipboard and says so in `message` ("Copied 5 chapters",
+    /// "Copied with warnings: ..."); false (and why in `message`) when there is nothing to copy.
+    Q_INVOKABLE bool copyToClipboard(const QString& format, const QString& range = QString(), bool chaptersOnly = false);
 
 signals:
     void markersChanged();

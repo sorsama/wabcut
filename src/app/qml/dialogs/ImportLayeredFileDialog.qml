@@ -83,6 +83,7 @@ WabcutDialog {
     }
     PillTabs {
         objectName: "layeredImportAs"
+        Accessible.name: qsTr("Import As") // P1 #61
         Layout.fillWidth: true
         compact: true
         model: dialog.modes.map(m => m.name)
@@ -99,6 +100,7 @@ WabcutDialog {
     }
     PillTabs {
         objectName: "layeredFootage"
+        Accessible.name: qsTr("Footage Dimensions") // P1 #61
         Layout.fillWidth: true
         compact: true
         visible: dialog.importAs === "layers" || dialog.importAs === "sequence"

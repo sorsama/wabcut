@@ -11,6 +11,8 @@ extern "C" {
 #include <algorithm>
 #include <cstring>
 #include <numeric>
+#include <optional>
+#include <utility>
 #include <vector>
 
 namespace wabcut::media {
@@ -302,6 +304,72 @@ struct AudioDecoder::Impl {
         return {};
     }
 
+    /// Where a seek on `s` for `absolute` lands by its index alone: the timestamp to seek `s` to and how far before
+    /// `absolute` the entry it finds lies. Nothing when the index cannot place it (fewer than two entries, or none at
+    /// or before it). Past the last entry, Matroska parses forward from that entry until the stream shows a later
+    /// one: up to the target for this stream, to the end of the file for a stream this decoder discards. So another
+    /// stream lands on the entry before its last one there (its last GOP, decoded forward).
+    struct IndexLanding {
+        std::int64_t stamp = 0;
+        Ticks gap{};
+    };
+    std::optional<IndexLanding> indexLanding(AVStream* s, Ticks absolute, std::int64_t ownStamp) const {
+        const bool own = s == stream;
+        const auto stamp = own ? std::optional<std::int64_t>(ownStamp) : toStreamTime(absolute, s->time_base);
+        const int entries = avformat_index_get_entries_count(s);
+        const AVIndexEntry* last = entries >= 2 ? avformat_index_get_entry(s, entries - 1) : nullptr;
+        if (!stamp || last == nullptr) {
+            return std::nullopt;
+        }
+        const bool pastLast = last->timestamp <= *stamp;
+        const AVIndexEntry* landing =
+            !pastLast ? avformat_index_get_entry_from_timestamp(s, *stamp, AVSEEK_FLAG_BACKWARD)
+                      : (own ? last : avformat_index_get_entry(s, entries - 2));
+        if (landing == nullptr) {
+            return std::nullopt;
+        }
+        const auto landed = toTicks(landing->timestamp, s->time_base);
+        const auto gap = landed && *landed <= absolute ? checkedSub(absolute, *landed) : std::nullopt;
+        if (!gap) {
+            return std::nullopt;
+        }
+        return IndexLanding{pastLast && !own ? landing->timestamp : *stamp, *gap};
+    }
+
+    /// This stream, or the video or audio stream whose index lands closest before `absolute` (ties: this one).
+    std::pair<AVStream*, std::optional<IndexLanding>> closestIndexFor(Ticks absolute, std::int64_t ownStamp) const {
+        std::pair<AVStream*, std::optional<IndexLanding>> best{stream, indexLanding(stream, absolute, ownStamp)};
+        for (unsigned i = 0; i < fmt->nb_streams; ++i) {
+            AVStream* s = fmt->streams[i];
+            const AVMediaType type = s->codecpar->codec_type;
+            if (s == stream || (s->disposition & AV_DISPOSITION_ATTACHED_PIC) != 0 ||
+                (type != AVMEDIA_TYPE_VIDEO && type != AVMEDIA_TYPE_AUDIO)) {
+                continue;
+            }
+            const std::optional<IndexLanding> landing = indexLanding(s, absolute, ownStamp);
+            if (landing && (!best.second || landing->gap < best.second->gap)) {
+                best = {s, landing};
+            }
+        }
+        return best;
+    }
+
+    /// The stream to position the demuxer with for `absolute`, and its timestamp there: normally this stream. But a
+    /// container may index one track only: Matroska's Cues list the video track's keyframes (FFmpeg's and OBS's
+    /// muxers, mkvmerge's default), and asked to seek an audio stream there FFmpeg falls back to reading the file
+    /// from its start up to the target (av_seek_frame's generic search): gigabytes for a jump into a long recording,
+    /// again for every new decoder and every track, so a 2-hour OBS MKV seemed to hang on its first jump (F2P,
+    /// 0.6). Seeking the indexed track to the same time puts the demuxer on the cluster of the keyframe at or before
+    /// it, and this stream's packets for that time follow (decodeMore() drops what lies before the target).
+    std::pair<int, std::int64_t> seekStreamFor(Ticks absolute, std::int64_t ownStamp) {
+        const auto closest = closestIndexFor(absolute, ownStamp); // the Cues are loaded at open (loadSeekIndex)
+        if (closest.first != stream && closest.second) {
+            ++stats.indexedSeeks;
+            return {closest.first->index, closest.second->stamp};
+        }
+        return {streamIndex, ownStamp}; // this stream's own index (or the demuxer's own search)
+    }
+
     std::expected<void, Error> seekRaw(std::int64_t outputSample) {
         const auto target = framesToTicks(outputSample, Rate{outRate, 1}, Rounding::Floor);
         const auto absolute = target ? checkedAdd(*target, origin) : std::nullopt;
@@ -310,7 +378,11 @@ struct AudioDecoder::Impl {
             return std::unexpected(Error{ErrorCode::InvalidArgument, "Seek target out of range"});
         }
         const std::int64_t ts = *stamp;
-        int r = av_seek_frame(fmt.get(), streamIndex, ts, AVSEEK_FLAG_BACKWARD);
+        const auto [seekStream, seekStamp] = seekStreamFor(*absolute, ts);
+        int r = av_seek_frame(fmt.get(), seekStream, seekStamp, AVSEEK_FLAG_BACKWARD);
+        if (r < 0 && seekStream != streamIndex) {
+            r = av_seek_frame(fmt.get(), streamIndex, ts, AVSEEK_FLAG_BACKWARD);
+        }
         if (r < 0) {
             r = avformat_seek_file(fmt.get(), streamIndex, INT64_MIN, ts, ts, 0);
         }
@@ -464,6 +536,9 @@ AudioDecoder::open(const std::string& path, int streamIndex, Rate outputRate, Ch
         impl->fmt->streams[i]->discard =
             static_cast<int>(i) == impl->streamIndex ? AVDISCARD_DEFAULT : AVDISCARD_ALL;
     }
+    // F2P (0.6): Matroska's Cues now, so seekStreamFor() can use the video track's index. A failed seek here is
+    // harmless: the first read seeks anyway.
+    (void)loadSeekIndex(impl->fmt.get(), impl->stream);
 
     impl->codec = avcodec_find_decoder(impl->stream->codecpar->codec_id);
     if (!impl->codec) {
@@ -513,7 +588,11 @@ const AudioStreamInfo& AudioDecoder::streamInfo() const {
 }
 
 AudioDecoderStats AudioDecoder::stats() const {
-    return m_impl->stats;
+    AudioDecoderStats s = m_impl->stats;
+    if (m_impl->fmt && m_impl->fmt->pb) {
+        s.bytesRead = static_cast<std::uint64_t>(std::max<std::int64_t>(0, m_impl->fmt->pb->bytes_read));
+    }
+    return s;
 }
 
 } // namespace wabcut::media

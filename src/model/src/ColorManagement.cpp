@@ -17,7 +17,7 @@ struct ModeName {
     std::string_view description;
 };
 // Premiere Pro's Color Setup presets (Sequence Settings > Color), in its menu order.
-constexpr std::array<ModeName, 6> kModes{{
+constexpr std::array<ModeName, 7> kModes{{
     {ColorManagementMode::DisplayRec709, "rec709", "Direct Rec.709 (SDR)",
      "Rec.709 working space and output. SDR media passes through; HDR and log media are tone-mapped into SDR on input."},
     {ColorManagementMode::HdrHlg, "hdr-hlg", "Direct HLG (HDR)",
@@ -31,22 +31,54 @@ constexpr std::array<ModeName, 6> kModes{{
      "transforms tone-map the result."},
     {ColorManagementMode::WideGamut, "wide-gamut", "Wide Gamut (No Tone Mapping)",
      "The ACEScg working space with a straight conversion to the output: anything above the output's white is clipped."},
+    {ColorManagementMode::WideGamutMinimal, "wide-gamut-minimal", "Wide Gamut (Minimal Tone Mapping)",
+     "The ACEScg working space. SDR media and graphics pass unchanged; camera log and HDR media are gamut compressed and "
+     "only their highlights are rolled off into white."},
     {ColorManagementMode::Disabled, "off", "Disable Color Management",
      "No conversions: every picture is shown as its code values say, HDR and log media included (grade them by hand "
      "with LUTs)."},
 }};
 
-constexpr std::array<ColorManagementMode, 6> kModeMenu{
-    ColorManagementMode::DisplayRec709, ColorManagementMode::HdrHlg,    ColorManagementMode::HdrPq,
-    ColorManagementMode::Aces13,        ColorManagementMode::WideGamut, ColorManagementMode::Disabled,
+constexpr std::array<ColorManagementMode, 7> kModeMenu{
+    ColorManagementMode::DisplayRec709,    ColorManagementMode::HdrHlg,    ColorManagementMode::HdrPq,
+    ColorManagementMode::Aces13,           ColorManagementMode::WideGamutMinimal,
+    ColorManagementMode::WideGamut,        ColorManagementMode::Disabled,
 };
+
+// 0.6: output colour spaces, SDR Conform's operators and gamut mappings.
+struct OutputSpaceName {
+    OutputColorSpace space;
+    std::string_view id;
+    std::string_view display;
+};
+constexpr std::array<OutputSpaceName, 6> kOutputSpaces{{
+    {OutputColorSpace::Automatic, "auto", "Automatic"},
+    {OutputColorSpace::Rec709, "rec709", "Rec.709"},
+    {OutputColorSpace::Rec2020, "rec2020", "Rec.2020 (SDR)"},
+    {OutputColorSpace::P3D65, "p3-d65", "P3-D65"},
+    {OutputColorSpace::Rec2100Pq, "rec2100-pq", "Rec.2100 PQ"},
+    {OutputColorSpace::Rec2100Hlg, "rec2100-hlg", "Rec.2100 HLG"},
+}};
+constexpr std::array<OutputColorSpace, 6> kOutputSpaceMenu{OutputColorSpace::Automatic, OutputColorSpace::Rec709,
+                                                           OutputColorSpace::Rec2020,   OutputColorSpace::P3D65,
+                                                           OutputColorSpace::Rec2100Pq, OutputColorSpace::Rec2100Hlg};
+constexpr std::array<std::pair<ToneMapOperator, std::pair<std::string_view, std::string_view>>, 3> kOperators{{
+    {ToneMapOperator::Bt2390, {"bt2390", "BT.2390"}},
+    {ToneMapOperator::Aces, {"aces", "ACES"}},
+    {ToneMapOperator::Reinhard, {"reinhard", "Reinhard"}},
+}};
+constexpr std::array<std::pair<GamutMapping, std::pair<std::string_view, std::string_view>>, 3> kGamutMappings{{
+    {GamutMapping::AcesRgc, {"aces-rgc", "ACES gamut compression"}},
+    {GamutMapping::Saturation, {"saturation", "Saturation"}},
+    {GamutMapping::Clip, {"clip", "Clip"}},
+}};
 
 struct SpaceName {
     InputColorSpace space;
     std::string_view id;
     std::string_view display;
 };
-constexpr std::array<SpaceName, 18> kSpaces{{
+constexpr std::array<SpaceName, 27> kSpaces{{
     {InputColorSpace::Rec709, "rec709", "Rec.709"},
     {InputColorSpace::Srgb, "srgb", "sRGB"},
     {InputColorSpace::LinearRec709, "linear-rec709", "Linear Rec.709"},
@@ -65,15 +97,29 @@ constexpr std::array<SpaceName, 18> kSpaces{{
     {InputColorSpace::CanonLog2, "canon-log2", "Canon Log 2 / Cinema Gamut"},
     {InputColorSpace::RedLog3G10, "red-log3g10", "RED Log3G10 / REDWideGamutRGB"},
     {InputColorSpace::AcesCct, "acescct", "ACEScct"},
+    // 0.6
+    {InputColorSpace::DLogDGamut, "d-log", "DJI D-Log / D-Gamut"},
+    {InputColorSpace::FLogFGamut, "f-log", "Fujifilm F-Log / F-Gamut"},
+    {InputColorSpace::FLog2FGamut, "f-log2", "Fujifilm F-Log2 / F-Gamut"},
+    {InputColorSpace::NLogNGamut, "n-log", "Nikon N-Log / N-Gamut"},
+    {InputColorSpace::SLog2SGamut, "s-log2", "Sony S-Log2 / S-Gamut"},
+    {InputColorSpace::SLog2SGamut3Cine, "s-log2-cine", "Sony S-Log2 / S-Gamut3.Cine"},
+    {InputColorSpace::CanonLogCinemaGamut, "canon-log", "Canon Log / Cinema Gamut"},
+    {InputColorSpace::LLogRec2020, "l-log", "Leica L-Log / Rec.2020"},
+    {InputColorSpace::RedLogFilm, "red-log-film", "RED Log Film / REDWideGamutRGB"},
 }};
 
-constexpr std::array<InputColorSpace, 18> kMenuOrder{
-    InputColorSpace::Rec709,       InputColorSpace::Srgb,         InputColorSpace::Rec2020,
-    InputColorSpace::Rec2100Pq,    InputColorSpace::Rec2100Hlg,   InputColorSpace::SLog3SGamut3Cine,
-    InputColorSpace::SLog3SGamut3, InputColorSpace::VLogVGamut,   InputColorSpace::LogC3,
-    InputColorSpace::LogC4,        InputColorSpace::CanonLog3,    InputColorSpace::CanonLog2,
-    InputColorSpace::RedLog3G10,   InputColorSpace::AppleLog,     InputColorSpace::LinearRec709,
-    InputColorSpace::AcesCg,       InputColorSpace::AcesCct,      InputColorSpace::Aces2065,
+// Menu order: the display spaces, the camera logs by maker, the scene-linear and ACES spaces.
+constexpr std::array<InputColorSpace, 27> kMenuOrder{
+    InputColorSpace::Rec709,           InputColorSpace::Srgb,             InputColorSpace::Rec2020,
+    InputColorSpace::Rec2100Pq,        InputColorSpace::Rec2100Hlg,       InputColorSpace::SLog3SGamut3Cine,
+    InputColorSpace::SLog3SGamut3,     InputColorSpace::SLog2SGamut3Cine, InputColorSpace::SLog2SGamut,
+    InputColorSpace::VLogVGamut,       InputColorSpace::LogC3,            InputColorSpace::LogC4,
+    InputColorSpace::CanonLog3,        InputColorSpace::CanonLog2,        InputColorSpace::CanonLogCinemaGamut,
+    InputColorSpace::RedLog3G10,       InputColorSpace::RedLogFilm,       InputColorSpace::AppleLog,
+    InputColorSpace::DLogDGamut,       InputColorSpace::FLogFGamut,       InputColorSpace::FLog2FGamut,
+    InputColorSpace::LLogRec2020,      InputColorSpace::NLogNGamut,       InputColorSpace::LinearRec709,
+    InputColorSpace::AcesCg,           InputColorSpace::AcesCct,          InputColorSpace::Aces2065,
 };
 
 const ModeName* modeEntry(ColorManagementMode mode) {
@@ -146,7 +192,16 @@ bool isCameraLog(InputColorSpace space) {
     case InputColorSpace::CanonLog2:
     case InputColorSpace::RedLog3G10:
     case InputColorSpace::AppleLog:
-    case InputColorSpace::AcesCct: return true;
+    case InputColorSpace::AcesCct:
+    case InputColorSpace::DLogDGamut:
+    case InputColorSpace::FLogFGamut:
+    case InputColorSpace::FLog2FGamut:
+    case InputColorSpace::NLogNGamut:
+    case InputColorSpace::SLog2SGamut:
+    case InputColorSpace::SLog2SGamut3Cine:
+    case InputColorSpace::CanonLogCinemaGamut:
+    case InputColorSpace::LLogRec2020:
+    case InputColorSpace::RedLogFilm: return true;
     default: return false;
     }
 }
@@ -203,6 +258,105 @@ std::optional<std::string_view> colorManagementProblem(const ColorManagement& m)
     }
     if (m.referenceWhiteNits >= m.peakNits) {
         return "the HDR reference white must be below the peak";
+    }
+    if (!std::isfinite(m.gamutCompressionStrength) || m.gamutCompressionStrength < 0.0 || m.gamutCompressionStrength > 1.0) {
+        return "the gamut compression strength must be 0 to 1";
+    }
+    if (const auto conform = sdrConformProblem(m.sdrConform)) {
+        return conform;
+    }
+    return std::nullopt;
+}
+
+std::string_view toString(OutputColorSpace space) {
+    for (const OutputSpaceName& s : kOutputSpaces) {
+        if (s.space == space) {
+            return s.id;
+        }
+    }
+    return "auto";
+}
+
+std::optional<OutputColorSpace> outputColorSpaceFromString(std::string_view text) {
+    for (const OutputSpaceName& s : kOutputSpaces) {
+        if (s.id == text) {
+            return s.space;
+        }
+    }
+    return std::nullopt;
+}
+
+std::string_view displayName(OutputColorSpace space) {
+    for (const OutputSpaceName& s : kOutputSpaces) {
+        if (s.space == space) {
+            return s.display;
+        }
+    }
+    return "Automatic";
+}
+
+std::span<const OutputColorSpace> allOutputColorSpaces() { return kOutputSpaceMenu; }
+
+std::string_view toString(ToneMapOperator op) {
+    for (const auto& [value, names] : kOperators) {
+        if (value == op) {
+            return names.first;
+        }
+    }
+    return "bt2390";
+}
+
+std::optional<ToneMapOperator> toneMapOperatorFromString(std::string_view text) {
+    for (const auto& [value, names] : kOperators) {
+        if (names.first == text) {
+            return value;
+        }
+    }
+    return std::nullopt;
+}
+
+std::string_view displayName(ToneMapOperator op) {
+    for (const auto& [value, names] : kOperators) {
+        if (value == op) {
+            return names.second;
+        }
+    }
+    return "BT.2390";
+}
+
+std::string_view toString(GamutMapping mapping) {
+    for (const auto& [value, names] : kGamutMappings) {
+        if (value == mapping) {
+            return names.first;
+        }
+    }
+    return "aces-rgc";
+}
+
+std::optional<GamutMapping> gamutMappingFromString(std::string_view text) {
+    for (const auto& [value, names] : kGamutMappings) {
+        if (names.first == text) {
+            return value;
+        }
+    }
+    return std::nullopt;
+}
+
+std::string_view displayName(GamutMapping mapping) {
+    for (const auto& [value, names] : kGamutMappings) {
+        if (value == mapping) {
+            return names.second;
+        }
+    }
+    return "ACES gamut compression";
+}
+
+std::optional<std::string_view> sdrConformProblem(const SdrConform& c) {
+    if (!std::isfinite(c.targetPeakNits) || c.targetPeakNits < SdrConform::kMinNits || c.targetPeakNits > SdrConform::kMaxNits) {
+        return "the SDR Conform target peak must be 48 to 400 nits";
+    }
+    if (!std::isfinite(c.paperWhiteNits) || c.paperWhiteNits < SdrConform::kMinNits || c.paperWhiteNits > SdrConform::kMaxNits) {
+        return "the SDR Conform paper white must be 48 to 400 nits";
     }
     return std::nullopt;
 }

@@ -6,6 +6,7 @@ set(wabcut_audio_edit_test_sources
     SyncTestSignals.h
     MusicTestSignals.h
     test_audio_commands.cpp
+    test_loudness_qc.cpp # 0.6 (P1 round, 2E, #54): where the loudest moments and the true-peak overs are
     test_essential_sound.cpp
     test_remix.cpp
     test_audio_sync.cpp

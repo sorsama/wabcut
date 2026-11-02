@@ -18,6 +18,11 @@ Panel {
     function focusContent() {
         tabs.forceActiveFocus(Qt.TabFocusReason)
     }
+    /// P1 round (#30, stream 1E): Edit > Find (Ctrl+F) while this panel is active - Browse's search.
+    function focusFind() {
+        tabs.currentIndex = 0
+        browsePage.focusFind()
+    }
     function openSaveDialog() {
         saveDialog.openForSelection()
     }
@@ -59,6 +64,7 @@ Panel {
             currentIndex: tabs.currentIndex
 
             GraphicsBrowsePage {
+                id: browsePage
                 onSaveRequested: root.openSaveDialog()
             }
             GraphicsEditPage {

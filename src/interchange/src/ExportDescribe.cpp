@@ -1,9 +1,14 @@
 // Export, step one (Exporters.h): a project's sequence and the sequences it plays as an IrDocument.
 
 #include "Exporters.h"
+#include "InterchangeEffects.h"
 
+#include <wabcut/interchange/CaptionTrackReport.h>
+
+#include <wabcut/model/Auditions.h>
 #include <wabcut/model/Effects.h>
 #include <wabcut/model/MediaLocator.h>
+#include <wabcut/model/Synthetic.h>
 #include <wabcut/model/Timecode.h>
 #include <wabcut/model/TitleOps.h>
 
@@ -113,6 +118,15 @@ private:
             media.markers.push_back(std::move(marker));
         }
         media.location = SourceLocation{m_ctx.fileLabel, "media '" + item.name + "'", 0};
+        if (item.isGenerator()) { // 0.6 (card #69): a synthetic item or an adjustment layer, no file
+            media.generator = IrGenerator{item.generator->kind, item.generator->params, {}};
+            media.reference = {};
+            media.reference.name = item.name;
+            const std::size_t index = m_out.ir.media.size();
+            m_out.ir.media.push_back(std::move(media));
+            m_mediaSlots.emplace(item.id.value, index);
+            return index;
+        }
         if (path.empty()) {
             m_ctx.add(ReportOutcome::Approximated, ReportCategory::Media,
                       "media '" + item.name + "' has no file path; it is written by name only (offline in the other editor)",
@@ -188,6 +202,11 @@ private:
             }
         }
         m_current = nullptr;
+        // 0.6 (#57): timeline files carry no caption track: the exported sequence's are reported (interchange.export can
+        // write them next to the file).
+        if (slot == 0 && m_ctx.report) {
+            reportCaptionTracks(s, m_ctx.fileLabel, "timeline files", *m_ctx.report);
+        }
         m_out.ir.sequences[slot] = std::move(seq);
     }
 
@@ -200,6 +219,7 @@ private:
         track.targeted = t.targeted;
         track.muted = t.muted;
         track.role = t.role;
+        track.effects = t.effects; // 0.6 (card #67): OTIO writes them as Effect objects
         track.location = SourceLocation{m_ctx.fileLabel, "'" + s.name + "' " + trackLabel(kind, index), 0};
         for (const Clip& c : t.clips) {
             if (auto clip = describeClip(s, c, kind, index)) {
@@ -279,7 +299,7 @@ private:
                     clip.effects.erase(style);
                 }
                 clip.title = std::move(title);
-            } else if (media->isGenerator()) {
+            } else if (media->isGenerator() && !syntheticOf(*media) && !isAdjustmentLayer(*media)) {
                 m_ctx.add(ReportOutcome::Dropped, ReportCategory::Graphic,
                           "'" + c.name() + "' is a " + (media->isGraphic() ? std::string("motion graphic") : media->generator->kind) +
                               " clip, which interchange formats cannot describe; its time is left as a gap",
@@ -301,6 +321,34 @@ private:
             speed.reversed = c.reversed && !c.isFreeze();
             speed.location = clip.location;
             clip.speed = speed;
+        }
+        if (const Audition* audition = c.audition()) {
+            // 0.6 (card #74): the other takes, each as the clip it would be when active (over the part of the
+            // audition's range its media covers), in take order; the writers that know auditions carry them.
+            clip.activeTake = audition->active;
+            for (std::size_t i = 0; i < audition->size(); ++i) {
+                if (i == audition->active) {
+                    continue;
+                }
+                Clip take = auditionTakeClip(c, i);
+                const TakeFit fit = takeFit(m_state, c, i, s.frameRate);
+                if (fit.head.value + fit.tail.value >= take.duration().value) {
+                    m_ctx.add(ReportOutcome::Dropped, ReportCategory::Clip,
+                              "take '" + take.name() + "' of audition '" + c.name() +
+                                  "' has no media inside the audition's range; not written",
+                              clip.location, s.name);
+                    continue;
+                }
+                if (fit.head.value > 0) {
+                    take.moveHead(fit.head);
+                }
+                if (fit.tail.value > 0) {
+                    take.moveTail(Ticks{-fit.tail.value});
+                }
+                if (auto alternate = describeClip(s, take, kind, index)) {
+                    clip.alternates.push_back(std::move(*alternate));
+                }
+            }
         }
         return clip;
     }

@@ -940,8 +940,15 @@ in the background for what the machine cannot play in real time.
   (`transformForFrameHeight`). The monitor badge reports what the picture is made of ("Proxy 1/2", "1/2", "Full").
 - **Export always decodes originals** (`ExportJob` resolves them and fails, naming the file, when one is offline, even when its
   proxy exists).
-- **Caches**: proxies, thumbnails, waveform peaks and analysis results, with per-cache limits (least recently written files go
-  first, never a proxy the project uses) and "clean regenerable data" (Settings > Media & cache).
+- **Caches**: proxies, thumbnails, waveform peaks and analysis results, with sizes and "clean regenerable data" (Settings >
+  Media & cache). Size limits (least recently written files go first) exist only for the caches no project refers to
+  (thumbnails, waveform peaks) and are applied only by the automatic keeper with its switch on; measuring never deletes.
+  Proxies and analysis results are deleted only by an explicit Clean (project files name proxies, and AI object masks
+  name their mattes in the analysis cache). A cache lists, and so cleans, only files Wabcut wrote (`CacheKind`): a proxy
+  folder only the proxies its `proxies.json` index records as written by Wabcut's generator under the proxy file shape
+  (`indexedProxyFiles`, `isProxyFileName`), never another file there; the analysis cache only its entry files. Results
+  that cannot be rebuilt (analysers `matte` and `highlights.chat`, `kUnrebuildableAnalyzers`) are a cache of their own
+  that "clean regenerable data" leaves; the dialog confirms every Clean of proxies, analysis results and those.
 
 ### `export` — owner: Export
 - `ExportSettings` / presets as before. `ExportJob` evaluates a **fixed snapshot** at rational output PTS, with backpressured

@@ -20,6 +20,8 @@ constexpr std::uintmax_t kMaxMarkerFileBytes = 4u << 20;
 const std::string kAudioAnalyzer = "highlights.audio";
 const std::string kVideoAnalyzer = "highlights.video";
 const std::string kMomentsAnalyzer = "highlights";
+// An imported chat log cannot be rebuilt from the media: listed in editor::kUnrebuildableAnalyzers (CacheInspector.h),
+// which keeps it out of "Clean regenerable data" (fix F2C). Keep the two in step.
 const std::string kChatAnalyzer = "highlights.chat";
 
 std::string version(std::string_view what) { return std::string(what) + "-" + std::to_string(kVersion); }

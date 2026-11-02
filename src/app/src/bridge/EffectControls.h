@@ -29,6 +29,16 @@
 // every selected clip (newest copy wins over the clip clipboard: ProjectController::clipboardChanged clears it).
 // 0.5.1: the lane zooms (Premiere's Effect Controls timeline): it shows [viewStart, viewEnd] of the clip, down to five
 // frames; another clip in the lane shows whole again. Lane positions stay 0..1 of the clip; the panel maps its pixels.
+// 0.6 (Premiere's Text in Effect Controls): a graphic clip shows one "Text (<layer>)" section per text layer, top layer
+// first, above its Transform: Source Text (the text, keyframable as hold keys; font, style, size, alignment, tracking,
+// kerning, leading, baseline shift, capitals, faux bold / italic, underline), Appearance (fill, strokes, background,
+// shadow) and the layer's Transform. A title clip's Title Style section is its "Text (<name>)" section with the title's
+// text and font. Numbers are keyframable like any row (edit::ParamRef::ofLayer: keys in graphic time, so a graphic with
+// responsive time maps its design time to the lane); the rest are edits of the layer. Every change is one undo step.
+// 0.6: selected keys can be copied (Ctrl+C / Ctrl+X) and pasted at the playhead (Ctrl+V) onto the clip shown, to the
+// same parameters. With several clips selected ("multi" mode, Premiere's multi-clip Properties) the panel shows the
+// Transform / Opacity and Audio rows of all of them: a value differing between them shows as mixed, and a change sets
+// every selected clip of that kind in one undo step (a key at the playhead where the parameter is animated).
 
 #include "BridgeIds.h"
 #include "ParameterUi.h"
@@ -52,6 +62,10 @@
 #include <tuple>
 #include <utility>
 #include <vector>
+
+namespace wabcut {
+struct GraphicLayer;
+}
 
 namespace wabcut::app {
 
@@ -97,6 +111,10 @@ class EffectControlsModel : public QAbstractListModel {
     Q_PROPERTY(QStringList selectedSections READ selectedSections NOTIFY sectionSelectionChanged FINAL)
     /// 0.4: copied effects wait to be pasted (no clip was copied since): Paste puts them on the selected clips.
     Q_PROPERTY(bool canPasteEffects READ canPasteEffects NOTIFY effectsClipboardChanged FINAL)
+    /// 0.6: copied keyframes wait to be pasted (the newest copy: no clip or effect was copied since).
+    Q_PROPERTY(bool canPasteKeys READ canPasteKeys NOTIFY keyClipboardChanged FINAL)
+    /// 0.6, "multi" mode: how many clips the rows edit (0 otherwise).
+    Q_PROPERTY(int multiCount READ multiCount NOTIFY contextChanged FINAL)
 
 public:
     enum Role {
@@ -135,6 +153,7 @@ public:
         GraphRole,          // { path: [x0, y0, x1, y1, ...], keys: [{ index, x, y, selected, shape, hasIn, inX, inY,
                             //   hasOut, outX, outY, broken }], min, max }: x 0..1 across the lane, y 0..1 down
         SectionSelectedRole, // 0.4, headers: the section is selected (selectedSections)
+        MixedRole,          // 0.6, multi mode: the selected clips differ (the value shown is the first clip's)
     };
     Q_ENUM(Role)
 
@@ -160,6 +179,8 @@ public:
     QString notice() const { return m_notice; }
     QStringList selectedSections() const { return m_selectedSections; }
     bool canPasteEffects() const { return effectsPastePending(); }
+    bool canPasteKeys() const { return m_keyClipboard != nullptr && m_keysPending; }
+    int multiCount() const { return m_multiCount; }
 
     /// Row index of a key, or -1.
     Q_INVOKABLE int rowOf(const QString& key) const;
@@ -185,8 +206,18 @@ public:
     Q_INVOKABLE void toggleKeyAtPlayhead(const QString& row);
     /// Moves the playhead to the previous (-1) or next (+1) key of the row.
     Q_INVOKABLE void goToKey(const QString& row, int direction);
-    /// A text row (0.2: Simple Text's text, the effect's data "text"): sets it; empty restores the default.
+    /// A text row (0.2: Simple Text's text, the effect's data "text"): sets it; empty restores the default. 0.6: also a
+    /// Source Text row ("textarea": a text layer's text at the playhead, a title's text) and a Font row ("font": the
+    /// family).
     Q_INVOKABLE void setEffectText(const QString& row, const QString& text);
+
+    // ---- Text sections (0.6) ----
+    /// A colour row ("color"): "#RRGGBB". A picker drag merges into one undo step until endEdit().
+    Q_INVOKABLE void setColor(const QString& row, const QString& color);
+    /// The installed font families (the Font row's picker).
+    Q_INVOKABLE QStringList fontFamilies() const;
+    /// A row's button: "addStroke" (the Strokes group), "remove" (a stroke's colour row).
+    Q_INVOKABLE void rowAction(const QString& row, const QString& action);
 
     // ---- Sections ----
     Q_INVOKABLE void setCollapsed(const QString& section, bool collapsed);
@@ -267,6 +298,13 @@ public:
     /// Interpolation of the selected keys: "linear", "hold", "bezier", "easeIn", "easeOut", "easeInOut".
     Q_INVOKABLE void setKeyInterpolation(const QString& interpolation);
     Q_INVOKABLE void deleteSelectedKeys();
+    /// 0.6: puts the selected keys on the keyframe clipboard (`cut`: also deletes them, one undo step "Cut Keyframes"):
+    /// each with its parameter, its time after the earliest copied key, value, interpolation and handles. Returns how
+    /// many keys were copied.
+    Q_INVOKABLE int copySelectedKeys(bool cut = false);
+    /// 0.6: pastes the keyframe clipboard at the playhead onto the clip shown (the same parameters; a key at the same
+    /// time is replaced): one undo step "Paste Keyframes". Returns "" or why not (also the notice).
+    Q_INVOKABLE QString pasteKeys();
     /// Lane ruler scrub: the playhead to `x` of the clip.
     Q_INVOKABLE void seekLane(double x);
 
@@ -317,6 +355,7 @@ signals:
     void noticeChanged();
     void sectionSelectionChanged();
     void effectsClipboardChanged();
+    void keyClipboardChanged();
 
 private:
     struct Row {
@@ -327,6 +366,7 @@ private:
         bool known = true;
         bool graphOpen = false;
         bool sectionSelected = false;
+        bool mixed = false;
         int stackIndex = -1;
         QVariantList keys, options;
         QVariantMap graph;
@@ -336,6 +376,10 @@ private:
         UiRange range;
         PropertyFrame frame;
         std::string undoLabel;
+        /// 0.6: what a text row edits ("align", "fill", "stroke1.position", "titleText" ...; "" for others) and the
+        /// graphic layer it belongs to (0: none).
+        QString textProp;
+        std::uint32_t layer = 0;
 
         bool sameData(const Row& o) const;
     };
@@ -348,6 +392,27 @@ private:
 
     std::vector<Row> buildRows();
     void addClipSections(std::vector<Row>& rows, const Clip& clip, bool video);
+    // ---- 0.6: text sections ----
+    void addTextSections(std::vector<Row>& rows, const Clip& clip);
+    void addTitleRows(std::vector<Row>& rows, const Clip& clip, const QString& section);
+    /// The curve time of a row's keys at timeline time `t`: graphic time for a layer of a graphic with responsive time
+    /// (GraphicResolve.h graphicTimeAt), else the clip's curve time; and back (nullopt: not inside the clip).
+    Ticks rowCurveTime(const Row& row, const Clip& clip, Ticks t) const;
+    Ticks rowCurveTimeAtPlayhead(const Row& row, const Clip& clip) const;
+    std::optional<Ticks> rowTimelineTime(const Row& row, const Clip& clip, Ticks curveTime) const;
+    /// Applies `edit` to a copy of a text row's layer (at the playhead's graphic time) as one undo step.
+    bool editTextLayer(const Row& row, const char* label, const std::function<bool(GraphicLayer&, Ticks)>& edit,
+                       const std::string& mergeKey = {});
+    /// A text row that is not a keyframable number: a switch, a choice or a plain number.
+    void setTextProperty(const Row& row, double value, const std::string& mergeKey);
+    /// A keyframable number of a graphic layer: the constant, or the key at the playhead's graphic time.
+    void setLayerParamAtPlayhead(const Row& row, double model, const std::string& mergeKey);
+    // ---- 0.6: multi-clip editing ----
+    void addMultiRows(std::vector<Row>& rows);
+    /// Sets a multi-mode row (UI units) on every selected clip of its kind: one undo step, merged while dragging.
+    void setMultiValue(const Row& row, double uiValue);
+    /// Deletes the selected keys as one undo step named `label`.
+    void deleteKeys(const char* label);
     void addParamRow(std::vector<Row>& rows, const Clip& clip, const QString& key, const QString& section,
                      const QString& sectionKind, const edit::ParamRef& ref, const QString& title, const QString& icon,
                      const UiRange& range, double defaultModel, bool animatable, bool enabled, std::string undoLabel);
@@ -429,6 +494,15 @@ private:
 
     std::shared_ptr<const EffectsClipboard> m_effects;
     bool m_effectsPending = false;
+
+    // ---- 0.6: the keyframe clipboard and multi mode ----
+    struct KeyClipboard;
+    std::shared_ptr<const KeyClipboard> m_keyClipboard;
+    bool m_keysPending = false;
+    void setKeysPending(bool pending);
+    int m_multiCount = 0;
+    /// The clips multi mode edits: each selected clip with its linked partners (selection order).
+    std::vector<std::vector<ClipId>> m_multiUnits;
     QStringList m_selectedSections;
     QString m_sectionAnchor;
     ClipId m_sectionsOf; ///< the primary clip the selection belongs to (another clip shown clears it)

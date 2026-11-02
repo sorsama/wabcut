@@ -31,6 +31,8 @@ const std::set<std::string> kRunsModel{
     "mask.objectSelect", "mask.refine", "mask.propagate", // SAM 2.1 (AI-14)
     "redaction.detectFaces",                       // the face detector (0.2)
     "workflow.podcast",                            // transcribe, enhance, switch, shorts when run
+    "autopilot.broll",                             // the smart search's visual model, when it is installed
+    "autopilot.publishKit",                        // "cloud": the user's chat model writes the copy
 };
 
 /// Commands the AI modules add that run no model: they read caches, edit, or measure.
@@ -74,6 +76,10 @@ const std::set<std::string> kNoModel{
     "highlights.find", "highlights.importChat", "highlights.toReel", "highlights.toShort",
     // Stabilization (P.2): Lucas-Kanade tracking, RANSAC fits and path smoothing.
     "effect.analyzeStabilization", "effect.analyzeRollingShutter",
+    // Creator autopilot (P1 #62): shot cuts, the beat grid and the sequence's own words - measured, not predicted.
+    "autopilot.pacing",
+    // Script correction (P1 #37): fuzzy matching of the transcript's words against the script.
+    "transcript.correctFromScript",
 };
 
 /// Namespaces whose every command runs a model; llm.* except its listed exceptions.
@@ -122,6 +128,7 @@ TEST_CASE("Every command that names files in its parameters is flagged; so exten
                                               "export.quick", "export.queue", "export.preset.import", "export.preset.export",
                                               "export.watchFolder.add",
                                               "sequence.exportFrame", "source.exportFrame", // P.2 Export Frame
+                                              "sequence.exportFramesAtMarkers",             // 0.6 (1C): a still per marker
                                               // 0.2: preset files, .cube export, templates (.mogrt), caption and transcript files
                                               "effects.importPresets", "effects.exportPresets", "lut.export", "template.import",
                                               "template.export", "transcript.export",
@@ -129,7 +136,8 @@ TEST_CASE("Every command that names files in its parameters is flagged; so exten
                                               // 0.2 media formats: Photoshop files and the Media Browser's folders
                                               "media.layeredFileInfo", "media.importLayeredFile", "media.browse",
                                               "media.importCameraClips",
-                                              "project.importItems"}; // 0.2 P.3: another project
+                                              "project.importItems", // 0.2 P.3: another project
+                                              "autopilot.publishKit"}; // P1 #62: writes the kit's files into "folder"
     // Parameters that look like files but are not, or that only the host can open.
     const std::set<std::string> kExempt{
         "mask.add", "mask.update",            // "path": a mask's outline, not a file

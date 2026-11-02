@@ -270,6 +270,7 @@ json shadowJson(const DropShadow& s) {
     putNumber(out, "angle", s.angle, d.angle);
     putNumber(out, "distance", s.distance, d.distance);
     putNumber(out, "softness", s.softness, d.softness);
+    putNumber(out, "size", s.size, d.size);
     return out;
 }
 
@@ -282,6 +283,7 @@ DropShadow readShadow(const Reader& r) {
     s.angle = number(r, "angle", s.angle);
     s.distance = number(r, "distance", s.distance);
     s.softness = number(r, "softness", s.softness);
+    s.size = number(r, "size", s.size);
     return s;
 }
 
@@ -302,6 +304,11 @@ json runJson(const TextRun& run) {
     putNumber(out, "tracking", s.tracking, d.tracking);
     putNumber(out, "leading", s.leading, d.leading);
     putNumber(out, "baselineShift", s.baselineShift, d.baselineShift);
+    // 0.6: kerning, capitals and the faux styles.
+    put(out, "kerning", s.kerning, d.kerning, kIdentity);
+    put(out, "caps", s.caps, d.caps, [](TextCaps v) { return std::string(toString(v)); });
+    put(out, "fauxBold", s.fauxBold, d.fauxBold, kIdentity);
+    put(out, "fauxItalic", s.fauxItalic, d.fauxItalic, kIdentity);
     return out;
 }
 
@@ -321,6 +328,10 @@ TextRun readRun(const Reader& r) {
     s.tracking = number(r, "tracking", 0.0);
     s.leading = number(r, "leading", 0.0);
     s.baselineShift = number(r, "baselineShift", 0.0);
+    s.kerning = r.boolean("kerning", true);
+    s.caps = enumOf(r, "caps", s.caps, textCapsFromString);
+    s.fauxBold = r.boolean("fauxBold", false);
+    s.fauxItalic = r.boolean("fauxItalic", false);
     return run;
 }
 
@@ -424,6 +435,44 @@ json textJson(const TextContent& t) {
     if (t.path) {
         out["onPath"] = textPathJson(*t.path);
     }
+    // 0.6: vertical alignment, strokes, Source Text keys and versions, and the size and spacing keys.
+    put(out, "verticalAlign", t.verticalAlign, d.verticalAlign, [](TextVerticalAlign v) { return std::string(toString(v)); });
+    if (!t.strokes.empty()) {
+        json list = json::array();
+        for (const TextStroke& st : t.strokes) {
+            json o = json::object();
+            const TextStroke sd;
+            put(o, "enabled", st.enabled, sd.enabled, kIdentity);
+            put(o, "color", st.color, sd.color, colorJson);
+            putParam(o, "width", st.width, 4.0);
+            put(o, "position", st.position, sd.position, [](StrokePosition v) { return std::string(toString(v)); });
+            list.push_back(std::move(o));
+        }
+        out["strokes"] = std::move(list);
+    }
+    if (!(t.sourceKey == d.sourceKey)) {
+        out["sourceKey"] = paramJson(t.sourceKey);
+    }
+    if (!t.sources.empty()) {
+        json list = json::array();
+        for (const std::vector<TextRun>& version : t.sources) {
+            json versionJson = json::array();
+            for (const TextRun& run : version) {
+                versionJson.push_back(runJson(run));
+            }
+            list.push_back(std::move(versionJson));
+        }
+        out["sources"] = std::move(list);
+    }
+    const auto keys = [&](const char* key, const std::optional<Curve>& curve) {
+        if (curve) {
+            out[key] = paramJson(ParamValue(*curve));
+        }
+    };
+    keys("sizeKeys", t.sizeKeys);
+    keys("trackingKeys", t.trackingKeys);
+    keys("leadingKeys", t.leadingKeys);
+    keys("baselineKeys", t.baselineKeys);
     return out;
 }
 
@@ -464,6 +513,56 @@ TextContent readText(const Reader& r) {
     if (r.has("onPath")) {
         t.path = readTextPath(r.child("onPath"));
     }
+    t.verticalAlign = enumOf(r, "verticalAlign", t.verticalAlign, textVerticalAlignFromString);
+    if (r.has("strokes")) {
+        const Reader list = r.child("strokes");
+        const std::size_t n = list.arraySize();
+        if (n > kMaxTextStrokes) {
+            list.fail("more than " + std::to_string(kMaxTextStrokes) + " strokes");
+        }
+        for (std::size_t i = 0; i < n; ++i) {
+            const Reader o = list.element(i);
+            requireObject(o);
+            TextStroke st;
+            st.enabled = o.boolean("enabled", true);
+            st.color = color(o, "color", st.color);
+            st.width = param(o, "width", 4.0);
+            st.position = enumOf(o, "position", st.position, strokePositionFromString);
+            t.strokes.push_back(std::move(st));
+        }
+    }
+    t.sourceKey = param(r, "sourceKey", 0.0);
+    if (r.has("sources")) {
+        const Reader list = r.child("sources");
+        const std::size_t n = list.arraySize();
+        if (n > kMaxTextSources) {
+            list.fail("more than " + std::to_string(kMaxTextSources) + " source texts");
+        }
+        for (std::size_t i = 0; i < n; ++i) {
+            const Reader item = list.element(i);
+            const std::size_t count = item.arraySize();
+            if (count > kMaxTextRuns) {
+                item.fail("more than " + std::to_string(kMaxTextRuns) + " runs");
+            }
+            std::vector<TextRun> version;
+            for (std::size_t k = 0; k < count; ++k) {
+                version.push_back(readRun(item.element(k)));
+            }
+            t.sources.push_back(std::move(version));
+        }
+    }
+    const auto keys = [&](const char* key, std::optional<Curve>& curve) {
+        if (r.has(key)) {
+            const ParamValue v = readParam(r.child(key));
+            if (const Curve* c = v.curve()) {
+                curve = *c;
+            }
+        }
+    };
+    keys("sizeKeys", t.sizeKeys);
+    keys("trackingKeys", t.trackingKeys);
+    keys("leadingKeys", t.leadingKeys);
+    keys("baselineKeys", t.baselineKeys);
     return t;
 }
 

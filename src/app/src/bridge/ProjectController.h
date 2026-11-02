@@ -186,6 +186,12 @@ class ProjectController : public QObject {
     /// [{ name, comment, timecode, colorIndex, durationText ("" for a point marker, else the range's length as a
     /// timecode), type ("comment", "chapter", ...: markerTypeName) }] in time order.
     Q_PROPERTY(QVariantList markers READ markers NOTIFY markersChanged FINAL)
+    /// 0.6 (P1 round, D9 #8): the sequence has a beat grid (Detect Beats…, or Set Beat Grid): Snap Selected Clips to
+    /// Beats and Clear Beat Grid can act.
+    Q_PROPERTY(bool hasBeatGrid READ hasBeatGrid NOTIFY revisionChanged FINAL)
+    /// The sequence's beat grid for the menus: { bpm, beats (how many the detection found, 0 for a grid set by hand),
+    /// beatsPerBar, phase (the first downbeat as a timecode) }; an empty map without a grid.
+    Q_PROPERTY(QVariantMap beatGridInfo READ beatGridInfo NOTIFY revisionChanged FINAL)
     /// Sequence In/Out marks as timecode ("" when unset). Out is shown as its last marked frame.
     Q_PROPERTY(QString markInText READ markInText NOTIFY marksChanged FINAL)
     Q_PROPERTY(QString markOutText READ markOutText NOTIFY marksChanged FINAL)
@@ -267,6 +273,8 @@ public:
 
     // ---- C++ API ----
     EditSession& session() { return *m_session; }
+    /// F2P (0.6): frees what the session lets go, and gives the memory back after a project closes (tests).
+    const SnapshotReleaser& releaser() const { return *m_releaser; }
     ProjectSnapshot snapshot() const { return m_session->snapshot(); }
     SequenceId currentSequenceId() const { return m_sequence; }
     /// The current sequence in the current snapshot (kept alive by the returned pointer).
@@ -414,6 +422,9 @@ public:
     EffectControlsModel* effectControls() const { return m_effectControls; }
     int clipCount() const;
     QVariantList markers() const;
+    /// 0.6 (P1 round, D9 #8): whether the sequence has a beat grid, and what it holds (see beatGridInfo above).
+    bool hasBeatGrid() const;
+    QVariantMap beatGridInfo() const;
     QVariantList audioTracks() const;
     QString markInText() const;
     QString markOutText() const;
@@ -644,6 +655,34 @@ public:
     /// A typed length normalised to the sequence's timecode ("" when invalid).
     Q_INVOKABLE QString normalizeTimecode(const QString& text) const;
 
+    // ---- 0.6 (P1 round, stream 1A; ProjectControllerEditing.cpp) ----
+    /// The edit points Trim has selected (TrimBridge keeps them here, [] when none): Apply Video / Audio Transition and
+    /// an Effects-panel transition go on them, and Extend Selected Edit to Playhead is available without a clip.
+    void setTrimEditPoints(std::vector<edit::EdgePoint> points);
+    const std::vector<edit::EdgePoint>& trimEditPoints() const { return m_trimEditPoints; }
+    /// A transition on each selected edit point on a track of that kind (`effect` "" = the default transition;
+    /// Settings' durations), one undo step `label`. Returns how many were added (0: none, lastError says why).
+    int applyTransitionAtEditPoints(bool audio, const std::string& effect = {}, const char* label = nullptr);
+    /// Ctrl+Alt+Q / Ctrl+Alt+W (Trim Previous / Next Edit to Playhead) and Shift+Q / Shift+W (Extend Previous / Next
+    /// Edit to Playhead), Premiere's non-ripple companions of Q / W: one undo step each; the playhead stays.
+    Q_INVOKABLE bool trimPreviousToPlayhead();
+    Q_INVOKABLE bool trimNextToPlayhead();
+    Q_INVOKABLE bool extendPreviousToPlayhead();
+    Q_INVOKABLE bool extendNextToPlayhead();
+    /// A Shift-click on a track header toggle: `flag` ("enabled" | "locked" | "muted" | "solo" | "syncLocked" |
+    /// "targeted") set on every track of `kind` ("video" | "audio"), one undo step. False with lastError when refused.
+    Q_INVOKABLE bool setTrackFlagAll(const QString& kind, const QString& flag, bool value);
+    /// Toggle All Video / Audio Targets (Ctrl+0 / Ctrl+9): all tracks of `kind` get `flag` when one lacks it, else none.
+    Q_INVOKABLE bool toggleTrackFlagAll(const QString& kind, const QString& flag);
+    /// Premiere's red out-of-sync tag: the clip's offset in frames against its linked partner (+ = the clip is late),
+    /// 0 when it is in sync or cannot be compared (edit::syncOffset).
+    Q_INVOKABLE int syncOffsetFrames(const QString& clipId) const;
+    /// Move into Sync / Slip into Sync on the selection: each out-of-sync selected clip moves by its offset (overwriting
+    /// what is there, its partners stay) or slips its source by it, one undo step. False with lastError when no
+    /// selected clip is out of sync or the edit is refused.
+    Q_INVOKABLE bool moveIntoSync();
+    Q_INVOKABLE bool slipIntoSync();
+
 signals:
     void changed(const QVariantMap& changeSet);
     void revisionChanged();
@@ -753,6 +792,7 @@ private:
     bool m_selectionFollowsPlayhead = false;
     int m_revision = 0;
     QString m_lastError;
+    std::vector<edit::EdgePoint> m_trimEditPoints; // 0.6 (1A): Trim's selected edit points
 };
 
 /// QML registration through the factory. Qt prefers a default constructor over create() when both exist, and the

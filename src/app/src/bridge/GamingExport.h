@@ -14,6 +14,11 @@
 //   * estimate(): the file size (bitrate x duration, + audio, + 1 % container) and the encode time, from P.1's export
 //     benchmark (tests/perf/baselines: H.264 / HEVC on NVENC, x264 and x265 at 1080p and 2160p, the whole render +
 //     encode pipeline) scaled by pixels, with a conservative margin. Both are labelled estimates.
+//     P1 (#3): every format is priced - AV1 and VP9 like H.264 / HEVC (size target, bitrate, or constant quality with
+//     their own codec factor), GIF by its palette, stills and image sequences per frame from the pixel format and the
+//     format's compression (one frame for a single still), CineForm and QuickTime Animation, Opus and MP3 sound.
+//     P1 (#29): the output drive's free space (freeBytes, lowSpace and a note when the file needs more than is free).
+//     P1 (#21): a vertical export longer than 3:00 is said to be no Short (never blocked).
 //
 // Every value is computed from the project snapshot on the GUI thread (resolving an export is arithmetic).
 
@@ -58,7 +63,9 @@ public:
     Q_INVOKABLE QVariantMap plan(const QString& id, const QString& sequenceId, const QString& range) const;
     /// What an export writes, as an estimate: { ok, error, bytes, sizeText, seconds, durationText, encodeSeconds,
     /// encodeText, encoder, encoderText, hardware, videoMbps, audioKbps, width, height, fpsText, approximate,
-    /// notes: [text] }. Works for every preset (built-in or gaming) and the panel's overrides.
+    /// notes: [text], freeBytes (-1: unknown), freeText, lowSpace, lowSpaceNote, folder }. Works for every preset
+    /// (built-in or gaming) and the panel's overrides; the drive is the output's (overrides.output, else the default
+    /// output path's folder).
     Q_INVOKABLE QVariantMap estimate(const QString& sequenceId, const QString& presetId, const QVariantMap& overrides) const;
     /// plan() and estimate() in one: a gaming card's line.
     Q_INVOKABLE QVariantMap estimateFor(const QString& id, const QString& sequenceId, const QString& range) const;
@@ -68,7 +75,8 @@ public:
     /// 0 when nothing fits.
     static std::int64_t targetVideoBitrate(std::int64_t targetBytes, double seconds, std::int64_t audioBitrate);
     /// The encode time in seconds of `frames` frames of `width` x `height` with FFmpeg encoder `encoder` ("h264_nvenc",
-    /// "libx264", ...) for `codec` ("h264" | "hevc" | "prores" | "dnxhr"): P.1's measured pipeline speeds, a margin.
+    /// "libx264", ...) for `codec` ("h264" | "hevc" | "prores" | "dnxhr"; P1: "av1", "vp9", "gif" from the encoder
+    /// settings, not measured): P.1's measured pipeline speeds, a margin.
     static double encodeSeconds(const std::string& codec, const std::string& encoder, int width, int height,
                                 std::int64_t frames);
     /// "142 MB", "850 KB", "1.24 GB" (decimal units, as upload limits are given).

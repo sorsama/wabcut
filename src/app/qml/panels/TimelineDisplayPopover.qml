@@ -147,6 +147,14 @@ Popover {
                     checked: Preferences.showClipMarkers
                     onToggled: Preferences.showClipMarkers = checked
                 }
+                // 0.6 (P1 round, D9 #8): thin beat ticks on the ruler when the sequence has a beat grid.
+                Toggle {
+                    objectName: "beatGridToggle"
+                    text: qsTr("Beat grid")
+                    tooltip: qsTr("Thin ticks on the ruler at each beat of the sequence's beat grid, taller on downbeats (Sequence > Beat Grid > Detect Beats…)")
+                    checked: Preferences.timelineShowBeatGrid
+                    onToggled: Preferences.timelineShowBeatGrid = checked
+                }
                 // 0.4: the speed after a retimed clip's name, the fx badge and the clip tooltip (also in Settings > Timeline
                 // & editing > Tracks).
                 Toggle {

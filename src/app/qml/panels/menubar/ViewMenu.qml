@@ -1,8 +1,9 @@
 pragma ComponentBehavior: Bound
 import QtQuick
 
-// View (the menu bar, Premiere's View menu): the Program Monitor's rulers and guides, its overlays and indicators, and
-// full screen. The switches show whether they are on (Monitors). Every row is a keymap command (its shortcut shows).
+// View (the menu bar, Premiere's View menu): the preview settings (Playback Resolution, Use Proxies), the Program
+// Monitor's rulers and guides, its overlays and indicators, and full screen. The switches show whether they are on
+// (Monitors, MediaReadiness). Every row is a keymap command (its shortcut shows).
 MenuBarMenu {
     id: root
     objectName: "viewMenu"
@@ -20,6 +21,88 @@ MenuBarMenu {
         onTriggered: item.checked = Qt.binding(() => item.on)
     }
 
+    // P1 (#19): a playback resolution row; its check shows the setting (MediaReadiness.previewQuality), its command
+    // runs through the bar like any View row.
+    component ResolutionItem: BarMenuItem {
+        id: resolution
+        required property string level
+        checkable: true
+        checked: MediaReadiness.previewQuality === resolution.level
+        onTriggered: resolution.checked = Qt.binding(() => MediaReadiness.previewQuality === resolution.level)
+    }
+
+    // P1 (#16): a paused resolution row (MediaReadiness.pausedQuality), as ResolutionItem.
+    component PausedItem: BarMenuItem {
+        id: paused
+        required property string level
+        checkable: true
+        checked: MediaReadiness.pausedQuality === paused.level
+        onTriggered: paused.checked = Qt.binding(() => MediaReadiness.pausedQuality === paused.level)
+    }
+
+    // Premiere's View menu starts with Playback Resolution and Use Proxies, above the rulers.
+    MenuBarMenu {
+        objectName: "viewPlaybackResolutionMenu"
+        title: qsTr("Playback Resolution")
+        nested: true
+        bar: root.bar
+
+        ResolutionItem {
+            text: qsTr("Auto (fit the monitor)")
+            command: "monitor.playbackResolutionAuto"
+            level: "auto"
+        }
+        ResolutionItem {
+            text: qsTr("Full")
+            command: "monitor.playbackResolutionFull"
+            level: "full"
+        }
+        ResolutionItem {
+            text: qsTr("1/2")
+            command: "monitor.playbackResolutionHalf"
+            level: "half"
+        }
+        ResolutionItem {
+            text: qsTr("1/4")
+            command: "monitor.playbackResolutionQuarter"
+            level: "quarter"
+        }
+    }
+    // P1 (#16): Premiere's Paused Resolution (the monitors' wrench has it too).
+    MenuBarMenu {
+        objectName: "viewPausedResolutionMenu"
+        title: qsTr("Paused Resolution")
+        nested: true
+        bar: root.bar
+
+        PausedItem {
+            text: qsTr("Full")
+            command: "monitor.pausedResolutionFull"
+            level: "full"
+        }
+        PausedItem {
+            text: qsTr("1/2")
+            command: "monitor.pausedResolutionHalf"
+            level: "half"
+        }
+        PausedItem {
+            text: qsTr("1/4")
+            command: "monitor.pausedResolutionQuarter"
+            level: "quarter"
+        }
+        ContextMenuSeparator {}
+        PausedItem {
+            text: qsTr("Same as Playback")
+            command: "monitor.pausedResolutionSame"
+            level: "same"
+        }
+    }
+    SwitchItem {
+        text: qsTr("Use Proxies")
+        command: "monitor.toggleProxies"
+        on: MediaReadiness.useProxies
+    }
+    ContextMenuSeparator {}
     SwitchItem {
         text: qsTr("Show Rulers")
         command: "programMonitor.showRulers"

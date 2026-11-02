@@ -10,6 +10,7 @@ wabcut_add_test_suite(playback_video
         test_finishing.cpp
         test_library_mapping.cpp # 0.2: Premiere's transitions and effects in the evaluator
         test_nested.cpp
+        test_auditions_playback.cpp # 0.6 (card #74): only the active take plays and exports
         test_graphics_layers.cpp # C.13 graphic clips in the evaluator (I.9 Part 0.5)
         test_preview_playback.cpp # C.16 preview files (renders them with wabcut_editor's export preview renderer)
         test_proxy_playback.cpp

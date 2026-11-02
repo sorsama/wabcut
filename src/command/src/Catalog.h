@@ -40,6 +40,8 @@ CommandOutput placeImportedCaptions(ExecutionContext& c, const std::filesystem::
                                     std::optional<CaptionStyle> style, Json extra);
 /// Nested sequences and multicam (C.8): sequence.nest / unnest, clip.openNested, multicam.*.
 void registerNestingCommands(CommandRegistry& registry);
+/// 0.6 (card #74): auditions, take stacks at a cut - audition.* (CatalogAuditions.cpp).
+void registerAuditionCommands(CommandRegistry& registry);
 /// Version history, review notes and packages, project merge (C.9): history.*, review.*, project.merge.
 void registerCollaborationCommands(CommandRegistry& registry);
 /// Clipboard (C.11): clipboard.copy / cut / paste / get, clip.pasteAttributes / removeAttributes.
@@ -107,6 +109,10 @@ Json markerHighlightParam();
 Json highlightJson(ExecutionContext& context, const MarkerHighlight& highlight);
 /// Sets a marker's type, url and target from the params that are given.
 void applyMarkerLinkParams(ExecutionContext& context, Marker& marker);
+/// A marker start on the sequence's frame grid: a tick value between two frames snaps down to the frame that contains
+/// it, exactly as the app's own marker bridge and the gaming commands snap a time. Marker commands never place a marker
+/// between frames. (A marker's length is a measured span and is left exactly as given.)
+Ticks markerFrameTime(ExecutionContext& context, Ticks t);
 /// Fails with InvalidParams when the marker is outside the model's bounds (markerProblem).
 void requireValidMarker(const Marker& marker);
 /// An object schema with `properties` plus the optional "sequence" parameter.

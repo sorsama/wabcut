@@ -65,6 +65,7 @@ WabcutDialog {
         }
         PillTabs {
             objectName: "guideOrientation"
+            Accessible.name: qsTr("Orientation") // P1 #61
             compact: true
             model: [qsTr("Horizontal"), qsTr("Vertical")]
             currentIndex: dialog.vertical ? 1 : 0
@@ -91,6 +92,7 @@ WabcutDialog {
             }
             PillTabs {
                 objectName: "guideUnits"
+                Accessible.name: qsTr("Guide position units") // P1 #61
                 compact: true
                 model: [qsTr("Pixels"), qsTr("Percent")]
                 currentIndex: dialog.percent ? 1 : 0

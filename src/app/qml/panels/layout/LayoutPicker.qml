@@ -9,6 +9,9 @@ import QtQuick.Layouts
 // capture), the options of the chosen layout, and Apply (one undo step). While it is open the Program Monitor shows the
 // schematic (LayoutMonitorOverlay) and every change is checked by a dry run. It stays open while you draw on the
 // monitor: Esc or Cancel closes it.
+// 0.6 (P1 #51): it opens with the options last applied (Preferences.layoutLastOptions, saved by a successful Apply)
+// over the defaults - the facecam source back to auto when the saved one is not there for this gameplay -, Reset puts
+// the defaults back, and the drawn region is remembered per gameplay file (Layouts).
 Popover {
     id: picker
     objectName: "layoutPicker"
@@ -28,6 +31,25 @@ Popover {
         options = Object.assign({}, Layouts.defaults, { preset: "pip", facecamSource: "auto" })
         error = ""
     }
+    /// 0.6 (P1 #51): the defaults with the options last applied over them (only the keys the picker knows); a saved
+    /// facecam source that does not apply here (no region drawn for this gameplay, no facecam clip) goes back to auto.
+    function restore() {
+        const next = Object.assign({}, Layouts.defaults, { preset: "pip", facecamSource: "auto" })
+        const saved = Preferences.parsedJson(Preferences.layoutLastOptions, ({}))
+        if (saved !== null && typeof saved === "object") {
+            for (const key of Object.keys(saved)) {
+                if (key in next)
+                    next[key] = saved[key]
+            }
+        }
+        if (!Layouts.layouts.some(l => l.preset === next.preset))
+            next.preset = "pip"
+        if ((next.facecamSource === "region" && Object.keys(Layouts.facecamRegion).length === 0)
+                || (next.facecamSource === "clip" && Layouts.facecam === ""))
+            next.facecamSource = "auto"
+        options = next
+        error = ""
+    }
     /// Sets one option and checks the layout again.
     function set(key, value) {
         const next = Object.assign({}, options)
@@ -39,7 +61,7 @@ Popover {
     /// schematic stays in view and a region can be drawn on it: right of it when there is room, else left of it.
     function openFor(host, monitor) {
         Layouts.refreshTargets()
-        reset()
+        restore()
         if (host) {
             parent = host
             const gap = Theme.space(2)
@@ -61,8 +83,10 @@ Popover {
     }
     function applyLayout() {
         error = Layouts.apply(options)
-        if (error === "")
+        if (error === "") {
+            Preferences.layoutLastOptions = JSON.stringify(options) // 0.6 (P1 #51): the next open starts from these
             close()
+        }
     }
 
     title: qsTr("Layout")
@@ -521,6 +545,19 @@ Popover {
                     picker.error = Layouts.createShortsSequence()
                     if (picker.error === "")
                         picker.close()
+                }
+            }
+            // 0.6 (P1 #51): the picker opens with the last applied options; this puts the defaults back.
+            PillButton {
+                objectName: "layoutReset"
+                compact: true
+                variant: "ghost"
+                iconName: "rotate-ccw"
+                text: qsTr("Reset")
+                tooltip: qsTr("Back to the default options (the picker opens with the ones you applied last)")
+                onClicked: {
+                    picker.reset()
+                    Layouts.preview(picker.options)
                 }
             }
             Item {

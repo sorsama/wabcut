@@ -106,6 +106,7 @@ WabcutDialog {
 
     PillTabs {
         objectName: "dubMode"
+        Accessible.name: qsTr("Dub mode") // P1 #61
         Layout.fillWidth: true
         model: [qsTr("Dub captions"), qsTr("Narration from a script")]
         currentIndex: dialog.modeIndex
@@ -126,6 +127,7 @@ WabcutDialog {
             Label { text: dialog.narration ? qsTr("Script") : qsTr("Captions to speak") }
             PillTabs {
                 objectName: "dubTrack"
+                Accessible.name: qsTr("Caption track to speak") // P1 #61
                 Layout.fillWidth: true
                 compact: true
                 visible: !dialog.narration && dialog.tracks.length > 0
@@ -273,6 +275,7 @@ WabcutDialog {
             }
             PillTabs {
                 objectName: "dubCloneSpeaker"
+                Accessible.name: qsTr("Voice to clone") // P1 #61
                 Layout.fillWidth: true
                 compact: true
                 visible: cloneToggle.checked && cloneToggle.visible && dialog.speakers.length > 0
@@ -308,6 +311,7 @@ WabcutDialog {
             }
             ValueSlider {
                 id: stretchSlider
+                Accessible.name: qsTr("Speed up at most") // P1 #61
                 objectName: "dubStretch"
                 Layout.fillWidth: true
                 from: 0
@@ -324,6 +328,7 @@ WabcutDialog {
             ValueSlider {
                 id: duckSlider
                 objectName: "dubDuck"
+                Accessible.name: dialog.narration ? qsTr("Duck other audio") : qsTr("Duck the original dialogue") // P1 #61
                 Layout.fillWidth: true
                 from: -40
                 to: 0
@@ -346,6 +351,7 @@ WabcutDialog {
                 Item { Layout.fillWidth: true }
                 NumberField {
                     id: capField
+                    Accessible.name: qsTr("Stop if it would cost more than") // P1 #61
                     objectName: "dubCap"
                     Layout.preferredWidth: Theme.space(22)
                     from: 0.01

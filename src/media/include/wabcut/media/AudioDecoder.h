@@ -51,6 +51,10 @@ struct AudioReadResult {
 struct AudioDecoderStats {
     std::uint64_t framesDecoded = 0; ///< Codec frames (packets' worth of audio) decoded.
     std::uint64_t seeks = 0;         ///< Demuxer seeks caused by non-sequential reads.
+    /// Of those, seeks positioned with another stream's index: Matroska's Cues index the video track only, and an
+    /// audio stream's own seek there would read the file from its start up to the target.
+    std::uint64_t indexedSeeks = 0;
+    std::uint64_t bytesRead = 0; ///< Bytes read from the file since it was opened (headers, index, packets).
 };
 
 /// Decodes one audio stream, converted with libswresample to interleaved float32 samples at `outputRate` in

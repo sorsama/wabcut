@@ -156,17 +156,16 @@ std::string cameraLogFromName(std::string_view curve, std::string_view gamut) {
     if (c.empty()) {
         return {};
     }
+    // Order matters: the names are squeezed, so "Canon Log Cinema" holds "logc", "REDlogFilm" holds "dlog" and "Canon
+    // Log" holds "nlog" - each is matched before the shorter name it contains.
     if (contains(c, "slog3")) {
         return contains(c, "cine") || contains(g, "cine") ? "s-log3-cine" : "s-log3";
     }
+    if (contains(c, "slog2")) {
+        return contains(c, "cine") || contains(g, "cine") ? "s-log2-cine" : "s-log2";
+    }
     if (contains(c, "vlog")) {
         return "v-log";
-    }
-    if (contains(c, "logc4")) {
-        return "logc4";
-    }
-    if (contains(c, "logc")) { // "LOG-C", "LogC3", "LogC (EI 800)"
-        return "logc3";
     }
     if (contains(c, "canonlog3") || contains(c, "clog3")) {
         return "canon-log3";
@@ -174,14 +173,47 @@ std::string cameraLogFromName(std::string_view curve, std::string_view gamut) {
     if (contains(c, "canonlog2") || contains(c, "clog2")) {
         return "canon-log2";
     }
+    if (contains(c, "canonlog") || c.starts_with("clog")) { // the original Canon Log: "Canon Log", "C-Log", "CLog"
+        return "canon-log";
+    }
+    if (contains(c, "logc4")) {
+        return "logc4";
+    }
+    if (contains(c, "logc")) { // "LOG-C", "LogC3", "LogC (EI 800)"
+        return "logc3";
+    }
     if (contains(c, "log3g10")) {
         return "red-log3g10";
+    }
+    if (contains(c, "redlogfilm")) {
+        return "red-log-film";
     }
     if (contains(c, "applelog")) {
         return "apple-log";
     }
     if (c == "acescct") {
         return "acescct";
+    }
+    if (contains(c, "flog2c")) {
+        return {}; // F-Log2 C: F-Gamut C, not a space here
+    }
+    if (contains(c, "flog2")) {
+        return "f-log2";
+    }
+    if (contains(c, "flog")) {
+        return "f-log";
+    }
+    if (c.starts_with("nlog") || contains(c, "nikonnlog")) {
+        return "n-log";
+    }
+    if (c.starts_with("llog") || contains(c, "leicallog")) {
+        return "l-log";
+    }
+    if (c.starts_with("dlogm") || contains(c, "djidlogm")) {
+        return {}; // D-Log M: DJI publishes no equation for it
+    }
+    if (c.starts_with("dlog") || contains(c, "djidlog")) {
+        return "d-log";
     }
     return {};
 }

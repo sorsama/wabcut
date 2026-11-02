@@ -376,3 +376,106 @@ TEST_CASE("Trims refuse clips on locked tracks and unknown clips", "[model][edit
     REQUIRE_FALSE(missing);
     CHECK(missing.error().code == ErrorCode::NotFound);
 }
+
+// --- Non-ripple Q / W (0.6): Trim and Extend Previous / Next Edit to Playhead -------------------------------------
+
+TEST_CASE("Trim Previous and Next Edit to Playhead leave a gap", "[model][edit][qw]") {
+    Timeline tl(R"(
+        V2     |Cccccccccc|
+        V1 tgt |AaaaBbbbbb|
+        A1 tgt |AaaaBbbbbb|
+    )");
+    tl.linkMatching();
+    const ClipId b = tl.clip("V1@4");
+    const auto previous = ok(edit::trimPreviousEditToPlayhead(tl.state, tl.seq, f(6)));
+    CHECK_TIMELINE(previous.state, tl.seq, R"(
+        V2 |Cccccccccc|
+        V1 |Aaaa..B2bb|
+        A1 |Aaaa..B2bb|
+    )");
+    CHECK(clipAt(previous.state, tl.seq, "V1@6") == b);
+    CHECK_FALSE(previous.playhead);
+
+    const auto next = ok(edit::trimNextEditToPlayhead(tl.state, tl.seq, f(6)));
+    CHECK_TIMELINE(next.state, tl.seq, R"(
+        V2 |Cccccccccc|
+        V1 |AaaaBb....|
+        A1 |AaaaBb....|
+    )");
+    // No clip under the playhead on a targeted track: nothing to trim.
+    Timeline gap(R"(
+        V1 tgt |Aa....Bbbb|
+    )");
+    CHECK_FALSE(edit::trimPreviousEditToPlayhead(gap.state, gap.seq, f(3)));
+}
+
+TEST_CASE("Extend Previous and Next Edit to Playhead roll the nearest edit", "[model][edit][qw]") {
+    Timeline tl(R"(
+        V1 tgt |AaaaB4bbbb|
+        A1 tgt |AaaaB4bbbb|
+        A2 tgt |Mmmmmmmmmm|
+    )");
+    tl.linkMatching();
+    SECTION("previous: both sides of the cut change; a track without a cut there stays") {
+        const auto r = ok(edit::extendPreviousEditToPlayhead(tl.state, tl.seq, f(6)));
+        CHECK_TIMELINE(r.state, tl.seq, R"(
+            V1 |AaaaaaB6bb|
+            A1 |AaaaaaB6bb|
+            A2 |Mmmmmmmmmm|
+        )");
+        CHECK_FALSE(r.playhead);
+    }
+    SECTION("next: the cut comes back to the playhead") {
+        const auto r = ok(edit::extendNextEditToPlayhead(tl.state, tl.seq, f(2)));
+        CHECK_TIMELINE(r.state, tl.seq, R"(
+            V1 |AaB2bbbbbb|
+            A1 |AaB2bbbbbb|
+            A2 |Mmmmmmmmmm|
+        )");
+    }
+    SECTION("nothing before or after the playhead") {
+        CHECK_FALSE(edit::extendPreviousEditToPlayhead(tl.state, tl.seq, f(0)));
+        CHECK_FALSE(edit::extendNextEditToPlayhead(tl.state, tl.seq, f(10)));
+    }
+}
+
+TEST_CASE("Extend Previous Edit to Playhead grows a clip into the gap after it", "[model][edit][qw]") {
+    Timeline tl(R"(
+        V1 tgt |Aaaa..Bbbb|
+    )");
+    const auto r = ok(edit::extendPreviousEditToPlayhead(tl.state, tl.seq, f(5)));
+    CHECK_TIMELINE(r.state, tl.seq, R"(
+        V1 |Aaaaa.Bbbb|
+    )");
+}
+
+// --- Sync (0.6): out-of-sync linked clips -----------------------------------------------------------------------
+
+TEST_CASE("Linked clips report how far they are out of sync", "[model][edit][sync]") {
+    Timeline tl(R"(
+        V1 tgt |Aaaa......|
+        A1 tgt |..Aaaa....|
+        A2     |Bbbbbb....|
+    )");
+    tl.link("V1@0 A1@2");
+    const ClipId video = tl.clip("V1@0");
+    const ClipId audio = tl.clip("A1@2");
+    const Sequence& seq = tl.sequence();
+    // The sound plays its first frame two frames after the picture's: +2 on the sound, -2 on the picture.
+    CHECK(edit::syncOffset(seq, audio) == f(2));
+    CHECK(edit::syncOffset(seq, video) == f(-2));
+    CHECK_FALSE(edit::syncOffset(seq, tl.clip("A2@0"))); // not linked
+    const auto all = edit::outOfSyncClips(seq);
+    REQUIRE(all.size() == 2);
+    CHECK(all[0].first == video);
+    CHECK(all[0].second == f(-2));
+
+    // The sound's clip starting two frames into its media is in sync.
+    Timeline inSync(R"(
+        V1 tgt |Aaaa......|
+        A1 tgt |..A2aa....|
+    )");
+    inSync.link("V1@0 A1@2");
+    CHECK(edit::syncOffset(inSync.sequence(), inSync.clip("A1@2")) == f(0));
+    CHECK(edit::outOfSyncClips(inSync.sequence()).empty());
+}

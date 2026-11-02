@@ -20,6 +20,7 @@ extern "C" {
 #include <algorithm>
 #include <cerrno>
 #include <cstring>
+#include <string_view>
 #include <system_error>
 
 namespace wabcut::media::detail {
@@ -464,6 +465,19 @@ std::expected<bool, Error> DecodeLoop::receive(AVFormatContext* fmt, AVCodecCont
             return std::unexpected(ffmpegError(ErrorCode::DecoderError, "Decoding failed", r));
         }
     }
+}
+
+bool isMatroska(const AVFormatContext* fmt) {
+    return fmt != nullptr && fmt->iformat != nullptr && fmt->iformat->name != nullptr &&
+           std::string_view(fmt->iformat->name).starts_with("matroska");
+}
+
+bool loadSeekIndex(AVFormatContext* fmt, AVStream* stream) {
+    if (!isMatroska(fmt) || stream == nullptr) {
+        return true;
+    }
+    const std::int64_t start = stream->start_time != AV_NOPTS_VALUE ? stream->start_time : 0;
+    return av_seek_frame(fmt, stream->index, start, AVSEEK_FLAG_BACKWARD) >= 0;
 }
 
 std::expected<AVStream*, Error> selectStream(AVFormatContext* fmt, AVMediaType type, int streamIndex) {

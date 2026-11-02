@@ -6,7 +6,8 @@ import QtQuick.Dialogs
 // ● MARKERS (M5i, Markers): the sequence's markers or the selected clip's (clip markers live on its media and show on
 // every clip of it), filtered by Premiere's eight colours and a search over names and comments. Click (or Enter) a row
 // to move the playhead there, double-click to edit it in place, Delete removes it. The header adds a marker at the
-// playhead and exports the sequence's markers as CSV or YouTube chapters.
+// playhead and exports the sequence's markers as CSV or YouTube chapters. 0.6: a right click (or the Menu key) on a row
+// opens the marker menu (MarkerContextMenu: Edit Marker…, Colour, Type, Go to Marker, Delete Marker).
 Panel {
     id: root
 
@@ -18,9 +19,21 @@ Panel {
     readonly property var typeLabels: ({ chapter: qsTr("Chapter"), segmentation: qsTr("Segmentation"),
                                           webLink: qsTr("Web link"), comment: "" })
 
+    /// 0.6: the marker menu for row `row` (a right click at `point` in it, or the Menu key).
+    property point menuPoint
+    function openMarkerMenu(row: Item, point: point, index: int) {
+        root.menuPoint = row.mapToItem(root, row.width / 2, row.height)
+        markerMenu.openAt(row, point, index)
+    }
+
     // Focus target for Window > Markers.
     function focusContent() {
         search.forceActiveFocus(Qt.TabFocusReason)
+    }
+    /// P1 round (#30, stream 1E): Edit > Find (Ctrl+F) while this panel is active: the search, its text selected.
+    function focusFind() {
+        search.forceActiveFocus(Qt.ShortcutFocusReason)
+        search.selectAll()
     }
 
     leading: [
@@ -61,7 +74,8 @@ Panel {
         property string format: "csv"
         title: qsTr("Export markers")
         fileMode: FileDialog.SaveFile
-        onAccepted: Markers.exportToFile(format, selectedFile)
+        // P1 (#24, 1C): the menu's From In to Out; YouTube chapters use chapter markers only.
+        onAccepted: Markers.exportToFile(format, selectedFile, exportMenu.range, format === "youtube")
     }
 
     Column {
@@ -148,6 +162,13 @@ Panel {
             onDoubleClicked: editor.openFor(modelData.index, row, Qt.point(row.width / 2, row.height))
             Keys.onDeletePressed: Markers.remove(modelData.index)
             Keys.onReturnPressed: Markers.seek(modelData.index)
+            // 0.6: the marker menu from the keyboard (the Menu key or Shift+F10).
+            Keys.onPressed: event => {
+                if (event.key === Qt.Key_Menu || (event.key === Qt.Key_F10 && (event.modifiers & Qt.ShiftModifier))) {
+                    root.openMarkerMenu(row, Qt.point(Theme.space(4), row.height), modelData.index)
+                    event.accepted = true
+                }
+            }
             Accessible.role: Accessible.ListItem
             Accessible.name: qsTr("Marker %1 at %2").arg(modelData.name).arg(modelData.inText)
 
@@ -242,6 +263,11 @@ Panel {
                 enabled: row.enabled
                 cursorShape: Qt.PointingHandCursor
             }
+            // 0.6: a right click opens the marker menu.
+            TapHandler {
+                acceptedButtons: Qt.RightButton
+                onTapped: eventPoint => root.openMarkerMenu(row, eventPoint.position, row.modelData.index)
+            }
         }
     }
 
@@ -260,5 +286,10 @@ Panel {
     MarkerEditor {
         id: editor
         parent: root
+    }
+    // 0.6: the rows' right-click menu; Edit Marker… opens the editor under the row once the menu has closed.
+    MarkerContextMenu {
+        id: markerMenu
+        onEditRequested: index => editor.openFor(index, root, root.menuPoint)
     }
 }

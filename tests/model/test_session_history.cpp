@@ -215,3 +215,49 @@ TEST_CASE("Superseded snapshots wait for releasePending() on another thread", "[
     REQUIRE(direct.apply("Mark In", [&](const ProjectState& s) { return edit::markIn(s, tl.seq, f(2)); }));
     CHECK(direct.pendingReleases() == 0);
 }
+
+// P1 round (the History panel): Delete drops the redo steps, Clear History drops every step; the current state stays,
+// the dropped snapshots wait for releasePending(), and neither runs during a gesture.
+TEST_CASE("Discarding redo and clearing the history keep the current state", "[model][session][history]") {
+    Timeline tl(R"(
+        V1 |Aaaa|
+    )");
+    EditSession session(tl.state, options());
+    for (int i = 1; i <= 3; ++i)
+        REQUIRE(session.apply("Mark In", [&](const ProjectState& s) { return edit::markIn(s, tl.seq, f(i)); }));
+    REQUIRE(session.undo());
+    REQUIRE(session.undoCount() == 2);
+    REQUIRE(session.redoCount() == 1);
+    const std::weak_ptr<const ProjectState> current = session.snapshot();
+    const std::size_t pending = session.pendingReleases();
+
+    REQUIRE(session.discardRedo());
+    CHECK(session.redoCount() == 0);
+    CHECK_FALSE(session.canRedo());
+    CHECK(session.undoCount() == 2);
+    CHECK(session.snapshot()->findSequence(tl.seq)->markIn == f(2));
+    CHECK(session.pendingReleases() == pending + 1); // the redo step's snapshot waits
+
+    // A new edit and an undo after a clear: the history starts again from the current state.
+    REQUIRE(session.clearHistory());
+    CHECK(session.undoCount() == 0);
+    CHECK(session.redoCount() == 0);
+    CHECK(session.undoMemoryBytes() == 0);
+    CHECK_FALSE(session.undo());
+    CHECK(session.snapshot()->findSequence(tl.seq)->markIn == f(2));
+    CHECK(session.pendingReleases() >= pending + 3);
+    CHECK(session.releasePending() >= 3);
+    CHECK_FALSE(current.expired()); // the current state is never released
+    REQUIRE(session.apply("Mark In", [&](const ProjectState& s) { return edit::markIn(s, tl.seq, f(3)); }));
+    REQUIRE(session.undo());
+    CHECK(session.snapshot()->findSequence(tl.seq)->markIn == f(2));
+
+    // Not during a gesture.
+    session.beginGesture("Drag");
+    REQUIRE(session.apply("Mark In", [&](const ProjectState& s) { return edit::markIn(s, tl.seq, f(1)); }));
+    CHECK_FALSE(session.clearHistory());
+    CHECK_FALSE(session.discardRedo());
+    session.endGesture();
+    CHECK(session.undoCount() == 1);
+    CHECK(session.clearHistory());
+}

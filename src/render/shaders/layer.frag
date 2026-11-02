@@ -17,6 +17,7 @@ layout(std140, binding = 0) uniform LayerParams {
     vec4 params;
     ivec4 mode;
     vec4 cm; // I.9: x = HLG system gamma - 1, y = inLut size, z = a capture's reference white, w = its peak (nits)
+    vec4 post; // 0.6 (#72): x = gamut compression strength, y = roll-off white, z = 1: keep values below 0
 } p;
 
 layout(binding = 1) uniform sampler2D plane0;
@@ -129,6 +130,52 @@ vec3 captureToSdr(vec3 nits)
         ratio = lum > peak ? white / lum : pqToLinear(e2 * pqPeak) * 10000.0 / lum;
     }
     return clamp(mat3(p.toWorking) * (c * ratio), 0.0, 1.0);
+}
+
+// 0.6 (#72), in the working space after the input (color::gamutCompress, color::minimalRolloff): ACES 1.3 Reference Gamut
+// Compression of a scene-referred layer (post.x = its strength), and Wide Gamut (Minimal Tone Mapping)'s highlight
+// roll-off on max(r, g, b) (post.y = the white that lands on 1.0; the knee is 0.8).
+float compressDistance(float dist, float lim, float thr)
+{
+    const float pwr = 1.2;
+    if (dist < thr)
+        return dist;
+    float scl = (lim - thr) / pow(pow((1.0 - thr) / (lim - thr), -pwr) - 1.0, 1.0 / pwr);
+    float nd = (dist - thr) / scl;
+    return thr + scl * nd / pow(1.0 + pow(nd, pwr), 1.0 / pwr);
+}
+
+vec3 gamutCompress(vec3 c, float strength)
+{
+    float ach = max(c.r, max(c.g, c.b));
+    if (ach == 0.0)
+        return c;
+    vec3 dist = (vec3(ach) - c) / abs(ach);
+    vec3 cd = vec3(compressDistance(dist.r, 1.147, 0.815), compressDistance(dist.g, 1.264, 0.803),
+                   compressDistance(dist.b, 1.312, 0.880));
+    return mix(c, vec3(ach) - cd * abs(ach), clamp(strength, 0.0, 1.0));
+}
+
+float kneeCurve(float v, float knee, float white)
+{
+    if (v <= knee)
+        return v;
+    if (white <= 1.0)
+        return min(v, 1.0);
+    if (v >= white)
+        return 1.0;
+    float a = 1.0 - knee;
+    float t = (v - knee) / a;
+    float big = (white - knee) / a;
+    return knee + a * t * (1.0 + t / (big * big)) / (1.0 + t);
+}
+
+vec3 rolloff(vec3 c, float white)
+{
+    float m = max(c.r, max(c.g, c.b));
+    if (m <= 0.8)
+        return c;
+    return c * (kneeCurve(m, 0.8, white) / m);
 }
 
 vec3 inputLut(vec3 x)
@@ -264,10 +311,16 @@ void main()
     else
         lin = mat3(p.toWorking) * vec3(toLinear(rgb.r, tf), toLinear(rgb.g, tf), toLinear(rgb.b, tf));
 
+    // 0.6 (#72): gamut compression and Minimal Tone Mapping's roll-off of a scene-referred layer.
+    if (p.post.x > 0.0)
+        lin = gamutCompress(lin, p.post.x);
+    if (p.post.y > 0.0)
+        lin = rolloff(lin, p.post.y);
+
     // Analytic edge coverage: distance to the frame edge in canvas pixels.
     vec2 d = min(v_src, p.srcRect.xy - v_src);
     vec2 w = max(fwidth(v_src), vec2(1e-6));
     vec2 cov = clamp(d / w + 0.5, 0.0, 1.0);
     float k = a * cov.x * cov.y * p.params.x;
-    fragColor = vec4(max(lin, vec3(0.0)) * k, k);
+    fragColor = vec4((p.post.z > 0.5 ? lin : max(lin, vec3(0.0))) * k, k); // 0.6: below 0 kept with gamut compression
 }

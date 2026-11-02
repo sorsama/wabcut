@@ -94,7 +94,7 @@ public:
         }
     }
 
-    ~SyntheticVideoSource() override { stop(); }
+    ~SyntheticVideoSource() override { shutdown(); }
 
     std::string description() const override { return "synthetic 3-layer test pattern"; }
     int maxInFlight() const override { return m_maxInFlight; }
@@ -131,7 +131,9 @@ public:
         return std::move(node.mapped());
     }
 
-    void stop() override {
+    void stop() override { shutdown(); }
+    /// stop()'s body, not virtual, so the destructor can call it.
+    void shutdown() {
         // Callable from any thread, also concurrently (a cancel and the job's own teardown): one caller
         // joins, the others wait for it.
         std::lock_guard stopping(m_stopMutex);

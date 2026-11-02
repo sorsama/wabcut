@@ -19,6 +19,13 @@
 //   UX rework (L): job(jobId) -> the row as a map (for a toast) · openOutput(jobId) (the file in its default app);
 //   the last choices, per user: lastPreset, lastGamingPreset, lastQuickPreset, lastFolder (+ lastFolderUrl), lastRange,
 //   suggestedRange(sequenceId), forgetExportChoices(); defaultOutputPath() writes into lastFolder when it exists.
+//   P1 round: rememberedFor(sequenceId) (vertical sequences remember their own presets, #21); describe() lists the
+//   offline media the export would read (#27), says what a size target gives (#28) and whether the drive has room
+//   (#29); retry(jobId) queues a failed job again (#27); diskSpaceLow(message) while exports run (#29).
+//   P1 round (stream 2C): restoreQueue() / keepsQueue / clearRestored() keep the queue across restarts (#20);
+//   sequenceExports() / queueSequences() export several sequences at once (#22); queueRanges(), markerRanges(),
+//   selectedClipRanges(), describeRanges() export each marker range or clip as its own file (#26); mediaUsage() /
+//   writeMediaUsage() write the media usage report (#25).
 //
 // `sequenceId` is ProjectController's opaque "s…" key ("" = the current sequence). `overrides`, all
 // optional (docs/export.md has the table):
@@ -28,6 +35,7 @@
 //   scaleMode    "fit" | "fill" | "stretch"             range        "whole" | "inOut" | "workArea"
 //   video, audio bool                                   audioCodec   "aac" | "pcm16" | "pcm24"
 //   sampleRate   Hz                                     audioBitrateKbps
+//   targetMB     P1 (#28): a size limit in MB (1-4000; 0 = off): the whole file at most that size (RateControl::TargetSize)
 //   output       local path or file URL (default: defaultOutputPath(); the extension follows the container)
 
 #include "ProjectController.h"
@@ -44,6 +52,7 @@
 #include <mutex>
 
 #include <QAbstractListModel>
+#include <QDateTime>
 #include <QObject>
 #include <QPointer>
 #include <QString>
@@ -106,6 +115,12 @@ public:
         /// 0.4, "errorKind": what stopped a failed job (ExportController::errorKindOf): "offline", "space", "access",
         /// "folder", "encoder" or "" (none, or another problem).
         ErrorKindRole,
+        /// P1 (#27), "retryable": a failed or cancelled job ExportController::retry() can queue again (it was queued from
+        /// a preset: the Export workspace, Quick Export or Send to Queue). P1 (#20): an "interrupted" job too.
+        RetryableRole,
+        /// P1 (#20), "restored": the job was kept from the last session (ExportController::restoreQueue). Its state may
+        /// also be "interrupted": it was running (or paused) when Wabcut closed; a finished row with Retry.
+        RestoredRole,
     };
     Q_ENUM(Role)
 
@@ -126,6 +141,12 @@ public:
         bool held = false; ///< 0.2: sent to the queue, waiting for Start Queue (Media Encoder's "Ready")
         QString origin = QStringLiteral("command"); ///< UX rework (L): OriginRole
         QString errorKind;                          ///< 0.4: ErrorKindRole
+        /// P1 (#27): the request as queueExport took it, for retry() ("" presetId: a built request, not retryable).
+        QString sequenceId;
+        QString presetId;
+        QVariantMap overrides;
+        bool restored = false; ///< P1 (#20): RestoredRole (it retries from the request kept with it)
+        QDateTime queuedAt;    ///< when the row was added (UTC; append() sets it): retry() reuses a file older than it
     };
 
     explicit ExportJobModel(QObject* parent = nullptr);
@@ -147,9 +168,13 @@ public:
     /// Applies a queue status to the row of `queueId`; returns the row (nullptr if unknown).
     const Row* update(exporter::ExportJobId queueId, const exporter::ExportJobStatus& status);
     const Row* find(const QString& jobId) const;
+    /// P1 (#27): keeps the request of `jobId` for ExportController::retry().
+    void setRequest(const QString& jobId, const QString& sequenceId, const QString& presetId, const QVariantMap& overrides);
     void removeFinished();
     /// 0.2: drops the row of `queueId` if it has finished (export.queue.remove).
     void removeFinished(exporter::ExportJobId queueId);
+    /// P1 (#20): drops the row of `jobId` if it has finished (an interrupted job removed, or replaced by its retry).
+    void removeFinishedRow(const QString& jobId);
     const std::vector<Row>& rows() const { return m_rows; }
 
 signals:
@@ -231,6 +256,12 @@ class ExportController : public QObject {
     /// The range the user last chose in the Export workspace: "whole", "inOut", "workArea", or "" (never chosen; also
     /// what "custom" and junk store) (export/lastRange). QML writes it only when the user picks a range.
     Q_PROPERTY(QString lastRange READ lastRange WRITE setLastRange NOTIFY exportMemoryChanged FINAL)
+    /// P1 (#28): the last custom size limit in MB the user typed (export/lastTargetMB; 0 = none): the Size limit row's
+    /// custom field starts from it. The limit itself is this export's choice (it starts Off).
+    Q_PROPERTY(double lastTargetMB READ lastTargetMB WRITE setLastTargetMB NOTIFY exportMemoryChanged FINAL)
+    /// P1 (#20): the queue is kept across restarts (restoreQueue() ran and this Wabcut owns the queue folder): what waits
+    /// in it comes back next time (the quit question says so and offers Keep Queue and Quit).
+    Q_PROPERTY(bool keepsQueue READ keepsQueue NOTIFY keepsQueueChanged FINAL)
 
 public:
     explicit ExportController(QObject* parent = nullptr);
@@ -295,7 +326,10 @@ public:
     void setCpuLimit(int percent);
     /// What an export would write: { ok, error (plain language), container, videoCodec, format, resolution,
     /// frameRate, duration, frames, encoder, quality, audio, range, output,
-    /// rangeAvailable: { whole, inOut, workArea } }.
+    /// rangeAvailable: { whole, inOut, workArea } }. P1: offline ([names] of the offline or missing original media the
+    /// range reads, nested ones included: the export would fail on them) and offlineCount (#27); targetMB (the size
+    /// limit, 0 = none), targetMbps, lowBitrate and lowBitrateNote (#28: under 0.03 bits a pixel the picture blocks up).
+    /// (The free space of the output drive is GamingExport::estimate's, #29.)
     Q_INVOKABLE QVariantMap describe(const QString& sequenceId, const QString& presetId,
                                      const QVariantMap& overrides = {}) const;
     Q_INVOKABLE QString defaultOutputPath(const QString& sequenceId, const QString& presetId,
@@ -326,8 +360,19 @@ public:
     Q_INVOKABLE QString suggestedRange(const QString& sequenceId) const;
     /// The folder of `path` (a file or folder path, or a file URL) as a URL, for FileDialog.currentFolder ("" -> {}).
     Q_INVOKABLE QUrl folderUrlOf(const QString& path) const;
-    /// "Reset to defaults": forgets lastPreset, lastGamingPreset, lastQuickPreset, lastFolder and lastRange.
+    /// "Reset to defaults": forgets lastPreset, lastGamingPreset, lastQuickPreset, lastFolder and lastRange (P1 #21: the
+    /// vertical sequences' presets too).
     Q_INVOKABLE void forgetExportChoices();
+    /// P1 (#21): the last choices for the shape of `sequenceId` ("" = the current sequence): { portrait (taller than
+    /// wide), preset, gamingPreset, quickPreset }. Vertical sequences have presets of their own
+    /// (export/lastPresetPortrait, export/lastGamingPresetPortrait, export/lastQuickPresetPortrait); a vertical sequence
+    /// with nothing remembered gets Match Source (its own size), never the landscape choice. lastPreset,
+    /// lastGamingPreset and lastQuickPreset read and write the current sequence's shape.
+    Q_INVOKABLE QVariantMap rememberedFor(const QString& sequenceId) const;
+    /// P1 (#27): queues a failed or cancelled job again with the request it had (sequence, preset, overrides), on the
+    /// project as it is now (relinked media is found), into the same file - or a numbered one when that file exists.
+    /// Returns the new job id, or "" with lastError (an unknown, running or built job: not retryable).
+    Q_INVOKABLE QString retry(const QString& jobId);
     QString lastPreset() const;
     void setLastPreset(const QString& id);
     QString lastGamingPreset() const;
@@ -339,8 +384,67 @@ public:
     QUrl lastFolderUrl() const;
     QString lastRange() const;
     void setLastRange(const QString& range);
+    double lastTargetMB() const;
+    void setLastTargetMB(double megabytes);
     /// Replaces "open the output" (tests must not launch apps). Receives the native output path.
     void setOpenHandler(std::function<bool(const QString&)> handler) { m_open = std::move(handler); }
+
+    // ---- P1 (#20): the export queue across restarts (ExportQueueKeeper.cpp) ----
+    /// Brings back the exports kept from the last session and keeps the queue from now on, at every change, in the queue
+    /// folder ("<AppConfig>/Export Queue": queue.json, and a project snapshot per job - it may hold unsaved edits). Held
+    /// and queued exports come back held (Ready: Start Queue runs them, nothing starts by itself); exports that were
+    /// running or paused come back "interrupted" (a finished row with Retry: it exports again from the start); one whose
+    /// file was written after it started comes back done. A job leaves the folder when it finishes, is cancelled or
+    /// removed. Returns { count (rows brought back), held, interrupted, done, skipped: [titles that could not be read] }.
+    /// Runs once (later calls return { count: 0 }); a second Wabcut (the folder is locked) keeps its queue in memory.
+    Q_INVOKABLE QVariantMap restoreQueue();
+    /// P1 (#20): cancels and removes the rows brought back from the last session that still wait or are interrupted (the
+    /// start-up toast's Clear).
+    Q_INVOKABLE void clearRestored();
+    bool keepsQueue() const { return !m_queueFolder.empty(); }
+    /// Tests: the folder restoreQueue() keeps the queue in (default: defaultQueueFolder()); set before restoreQueue().
+    void setQueueFolder(std::filesystem::path folder) { m_queueFolderOverride = std::move(folder); }
+    /// "<AppConfig>/Export Queue".
+    static std::filesystem::path defaultQueueFolder();
+
+    // ---- P1 (#22): export several sequences at once (ExportBatches.cpp) ----
+    /// What queueSequences(sequenceIds, options) would queue, one entry per sequence ("" ids are skipped): { key, name,
+    /// width, height, portrait, presetId, overrides, presetName, output, ok, error, offlineCount }. `options`: { preset
+    /// (a built-in or user preset id) or gaming (a GamingExport id) for every sequence, or matchShape: true (each
+    /// sequence's remembered preset for its shape - else YouTube 1080p60 for landscape, Shorts / TikTok / Reels for
+    /// vertical), folder (path or URL; default lastFolder, else next to the project) }.
+    Q_INVOKABLE QVariantList sequenceExports(const QStringList& sequenceIds, const QVariantMap& options) const;
+    /// Queues one export per sequence (Premiere's File > Export > Media with sequences selected in the Project panel),
+    /// each file named after its sequence in the folder (numbered when taken), `options.hold` = they wait for Start
+    /// Queue. All or nothing: a sequence that cannot export (no preset, offline media, ...) queues none. The folder
+    /// becomes lastFolder. -> { ok, jobs: [ids], count, error }.
+    Q_INVOKABLE QVariantMap queueSequences(const QStringList& sequenceIds, const QVariantMap& options);
+
+    // ---- P1 (#26): each marker range or each selected clip as its own file (ExportBatches.cpp) ----
+    /// Queues one export of `sequenceId` ("" = the current one) per range ({ in, out (ticks, or timecodes in the
+    /// sequence's rate), name }) with `presetId` + `overrides` (their range keys are replaced), into
+    /// "<folder>/<sequence> - <name>.<ext>" (overrides.output's folder, else lastFolder, else next to the project;
+    /// numbered against the disk and this batch). Nothing is queued (lastError) when a range is empty or one export
+    /// cannot run. Returns the job ids.
+    Q_INVOKABLE QStringList queueRanges(const QString& sequenceId, const QString& presetId, const QVariantList& ranges,
+                                        const QVariantMap& overrides = {}, bool hold = false);
+    /// The sequence's markers with a duration, in time order: [{ in, out (ticks), inText, outText, name ("Marker N" when
+    /// unnamed), colorIndex }]; `colorIndex` >= 0 keeps that colour's only.
+    Q_INVOKABLE QVariantList markerRanges(const QString& sequenceId, int colorIndex = -1) const;
+    /// The timeline ranges of the selected clips of the current sequence, linked video and audio merged into one, in
+    /// time order: [{ in, out, inText, outText, name (the clip's) }].
+    Q_INVOKABLE QVariantList selectedClipRanges() const;
+    /// What queueRanges() would write: { ok, error, count, outputs: [file names], folder, bytes, sizeText, seconds,
+    /// durationText } (the size: GamingExport's estimate summed over the ranges).
+    Q_INVOKABLE QVariantMap describeRanges(const QString& sequenceId, const QString& presetId, const QVariantList& ranges,
+                                           const QVariantMap& overrides = {}) const;
+
+    // ---- P1 (#25): the media usage report (ExportBatches.cpp) ----
+    /// sequence.mediaUsage on the project: `options` { range "sequence" | "inOut", format "csv" | "json", flatten }.
+    /// -> { ok, text, uses, media, error }.
+    Q_INVOKABLE QVariantMap mediaUsage(const QString& sequenceId, const QVariantMap& options = {}) const;
+    /// Writes mediaUsage()'s text to `file` (a path or file URL): { ok, path, uses, media, error }.
+    Q_INVOKABLE QVariantMap writeMediaUsage(const QString& file, const QString& sequenceId, const QVariantMap& options = {});
 
     // ---- C++ API ----
     void setProject(ProjectController* project);
@@ -393,10 +497,30 @@ signals:
     void presetsChanged();
     void watchFoldersChanged();
     void cpuLimitChanged();
-    /// UX rework (L): lastPreset, lastGamingPreset, lastQuickPreset, lastFolder or lastRange changed.
+    /// UX rework (L): lastPreset, lastGamingPreset, lastQuickPreset, lastFolder or lastRange changed (P1 #21: also when
+    /// the current sequence's shape changes what they read).
     void exportMemoryChanged();
+    /// P1 (#29): the drive a running export writes to has less than 2 GB left (checked every 30 s while exports run;
+    /// said once per drive until the queue is idle again).
+    void diskSpaceLow(const QString& message);
+    /// P1 (#27): the Export panel, Quick Export or a failed job's row asks for the Relink dialog (Main opens it; QML
+    /// emits it: ExportController.relinkRequested()).
+    void relinkRequested();
+    /// P1 (#20): keepsQueue changed.
+    void keepsQueueChanged();
+    /// P1 (#22): the Library asks to export sequences (QML emits it; Main acts): `queue` false with one sequence opens it
+    /// in the Export workspace; otherwise the Export Sequences dialog opens on them.
+    void sequencesExportRequested(const QStringList& sequenceIds, bool queue);
+    /// P1 (#26): export each range as its own file: `mode` "markers" (the Markers panel's export menu) or "clips" (the
+    /// selected clips). QML emits it; Main opens the Export Ranges dialog.
+    void rangesExportRequested(const QString& mode);
 
 private:
+    /// P1 (#29): the free-space check of running exports' drives (diskSpaceLow); every 30 s while jobs are active
+    /// (invokable so tests need not wait).
+    Q_INVOKABLE void checkDiskSpace();
+    /// P1 (#21): whether `sequenceId` ("" = the current sequence) is vertical (taller than wide).
+    bool portraitSequence(const QString& sequenceId) const;
     struct Relay;
     /// queueExport with the row's origin (OriginRole).
     QString queueExportAs(const QString& sequenceId, const QString& presetId, const QVariantMap& overrides,
@@ -439,6 +563,40 @@ private:
     std::shared_ptr<exporter::WatchFolderService> m_watch;              ///< 0.2: after the queue (it queues there)
     std::shared_ptr<exporter::ExportCommandServices> m_commandServices; ///< 0.2: made on first use
     std::jthread m_probe;
+    QMetaObject::Connection m_sequenceConnection; ///< P1 (#21): the project's sequenceChanged -> exportMemoryChanged
+    QObject* m_spaceTimer = nullptr;              ///< P1 (#29): a QTimer while exports run
+    QStringList m_spaceWarned;                    ///< P1 (#29): drives said low since the queue was last idle
+    bool m_lastPortrait = false;                  ///< P1 (#21): the current sequence's shape when last looked at
+
+    // ---- P1 (#20): the queue across restarts (ExportQueueKeeper.cpp) ----
+    struct KeptJob;
+    /// Remembers what `jobId` exports (its snapshot, settings, output, ...), for the queue folder and a restored job's
+    /// Retry. Called by queueRequestAs for every job but a watch folder's.
+    void keepJob(const QString& jobId, const exporter::ExportRequest& request, const QString& presetName,
+                 const QString& credentials, const QString& origin);
+    /// Writes the queue folder (when kept): queue.json with every waiting, running, paused and interrupted job, the
+    /// snapshots they need first, then drops the files no entry names. Forgets kept jobs whose rows are gone.
+    void persistQueue();
+    /// Retry of a restored job: its kept request again (not the project open now).
+    QString retryKept(const QString& jobId);
+    /// Retry's file (fix round 1, ARGON-11): `path` again when no unfinished job writes it and the file there (if any)
+    /// is the one the job was to replace - written before `since` (when the job was queued / started) or modified at
+    /// `replaced`; else "name (2).ext", "name (3).ext", ... (a file written there meanwhile is someone else's).
+    QString retryOutputPath(const QString& path, const QDateTime& since, const QDateTime& replaced = {}) const;
+    /// persistQueue() once the current event is done (the job model's changes; progress alone writes nothing).
+    void schedulePersist();
+    /// Marks the kept jobs (`unfinishedOnly`: of the unfinished rows) as given up, then writes the queue folder.
+    void dropKept(bool unfinishedOnly);
+    /// The persisted state of a row ("held", "queued", "running", "paused", "interrupted"; "" = not kept).
+    static QString keptStateOf(const ExportJobModel::Row& row);
+    std::map<QString, std::shared_ptr<KeptJob>> m_kept;
+    std::filesystem::path m_queueFolder;         ///< "" until restoreQueue() took the folder
+    std::filesystem::path m_queueFolderOverride; ///< tests
+    std::shared_ptr<void> m_queueLock;           ///< a QLockFile on the folder while this Wabcut keeps it
+    bool m_restoring = false;                    ///< restoreQueue() is queueing what it brings back
+    bool m_restoreRan = false;
+    bool m_persistPending = false;               ///< schedulePersist() waits for the event loop
+    QString m_persistedText;                     ///< the queue.json last written (unchanged: not written again)
 };
 
 } // namespace wabcut::app

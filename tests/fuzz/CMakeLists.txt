@@ -79,7 +79,9 @@ wabcut_add_fuzzer(extension SOURCES fuzz_extension.cpp LIBS wabcut_script MAX_LE
 
 # --- Other editors' timelines (interchange) ---------------------------------------------------------------------------
 wabcut_add_fuzzer(fcp7 SOURCES fuzz_import.cpp LIBS wabcut_interchange DEFINITIONS WABCUT_FUZZ_FORMAT=Fcp7Xml MAX_LEN 65536
-    SEEDS ${fuzz_fixtures}/fcp7_23976_mac.xml ${fuzz_fixtures}/premiere_2997df.xml ${fuzz_fixtures}/malformed_truncated.xml)
+    SEEDS ${fuzz_fixtures}/fcp7_23976_mac.xml ${fuzz_fixtures}/premiere_2997df.xml ${fuzz_fixtures}/malformed_truncated.xml
+    ${fuzz_fixtures}/premiere_color_audio_filters.xml # 0.6: Lumetri, EQ and dynamics filters (card #66)
+    ${fuzz_fixtures}/premiere_lumetri_real.xml) # 0.6: a real Premiere export's Lumetri (key-list values, Blob)
 wabcut_add_fuzzer(fcpxml SOURCES fuzz_import.cpp LIBS wabcut_interchange DEFINITIONS WABCUT_FUZZ_FORMAT=FcpXml MAX_LEN 65536
     SEEDS ${fuzz_fixtures}/fcpx_1_10_23976.fcpxml "${fuzz_fixtures}/Wedding Teaser.fcpxmld/Info.fcpxml")
 wabcut_add_fuzzer(otio SOURCES fuzz_import.cpp LIBS wabcut_interchange DEFINITIONS WABCUT_FUZZ_FORMAT=Otio MAX_LEN 65536
@@ -96,6 +98,11 @@ wabcut_add_fuzzer(captions SOURCES fuzz_captions.cpp LIBS wabcut_interchange MAX
 wabcut_add_fuzzer(audio_post SOURCES fuzz_audio_post.cpp LIBS wabcut_interchange MAX_LEN 1048576
     SEEDS ${fuzz_fixtures}/export/audiopost.aaf ${fuzz_fixtures}/export/audiopost.omf)
 target_include_directories(fuzz_audio_post PRIVATE ${CMAKE_SOURCE_DIR}/src/interchange/src)
+# 0.6: AAF and OMF import end to end (the mob graph, the IR and the project build), seeded with the golden exports.
+wabcut_add_fuzzer(aaf_import SOURCES fuzz_import.cpp LIBS wabcut_interchange DEFINITIONS WABCUT_FUZZ_FORMAT=Aaf
+    MAX_LEN 1048576 SEEDS ${fuzz_fixtures}/export/audiopost.aaf)
+wabcut_add_fuzzer(omf_import SOURCES fuzz_import.cpp LIBS wabcut_interchange DEFINITIONS WABCUT_FUZZ_FORMAT=Omf
+    MAX_LEN 1048576 SEEDS ${fuzz_fixtures}/export/audiopost.omf)
 # 0.2: Motion Graphics templates (.mogrt made in Premiere Pro) and the bounded ZIP reader; effect preset files and the
 # user's effects library (seeds: seeds/mogrt, seeds/effect_presets - the first byte picks the input).
 wabcut_add_fuzzer(mogrt SOURCES fuzz_mogrt.cpp LIBS wabcut_interchange MAX_LEN 65536)

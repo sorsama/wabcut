@@ -4,6 +4,7 @@
 #include "TextUtil.h"
 
 #include <wabcut/interchange/Export.h>
+#include <wabcut/model/MasterClipEffects.h>
 #include <wabcut/model/MediaLocator.h>
 #include <wabcut/model/ProjectIO.h>
 
@@ -87,11 +88,73 @@ std::expected<ExportResult, Error> exportSequence(const ProjectState& project, S
     context.fileLabel = options.fileLabel.empty() ? seq->name + result.extension : options.fileLabel;
     context.options = &options;
     context.report = &result.report;
-    auto described = describeForExport(project, sequence, context);
+    // 0.6 (card #71): none of these formats has Master Clip Effects, so every clip gets its media's folded onto its own
+    // stack (before its own effects, as they play) and the report says so.
+    const ProjectState flat = flattenMasterEffects(project);
+    auto described = describeForExport(flat, sequence, context);
     if (!described) {
         return std::unexpected(described.error());
     }
     result.sequences = described->sequenceIds;
+    std::size_t folded = 0;
+    for (const SequenceId id : described->sequenceIds) {
+        const Sequence* s = project.findSequence(id);
+        if (!s) {
+            continue;
+        }
+        for (const std::vector<TrackPtr>* tracks : {&s->videoTracks, &s->audioTracks}) {
+            for (const TrackPtr& track : *tracks) {
+                for (const Clip& clip : track->clips) {
+                    const EffectKind kind = track->kind == TrackKind::Video ? EffectKind::Video : EffectKind::Audio;
+                    folded += playsMasterEffects(project, clip) && !masterEffectsOf(project, clip.media, kind).empty() ? 1 : 0;
+                }
+            }
+        }
+    }
+    if (folded > 0) {
+        result.report.add(ReportOutcome::Approximated, ReportCategory::Effect,
+                          "Master Clip Effects folded onto " + std::to_string(folded) + (folded == 1 ? " clip" : " clips") +
+                              " (" + std::string(displayName(format)) + " has no master clip effects)",
+                          SourceLocation{context.fileLabel, {}, 0}, seq->name);
+    }
+    if (format != Format::Otio) { // 0.6 (card #67): only OTIO has effects on tracks
+        for (const detail::IrSequence& s : described->ir.sequences) {
+            for (const auto* tracks : {&s.videoTracks, &s.audioTracks}) {
+                for (const detail::IrTrack& t : *tracks) {
+                    if (!t.effects.empty()) {
+                        result.report.add(ReportOutcome::Dropped, ReportCategory::Effect,
+                                          std::to_string(t.effects.size()) + " track effect" + (t.effects.size() == 1 ? "" : "s") +
+                                              " not written: " + std::string(displayName(format)) + " has no track effects",
+                                          t.location, s.name);
+                    }
+                }
+            }
+        }
+    }
+    if (format != Format::FcpXml && format != Format::Otio) { // 0.6 (card #74): only FCPXML and OTIO carry auditions
+        for (const detail::IrSequence& s : described->ir.sequences) {
+            for (const auto* tracks : {&s.videoTracks, &s.audioTracks}) {
+                for (const detail::IrTrack& t : *tracks) {
+                    for (const detail::IrClip& c : t.clips) {
+                        if (c.alternates.empty()) {
+                            continue;
+                        }
+                        std::string others;
+                        for (const detail::IrClip& a : c.alternates) {
+                            others += (others.empty() ? "'" : ", '") + a.name + "'";
+                        }
+                        result.report.add(ReportOutcome::Dropped, ReportCategory::Clip,
+                                          "audition '" + c.name + "': its active take is written; the other " +
+                                              std::to_string(c.alternates.size()) +
+                                              (c.alternates.size() == 1 ? " take (" : " takes (") + others +
+                                              (c.alternates.size() == 1 ? ") is not: " : ") are not: ") +
+                                              std::string(displayName(format)) + " has no auditions",
+                                          c.location, s.name);
+                    }
+                }
+            }
+        }
+    }
     switch (format) {
     case Format::Fcp7Xml:
         result.data = writeFcp7Xml(described->ir, context);

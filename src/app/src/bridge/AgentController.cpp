@@ -487,7 +487,8 @@ void AgentController::onFinished(std::shared_ptr<const agent::AgentOutcome> outc
     const bool local = m_dataFlow.value(QStringLiteral("local")).toBool();
     m_usageText = (local ? tr("No cost (local)") : money(o.cost)) + QStringLiteral(" · ") +
                   tr("%1 in / %2 out").arg(tokens(o.usage.inputTokens), tokens(o.usage.outputTokens)) +
-                  QStringLiteral(" · ") + tr("%n call(s)", nullptr, o.modelCalls);
+                  QStringLiteral(" · ") +
+                  (o.modelCalls == 1 ? tr("1 call") : tr("%1 calls").arg(o.modelCalls));
 
     m_checks.clear();
     int failed = 0;
@@ -503,7 +504,7 @@ void AgentController::onFinished(std::shared_ptr<const agent::AgentOutcome> outc
     }
     switch (o.status) {
     case agent::AgentStatus::Staged:
-        m_statusText = tr("All %n check(s) passed", nullptr, blocking);
+        m_statusText = blocking == 1 ? tr("The check passed") : tr("All %1 checks passed").arg(blocking);
         break;
     case agent::AgentStatus::VerificationFailed:
         m_statusText = tr("%1 of %2 checks failed — review before accepting").arg(failed).arg(blocking);
@@ -514,8 +515,21 @@ void AgentController::onFinished(std::shared_ptr<const agent::AgentOutcome> outc
     case agent::AgentStatus::Cancelled:
         m_statusText = tr("Cancelled");
         break;
-    default:
-        m_statusText = qs(o.error);
+    case agent::AgentStatus::Stuck:
+        // Fix round 3 (NEW-04): the short reason here, the detail once in m_message below (not the same text twice).
+        m_statusText = tr("Stopped: a step was refused again and again");
+        break;
+    case agent::AgentStatus::StepLimit:
+        m_statusText = tr("Stopped at the step limit");
+        break;
+    case agent::AgentStatus::BudgetExceeded:
+        m_statusText = tr("Stopped at the budget");
+        break;
+    case agent::AgentStatus::TimedOut:
+        m_statusText = tr("Timed out");
+        break;
+    case agent::AgentStatus::Failed:
+        m_statusText = tr("The assistant stopped");
         break;
     }
     if (o.status != agent::AgentStatus::Staged && o.status != agent::AgentStatus::VerificationFailed &&

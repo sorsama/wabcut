@@ -22,6 +22,9 @@ import QtQuick.Controls.Basic
 //   * 0.4: the toggles show their state as the mixers do: the speaker is crossed only while the track is muted
 //     ("Mute A1" / "Unmute A1"); mute amber, solo green, record arm red; objectNames trackOutput_/trackMute_/
 //     trackSolo_/trackLock_ + the short name.
+//   * 0.6: Shift-click a toggle (output, mute, solo, sync lock, lock) or the target chip to set it on every track of the
+//     kind, one undo step (ProjectController.setTrackFlagAll); a Sync Lock toggle (trackSyncLock_) before Lock shows
+//     which tracks a ripple shifts; it is the first toggle to go when the header is narrow.
 Item {
     id: root
 
@@ -35,6 +38,7 @@ Item {
     required property bool muted
     required property bool solo
     required property bool targeted
+    required property bool syncLocked
 
     readonly property bool audio: kind === "audio"
     /// A.9: "mono" | "stereo" | "5.1" | "adaptive".
@@ -82,6 +86,25 @@ Item {
     /// The lanes (TimelinePanel sets it): the row height comes from there.
     property TimelineView view: null
 
+    /// 0.6: the toggles' width: five fit beside the target chip on an audio track's header (with Sync Lock).
+    readonly property real toggleWidth: Theme.space(5.5)
+    /// 0.6: the modifiers of the last press on the chip or a toggle (the press watchers at the end record them).
+    property int pressModifiers: 0
+    /// The click being handled was a Shift-click (the press's modifiers, or the keyboard's now); consumed once.
+    function shiftClick(): bool {
+        const shift = (root.pressModifiers & Qt.ShiftModifier) !== 0
+                      || (root.view !== null && (root.view.keyboardModifiers() & Qt.ShiftModifier) !== 0)
+        root.pressModifiers = 0
+        return shift
+    }
+    /// 0.6: a toggle's click: Shift (the click's own modifiers) sets `flag` to `value` on every track of this kind.
+    function setFlag(flag: string, value: bool) {
+        if (root.shiftClick())
+            ProjectController.setTrackFlagAll(root.kind, flag, value)
+        else
+            ProjectController.setTrackFlag(root.trackId, flag, value)
+    }
+
     height: {
         if (!root.view)
             return Theme.trackHeight(root.kind)
@@ -90,13 +113,14 @@ Item {
     }
 
     // Design language v3: the row is a pill on the raised surface, inset a little from the lane's height (like the
-    // reference's track headers), so neighbouring rows read as separate pills.
+    // reference's track headers), so neighbouring rows read as separate pills. 0.6: square with Settings > Appearance >
+    // Timeline corners on Square (Theme.timelinePill), as are the chip, the source indicator and the format badge.
     Rectangle {
         id: plate
         anchors.fill: parent
         anchors.topMargin: root.height >= Theme.space(8) ? Theme.space(0.75) : Theme.hairline
         anchors.bottomMargin: anchors.topMargin
-        radius: height / 2
+        radius: Theme.timelinePill(height)
         color: Theme.raised
     }
     // Right-click on a header: the track menu. A double-click on its background (or the name) renames the track.
@@ -168,7 +192,7 @@ Item {
             y: patchSlot.dragOffset
             width: parent.width
             height: parent.height
-            radius: height / 2
+            radius: Theme.timelinePill(height)
             color: patchSlot.patchOn ? Theme.accentFill : "transparent"
             border.width: patchSlot.patchOn ? 0 : Theme.hairline * 1.5
             border.color: Theme.textTertiary
@@ -188,7 +212,7 @@ Item {
         Rectangle {
             anchors.fill: parent
             visible: !patchSlot.patched && patchSlot.canPatch && patchMouse.containsMouse
-            radius: height / 2
+            radius: Theme.timelinePill(height)
             color: Theme.accentWash
             border.width: Theme.hairline
             border.color: Theme.accentStroke
@@ -239,9 +263,13 @@ Item {
         }
         Loader {
             active: patchMouse.containsMouse && !patchSlot.dragging && (patchSlot.patched || patchSlot.canPatch)
+            // 0.6: beside the indicator, not above it: a long (wrapped) tip above would cover the neighbouring
+            // track's indicator and take the press meant for it (a drag from there could not start).
             sourceComponent: Tooltip {
                 parent: patchSlot
                 visible: true
+                x: patchSlot.width + Theme.space(1.5)
+                y: Math.round((patchSlot.height - height) / 2)
                 text: patchSlot.patched
                       ? (patchSlot.patchOn ? qsTr("Source %1 goes to %2 in Insert and Overwrite. Drag to another track to repatch; Alt-click to switch it off.").arg(patchSlot.sourceLabel).arg(root.shortName)
                                            : qsTr("Source %1 is switched off: click to switch it on.").arg(patchSlot.sourceLabel))
@@ -250,7 +278,7 @@ Item {
         }
         FocusRing {
             anchors.fill: parent
-            targetRadius: height / 2
+            targetRadius: Theme.timelinePill(height)
             visible: patchSlot.activeFocus
         }
     }
@@ -277,7 +305,10 @@ Item {
         Accessible.checked: root.targeted
         onClicked: {
             checked = Qt.binding(() => root.targeted)
-            SourceMonitor.setTargeted(root.trackId, !root.targeted)
+            if (root.shiftClick())
+                ProjectController.setTrackFlagAll(root.kind, "targeted", !root.targeted) // 0.6: Shift: every track
+            else
+                SourceMonitor.setTargeted(root.trackId, !root.targeted)
         }
         // The context menu key (or Shift+F10) opens the track menu from the keyboard; F2 renames the track.
         Keys.onPressed: event => {
@@ -291,7 +322,7 @@ Item {
         }
 
         background: Rectangle {
-            radius: height / 2
+            radius: Theme.timelinePill(height)
             color: root.targeted ? Theme.accentFill : chip.hovered ? Theme.hover : Theme.well
             opacity: root.trackEnabled && !root.muted ? 1 : Theme.disabledOpacity
 
@@ -299,7 +330,7 @@ Item {
                 visible: root.targeted
                 anchors.fill: parent
                 anchors.margins: -Theme.space(0.75)
-                radius: height / 2
+                radius: Theme.timelinePill(height)
                 color: "transparent"
                 border.width: Theme.selectionWidth
                 border.color: Theme.textPrimary
@@ -320,10 +351,11 @@ Item {
             text: (root.customName !== "" ? root.customName + "\n" : "")
                   + (root.targeted ? qsTr("%1 is targeted: Lift, Extract, paste, Up/Down and Match Frame use it").arg(root.shortName)
                                    : qsTr("Target %1 (Lift, Extract, paste, Up/Down and Match Frame)").arg(root.shortName))
+                  + "\n" + qsTr("Shift-click: every %1 track").arg(root.audio ? qsTr("audio") : qsTr("video"))
         }
         FocusRing {
             anchors.fill: parent
-            targetRadius: height / 2
+            targetRadius: Theme.timelinePill(height)
             visible: chip.visualFocus
         }
         HoverHandler {
@@ -348,7 +380,7 @@ Item {
         implicitHeight: badgeText.implicitHeight + Theme.space(0.5)
         width: implicitWidth
         height: implicitHeight
-        radius: height / 2
+        radius: Theme.timelinePill(height)
         color: Theme.well
         border.width: Theme.hairline
         border.color: Theme.borderStrong
@@ -446,12 +478,13 @@ Item {
             objectName: "trackOutput_" + root.shortName
             visible: !root.audio
             compact: true
+            implicitWidth: root.toggleWidth
             iconName: root.trackEnabled ? "eye" : "eye-off"
             iconSize: Theme.iconSm
             tooltip: qsTr("Toggle output of %1").arg(root.shortName)
             Accessible.role: Accessible.CheckBox
             Accessible.checked: root.trackEnabled
-            onClicked: ProjectController.setTrackFlag(root.trackId, "enabled", !root.trackEnabled)
+            onClicked: root.setFlag("enabled", !root.trackEnabled)
         }
         // 0.4: the toggles look like their state and use the mixers' colours (MixerStrip, ClipMixerStrip): a plain
         // speaker while the track plays, the crossed one only when muted; mute amber, solo green, clipInk glyphs.
@@ -459,6 +492,7 @@ Item {
             objectName: "trackMute_" + root.shortName
             visible: root.audio
             compact: true
+            implicitWidth: root.toggleWidth
             checkable: true
             checked: root.muted
             iconName: root.muted ? "volume-x" : "volume-2"
@@ -466,12 +500,13 @@ Item {
             checkedColor: Theme.warning
             checkedIconColor: Theme.clipInk
             tooltip: root.muted ? qsTr("Unmute %1").arg(root.shortName) : qsTr("Mute %1").arg(root.shortName)
-            onToggled: ProjectController.setTrackFlag(root.trackId, "muted", checked)
+            onToggled: root.setFlag("muted", checked)
         }
         IconButton {
             objectName: "trackSolo_" + root.shortName
             visible: root.audio
             compact: true
+            implicitWidth: root.toggleWidth
             checkable: true
             checked: root.solo
             iconName: "headphones"
@@ -479,24 +514,46 @@ Item {
             checkedColor: Theme.success
             checkedIconColor: Theme.clipInk
             tooltip: qsTr("Solo %1").arg(root.shortName)
-            onToggled: ProjectController.setTrackFlag(root.trackId, "solo", checked)
+            onToggled: root.setFlag("solo", checked)
         }
         // Voice-over (A.8, M5m): the microphone arms the track; a pass records onto the first armed audio track.
         RecordArmButton {
             objectName: "recordArm_" + root.shortName
             visible: root.audio
+            implicitWidth: root.toggleWidth
             track: root.trackId
             trackLabel: root.shortName
+        }
+        // 0.6: Premiere's Toggle Sync Lock: on, ripple edits on other tracks shift this track too. The first toggle to go
+        // when the header is narrow (it stays in the track menu).
+        IconButton {
+            objectName: "trackSyncLock_" + root.shortName
+            visible: root.width >= Theme.space(50)
+            compact: true
+            implicitWidth: root.toggleWidth
+            checkable: true
+            checked: root.syncLocked
+            iconName: "sync-lock"
+            iconSize: Theme.iconSm
+            // On for every track by default: a quiet well with a bright glyph; off, a faint glyph.
+            checkedColor: Theme.well
+            checkedIconColor: Theme.textPrimary
+            iconColor: Theme.textTertiary
+            tooltip: root.syncLocked ? qsTr("Sync lock %1 is on: ripple edits on other tracks shift it too (Shift: every %2 track)").arg(root.shortName).arg(root.audio ? qsTr("audio") : qsTr("video"))
+                                     : qsTr("Sync lock %1 is off: ripple edits elsewhere leave it alone (Shift: every %2 track)").arg(root.shortName).arg(root.audio ? qsTr("audio") : qsTr("video"))
+            Accessible.name: qsTr("Sync lock %1").arg(root.shortName)
+            onToggled: root.setFlag("syncLocked", checked)
         }
         IconButton {
             objectName: "trackLock_" + root.shortName
             compact: true
+            implicitWidth: root.toggleWidth
             checkable: true
             checked: root.locked
             iconName: root.locked ? "lock" : "lock-open"
             iconSize: Theme.iconSm
             tooltip: qsTr("Lock %1").arg(root.shortName)
-            onToggled: ProjectController.setTrackFlag(root.trackId, "locked", checked)
+            onToggled: root.setFlag("locked", checked)
         }
     }
     // Track height (M5i): drag the bottom edge; a double-click resets the track to the default height.
@@ -541,5 +598,27 @@ Item {
     FrameAnimation {
         running: resizeHandle.pressed
         onTriggered: resizeHandle.apply()
+    }
+    // 0.6: over the target chip and the toggles, record each left press's modifiers (Shift-clicks) and let the press
+    // through to them.
+    MouseArea {
+        objectName: "trackTargetPressWatch"
+        anchors.fill: chip
+        z: 10
+        acceptedButtons: Qt.LeftButton
+        onPressed: mouse => {
+            root.pressModifiers = mouse.modifiers
+            mouse.accepted = false
+        }
+    }
+    MouseArea {
+        objectName: "trackTogglesPressWatch"
+        anchors.fill: toggles
+        z: 10
+        acceptedButtons: Qt.LeftButton
+        onPressed: mouse => {
+            root.pressModifiers = mouse.modifiers
+            mouse.accepted = false
+        }
     }
 }

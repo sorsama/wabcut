@@ -379,7 +379,7 @@ Json EvalSummary::toJson() const {
         rows.push_back({{"id", c.id}, {"category", c.category}, {"success", c.success}, {"failure", c.failure},
                         {"status", c.status}, {"modelCalls", c.modelCalls}, {"toolCalls", c.toolCalls},
                         {"invalidToolCalls", c.invalidToolCalls}, {"malformedReplies", c.malformedReplies},
-                        {"routedReference", c.routedReference}, {"seconds", c.seconds}, {"tools", c.tools}, {"calls", calls}});
+                        {"routedReference", c.routedReference}, {"seconds", c.seconds}, {"tools", c.tools}, {"errors", c.errors}, {"calls", calls}});
     }
     Json categories = Json::object();
     for (const auto& [name, counts] : byCategory()) {
@@ -434,6 +434,9 @@ EvalSummary runEval(const std::function<IChatModel&(const EvalCase&, const Fixtu
         for (const agent::AgentStep& s : outcome.steps) {
             if (!s.tool.empty()) {
                 r.tools.push_back(s.tool + (s.ok ? "" : " (error)"));
+            }
+            if (!s.tool.empty() && !s.ok && std::ranges::find(r.errors, s.tool + ": " + s.detail) == r.errors.end()) {
+                r.errors.push_back(s.tool + ": " + s.detail);
             }
         }
         for (const ToolUse& use : c.reference) {

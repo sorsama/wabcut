@@ -34,7 +34,8 @@ struct WindowPlacement {
 ///   * at least 64 x 24 px of its top 32 px (the title bar) lie on a screen: it stays where it was, only cut to that
 ///     screen's size when larger (then moved inside it along the cut side) and never above the screen's top edge;
 ///   * otherwise it is centred on the primary screen (cut to it).
-/// Never smaller than `minimum`. nullopt without screens or for an empty `saved`.
+/// Never smaller than `minimum` cut to the chosen screen (P1 #47: the minimum never pushes it past the work area).
+/// nullopt without screens or for an empty `saved`.
 std::optional<QRect> placeOnScreens(const QRect& saved, const QList<QRect>& screens, const QSize& minimum = {});
 
 /// The placement saved in QSettings group `group`, or nullopt when none was (or it is unusable).
@@ -45,6 +46,19 @@ void saveWindowPlacement(const WindowPlacement& placement, const QString& group 
 /// there are now (QGuiApplication::screens(), placeOnScreens), plus visibility: Window.Maximized (4) when it was
 /// maximized. {} when nothing was saved or there is no screen.
 QVariantMap restoredWindowProperties(const QString& group = QStringLiteral("window"), const QSize& minimum = {});
+
+/// P1 #47, the first run (nothing saved): the window at `defaultSize` centred on the work area `available`, cut to it;
+/// `maximized` when the default does not fit (a 1366 x 768 laptop, or 1080p at 150 %).
+struct FirstRunPlacement {
+    QRect normal;
+    bool maximized = false;
+};
+FirstRunPlacement firstRunPlacement(const QRect& available, const QSize& defaultSize);
+
+/// What main() opens the window with: restoredWindowProperties() with `minimum` cut to the primary screen's work area,
+/// or on the first run, when `defaultSize` does not fit that work area, a window cut to it and maximized ({} when it
+/// fits: the window's own size, the system's place).
+QVariantMap startWindowProperties(const QString& group, const QSize& minimum, const QSize& defaultSize);
 
 /// Follows `window`'s windowed geometry and maximized state (a minimized window keeps what it had) and saves them:
 /// 400 ms after they last changed, when the application is about to quit, and when the keeper goes (it is a child of

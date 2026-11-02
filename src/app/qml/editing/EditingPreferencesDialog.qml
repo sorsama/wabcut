@@ -48,6 +48,7 @@ WabcutDialog {
 
     PillTabs {
         objectName: "preferencesPageTabs"
+        Accessible.name: qsTr("Preferences page") // P1 #61
         Layout.fillWidth: true
         compact: true
         readonly property var values: ["media", "timeline"]
@@ -64,6 +65,7 @@ WabcutDialog {
 
         Label { text: qsTr("Default media scaling") }
         PillTabs {
+            Accessible.name: qsTr("Default media scaling") // P1 #61
             objectName: "defaultMediaScalingTabs"
             Layout.fillWidth: true
             compact: true

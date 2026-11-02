@@ -15,6 +15,8 @@ Item {
     property var header: ({})
     readonly property var controls: ProjectController.effectControls
     readonly property bool stackEffect: root.header.sectionKind === "effect"
+    /// 0.6 (card #71): an effect of the media's Master Clip Effects (EffectControls: stackKind "master").
+    readonly property bool masterEffect: root.stackEffect && root.header.stackKind === "master"
     /// Taken on each popup, like `header`: a binding on these calls would keep the first popup's answer, since the key
     /// stays the same when the header is right-clicked again after a move or an added effect.
     property bool canMoveUp: false
@@ -101,6 +103,23 @@ Item {
             height: visible ? implicitHeight : 0
             enabled: root.canMoveDown
             onTriggered: root.controls.moveSectionBy(root.section, 1)
+        }
+        // 0.6 (card #71): Premiere's master clip effects - every clip of the media plays them, before its own.
+        ContextMenuItem {
+            objectName: "moveToMasterItem"
+            text: qsTr("Move to Master Clip")
+            iconName: "layers"
+            visible: root.stackEffect && !root.masterEffect
+            height: visible ? implicitHeight : 0
+            onTriggered: root.controls.rowAction("h:" + root.section, "toMaster")
+        }
+        ContextMenuItem {
+            objectName: "moveToClipItem"
+            text: qsTr("Move to This Clip")
+            iconName: "layers"
+            visible: root.masterEffect
+            height: visible ? implicitHeight : 0
+            onTriggered: root.controls.rowAction("h:" + root.section, "toClip")
         }
         ContextMenuSeparator {}
         ContextMenuItem {

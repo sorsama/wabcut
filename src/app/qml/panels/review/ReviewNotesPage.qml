@@ -16,6 +16,12 @@ Item {
 
     readonly property bool hasInOut: ProjectController.markInText !== "" && ProjectController.markOutText !== ""
 
+    /// P1 round (#30): Edit > Find (Ctrl+F) - the search, its text selected.
+    function focusFind() {
+        searchField.forceActiveFocus(Qt.ShortcutFocusReason)
+        searchField.selectAll()
+    }
+
     ColumnLayout {
         anchors.fill: parent
         spacing: Theme.space(2)
@@ -39,6 +45,7 @@ Item {
             Layout.fillWidth: true
             spacing: Theme.space(2)
             FieldInput {
+                id: searchField
                 objectName: "reviewSearch"
                 Layout.fillWidth: true
                 iconName: "search"

@@ -24,13 +24,19 @@ target_include_directories(wabcut_render PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/incl
 # GuiPrivate: QRhi is semi-public API (pinned to Qt 6.11 behaviour, see the root CMakeLists.txt).
 target_link_libraries(wabcut_render PUBLIC wabcut_model wabcut_media wabcut_color wabcut_colorspaces wabcut_motion
                                            Qt6::Gui Qt6::GuiPrivate)
+# 0.6: Lightning's and Scribble's strokes (render/reference/LibraryGeometry.h) are one source for the compositor and
+# their CPU twins, so preview, export and the reference draw the same segments.
+target_link_libraries(wabcut_render PRIVATE wabcut_render_reference)
 wabcut_target_defaults(wabcut_render)
 
 # Resources under :/wabcut/render/shaders/<name>.qsb. GLSL 300 es / 330 (no ES 2: integer uniforms, fwidth),
-# HLSL 5.0 and MSL 1.2 are the qsb defaults otherwise.
+# HLSL 5.0 and MSL 1.2 are the qsb defaults otherwise. PRECOMPILE (0.6, F3P): every picture's shaders are DXBC at
+# build time on Windows like the grade's; compiled at first use they cost D3D's compiler 1-1.5 s on the first picture of
+# every new renderer (the Program Monitor's first frame, each export, a play that starts with a new presenter).
 qt_add_shaders(wabcut_render "wabcut_render_shaders"
     PREFIX "/wabcut/render"
     GLSL "300es,330"
+    PRECOMPILE
     FILES
         shaders/layer.vert
         shaders/layer.frag

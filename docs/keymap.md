@@ -109,7 +109,7 @@ Control and "Ctrl" as Meta on macOS, and rejects Cmd/Opt on Windows/Linux so the
 
 ## Command table
 
-All 312 commands. *Source*: 2026, 2024 and 2017 are the Adobe pages above; † marks the 2026 "assign multiple"
+All 366 commands. *Source*: 2026, 2024 and 2017 are the Adobe pages above; † marks the 2026 "assign multiple"
 page; `.kys` means Premiere's shipped default key sets. *Premiere .kys item* is the `(context, command name)` pair
 the importer maps from; *(not mapped)* means no verified pair, so `.kys` import skips the command.
 
@@ -180,9 +180,29 @@ the importer maps from; *(not mapped)* means no verified pair, so `.kys` import 
 | Make Offline [^21] | `clip.makeOffline` | Application | | | Wabcut | (not mapped) |
 | Reveal in Project [^uxt] | `clip.revealInProject` | Application | | | Wabcut | (not mapped) |
 | Scene Edit Detection… [^sed] | `clip.sceneEditDetection` | Application | | | Wabcut | (not mapped) |
+| Move into Sync (0.6) | `clip.moveIntoSync` | Application | | | Wabcut | (not mapped) |
+| Slip into Sync (0.6) | `clip.slipIntoSync` | Application | | | Wabcut | (not mapped) |
+| New Audition (0.6) [^aud] | `audition.create` | Application | | | Wabcut | (not mapped) |
+| Add Selected Clips to Audition (0.6) [^aud] | `audition.addSelected` | Application | | | Wabcut | (not mapped) |
+| Add Source Monitor Clip to Audition (0.6) [^aud] | `audition.addSource` | Application | | | Wabcut | (not mapped) |
+| Duplicate Take (0.6) [^aud] | `audition.duplicateTake` | Application | | | Wabcut | (not mapped) |
+| Next Take (0.6) [^aud] | `audition.nextTake` | Application | | | Wabcut | (not mapped) |
+| Previous Take (0.6) [^aud] | `audition.previousTake` | Application | | | Wabcut | (not mapped) |
+| Flatten Audition (0.6) [^aud] | `audition.flatten` | Application | | | Wabcut | (not mapped) |
+| Show Takes in Program Monitor (0.6) [^aud] | `audition.toggleOverlay` | Application | | | Wabcut | (not mapped) |
+| Take Selector (0.6) [^aud] | `audition.showTakeSelector` | Application | | | Wabcut | (not mapped) |
 | Slow-mo at Playhead [^20] | `moments.slowMo` | Application | | | Wabcut | (not mapped) |
 | Punch-in at Playhead [^20] | `moments.punchIn` | Application | | | Wabcut | (not mapped) |
+| Speed Ramp In [^d2] | `moments.rampIn` | Application | | | Wabcut | (not mapped) |
+| Freeze and Replay [^d2] | `moments.freezeReplay` | Application | | | Wabcut | (not mapped) |
+| Fast Forward 300 % [^d2] | `moments.fastForward` | Application | | | Wabcut | (not mapped) |
+| Punch In and Hold [^d2] | `moments.punchInHold` | Application | | | Wabcut | (not mapped) |
+| Shake [^d2] | `moments.shake` | Application | | | Wabcut | (not mapped) |
+| Instant Replay [^d2] | `moments.instantReplay` | Application | | | Wabcut | (not mapped) |
 | Render Effects In to Out | `sequence.renderInToOut` | Application | `Enter` | `Return` | 2026 | `global / cmd.sequence.preview` |
+| Render Selection | `sequence.renderSelection` | Application | | | Wabcut | (not mapped) |
+| Delete Render Files | `sequence.deleteRenderFiles` | Application | | | Wabcut | (not mapped) |
+| Delete Render Files In to Out | `sequence.deleteRenderFilesInToOut` | Application | | | Wabcut | (not mapped) |
 | Match Frame | `sequence.matchFrame` | Application | `F` | `F` | 2026 | `global / cmd.sequence.matchframe` |
 | Reverse Match Frame | `sequence.reverseMatchFrame` | Application | `Shift+R` | `Shift+R` | 2026 | `global / cmd.sequence.reversematchframe` |
 | Add Edit | `sequence.addEdit` | Application | `Ctrl+K` | `Cmd+K` | 2026 | `global / cmd.sequence.razorateditline` |
@@ -207,6 +227,17 @@ the importer maps from; *(not mapped)* means no verified pair, so `.kys` import 
 | Snap in Timeline | `sequence.snap` | Application | `S` | `S` | 2026 | `global / cmd.sequence.snap` |
 | Make Subsequence [^4] | `sequence.makeSubsequence` | Application | `Shift+U` | `Shift+U` | 2026 (Windows), .kys (macOS) | `global / cmd.sequence.makesubsequence` |
 | Make Subsequence from In to Out [^21] | `sequence.makeSubsequenceFromInToOut` | Application | | | .kys | `global / cmd.sequence.makesubsequencefromintoout` |
+| Make a Short from In to Out [^d2] | `sequence.makeShortFromInOut` | Application | | | Wabcut | (not mapped) |
+| Make Shorts Version [^d2] | `moments.shortsVersion` | Application | | | Wabcut | (not mapped) |
+| Make Square Version [^d2] | `moments.squareVersion` | Application | | | Wabcut | (not mapped) |
+| Find Dead Time… [^d2] | `moments.findDeadTime` | Application | | | Wabcut | (not mapped) |
+| Find Highlights… [^d2] | `moments.findHighlights` | Application | | | Wabcut | (not mapped) |
+| Auto Reframe Sequence… [^d2] | `sequence.autoReframe` | Application | | | Wabcut | (not mapped) |
+| Creator Autopilot… (auto B-roll, publishing kit, pacing match) | `sequence.creatorAutopilot` | Application | | | Wabcut | (not mapped) |
+| Detect Beats [^d9] | `sequence.detectBeats` | Application | | | Wabcut | (not mapped) |
+| Snap to Beats [^d9] | `edit.snapToBeats` | Application | | | Wabcut | (not mapped) |
+| Cut to Beats [^d9] | `sequence.cutToBeats` | Application | | | Wabcut | (not mapped) |
+| Clear Beat Grid [^d9] | `sequence.clearBeatGrid` | Application | | | Wabcut | (not mapped) |
 | Sequence Settings… [^21] | `sequence.settings` | Application | | | .kys | `global / cmd.sequence.sequencesettingsgeneral` |
 | Replace With Clip: From Source Monitor [^21] | `sequence.replaceFromSourceMonitor` | Application | | | .kys | `global / clip.replaceclip.fromsourcemonitor` |
 | Replace With Clip: From Source Monitor, Match Frame [^21] | `sequence.replaceFromSourceMonitorMatchFrame` | Application | | | .kys | `global / clip.replaceclip.fromsourcemonitor.matchframe` |
@@ -221,6 +252,14 @@ the importer maps from; *(not mapped)* means no verified pair, so `.kys` import 
 | Go to Previous Caption Segment [^6] | `sequence.previousCaptionSegment` | Application | `Ctrl+Alt+Up` | `Opt+Cmd+Up` | 2026 | `timeline / cmd.timeline.goto.prev.caption.trackitem` |
 | Ripple Trim Previous Edit to Playhead | `sequence.rippleTrimPreviousToPlayhead` | Application | `Q` | `Q` | 2024 | `global / cmd.sequence.rippletrimpreviousedittoplayhead` |
 | Ripple Trim Next Edit to Playhead | `sequence.rippleTrimNextToPlayhead` | Application | `W` | `W` | 2024 | `global / cmd.sequence.rippletrimnextedittoplayhead` |
+| Extend Previous Edit to Playhead (0.6) | `sequence.extendPreviousToPlayhead` | Application | `Shift+Q` | `Shift+Q` | .kys | `global / cmd.sequence.extendpreviousedittoplayhead` |
+| Extend Next Edit to Playhead (0.6) | `sequence.extendNextToPlayhead` | Application | `Shift+W` | `Shift+W` | .kys | `global / cmd.sequence.extendnextedittoplayhead` |
+| Trim Previous Edit to Playhead (0.6) | `sequence.trimPreviousToPlayhead` | Application | `Ctrl+Alt+Q` | `Opt+Q` | .kys | `global / cmd.tlnav.trim.in.to.cti` |
+| Trim Next Edit to Playhead (0.6) | `sequence.trimNextToPlayhead` | Application | `Ctrl+Alt+W` | `Opt+W` | .kys | `global / cmd.tlnav.trim.out.to.cti` |
+| Toggle All Video Targets (0.6) | `timeline.toggleAllVideoTargets` | Application | `Ctrl+0` | `Cmd+0` | .kys | `global / cmd.tlnav.toggle.all.target.video` |
+| Toggle All Audio Targets (0.6) | `timeline.toggleAllAudioTargets` | Application | `Ctrl+9` | `Cmd+9` | .kys | `global / cmd.tlnav.toggle.all.target.audio` |
+| Toggle All Source Video (0.6) | `timeline.toggleAllVideoSources` | Application | `Ctrl+Alt+0` | `Opt+Cmd+0` | .kys | `global / cmd.tlnav.toggle.all.source.video` |
+| Toggle All Source Audio (0.6) | `timeline.toggleAllAudioSources` | Application | `Ctrl+Alt+9` | `Opt+Cmd+9` | .kys | `global / cmd.tlnav.toggle.all.source.audio` |
 | Select Clip at Playhead | `sequence.selectClipAtPlayhead` | Application | `D` | `D` | 2024 | `global / cmd.tlnav.select.clip.at.playhead` |
 | Selection Follows Playhead (0.2, a toggle) | `sequence.selectionFollowsPlayhead` | Application | (none) | (none) | Wabcut | (not mapped) |
 | Show Video Fade Handles (0.2, a toggle) | `timeline.showVideoFadeHandles` | Application | (none) | (none) | Wabcut | (not mapped) |
@@ -254,11 +293,14 @@ the importer maps from; *(not mapped)* means no verified pair, so `.kys` import 
 | Clear Out | `marker.clearOut` | Application | `Ctrl+Shift+O` | `Opt+O` | 2026 | `global / cmd.clear.out` |
 | Clear In and Out | `marker.clearInAndOut` | Application | `Ctrl+Shift+X` | `Opt+X` | 2026 | `global / cmd.clear.inandout` |
 | Add Marker | `marker.add` | Application | `M` | `M` | 2026 | `global / cmd.set.marker` |
+| Edit Marker… (0.6) | `marker.edit` | Application | | | .kys | `global / cmd.marker.edit` |
+| Add Chapter Marker… (0.6) | `marker.addChapter` | Application | | | .kys | `global / cmd.marker.setchaptermarkerdialog` |
 | Go to Next Marker | `marker.goToNext` | Application | `Shift+M` | `Shift+M` | 2026 | `global / cmd.marker.gotomarker.next` |
 | Go to Previous Marker | `marker.goToPrevious` | Application | `Ctrl+Shift+M` | `Shift+Cmd+M` | 2026 | `global / cmd.marker.gotomarker.previous` |
 | Clear Selected Marker | `marker.clearSelected` | Application | `Ctrl+Alt+M` | `Opt+M` | 2026 | `global / cmd.marker.clearmarker.current` |
 | Clear All Markers | `marker.clearAll` | Application | `Ctrl+Alt+Shift+M` | `Opt+Cmd+M` | 2026 | `global / cmd.marker.clearmarker.all` |
 | Ripple Sequence Markers [^04] | `marker.toggleRipple` | Application | | | .kys | `global / cmd.marker.style.ripplesequencemarkers` |
+| Export Frames at Markers… (0.6) | `marker.exportFrames` | Application | | | Wabcut | (not mapped) |
 | New Layer: Text | `graphics.newTextLayer` | Application | `Ctrl+T` | `Cmd+T` | 2026 | `global / cmd.graphics.add.text` |
 | New Layer: Rectangle | `graphics.newRectangleLayer` | Application | `Ctrl+Alt+R` | `Opt+Cmd+R` | 2026 | `global / cmd.graphics.add.shape.rectangle` |
 | New Layer: Ellipse | `graphics.newEllipseLayer` | Application | `Ctrl+Alt+E` | `Opt+Cmd+E` | 2026 | `global / cmd.graphics.add.shape.ellipse` |
@@ -292,6 +334,8 @@ the importer maps from; *(not mapped)* means no verified pair, so `.kys` import 
 | History [^21] | `window.history` | Application | | | .kys | `global / uif.window.History` |
 | Background Tasks [^04] | `window.backgroundTasks` | Application | | | Wabcut | (not mapped) |
 | Audio Meters [^05b] | `window.audioMeters` | Application | | | .kys | `global / uif.window.Audio Meter` |
+| Next Panel Group [^p1e] | `window.nextPanelGroup` | Application | `Ctrl+F6` | `Ctrl+F6` | Wabcut | (not mapped) |
+| Previous Panel Group [^p1e] | `window.previousPanelGroup` | Application | `Ctrl+Shift+F6` | `Ctrl+Shift+F6` | Wabcut | (not mapped) |
 | Selection Tool | `tool.selection` | Application | `V` | `V` | 2017 | `global / cmd.tools.01pointer` |
 | Track Select Forward Tool [^8] | `tool.trackSelectForward` | Application | `A` | `A` | 2017 | `global / cmd.tools.02trackselectforward` |
 | Track Select Backward Tool [^9] | `tool.trackSelectBackward` | Application | `Shift+A` | `Shift+A` | 2026† | `global / cmd.tools.02_5trackselectbackward` |
@@ -330,6 +374,15 @@ the importer maps from; *(not mapped)* means no verified pair, so `.kys` import 
 | Loop [^22] | `monitor.loop` | Application | | | .kys | `global / cmd.monitor.loop` |
 | Enable Transmit [^22] | `monitor.enableTransmit` | Application | | | .kys | `global / cmd.toggletransmit` |
 | Toggle Crop Direct Manipulation [^22] | `monitor.toggleCropDirectManipulation` | Application | | | .kys | `global / cmd.monitor.toggle.crop.dm` |
+| Toggle Proxies [^p1d] | `monitor.toggleProxies` | Application | | | Wabcut | (not mapped) |
+| Playback Resolution: Auto [^p1d] | `monitor.playbackResolutionAuto` | Application | | | Wabcut | (not mapped) |
+| Playback Resolution: Full [^p1d] | `monitor.playbackResolutionFull` | Application | | | Wabcut | (not mapped) |
+| Playback Resolution: 1/2 [^p1d] | `monitor.playbackResolutionHalf` | Application | | | Wabcut | (not mapped) |
+| Playback Resolution: 1/4 [^p1d] | `monitor.playbackResolutionQuarter` | Application | | | Wabcut | (not mapped) |
+| Paused Resolution: Full [^p1-3b] | `monitor.pausedResolutionFull` | Application | | | Wabcut | (not mapped) |
+| Paused Resolution: 1/2 [^p1-3b] | `monitor.pausedResolutionHalf` | Application | | | Wabcut | (not mapped) |
+| Paused Resolution: 1/4 [^p1-3b] | `monitor.pausedResolutionQuarter` | Application | | | Wabcut | (not mapped) |
+| Paused Resolution: Same as Playback [^p1-3b] | `monitor.pausedResolutionSame` | Application | | | Wabcut | (not mapped) |
 | Record Voice-over [^18] | `record.toggle` | Application | | | `.kys` | `timeline / cmd.timeline.voiceover.track.record` |
 | Start Voice-over Recording [^18] | `record.start` | Application | | | Wabcut | (not mapped) |
 | Stop Voice-over Recording [^18] | `record.stop` | Application | | | Wabcut | (not mapped) |
@@ -342,7 +395,8 @@ the importer maps from; *(not mapped)* means no verified pair, so `.kys` import 
 | Delete Custom Item | `effects.deleteCustomItem` | Effects | `Backspace` | `Backspace` | 2026 | `effects / cmd.edit.clear` |
 | Step Backward [^uxs] | `history.stepBackward` | History | `Left` | `Left` | 2026 | `history / cmd.history.step.backward` |
 | Step Forward [^uxs] | `history.stepForward` | History | `Right` | `Right` | 2026 | `history / cmd.history.step.forward` |
-| Delete | `history.delete` | History | `Backspace` | `Backspace` | 2026 | `history / cmd.edit.clear` |
+| Delete [^p1e] | `history.delete` | History | `Backspace` | `Backspace` | 2026 | `history / cmd.edit.clear` |
+| Clear History [^p1e] | `history.clear` | History | | | Wabcut | (not mapped) |
 | Open in Source Monitor | `mediaBrowser.openInSourceMonitor` | Media Browser | `Shift+O` | `Shift+O` | 2026 | `mediabrowser / cmd.mediabrowser.openinsourcemonitor` |
 | Select Directory List | `mediaBrowser.selectDirectoryList` | Media Browser | `Shift+Left` | `Shift+Left` | 2026 | `mediabrowser / cmd.mediabrowser.selectdirectorylist` |
 | Select Media List | `mediaBrowser.selectMediaList` | Media Browser | `Shift+Right` | `Shift+Right` | 2026 | `mediabrowser / cmd.mediabrowser.selectmedialist` |
@@ -450,6 +504,8 @@ the importer maps from; *(not mapped)* means no verified pair, so `.kys` import 
 [^19]: Remove Attributes (C.11, M5m): Premiere's Edit > Remove Attributes… has no default key, and neither shipped key set (Windows `Premiere_default_keys.kys`, macOS `Default Adobe.kys`) lists an item for it, so it has no `.kys` mapping. It opens the attributes dialog on the selection's own attributes (`clip.removeAttributes`).
 [^20]: Moments (M5o, gaming): Wabcut's, with no default key; Premiere has no counterpart. They act on the clip under the playhead (the selected one if several): Slow-mo at Playhead is the 25 % / 1 s slow motion centred on the playhead (one `timeRemap.*` undo step, later clips ripple); Punch-in at Playhead zooms to 130 % of the clip's scale for 1 s (Motion keyframes). The Timeline's Moments popover (the zap button in the tracks header) and the clip menu's Moments submenu list the other presets; a key assigned in Keyboard Shortcuts shows next to both.
 [^21]: P.2 (E5, Premiere editing parity): Premiere binds no key to these; Wabcut has none either. Every `.kys` pair is the command's item in Premiere's shipped macOS key set (`Default Adobe.kys`), which lists every command (the Windows set lists only bound ones), so a custom key set that binds one carries over. New Sequence From Clip and Make Offline have no verified item there. The Editing bridge runs them (`EditingBridge::handlesCommand`); Edit Original, Duplicate, Make Subsequence and Next / Previous in Sequence, listed above with their keys, now run too. Keyboard Shortcuts > Export… also saves a whole key set as a `.kys` (`exportKys`), which Premiere and Wabcut import.
+[^aud]: 0.6 (card #74): Clip > Auditions, Final Cut Pro's auditions (a take stack at a cut; the Take Selector panel lists the takes). Premiere has no auditions, so there is no default key and no `.kys` item: bind them in Keyboard Shortcuts. Next / Previous Take repeat while the key is held. They grey out with the reason while they cannot act ("Select an audition first").
+[^d2]: 0.6 (P1 round, gaming keys): every Moments preset and the gaming sequence actions are keymap commands now, with no default key (Premiere has no counterpart except Auto Reframe Sequence, whose key Wabcut also leaves unset). The Clip ones act on the clip under the playhead like [^20] and live in Clip > Moments; the Sequence ones in Sequence > Gaming (Make Shorts / Square Version, Find Dead Time…, Find Highlights…) and Sequence > Make a Short from In to Out (the In to Out range as a 1080x1920 Short with the Highlights Short options). All of them grey out with the reason while they cannot act (no clip to retime or zoom, no In and Out). Their ids stay `moments.*` so `Main.qml` routes them unchanged; `Highlights.find` is not reused (the catalog edit keeps that id).
 [^ux]: Settings… (UX rework, 2026-10-23): Premiere's Edit > Preferences > General. The shipped macOS key set (`Default Adobe.kys`) binds it to Cmd+, in `context.global`; the Windows set binds nothing, so Ctrl+, is Wabcut's (source `wabcut` in the Windows JSON, `premiere-kys` in the macOS one). `Main.qml` opens the Settings window; the command palette lists it. `tests/keymap/test_default_tables.cpp` checks both keys and the `.kys` pair.
 [^uxt]: Reveal in Project (UX rework, 2026-10-23): Premiere's timeline clip menu item, with no default key and no verified item in either shipped key set, so `.kys` import skips it. The Editing bridge runs it (`EditingBridge::revealInProject`): the primary selected clip's media item, or its nested sequence, is shown and selected in the Library, which comes forward.
 [^sed]: Scene Edit Detection… (0.5): Premiere's timeline clip menu item (also Clip > Scene Edit Detection… here), with no default key and no verified item in either shipped key set, so `.kys` import skips it. It opens the Scene Edit Detection dialog on the selected video clips (`SceneDetect`: a cut at each detected edit and / or a marker at each, one undo step); without a video clip in the selection the menus and the command palette show it greyed out with the reason.
@@ -457,6 +513,10 @@ the importer maps from; *(not mapped)* means no verified pair, so `.kys` import 
 [^22]: The monitors (P.2, [monitors.md](monitors.md)): checked against both shipped key sets. Export Frame (`cmd.export.frame`, `context.global`) is Ctrl+Shift+E on Windows and Shift+E on macOS; Toggle Full Screen (`cmd.toggle.fullscreen.monitor`, `context.global`) is Ctrl+` on both (the physical Control key on macOS). Loop (`cmd.monitor.loop`), Enable Transmit (`cmd.toggletransmit`) and Toggle Crop Direct Manipulation (`cmd.monitor.toggle.crop.dm`) are in `context.global` without a key; Add Guide, Clear Guides (`cmd.monitor.removeguides`), Save Guides as Template, Manage Guides and Transparency Grid (`cmd.monitor.toggletransparencygrid`, in both monitors' contexts) have no key either, nor do Show Dropped Frame Indicator (`cmd.monitor.toggledroppedframeindicator`) and Overlays (`cmd.monitor.overlays`, `context.global`); Show Audio Time Units has no item in either key set, so no `.kys` mapping. Loop acts on the focused monitor (the Source Monitor's while it has the focus, else the Program Monitor's), Export Frame too. The Program Monitor's Show Rulers, Show Guides, Lock Guides, Snap and Nudge rows above now act (Motion direct manipulation, guides).
 [^04]: 0.4 (stream B, checked against both shipped key sets: Windows `Premiere_default_keys.kys`, macOS `Default Adobe.kys`). Nudge Clip Selection Up / Down (`context.timeline`) is Alt+Up / Alt+Down, Opt+Up / Opt+Down on macOS although Left / Right are Cmd+arrows there: the selected clips (with their links) go one track up or down, overwriting. Towards the divider (audio on A1 with Up, video on V1 with Down) the half with no track there stays and the other moves, still linked, as in Premiere, with a toast; away from it (the top video track with Up, the bottom audio track with Down) Premiere adds a track and Wabcut does not, so a selection with video and audio refuses the whole nudge with a toast. A locked destination refuses the nudge too (`ProjectController::nudgeSelectionTrack`). Increase / Decrease Clip Volume (`context.global`) are ] and [, Many is Shift+] / Shift+[: the clip Volume Level moves 1 dB (Many: 6 dB, Premiere's default Large Volume Adjustment; there is no preference for it yet), every keyframe with it, on the selected clips or the clips under the playhead on the targeted tracks; presses within a second are one undo step (`ClipAudio.runVolumeCommand`). While the Library has focus Shift+] / Shift+[ stay its thumbnail size keys (panel scope wins), and the accessible clip list keeps [ and ] for choosing an edge. Play from Playhead to Out (`cmd.transport.play.ctitoout`) is Control+Space on both OSes (the physical Control key on macOS, where the system may use it to switch input sources); it stops on the last marked frame, in the focused monitor. Ripple Sequence Markers (`cmd.marker.style.ripplesequencemarkers`) has an item in the macOS set and no key in either: Markers > Ripple Sequence Markers, per sequence here (Premiere: one switch for the app), on by default. Shuttle Slow Left / Right (Shift+J / Shift+L), Play Around (Shift+K) and Show Next / Previous Screen (PageDown / PageUp) had their keys before and act from 0.4. Import Folder… (stream D) and Background Tasks (stream E) are Wabcut's, with no key and no `.kys` item.
 [^05b]: 0.5 (stream B, checked against both shipped key sets). Toggle Audio Scrubbing (`cmd.toggle.audio.scrubbing`, `context.global`) is Shift+S in the Windows and the macOS set; S alone stays Snap in Timeline. It turns Playback's audio scrubbing on and off (the Sequence menu's Audio Scrubbing and Settings > Timeline & editing's "Play audio while scrubbing" show the same switch; on by default, as in Premiere): while stopped, dragging the playhead in the ruler or the Program Monitor's time bar and stepping frames play a short window of the sequence mix there (a backward drag plays it backwards), and the Source Monitor's time bar and steps play its clip. Audio Meters (`uif.window.Audio Meter`, `context.global`) has an item in the macOS set and no key in either; Window > Audio Meters opens the panel right of the timeline (or brings it forward).
+[^p1e]: 0.6 (P1 round, stream 1E). Next / Previous Panel Group are Wabcut keys (Premiere has no default for them; Control+F6 on macOS too): the focus moves to the next / previous panel group of the workspace, docked groups in layout order and floating ones last, wrapping round; while a frame is maximized only the groups on screen count. History > Delete (Backspace with the History panel focused) deletes the current step and every step after it, as in Premiere; Clear History (the History panel menu, the palette; no key) drops every step and keeps the project as it is. Both ask first: they cannot be undone.
+[^p1d]: 0.6 (P1 round, task D1, #19). Toggle Proxies and Playback Resolution: Auto / Full / 1/2 / 1/4 are Wabcut commands with no default key in either shipped key set; neither key set has a verified Premiere item for them, so `.kys` import carries none over (Premiere has Toggle Proxies and Playback Resolution in Keyboard Shortcuts without default keys too). They are in `context.global`, so they act in either monitor: View > Playback Resolution and View > Use Proxies, the Source Monitor's settings menu and the palette show the same switches as the Program Monitor's quality menu, and the check marks follow `MediaReadiness.previewQuality` / `useProxies`.
+[^p1-3b]: 0.6 (P1 round, stream 3B, #16). Premiere's Paused Resolution (the monitors' wrench > Paused Resolution): the resolution the monitors draw a parked frame at, Full by default; "Same as Playback" is Wabcut's (the setting before 0.6). No default key in either shipped key set and no verified `.kys` name, like Playback Resolution. View > Paused Resolution, the quality pill's and both wrenches' Paused Resolution submenus and Settings > Media & cache show the same setting (`MediaReadiness.pausedQuality`).
+[^d9]: 0.6 (P1 round, task D9, #8). Premiere has no beat detection, so these four are Wabcut's own with no default key in either shipped key set and no `.kys` name for a key set to carry: Sequence > Beat Grid has Detect Beats from Selected Clip… (`analysis.detectBeats` with an optional BPM range, one undo step), Snap Selected Clips to Beats (`edit.snapToBeats`), Cut Selected Clips to Beats… (`edit.cutToBeats`, one clip per group of 1, 2, 4 or 8 beats from the playhead) and Clear Beat Grid (`sequence.setBeatGrid` with `clear`). Clip > Detect Beats… and the clip right-click menu's Detect Beats… open the same detection on a clip with sound. The rows and their palette rows grey out with the reason: "Open a sequence first", "Select a clip with sound", "Detect beats first", "No beat grid to clear", "Select a clip first". `edit.snapToBeats` and `sequence.cutToBeats` share their names with the catalog commands of the same work; the palette lists the keymap row once.
 
 ## How resolution works
 
@@ -712,6 +772,9 @@ their Premiere meaning:
 | `transport.toggleAudioScrubbing` (0.5) | Shift+S: `Playback.audioScrubbing` on / off, with a toast (Main.qml) |
 | `window.audioMeters` (0.5) | the Audio Meters panel: right of the timeline when it opens, focused (Main.qml `focusPanel`) |
 | `marker.toggleRipple` (0.4) | Markers > Ripple Sequence Markers for the current sequence, one undo step |
+| `marker.exportFrames` (0.6) | Markers > Export Frames at Markers…: the Export Frame dialog in its markers mode (`Monitors.requestExportFramesAtMarkers`) |
+| `monitor.toggleProxies`, `monitor.playbackResolutionAuto` / `Full` / `Half` / `Quarter` (0.6) | View > Use Proxies and Playback Resolution: `MediaReadiness.useProxies` / `previewQuality` (`MonitorBridge.runCommand`), the setting both monitors play from |
+| `monitor.pausedResolutionFull` / `Half` / `Quarter` / `Same` (0.6) | View > Paused Resolution: `MediaReadiness.pausedQuality` (`MonitorBridge.runCommand`), the resolution both monitors draw a parked frame at |
 | `clip.increaseVolume`, `clip.decreaseVolume`, `clip.increaseVolumeMany`, `clip.decreaseVolumeMany` (0.4) | ] [ and Shift+] Shift+[: the clip Volume Level by 1 / 6 dB (`ClipAudio.runVolumeCommand`) |
 
 Tests: `tests/app/test_keymap_dispatcher.cpp` drives a hidden window built from `tests/app/KeymapScene.qml` with
@@ -794,6 +857,8 @@ command goes to `SourceMonitor.runCommand()` first:
 | Shift+T | `sequence.trimEdit` | `Trim.trimEdit()`: the edit points nearest the playhead, and the Trim view |
 | Ctrl+Shift+T / Control+T | `sequence.toggleTrimType` | `Trim.toggleType()`; with no edit point selected, Trim Edit |
 | Ctrl+Left/Right / Opt+Left/Right | `sequence.trimBackward` / `trimForward` | `Trim`: one frame on every selected edit point (or on a clip edge chosen with [ or ] when there are none) |
+| E (edit points selected) | `sequence.extendEditToPlayhead` | 0.6: `Trim.extendToPlayhead()`: the selected edit points move to the playhead with the current trim type (roll, ripple or regular); without edit points, the selected clip's nearest edge (ProjectController) |
+| Ctrl+D / Cmd+D, Ctrl+Shift+D / Shift+Cmd+D (edit points selected) | `sequence.applyVideoTransition` / `applyAudioTransition` | 0.6: the default transition on each selected edit point of that kind (a roll point centred on the cut, a one-sided point starting or ending there); an Effects-panel transition goes there too |
 | Ctrl+Shift+Left/Right / Opt+Shift+Left/Right | `sequence.trimBackwardMany` / `trimForwardMany` | `Trim`: the Large trim offset (Preferences, default 5) |
 | J / K / L with edit points selected | the transport gesture | `Trim.transportIntent()`: dynamic trimming (Main routes it while `Trim.active`) |
 | Ctrl+= / Ctrl+- (Cmd on macOS) | `timeline.increase/decreaseVideoTrackHeight` | `TimelineView.changeTrackHeights("video", ±1)` |
@@ -801,6 +866,7 @@ command goes to `SourceMonitor.runCommand()` first:
 | Shift+= / Shift+- | `timeline.expandAllTracks` / `minimizeAllTracks` | `TimelineView.changeTrackHeights("all", 1)` / `minimizeAllTracks()` |
 | Ctrl+Tab / Ctrl+Shift+Tab (physical Control on macOS) | `timeline.nextSequenceTab` / `previousSequenceTab` | `SequenceTabs.cycle(±1)` |
 | M | `marker.add` | `Markers.add()`: with the Timeline focused and a selected clip under the playhead, a clip marker; otherwise a sequence marker. In the Source Monitor, a clip marker on the source (`SourceMonitor.addMarker()`) |
+| M (on a marker) | `marker.add` | 0.6: with the playhead stopped on a marker's frame (a sequence marker, or with the Timeline focused the selected clip's marker there), M opens that marker in the marker editor instead of adding a second one (`Markers.markerAtPlayhead()`); during playback M adds markers as before |
 | Shift+M / Ctrl+Shift+M (Shift+Cmd+M) | `marker.goToNext` / `goToPrevious` | `Markers.goToNext()` / `goToPrevious()` |
 | Ctrl+Alt+M (Opt+M) | `marker.clearSelected` | `Markers.clearAtPlayhead()`: the marker at the playhead |
 | Ctrl+Alt+Shift+M (Opt+Cmd+M) | `marker.clearAll` | `Markers.clearAll()`: the sequence's markers |

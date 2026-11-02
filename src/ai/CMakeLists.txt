@@ -132,6 +132,9 @@ add_subdirectory(dub)
 # engineer. See src/ai/multicam/CMakeLists.txt and src/ai/workflow/CMakeLists.txt.
 add_subdirectory(multicam)
 add_subdirectory(workflow)
+# wabcut_ai_autopilot - the creator autopilot (P1 #62): auto B-roll, the publishing kit, pacing match. See
+# src/ai/autopilot/CMakeLists.txt (it and wabcut_ai_edit depend on each other).
+add_subdirectory(autopilot)
 
 # ---------------------------------------------------------------------------------------------------------------
 # wabcut_ai_agent — the editing assistant: tool loop, staging, verification, quick actions, guarded apply (AI-5).

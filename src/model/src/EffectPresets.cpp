@@ -553,6 +553,44 @@ std::vector<EffectPreset> builtinEffectPresets(std::int32_t width, std::int32_t 
     out.push_back(preset("Solarize Out", "Solarizes", T::AnchorToOutPoint, "Solarizes over the last second.",
                          {stackEffect("wabcut.stylize.solarize", {{"threshold", keyed({{end - kSecond, 1.0}, {end, 0.0}})}})}));
 
+    // 0.6: Glow, the generators (backgrounds that evolve over the clip), Lightning, Scribble and Paint Bucket.
+    out.push_back(preset("Soft Glow", "Glows", T::Scale, "A soft glow around the bright parts.",
+                         {stackEffect("wabcut.stylize.glow", {{"threshold", 0.6}, {"radius", 25.0}, {"intensity", 0.8}})}));
+    out.push_back(preset("Neon Glow", "Glows", T::Scale, "A strong white-to-magenta glow for titles and neon signs.",
+                         {stackEffect("wabcut.stylize.glow", {{"threshold", 0.4}, {"radius", 18.0}, {"intensity", 2.0},
+                                                              {"colors", 1.0}, {"colorB.r", 1.0}, {"colorB.g", 0.2},
+                                                              {"colorB.b", 0.8}})}));
+    out.push_back(preset("Glow In", "Glows", T::AnchorToInPoint, "Starts glowing hot and settles over the first second.",
+                         {stackEffect("wabcut.stylize.glow", {{"threshold", 0.4}, {"radius", 20.0},
+                                                              {"intensity", keyed({{Ticks{}, 4.0}, {kSecond, 0.0}})}})}));
+    out.push_back(preset("Fractal Clouds", "Backgrounds", T::Scale, "Soft grey clouds drifting over the clip.",
+                         {stackEffect("wabcut.generate.fractalNoise",
+                                      {{"scale", 200.0}, {"evolution", keyed({{Ticks{}, 0.0}, {end, 360.0}})}})}));
+    out.push_back(preset("Turbulent Smoke", "Backgrounds", T::Scale, "Turbulent smoke that churns over the clip.",
+                         {stackEffect("wabcut.generate.fractalNoise",
+                                      {{"fractalType", 1.0}, {"contrast", 150.0}, {"scale", 150.0},
+                                       {"evolution", keyed({{Ticks{}, 0.0}, {end, 720.0}})}})}));
+    out.push_back(preset("Fire Background", "Backgrounds", T::Scale, "Fractal noise coloured as fire, moving over the clip.",
+                         {stackEffect("wabcut.generate.fractalNoise",
+                                      {{"fractalType", 1.0}, {"contrast", 160.0}, {"evolution", keyed({{Ticks{}, 0.0}, {end, 540.0}})}}),
+                          stackEffect("wabcut.generate.colorama", {{"palette", 4.0}})}));
+    out.push_back(preset("Cell Bubbles", "Backgrounds", T::Scale, "Bubbles that drift over the clip.",
+                         {stackEffect("wabcut.generate.cellPattern",
+                                      {{"size", 80.0}, {"evolution", keyed({{Ticks{}, 0.0}, {end, 360.0}})}})}));
+    out.push_back(preset("Rainbow Cycle", "Backgrounds", T::Scale, "Colorama cycling the rainbow through the picture's tones.",
+                         {stackEffect("wabcut.generate.colorama",
+                                      {{"palette", 7.0}, {"phaseShift", keyed({{Ticks{}, 0.0}, {end, 360.0}})}})}));
+    out.push_back(preset("Lightning Strike", "Lightning", T::Scale, "A branching blue bolt from the top left, added on.",
+                         {stackEffect("wabcut.generate.lightning", {{"branching", 0.5}, {"speed", 15.0}, {"blendingMode", 1.0}})}));
+    out.push_back(preset("Electric Arc", "Lightning", T::Scale, "A fast, fine arc across the middle of the frame.",
+                         {stackEffect("wabcut.generate.lightning",
+                                      {{"start.x", 0.1}, {"start.y", 0.5}, {"end.x", 0.9}, {"end.y", 0.5}, {"detail", 3.0},
+                                       {"speed", 30.0}, {"width", 6.0}, {"blendingMode", 2.0}})}));
+    out.push_back(preset("Scribble Write-On", "Scribbles", T::AnchorToInPoint, "Scribbles the frame in over the first second.",
+                         {stackEffect("wabcut.generate.scribble", {{"end", keyed({{Ticks{}, 0.0}, {kSecond, 1.0}})}})}));
+    out.push_back(preset("Paint Bucket Outline", "Paint Bucket", T::Scale, "Outlines the area around the centre in red.",
+                         {stackEffect("wabcut.generate.paintBucket", {{"stroke", 4.0}, {"strokeWidth", 4.0}})}));
+
     // Twirls: a full turn unwinding over the first second, and winding up over the last.
     out.push_back(preset("Twirl In", "Twirls", T::AnchorToInPoint, "Untwirls over the first second.",
                          {stackEffect("wabcut.distort.twirl", {{"angle", keyed({{Ticks{}, 360.0}, {kSecond, 0.0}})}, {"radius", 50.0}})}));

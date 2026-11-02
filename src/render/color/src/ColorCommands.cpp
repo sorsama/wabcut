@@ -1014,6 +1014,15 @@ CommandOutput scopesRead(ExecutionContext& c) {
 
 // ---- Colour management (I.9, docs/color.md "Colour management") ----
 
+Json sdrConformJson(const SdrConform& c) {
+    return Json{{"enabled", c.enabled},
+                {"targetPeakNits", c.targetPeakNits},
+                {"paperWhiteNits", c.paperWhiteNits},
+                {"toneMap", std::string(toString(c.toneMap))},
+                {"gamut", std::string(toString(c.gamut))},
+                {"legalRange", c.legalRange}};
+}
+
 Json managementJson(const ColorManagement& m) {
     return Json{{"mode", std::string(toString(m.mode))},
                 {"name", std::string(displayName(m.mode))},
@@ -1021,7 +1030,22 @@ Json managementJson(const ColorManagement& m) {
                 {"managed", m.managed()},
                 {"peakNits", m.peakNits},
                 {"referenceWhiteNits", m.referenceWhiteNits},
-                {"autoDetectLog", m.autoDetectLog}};
+                {"autoDetectLog", m.autoDetectLog},
+                // 0.6 (#72)
+                {"gamutCompression", m.gamutCompression},
+                {"gamutCompressionStrength", m.gamutCompressionStrength},
+                {"gamutCompressed", m.compressesGamut()},
+                {"outputSpace", std::string(toString(m.outputSpace))},
+                {"sdrConform", sdrConformJson(m.sdrConform)},
+                {"conformsSdr", m.conformsSdr()}};
+}
+
+std::vector<std::string> outputSpaceIds() {
+    std::vector<std::string> ids;
+    for (const OutputColorSpace s : allOutputColorSpaces()) {
+        ids.emplace_back(toString(s));
+    }
+    return ids;
 }
 
 std::vector<std::string> modeIds() {
@@ -1056,6 +1080,22 @@ CommandOutput managementGet(ExecutionContext& c) {
     }
     out.data["modes"] = std::move(modes);
     out.data["inputSpaces"] = std::move(spaces);
+    // 0.6 (#72): the output colour spaces and SDR Conform's choices.
+    Json outputs = Json::array();
+    for (const OutputColorSpace s : allOutputColorSpaces()) {
+        outputs.push_back(Json{{"id", std::string(toString(s))}, {"name", std::string(displayName(s))}});
+    }
+    out.data["outputSpaces"] = std::move(outputs);
+    Json operators = Json::array();
+    for (const ToneMapOperator op : {ToneMapOperator::Bt2390, ToneMapOperator::Aces, ToneMapOperator::Reinhard}) {
+        operators.push_back(Json{{"id", std::string(toString(op))}, {"name", std::string(displayName(op))}});
+    }
+    out.data["toneMapOperators"] = std::move(operators);
+    Json mappings = Json::array();
+    for (const GamutMapping g : {GamutMapping::AcesRgc, GamutMapping::Saturation, GamutMapping::Clip}) {
+        mappings.push_back(Json{{"id", std::string(toString(g))}, {"name", std::string(displayName(g))}});
+    }
+    out.data["gamutMappings"] = std::move(mappings);
     return out;
 }
 
@@ -1076,6 +1116,51 @@ CommandOutput managementSet(ExecutionContext& c) {
     }
     if (c.has("autoDetectLog")) {
         m.autoDetectLog = c.boolean("autoDetectLog", true);
+    }
+    // 0.6 (#72): gamut compression, the output colour space, SDR Conform (only the given fields change).
+    if (c.has("gamutCompression")) {
+        m.gamutCompression = c.boolean("gamutCompression", false);
+    }
+    if (c.has("gamutCompressionStrength")) {
+        m.gamutCompressionStrength = c.number("gamutCompressionStrength");
+    }
+    if (c.has("outputSpace")) {
+        const auto space = outputColorSpaceFromString(c.string("outputSpace"));
+        if (!space) {
+            fail(ErrorCode::InvalidParams, "unknown output colour space \"" + c.string("outputSpace") + "\"",
+                 Json{{"path", "/outputSpace"}});
+        }
+        m.outputSpace = *space;
+    }
+    if (c.has("sdrConform")) {
+        const Json& sc = c.params().at("sdrConform");
+        SdrConform& conform = m.sdrConform;
+        if (sc.contains("enabled")) {
+            conform.enabled = sc.at("enabled").get<bool>();
+        }
+        if (sc.contains("targetPeakNits")) {
+            conform.targetPeakNits = sc.at("targetPeakNits").get<double>();
+        }
+        if (sc.contains("paperWhiteNits")) {
+            conform.paperWhiteNits = sc.at("paperWhiteNits").get<double>();
+        }
+        if (sc.contains("toneMap")) {
+            const auto op = toneMapOperatorFromString(sc.at("toneMap").get<std::string>());
+            if (!op) {
+                fail(ErrorCode::InvalidParams, "unknown tone-mapping operator", Json{{"path", "/sdrConform/toneMap"}});
+            }
+            conform.toneMap = *op;
+        }
+        if (sc.contains("gamut")) {
+            const auto mapping = gamutMappingFromString(sc.at("gamut").get<std::string>());
+            if (!mapping) {
+                fail(ErrorCode::InvalidParams, "unknown gamut mapping", Json{{"path", "/sdrConform/gamut"}});
+            }
+            conform.gamut = *mapping;
+        }
+        if (sc.contains("legalRange")) {
+            conform.legalRange = sc.at("legalRange").get<bool>();
+        }
     }
     CommandOutput out;
     out.state = c.take(edit::setColorManagement(c.state(), m));
@@ -1368,13 +1453,31 @@ void registerColorCommands(command::CommandRegistry& registry) {
          "wide-gamut (Wide Gamut (No Tone Mapping): ACEScg, clipped at the output's white) or off (Disable Color "
          "Management: no conversion at all). \"peakNits\" (100..10000, default 1000) is the HDR mastering peak, "
          "\"referenceWhiteNits\" (80..400, default 203) the graphics white where SDR white lands, \"autoDetectLog\" "
-         "(default true) reads clips as the camera log their metadata names. Only the given fields change. One undo step.",
+         "(default true) reads clips as the camera log their metadata names. 0.6: wide-gamut-minimal (Wide Gamut (Minimal "
+         "Tone Mapping): ACEScg; SDR media and graphics unchanged, camera log and HDR media gamut compressed and their "
+         "highlights rolled off), \"gamutCompression\" (ACES 1.3 reference gamut compression of camera log and HDR "
+         "media in managed setups; values below 0 are then kept) at \"gamutCompressionStrength\" (0..1), "
+         "\"outputSpace\" (what exports write: auto, rec709, rec2020, p3-d65, rec2100-pq, rec2100-hlg) and "
+         "\"sdrConform\" (how an HDR or Wide Gamut sequence becomes an SDR export: enabled, targetPeakNits, "
+         "paperWhiteNits, toneMap bt2390 / aces / reinhard, gamut aces-rgc / saturation / clip, legalRange). Only the "
+         "given fields change. One undo step.",
          Capability::EditProject,
          Json{{"type", "object"},
               {"properties", Json{{"mode", schema::enumeration(modeIds(), "The colour setup.")},
                                   {"peakNits", schema::number("HDR mastering peak in nits, 100..10000.", 100.0, 10000.0)},
                                   {"referenceWhiteNits", schema::number("HDR graphics (reference) white in nits, 80..400.", 80.0, 400.0)},
-                                  {"autoDetectLog", schema::boolean("Read clips as the camera log their metadata names.")}}},
+                                  {"autoDetectLog", schema::boolean("Read clips as the camera log their metadata names.")},
+                                  {"gamutCompression", schema::boolean("ACES 1.3 gamut compression of camera log and HDR media.")},
+                                  {"gamutCompressionStrength", schema::number("Gamut compression strength, 0..1.", 0.0, 1.0)},
+                                  {"outputSpace", schema::enumeration(outputSpaceIds(), "What exports write.")},
+                                  {"sdrConform",
+                                   schema::object({{"enabled", schema::boolean("Conform SDR exports of HDR and Wide Gamut setups.")},
+                                                   {"targetPeakNits", schema::number("The SDR display's white in nits (100 or 203).", 48.0, 400.0)},
+                                                   {"paperWhiteNits", schema::number("Where the reference white lands, in nits.", 48.0, 400.0)},
+                                                   {"toneMap", schema::enumeration({"bt2390", "aces", "reinhard"}, "The tone-mapping operator.")},
+                                                   {"gamut", schema::enumeration({"aces-rgc", "saturation", "clip"}, "The gamut mapping.")},
+                                                   {"legalRange", schema::boolean("Soft-clip the encoded components above 90 %.")}},
+                                                  {}, "SDR Conform (only the given fields change).")}}},
               {"additionalProperties", false}},
          Json{{"mode", "hdr-pq"}, {"peakNits", 1000}}, {}, managementSet});
     add(registry,

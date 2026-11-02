@@ -2,6 +2,7 @@
 
 #include <wabcut/model/ProjectOps.h>
 
+#include <wabcut/model/Auditions.h>
 #include <wabcut/model/Nesting.h>
 #include <wabcut/model/SubmixOps.h>
 
@@ -72,7 +73,8 @@ std::expected<ProjectState, Error> removeMedia(const ProjectState& state, MediaI
     for (const SequencePtr& seq : state.sequences) {
         bool used = false;
         seq->forEachTrack([&](const Track& t) {
-            used = used || std::any_of(t.clips.begin(), t.clips.end(), [&](const Clip& c) { return c.media == media; });
+            // 0.6: a take of an audition counts too (Auditions.h).
+            used = used || std::any_of(t.clips.begin(), t.clips.end(), [&](const Clip& c) { return clipUsesMedia(c, media); });
         });
         if (used) {
             return std::unexpected(invalidArgument("media '" + (*it)->name + "' is used in sequence '" + seq->name + "'"));
@@ -162,6 +164,42 @@ bool clearReference(EffectStack& stack, const std::string& reference) {
     return changed;
 }
 
+/// 0.6: whether a clip's effects or the effects of one of its audition takes (Auditions.h) name `reference`.
+bool clipRefersTo(const Clip& c, const std::string& reference) {
+    if (refersTo(c.effects(), reference)) {
+        return true;
+    }
+    const Audition* a = c.audition();
+    return a && std::any_of(a->others.begin(), a->others.end(), [&](const AuditionTake& t) {
+               return refersTo(t.contentOrDefault().effects, reference);
+           });
+}
+
+/// The clip without data entries naming `reference`, in its own effects and its takes' (clipRefersTo).
+void clearClipReference(Clip& c, const std::string& reference) {
+    ClipContent content = c.content();
+    bool changed = clearReference(content.effects, reference);
+    if (content.audition) {
+        Audition next = *content.audition;
+        bool takesChanged = false;
+        for (AuditionTake& t : next.others) {
+            if (refersTo(t.contentOrDefault().effects, reference)) {
+                ClipContent takeContent = t.contentOrDefault();
+                clearReference(takeContent.effects, reference);
+                t.content = std::make_shared<const ClipContent>(std::move(takeContent));
+                takesChanged = true;
+            }
+        }
+        if (takesChanged) {
+            content.audition = std::make_shared<const Audition>(std::move(next));
+            changed = true;
+        }
+    }
+    if (changed) {
+        c.setContent(std::move(content));
+    }
+}
+
 std::expected<void, Error> checkAssetLocator(const MediaLocator& locator) {
     if (locator.path.empty()) {
         return std::unexpected(invalidArgument("an asset needs a file path"));
@@ -215,7 +253,7 @@ std::expected<ProjectState, Error> removeAsset(const ProjectState& state, AssetI
         bool used = refersTo(seq->effects, reference);
         seq->forEachTrack([&](const Track& t) {
             used = used || refersTo(t.effects, reference) ||
-                   std::any_of(t.clips.begin(), t.clips.end(), [&](const Clip& c) { return refersTo(c.effects(), reference); });
+                   std::any_of(t.clips.begin(), t.clips.end(), [&](const Clip& c) { return clipRefersTo(c, reference); });
         });
         if (!used) {
             continue;
@@ -230,23 +268,34 @@ std::expected<ProjectState, Error> removeAsset(const ProjectState& state, AssetI
             for (TrackPtr& track : *list) {
                 const bool trackUses = refersTo(track->effects, reference) ||
                                        std::any_of(track->clips.begin(), track->clips.end(),
-                                                   [&](const Clip& c) { return refersTo(c.effects(), reference); });
+                                                   [&](const Clip& c) { return clipRefersTo(c, reference); });
                 if (!trackUses) {
                     continue;
                 }
                 auto t = std::make_shared<Track>(*track);
                 clearReference(t->effects, reference);
                 for (std::size_t i = 0; i < t->clips.size(); ++i) {
-                    if (refersTo(t->clips[i].effects(), reference)) {
-                        EffectStack stack = t->clips[i].effects();
-                        clearReference(stack, reference);
-                        t->clips.mutableAt(i).setEffects(std::move(stack));
+                    if (clipRefersTo(t->clips[i], reference)) {
+                        clearClipReference(t->clips.mutableAt(i), reference);
                     }
                 }
                 track = std::move(t);
             }
         }
         seq = std::move(next);
+    }
+    // 0.6 (card #71): Master Clip Effects name assets too (a LUT in a source's Lumetri).
+    for (MediaPtr& m : out.media) {
+        if (!refersTo(m->masterEffects, reference)) {
+            continue;
+        }
+        if (!clearReferences) {
+            return std::unexpected(invalidArgument("asset '" + found->name + "' is used by the Master Clip Effects of '" +
+                                                   m->name + "'"));
+        }
+        MediaItem item = *m;
+        clearReference(item.masterEffects, reference);
+        m = std::make_shared<const MediaItem>(std::move(item));
     }
     std::erase_if(out.assets, [&](const ProjectAsset& a) { return a.id == asset; });
     return out;
@@ -307,7 +356,8 @@ std::expected<ProjectState, Error> removeSequence(const ProjectState& state, Seq
         }
         bool used = false;
         other->forEachTrack([&](const Track& t) {
-            used = used || std::any_of(t.clips.begin(), t.clips.end(), [&](const Clip& c) { return c.sequence == sequence; });
+            used = used || std::any_of(t.clips.begin(), t.clips.end(),
+                                       [&](const Clip& c) { return clipUsesSequence(c, sequence); });
         });
         if (used) {
             return std::unexpected(invalidArgument("sequence '" + (*it)->name + "' is used in sequence '" + other->name + "'"));
@@ -443,7 +493,8 @@ EditOutcome removeTrack(const ProjectState& state, SequenceId sequence, TrackId 
             bool used = false;
             other->forEachTrack([&](const Track& t) {
                 used = used || std::any_of(t.clips.begin(), t.clips.end(), [&](const Clip& c) {
-                           return c.sequence == sequence && c.stream.kind == kind;
+                           // 0.6: a take of an audition plays it too (the takes share the clip's stream kind).
+                           return c.stream.kind == kind && clipUsesSequence(c, sequence);
                        });
             });
             if (used) {
@@ -623,10 +674,13 @@ bool usesMedia(const Sequence& seq, const std::unordered_set<std::uint64_t>& med
     bool found = false;
     seq.forEachTrack([&](const Track& t) {
         for (const Clip& c : t.clips) {
-            if (!found && media.contains(c.media.value)) {
-                found = true;
-                *which = c.media;
-            }
+            // 0.6 (card #74): every take of an audition, not only the active one (the clip's own media).
+            forEachTakeSource(c, [&](MediaId m, SequenceId) {
+                if (!found && m.isValid() && media.contains(m.value)) {
+                    found = true;
+                    *which = m;
+                }
+            });
         }
     });
     return found;
@@ -774,9 +828,11 @@ std::expected<ProjectState, Error> removeBins(const ProjectState& state, std::sp
         std::optional<SequenceId> played;
         seq->forEachTrack([&](const Track& t) {
             for (const Clip& c : t.clips) {
-                if (!played && c.isNested() && removedSequence(c.sequence)) {
-                    played = c.sequence;
-                }
+                forEachTakeSource(c, [&](MediaId, SequenceId s) { // 0.6: an audition's other takes too
+                    if (!played && s.isValid() && removedSequence(s)) {
+                        played = s;
+                    }
+                });
             }
         });
         if (played) {

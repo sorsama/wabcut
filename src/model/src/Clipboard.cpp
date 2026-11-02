@@ -2,6 +2,7 @@
 
 #include <wabcut/model/Clipboard.h>
 
+#include <wabcut/model/Auditions.h>
 #include <wabcut/model/FinishingOps.h>
 #include <wabcut/model/Nesting.h>
 #include <wabcut/model/ProjectIO.h>
@@ -80,15 +81,18 @@ void collectSources(const ProjectState& state, const Sequence& seq, std::set<std
                     std::set<std::uint64_t>& sequences) {
     seq.forEachTrack([&](const Track& t) {
         for (const Clip& c : t.clips) {
-            if (c.isNested()) {
-                if (sequences.insert(c.sequence.value).second) {
-                    if (const Sequence* nested = state.findSequence(c.sequence)) {
-                        collectSources(state, *nested, media, sequences);
+            // 0.6: every take of an audition (Auditions.h), the clip's own source first.
+            forEachTakeSource(c, [&](MediaId m, SequenceId s) {
+                if (s.isValid()) {
+                    if (sequences.insert(s.value).second) {
+                        if (const Sequence* nested = state.findSequence(s)) {
+                            collectSources(state, *nested, media, sequences);
+                        }
                     }
+                } else if (m.isValid()) {
+                    media.insert(m.value);
                 }
-            } else if (c.media.isValid()) {
-                media.insert(c.media.value);
-            }
+            });
         }
     });
 }
@@ -733,6 +737,45 @@ std::expected<PasteResult, Error> pasteClips(const ProjectState& state, Sequence
                                                                " plays media it does not hold"));
                     }
                     n.media = m->second;
+                }
+                if (const Audition* audition = n.audition()) {
+                    // 0.6 (card #74): the other takes follow the clip's rules; a take this project cannot play is left
+                    // out (and said so), an audition left with one take pastes as a plain clip.
+                    Audition a = *audition;
+                    std::vector<AuditionTake> kept;
+                    std::uint32_t active = a.active;
+                    for (std::size_t k = 0; k < a.others.size(); ++k) {
+                        AuditionTake take = a.others[k];
+                        bool ok = true;
+                        if (take.media.isValid()) {
+                            const auto m = mediaMap.find(take.media.value);
+                            ok = m != mediaMap.end();
+                            if (ok) {
+                                take.media = m->second;
+                            }
+                        }
+                        if (take.sequence.isValid()) {
+                            ok = ok && nestedOk.contains(take.sequence.value) && !sequenceContains(out, take.sequence, sequenceId);
+                        }
+                        if (ok) {
+                            kept.push_back(std::move(take));
+                        } else {
+                            report.notes.push_back("take '" + take.name() + "' of audition '" + n.name() +
+                                                   "' was left out: this project cannot play its source here");
+                            if (k < a.active) {
+                                --active;
+                            }
+                        }
+                    }
+                    ClipContent block = n.content();
+                    if (kept.empty()) {
+                        block.audition = nullptr;
+                    } else {
+                        a.others = std::move(kept);
+                        a.active = active;
+                        block.audition = std::make_shared<const Audition>(std::move(a));
+                    }
+                    n.setContent(std::move(block));
                 }
                 if (c.linkGroup.isValid()) {
                     auto g = groups.find(c.linkGroup.value);

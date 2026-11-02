@@ -286,3 +286,80 @@ TEST_CASE("Enhance Speech live: recording a take while playing is heard within t
     }
     CHECK(wrong == 0);
 }
+
+namespace {
+
+/// Fix F1A: media `letter`'s Master Clip Effects (MediaItem::masterEffects, card #71).
+void setMasterEffects(Project& p, char letter, EffectStack effects) {
+    for (MediaPtr& m : p.state.media) {
+        if (m && m->id == p.mediaId(letter)) {
+            MediaItem item = *m;
+            item.masterEffects = std::move(effects);
+            m = std::make_shared<const MediaItem>(std::move(item));
+        }
+    }
+}
+
+/// exported() with the project handed to the renderers, as the app's export does (master clip effects need it).
+std::vector<float> exportedWithProject(const Project& p, Ticks start, std::size_t count) {
+    OfflineMixdownOptions options;
+    options.renderer.edgeFade = Ticks{};
+    options.redactions = AudioRedactions::of(p.state);
+    options.takes = AudioTakes::of(p.state);
+    options.project = std::make_shared<const ProjectState>(p.state);
+    OfflineMixdown mix(p.state.sequences.front(), 2, 48000, start, *p.feed, options);
+    std::vector<float> out(count * 2);
+    for (std::size_t done = 0; done < count;) {
+        const std::size_t n = std::min<std::size_t>(count - done, 300 + done % 777);
+        mix.render(std::span<float>(out.data() + done * 2, n * 2));
+        done += n;
+    }
+    return out;
+}
+
+} // namespace
+
+TEST_CASE("Enhance Speech on the master clip plays the take for every clip that plays master clip effects (fix F1A)",
+          "[playback][enhance][export][master]") {
+    // ARGON-06: the renderer looked for Enhance Speech in the clip's own stack only.
+    Project p;
+    p.media('A', level(0.5f));
+    const auto file = takeFile("master");
+    recordTake(p, 'A', file, saw());
+    setMasterEffects(p, 'A', {enhance(p, ParamValue(1.0))});
+    Clip off = p.makeClip({'A', ms(400), ms(400), ms(650)});
+    ClipContent content = off.content();
+    content.masterEffectsOff = true;
+    off.setContent(std::move(content));
+    addTrack(p, {p.makeClip({'A', ms(0), ms(400), ms(250)}), std::move(off)});
+    const std::size_t n = at(ms(800));
+    const auto out = exportedWithProject(p, Ticks{}, n);
+    std::size_t wrong = 0;
+    for (std::size_t k = 0; k < at(ms(400)); ++k) { // the first clip: the take
+        wrong += out[k * 2] != takeAt(p, file, ms(250), k, 0) ? 1 : 0;
+    }
+    CHECK(wrong == 0);
+    // The clip that turned the master clip effects off plays its media as it is.
+    CHECK(out[at(ms(600)) * 2] == Approx(0.5f));
+}
+
+TEST_CASE("A through edit where one side turns the master clip effects off plays in two voices (fix F1A)",
+          "[playback][effects][master]") {
+    // ARGON-06: the voice of a through edit plays its first clip's stack, so both sides heard the master's -6 dB.
+    Project p;
+    p.media('A', level(0.5f));
+    EffectInstance gain;
+    gain.id = p.state.ids.allocate<EffectInstanceId>();
+    gain.effect = "wabcut.audio.gain";
+    gain.set("gain", ParamValue(-6.0));
+    setMasterEffects(p, 'A', {gain});
+    Clip second = p.makeClip({'A', ms(400), ms(400), ms(400)}); // continues the first clip's source
+    ClipContent content = second.content();
+    content.masterEffectsOff = true;
+    second.setContent(std::move(content));
+    addTrack(p, {p.makeClip({'A', ms(0), ms(400), ms(0)}), std::move(second)});
+    const auto out = exportedWithProject(p, Ticks{}, at(ms(800)));
+    const float lowered = 0.5f * std::pow(10.0f, -6.0f / 20.0f);
+    CHECK(out[at(ms(200)) * 2] == Approx(lowered).margin(1e-3));
+    CHECK(out[at(ms(600)) * 2] == Approx(0.5f).margin(1e-3));
+}

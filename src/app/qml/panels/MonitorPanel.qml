@@ -22,7 +22,8 @@ import QtQuick.Layouts
 // I.3: preview quality (MediaReadiness). The quality menu picks Auto / Full / 1/2 / 1/4 (Premiere's playback
 // resolution) and "Use proxies"; the monitor composites and the decoders decode at that resolution. The header
 // badge says what the picture really is ("Proxy 1/2", "1/2", "Full"; amber when an offline original is shown from
-// its proxy).
+// its proxy). P1 (#16): its Paused Resolution submenu sets the resolution while parked (MediaReadiness.pausedQuality,
+// default Full): the parked frame is drawn sharp, the pill and badge keep showing the playback resolution.
 //
 // I.4: captions are drawn by the compositor, in the picture (no QML overlay), as exports burn them in; the quality
 // menu toggles karaoke highlighting (Playback.captionKaraoke).
@@ -35,6 +36,16 @@ import QtQuick.Layouts
 // the monitor focused opens the timecode field seeded with it; on vertical sequences, the wrench's Platform Safe Zones
 // shade where Shorts, TikTok or Reels put their buttons and captions (PlatformSafeZoneOverlay); the transport always
 // fits: the lowest-priority buttons hide first and a "···" button at the row's end lists them (TransportOverflowButton).
+//
+// P1 (#17): Premiere's edit overlay. A Library clip (application/x-wabcut-media: a media or sequence key) or the Source
+// Monitor's picture (application/x-wabcut-source) dragged over the picture shows EditOverlay's five zones - Insert,
+// Overwrite, Overlay, Replace, Append at End - and a drop runs that edit at the playhead and the targeted tracks, one
+// undo step named after the zone (programDrop). Picking and Motion's box stand aside while the drag is over it.
+//
+// P1 (#18): captions in the picture are picked too (GraphicCanvas: kind "caption"). A click selects the cue (outlined;
+// the Captions list scrolls to it; a cue and clips are selected one or the other), a double-click opens its text in the
+// Captions panel, and dragging the outlined block moves the caption track's text block: placement Custom at the new
+// centre, kept inside the style's safe area, one undo step "Move Caption" (refused while the position is keyframed).
 Panel {
     id: root
 
@@ -46,6 +57,68 @@ Panel {
     signal monitorRequested(string monitor)
     /// UX rework (stream T): a typed time moved the playhead (Main brings it into view in the Timeline).
     signal playheadMoved()
+    /// P1 (#17, #18): why a drop on the edit overlay or a caption drag did nothing (Main shows it as a toast).
+    signal messageRequested(string text)
+    /// P1 (#17): wraps a drop that places clips (Main: TimelinePanel.dropChecked, the Clip Mismatch Warning for the
+    /// first clip in an empty sequence). Called with a function that places them and returns whether it did.
+    property var checkDrop: drop => drop()
+
+    /// P1 (#17): a drop on the edit overlay's `zone` ("insert", "overwrite", "overlay", "replace" or "append"): the
+    /// Library item `mediaKey` ("m…" media or "s…" sequence) or, with `mediaKey` "", the Source Monitor's clip
+    /// (`streams` "av", "video" or "audio", as its drag says), at the playhead (Append: after the last clip) on the
+    /// targeted tracks. Overlay takes the first free video track at or above the target (Monitors.overlayTrack), or a new
+    /// one on top; Replace replaces the clip under the playhead on the target track (Monitors.replaceTarget). One undo
+    /// step named after the zone. Returns whether it placed something (else messageRequested says why).
+    function programDrop(zone: string, mediaKey: string, streams: string): bool {
+        const fromSource = mediaKey === ""
+        let label = ""
+        switch (zone) {
+        case "insert": label = qsTr("Insert"); break
+        case "overwrite": label = qsTr("Overwrite"); break
+        case "overlay": label = qsTr("Overlay"); break
+        case "replace": label = qsTr("Replace"); break
+        case "append": label = qsTr("Append at End"); break
+        default: return false
+        }
+        const kind = streams === "" ? "av" : streams
+        const place = (time, track, overwrite) => fromSource ? SourceMonitor.dropAt(time, track, overwrite, kind)
+                                                             : ProjectFile.dropMedia(mediaKey, time, track, overwrite)
+        ProjectController.beginGesture(label)
+        let placed = false
+        if (zone === "replace") {
+            const target = Monitors.replaceTarget()
+            placed = target !== "" && Editing.replaceDrop(target, mediaKey, fromSource)
+        } else {
+            placed = root.checkDrop(() => {
+                if (zone === "insert" || zone === "overwrite")
+                    return place(ProjectController.playheadText, "", zone === "overwrite")
+                if (zone === "append")
+                    return place(Monitors.sequenceEndText(), "", true)
+                let track = Monitors.overlayTrack(mediaKey, fromSource)
+                if (track === "") {
+                    const made = ProjectController.addTracks({ video: 1, audio: 0, videoPlacement: "last" })
+                    track = made.length > 0 ? made[0] : ""
+                }
+                return track !== "" && place(ProjectController.playheadText, track, true)
+            })
+        }
+        if (placed) {
+            ProjectController.endGesture()
+            return true
+        }
+        ProjectController.cancelGesture()
+        const why = zone === "replace" ? (Monitors.replaceTarget() === "" ? qsTr("There is no clip under the playhead to replace")
+                                                                           : Editing.message)
+                  : fromSource ? SourceMonitor.message : ProjectFile.lastError
+        root.messageRequested(why !== "" ? why : qsTr("%1 did not place anything").arg(label))
+        return false
+    }
+
+    /// P1 (#18): a caption picked in the picture (a pick result of kind "caption"): its cue selected in Captions (the
+    /// list scrolls to it; it shows that caption track).
+    function selectCaption(result) {
+        Captions.selectCue(result.captionTrack, result.cue)
+    }
 
     // 0 = fit the well; otherwise monitor pixels per sequence pixel (Premiere's zoom levels).
     property real zoom: 0
@@ -83,6 +156,11 @@ Panel {
     function applyPick(result) {
         if (result.action !== "edit")
             return
+        if (result.kind === "caption") { // P1 (#18): the cue's text, in the Captions panel
+            root.selectCaption(result)
+            Captions.editCue(result.cue)
+            return
+        }
         if (result.kind === "title") {
             titleEditor.titleClip = result.clip
             titleEditor.open(0, result.editor ?? {}, false)
@@ -352,10 +430,13 @@ Panel {
                     id: pickArea
                     objectName: "programPickArea"
                     anchors.fill: parent
-                    enabled: !root.typeTool
+                    enabled: !root.typeTool && !editDrop.containsDrag
                     hoverEnabled: true
                     acceptedButtons: Qt.LeftButton
                     property var hoverQuad: []
+                    /// P1 (#18): the caption block being dragged: { x, y (press, pixels), cx, cy, hw, hh (its centre and
+                    /// half size, fractions), moving } or null.
+                    property var captionDrag: null
 
                     function quadPoints(quad) {
                         const out = []
@@ -368,10 +449,58 @@ Panel {
                         root.pendingTextLayer = 0
                         well.pointerFocus = true
                         well.forceActiveFocus(Qt.MouseFocusReason)
-                        GraphicCanvas.pickPress(mouse.x / width, mouse.y / height)
+                        const picked = GraphicCanvas.pickPress(mouse.x / width, mouse.y / height)
                         hoverQuad = []
+                        captionDrag = null
+                        if (picked.kind === "caption") {
+                            root.selectCaption(picked)
+                            const q = picked.quad ?? []
+                            if (q.length === 8) {
+                                const xs = [q[0], q[2], q[4], q[6]]
+                                const ys = [q[1], q[3], q[5], q[7]]
+                                const x0 = Math.min(...xs)
+                                const x1 = Math.max(...xs)
+                                const y0 = Math.min(...ys)
+                                const y1 = Math.max(...ys)
+                                captionDrag = { x: mouse.x, y: mouse.y, cx: (x0 + x1) / 2, cy: (y0 + y1) / 2,
+                                                hw: (x1 - x0) / 2, hh: (y1 - y0) / 2, moving: false }
+                            }
+                        }
                         pickOutline.requestPaint()
                     }
+                    // P1 (#18): dragging the picked caption moves the caption track's text block (one undo step).
+                    function dragCaption(mx: real, my: real) {
+                        const d = captionDrag
+                        if (!d)
+                            return
+                        if (!d.moving) {
+                            if (Math.abs(mx - d.x) < 3 && Math.abs(my - d.y) < 3)
+                                return
+                            if (Captions.style.positionAnimated) {
+                                captionDrag = null
+                                root.messageRequested(qsTr("The caption position is keyframed: change it in Caption Style"))
+                                return
+                            }
+                            ProjectController.beginGesture(qsTr("Move Caption"))
+                            d.moving = true
+                            captionDrag = d
+                            Captions.setStyle("placement", "custom")
+                        }
+                        const safe = Captions.style.safeArea ?? 0
+                        const clampTo = (v, half) => Math.max(Math.min(safe + half, 0.5), Math.min(Math.max(1 - safe - half, 0.5), v))
+                        Captions.setStyle("positionX", clampTo(d.cx + (mx - d.x) / width, d.hw))
+                        Captions.setStyle("positionY", clampTo(d.cy + (my - d.y) / height, d.hh))
+                    }
+                    function endCaptionDrag() {
+                        const d = captionDrag
+                        captionDrag = null
+                        if (d && d.moving) {
+                            Captions.endStyleEdit()
+                            ProjectController.endGesture()
+                        }
+                    }
+                    onReleased: endCaptionDrag()
+                    onCanceled: endCaptionDrag()
                     // A double-click edits a title or a text in place; on a picture it shows Motion's box (P.2).
                     onDoubleClicked: mouse => {
                         const picked = GraphicCanvas.pickDoubleClick(mouse.x / width, mouse.y / height)
@@ -381,8 +510,10 @@ Panel {
                             motionOverlay.engageAt(mouse.x, mouse.y)
                     }
                     onPositionChanged: mouse => {
-                        if (pressed)
+                        if (pressed) {
+                            dragCaption(mouse.x, mouse.y)
                             return
+                        }
                         const quad = GraphicCanvas.hoverAt(mouse.x / width, mouse.y / height)
                         if (JSON.stringify(quad) !== JSON.stringify(hoverQuad)) {
                             hoverQuad = quad
@@ -505,7 +636,7 @@ Panel {
                 MotionOverlay {
                     id: motionOverlay
                     anchors.fill: parent
-                    suspended: root.typeTool
+                    suspended: root.typeTool || editDrop.containsDrag // P1 (#17): not while a clip is dragged over
                 }
             }
 
@@ -541,6 +672,57 @@ Panel {
             VoiceOverOverlay {
                 anchors.fill: parent
                 z: 2
+            }
+
+            // 0.6 (card #74): the takes of the audition at the playhead (Clip > Auditions > Show Takes in Program
+            // Monitor), a strip of cards along the bottom of the picture.
+            TakeStripOverlay {
+                anchors.left: frameArea.left
+                anchors.right: frameArea.right
+                anchors.bottom: frameArea.bottom
+                anchors.margins: Theme.space(2)
+                visible: Auditions.overlayShown && Auditions.clip !== "" && Auditions.count > 1 && !Trim.viewOpen
+                z: 2
+            }
+
+            // P1 (#17): the edit overlay - a Library clip or the Source Monitor's picture dragged over the monitor.
+            DropArea {
+                id: editDrop
+                objectName: "programEditDropArea"
+                anchors.fill: parent
+                enabled: !Trim.viewOpen
+                keys: ["application/x-wabcut-media", "application/x-wabcut-source"]
+                function payload(drag) {
+                    if (drag.formats.indexOf("application/x-wabcut-source") >= 0)
+                        return { mediaKey: "", streams: drag.getDataAsString("application/x-wabcut-source") }
+                    const key = drag.getDataAsString("application/x-wabcut-media")
+                    return { mediaKey: key, streams: "" }
+                }
+                onEntered: drag => {
+                    const p = payload(drag)
+                    // Media and sequences only (a bin or a search hit is not a clip to edit in).
+                    drag.accepted = p.mediaKey === "" ? SourceMonitor.loaded && !SourceMonitor.preview
+                                                      : p.mediaKey.startsWith("m") || p.mediaKey.startsWith("s")
+                    if (!drag.accepted)
+                        return
+                    editOverlay.replaceAvailable = Monitors.replaceTarget() !== ""
+                    editOverlay.zone = editOverlay.zoneAt(drag.x, drag.y)
+                }
+                onPositionChanged: drag => editOverlay.zone = editOverlay.zoneAt(drag.x, drag.y)
+                onExited: editOverlay.zone = ""
+                onDropped: drop => {
+                    const zone = editOverlay.zoneAt(drop.x, drop.y)
+                    editOverlay.zone = ""
+                    const p = payload(drop)
+                    if (zone !== "" && root.programDrop(zone, p.mediaKey, p.streams))
+                        drop.accept(Qt.CopyAction)
+                }
+            }
+            EditOverlay {
+                id: editOverlay
+                anchors.fill: parent
+                visible: editDrop.containsDrag
+                z: 3
             }
 
             FocusRing {
@@ -723,7 +905,8 @@ Panel {
                     text: {
                         switch (MediaReadiness.previewQuality) {
                         //: Preview quality button; Auto shows the resolution it chose, e.g. "Auto 1/2"
-                        case "auto": return qsTr("Auto %1").arg(MediaReadiness.previewDivisor === 1 ? qsTr("Full") : "1/" + MediaReadiness.previewDivisor)
+                        // P1 (#16): the playback divisor, so the pill does not change at every play and pause.
+                        case "auto": return qsTr("Auto %1").arg(MediaReadiness.playbackDivisor === 1 ? qsTr("Full") : "1/" + MediaReadiness.playbackDivisor)
                         case "full": return qsTr("Full")
                         case "half": return "1/2"
                         case "quarter": return "1/4"
@@ -741,6 +924,8 @@ Panel {
                         QualityItem { value: "full"; text: qsTr("Full") }
                         QualityItem { value: "half"; text: qsTr("1/2") }
                         QualityItem { value: "quarter"; text: qsTr("1/4") }
+                        // P1 (#16): the resolution while parked (Premiere's Paused Resolution).
+                        PausedResolutionMenu { namePrefix: "quality_" }
                         ContextMenuSeparator {}
                         ContextMenuItem {
                             objectName: "captionKaraokeItem"

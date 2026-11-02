@@ -39,7 +39,8 @@ ExportSettings preset(std::string_view id) {
 
 TEST_CASE("Built-in presets exist, validate and say what they promise", "[export][settings]") {
     const auto presets = builtInPresets();
-    REQUIRE(presets.size() == 38); // six, twelve for gaming videos, four HDR (I.9) and sixteen of Premiere's formats (0.2)
+    // six, twelve for gaming videos, four HDR (I.9), sixteen of Premiere's formats (0.2) and five MXF deliveries (#73)
+    REQUIRE(presets.size() == 43);
     for (const Preset& p : presets) {
         INFO(p.id);
         CHECK(!p.name.empty());

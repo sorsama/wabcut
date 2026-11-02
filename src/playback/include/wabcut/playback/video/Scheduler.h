@@ -152,7 +152,7 @@ public:
     Scheduler(const Scheduler&) = delete;
     Scheduler& operator=(const Scheduler&) = delete;
 
-    /// Follow `session`'s current snapshot (acquired once per pass; the session must outlive the scheduler or
+    /// Follow `session`'s shown state (EditSession::shown: a preview plays; acquired once per pass; the session must outlive the scheduler or
     /// the next setSession()/setSnapshot()). Any thread.
     void setSession(const EditSession* session, SequenceId sequence);
     /// Evaluate a fixed snapshot (export, tests, benchmarks).

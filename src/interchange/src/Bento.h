@@ -14,7 +14,7 @@
 //
 // The writer emits what the OMF Toolkit's Bento library reads (and what other OMF writers do): every object's entries
 // sorted by property, objects in ID order, values of up to 4 bytes inline in the TOC, no object split across TOC
-// blocks when it fits in one. The reader is for tests and takes untrusted files (sizes and counts bounded).
+// blocks when it fits in one. The reader (tests, and OMF import) takes untrusted files (sizes and counts bounded).
 
 #include "Cfb.h"
 
@@ -23,10 +23,12 @@
 #include <cstdint>
 #include <expected>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace wabcut::interchange::detail::bento {
@@ -105,6 +107,9 @@ struct ReadValue {
     std::uint64_t size = 0;
     bool immediate = false;
     std::uint32_t referenceList = 0;
+    /// 0.6: where a value that is not immediate lies in the file (offset, size), in order: values too large to load
+    /// (embedded media) are copied from there.
+    std::vector<std::pair<std::uint64_t, std::uint64_t>> segments;
 };
 
 struct Container {
@@ -124,5 +129,8 @@ struct Container {
 /// Parses a Bento container (label, TOC, value data up to `maxValueBytes` each; larger ones keep offset and size
 /// only). Errors: ParseError.
 std::expected<Container, Error> read(std::string_view bytes, std::size_t maxValueBytes = 16u * 1024u * 1024u);
+/// 0.6 (OMF import): the same for a file on disk, reading only its label, TOC and the values it loads (files of any
+/// size). Errors: IoError, ParseError.
+std::expected<Container, Error> readFile(const std::filesystem::path& file, std::size_t maxValueBytes = 16u * 1024u * 1024u);
 
 } // namespace wabcut::interchange::detail::bento

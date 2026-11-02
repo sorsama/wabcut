@@ -80,6 +80,9 @@ QFont fontOf(const TextBlockRun& run) {
     font.setUnderline(run.underline);
     if (run.tracking != 0.0)
         font.setLetterSpacing(QFont::AbsoluteSpacing, run.tracking / 1000.0 * run.fontSize);
+    font.setKerning(run.kerning); // 0.6: as the renderer lays it out
+    if (run.caps != TextCaps::Normal)
+        font.setCapitalization(run.caps == TextCaps::AllCaps ? QFont::AllUppercase : QFont::SmallCaps);
     return font;
 }
 
@@ -254,6 +257,8 @@ std::array<double, 2> QtTextMeasurer::measure(const TextContent& text, const std
         run.underline = r.style.underline;
         run.tracking = r.style.tracking;
         run.leading = r.style.leading;
+        run.kerning = r.style.kerning;
+        run.caps = r.style.caps;
         runs.push_back(std::move(run));
         byte += r.text.size();
     }
@@ -277,6 +282,8 @@ std::vector<TextBlockRun> blockRuns(const DrawText& text) {
         run.underline = r.underline;
         run.tracking = r.tracking;
         run.leading = r.leading;
+        run.kerning = r.kerning;
+        run.caps = r.caps;
         runs.push_back(std::move(run));
     }
     return runs;

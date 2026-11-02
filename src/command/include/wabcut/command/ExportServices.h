@@ -61,6 +61,15 @@ public:
     virtual std::expected<Json, CommandError> addWatchFolder(const std::string& folder, const std::string& preset,
                                                              const std::string& output, bool moveSources, bool dryRun) = 0;
     virtual std::expected<void, CommandError> removeWatchFolder(std::string_view id, bool dryRun) = 0;
+
+    /// 0.6 (#52): the stems of `master` (an export planned to write `masterOutput`) by track role: one audio-only export
+    /// per role with an audible track, written next to it ("<stem>_DX.wav", ...), its overrides naming the role
+    /// ("stemOnly"; "stemsMasterEffects" false: without the master bus's effects). Hosts without stems: none.
+    virtual std::vector<Output> stemExports(const ProjectState& state, SequenceId sequence, const Output& master,
+                                            const std::string& masterOutput, bool masterEffects) const {
+        (void)state, (void)sequence, (void)master, (void)masterOutput, (void)masterEffects;
+        return {};
+    }
 };
 
 } // namespace wabcut::command

@@ -24,6 +24,11 @@ Rectangle {
         cueText.forceActiveFocus(Qt.OtherFocusReason)
         cueText.cursorPosition = cueText.length
     }
+    /// P1 round (#35): a new caption's text, all of it selected (typing replaces "New caption").
+    function selectText() {
+        cueText.forceActiveFocus(Qt.OtherFocusReason)
+        cueText.selectAll()
+    }
 
     objectName: "captionCue_" + modelData.index
     implicitHeight: cueColumn.implicitHeight + Theme.space(2)

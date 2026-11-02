@@ -15,6 +15,10 @@ import QtQuick
 // 0.4 (stream A): Clear (Delete: the selected clips go and leave gaps) before Ripple Delete, and Audio Gain… (G) at the
 // top of the audio tools on clips with sound; its dialog opens once the menu has closed (pendingCommand).
 // 0.5 (stream C): Scene Edit Detection… after Speed/Duration… (SceneDetect; greyed out with the reason without video).
+// 0.6 (stream 1A): Move into Sync / Slip into Sync after Link, on a linked clip that is out of sync.
+// 0.6 (P1 round, D9 #8): Detect Beats… (D9) in the audio tools on a clip with sound: its dialog (the optional BPM range)
+// and the analysis run in the Beats bridge.
+// 0.6 (card #74): Audition, the submenu of take stacks, after the nesting rows.
 ContextMenu {
     id: clipMenu
     objectName: "clipContextMenu"
@@ -42,6 +46,8 @@ ContextMenu {
     property var selection: []
     /// 0.5: SceneDetect.availability(): { enabled, reason, note } for Scene Edit Detection….
     property var sceneInfo: ({})
+    /// 0.6: frames the clip is out of sync with its linked partner (0: in sync): Move / Slip into Sync show then.
+    property int syncFrames: 0
 
     function openAt(target, id, point) {
         clipId = id
@@ -51,9 +57,11 @@ ContextMenu {
         revealInfo = Editing.revealInfo(id)
         selection = ClipAudio.selectedClips()
         sceneInfo = SceneDetect.availability()
+        syncFrames = ProjectController.syncOffsetFrames(id)
         showChannels()
         showTakes()
         momentsMenu.refresh()
+        auditionMenu.refresh()
         videoOptionsMenu.refresh()
         interpolationMenu.refresh()
         popup(target, point.x, point.y)
@@ -212,6 +220,27 @@ ContextMenu {
         command: "clip.link"
         onTriggered: ProjectController.toggleLinkSelection()
     }
+    // 0.6 (stream 1A): a linked clip out of sync with its partner (the red tag on the clip): Premiere's Move into Sync
+    // (the clip moves back, overwriting) and Slip into Sync (its source slips, it stays where it is). One undo step each.
+    ContextMenuItem {
+        objectName: "moveIntoSyncMenuItem"
+        visible: clipMenu.syncFrames !== 0
+        height: visible ? implicitHeight : 0
+        //: %1 = the offset in frames ("+5", "-12")
+        text: qsTr("Move into Sync (%1)").arg(clipMenu.syncFrames > 0 ? "+" + clipMenu.syncFrames : clipMenu.syncFrames)
+        iconName: "arrow-left-right"
+        command: "clip.moveIntoSync"
+        onTriggered: ProjectController.moveIntoSync()
+    }
+    ContextMenuItem {
+        objectName: "slipIntoSyncMenuItem"
+        visible: clipMenu.syncFrames !== 0
+        height: visible ? implicitHeight : 0
+        text: qsTr("Slip into Sync")
+        iconName: "arrow-left-right"
+        command: "clip.slipIntoSync"
+        onTriggered: ProjectController.slipIntoSync()
+    }
     // 0.2: Premiere's Group / Ungroup (Ctrl/Cmd+G, Ctrl/Cmd+Shift+G).
     ContextMenuItem {
         objectName: "groupMenuItem"
@@ -328,6 +357,12 @@ ContextMenu {
         iconName: "layout-grid"
         onTriggered: Multicam.flatten(clipMenu.clipId)
     }
+    // 0.6 (card #74): Audition - the takes of an audition (choose one to use it), New Audition / Duplicate as Audition.
+    AuditionSubmenu {
+        id: auditionMenu
+        clipKey: clipMenu.clipId
+        onCommandRequested: command => clipMenu.pendingCommand = command
+    }
     // ---- Audio tools (A.4 / A.5) ----
     ContextMenuSeparator {
         visible: clipMenu.audioInfo.audio === true
@@ -342,6 +377,17 @@ ContextMenu {
         iconName: "volume-2"
         command: "clip.audioGain"
         onTriggered: clipMenu.pendingCommand = "clip.audioGain"
+    }
+    // 0.6 (P1 round, D9 #8): Detect Beats… (its dialog has the optional BPM range) on a clip with sound, which puts the
+    // numbered beat markers and the sequence's beat grid on it; Main opens the dialog once the menu has closed.
+    ContextMenuItem {
+        objectName: "detectBeatsMenuItem"
+        visible: clipMenu.audioInfo.audio === true
+        height: visible ? implicitHeight : 0
+        text: qsTr("Detect Beats…")
+        iconName: "music"
+        command: "sequence.detectBeats"
+        onTriggered: clipMenu.pendingCommand = "sequence.detectBeats"
     }
     ContextMenuItem {
         objectName: "enhanceSpeechMenuItem"
@@ -405,6 +451,28 @@ ContextMenu {
         iconName: "folder-open"
         enabled: clipMenu.revealInfo.inExplorer === true
         onTriggered: Editing.revealInExplorer(clipMenu.clipId)
+    }
+    // P1 round (stream 1D, #43): Premiere's Link Media… on a clip whose media is offline (the Relink dialog for it).
+    ContextMenuItem {
+        id: linkMediaItem
+        objectName: "clipMenuLinkMedia"
+        /// The media to relink once the menu has closed (the dialog then keeps the focus).
+        property string pendingKey: ""
+        visible: clipMenu.revealInfo.offline === true && (clipMenu.revealInfo.item ?? "") !== ""
+                 && Library.details(clipMenu.revealInfo.item).offline === true
+        height: visible ? implicitHeight : 0
+        text: qsTr("Link Media…")
+        iconName: "link"
+        onTriggered: linkMediaItem.pendingKey = clipMenu.revealInfo.item
+        Connections {
+            target: clipMenu
+            function onClosed() {
+                const key = linkMediaItem.pendingKey
+                linkMediaItem.pendingKey = ""
+                if (key !== "")
+                    Library.requestLinkMedia([key])
+            }
+        }
     }
     // Label colour swatches
     Item {

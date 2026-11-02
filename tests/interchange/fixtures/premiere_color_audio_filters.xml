@@ -1,0 +1,441 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE xmeml>
+<!-- Hand-authored in the shape of a Premiere Pro "Export > Final Cut Pro XML" (xmeml v4) of a graded and mixed
+     interview (0.6, card #66): Premiere writes its own effects as filters with "AE.ADBE" match names, numbered
+     parameter ids and the parameter names of Effect Controls. 25 fps. The video clip has Lumetri Color (Basic
+     Correction, Creative with a Look LUT, Vignette, keyframed exposure), Fast Color Corrector, RGB Curves, ProcAmp and
+     a third-party filter; the audio clip has Parametric Equalizer, Dynamics, Multiband Compressor and Single-band
+     Compressor. -->
+<xmeml version="4">
+	<sequence id="sequence-1">
+		<name>Graded Interview</name>
+		<duration>250</duration>
+		<rate>
+			<timebase>25</timebase>
+			<ntsc>FALSE</ntsc>
+		</rate>
+		<media>
+			<video>
+				<format>
+					<samplecharacteristics>
+						<width>1920</width>
+						<height>1080</height>
+					</samplecharacteristics>
+				</format>
+				<track>
+					<clipitem id="clipitem-1">
+						<name>Interview.mov</name>
+						<rate>
+							<timebase>25</timebase>
+							<ntsc>FALSE</ntsc>
+						</rate>
+						<start>0</start>
+						<end>200</end>
+						<in>50</in>
+						<out>250</out>
+						<file id="file-1">
+							<name>Interview.mov</name>
+							<pathurl>file://localhost/D%3a/Footage/Interview.mov</pathurl>
+							<rate>
+								<timebase>25</timebase>
+								<ntsc>FALSE</ntsc>
+							</rate>
+							<duration>1000</duration>
+							<media>
+								<video>
+									<samplecharacteristics>
+										<width>1920</width>
+										<height>1080</height>
+									</samplecharacteristics>
+								</video>
+								<audio>
+									<channelcount>1</channelcount>
+								</audio>
+							</media>
+						</file>
+						<filter>
+							<effect>
+								<name>Lumetri Color</name>
+								<effectid>AE.ADBE Lumetri</effectid>
+								<effectcategory>Color Correction</effectcategory>
+								<effecttype>filter</effecttype>
+								<mediatype>video</mediatype>
+								<parameter authoringApp="PremierePro">
+									<parameterid>3</parameterid>
+									<name>Temperature</name>
+									<value>12</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>4</parameterid>
+									<name>Tint</name>
+									<value>-5</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>5</parameterid>
+									<name>Exposure</name>
+									<keyframe>
+										<when>50</when>
+										<value>0</value>
+									</keyframe>
+									<keyframe>
+										<when>100</when>
+										<value>0.8</value>
+									</keyframe>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>6</parameterid>
+									<name>Contrast</name>
+									<value>20</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>7</parameterid>
+									<name>Highlights</name>
+									<value>-30</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>8</parameterid>
+									<name>Shadows</name>
+									<value>25</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>9</parameterid>
+									<name>Whites</name>
+									<value>10</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>10</parameterid>
+									<name>Blacks</name>
+									<value>-10</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>11</parameterid>
+									<name>Saturation</name>
+									<value>110</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>13</parameterid>
+									<name>Look</name>
+									<value>SL BIG MINUS BLUE</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>14</parameterid>
+									<name>Intensity</name>
+									<value>80</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>15</parameterid>
+									<name>Faded Film</name>
+									<value>15</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>16</parameterid>
+									<name>Sharpen</name>
+									<value>20</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>17</parameterid>
+									<name>Vibrance</name>
+									<value>10</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>18</parameterid>
+									<name>Saturation</name>
+									<value>90</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>19</parameterid>
+									<name>Shadow Tint</name>
+									<value>
+										<alpha>255</alpha>
+										<red>0</red>
+										<green>128</green>
+										<blue>255</blue>
+									</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>21</parameterid>
+									<name>Tint Balance</name>
+									<value>5</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>40</parameterid>
+									<name>Amount</name>
+									<value>-1.5</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>41</parameterid>
+									<name>Midpoint</name>
+									<value>40</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>42</parameterid>
+									<name>Roundness</name>
+									<value>10</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>43</parameterid>
+									<name>Feather</name>
+									<value>60</value>
+								</parameter>
+							</effect>
+						</filter>
+						<filter>
+							<effect>
+								<name>Fast Color Corrector</name>
+								<effectid>AE.ADBE Fast Color Corrector</effectid>
+								<effectcategory>Obsolete</effectcategory>
+								<effecttype>filter</effecttype>
+								<mediatype>video</mediatype>
+								<parameter authoringApp="PremierePro">
+									<parameterid>3</parameterid>
+									<name>Balance Magnitude</name>
+									<value>20</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>4</parameterid>
+									<name>Balance Angle</name>
+									<value>200</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>7</parameterid>
+									<name>Saturation</name>
+									<value>120</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>10</parameterid>
+									<name>Input Black Level</name>
+									<value>16</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>11</parameterid>
+									<name>Input Gray Level</name>
+									<value>1</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>12</parameterid>
+									<name>Input White Level</name>
+									<value>235</value>
+								</parameter>
+							</effect>
+						</filter>
+						<filter>
+							<effect>
+								<name>RGB Curves</name>
+								<effectid>AE.ADBE RGB Curves</effectid>
+								<effectcategory>Obsolete</effectcategory>
+								<effecttype>filter</effecttype>
+								<mediatype>video</mediatype>
+								<parameter authoringApp="PremierePro">
+									<parameterid>2</parameterid>
+									<name>Master</name>
+									<value>0,0 64,48 192,210 255,255</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>5</parameterid>
+									<name>Blue</name>
+									<value>0,0.05 1,0.95</value>
+								</parameter>
+							</effect>
+						</filter>
+						<filter>
+							<effect>
+								<name>ProcAmp</name>
+								<effectid>AE.ADBE ProcAmp</effectid>
+								<effectcategory>Color Correction</effectcategory>
+								<effecttype>filter</effecttype>
+								<mediatype>video</mediatype>
+								<parameter authoringApp="PremierePro">
+									<parameterid>1</parameterid>
+									<name>Brightness</name>
+									<value>8</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>2</parameterid>
+									<name>Contrast</name>
+									<value>105</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>4</parameterid>
+									<name>Saturation</name>
+									<value>95</value>
+								</parameter>
+							</effect>
+						</filter>
+						<filter>
+							<effect>
+								<name>Film Look Pro</name>
+								<effectid>com.example.filmlook</effectid>
+								<effectcategory>Third Party</effectcategory>
+								<effecttype>filter</effecttype>
+								<mediatype>video</mediatype>
+								<parameter authoringApp="PremierePro">
+									<parameterid>1</parameterid>
+									<name>Grain</name>
+									<value>30</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>2</parameterid>
+									<name>Halation</name>
+									<value>10</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>3</parameterid>
+									<name>Stock</name>
+									<value>2</value>
+								</parameter>
+							</effect>
+						</filter>
+						<link>
+							<linkclipref>clipitem-1</linkclipref>
+							<mediatype>video</mediatype>
+							<trackindex>1</trackindex>
+							<clipindex>1</clipindex>
+						</link>
+						<link>
+							<linkclipref>clipitem-2</linkclipref>
+							<mediatype>audio</mediatype>
+							<trackindex>1</trackindex>
+							<clipindex>1</clipindex>
+						</link>
+					</clipitem>
+				</track>
+			</video>
+			<audio>
+				<track>
+					<clipitem id="clipitem-2">
+						<name>Interview.mov</name>
+						<rate>
+							<timebase>25</timebase>
+							<ntsc>FALSE</ntsc>
+						</rate>
+						<start>0</start>
+						<end>200</end>
+						<in>50</in>
+						<out>250</out>
+						<file id="file-1"/>
+						<sourcetrack>
+							<mediatype>audio</mediatype>
+							<trackindex>1</trackindex>
+						</sourcetrack>
+						<filter>
+							<effect>
+								<name>Parametric Equalizer</name>
+								<effectid>AE.ADBE Parametric Equalizer</effectid>
+								<effectcategory>Filter and EQ</effectcategory>
+								<effecttype>filter</effecttype>
+								<mediatype>audio</mediatype>
+								<parameter authoringApp="PremierePro">
+									<parameterid>4</parameterid>
+									<name>Low Shelf Frequency</name>
+									<value>120</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>5</parameterid>
+									<name>Low Shelf Gain</name>
+									<value>-4</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>9</parameterid>
+									<name>EQ Band 2 Center Frequency</name>
+									<value>250</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>10</parameterid>
+									<name>EQ Band 2 Gain</name>
+									<value>-3.5</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>11</parameterid>
+									<name>EQ Band 2 Q</name>
+									<value>1.4</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>20</parameterid>
+									<name>High-Pass Filter Enable</name>
+									<value>TRUE</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>21</parameterid>
+									<name>High-Pass Cutoff Frequency</name>
+									<value>80</value>
+								</parameter>
+							</effect>
+						</filter>
+						<filter>
+							<effect>
+								<name>Dynamics</name>
+								<effectid>AE.ADBE Dynamics</effectid>
+								<effectcategory>Amplitude and Compression</effectcategory>
+								<effecttype>filter</effecttype>
+								<mediatype>audio</mediatype>
+								<parameter authoringApp="PremierePro">
+									<parameterid>6</parameterid>
+									<name>Compressor</name>
+									<value>TRUE</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>7</parameterid>
+									<name>Compressor Threshold</name>
+									<value>-24</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>8</parameterid>
+									<name>Compressor Ratio</name>
+									<value>4</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>12</parameterid>
+									<name>MakeUp</name>
+									<value>3</value>
+								</parameter>
+							</effect>
+						</filter>
+						<filter>
+							<effect>
+								<name>Multiband Compressor</name>
+								<effectid>AE.ADBE Multiband Compressor</effectid>
+								<effectcategory>Amplitude and Compression</effectcategory>
+								<effecttype>filter</effecttype>
+								<mediatype>audio</mediatype>
+								<parameter authoringApp="PremierePro">
+									<parameterid>4</parameterid>
+									<name>Band 1 Threshold</name>
+									<value>-30</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>35</parameterid>
+									<name>Output Gain</name>
+									<value>2</value>
+								</parameter>
+							</effect>
+						</filter>
+						<filter>
+							<effect>
+								<name>Single-band Compressor</name>
+								<effectid>AE.ADBE Single-band Compressor</effectid>
+								<effectcategory>Amplitude and Compression</effectcategory>
+								<effecttype>filter</effecttype>
+								<mediatype>audio</mediatype>
+								<parameter authoringApp="PremierePro">
+									<parameterid>1</parameterid>
+									<name>Threshold</name>
+									<value>-18</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>2</parameterid>
+									<name>Ratio</name>
+									<value>6</value>
+								</parameter>
+								<parameter authoringApp="PremierePro">
+									<parameterid>3</parameterid>
+									<name>Attack</name>
+									<value>5</value>
+								</parameter>
+							</effect>
+						</filter>
+					</clipitem>
+				</track>
+			</audio>
+		</media>
+	</sequence>
+</xmeml>

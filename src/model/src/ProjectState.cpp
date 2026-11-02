@@ -1,5 +1,6 @@
 #include <wabcut/model/ProjectState.h>
 
+#include <wabcut/model/Auditions.h>
 #include <wabcut/model/CaptionOps.h>
 #include <wabcut/model/CaptionText.h>
 #include <wabcut/model/FinishingOps.h>
@@ -468,8 +469,17 @@ std::vector<std::string> assetReferenceWarnings(const ProjectState& state) {
             check(t.effects, "track " + std::to_string(t.id.value));
             for (const Clip& c : t.clips) {
                 check(c.effects(), "clip " + std::to_string(c.id.value));
+                if (const Audition* a = c.audition()) { // 0.6: the other takes' effects
+                    for (std::size_t i = 0; i < a->others.size(); ++i) {
+                        check(a->others[i].contentOrDefault().effects,
+                              "clip " + std::to_string(c.id.value) + " take " + std::to_string(i + 1));
+                    }
+                }
             }
         });
+    }
+    for (const MediaPtr& m : state.media) { // 0.6: Master Clip Effects
+        check(m->masterEffects, "media " + std::to_string(m->id.value) + " master clip effects");
     }
     return out;
 }
@@ -842,6 +852,22 @@ private:
             }
             if (item->info.duration.value < 0) {
                 fail(what + " has a negative duration");
+            }
+            if (!item->masterEffects.empty()) { // 0.6: Master Clip Effects - video and audio effects in one stack
+                EffectStack video;
+                EffectStack audio;
+                for (const EffectInstance& e : item->masterEffects) {
+                    const EffectDescriptor* d = EffectRegistry::builtin().find(e.effect);
+                    (d && d->kind == EffectKind::Audio ? audio : video).push_back(e);
+                }
+                for (const auto& [part, kind] : {std::pair{&video, EffectKind::Video}, std::pair{&audio, EffectKind::Audio}}) {
+                    if (const auto problem = effectStackProblem(*part, kind, m_state.ids.next)) {
+                        fail(what + ": master clip effects: " + *problem);
+                    }
+                }
+                if (item->masterEffects.size() > 64) {
+                    fail(what + " has more than 64 master clip effects");
+                }
             }
             const MediaLocator& loc = item->locator;
             if (loc.fingerprint.size < -1) {
@@ -1398,6 +1424,9 @@ private:
         if (const auto problem = effectStackProblem(
                 clip.effects(), track.kind == TrackKind::Video ? EffectKind::Video : EffectKind::Audio, m_state.ids.next)) {
             fail(what + ": " + *problem);
+        }
+        if (const auto problem = auditionProblem(m_state, streamKindOf(track.kind), clip)) { // 0.6 (card #74)
+            fail(what + " " + *problem);
         }
         if (clip.hasUnknownSource()) {
             // A newer build's source kind (C.8): kept as it is, nothing to check it against.

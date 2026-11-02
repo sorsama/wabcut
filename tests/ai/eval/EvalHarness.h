@@ -126,6 +126,7 @@ struct CaseResult {
     double seconds = 0;
     std::vector<CallTiming> calls;
     std::vector<std::string> tools;   ///< the calls the model made, in order
+    std::vector<std::string> errors;  ///< what the refused calls were told, each message once (diagnosis)
 };
 
 struct EvalSummary {

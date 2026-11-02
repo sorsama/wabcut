@@ -23,6 +23,8 @@ Item {
     /// The group's panels (Workspaces.catalog keys) and the one shown.
     property var panels: []
     property string current: ""
+    /// P1 round (#32): the workspace is locked - the tabs do not drag and show no ×.
+    readonly property bool locked: root.slot?.manager?.locked ?? false
     signal activated(string key)
     signal closeRequested(string key)
 
@@ -31,7 +33,7 @@ Item {
                                              effects: "window.effects", effectControls: "window.effectControls",
                                              source: "window.sourceMonitor", program: "window.programMonitor",
                                              timeline: "window.timeline", mixer: "window.audioTrackMixer",
-                                             audioMeters: "window.audioMeters" })
+                                             audioMeters: "window.audioMeters", history: "window.history" })
 
     /// The width every tab would take at its label's size.
     readonly property real naturalWidth: {
@@ -248,7 +250,8 @@ Item {
                     anchors.verticalCenterOffset: (Theme.tabStripHeight - Theme.tabHeight) / 2
                     compact: true
                     iconName: "x"
-                    // Shown on the active tab and under the pointer, as browsers do.
+                    // Shown on the active tab and under the pointer, as browsers do (not while the workspace is locked).
+                    visible: !root.locked
                     opacity: tab.active || hover.hovered || activeFocus ? 1 : 0
                     tooltip: qsTr("Close %1").arg(tab.label)
                     onClicked: root.closeRequested(tab.modelData)
@@ -283,6 +286,7 @@ Item {
                     }
                     TapHandler {
                         acceptedButtons: Qt.MiddleButton
+                        enabled: !root.locked
                         onTapped: root.closeRequested(tab.modelData)
                     }
                     TapHandler {
@@ -293,6 +297,7 @@ Item {
                     DragHandler {
                         id: drag
                         target: null
+                        enabled: !root.locked
                         onActiveChanged: {
                             if (active) {
                                 root.activated(tab.modelData)

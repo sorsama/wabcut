@@ -119,4 +119,10 @@ command::Json momentToJson(const Moment& moment, std::size_t rank);
 /// first.
 std::vector<Moment> markedMoments(const Sequence& sequence);
 
+/// 0.6 (P1 #56): the role each audio stream's title gives highlights.find, by MediaInfo::audio index: OBS's and the
+/// other recorders' recognised titles (edit::sourceTrackNames; a number after them allowed, "Mic 2") - Mic -> "mic";
+/// Game / Desktop Audio and Alerts -> "game"; Discord and Music -> "ignore" -, else "" (no opinion: an untitled stream,
+/// "Track 3", a custom name). All "" for a file with fewer than two audio streams (its one stream is mixed).
+std::vector<std::string> audioRolesFromTitles(const MediaInfo& media);
+
 } // namespace wabcut::ai::highlights

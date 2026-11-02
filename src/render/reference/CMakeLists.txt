@@ -11,6 +11,7 @@ add_library(wabcut_render_reference STATIC
     src/LibraryDistort.cpp
     src/LibraryEffects.cpp
     src/LibraryGenerate.cpp
+    src/LibraryGeometry.cpp
     src/LibraryStylize.cpp
     src/Synthetic.cpp
     src/Transitions.cpp

@@ -6,6 +6,7 @@
 
 #include "Catalog.h"
 
+#include <wabcut/model/MasterClipEffects.h>
 #include <wabcut/model/EffectPresets.h>
 #include <wabcut/model/MediaLocator.h>
 #include <wabcut/model/ProjectIO.h>
@@ -334,8 +335,33 @@ CommandOutput savePreset(ExecutionContext& c) {
     if (!replace || !library.findPreset(name)) {
         requireFreeName(c, library, name, "name");
     }
+    // 0.6 (card #71): effects of the clip's media's Master Clip Effects too, by their index there: the preset is made
+    // from the clip as it plays (those master effects first, then its own).
+    Clip played = loc->clip();
+    if (c.has("master")) {
+        const EffectKind kind = played.stream.kind == StreamKind::Video ? EffectKind::Video : EffectKind::Audio;
+        const EffectStack master = masterEffectsOf(c.state(), played.media, kind);
+        EffectStack chosen;
+        for (std::size_t i = 0; i < c.params()["master"].size(); ++i) {
+            const std::size_t index = c.indexValue(c.params()["master"][i], "/master/" + std::to_string(i));
+            if (index >= master.size()) {
+                fail(ErrorCode::InvalidParams, "the clip's master clip has " + std::to_string(master.size()) + " effects",
+                     Json{{"path", "/master/" + std::to_string(i)}});
+            }
+            chosen.push_back(master[index]);
+        }
+        for (std::size_t& index : selection.effects) {
+            index += chosen.size();
+        }
+        for (std::size_t i = 0; i < chosen.size(); ++i) {
+            selection.effects.insert(selection.effects.begin() + static_cast<std::ptrdiff_t>(i), i);
+        }
+        EffectStack stack = chosen;
+        stack.insert(stack.end(), played.effects().begin(), played.effects().end());
+        played.setEffects(std::move(stack));
+    }
     std::vector<std::string> notes;
-    auto preset = edit::makeEffectPreset(c.state(), loc->clip(), selection, name, typeParam(c, EffectPresetType::Scale),
+    auto preset = edit::makeEffectPreset(c.state(), played, selection, name, typeParam(c, EffectPresetType::Scale),
                                          c.string("description"), checkedBin(c.string("bin"), "bin"), &notes);
     if (!preset) {
         fail(ErrorCode::InvalidParams, preset.error().message);
@@ -696,6 +722,8 @@ void registerEffectsLibraryCommands(CommandRegistry& registry) {
          withSequence({{"clip", clipParam("The clip whose effects to save.")},
                        {"effects", schema::array(schema::integer("An index in the clip's effect stack (0 = first).", 0),
                                                  "Stack effects to save.")},
+                       {"master", schema::array(schema::integer("An index in the clip's master clip effects of its kind (0 = first).", 0),
+                                                "0.6: master clip effects to save (they come first in the preset).")},
                        {"fixed", schema::array(schema::enumeration({"motion", "opacity", "volume", "panner"}, "A fixed effect."),
                                                "Fixed effects to save (Motion and Opacity of a video clip, Volume and "
                                                "Panner of an audio clip).")},

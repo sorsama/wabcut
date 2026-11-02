@@ -82,6 +82,11 @@ std::expected<Created<MediaId>, Error> duplicateMedia(const ProjectState& state,
 std::expected<Created<SequenceId>, Error> newSequenceFromClip(const ProjectState& state, MediaId media,
                                                               std::string name = {});
 
+/// 0.6 (Premiere's Clip Mismatch Warning): the Sequence Settings change that makes `sequence` match `media` the way New
+/// Sequence From Clip would make it (frame size as displayed, frame rate, pixel aspect, audio sample rate), or nullopt
+/// when the item has no moving picture (audio only, a still image) or the sequence already has its frame size and rate.
+std::optional<SequenceSettingsChange> settingsToMatchMedia(const Sequence& sequence, const MediaItem& media);
+
 /// Sequence > Add Tracks... with a placement (Premiere's Before First Track / After Target Track / After Last Track; the
 /// track header menu's Add Track): a track of `kind` at `index` among the tracks of that kind (0: it becomes V1 / A1;
 /// the count or more: above the top video track / below the last audio track, as addTrack does). The tracks from

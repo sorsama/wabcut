@@ -27,7 +27,12 @@
 //     the target clip (the command's range mode: every clip of media in it, linked audio and facecam too); else, on a
 //     clip longer than 20 s, the 5 s before the playhead; else the whole clip. Speed (25 / 50 %), sound and the REPLAY
 //     stinger are remembered (QSettings moments/replaySpeed, moments/replaySound, moments/replayLabel).
-//   * Keymap: moments.slowMo and moments.punchIn (runCommand), no default keys.
+//   * Keymap: moments.slowMo, moments.punchIn, moments.rampIn, moments.freezeReplay, moments.fastForward (300 %),
+//     moments.punchInHold, moments.shake and moments.instantReplay in the Clip group, and moments.shortsVersion,
+//     moments.squareVersion, moments.findDeadTime and moments.findHighlights in the Sequence group (runCommand), with no
+//     default keys. commandAvailability says whether one can act now (the same canRetime / canZoom rules as the
+//     presets' menus), so the menu bar and the palette grey them out with the reason. moments.findHighlights opens or
+//     focuses the Highlights panel (findHighlightsRequested: Main.qml) and asks it to find with its saved options.
 //   * 0.5 Remove dead time's review (the Highlights panel's Dead time sheet, DeadTimeReview.qml; Premiere's Text-Based
 //     Editing > Pauses): Find dead time takes Sensitivity, Shortest stretch, Keep at each end and Only In to Out
 //     (remembered, QSettings moments/deadTime*), measures off the GUI thread with its progress and Cancel, and lists the
@@ -36,6 +41,15 @@
 //     selection and cleanup preview stay). A row jumps the playhead to its stretch; the keyboard reviews them (Up /
 //     Down, K keep, Delete remove). Remove takes out only the switched-on stretches, in one undo step; when the
 //     sequence's clips changed since the find, it asks for a new find first.
+//   * 0.6 (P1 #55) Make Shorts / square version is a job off the GUI thread with its progress and Cancel (`version`):
+//     on a copy of the project it first finds the subjects of each video media of the sequence (analysis.subjects,
+//     cached per file) when the version will need Auto Reframe (no facecam track, no stored facecam region), so the
+//     reframe inside sequence.makeVersion reads the cache; then it makes the version. Back on the GUI thread the copy is
+//     committed as ONE undo step ("Make Shorts Version" / "Make Square Version") and the new sequence opens, unless the
+//     project changed meanwhile ("The project changed while this ran. Run it again.": nothing is changed).
+//   * 0.6 (P1 #51): the version uses the facecam region drawn in the layout picker for the sequence's gameplay media
+//     (LayoutBridge::storedRegionFor, kept per file) when no facecam track is detected, and the split and facecam side
+//     the picker last applied (QSettings layout/lastOptions).
 
 #include <wabcut/model/Ids.h>
 #include <wabcut/model/Time.h>
@@ -80,6 +94,10 @@ class MomentsBridge : public QObject {
     /// C.16's gaming edits the catalog has: { replay (clip.instantReplay), version (sequence.makeVersion), deadTime
     /// (sequence.removeDeadTime) }. Their entries show only when there.
     Q_PROPERTY(QVariantMap gamingEdits READ gamingEdits NOTIFY catalogChanged FINAL)
+    /// 0.6 (P1 #55): Make Shorts / square version's job: { busy, format ("shorts" | "square"), text ("Finding the
+    /// subject 1 of 2 · 40 %", "Making the Shorts version…"), progress (0..1, -1 unknown), error ("" or why it failed),
+    /// done (the name of the version it made last, "" otherwise) }.
+    Q_PROPERTY(QVariantMap version READ version NOTIFY versionChanged FINAL)
     /// Remove dead time's preview: { busy, found (ranges are waiting for Remove), count, seconds, text, error }. 0.5:
     /// also phase and progress (0..1, -1 unknown) while busy, searched (a find ended), removeCount and removeSeconds
     /// (the switched-on stretches), removeText ("10 of 12 to remove · 3:02"), stale (the sequence's clips changed since
@@ -137,7 +155,12 @@ public:
     bool replayLabel() const { return m_replayLabel; }
     void setReplayLabel(bool on);
     /// C.16 sequence.makeVersion of the current sequence: "shorts" (1080x1920) or "square"; the new sequence opens.
+    /// 0.6 (P1 #55): a job (`version`; synchronous in tests): returns "" once it started (or, when it ran synchronously,
+    /// "" or why it failed), else why it cannot start.
     Q_INVOKABLE QString makeVersion(const QString& format = QStringLiteral("shorts"));
+    QVariantMap version() const { return m_version; }
+    /// Stops the version job at its next checkpoint: nothing is changed.
+    Q_INVOKABLE void cancelVersion();
     QVariantMap gamingEdits() const;
     QVariantMap deadTime() const { return m_deadTime; }
     /// C.16 sequence.removeDeadTime's preview on the current sequence, off the GUI thread (it measures the gameplay's
@@ -176,14 +199,24 @@ public:
     /// "punchIn", "punchInHold", "shake", "instantReplay", "shortsVersion", "squareVersion". options.clip: the clip
     /// ("" = the target).
     Q_INVOKABLE QString apply(const QString& preset, const QVariantMap& options = {});
-    /// moments.slowMo (25 %, 1 s) and moments.punchIn (130 %): true when the id is one of them.
+    /// moments.slowMo (25 %, 1 s), moments.punchIn (130 %), moments.rampIn, moments.freezeReplay, moments.fastForward
+    /// (300 %), moments.punchInHold, moments.shake, moments.instantReplay, moments.shortsVersion, moments.squareVersion,
+    /// moments.findDeadTime (which opens the review) and moments.findHighlights (which asks for the Highlights panel:
+    /// findHighlightsRequested): true when the id is one of them.
     Q_INVOKABLE bool runCommand(const QString& commandId);
+    /// The ids runCommand runs, and whether each can act now for the menu bar and the palette: { handled, enabled,
+    /// reason } ({} for any other id). A speed preset needs footage to retime, a zoom preset a picture, and the
+    /// sequence actions an open sequence.
+    static bool handlesCommand(const QString& commandId);
+    Q_INVOKABLE QVariantMap commandAvailability(const QString& commandId) const;
 
 signals:
     void targetChanged();
     void messageChanged();
     void catalogChanged();
     void deadTimeChanged();
+    /// 0.6 (P1 #55): `version` changed.
+    void versionChanged();
     /// 0.4: replaySpeed, replaySound or replayLabel changed.
     void replayOptionsChanged();
     // 0.5: the dead-time review.
@@ -192,6 +225,8 @@ signals:
     void deadTimeReviewingChanged();
     void deadTimeCurrentChanged();
     void deadTimeReviewRequested();
+    /// 0.6 (D2 #34): moments.findHighlights: Main.qml brings the Highlights panel forward and it finds with its options.
+    void findHighlightsRequested();
     /// The playhead jumped to a stretch: Main.qml keeps it in view.
     void revealRequested();
 
@@ -213,6 +248,14 @@ private:
     QString m_message;
     const command::CommandRegistry* m_registry = nullptr;
     std::unique_ptr<BridgeJob> m_deadTimeJob;
+    // 0.6 (P1 #55): the version job and its state (`version`); m_versionRun is bumped by each start and cancel, so a
+    // late progress report of an earlier run is dropped.
+    std::unique_ptr<BridgeJob> m_versionJob;
+    QVariantMap m_version;
+    std::uint64_t m_versionRun = 0;
+    QString m_versionFormat; ///< "shorts" | "square": the running (or last) job's
+    void setVersionState(bool busy, const QString& text, double progress, const QString& error = {},
+                         const QString& done = {});
     QVariantMap m_deadTime;
     std::uint64_t m_deadTimeSequence = 0;
     bool m_synchronous = false;

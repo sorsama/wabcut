@@ -13,13 +13,17 @@ wabcut_add_test_suite(interchange
         InterchangeTestSupport.cpp
         InterchangeTestSupport.h
         test_aaf.cpp
+        test_audiopost_import.cpp # 0.6: AAF / OMF import
         test_captions.cpp
         test_detect.cpp
         test_docx.cpp
         test_edl.cpp
         test_export.cpp
         test_fcp7.cpp
+        test_fcp7_filters.cpp # 0.6: colour grades and audio EQ / dynamics (card #66)
         test_fcpxml.cpp
+        test_interchange_effects.cpp # 0.6: generators and FCPXML / OTIO effects
+        test_auditions_interchange.cpp # 0.6 (card #74): auditions
         test_file_url.cpp
         test_lottie.cpp
         test_omf.cpp

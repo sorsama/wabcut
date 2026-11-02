@@ -197,7 +197,8 @@ Box shapeBounds(const ShapeContent& s, Ticks time, ShapeSize size) {
     return {};
 }
 
-Box textBounds(const TextContent& t, Ticks time, const ResolveOptions& o) {
+Box textBounds(const TextContent& keyed, Ticks time, const ResolveOptions& o) {
+    const TextContent t = textAt(keyed, time); // 0.6: Source Text keys and size / spacing keys
     if (t.path) {
         // Type on a path: the path's box, grown by the text's height on every side (the characters stand on it and
         // lines go below; an open path's text may run on past its ends).
@@ -417,10 +418,11 @@ std::vector<DrawMask> drawMasks(std::uint32_t owner, const std::vector<Mask>& ma
 }
 
 DrawShadow drawShadow(const DropShadow& s, const BrandKit* kit) {
-    return {s.enabled, resolved(s.color, kit), s.opacity, s.angle, s.distance, s.softness};
+    return {s.enabled, resolved(s.color, kit), s.opacity, s.angle, s.distance, s.softness, s.size};
 }
 
-DrawText drawText(const TextContent& t, Ticks time, const ResolveOptions& o) {
+DrawText drawText(const TextContent& keyed, Ticks time, const ResolveOptions& o) {
+    const TextContent t = textAt(keyed, time); // 0.6: Source Text keys and size / spacing keys
     DrawText out;
     std::size_t byte = 0;
     for (const TextRun& r : t.runs) {
@@ -445,6 +447,10 @@ DrawText drawText(const TextContent& t, Ticks time, const ResolveOptions& o) {
         run.tracking = s.tracking;
         run.leading = s.leading;
         run.baselineShift = s.baselineShift;
+        run.kerning = s.kerning;
+        run.caps = s.caps;
+        run.fauxBold = s.fauxBold;
+        run.fauxItalic = s.fauxItalic;
         byte += r.text.size();
         out.runs.push_back(std::move(run));
     }
@@ -456,6 +462,13 @@ DrawText drawText(const TextContent& t, Ticks time, const ResolveOptions& o) {
     out.backgroundColor = resolved(t.background.color, o.brandKit);
     out.backgroundPadding = t.background.padding;
     out.backgroundRadius = t.background.radius;
+    out.verticalAlign = t.verticalAlign;
+    for (const TextStroke& st : t.strokes) {
+        const double width = std::max(0.0, st.width.valueAt(time));
+        if (st.enabled && width > 0.0) {
+            out.strokes.push_back(DrawTextStroke{resolved(st.color, o.brandKit), width, st.position});
+        }
+    }
     if (t.path) {
         out.path = pathAt(t.path->path, time);
         out.pathClosed = t.path->closed;
@@ -792,6 +805,55 @@ DrawList resolveGraphicClip(const ProjectState& state, const Clip& clip, Ticks t
 
 Box layerBounds(const GraphicLayer& layer, Ticks time, const ResolveOptions& options) {
     return boundsOf(layer, time, options, 1);
+}
+
+const std::vector<TextRun>& sourceRunsAt(const TextContent& text, Ticks time) {
+    if (text.sources.empty()) {
+        return text.runs;
+    }
+    const double v = text.sourceKey.valueAt(time);
+    const double k = std::isfinite(v) ? std::floor(v + 1e-9) : 0.0;
+    const auto i = static_cast<std::size_t>(std::clamp(k, 0.0, static_cast<double>(text.sources.size())));
+    return i == 0 ? text.runs : text.sources[i - 1];
+}
+
+TextContent textAt(const TextContent& text, Ticks time) {
+    const bool keyed = !text.sources.empty() || text.sizeKeys || text.trackingKeys || text.leadingKeys ||
+                       text.baselineKeys || !text.sourceKey.isConstant() || text.sourceKey.constant() != 0.0;
+    if (!keyed) {
+        return text;
+    }
+    TextContent out = text;
+    out.runs = sourceRunsAt(text, time);
+    out.sources.clear();
+    out.sourceKey = ParamValue(0.0);
+    out.sizeKeys.reset();
+    out.trackingKeys.reset();
+    out.leadingKeys.reset();
+    out.baselineKeys.reset();
+    if (out.runs.empty()) {
+        return out;
+    }
+    const TextStyle first = out.runs.front().style;
+    if (text.sizeKeys && first.fontSize > 0.0) {
+        const double ratio = std::clamp(text.sizeKeys->valueAt(time), 1.0, 2000.0) / first.fontSize;
+        for (TextRun& r : out.runs) {
+            r.style.fontSize = std::clamp(r.style.fontSize * ratio, 1.0, 2000.0);
+        }
+    }
+    const auto shift = [&](const std::optional<Curve>& curve, double TextStyle::*member, double lo, double hi) {
+        if (!curve) {
+            return;
+        }
+        const double delta = std::clamp(curve->valueAt(time), lo, hi) - first.*member;
+        for (TextRun& r : out.runs) {
+            r.style.*member = std::clamp(r.style.*member + delta, lo, hi);
+        }
+    };
+    shift(text.trackingKeys, &TextStyle::tracking, -1000.0, 10000.0);
+    shift(text.leadingKeys, &TextStyle::leading, 0.0, 10000.0);
+    shift(text.baselineKeys, &TextStyle::baselineShift, -10000.0, 10000.0);
+    return out;
 }
 
 std::vector<std::pair<std::size_t, std::size_t>> textUnits(std::string_view text, TextUnit unit, std::string_view language,

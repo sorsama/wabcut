@@ -8,6 +8,7 @@
 #include <wabcut/model/ProjectIO.h>
 
 #include <array>
+#include <fstream>
 #include <system_error>
 
 namespace wabcut::interchange {
@@ -21,7 +22,7 @@ constexpr std::size_t kSniffBytes = 64 * 1024;
 
 constexpr std::string_view kSupportedFormats =
     "Wabcut imports Final Cut Pro 7 XML (.xml, as Premiere Pro and DaVinci Resolve export it), FCPXML "
-    "(.fcpxml/.fcpxmld), OpenTimelineIO (.otio) and CMX3600 EDL (.edl) files.";
+    "(.fcpxml/.fcpxmld), OpenTimelineIO (.otio), CMX3600 EDL (.edl), AAF (.aaf) and OMF (.omf) files.";
 
 constexpr std::string_view kPremiereGuidance =
     "Premiere Pro projects are not imported directly yet. In Premiere Pro, select the sequence in the "
@@ -38,10 +39,6 @@ constexpr std::string_view kFinalCutGuidance =
     "Final Cut Pro libraries are proprietary. In Final Cut Pro, select the project and choose File > Export "
     "XML... (FCPXML 1.10 or later), then import the .fcpxml or .fcpxmld.";
 
-constexpr std::string_view kAafGuidance =
-    "AAF is not supported yet. From Premiere Pro or Resolve, export Final Cut Pro XML, FCPXML or "
-    "OpenTimelineIO instead; from Avid Media Composer, export a CMX3600 EDL.";
-
 constexpr std::string_view kOtiozGuidance = ".otioz bundles are not supported yet. An .otioz is a zip "
                                             "archive: extract it and import its content.otio, "
                                             "or export a plain .otio file.";
@@ -51,6 +48,11 @@ bool hasZipMagic(std::string_view d) {
 }
 bool hasCompoundFileMagic(std::string_view d) {
     return d.starts_with(std::string_view("\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1", 8));
+}
+/// A Bento container (OMF) ends with its 24-byte label, which starts with this magic.
+constexpr std::string_view kBentoMagic("\xA4\x43\x4D\xA5\x48\x64\x72\xD7", 8);
+bool hasBentoLabel(std::string_view d) {
+    return d.size() >= 24 && d.substr(d.size() - 24, 8) == kBentoMagic;
 }
 
 bool isTimecodeWord(std::string_view w) {
@@ -127,6 +129,12 @@ std::string stemOf(std::string_view fileName) {
     return std::string(dot == std::string_view::npos || dot == 0 ? name : name.substr(0, dot));
 }
 
+/// 0.6: AAF / OMF from bytes or a file on disk, and the build every format ends with.
+std::expected<ImportResult, Error> importBinary(const BinaryInput& input, Format format, std::string_view sourceName,
+                                                const ImportOptions& options, const fs::path& baseDirectory);
+std::expected<ImportResult, Error> buildImport(IrDocument document, Format format, std::string_view sourceName,
+                                               const ImportOptions& options, const fs::path& baseDirectory);
+
 } // namespace
 
 std::string_view toString(Format format) {
@@ -151,6 +159,8 @@ std::string_view toString(Format format) {
         return "fcp-library";
     case Format::OtioArchive:
         return "otioz";
+    case Format::Omf:
+        return "omf";
     }
     return "unknown";
 }
@@ -177,6 +187,8 @@ std::string_view displayName(Format format) {
         return "Final Cut Pro library";
     case Format::OtioArchive:
         return "OpenTimelineIO archive (.otioz)";
+    case Format::Omf:
+        return "OMF";
     }
     return "Unknown format";
 }
@@ -195,7 +207,10 @@ Detection ImportRouter::detectData(std::string_view data, std::string_view fileN
         return make(Format::OtioArchive, false, kOtiozGuidance);
     }
     if (ext == ".aaf" || hasCompoundFileMagic(data)) {
-        return make(Format::Aaf, false, kAafGuidance);
+        return make(Format::Aaf, true); // 0.6
+    }
+    if (ext == ".omf" || ext == ".omfi" || hasBentoLabel(data)) {
+        return make(Format::Omf, true); // 0.6
     }
     if (hasZipMagic(data)) {
         return unknown("This is a zip archive, not a timeline. " + std::string(kSupportedFormats));
@@ -274,6 +289,19 @@ Detection ImportRouter::detect(const fs::path& path) {
         return d;
     }
     Detection d = detectData(*prefix, utf8FromPath(path.filename()));
+    // 0.6: an OMF file (a Bento container) is known by the label at its end.
+    if (d.format == Format::Unknown && prefix->size() == kSniffBytes) {
+        std::ifstream in(path, std::ios::binary | std::ios::ate);
+        const std::streamoff size = in ? static_cast<std::streamoff>(in.tellg()) : 0;
+        if (size >= 24) {
+            std::string tail(24, '\0');
+            in.seekg(size - 24);
+            in.read(tail.data(), 24);
+            if (in.gcount() == 24 && hasBentoLabel(tail)) {
+                d = make(Format::Omf, true);
+            }
+        }
+    }
     d.contentPath = path;
     return d;
 }
@@ -294,13 +322,18 @@ std::expected<ImportResult, Error> ImportRouter::importFile(const fs::path& path
         return std::unexpected(
             unsupported(std::string(displayName(detection.format)) + " files cannot be imported"));
     }
+    // Relative media references resolve against the folder holding the timeline (inside a bundle, the
+    // bundle itself; the relinker also tries the folder above).
+    const fs::path base = detection.contentPath.parent_path();
+    if (detection.format == Format::Aaf || detection.format == Format::Omf) {
+        // 0.6: read on demand, so a file with gigabytes of embedded audio never has to fit in memory.
+        return importBinary(BinaryInput{{}, detection.contentPath}, detection.format, utf8FromPath(path.filename()),
+                            options, base);
+    }
     auto data = readFileLimited(detection.contentPath);
     if (!data) {
         return std::unexpected(data.error());
     }
-    // Relative media references resolve against the folder holding the timeline (inside a bundle, the
-    // bundle itself; the relinker also tries the folder above).
-    const fs::path base = detection.contentPath.parent_path();
     return importData(*data, detection.format, utf8FromPath(path.filename()), options, base);
 }
 
@@ -330,12 +363,41 @@ std::expected<ImportResult, Error> ImportRouter::importData(std::string_view dat
         }
         document = parsePremiereProject(data, context);
         break;
+    case Format::Aaf:
+    case Format::Omf:
+        return importBinary(BinaryInput{data, {}}, format, sourceName, options, baseDirectory);
     default:
         return std::unexpected(unsupported(std::string(displayName(format)) + " files cannot be imported"));
     }
     if (!document) {
         return std::unexpected(document.error());
     }
+    return buildImport(std::move(*document), format, sourceName, options, baseDirectory);
+}
+
+namespace {
+
+std::expected<ImportResult, Error> importBinary(const BinaryInput& input, Format format, std::string_view sourceName,
+                                                const ImportOptions& options, const fs::path& baseDirectory) {
+    ParseContext context{std::string(sourceName), &options, {}};
+    // Embedded media goes to the folder the options name, else "<file name> Media" beside the project (or the file).
+    if (!options.extractEmbeddedMedia) {
+        // Left offline (reported).
+    } else if (!options.embeddedMediaFolder.empty()) {
+        context.mediaFolder = options.embeddedMediaFolder;
+    } else if (const fs::path home = !options.projectFile.empty() ? options.projectFile.parent_path() : baseDirectory;
+               !home.empty()) {
+        context.mediaFolder = home / pathFromUtf8(stemOf(sourceName) + " Media");
+    }
+    auto document = format == Format::Aaf ? parseAaf(input, context) : parseOmf(input, context);
+    if (!document) {
+        return std::unexpected(document.error());
+    }
+    return buildImport(std::move(*document), format, sourceName, options, baseDirectory);
+}
+
+std::expected<ImportResult, Error> buildImport(IrDocument document, Format format, std::string_view sourceName,
+                                               const ImportOptions& options, const fs::path& baseDirectory) {
     BuildContext build;
     build.format = format;
     build.fileLabel = std::string(sourceName);
@@ -345,7 +407,7 @@ std::expected<ImportResult, Error> ImportRouter::importData(std::string_view dat
                             ? options.projectFile
                             : baseDirectory / pathFromUtf8(stemOf(sourceName) + std::string(".wabcut"));
     build.options = &options;
-    auto result = buildProject(std::move(*document), build);
+    auto result = buildProject(std::move(document), build);
     // Whatever was imported must also save: a name that is not UTF-8 would make every later save fail.
     if (result) {
         if (auto saved = io::toJson(result->project); !saved) {
@@ -354,5 +416,7 @@ std::expected<ImportResult, Error> ImportRouter::importData(std::string_view dat
     }
     return result;
 }
+
+} // namespace
 
 } // namespace wabcut::interchange

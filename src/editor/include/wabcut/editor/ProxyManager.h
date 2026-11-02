@@ -18,7 +18,8 @@
 //
 // Ownership (Codex wave-3 P1-1): a proxy path from a project file or an index is untrusted. Wabcut deletes a proxy
 // file (Delete proxies, a regeneration replacing it) only when it owns it: a file directly inside one of its managed
-// proxy folders (this project's "<project> Proxies", the untitled proxy folder), neither the folder nor the file a
+// proxy folders (this project's "<project> Proxies" - next to it and, P1 #48, under the proxy folder override - and
+// the untitled proxy folders), neither the folder nor the file a
 // link, recorded in that folder's index by Wabcut's generator, and not the original (by path in any case, hard link,
 // symlink or junction). Any other proxy is attached: it may play in the preview, and deleting it only detaches it.
 // Proxies that are the original are refused outright, and index entries must be bare file names.
@@ -260,6 +261,10 @@ private:
 struct ProxyManagerOptions {
     /// Where an untitled project's proxies go ("<root>/Untitled Proxies"); a saved project's go next to it.
     std::filesystem::path untitledProxyRoot;
+    /// P1 (#48, Settings > Media & cache > Proxies: In this folder): when set, new proxies go to
+    /// "<proxyRoot>/<project stem> Proxies" (an untitled project's to "<proxyRoot>/Untitled Proxies") instead.
+    /// Proxies made before stay where they are and are still found, played and cleaned (managedFolders()).
+    std::filesystem::path proxyRoot;
     exporter::ProxySettings settings{};
     ProxyPolicy policy = ProxyPolicy::Auto;
     std::shared_ptr<ResourceGovernor> governor;
@@ -328,6 +333,13 @@ public:
     std::optional<std::filesystem::path> proxyFile(MediaId media) const;
     /// Where new proxies of this project go.
     std::filesystem::path proxyFolder() const;
+    /// P1 (#48): the proxy folder override (ProxyManagerOptions::proxyRoot; empty = next to the project). New proxies
+    /// go to the new place; the ones made before stay where they are and still count as Wabcut's own.
+    const std::filesystem::path& proxyRoot() const { return m_options.proxyRoot; }
+    void setProxyRoot(std::filesystem::path root);
+    /// The folders whose files Wabcut may own (see the file comment): proxyFolder() first, then the folder next to the
+    /// project, the override's and the default untitled folders; no duplicates.
+    std::vector<std::filesystem::path> managedFolders() const;
     /// Every proxy file the project uses, and its originals (the cache inspector never deletes these).
     std::set<std::filesystem::path> filesInUse() const;
     /// Writes the registry into `state`'s MediaLocator::proxy fields (ProjectDocument's save filter).
@@ -345,8 +357,6 @@ private:
     void rebuildTable();
     /// False when nothing was queued (the proxy folder is a link: nothing is written through it).
     bool queueFor(const MediaItem& item, ProxyPriority priority, std::string reason);
-    /// The folders whose files Wabcut may own: this project's proxy folder and the untitled one.
-    std::vector<std::filesystem::path> managedFolders() const;
     /// `file` is (or reaches) the original of any media item of `state`.
     static bool isOriginal(const std::filesystem::path& file, const ProjectState& state);
     /// Wabcut owns `file` (see the file comment).
@@ -387,5 +397,13 @@ private:
     std::vector<ProbeThread> m_probeThreads;
     std::atomic<bool> m_dirty{false};
 };
+
+/// Fix F2C: `name` (one file name, UTF-8) has the exact shape Wabcut gives the proxies it writes:
+/// "<stem>.<8 lower-case hex digits>.g<generation>.mov".
+bool isProxyFileName(std::string_view name);
+/// Fix F2C: the proxy files Wabcut made in `folder`, as the folder's index ("proxies.json") records them: entries
+/// written by Wabcut's proxy generator under a bare file name of the proxy shape (isProxyFileName). Settings > Media &
+/// cache cleans only these (with the files the open project uses kept): never a file Wabcut did not make there.
+std::vector<std::string> indexedProxyFiles(const std::filesystem::path& folder);
 
 } // namespace wabcut::editor

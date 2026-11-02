@@ -16,6 +16,7 @@
 #include <wabcut/model/FinishingOps.h>
 #include <wabcut/model/Timecode.h>
 
+#include <QJSValue>
 #include <QJsonDocument>
 #include <QQmlEngine>
 
@@ -222,12 +223,42 @@ void ColorBridge::refresh() {
                          {QStringLiteral("peakNits"), management.peakNits},
                          {QStringLiteral("referenceWhiteNits"), management.referenceWhiteNits},
                          {QStringLiteral("autoDetectLog"), management.autoDetectLog}};
+    // 0.6 (#72): gamut compression, the output colour space and SDR Conform.
+    const SdrConform& conform = management.sdrConform;
+    const bool conformable = management.isHdr() || management.isWideGamutDirect();
+    m_colorManagement.insert(QStringLiteral("gamutCompression"), management.gamutCompression);
+    m_colorManagement.insert(QStringLiteral("gamutCompressionStrength"), management.gamutCompressionStrength);
+    m_colorManagement.insert(QStringLiteral("gamutCompressed"), management.compressesGamut());
+    m_colorManagement.insert(QStringLiteral("outputSpace"), QString::fromLatin1(toString(management.outputSpace)));
+    m_colorManagement.insert(QStringLiteral("conformable"), conformable);
+    m_colorManagement.insert(
+        QStringLiteral("sdrConform"),
+        QVariantMap{{QStringLiteral("enabled"), conform.enabled},
+                    {QStringLiteral("targetPeakNits"), conform.targetPeakNits},
+                    {QStringLiteral("paperWhiteNits"), conform.paperWhiteNits},
+                    {QStringLiteral("toneMap"), QString::fromLatin1(toString(conform.toneMap))},
+                    {QStringLiteral("gamut"), QString::fromLatin1(toString(conform.gamut))},
+                    {QStringLiteral("legalRange"), conform.legalRange}});
+    m_colorManagement.insert(
+        QStringLiteral("outputChain"),
+        QString::fromUtf8(color::describeOutput(management, color::outputTargetOf(management.outputSpace, color::OutputTarget::Sdr),
+                                                management.conformsSdr())));
+    if (!conformable && m_conformPreview != 0) {
+        m_conformPreview = 0; // nothing to preview in this setup
+        emit viewChanged();
+    }
     m_monitorLabel.clear();
     if (management.mode == ColorManagementMode::Disabled) {
         m_monitorLabel = tr("Color management off");
     } else if (management.managed()) {
         if (const auto plan = color::planOutput(management, color::OutputTarget::Sdr)) {
             m_monitorLabel = QString::fromUtf8(plan->label);
+        }
+        if (management.compressesGamut()) {
+            m_monitorLabel += QStringLiteral(" · ") + tr("gamut compression");
+        }
+        if (m_conformPreview != 0) {
+            m_monitorLabel += QStringLiteral(" · ") + (m_conformPreview == 1 ? tr("SDR Conform before / after") : tr("SDR Conform"));
         }
     }
     m_inputColorSpace.clear();
@@ -273,11 +304,56 @@ QVariantList ColorBridge::inputColorSpaces() const {
     return out;
 }
 
+QVariantList ColorBridge::outputColorSpaces() const {
+    QVariantList out;
+    for (const OutputColorSpace s : allOutputColorSpaces()) {
+        out.append(QVariantMap{{QStringLiteral("id"), QString::fromLatin1(toString(s))},
+                               {QStringLiteral("name"), QString::fromUtf8(displayName(s))}});
+    }
+    return out;
+}
+
+QVariantList ColorBridge::toneMapOperators() const {
+    QVariantList out;
+    for (const ToneMapOperator op : {ToneMapOperator::Bt2390, ToneMapOperator::Aces, ToneMapOperator::Reinhard}) {
+        out.append(QVariantMap{{QStringLiteral("id"), QString::fromLatin1(toString(op))},
+                               {QStringLiteral("name"), QString::fromUtf8(displayName(op))}});
+    }
+    return out;
+}
+
+QVariantList ColorBridge::gamutMappings() const {
+    QVariantList out;
+    for (const GamutMapping g : {GamutMapping::AcesRgc, GamutMapping::Saturation, GamutMapping::Clip}) {
+        out.append(QVariantMap{{QStringLiteral("id"), QString::fromLatin1(toString(g))},
+                               {QStringLiteral("name"), QString::fromUtf8(displayName(g))}});
+    }
+    return out;
+}
+
+void ColorBridge::setConformPreview(int mode) {
+    mode = std::clamp(mode, 0, 2);
+    if (mode != 0 && !(m_management.isHdr() || m_management.isWideGamutDirect())) {
+        mode = 0;
+    }
+    if (mode == m_conformPreview) {
+        return;
+    }
+    m_conformPreview = mode;
+    emit viewChanged();
+    refresh(); // the monitor label says so; then the view goes to the monitor (applyView)
+}
+
 bool ColorBridge::setColorManagement(const QVariantMap& values) {
     QVariantMap params;
-    for (const char* key : {"mode", "peakNits", "referenceWhiteNits", "autoDetectLog"}) {
+    for (const char* key : {"mode", "peakNits", "referenceWhiteNits", "autoDetectLog", "gamutCompression",
+                            "gamutCompressionStrength", "outputSpace", "sdrConform"}) {
         if (values.contains(QLatin1String(key))) {
-            params.insert(QLatin1String(key), values.value(QLatin1String(key)));
+            QVariant value = values.value(QLatin1String(key));
+            if (value.metaType() == QMetaType::fromType<QJSValue>()) {
+                value = value.value<QJSValue>().toVariant(); // 0.6: sdrConform, a JS object from QML
+            }
+            params.insert(QLatin1String(key), value);
         }
     }
     return runCommand("color.management.set", params, nullptr);
@@ -364,6 +440,7 @@ void ColorBridge::applyView() {
     preview.view.maskView = m_maskView;
     preview.view.maskClip = m_clip.value;
     preview.view.split = m_compareMode == 1 ? m_split : -1.0;
+    preview.view.conformSplit = m_conformPreview == 1 ? 0.5 : m_conformPreview == 2 ? 0.0 : -1.0; // 0.6 (#72)
     preview.reference = m_compareMode == 2 ? m_reference : nullptr;
     p->setColorPreview(std::move(preview));
 }

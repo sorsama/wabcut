@@ -17,6 +17,9 @@ import QtQuick.Layouts
 // UX rework (stream L): the last choices come back (ExportController, per user): the preset or gaming preset picked
 // last, the range picked last (else In to Out when the sequence has marks; the Export button then says so), and the
 // folder exported to last (the default file name and Browse… start there). "Reset to defaults" forgets them.
+// P1 round: a vertical (9:16) sequence remembers presets of its own (ExportController.rememberedFor, #21); the export
+// waits while media it reads is offline (a warning with Relink…, #27) and says when the drive is short of space (#29);
+// the settings drawer has a Size limit (#28); a failed job in the queue has Retry (and Relink… when media was offline).
 Panel {
     id: root
 
@@ -38,6 +41,15 @@ Panel {
     /// Anything remembered from earlier exports (for "Reset to defaults").
     readonly property bool remembers: ExportController.lastPreset !== "match-source" || ExportController.lastGamingPreset !== ""
                                       || ExportController.lastFolder !== "" || ExportController.lastRange !== ""
+                                      || ExportController.lastTargetMB > 0
+    /// P1 (#21): the presets picked here this session, per sequence and frame size ({ "<sequence key>@<w>x<h>": {
+    /// preset, gaming } }): coming back to a sequence keeps its pick; another sequence (or the same one made 9:16)
+    /// starts from what is remembered for its shape (landscape or 9:16).
+    property var sessionPicks: ({})
+    readonly property string pickKey: ProjectController.sequenceId + "@" + ProjectController.frameWidth + "x"
+                                      + ProjectController.frameHeight
+    /// P1 (#27): the original media this export reads that is offline (it waits until they are relinked).
+    readonly property int offlineCount: summary.offlineCount ?? 0
     /// The range this export covers ("whole", "inOut", "workArea", "custom").
     readonly property string range: overrides.range ?? "whole"
     /// The exporter's presets the gaming tiles already offer (I.9): left out of the built-in ones.
@@ -63,7 +75,10 @@ Panel {
                                     ? GamingExport.estimate(ProjectController.sequenceId, effectivePresetId,
                                                             effectiveOverrides)
                                     : ({})
-    readonly property var estimateNotes: (gamingPlan.notes ?? []).concat(estimate.notes ?? [])
+    // P1 (#29): the low-space warning is pinned by the Export button, not repeated with the notes.
+    readonly property var estimateNotes: (gamingPlan.notes ?? []).concat((estimate.notes ?? []).filter(n => n !== estimate.lowSpaceNote))
+    /// P1 (#28): warnings about the picture (a size limit too small for it), in the warning colour.
+    readonly property var warningNotes: (summary.lowBitrateNote ?? "") !== "" ? [summary.lowBitrateNote] : []
     readonly property string errorText: gamingPreset !== "" && gamingPlan.ok === false ? gamingPlan.error
                                         : summary.ok === false ? summary.error : ExportController.lastError
     /// The built-in presets shown as tiles (I.9's gaming presets are the gaming tiles, with their estimates: not twice).
@@ -125,12 +140,33 @@ Panel {
         overrides = rangeOverrides()
         ExportController.lastPreset = id
         ExportController.lastGamingPreset = ""
+        rememberPick()
     }
     // M5o: a gaming preset keeps the range the drawer chose (its size target depends on it).
     function chooseGamingPreset(id) {
         gamingPreset = id
         overrides = rangeOverrides()
         ExportController.lastGamingPreset = id
+        rememberPick()
+    }
+    /// P1 (#21): this sequence's pick, for coming back to it in this session.
+    function rememberPick() {
+        const next = Object.assign({}, sessionPicks)
+        next[root.pickKey] = { preset: presetId, gaming: gamingPreset }
+        sessionPicks = next
+    }
+    /// P1 (#21): the preset for the current sequence: its pick this session, else what is remembered for its shape (a
+    /// 9:16 sequence never starts from the landscape choice).
+    function applyRemembered() {
+        const picked = sessionPicks[root.pickKey]
+        const remembered = picked !== undefined ? null : ExportController.rememberedFor(ProjectController.sequenceId)
+        const preset = picked !== undefined ? picked.preset : remembered.preset
+        const gaming = picked !== undefined ? picked.gaming : remembered.gamingPreset
+        if (preset === presetId && gaming === gamingPreset)
+            return
+        presetId = preset
+        gamingPreset = gaming
+        overrides = rangeOverrides()
     }
     /// The drawer's range picker: this export's range, remembered for the next one ("custom" is not).
     function chooseRange(value) {
@@ -156,17 +192,18 @@ Panel {
         outputPath = ""
         overrides = ({})
         rangeChosen = false
+        sessionPicks = ({})
         applySuggestedRange()
     }
     function startExport() {
-        if (gamingPreset !== "" && gamingPlan.ok !== true)
+        if ((gamingPreset !== "" && gamingPlan.ok !== true) || offlineCount > 0)
             return
         if (ExportController.queueExport(ProjectController.sequenceId, effectivePresetId, effectiveOverrides) !== "")
             outputPath = "" // the next export gets a fresh default name
     }
     // 0.2, Premiere's Send to Media Encoder (Alt+Shift+M): the export waits in the queue for Start Queue.
     function sendToQueue() {
-        if (gamingPreset !== "" && gamingPlan.ok !== true)
+        if ((gamingPreset !== "" && gamingPlan.ok !== true) || offlineCount > 0)
             return
         if (ExportController.sendToQueue(ProjectController.sequenceId, [effectivePresetId], effectiveOverrides, true).length > 0)
             outputPath = ""
@@ -181,15 +218,15 @@ Panel {
         ExportController.probeEncoders()
         applySuggestedRange()
     }
-    // The last choices (UX rework): set once, so a pick here is never overwritten.
+    // The last choices (UX rework): set once, so a pick here is never overwritten. P1 (#21): for the sequence's shape.
     Component.onCompleted: {
-        presetId = ExportController.lastPreset
-        gamingPreset = ExportController.lastGamingPreset
+        applyRemembered()
         applySuggestedRange()
     }
     Connections {
         target: ProjectController
         function onSequenceChanged() {
+            root.applyRemembered()
             root.applySuggestedRange()
         }
     }
@@ -215,6 +252,56 @@ Panel {
             name: glyph.iconName
             size: Theme.iconMd
             color: Theme.clipInk
+        }
+    }
+    // P1 (#27, #29): a warning pinned by the Export button: a warning glyph, the text, and an action (Relink…) when it
+    // has one.
+    component WarningLine: Rectangle {
+        id: warning
+        property string text: ""
+        property string actionText: ""
+        property string actionName: ""
+        property string actionTooltip: ""
+        signal actionClicked()
+        Layout.fillWidth: true
+        implicitHeight: warningRow.implicitHeight + Theme.space(3)
+        radius: Theme.radiusField
+        color: Qt.alpha(Theme.warning, 0.16)
+        Accessible.role: Accessible.AlertMessage
+        Accessible.name: warning.text
+
+        RowLayout {
+            id: warningRow
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            anchors.leftMargin: Theme.space(3)
+            anchors.rightMargin: Theme.space(warning.actionText !== "" ? 1.5 : 3)
+            spacing: Theme.space(2)
+
+            Icon {
+                Layout.alignment: Qt.AlignVCenter
+                name: "triangle-alert"
+                size: Theme.iconSm
+                color: Theme.warning
+            }
+            Text {
+                Layout.fillWidth: true
+                text: warning.text
+                wrapMode: Text.WordWrap
+                color: Theme.textPrimary
+                font.family: Theme.fontSans
+                font.pixelSize: Theme.textSm
+            }
+            PillButton {
+                objectName: warning.actionName
+                visible: warning.actionText !== ""
+                compact: true
+                variant: "secondary"
+                text: warning.actionText
+                tooltip: warning.actionTooltip
+                onClicked: warning.actionClicked()
+            }
         }
     }
     // A caps label over a value, e.g. "FILE SIZE / ≈ 115 MB".
@@ -553,6 +640,33 @@ Panel {
                                 }
                             }
                         }
+                        // P1 (#28): what the picture will look like (a size limit too small for it), in warning colour.
+                        Repeater {
+                            objectName: "exportWarningNotes"
+                            model: root.warningNotes
+                            delegate: RowLayout {
+                                id: warningNote
+                                required property var modelData
+                                Layout.fillWidth: true
+                                spacing: Theme.space(2)
+
+                                Icon {
+                                    Layout.alignment: Qt.AlignTop
+                                    name: "triangle-alert"
+                                    size: Theme.iconSm
+                                    color: Theme.warning
+                                }
+                                Text {
+                                    objectName: "exportWarningNote"
+                                    Layout.fillWidth: true
+                                    text: warningNote.modelData
+                                    wrapMode: Text.WordWrap
+                                    color: Theme.textSecondary
+                                    font.family: Theme.fontSans
+                                    font.pixelSize: Theme.textXs
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -688,6 +802,26 @@ Panel {
                 font.family: Theme.fontSans
                 font.pixelSize: Theme.textSm
             }
+            // P1 (#27): media this export reads is offline: the export waits (it would fail) until it is relinked.
+            WarningLine {
+                objectName: "exportOfflineWarning"
+                visible: root.summary.ok === true && root.offlineCount > 0
+                //: The Export panel's offline warning, e.g. "2 offline files in this export: A001.mov, B002.mov. Relink to export."
+                text: (root.offlineCount === 1
+                       ? qsTr("1 offline file in this export: %1. Relink to export.")
+                       : qsTr("%1 offline files in this export: %2. Relink to export.").arg(root.offlineCount))
+                          .arg((root.summary.offline ?? []).slice(0, 3).join(", ") + (root.offlineCount > 3 ? ", …" : ""))
+                actionText: qsTr("Relink…")
+                actionName: "exportRelink"
+                actionTooltip: qsTr("Find the offline files (Relink Media)")
+                onActionClicked: ExportController.relinkRequested()
+            }
+            // P1 (#29): the drive is short of space for the file (a warning: the export stays allowed).
+            WarningLine {
+                objectName: "exportLowSpaceWarning"
+                visible: root.estimate.lowSpace === true
+                text: root.estimate.lowSpaceNote ?? ""
+            }
 
             Rectangle {
                 objectName: "exportFooter"
@@ -767,7 +901,8 @@ Panel {
                             Layout.preferredWidth: footerGrid.columns === 1 ? -1 : Math.max(implicitWidth, Theme.space(34))
                             implicitHeight: Theme.controlHeightLarge
                             variant: "primary"
-                            enabled: root.summary.ok === true
+                            // P1 (#27): it waits while media it reads is offline (the warning above says so).
+                            enabled: root.summary.ok === true && root.offlineCount === 0
                             // The range when it is not the whole sequence (UX rework: In to Out is picked for a
                             // marked sequence, so the button says so).
                             text: ExportController.busy ? qsTr("Add to queue")
@@ -784,7 +919,7 @@ Panel {
                             objectName: "exportSendToQueue"
                             implicitHeight: Theme.controlHeightLarge
                             variant: "secondary"
-                            enabled: root.summary.ok === true
+                            enabled: root.summary.ok === true && root.offlineCount === 0
                             text: qsTr("Send to Queue")
                             iconName: "list"
                             tooltip: qsTr("Send to the export queue (Media Encoder) without starting")

@@ -36,12 +36,30 @@ Panel {
     function formatCount(n: int): string {
         return Number(n).toLocaleString(Qt.locale(), 'f', 0)
     }
+    /// 0.6 (P1 #56): what the find took each audio stream of the recording for ("Audio: Game · Your voice · Left
+    /// out"), "" when it did not run on this sequence.
+    function audioRolesText(): string {
+        if (Highlights.recordingCount <= 0 || Highlights.recordings.length === 0)
+            return ""
+        const recording = Highlights.recordings[0]
+        const roles = recording.audioRoles ?? []
+        const names = []
+        for (let i = 0; i < roles.length; ++i) {
+            const role = String(roles[i])
+            names.push(role === "game" ? qsTr("Game") : role === "mic" ? qsTr("Your voice")
+                       : role === "mixed" ? qsTr("Mixed") : qsTr("Left out"))
+        }
+        return names.length > 0 ? qsTr("Audio: %1").arg(names.join(qsTr(" · "))) : ""
+    }
     function summary(): string {
         const parts = [qsTr("Moments: %1").arg(root.formatCount(list.count))]
         if (Highlights.recordingCount > 0)
             parts.push(qsTr("Recordings: %1").arg(root.formatCount(Highlights.recordingCount)))
         if (Highlights.chatMessages > 0)
             parts.push(qsTr("Chat messages: %1").arg(root.formatCount(Highlights.chatMessages)))
+        const roles = root.audioRolesText()
+        if (roles !== "")
+            parts.push(roles)
         if (Highlights.acceptedCount > 0)
             parts.push(qsTr("Accepted: %1").arg(root.formatCount(Highlights.acceptedCount)))
         return parts.join(qsTr(" · "))
@@ -425,6 +443,15 @@ Panel {
                              : Highlights.shortsCount <= 1 ? qsTr("One moment: Make a Short makes it")
                              : qsTr("A vertical Short of each accepted moment (else of every moment not rejected), in one undo step; the timeline stays on this sequence")
                     onClicked: Highlights.makeShorts(shortOptions.options())
+                }
+                // P1 (#23, stream 1C): a still at each highlight's peak - thumbnail candidates (Export Frames at Markers).
+                PillButton {
+                    objectName: "highlightsThumbnailsButton"
+                    iconName: "image"
+                    text: qsTr("Thumbnails…")
+                    enabled: !Highlights.busy && Highlights.moments.length > 0
+                    tooltip: qsTr("A still at the peak of each highlight, named after it: YouTube thumbnail candidates")
+                    onClicked: Monitors.requestExportFramesAtMarkers(true)
                 }
             }
             // 0.4: after a batch, its Shorts (those still in the project) into the export queue at 1080x1920.

@@ -14,6 +14,7 @@
 #include <wabcut/render/Compositor.h>
 #include <wabcut/render/GpuScopes.h>
 
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 #include <rhi/qrhi.h>
@@ -415,4 +416,273 @@ TEST_CASE("HDR scopes read PQ code values (the nits scale) and the HLG signal (t
     // HLG: SDR white at 75 %.
     const ColorPipeline hlgPipeline = managed(ColorManagementMode::HdrHlg);
     CHECK(std::abs(lumaLevel(hlgPipeline, flatLayer(1.0, InputColorSpace::Rec709), true) - 0.75) < 0.015);
+}
+
+// ---- 0.6 (#72): HDR finishing - Minimal Tone Mapping, gamut compression, output colour spaces, SDR Conform ----------
+
+namespace {
+
+/// Saturated synthetic colours: a grey ramp on top, the Rec.2020 primaries and secondaries (and two near-greys) below.
+Rgb primariesAt(int x, int y) {
+    const double u = (x + 0.5) / kW;
+    if (y < kH / 2) {
+        return {u, u, u};
+    }
+    static constexpr Rgb kPatches[] = {{0.75, 0.0, 0.0}, {0.0, 0.75, 0.0}, {0.0, 0.0, 0.75}, {0.62, 0.62, 0.0},
+                                       {0.0, 0.62, 0.62}, {0.62, 0.0, 0.62}, {0.9, 0.85, 0.8}, {0.4, 0.42, 0.45}};
+    return kPatches[x * 8 / kW];
+}
+
+const ColorInfo kTags2020{ColorMatrix::BT2020NonConstant, ColorRange::Full, ColorPrimaries::BT2020, TransferFunction::BT709,
+                          ChromaLocation::Left};
+
+Rgb primariesCodeAt(int x, int y) {
+    const auto yuv = encodeYuv(primariesAt(x, y), kTags2020.matrix, kTags2020.range, 10);
+    const SampleToRgb s2r = sampleToRgb(kTags2020.matrix, kTags2020.range, SampleEncoding::Bits10Low, false);
+    const auto rgb = s2r.apply({yuv[0] / 65535.0, yuv[1] / 65535.0, yuv[2] / 65535.0});
+    return {std::clamp(rgb[0], 0.0, 1.0), std::clamp(rgb[1], 0.0, 1.0), std::clamp(rgb[2], 0.0, 1.0)};
+}
+
+CompositeLayer primariesLayer(InputColorSpace space) {
+    CompositeLayer layer = layerOf(makeFrame(media::PixelFormat::YUV444P10, kW, kH, kTags2020, primariesAt));
+    layer.inputSpace = space;
+    return layer;
+}
+
+/// The working value the layer pass leaves on the canvas: below 0 clipped unless the setup compresses gamut (0.6).
+color::Rgb3 canvasOf(const ColorManagement& m, const color::Rgb3& w) { return m.compressesGamut() ? w : onCanvas(w); }
+
+color::Rgb3 workingValueOf(const ColorManagement& m, InputColorSpace space, const Rgb& code) {
+    const auto in = color::planInput(m, space, false, false);
+    REQUIRE(in);
+    return canvasOf(m, color::runInputPlan(*in, toRgb3(code)));
+}
+
+} // namespace
+
+TEST_CASE("Wide Gamut Minimal Tone Mapping on the GPU: SDR media unchanged and scene-referred highlights rolled off (0.6)",
+          "[render][gpu][colormanagement][widegamut]") {
+    auto renderer = makeRenderer();
+    const ColorPipeline minimal = managed(ColorManagementMode::WideGamutMinimal);
+    REQUIRE(minimal.management.compressesGamut());
+    for (const InputColorSpace space : {InputColorSpace::Rec709, InputColorSpace::SLog3SGamut3Cine, InputColorSpace::LogC4,
+                                        InputColorSpace::Rec2100Pq, InputColorSpace::Rec2100Hlg}) {
+        DYNAMIC_SECTION(toString(space)) {
+            auto image = renderer->render(compositeOf({kW, kH}, {pictureLayer(space)}, minimal));
+            REQUIRE(image);
+            savePng(*image, QStringLiteral("colormanagement/minimal_%1.png").arg(QString::fromLatin1(toString(space))));
+            const auto out = color::planOutput(minimal.management, color::OutputTarget::Sdr);
+            REQUIRE(out);
+            std::string where;
+            const double worst = worstOver(*image, [&](int x, int y) {
+                return fromRgb3(color::runOutputPlan(*out, workingValueOf(minimal.management, space, codeAt(x, y))));
+            }, &where);
+            INFO(where);
+            CHECK(worst <= 2.5 / 255.0);
+        }
+    }
+    // SDR media and graphics come out as they went in (no roll-off, no gamut compression on display-referred pictures).
+    for (const bool graphics : {false, true}) {
+        auto image = renderer->render(compositeOf({kW, kH}, {pictureLayer(InputColorSpace::Rec709, graphics)}, minimal));
+        REQUIRE(image);
+        std::string where;
+        const double worst = worstOver(*image, [](int x, int y) { return codeAt(x, y); }, &where);
+        INFO(where);
+        CHECK(worst <= 2.5 / 255.0);
+    }
+}
+
+TEST_CASE("Gamut compression on the GPU matches the CPU plans and keeps working values below 0 (0.6)",
+          "[render][gpu][colormanagement][gamut]") {
+    auto renderer = makeRenderer();
+    auto renderer10 = makeRenderer10();
+    for (const ColorManagementMode mode : {ColorManagementMode::WideGamut, ColorManagementMode::Aces13, ColorManagementMode::HdrPq}) {
+        ColorPipeline pipeline = managed(mode, mode == ColorManagementMode::HdrPq ? color::OutputTarget::Pq : color::OutputTarget::Sdr);
+        pipeline.management.gamutCompression = true;
+        pipeline.management.gamutCompressionStrength = 0.8;
+        for (const InputColorSpace space : {InputColorSpace::SLog3SGamut3, InputColorSpace::LogC4, InputColorSpace::Rec709}) {
+            DYNAMIC_SECTION(toString(mode) << " " << toString(space)) {
+                auto& r = mode == ColorManagementMode::HdrPq ? renderer10 : renderer;
+                auto image = r->render(compositeOf({kW, kH}, {pictureLayer(space)}, pipeline));
+                REQUIRE(image);
+                const auto out = color::planOutput(pipeline.management, outputTargetFor(pipeline, OutputRole::Export));
+                REQUIRE(out);
+                std::string where;
+                const double worst = worstOver(*image, [&](int x, int y) {
+                    return fromRgb3(color::runOutputPlan(*out, workingValueOf(pipeline.management, space, codeAt(x, y))));
+                }, &where);
+                INFO(where);
+                CHECK(worst <= (image->tenBit ? 3.0 / 1023.0 : 2.5 / 255.0));
+            }
+        }
+    }
+    // A saturated S-Gamut3 blue lies outside ACEScg: compressed, it comes closer to the gamut and its negative channel is
+    // kept on the canvas (the Rec.709 output then differs from a clipped canvas).
+    ColorPipeline wide = managed(ColorManagementMode::WideGamut);
+    const auto in = color::planInput(wide.management, InputColorSpace::SLog3SGamut3, false, false);
+    REQUIRE(in);
+    const color::Rgb3 plain = color::runInputPlan(*in, {0.25, 0.25, 0.95});
+    wide.management.gamutCompression = true;
+    const auto compressedPlan = color::planInput(wide.management, InputColorSpace::SLog3SGamut3, false, false);
+    REQUIRE(compressedPlan);
+    const color::Rgb3 compressed = color::runInputPlan(*compressedPlan, {0.25, 0.25, 0.95});
+    REQUIRE(std::min({plain[0], plain[1], plain[2]}) < 0.0);
+    CHECK(std::min({compressed[0], compressed[1], compressed[2]}) > std::min({plain[0], plain[1], plain[2]}));
+    CHECK(std::max({compressed[0], compressed[1], compressed[2]}) == Catch::Approx(std::max({plain[0], plain[1], plain[2]})));
+}
+
+TEST_CASE("Output colour spaces Rec.2020 SDR and P3-D65 on the GPU match the CPU plans (0.6)",
+          "[render][gpu][colormanagement][output]") {
+    auto renderer = makeRenderer();
+    for (const ColorManagementMode mode : {ColorManagementMode::DisplayRec709, ColorManagementMode::WideGamut,
+                                           ColorManagementMode::HdrPq, ColorManagementMode::Aces13}) {
+        for (const color::OutputTarget target : {color::OutputTarget::Rec2020Sdr, color::OutputTarget::P3D65}) {
+            DYNAMIC_SECTION(toString(mode) << " " << (target == color::OutputTarget::P3D65 ? "p3" : "2020")) {
+                const ColorPipeline pipeline = managed(mode, target);
+                const InputColorSpace space = mode == ColorManagementMode::HdrPq ? InputColorSpace::Rec2100Pq : InputColorSpace::Rec709;
+                auto image = renderer->render(compositeOf({kW, kH}, {pictureLayer(space)}, pipeline));
+                REQUIRE(image);
+                savePng(*image, QStringLiteral("colormanagement/output_%1_%2.png")
+                                    .arg(QString::fromLatin1(toString(mode)))
+                                    .arg(target == color::OutputTarget::P3D65 ? QStringLiteral("p3d65") : QStringLiteral("rec2020")));
+                const auto out = color::planOutput(pipeline.management, target);
+                REQUIRE(out);
+                std::string where;
+                const double worst = worstOver(*image, [&](int x, int y) {
+                    return fromRgb3(color::runOutputPlan(*out, workingValueOf(pipeline.management, space, codeAt(x, y))));
+                }, &where);
+                INFO(where);
+                CHECK(worst <= 2.5 / 255.0);
+            }
+        }
+    }
+    // Rec.709 white stays white in every SDR space, and a Rec.709 red is less saturated in Rec.2020 code values.
+    const ColorManagement direct;
+    const auto r2020 = color::planOutput(direct, color::OutputTarget::Rec2020Sdr);
+    REQUIRE(r2020);
+    const color::Rgb3 white = color::runOutputPlan(*r2020, {1.0, 1.0, 1.0});
+    CHECK(white[0] == Catch::Approx(1.0).margin(1e-6));
+    CHECK(white[2] == Catch::Approx(1.0).margin(1e-6));
+    const color::Rgb3 red = color::runOutputPlan(*r2020, {1.0, 0.0, 0.0});
+    CHECK(red[1] > 0.1);
+    CHECK(red[0] < 1.0);
+}
+
+TEST_CASE("SDR Conform on the GPU matches the CPU reference and flags what it mapped (0.6)",
+          "[render][gpu][colormanagement][conform]") {
+    auto renderer = makeRenderer();
+    struct Setting {
+        ColorManagementMode mode;
+        color::OutputTarget target;
+        ToneMapOperator op;
+        GamutMapping gamut;
+        bool legal;
+        double peak;
+        double paper;
+    };
+    const Setting settings[] = {
+        {ColorManagementMode::HdrPq, color::OutputTarget::Sdr, ToneMapOperator::Bt2390, GamutMapping::AcesRgc, false, 100.0, 100.0},
+        {ColorManagementMode::HdrPq, color::OutputTarget::Sdr, ToneMapOperator::Aces, GamutMapping::Saturation, false, 203.0, 120.0},
+        {ColorManagementMode::HdrHlg, color::OutputTarget::P3D65, ToneMapOperator::Reinhard, GamutMapping::Clip, true, 100.0, 100.0},
+        {ColorManagementMode::WideGamutMinimal, color::OutputTarget::Rec2020Sdr, ToneMapOperator::Bt2390, GamutMapping::AcesRgc,
+         true, 100.0, 80.0},
+    };
+    int index = 0;
+    for (const Setting& s : settings) {
+        DYNAMIC_SECTION("setting " << index++) {
+            ColorPipeline pipeline = managed(s.mode, s.target);
+            SdrConform& c = pipeline.management.sdrConform;
+            c.enabled = true;
+            c.toneMap = s.op;
+            c.gamut = s.gamut;
+            c.legalRange = s.legal;
+            c.targetPeakNits = s.peak;
+            c.paperWhiteNits = s.paper;
+            pipeline.conformStats = true;
+            REQUIRE(pipeline.management.conformsSdr());
+            auto image = renderer->render(compositeOf({kW, kH}, {primariesLayer(InputColorSpace::Rec2100Pq)}, pipeline));
+            REQUIRE(image);
+            savePng(*image, QStringLiteral("colormanagement/conform_%1.png").arg(index));
+            const auto plan = color::planOutput(pipeline.management, s.target, true);
+            REQUIRE(plan);
+            REQUIRE(plan->kind == color::OutputPlan::Kind::Conform);
+            double worst = 0.0;
+            std::string where;
+            int samples = 0;
+            int flagsMatch = 0;
+            bool anyToneMapped = false;
+            bool anyGamutMapped = false;
+            for (int y = 4; y < kH; y += 8) {
+                for (int x = 2; x < kW; x += 4) {
+                    const color::ConformPixel want =
+                        color::sdrConformPixel(*plan, workingValueOf(pipeline.management, InputColorSpace::Rec2100Pq, primariesCodeAt(x, y)));
+                    const Rgb got = pixelOf(*image, x, y);
+                    const double d = maxDiff(got, fromRgb3(want.code));
+                    if (d > worst) {
+                        worst = d;
+                        where = std::format("({}, {}): got {} want {}", x, y, describe(got), describe(fromRgb3(want.code)));
+                    }
+                    const int flags = (want.toneMapped ? 1 : 0) | (want.gamutMapped ? 2 : 0);
+                    flagsMatch += conformFlagsOf(alphaOf(*image, x, y)) == flags ? 1 : 0;
+                    anyToneMapped = anyToneMapped || want.toneMapped;
+                    anyGamutMapped = anyGamutMapped || want.gamutMapped;
+                    ++samples;
+                }
+            }
+            INFO(where);
+            CHECK(worst <= 3.0 / 255.0);
+            CHECK(flagsMatch >= samples * 98 / 100); // floats vs doubles may flip a pixel sitting on a threshold
+            if (s.mode != ColorManagementMode::WideGamutMinimal) {
+                CHECK(anyToneMapped); // PQ code values run far above the reference white (Minimal rolled them off on input)
+            }
+            if (s.target != color::OutputTarget::Rec2020Sdr) {
+                CHECK(anyGamutMapped); // the Rec.2020 primaries lie outside Rec.709 and P3
+            }
+        }
+    }
+    // Without conformStats the export's alpha stays opaque; SDR Conform off leaves the setup's own SDR output.
+    ColorPipeline plain = managed(ColorManagementMode::HdrPq);
+    plain.management.sdrConform.enabled = true;
+    auto image = renderer->render(compositeOf({kW, kH}, {primariesLayer(InputColorSpace::Rec2100Pq)}, plain));
+    REQUIRE(image);
+    CHECK(alphaOf(*image, 10, 10) == 1.0);
+}
+
+TEST_CASE("The monitor previews SDR Conform before and after on a split (0.6)", "[render][gpu][colormanagement][conform]") {
+    auto display = makeRenderer(OutputRole::Display);
+    ColorPipeline pipeline = managed(ColorManagementMode::HdrPq);
+    pipeline.management.sdrConform.toneMap = ToneMapOperator::Reinhard; // off: the preview shows it all the same
+    auto composite = compositeOf({kW, kH}, {primariesLayer(InputColorSpace::Rec2100Pq)}, pipeline);
+    composite->colorView.conformSplit = 0.5;
+    auto image = display->render(composite);
+    REQUIRE(image);
+    savePng(*image, QStringLiteral("colormanagement/conform_preview_split.png"));
+    const auto before = color::planOutput(pipeline.management, color::OutputTarget::Sdr);
+    const auto after = color::planOutput(pipeline.management, color::OutputTarget::Sdr, true);
+    REQUIRE(before);
+    REQUIRE(after);
+    double worst = 0.0;
+    std::string where;
+    for (int y = 4; y < kH; y += 8) {
+        for (int x = 2; x < kW; x += 4) {
+            if (std::abs(x - kW / 2) < 3) {
+                continue;
+            }
+            const color::Rgb3 w = workingValueOf(pipeline.management, InputColorSpace::Rec2100Pq, primariesCodeAt(x, y));
+            const Rgb want = fromRgb3(x < kW / 2 ? color::runOutputPlan(*before, w) : color::sdrConformPixel(*after, w).code);
+            const Rgb got = pixelOf(*image, x, y);
+            if (maxDiff(got, want) > worst) {
+                worst = maxDiff(got, want);
+                where = std::format("({}, {}): got {} want {}", x, y, describe(got), describe(want));
+            }
+        }
+    }
+    INFO(where);
+    CHECK(worst <= 3.0 / 255.0);
+    // The whole picture conformed (split 0), and no preview without the view.
+    composite->colorView.conformSplit = 0.0;
+    auto whole = display->render(composite);
+    REQUIRE(whole);
+    const color::Rgb3 w = workingValueOf(pipeline.management, InputColorSpace::Rec2100Pq, primariesCodeAt(10, 50));
+    CHECK(maxDiff(pixelOf(*whole, 10, 50), fromRgb3(color::sdrConformPixel(*after, w).code)) <= 3.0 / 255.0);
 }

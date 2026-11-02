@@ -207,6 +207,9 @@ public:
     /// 0.4, Premiere's Play from Playhead to Out (Ctrl+Space): plays from the playhead to the sequence Out (no Out: the
     /// sequence end) once and stops on the last marked frame. At or past the Out: nothing. Loop is ignored.
     Q_INVOKABLE void playToOut();
+    /// 0.6 (card #74): plays sequence time [from, to) once (Loop ignored) and parks back on the playhead it started
+    /// from, like Play Around: the Take Selector auditions a take in place this way. C++ only.
+    void playRange(Ticks from, Ticks to);
     /// Returns the attached monitors from a legacy source view to the sequence.
     Q_INVOKABLE void showProgram();
     /// 0.5: a playhead drag starts (the ruler, the Program Monitor's time bar) or ends: while it lasts, the playhead
@@ -225,6 +228,8 @@ signals:
     /// a voice-over pass ends here and places its take (review A5-P1-7). Direct connections only.
     void sessionEnding();
     void transportChanged();
+    /// P1 (#16): setPreviewSettings changed what the monitors decode (the Source Monitor's own session follows it).
+    void previewSettingsChanged();
     void statsChanged();
     void captionsChanged();
     void sourceChanged();

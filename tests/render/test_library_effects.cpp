@@ -10,9 +10,12 @@
 
 #include <wabcut/model/Effects.h>
 #include <wabcut/render/EffectLibrary.h>
+#include <wabcut/render/Mask.h>
 #include <wabcut/render/reference/LibraryEffects.h>
+#include <wabcut/render/reference/LibraryGeometry.h>
 
 #include <QDir>
+#include <QFile>
 #include <QElapsedTimer>
 #include <QImage>
 
@@ -22,6 +25,7 @@
 #include <cmath>
 #include <limits>
 #include <optional>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -496,5 +500,311 @@ TEST_CASE("Effect library: every library effect has a descriptor with its keys (
         }
         CHECK(keys == d->params.size()); // every parameter reaches the compositor
         CHECK(familyOf(entry.op) != FxFamily::Core);
+    }
+}
+
+// ---- 0.6: Glow and the generators Premiere / After Effects editors reach for (card #70) ----------------------------
+
+namespace {
+
+/// Flat regions with hard outlines (Paint Bucket's picture): a pale blue disc in a dark ring on white, a dark bar, a
+/// yellow right part and a transparent corner at the top left.
+std::array<std::uint8_t, 4> cartoon(int x, int y) {
+    const double r = std::hypot(x + 0.5 - 110.0, y + 0.5 - 90.0);
+    if (x < 40 && y < 30) {
+        return {0, 0, 0, 0};
+    }
+    if (r >= 50.0 && r < 56.0) {
+        return {10, 10, 10, 255};
+    }
+    if (r < 50.0) {
+        return {150, 200, 250, 255};
+    }
+    if (x >= 230 && x < 236) {
+        return {10, 10, 10, 255};
+    }
+    if (x >= 236) {
+        return {250, 230, 120, 255};
+    }
+    return {245, 245, 245, 255};
+}
+
+std::vector<Case> cases06() {
+    return {
+        one("glow", colorful, "wabcut.stylize.glow", {{"threshold", 0.55}, {"radius", 12.0}}),
+        one("glow_ab_horizontal_screen", colorful, "wabcut.stylize.glow",
+            {{"threshold", 0.5}, {"radius", 16.0}, {"colors", 1.0}, {"colorB.r", 0.9}, {"colorB.g", 0.2}, {"dimensions", 1.0},
+             {"operation", 1.0}, {"intensity", 1.5}}),
+        one("glow_alpha_on_top", card, "wabcut.stylize.glow",
+            {{"basedOn", 1.0}, {"threshold", 0.2}, {"radius", 10.0}, {"composite", 0.0}, {"intensity", 2.0}}),
+        one("glow_vertical_alone_blend", colorful, "wabcut.stylize.glow",
+            {{"dimensions", 2.0}, {"composite", 2.0}, {"blend", 0.3}, {"operation", 3.0}}),
+        one("colorama", colorful, "wabcut.generate.colorama"),
+        one("colorama_fire_hue", colorful, "wabcut.generate.colorama",
+            {{"palette", 4.0}, {"input", 2.0}, {"phaseShift", 90.0}, {"blend", 0.2}}),
+        one("colorama_three_stops_steps", colorful, "wabcut.generate.colorama",
+            {{"colors", 3.0}, {"interpolate", 0.0}, {"input", 1.0}, {"cycles", 2.0}, {"blendingMode", 2.0}}),
+        one("colorama_alpha_ramp", card, "wabcut.generate.colorama", {{"input", 7.0}, {"palette", 1.0}}),
+        one("fractal_noise", colorful, "wabcut.generate.fractalNoise"),
+        one("fractal_noise_turbulent_spline", colorful, "wabcut.generate.fractalNoise",
+            {{"fractalType", 1.0}, {"noiseType", 3.0}, {"complexity", 4.5}, {"rotation", 30.0}, {"evolution", 120.0},
+             {"blendingMode", 5.0}, {"opacity", 0.7}, {"scale", 60.0}}),
+        one("fractal_noise_dynamic_block_wrap", colorful, "wabcut.generate.fractalNoise",
+            {{"fractalType", 2.0}, {"noiseType", 0.0}, {"cycleEvolution", 1.0}, {"evolution", 400.0}, {"contrast", 200.0},
+             {"overflow", 2.0}, {"seed", 9.0}}),
+        one("fractal_noise_linear_soft_invert", colorful, "wabcut.generate.fractalNoise",
+            {{"fractalType", 3.0}, {"noiseType", 1.0}, {"overflow", 1.0}, {"invert", 1.0}, {"subRotation", 25.0},
+             {"blendingMode", 3.0}}),
+        one("cell_pattern", colorful, "wabcut.generate.cellPattern"),
+        one("cell_pattern_crystals_border", colorful, "wabcut.generate.cellPattern",
+            {{"pattern", 1.0}, {"border", 0.3}, {"size", 30.0}, {"evolution", 90.0}}),
+        one("cell_pattern_plates_screen", colorful, "wabcut.generate.cellPattern",
+            {{"pattern", 2.0}, {"blendingMode", 4.0}, {"evolution", 45.0}, {"seed", 3.0}}),
+        one("cell_pattern_static_plates", colorful, "wabcut.generate.cellPattern", {{"pattern", 3.0}, {"disperse", 0.4}}),
+        one("cell_pattern_crystallize", colorful, "wabcut.generate.cellPattern", {{"pattern", 4.0}, {"size", 25.0}}),
+        one("cell_pattern_pillow_invert", colorful, "wabcut.generate.cellPattern",
+            {{"pattern", 5.0}, {"invert", 1.0}, {"contrast", 150.0}, {"overflow", 1.0}}),
+        one("cell_pattern_tubular_multiply", colorful, "wabcut.generate.cellPattern",
+            {{"pattern", 6.0}, {"blendingMode", 3.0}, {"opacity", 0.8}}),
+        one("lightning", colorful, "wabcut.generate.lightning", {{"time", 0.5}}),
+        one("lightning_branchy_add", colorful, "wabcut.generate.lightning",
+            {{"branching", 0.8}, {"rebranching", 0.4}, {"detail", 3.0}, {"blendingMode", 1.0}, {"time", 1.3}, {"seed", 7.0},
+             {"width", 14.0}, {"fixedEndpoint", 0.0}}),
+        one("lightning_screen_on_card", card, "wabcut.generate.lightning",
+            {{"blendingMode", 2.0}, {"start.x", 0.1}, {"start.y", 0.5}, {"end.x", 0.9}, {"end.y", 0.5}, {"time", 2.0}}),
+        one("scribble", colorful, "wabcut.generate.scribble", {{"spacing", 14.0}}),
+        one("scribble_edge_progress", colorful, "wabcut.generate.scribble",
+            {{"fillType", 1.0}, {"end", 0.6}, {"strokeWidth", 3.0}, {"edgeWidth", 16.0}}),
+        one("scribble_reveal_curvy", colorful, "wabcut.generate.scribble",
+            {{"composite", 2.0}, {"curvature", 0.4}, {"angle", 10.0}, {"spacing", 12.0}, {"strokeWidth", 8.0}, {"jitter", 3.0},
+             {"wiggles", 4.0}, {"time", 0.75}}),
+        one("paint_bucket", cartoon, "wabcut.generate.paintBucket", {{"point.x", 0.35}, {"point.y", 0.5}}),
+        one("paint_bucket_feather_behind", cartoon, "wabcut.generate.paintBucket",
+            {{"point.x", 0.05}, {"point.y", 0.9}, {"stroke", 1.0}, {"softness", 6.0}, {"color.g", 0.6}, {"blendingMode", 1.0}}),
+        one("paint_bucket_stroke", cartoon, "wabcut.generate.paintBucket",
+            {{"point.x", 0.35}, {"point.y", 0.5}, {"stroke", 4.0}, {"strokeWidth", 4.0}, {"color.b", 1.0}}),
+        one("paint_bucket_spread_multiply", cartoon, "wabcut.generate.paintBucket",
+            {{"point.x", 0.9}, {"point.y", 0.5}, {"stroke", 2.0}, {"strokeWidth", 6.0}, {"blendingMode", 3.0}}),
+        one("paint_bucket_choke_fill_only", cartoon, "wabcut.generate.paintBucket",
+            {{"point.x", 0.35}, {"point.y", 0.5}, {"stroke", 3.0}, {"strokeWidth", 6.0}, {"blendingMode", 5.0}}),
+        one("paint_bucket_transparency_invert", cartoon, "wabcut.generate.paintBucket",
+            {{"point.x", 0.02}, {"point.y", 0.02}, {"selector", 2.0}, {"tolerance", 20.0}, {"invert", 1.0}, {"opacity", 0.6}}),
+        one("paint_bucket_view_threshold", cartoon, "wabcut.generate.paintBucket",
+            {{"point.x", 0.35}, {"point.y", 0.5}, {"viewThreshold", 1.0}}),
+    };
+}
+
+ref::LibraryParams paramsOf(const LayerEffect& e) {
+    ref::LibraryParams q{};
+    std::copy(e.params.begin(), e.params.end(), q.begin());
+    return q;
+}
+
+ref::Image referenceOf(Picture picture, const LayerEffect& e, std::span<const ref::LibraryPath> paths = {}) {
+    return ref::libraryEffect(toReference(linearFromRgba8(kW, kH, picture)), static_cast<ref::LibraryEffect>(e.op),
+                              paramsOf(e), nullptr, paths);
+}
+
+double imageDifference(const ref::Image& a, const ref::Image& b) {
+    double most = 0.0;
+    for (std::size_t i = 0; i < a.rgba.size() && i < b.rgba.size(); ++i) {
+        most = std::max(most, std::abs(static_cast<double>(a.rgba[i]) - static_cast<double>(b.rgba[i])));
+    }
+    return most;
+}
+
+} // namespace
+
+TEST_CASE("Effect library: Glow and the 0.6 generators match their CPU reference", "[render][gpu][library]") {
+    runCases(cases06());
+}
+
+TEST_CASE("Effect library: Scribble draws in and along its mask path and leaves the rest (0.6)", "[render][gpu][library]") {
+    // A triangle mask (normalised frame coordinates, moved by its transform) is Scribble's path, not a mix.
+    auto mask = std::make_shared<MaskSpec>();
+    MaskShapeSpec shape;
+    shape.polygon = {{0.2, 0.2}, {0.8, 0.3}, {0.5, 0.85}};
+    shape.affine = {1.0, 0.0, 0.05, 0.0, 1.0, -0.05};
+    mask->shapes.push_back(shape);
+    mask->aspect = static_cast<double>(kW) / kH;
+    mask->seal();
+    std::vector<ref::LibraryPath> paths{{}};
+    for (const Vec2& v : shape.polygon) {
+        paths[0].push_back({(v.x + 0.05) * kW, (v.y - 0.05) * kH});
+    }
+    auto renderer = makeRenderer(OutputRole::Export);
+    auto plain = renderer->render(compositeOf({kW, kH}, {layerOf(makeRgbaFrame(kW, kH, colorful))}));
+    REQUIRE(plain);
+    for (const double fill : {0.0, 1.0, 3.0}) {
+        DYNAMIC_SECTION("fill type " << fill) {
+            LayerEffect e = libraryEffectOf("wabcut.generate.scribble",
+                                            {{"fillType", fill}, {"spacing", 9.0}, {"strokeWidth", 3.0}, {"edgeWidth", 12.0},
+                                             {"color.g", 1.0}});
+            e.mask = mask;
+            CompositeLayer layer = layerOf(makeRgbaFrame(kW, kH, colorful));
+            layer.effects = {e};
+            auto image = renderer->render(compositeOf({kW, kH}, {layer}));
+            REQUIRE(image);
+            const LinearImage expected = fromReference(referenceOf(colorful, e, paths));
+            const std::vector<std::uint8_t> rgb = encodeOverBlack(expected, outputTransformFor(ColorPipeline{}, OutputRole::Export));
+            savePng(*image, QStringLiteral("library/scribble_mask_%1.png").arg(fill));
+            const RenderMatch m = compareToReference(*image, rgb);
+            WARN("scribble in a mask: PSNR " << m.psnr << " dB");
+            CHECK(m.psnr >= 40.0);
+            CHECK(m.mismatched <= 0.003);
+            // Far from the triangle the picture is untouched; the strokes are yellow (red + green) on it.
+            CHECK(maxDiff(pixelOf(*image, 5, 175), pixelOf(*plain, 5, 175)) <= 1.5 / 255.0);
+            CHECK(maxDiff(pixelOf(*image, 300, 10), pixelOf(*plain, 300, 10)) <= 1.5 / 255.0);
+            int yellow = 0;
+            for (int y = 0; y < kH; ++y) {
+                for (int x = 0; x < kW; ++x) {
+                    const Rgb c = pixelOf(*image, x, y);
+                    yellow += c[0] > 0.95 && c[1] > 0.95 && c[2] < 0.1 ? 1 : 0;
+                }
+            }
+            CHECK(yellow > 200);
+        }
+    }
+}
+
+TEST_CASE("Effect library: Fractal Noise Cell Pattern and Lightning are the same for a seed and time (0.6)",
+          "[render][library]") {
+    const LayerEffect noise = libraryEffectOf("wabcut.generate.fractalNoise", {{"evolution", 30.0}, {"seed", 4.0}});
+    CHECK(imageDifference(referenceOf(colorful, noise), referenceOf(colorful, noise)) == 0.0);
+    const LayerEffect otherSeed = libraryEffectOf("wabcut.generate.fractalNoise", {{"evolution", 30.0}, {"seed", 5.0}});
+    CHECK(imageDifference(referenceOf(colorful, noise), referenceOf(colorful, otherSeed)) > 0.05);
+    const LayerEffect evolved = libraryEffectOf("wabcut.generate.fractalNoise", {{"evolution", 60.0}, {"seed", 4.0}});
+    CHECK(imageDifference(referenceOf(colorful, noise), referenceOf(colorful, evolved)) > 0.01);
+    // Cycle Evolution: a whole cycle later the noise is back.
+    const LayerEffect cycled = libraryEffectOf("wabcut.generate.fractalNoise",
+                                               {{"evolution", 30.0}, {"seed", 4.0}, {"cycleEvolution", 1.0}, {"cycle", 2.0}});
+    const LayerEffect cycledLater = libraryEffectOf("wabcut.generate.fractalNoise",
+                                                    {{"evolution", 30.0 + 720.0}, {"seed", 4.0}, {"cycleEvolution", 1.0}, {"cycle", 2.0}});
+    CHECK(imageDifference(referenceOf(colorful, cycled), referenceOf(colorful, cycledLater)) < 1e-4);
+
+    const LayerEffect cells = libraryEffectOf("wabcut.generate.cellPattern", {{"seed", 2.0}});
+    const LayerEffect otherCells = libraryEffectOf("wabcut.generate.cellPattern", {{"seed", 3.0}});
+    CHECK(imageDifference(referenceOf(colorful, cells), referenceOf(colorful, cells)) == 0.0);
+    CHECK(imageDifference(referenceOf(colorful, cells), referenceOf(colorful, otherCells)) > 0.05);
+
+    // Lightning: the same bolt for a seed and time; Speed makes a new shape over time, Stability 1 holds it.
+    const auto bolt = [](double time, double seed, double stability) {
+        ref::LibraryParams q = paramsOf(libraryEffectOf("wabcut.generate.lightning",
+                                                        {{"time", time}, {"seed", seed}, {"stability", stability}}));
+        return ref::lightningStrokes(q, kW, kH);
+    };
+    const auto same = [](const std::vector<ref::StrokeSegment>& a, const std::vector<ref::StrokeSegment>& b) {
+        if (a.size() != b.size()) {
+            return false;
+        }
+        for (std::size_t i = 0; i < a.size(); ++i) {
+            if (a[i].ax != b[i].ax || a[i].ay != b[i].ay || a[i].bx != b[i].bx || a[i].by != b[i].by) {
+                return false;
+            }
+        }
+        return true;
+    };
+    CHECK(same(bolt(0.5, 1.0, 0.3), bolt(0.5, 1.0, 0.3)));
+    CHECK_FALSE(same(bolt(0.5, 1.0, 0.3), bolt(0.5, 2.0, 0.3)));
+    CHECK_FALSE(same(bolt(0.5, 1.0, 0.3), bolt(0.9, 1.0, 0.3)));
+    CHECK(same(bolt(0.5, 1.0, 1.0), bolt(3.0, 1.0, 1.0)));
+    const auto segments = bolt(0.5, 1.0, 0.3);
+    REQUIRE_FALSE(segments.empty());
+    // Fixed Endpoint: the bolt starts and ends on its points (frame pixels).
+    CHECK(std::abs(segments.front().ax - 0.2 * kW) < 1e-9);
+    CHECK(std::abs(segments.front().ay - 0.15 * kH) < 1e-9);
+
+    // The GPU draws the same frame twice the same.
+    auto renderer = makeRenderer(OutputRole::Export);
+    CompositeLayer layer = layerOf(makeRgbaFrame(kW, kH, colorful));
+    layer.effects = {libraryEffectOf("wabcut.generate.lightning", {{"time", 0.4}}),
+                     libraryEffectOf("wabcut.generate.fractalNoise", {{"blendingMode", 5.0}, {"opacity", 0.5}})};
+    auto first = renderer->render(compositeOf({kW, kH}, {layer}));
+    auto second = renderer->render(compositeOf({kW, kH}, {layer}));
+    REQUIRE(first);
+    REQUIRE(second);
+    CHECK(first->rgba == second->rgba);
+}
+
+TEST_CASE("Effect library: the 0.6 effects read 8-bit and 10-bit sources alike", "[render][gpu][library]") {
+    auto renderer = makeRenderer(OutputRole::Export);
+    const ColorInfo tags{ColorMatrix::BT709, ColorRange::Full, ColorPrimaries::BT709, TransferFunction::BT709,
+                         ChromaLocation::Left};
+    const auto rgbOf = [](Picture picture) {
+        return [picture](int x, int y) {
+            const auto c = picture(x, y);
+            return Rgb{c[0] / 255.0, c[1] / 255.0, c[2] / 255.0};
+        };
+    };
+    const std::vector<std::pair<std::string, LayerEffect>> effects = {
+        {"glow", libraryEffectOf("wabcut.stylize.glow", {{"threshold", 0.5}})},
+        {"colorama", libraryEffectOf("wabcut.generate.colorama", {})},
+        {"fractal_noise", libraryEffectOf("wabcut.generate.fractalNoise", {{"blendingMode", 5.0}})},
+        {"cell_pattern", libraryEffectOf("wabcut.generate.cellPattern", {{"blendingMode", 3.0}})},
+        {"lightning", libraryEffectOf("wabcut.generate.lightning", {{"time", 0.2}})},
+        {"scribble", libraryEffectOf("wabcut.generate.scribble", {})},
+        {"paint_bucket", libraryEffectOf("wabcut.generate.paintBucket", {{"point.x", 0.35}, {"point.y", 0.5}, {"tolerance", 30.0}})},
+    };
+    for (const auto& [name, effect] : effects) {
+        DYNAMIC_SECTION(name) {
+            const Picture picture = name == "paint_bucket" ? cartoon : colorful;
+            std::vector<std::vector<std::uint8_t>> renders;
+            for (const media::PixelFormat format : {media::PixelFormat::YUV444P, media::PixelFormat::YUV444P10}) {
+                CompositeLayer layer = layerOf(makeFrame(format, kW, kH, tags, rgbOf(picture)));
+                layer.effects = {effect};
+                auto image = renderer->render(compositeOf({kW, kH}, {layer}));
+                REQUIRE(image);
+                renders.push_back(image->rgba);
+            }
+            double squared = 0.0;
+            std::size_t count = 0;
+            for (std::size_t i = 0; i < renders[0].size(); ++i) {
+                if (i % 4 == 3) {
+                    continue;
+                }
+                const double d = static_cast<double>(renders[0][i]) - static_cast<double>(renders[1][i]);
+                squared += d * d;
+                ++count;
+            }
+            const double mse = squared / std::max<std::size_t>(count, 1);
+            const double psnr = mse <= 0.0 ? 99.0 : 10.0 * std::log10(255.0 * 255.0 / mse);
+            WARN(name << ": 8-bit against 10-bit source PSNR " << psnr << " dB");
+            CHECK(psnr >= 35.0);
+        }
+    }
+}
+
+TEST_CASE("Effect library: 1080p frame time of Fractal Noise Cell Pattern Glow and Paint Bucket (0.6)",
+          "[render][gpu][library][perf]") {
+    // Best of three, render + readback at 1080p: a budget for the heaviest 0.6 effects (the GPU may be shared, so it
+    // is generous; the times are reported).
+    auto renderer = makeRenderer(OutputRole::Export);
+    const auto big = [](int x, int y) { return colorful(x * kW / 1920, y * kH / 1080); };
+    const std::vector<std::pair<std::string, LayerEffect>> effects = {
+        {"fractal_noise", libraryEffectOf("wabcut.generate.fractalNoise", {{"noiseType", 3.0}})},
+        {"cell_pattern", libraryEffectOf("wabcut.generate.cellPattern", {})},
+        {"glow", libraryEffectOf("wabcut.stylize.glow", {{"radius", 30.0}})},
+        {"paint_bucket", libraryEffectOf("wabcut.generate.paintBucket", {{"tolerance", 40.0}})},
+        {"lightning", libraryEffectOf("wabcut.generate.lightning", {{"branching", 0.8}, {"detail", 3.0}})},
+        {"scribble", libraryEffectOf("wabcut.generate.scribble", {})},
+    };
+    QString report;
+    for (const auto& [name, effect] : effects) {
+        CompositeLayer layer = layerOf(makeRgbaFrame(1920, 1080, big));
+        layer.effects = {effect};
+        qint64 best = std::numeric_limits<qint64>::max();
+        for (int i = 0; i < 3; ++i) {
+            QElapsedTimer timer;
+            timer.start();
+            REQUIRE(renderer->render(compositeOf({1920, 1080}, {layer})));
+            best = std::min(best, timer.nsecsElapsed());
+        }
+        WARN(name << " at 1080p: " << best / 1.0e6 << " ms per frame incl. readback");
+        report += QStringLiteral("%1: %2 ms\n").arg(QString::fromStdString(name)).arg(best / 1.0e6, 0, 'f', 1);
+        CHECK(best < 250'000'000);
+    }
+    QFile file(outputDir() + QStringLiteral("/library/perf-06.txt"));
+    if (file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        file.write(report.toUtf8());
     }
 }

@@ -19,7 +19,8 @@
 //     (its properties at the playhead). Edits go through GraphicOps.h with ProjectController::applyEditFn: one undo
 //     step each, a drag merged into one (setValue / setRun / setColor ... until endEdit()).
 //   * Animatable numbers (transform.*, shape.width/height/cornerRadius/outerRadius/innerRadius/trimStart/trimEnd/
-//     trimOffset, stroke.width): `layer` shows them as { value, animated, keyed } at the playhead's graphic time;
+//     trimOffset, stroke.width; 0.6: text.fontSize/tracking/leading/baselineShift and text.stroke<n>.width, the layer
+//     parameters of GraphicOps.h): `layer` shows them as { value, animated, keyed } at the playhead's graphic time;
 //     setValue() changes the constant or the key there (adding one), toggleKey() / setAnimated() like Effect Controls.
 //   * Presets (graphic.applyPreset), Responsive Design: pins (setPin: the offsets keep the layer where it is) and time.
 //   * runCommand(): the keymap's graphics.* commands (New Layer: Text = Ctrl+T, Bring Forward, Select Next Layer...).
@@ -36,6 +37,7 @@
 #include <QPointer>
 #include <QString>
 #include <QStringList>
+#include <QUrl>
 #include <QVariantList>
 #include <QVariantMap>
 #include <QtQml/qqmlregistration.h>
@@ -150,6 +152,22 @@ public:
     /// Removes a template of the project's library (user templates: delete their file; built-in ones are refused).
     Q_INVOKABLE QString removeTemplate(const QString& templateKey);
 
+    // ---- Template files ----
+    /// True for a local file the import accepts: ".mogrt" (Premiere) or ".wabcut-template.json" (Wabcut).
+    Q_INVOKABLE bool isTemplateFile(const QUrl& file) const;
+    /// template.import of `file` into the project's library (default) or the user's; reads the libraries again.
+    /// { error, file, key "<library>/<id>", name, library, report } - report as GraphicsImportBridge::reportMap (the
+    /// .mogrt's approximations and drops) with format "Motion Graphics template"; {} fields when nothing was reported.
+    Q_INVOKABLE QVariantMap importTemplate(const QUrl& file, const QString& library = QStringLiteral("project"));
+    /// template.export of a template key ("project/<id>", "user/<id>", "builtin/<id>") to a ".wabcut-template.json" file.
+    /// Appends the suffix when `file` has none. Returns "" or the error.
+    Q_INVOKABLE QString exportTemplate(const QString& templateKey, const QUrl& file, bool overwrite = false);
+    /// Asks the window for the Install Motion Graphics Template file dialog (installRequested(library)): the menu row,
+    /// Callouts' "Install template…".
+    Q_INVOKABLE void openInstallDialog(const QString& library = QStringLiteral("project"));
+    /// Asks the window for the Export template save dialog (exportRequested(templateKey)): a template's menu.
+    Q_INVOKABLE void openExportDialog(const QString& templateKey);
+
     // ---- Edit: fields ----
     /// template.setField: a typing or a drag merges into one undo step until endEdit().
     Q_INVOKABLE QString setField(const QString& fieldId, const QVariant& value);
@@ -176,7 +194,9 @@ public:
     /// The stopwatch: on keys the value at the playhead; off makes it the constant it has there.
     Q_INVOKABLE QString setAnimated(int layerId, const QString& path, bool animated);
     /// A text run's style: "fontFamily", "fontStyle", "brandFont", "fontWeight", "fontSize", "fill" (a colour),
-    /// "italic", "underline", "tracking", "leading", "baselineShift", or "text". Merges until endEdit().
+    /// "italic", "underline", "tracking", "leading", "baselineShift", or "text"; 0.6: "kerning", "caps" ("normal",
+    /// "allCaps", "smallCaps"), "fauxBold", "fauxItalic". Merges until endEdit(). 0.6: with Source Text keys the runs are
+    /// those shown at the playhead (a key there); a keyframed size or spacing takes the value as the key at the playhead.
     Q_INVOKABLE QString setRun(int layerId, int run, const QString& key, const QVariant& value);
     /// The whole text of a text layer (one run in the first run's style when it has one run or none).
     Q_INVOKABLE QString setText(int layerId, const QString& text);
@@ -186,8 +206,12 @@ public:
     /// "reverse", "perpendicular" or "forceAlignment" of a text layer on a path.
     Q_INVOKABLE QString setTextPathOption(int layerId, const QString& key, bool on);
     /// A colour: "fill" (a shape's fill or every run of a text), "stroke", "background", "shadow" or "stop:<n>" (a
-    /// gradient stop). Merges until endEdit().
+    /// gradient stop); 0.6: "textStroke:<n>" (a text stroke). Merges until endEdit().
     Q_INVOKABLE QString setColor(int layerId, const QString& what, const QString& color);
+    /// 0.6, a text layer's strokes (TextStroke): "add" (one more, wider than the last), "remove" (stroke `index`),
+    /// "position" ("outside", "center", "inside") or "enabled" (true / false) of stroke `index`. Its width is the
+    /// animatable "text.stroke<n>.width" (setValue), its colour setColor("textStroke:<n>"). One undo step.
+    Q_INVOKABLE QString setTextStroke(int layerId, int index, const QString& key, const QVariant& value = {});
     /// The shape's fill: "none", "solid", "linear", "radial" (gradients start from the fill colour to transparent,
     /// across the shape).
     Q_INVOKABLE QString setFillKind(int layerId, const QString& kind);
@@ -230,6 +254,10 @@ signals:
     void layerChanged();
     void brandChanged();
     void messageChanged();
+    /// The window shows the Install Motion Graphics Template file dialog, into `library` ("project" | "user").
+    void installRequested(const QString& library);
+    /// The window shows the Export template save dialog for `templateKey`.
+    void exportRequested(const QString& templateKey);
 
 public:
     /// What the thumbnail provider reads, on its own thread.
@@ -256,6 +284,8 @@ private:
                       const std::string& merge = {});
     const command::CommandRegistry& registry() const;
     QString runCommandNow(const std::string& name, const std::string& params, QVariantMap* data = nullptr);
+    /// The import report in GraphicsImportBridge::reportMap's shape, from template.import's data (see importTemplate).
+    QVariantMap templateReport(const QVariantMap& data, const QString& fileName) const;
     /// Selects the selected graphic's first text field's layer, else its top text layer.
     void selectFirstTextLayer();
     void rebuild();

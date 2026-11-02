@@ -11,7 +11,10 @@
 #include "ProjectLifecycle.h"
 
 #include <wabcut/command/Command.h>
+#include <wabcut/editor/CameraCards.h>
 #include <wabcut/editor/MediaImport.h>
+#include <wabcut/editor/PreviewRender.h>
+#include <wabcut/editor/Production.h>
 #include <wabcut/editor/SourceEdit.h>
 #include <wabcut/interchange/CaptionFiles.h>
 #include <wabcut/interchange/Import.h>
@@ -19,6 +22,7 @@
 #include <wabcut/model/ColorManagement.h>
 #include <wabcut/model/LayeredFile.h>
 #include <wabcut/model/MediaLocator.h>
+#include <wabcut/model/ProjectIO.h>
 #include <wabcut/model/ProjectOps.h>
 #include <wabcut/model/ProjectState.h>
 #include <wabcut/model/SequencePresets.h>
@@ -247,7 +251,8 @@ const QStringList& captionSuffixes() {
 
 const QStringList& timelineSuffixes() {
     static const QStringList suffixes{QStringLiteral("xml"), QStringLiteral("fcpxml"), QStringLiteral("otio"),
-                                      QStringLiteral("edl"), QStringLiteral("prproj")};
+                                      QStringLiteral("edl"), QStringLiteral("prproj"),
+                                      QStringLiteral("aaf"), QStringLiteral("omf")}; // 0.6: AAF / OMF import
     return suffixes;
 }
 
@@ -330,6 +335,11 @@ struct Sorted {
     int skipped = 0;  ///< files in folders left out (not media)
     int folders = 0;
     bool truncated = false;
+    // P1 round (#63): folders are read like File > Import Folder reads them (editor::collectImportFolder's rules):
+    // hidden files and folders and camera cards are left out; the folders given are kept for their bins.
+    int hidden = 0;
+    QStringList cardsLeftOut;
+    QVariantList folderUrls;
 };
 
 QString notImportedGuidance(const QString& suffix) {
@@ -465,6 +475,18 @@ void sortFile(const QFileInfo& info, bool inFolder, Sorted& out) {
 }
 
 /// A folder's files (sorted by name, the subfolders after them), at most kMaxFolderFiles looked at, kMaxFolderDepth deep.
+/// P1 round (#63): a camera card at `folder` (or a folder inside one) is left out, with a note: the Media Browser
+/// imports its clips (spanned clips joined), as File > Import Folder says.
+bool cardLeftOut(const QFileInfo& folder, Sorted& out) {
+    const auto card = editor::cameraCardAt(fsPath(folder.absoluteFilePath()));
+    if (!card)
+        return false;
+    const std::string_view kind = editor::displayName(card->first);
+    out.cardsLeftOut << HomeBridge::tr("%1 card in %2 was left out: import it from the Media Browser.")
+                            .arg(QString::fromUtf8(kind.data(), static_cast<qsizetype>(kind.size())), folder.fileName());
+    return true;
+}
+
 void sortFolder(const QDir& dir, int depth, Sorted& out) {
     const QFileInfoList files = dir.entryInfoList(QDir::Files | QDir::NoDotAndDotDot, QDir::Name | QDir::IgnoreCase);
     for (const QFileInfo& file : files) {
@@ -473,6 +495,10 @@ void sortFolder(const QDir& dir, int depth, Sorted& out) {
             return;
         }
         ++out.examined;
+        if (file.fileName().startsWith(QLatin1Char('.')) || file.isSymLink()) { // P1 round (#63), as Import Folder
+            ++out.hidden;
+            continue;
+        }
         sortFile(file, true, out);
     }
     if (depth >= HomeBridge::kMaxFolderDepth)
@@ -483,6 +509,12 @@ void sortFolder(const QDir& dir, int depth, Sorted& out) {
             ++out.skipped;
             continue;
         }
+        if (folder.fileName().startsWith(QLatin1Char('.'))) {
+            ++out.hidden;
+            continue;
+        }
+        if (cardLeftOut(folder, out))
+            continue;
         sortFolder(QDir(folder.absoluteFilePath()), depth + 1, out);
         if (out.truncated)
             return;
@@ -1118,7 +1150,11 @@ QVariantMap HomeBridge::createFromMediaWith(const QString& name, const QUrl& fol
     // 2. The files in the project, and their media items in the order given.
     std::vector<MediaPtr> items;
     if (!importable.isEmpty()) {
-        const QVariantMap imported = m_lifecycle->importFiles(importable);
+        // P1 round (#63): files from folders (Home's Import folder…) go into the folders' bins, subfolders nested.
+        QVariantMap importOptions;
+        if (const QVariantList folders = plainValue(options.value(QStringLiteral("folders"))).toList(); !folders.isEmpty())
+            importOptions.insert(QStringLiteral("binsFrom"), folders);
+        const QVariantMap imported = m_lifecycle->importFiles(importable, importOptions);
         result.insert(QStringLiteral("added"), imported.value(QStringLiteral("added")).toInt());
         result.insert(QStringLiteral("captionTracks"), imported.value(QStringLiteral("captionTracks")).toInt());
         const QVariantList failed = imported.value(QStringLiteral("failed")).toList();
@@ -1243,6 +1279,9 @@ QVariantMap HomeBridge::classifyImport(const QList<QUrl>& files) const {
         const QFileInfo info(path);
         if (info.isDir() && !bundleSuffix(info.suffix().toLower())) {
             ++sorted.folders;
+            if (cardLeftOut(info, sorted)) // P1 round (#63): a camera card goes through the Media Browser
+                continue;
+            sorted.folderUrls.append(QUrl::fromLocalFile(info.absoluteFilePath()));
             if (!sorted.truncated)
                 sortFolder(QDir(info.absoluteFilePath()), 1, sorted);
             continue;
@@ -1319,6 +1358,10 @@ QVariantMap HomeBridge::classifyImport(const QList<QUrl>& files) const {
     if (sorted.truncated) {
         notes << tr("Only the first %n files of the folders were looked at.", "", kMaxFolderFiles);
     }
+    if (sorted.hidden > 0) {
+        notes << tr("%n hidden file(s) or folder(s) in the folders were left out.", "", sorted.hidden);
+    }
+    notes << sorted.cardsLeftOut;
 
     QUrl firstVideo;
     for (const QVariant& entry : sorted.media) {
@@ -1346,6 +1389,7 @@ QVariantMap HomeBridge::classifyImport(const QList<QUrl>& files) const {
         {QStringLiteral("folders"), sorted.folders},
         {QStringLiteral("skipped"), sorted.skipped},
         {QStringLiteral("truncated"), sorted.truncated},
+        {QStringLiteral("folderUrls"), sorted.folderUrls},
     };
 }
 
@@ -1699,7 +1743,7 @@ QVariantList HomeBridge::importSources() const {
 }
 
 QStringList HomeBridge::timelineNameFilters() const {
-    return {tr("Timelines (*.xml *.fcpxml *.otio *.edl *.prproj)"), tr("All files (*)")};
+    return {tr("Timelines (*.xml *.fcpxml *.otio *.edl *.prproj *.aaf *.omf)"), tr("All files (*)")};
 }
 
 QUrl HomeBridge::websiteUrl() const {
@@ -1755,6 +1799,267 @@ QVariantList HomeBridge::links() const {
                                {QStringLiteral("url"), guideUrl(QString::fromLatin1(link.page))}});
     }
     return out;
+}
+
+// ---- The project's files (P1 round, #49) ----------------------------------------------------------------------------
+
+namespace {
+
+HomeBridge::Trasher& trashOverride() {
+    static HomeBridge::Trasher instance;
+    return instance;
+}
+
+/// The platform's recycle bin (Windows), Trash (macOS) or freedesktop Trash (Linux and others): QFile::moveToTrash.
+/// Where there is none the move fails, and nothing is deleted for good.
+bool moveToTrash(const QString& path, QString* inTrash) {
+    if (trashOverride())
+        return trashOverride()(path, inTrash);
+    QString where;
+    const bool moved = QFile::moveToTrash(path, &where);
+    if (inTrash)
+        *inTrash = where;
+    return moved;
+}
+
+/// A file Undo takes back out of the trash leaves no record there: Windows keeps "$I..." next to its "$R..." file, the
+/// freedesktop Trash "info/<name>.trashinfo" next to "files/<name>" (macOS keeps none).
+void forgetTrashRecord(const QString& inTrash) {
+    const QFileInfo info(inTrash);
+#if defined(Q_OS_WIN)
+    if (info.fileName().startsWith(QLatin1String("$R")))
+        QFile::remove(info.dir().filePath(QStringLiteral("$I") + info.fileName().mid(2)));
+#elif !defined(Q_OS_MACOS)
+    QDir files = info.dir();
+    if (files.dirName() == QLatin1String("files") && files.cdUp())
+        QFile::remove(files.filePath(QStringLiteral("info/") + info.fileName() + QStringLiteral(".trashinfo")));
+#else
+    Q_UNUSED(info)
+#endif
+}
+
+/// Renames a file or a folder.
+bool renamePath(const QString& from, const QString& to) {
+    return QDir().rename(from, to);
+}
+
+/// "Recycle Bin" on Windows, "Trash" elsewhere.
+QString trashName() {
+#if defined(Q_OS_WIN)
+    return HomeBridge::tr("Recycle Bin");
+#else
+    return HomeBridge::tr("Trash");
+#endif
+}
+
+/// What a sidecar of the project at `oldPath` is called next to the project at `newPath`: "<new>.autosave2" for
+/// "<old>.autosave2", "<new stem> Preview Files" for the preview folder.
+QString renamedSidecar(const QString& sidecar, const QString& oldPath, const QString& newPath) {
+    const QFileInfo side(sidecar);
+    const QString previews = QString::fromStdU16String(editor::previewFolderFor(fsPath(oldPath)).u16string());
+    if (samePath(side.absoluteFilePath(), previews))
+        return QString::fromStdU16String(editor::previewFolderFor(fsPath(newPath)).u16string());
+    return newPath + side.fileName().mid(QFileInfo(oldPath).fileName().size());
+}
+
+} // namespace
+
+void HomeBridge::setTrasher(Trasher trasher) { trashOverride() = std::move(trasher); }
+
+QStringList HomeBridge::sidecarsOf(const QString& projectPath) {
+    QStringList out;
+    const QFileInfo project(projectPath);
+    if (project.fileName().isEmpty())
+        return out;
+    const QDir dir(project.absolutePath());
+    const QString name = project.fileName();
+    // "<name>.autosave", "<name>.autosave2", ... (rotated autosaves), "<name>.bak1".. (backups) and "<name>.lock".
+    const QStringList entries = dir.entryList(QDir::Files | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot);
+    for (const QString& entry : entries) {
+#ifdef Q_OS_WIN
+        constexpr Qt::CaseSensitivity sensitivity = Qt::CaseInsensitive;
+#else
+        constexpr Qt::CaseSensitivity sensitivity = Qt::CaseSensitive;
+#endif
+        if (entry.size() <= name.size() + 1 || !entry.startsWith(name + QLatin1Char('.'), sensitivity))
+            continue;
+        const QString rest = entry.mid(name.size() + 1);
+        const auto digitsFrom = [&](qsizetype at) {
+            for (qsizetype i = at; i < rest.size(); ++i) {
+                if (!rest[i].isDigit())
+                    return false;
+            }
+            return true;
+        };
+        const bool autosave = rest.startsWith(QLatin1String("autosave"), Qt::CaseInsensitive) && digitsFrom(8);
+        const bool backup = rest.size() > 3 && rest.startsWith(QLatin1String("bak"), Qt::CaseInsensitive) && digitsFrom(3);
+        const bool lock = rest.compare(QLatin1String("lock"), Qt::CaseInsensitive) == 0;
+        if (autosave || backup || lock)
+            out << dir.filePath(entry);
+    }
+    // "<stem> Preview Files" next to it (render previews: editor::previewFolderFor).
+    const QString previews = QString::fromStdU16String(editor::previewFolderFor(fsPath(project.absoluteFilePath())).u16string());
+    if (QFileInfo(previews).isDir())
+        out << previews;
+    return out;
+}
+
+QString HomeBridge::projectBlocker(const QUrl& file) const {
+    const QFileInfo info(localPath(file));
+    const QString name = info.completeBaseName();
+    if (!info.isFile())
+        return tr("%1 is missing: use Locate… to find it first").arg(name);
+    if (m_lifecycle && m_lifecycle->indexOfProject(QUrl::fromLocalFile(info.absoluteFilePath())) >= 0)
+        return tr("%1 is open: close it first (File > Close Project)").arg(name);
+    if (const auto lock = editor::readProjectLock(fsPath(info.absoluteFilePath())); lock && editor::heldByOther(*lock))
+        return tr("%1 is open in another Wabcut (%2)").arg(name, QString::fromStdString(lock->owner()));
+    return {};
+}
+
+QString HomeBridge::validateRename(const QUrl& file, const QString& newName) const {
+    if (const QString why = projectBlocker(file); !why.isEmpty())
+        return why;
+    const QFileInfo info(localPath(file));
+    const QString trimmed = newName.trimmed();
+    const QUrl folder = QUrl::fromLocalFile(info.absolutePath());
+    const QString target = projectUrl(trimmed, folder).toLocalFile();
+    if (trimmed == info.completeBaseName())
+        return tr("Type a new name");
+    // A new spelling of the same name (case only, where file names ignore case) is the same file: allowed.
+    const bool sameFileAgain = samePath(target, info.absoluteFilePath());
+    if (const QString why = validateProject(trimmed, folder);
+        !why.isEmpty() && !(sameFileAgain && why == tr("“%1” already exists in this folder").arg(trimmed)))
+        return why;
+    for (const QString& sidecar : sidecarsOf(info.absoluteFilePath())) {
+        const QString renamed = renamedSidecar(sidecar, info.absoluteFilePath(), target);
+        if (!sameFileAgain && QFileInfo::exists(renamed))
+            return tr("“%1” is already in this folder").arg(QFileInfo(renamed).fileName());
+    }
+    return {};
+}
+
+QVariantMap HomeBridge::renameProject(const QUrl& file, const QString& newName) {
+    QVariantMap out{{QStringLiteral("ok"), false}, {QStringLiteral("error"), QString()}, {QStringLiteral("warning"), QString()}};
+    if (const QString why = validateRename(file, newName); !why.isEmpty()) {
+        out.insert(QStringLiteral("error"), why);
+        return out;
+    }
+    const QFileInfo info(localPath(file));
+    const QString oldPath = info.absoluteFilePath();
+    const QString newPath = projectUrl(newName.trimmed(), QUrl::fromLocalFile(info.absolutePath())).toLocalFile();
+    const QStringList sidecars = sidecarsOf(oldPath);
+    // The project file first: when it cannot move, nothing has changed.
+    if (!renamePath(oldPath, newPath)) {
+        out.insert(QStringLiteral("error"), tr("%1 cannot be renamed: it may be in use, or the folder is read-only")
+                                                .arg(info.completeBaseName()));
+        return out;
+    }
+    QStringList stayed;
+    for (const QString& sidecar : sidecars) {
+        if (!renamePath(sidecar, renamedSidecar(sidecar, oldPath, newPath)))
+            stayed << QFileInfo(sidecar).fileName();
+    }
+    // The recent entry follows, in its place (as Locate does); so does Reopen the last project.
+    const QVariantMap located = locateProject(QUrl::fromLocalFile(oldPath), QUrl::fromLocalFile(newPath));
+    QSettings settings;
+    if (samePath(settings.value(QStringLiteral("project/lastFile")).toString(), oldPath))
+        settings.setValue(QStringLiteral("project/lastFile"), QDir::fromNativeSeparators(newPath));
+    out = located;
+    out.insert(QStringLiteral("warning"),
+               stayed.isEmpty() ? QString() : tr("These files kept the old name: %1").arg(stayed.join(QStringLiteral(", "))));
+    return out;
+}
+
+QString HomeBridge::duplicateName(const QUrl& file) const {
+    const QFileInfo info(localPath(file));
+    //: The name of a duplicated project, e.g. "Trailer copy"
+    return uniqueProjectName(tr("%1 copy").arg(info.completeBaseName()), QUrl::fromLocalFile(info.absolutePath()));
+}
+
+QVariantMap HomeBridge::duplicateProject(const QUrl& file, const QString& newName) {
+    QVariantMap out{{QStringLiteral("ok"), false}, {QStringLiteral("error"), QString()}};
+    const QFileInfo info(localPath(file));
+    if (!info.isFile()) {
+        out.insert(QStringLiteral("error"), tr("%1 is missing: use Locate… to find it first").arg(info.completeBaseName()));
+        return out;
+    }
+    const QUrl folder = QUrl::fromLocalFile(info.absolutePath());
+    if (const QString why = validateProject(newName, folder); !why.isEmpty()) {
+        out.insert(QStringLiteral("error"), why);
+        return out;
+    }
+    // Read and saved again (not a file copy): a valid project, and no backups, autosaves, lock or previews with it. It
+    // stays in the same folder, so the media's relative paths still hold.
+    auto state = io::loadProject(fsPath(info.absoluteFilePath()));
+    if (!state) {
+        out.insert(QStringLiteral("error"), tr("%1 cannot be read: %2")
+                                                .arg(info.completeBaseName(), QString::fromStdString(state.error().message)));
+        return out;
+    }
+    const QString newPath = projectUrl(newName.trimmed(), folder).toLocalFile();
+    if (auto saved = io::saveProject(*state, fsPath(newPath), io::SaveOptions{0}); !saved) {
+        out.insert(QStringLiteral("error"), tr("The copy cannot be saved: %1").arg(QString::fromStdString(saved.error().message)));
+        return out;
+    }
+    rememberProject(QUrl::fromLocalFile(newPath));
+    out.insert(QStringLiteral("ok"), true);
+    out.insert(QStringLiteral("url"), QUrl::fromLocalFile(newPath));
+    out.insert(QStringLiteral("path"), QDir::toNativeSeparators(newPath));
+    out.insert(QStringLiteral("name"), QFileInfo(newPath).completeBaseName());
+    return out;
+}
+
+QVariantMap HomeBridge::trashProject(const QUrl& file) {
+    QVariantMap out{{QStringLiteral("ok"), false}, {QStringLiteral("error"), QString()}, {QStringLiteral("warning"), QString()}};
+    if (const QString why = projectBlocker(file); !why.isEmpty()) {
+        out.insert(QStringLiteral("error"), why);
+        return out;
+    }
+    const QFileInfo info(localPath(file));
+    const QString path = info.absoluteFilePath();
+    const QStringList sidecars = sidecarsOf(path);
+    m_trashed.clear();
+    m_trashError.clear();
+    // The project file first: when it cannot go (no trash on that drive), nothing went.
+    QString where;
+    if (!moveToTrash(path, &where)) {
+        out.insert(QStringLiteral("error"), tr("%1 cannot be moved to the %2, so it was kept.").arg(info.completeBaseName(), trashName()));
+        return out;
+    }
+    m_trashed.append({path, where});
+    QStringList stayed;
+    for (const QString& sidecar : sidecars) {
+        QString moved;
+        if (moveToTrash(sidecar, &moved))
+            m_trashed.append({sidecar, moved});
+        else
+            stayed << QFileInfo(sidecar).fileName();
+    }
+    removeRecent(QUrl::fromLocalFile(path)); // Undo (undoTrash) puts the entry back too
+    out.insert(QStringLiteral("ok"), true);
+    out.insert(QStringLiteral("name"), info.completeBaseName());
+    out.insert(QStringLiteral("moved"), static_cast<int>(m_trashed.size()));
+    out.insert(QStringLiteral("warning"),
+               stayed.isEmpty() ? QString() : tr("These files stayed in the folder: %1").arg(stayed.join(QStringLiteral(", "))));
+    return out;
+}
+
+bool HomeBridge::undoTrash() {
+    if (m_trashed.isEmpty())
+        return false;
+    QStringList failed;
+    for (const auto& [original, inTrash] : std::as_const(m_trashed)) {
+        if (inTrash.isEmpty() || !QFileInfo::exists(inTrash) || QFileInfo::exists(original) || !renamePath(inTrash, original)) {
+            failed << QFileInfo(original).fileName();
+            continue;
+        }
+        forgetTrashRecord(inTrash);
+    }
+    m_trashed.clear();
+    undoRemoveRecent();
+    m_trashError = failed.isEmpty() ? QString()
+                                    : tr("Restore these from the %1 yourself: %2").arg(trashName(), failed.join(QStringLiteral(", ")));
+    return failed.isEmpty();
 }
 
 } // namespace wabcut::app

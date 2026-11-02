@@ -433,6 +433,48 @@ TEST_CASE("highlights.find marks the best moments of a sequence in one undo step
     CHECK(bare.errorOf("highlights.find", Json::object()) == "InvalidRequest");
 }
 
+// 0.6 (P1 #56): the stream titles OBS writes say which stream is the mic, the game, a friend on Discord or music.
+TEST_CASE("highlights.find takes the audio roles from the stream titles and audioRoles corrects them",
+          "[ai][highlights][commands]") {
+    // The synthetic recording's stream 0 is game audio, stream 1 the player's voice (the classifier's pick).
+    const auto rolesWith = [](std::vector<std::string> titles, Json params) {
+        Timeline tl = gameplayTimeline();
+        for (MediaPtr& media : tl.state.media) {
+            if (media->id != tl.media('A'))
+                continue;
+            MediaItem titled = *media;
+            REQUIRE(titled.info.audio.size() == titles.size());
+            for (std::size_t i = 0; i < titles.size(); ++i)
+                titled.info.audio[i].title = titles[i];
+            media = std::make_shared<const MediaItem>(std::move(titled));
+        }
+        auto provider = std::make_shared<MapHighlightProvider>();
+        provider->add(tl.media('A'), gameplayMeasurement());
+        CommandHarness h(std::move(tl), Fixture::policy(provider, std::make_shared<ai::analysis::MapAnalysisProvider>()),
+                         ai::edit::editingCommands());
+        params["count"] = 3;
+        const auto r = h.ok("highlights.find", params);
+        return r.data["recordings"][0]["audioRoles"];
+    };
+    // No titles: as before.
+    CHECK(rolesWith({"", ""}, Json::object()) == Json::array({"game", "mic"}));
+    // The titles win over the sound: OBS's Mic/Aux is the mic even when the other stream sounds more like a voice.
+    CHECK(rolesWith({"Mic/Aux", "Desktop Audio"}, Json::object()) == Json::array({"mic", "game"}));
+    // Discord and Music are left out; an untitled stream keeps the classified role.
+    CHECK(rolesWith({"Discord", ""}, Json::object()) == Json::array({"ignore", "mic"}));
+    CHECK(rolesWith({"Game", "Discord"}, Json::object()) == Json::array({"game", "ignore"}));
+    CHECK(rolesWith({"Alerts", "Music"}, Json::object()) == Json::array({"game", "ignore"}));
+    // A titled mic: an untitled stream the classifier took for the voice is game.
+    CHECK(rolesWith({"Mic 2", ""}, Json::object()) == Json::array({"mic", "game"}));
+    // Unrecognised titles ("Track 2", a custom name) keep the classified role.
+    CHECK(rolesWith({"Track1", "My stream"}, Json::object()) == Json::array({"game", "mic"}));
+    // audioRoles corrects them stream by stream; "auto" keeps a stream's own role.
+    CHECK(rolesWith({"Mic/Aux", "Desktop Audio"}, Json{{"audioRoles", Json::array({"auto", "mixed"})}}) ==
+          Json::array({"mic", "mixed"}));
+    CHECK(rolesWith({"Discord", ""}, Json{{"audioRoles", Json::array({"mic", "ignore"})}}) ==
+          Json::array({"mic", "ignore"}));
+}
+
 TEST_CASE("highlights.importChat keeps a chat log that highlights.find then counts", "[ai][highlights][commands]") {
     Fixture fx;
     const auto dir = std::filesystem::temp_directory_path() / "wabcut-highlights-chat";

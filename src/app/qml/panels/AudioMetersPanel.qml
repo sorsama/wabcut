@@ -220,7 +220,8 @@ Panel {
             font.family: Theme.fontMono
             font.pixelSize: Theme.textXs
             Accessible.role: Accessible.StaticText
-            Accessible.name: qsTr("Peak %1 dB").arg(meter.peakText)
+            // P1 #61: no "Peak  dB" while there is no signal yet.
+            Accessible.name: meter.peakText !== "" ? qsTr("Peak %1 dB").arg(meter.peakText) : qsTr("Peak: no signal")
         }
     }
 }

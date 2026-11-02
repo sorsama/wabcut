@@ -30,6 +30,10 @@
 //     project with the vertical-1080x1920 preset (ExportController.queueExport).
 //   * available: the catalog has highlights.find (G.2). Until then the panel says highlights arrive with the next
 //     engine update.
+//   * 0.6 (D2 #9): makeShortFromRange(start, end, options) makes the same highlights.toShort of ANY range of the current
+//     sequence (makeShortFromInOut: the sequence's In and Out marks), so a moment the editor marked becomes a 9:16 Short
+//     without running the find. Its title is the first marker inside the range, else "<sequence> <In TC>"; the options it
+//     is not given are the Short options' last used ones (settings). Its keymap id is sequence.makeShortFromInOut.
 
 #include <wabcut/model/Ids.h>
 #include <wabcut/model/Sequence.h>
@@ -181,8 +185,14 @@ public:
     Q_INVOKABLE QString importChat(const QString& fileOrUrl);
     /// highlights.find's parameters for `options` { signals: [..], count, minScore, minGap, chatDelay, keywords: [..] },
     /// clamped to the command's ranges, with the current sequence (and chatOffset when it changed since the
-    /// chat log was imported).
+    /// chat log was imported). 0.6 (P1 #56): audioRoles: [..] by stream ("auto", "game", "mic", "mixed", "ignore"; any
+    /// other entry counts as "auto"), sent only when one is not "auto" (trailing "auto" entries dropped).
     Q_INVOKABLE QVariantMap findParams(const QVariantMap& options) const;
+    /// 0.6 (P1 #56): the audio streams of the current sequence's recording (the video media of its clips with the most
+    /// audio streams): [{ index, title (the stream's title, "" untitled), name (its track name: "Mic", "Game",
+    /// "Discord", "Track 2"...), named (the role its title gives: "mic", "game", "ignore", or "" for none), found (the
+    /// role the last find used for it on this sequence, "" when none) }], [] without a recording.
+    Q_INVOKABLE QVariantList audioStreams() const;
     /// Runs highlights.find as a job. "" or why not.
     Q_INVOKABLE QString find(const QVariantMap& options = {});
     /// Stops the running job at its next checkpoint (nothing is changed).
@@ -205,11 +215,23 @@ public:
     /// titleSeconds, captions, hookTitle, normalize; 0.4: handleBefore, handleAfter (lead-in and tail, 0..30 s),
     /// minLength (0..180 s: the missing time is added two thirds before, one third after), captionPreset (with
     /// captions) }, clamped to layout.apply's ranges and the sequence.
-    Q_INVOKABLE QVariantMap shortParams(int rank, const QVariantMap& options) const;
-    Q_INVOKABLE QString makeShort(int rank, const QVariantMap& options = {});
+    Q_INVOKABLE QVariantMap shortParams(int rank, const QVariantMap& options) const;    Q_INVOKABLE QString makeShort(int rank, const QVariantMap& options = {});
     /// 0.4: highlights.toShort for every moment reelMoments() lists (time order), shortParams(rank, options) each, as
     /// ONE job and ONE undo step "Make Highlight Shorts"; stays on the source sequence. "" or why not. job() == "shorts".
     Q_INVOKABLE QString makeShorts(const QVariantMap& options = {});
+    /// 0.6 (D2 #9): a Short of a range of the current sequence, without a highlight find: the same highlights.toShort as
+    /// shortParams builds (layout, facecam and its region, split, blur, zoom, captions, hook title, normalize, lead-in,
+    /// tail, minimum length, caption style) for `startSeconds`..`endSeconds`, titled by the first marker inside the range,
+    /// else "<sequence> <In TC>". The options it does not get are HighlightShortOptions' last-used ones from the settings
+    /// (Settings > the Short options). Runs the same job and opens the new sequence. "" or why not.
+    Q_INVOKABLE QString makeShortFromRange(double startSeconds, double endSeconds, const QVariantMap& options = {});
+    /// makeShortFromRange of the sequence's markIn / markOut (both needed: "Set In and Out first"). The Short from In to
+    /// Out command's id is sequence.makeShortFromInOut.
+    Q_INVOKABLE QString makeShortFromInOut(const QVariantMap& options = {});
+    /// 0.6 (D2 #9): the ids this bridge answers ({ handled, enabled, reason }; {} for any other id), for the menu bar and
+    /// the palette.
+    static bool handlesCommand(const QString& commandId);
+    Q_INVOKABLE QVariantMap commandAvailability(const QString& commandId) const;
     /// 0.4: queues the Shorts the last makeShorts() made that are still in the project (preset vertical-1080x1920;
     /// videoCodec hevc when `hevc`). Returns how many were queued.
     Q_INVOKABLE int exportShorts(bool hevc);
@@ -256,6 +278,9 @@ private:
         QVariantList signalBars;
     };
     using ReviewKey = std::tuple<std::uint64_t, std::int64_t, std::int64_t>; ///< sequence, marker start, marker end
+    /// highlights.toShort's parameters for a range of `sequence` (shortParams' body; 0.6 makeShortFromRange too).
+    QVariantMap shortParamsFor(SequenceId sequence, double start, double end, const QString& title,
+                               const QVariantMap& options) const;
     using Done = std::function<void(const command::CommandResult& result, bool stale)>;
     /// 0.4: per request, in order (a step not run: not in the list); `cancelled`: Cancel stopped the batch.
     using DoneMany = std::function<void(const std::vector<command::CommandResult>& results, bool stale, bool cancelled)>;

@@ -13,6 +13,7 @@
 #include <wabcut/model/Graphics.h>
 #include <wabcut/model/ProjectState.h>
 
+#include <functional>
 #include <optional>
 #include <span>
 #include <string>
@@ -44,6 +45,44 @@ EditOutcome updateGraphicLayer(const ProjectState& state, SequenceId sequence, C
                                GraphicLayer layer);
 /// Removes a layer (a group with its children). Pins to it and template fields bound to it go too.
 EditOutcome removeGraphicLayer(const ProjectState& state, SequenceId sequence, ClipId clip, std::uint32_t layerId);
+
+// ---- Layer parameters (0.6: Effect Controls' Text section) ------------------------------------------------------------
+
+/// A keyframable number of a graphic layer, by path: edit::ParamRef::ofLayer(layer, path) lets the clip parameter edits
+/// (setParameter, addKeyframe, setAnimated, setKeyframe ... in FinishingOps.h) edit it like a clip's, in graphic time
+/// (GraphicResolve.h graphicTimeAt). Paths:
+///   transform.x / y / anchorX / anchorY / scaleX / scaleY / rotation / opacity   the layer's LayerTransform
+///   transform.scale         uniform scale: reads scaleX, writes scaleX and scaleY
+///   text.fontSize / tracking / leading / baselineShift   the text as a whole (TextContent::sizeKeys ...): a constant
+///                           sets every run of every Source Text version (sizes in proportion to the first run's, the
+///                           others by the same amount), a curve keys them
+///   text.stroke<n>.width    the width of text stroke n (0-based)
+///   text.source             Source Text keys (TextContent::sourceKey): stored as hold keys, versions no key shows are
+///                           dropped; a constant k makes version k the layer's runs (the stopwatch turned off)
+struct LayerParamInfo {
+    double minValue = 0.0;
+    double maxValue = 0.0;
+    double defaultValue = 0.0;
+};
+/// The range of a layer parameter path for `layer` (nullopt: not one of its parameters).
+std::optional<LayerParamInfo> layerParamInfo(const GraphicLayer& layer, std::string_view path);
+/// The value of `path` on `layer` (nullopt: not one of its parameters).
+std::optional<ParamValue> layerParam(const GraphicLayer& layer, std::string_view path);
+/// Stores `value` as `path` of `layer` (see above); false when it is not one of its parameters.
+bool setLayerParam(GraphicLayer& layer, std::string_view path, ParamValue value);
+
+/// 0.6: changes the runs a text layer shows at graphic time `time` (Premiere's Source Text): with Source Text keys, the
+/// version of the key at `time` (a new hold key there, holding a copy of the runs shown, when there is none); without,
+/// the layer's runs. `edit` returns false to change nothing (then nothing is added either). Returns whether it changed.
+bool editSourceRunsAt(TextContent& text, Ticks time, const std::function<bool(std::vector<TextRun>&)>& edit);
+/// 0.6: applies `edit` to every run of every Source Text version of a text layer (appearance: fill colour, size).
+void editAllRuns(TextContent& text, const std::function<void(TextRun&)>& edit);
+/// 0.6 (fix F1A): pastes Source Text keys that carry their own text (Effect Controls' keyframe clipboard): the key
+/// keys[i] (graphic time; its value is ignored) shows texts[i], kept as a version of this layer (an identical version is
+/// shared). A key already at the same time is replaced; keys stay hold keys and versions no key shows are dropped, as
+/// setLayerParam does. False (nothing changed) when the sizes differ or the layer would need more than kMaxTextSources
+/// versions.
+bool pasteSourceTextKeys(TextContent& text, std::span<const Keyframe> keys, std::span<const std::vector<TextRun>> texts);
 
 // ---- Animation presets ------------------------------------------------------------------------------------------------
 

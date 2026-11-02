@@ -2,6 +2,7 @@
 
 #include <wabcut/color/ColorSpaces.h>
 #include <wabcut/render/EffectLibrary.h>
+#include <wabcut/render/reference/LibraryGeometry.h>
 
 #include <QColor>
 #include <QFloat16>
@@ -30,8 +31,11 @@ struct LayerUniforms {
     float params[4];
     std::int32_t mode[4];
     float cm[4]; ///< I.9: x = HLG system gamma - 1, y = input LUT size
+    /// 0.6 (#72): x = gamut compression strength (0 = none), y = Minimal Tone Mapping's roll-off white (0 = none), z = 1
+    /// to keep working values below 0 (gamut compression on)
+    float post[4];
 };
-static_assert(sizeof(LayerUniforms) == 272);
+static_assert(sizeof(LayerUniforms) == 288);
 
 struct OutputUniforms {
     float cornerToClip[16];
@@ -39,8 +43,14 @@ struct OutputUniforms {
     std::int32_t mode[4];
     float toOutput[16]; ///< I.9: working -> Rec.2020 (PQ, HLG)
     float cm[4];        ///< I.9: reference white, HLG peak, HLG system gamma, output LUT size
+    /// 0.6 (#72) SDR Conform: working -> Rec.2020; conform0 = paper white / target peak, the source peak in those
+    /// units, the operator, the gamut mapping; conform1 = legal range, the target peak (nits), the before side's
+    /// output kind of a split preview (-1: none), the split (a fraction of the canvas width)
+    float conformIn[16];
+    float conform0[4];
+    float conform1[4];
 };
-static_assert(sizeof(OutputUniforms) == 176);
+static_assert(sizeof(OutputUniforms) == 272);
 
 // shaders/fx.vert + fx.frag
 struct FxUniforms {
@@ -222,6 +232,9 @@ enum FxMode : std::int32_t {
 /// Offscreen passes an effect needs (uniform slots are reserved up front).
 int fxPassCount(const LayerEffect& effect) {
     if (effect.type == EffectType::Library) {
+        if (effect.op == static_cast<std::uint16_t>(LibraryOp::PaintBucket)) {
+            return 41; // 0.6: runs (1 + 11 doublings), the fill point, 24 propagations, the mask, a blur's two, the fill
+        }
         return 6; // the most a library effect plans (a key's matte, morphology, two blur passes, apply)
     }
     switch (effect.type) {
@@ -291,6 +304,7 @@ constexpr std::int32_t kOutHlg = 4;
 constexpr std::int32_t kOutLut = 5;
 constexpr std::int32_t kOutToneMap = 6;
 constexpr std::int32_t kOutRec709Matrix = 7; // 0.2: Wide Gamut (No Tone Mapping)
+constexpr std::int32_t kOutConform = 8;      // 0.6 (#72): SDR Conform
 // layer.frag mode.y of a managed input plan.
 constexpr std::int32_t kTfPq = 5;
 constexpr std::int32_t kTfPqSdr = 8;  // I.9 (gaming): an HDR capture tone-mapped into an SDR project
@@ -483,6 +497,7 @@ void Compositor::setPreviewDivisor(int divisor) {
 }
 
 void Compositor::releaseResources() {
+    m_strokeTextures.clear();
     m_nestedSrbs.clear();
     m_children.clear(); // each child releases its own resources
     m_maskSrbs.clear();
@@ -1670,6 +1685,14 @@ std::expected<CompositeStats, Error> Compositor::renderImpl(QRhiCommandBuffer* c
         }
     }
 
+    if (m_frameCounter % 64 == 0 && !m_strokeTextures.empty()) { // 0.6: stroke lists of effects no longer drawn
+        const auto before = m_strokeTextures.size();
+        std::erase_if(m_strokeTextures, [&](const auto& e) { return e.second->lastUsedFrame + 256 < m_frameCounter; });
+        if (m_strokeTextures.size() != before) {
+            m_fxSrbs.clear(); // they may name the textures just dropped
+        }
+    }
+
     // ---- Layers: import + uniforms ----
     m_importer.beginFrame();
     ++m_frameCounter;
@@ -1683,6 +1706,7 @@ std::expected<CompositeStats, Error> Compositor::renderImpl(QRhiCommandBuffer* c
         evictMotionTextures(); // P.2: flow mixes no longer drawn
     }
     std::size_t nestedIndex = 0;
+    bool importedMedia = false; // F2P (0.6): a media frame went through the importer this frame
     std::vector<int> placementOf(static_cast<std::size_t>(layerCount), -1);
     // Track Matte Keys (0.1.2): each matte's composite on a canvas like this one, by (layer, effect index).
     std::map<std::pair<int, std::size_t>, QRhiTexture*> matteTextures;
@@ -1742,8 +1766,10 @@ std::expected<CompositeStats, Error> Compositor::renderImpl(QRhiCommandBuffer* c
                 frameView.keepAlive = keepAlive;
             }
             imported = m_importer.import(frameView, updates);
+            importedMedia = true;
         } else {
             imported = m_importer.import(layer.frame, updates, keepAlive);
+            importedMedia = true;
         }
         if (!imported) {
             ++stats.layersFailed;
@@ -1816,6 +1842,8 @@ std::expected<CompositeStats, Error> Compositor::renderImpl(QRhiCommandBuffer* c
         }
         u.mode[2] |= (layer.fieldMode & 3) << 3; // 0.2 field options: deinterlacing or Flicker Removal (layer.frag)
         u.mode[3] = layer.nested ? 1 : 0; // a nested canvas is float: keep what is above 1 (I.9)
+        // 0.6 (#72): with gamut compression the canvas keeps working values below 0 (a grade can bring them back).
+        u.post[2] = colorPipeline.management.compressesGamut() ? 1.0f : 0.0f;
         // Colour management (I.9, 0.2): the layer's input colour space into the working space (a nested canvas is
         // already there). Managed working spaces read every layer through a plan (Auto follows the frame's tags).
         // Direct Rec.709 reads code values as they are (byte for byte), except HDR media (PQ / HLG tags or override:
@@ -1837,6 +1865,10 @@ std::expected<CompositeStats, Error> Compositor::renderImpl(QRhiCommandBuffer* c
         if (planned) {
             const InputColorSpace space = *planned;
             const auto plan = color::planInput(colorPipeline.management, space, color.range == ColorRange::Limited, layer.graphics);
+            if (plan) { // 0.6 (#72): a scene-referred layer's gamut compression and Minimal Tone Mapping's roll-off
+                u.post[0] = static_cast<float>(plan->gamutStrength);
+                u.post[1] = static_cast<float>(plan->rolloffWhite);
+            }
             if (!plan) {
                 ++stats.colorPlanErrors;
             } else if (plan->kind == color::InputPlan::Kind::ToneMapSdr) {
@@ -1891,6 +1923,15 @@ std::expected<CompositeStats, Error> Compositor::renderImpl(QRhiCommandBuffer* c
     }
     stats.layersDrawn += static_cast<int>(m_placements.size()); // plus those inside nested composites
     stats.bytesUploaded += m_importer.stats().bytesUploaded - bytesBefore;
+    if (!importedMedia) {
+        // F2P (0.6): no media in this picture (black, titles only: e.g. the monitor once a project closed): let go of
+        // the views of decoder surfaces the GPU is done with, and of their bindings, instead of keeping the closed
+        // project's decoder surface arrays for the hundreds of frames an idle monitor may never draw.
+        m_importer.dropIdleNativeViews();
+        if (!m_importer.holdsFrames()) {
+            m_nativeSrbs.clear();
+        }
+    }
 
     // ---- Effects and transitions: offscreen passes into intermediates ----
     // Plan first (uniforms go into the same batch), record afterwards.
@@ -2425,6 +2466,49 @@ std::expected<CompositeStats, Error> Compositor::renderImpl(QRhiCommandBuffer* c
     };
     int currentLayer = -1; // the composite layer being planned (mask owners)
 
+    // 0.6 Lightning / Scribble: a packed stroke list as an RGBA32F data texture of `owner` (grown, never shrunk; the
+    // upload skipped while the strokes stay the same).
+    const auto strokeTexture = [&](const reference::StrokeTexture& packed, std::uint64_t owner) -> QRhiTexture* {
+        std::unique_ptr<StrokeData>& slot = m_strokeTextures[owner];
+        if (!slot) {
+            slot = std::make_unique<StrokeData>();
+        }
+        if (!slot->texture || slot->size.width() < packed.width || slot->size.height() < packed.height) {
+            if (slot->texture) {
+                QRhiTexture* old = slot->texture.get();
+                std::erase_if(m_fxSrbs, [&](const auto& entry) { return entry.first.first == old || entry.first.second == old; });
+            }
+            const QSize size(std::max(packed.width, slot->size.width()), std::max(packed.height, slot->size.height()));
+            slot->texture.reset(m_rhi->newTexture(QRhiTexture::RGBA32F, size));
+            if (!slot->texture->create()) {
+                slot->texture.reset();
+                slot->size = QSize();
+                return nullptr;
+            }
+            slot->size = size;
+            slot->content = 0;
+        }
+        std::uint64_t hash = 1469598103934665603ull ^ static_cast<std::uint64_t>(packed.height);
+        for (const float v : packed.texels) {
+            std::uint32_t bits = 0;
+            std::memcpy(&bits, &v, sizeof bits);
+            hash = (hash ^ bits) * 1099511628211ull;
+        }
+        hash = hash == 0 ? 1 : hash;
+        if (hash != slot->content) {
+            std::vector<float> texels(static_cast<std::size_t>(slot->size.width()) * static_cast<std::size_t>(slot->size.height()) * 4,
+                                      0.0f);
+            std::copy(packed.texels.begin(), packed.texels.end(), texels.begin()); // the same row width
+            updates->uploadTexture(slot->texture.get(),
+                                   QRhiTextureUploadDescription(QRhiTextureUploadEntry(
+                                       0, 0, QRhiTextureSubresourceUploadDescription(texels.data(),
+                                                                                     static_cast<quint32>(texels.size() * sizeof(float))))));
+            slot->content = hash;
+        }
+        slot->lastUsedFrame = m_frameCounter;
+        return slot->texture.get();
+    };
+
     // ---- The effect library (0.2, EffectLibrary.h): family shaders, LayerEffect::params as p0..p7 ----
     const auto libraryUniforms = [&](std::uint16_t op, const LayerEffect& e, const Placement& placement) {
         FxUniforms u = fxBase(kFxLibrary);
@@ -2445,7 +2529,7 @@ std::expected<CompositeStats, Error> Compositor::renderImpl(QRhiCommandBuffer* c
     // blur or key first (their CPU twins in render/reference: the same passes). `second`: its second picture (echoes,
     // text, another track's layer, an image), null when it has none. `in` itself when there is nothing to do.
     const auto applyLibrary = [&](Intermediate* in, const LayerEffect& e, const Placement& placement,
-                                  QRhiTexture* second) -> Intermediate* {
+                                  QRhiTexture* second, std::size_t effectIndex) -> Intermediate* {
         const auto op = static_cast<LibraryOp>(e.op);
         const int family = static_cast<int>(familyOf(op));
         const auto& q = e.params;
@@ -2460,6 +2544,130 @@ std::expected<CompositeStats, Error> Compositor::renderImpl(QRhiCommandBuffer* c
         switch (op) {
         case LibraryOp::None:
             return in;
+        case LibraryOp::Glow: {
+            // 0.6: the bright pass, blurred by Glow Radius / 2 (one axis for Horizontal or Vertical), composited.
+            Intermediate* bright = pass(0, in->texture.get(), nullptr);
+            if (!bright) {
+                return nullptr;
+            }
+            const double sigma = std::max(0.0, q[2]) / 2.0 / div;
+            const int dims = static_cast<int>(std::floor(q[14] + 0.5));
+            Intermediate* soft = bright;
+            if (sigma >= 0.05 && dims == 0) {
+                soft = blurOf(bright, sigma, false);
+                release(bright);
+            } else if (sigma >= 0.05) {
+                int lod = 0;
+                while (sigma / std::exp2(lod) > kMaxBlurSigma && lod < 8) {
+                    ++lod;
+                }
+                FxUniforms b = fxBase(kFxBlur);
+                storeVec4(b.p0, dims == 1 ? 1.0 : 0.0, dims == 1 ? 0.0 : 1.0, sigma, lod);
+                storeVec4(b.p1, 0.0, 0.0, 0.0, 0.0);
+                soft = fxPass(b, bright->texture.get(), nullptr, lod > 0 ? bright->texture.get() : nullptr);
+                release(bright);
+            }
+            if (!soft) {
+                return nullptr;
+            }
+            Intermediate* out = pass(1, in->texture.get(), soft->texture.get());
+            release(soft);
+            return out;
+        }
+        case LibraryOp::Lightning:
+        case LibraryOp::Scribble: {
+            // 0.6: the strokes (render/reference/LibraryGeometry.h, the CPU twins' too) in a data texture as tex1.
+            reference::LibraryParams params{};
+            std::copy(q.begin(), q.end(), params.begin());
+            const double fw = placement.frame.width;
+            const double fh = placement.frame.height;
+            std::vector<reference::StrokeSegment> segments;
+            reference::StrokeKind kind = reference::StrokeKind::Line;
+            double core = 0.0;
+            if (op == LibraryOp::Lightning) {
+                segments = reference::lightningStrokes(params, fw, fh);
+                kind = reference::StrokeKind::Glow;
+                core = q[19];
+            } else {
+                // Scribble's paths are its masks (their polygons through their transforms, in frame pixels).
+                std::vector<reference::LibraryPath> paths;
+                if (e.mask) {
+                    for (const MaskShapeSpec& shape : e.mask->shapes) {
+                        if (shape.polygon.size() < 3 || shape.matte) {
+                            continue;
+                        }
+                        const auto& m = shape.affine;
+                        reference::LibraryPath path;
+                        path.reserve(shape.polygon.size());
+                        for (const Vec2& v : shape.polygon) {
+                            path.push_back({(m[0] * v.x + m[1] * v.y + m[2]) * fw, (m[3] * v.x + m[4] * v.y + m[5]) * fh});
+                        }
+                        paths.push_back(std::move(path));
+                    }
+                }
+                segments = reference::scribbleStrokes(params, paths, fw, fh);
+            }
+            QRhiTexture* data = strokeTexture(reference::packStrokes(segments, kind, core),
+                                              maskOwner(placement.clipId, currentLayer, 4, effectIndex));
+            if (!data) {
+                outOfMemory = true;
+                return nullptr;
+            }
+            return pass(0, in->texture.get(), data);
+        }
+        case LibraryOp::PaintBucket: {
+            // 0.6: the flood fill in stages (fx_generate.frag OP_PAINT_BUCKET; CPU twin LibraryGenerate.cpp
+            // paintBucket): the run of similar texels in four directions by doubling (11), the fill point, 24
+            // propagations jumping 1 .. 1024 texels along a run, the mask, its softening, the fill composited.
+            const Vec2 point = placement.toCanvas.map({q[0] * placement.frame.width, q[1] * placement.frame.height});
+            const double tx = std::floor(point.x / div);
+            const double ty = std::floor(point.y / div);
+            const bool inside = tx >= 0.0 && ty >= 0.0 && tx < canvasPixels.width() && ty < canvasPixels.height();
+            const auto stage = [&](int s, QRhiTexture* in0, QRhiTexture* in1, double aux) {
+                FxUniforms u = libraryUniforms(e.op, e, placement);
+                u.mode[3] = s;
+                storeVec4(u.p7, aux, inside ? tx : 0.0, inside ? ty : 0.0, inside ? 1.0 : 0.0);
+                return fxPass(u, in0, in1, nullptr, family);
+            };
+            Intermediate* runs = stage(0, in->texture.get(), nullptr, 0.0);
+            for (int k = 0; runs && k <= 10; ++k) {
+                Intermediate* next = stage(1, runs->texture.get(), nullptr, std::exp2(k));
+                release(runs);
+                runs = next;
+            }
+            if (!runs) {
+                return nullptr;
+            }
+            Intermediate* fill = stage(2, runs->texture.get(), nullptr, 0.0);
+            for (int k = 0; fill && k < 24; ++k) {
+                Intermediate* next = stage(3, fill->texture.get(), runs->texture.get(), 0.0);
+                release(fill);
+                fill = next;
+            }
+            release(runs);
+            if (!fill) {
+                return nullptr;
+            }
+            Intermediate* mask = stage(4, fill->texture.get(), nullptr, 0.0);
+            release(fill);
+            if (!mask) {
+                return nullptr;
+            }
+            const int strokeKind = static_cast<int>(std::floor(q[5] + 0.5));
+            const double sigma =
+                (strokeKind <= 0 ? 0.75 : strokeKind == 1 ? std::max(q[7], 0.0) / 2.0 : std::max(q[6], 0.5) / 2.0) / div;
+            if (sigma >= 0.05) {
+                Intermediate* soft = blurOf(mask, sigma, true);
+                release(mask);
+                mask = soft;
+                if (!mask) {
+                    return nullptr;
+                }
+            }
+            Intermediate* out = stage(5, in->texture.get(), mask->texture.get(), 0.0);
+            release(mask);
+            return out;
+        }
         case LibraryOp::UnsharpMask:
         case LibraryOp::AlphaGlow:
         case LibraryOp::BevelAlpha:
@@ -2693,15 +2901,17 @@ std::expected<CompositeStats, Error> Compositor::renderImpl(QRhiCommandBuffer* c
         }
         case EffectType::Library: { // 0.2: Premiere's effect library (EffectLibrary.h)
             const auto found = matteTextures.find({currentLayer, effectIndex});
-            out = applyLibrary(in, e, placement, found != matteTextures.end() ? found->second : nullptr);
+            out = applyLibrary(in, e, placement, found != matteTextures.end() ? found->second : nullptr, effectIndex);
             if (out == in) {
                 return in; // nothing to do
             }
             break;
         }
         }
-        // A masked effect: its result mixed into its input by the masks' coverage (local corrections).
-        if (e.mask && !e.mask->shapes.empty() && e.type != EffectType::OpacityMask && out && out != in) {
+        // A masked effect: its result mixed into its input by the masks' coverage (local corrections). 0.6 Scribble's
+        // masks are its paths, not a mix.
+        const bool masksArePaths = e.type == EffectType::Library && e.op == static_cast<std::uint16_t>(LibraryOp::Scribble);
+        if (e.mask && !e.mask->shapes.empty() && e.type != EffectType::OpacityMask && !masksArePaths && out && out != in) {
             MaskTexture* coverage = coverageOf(*e.mask, placement, maskOwner(placement.clipId, currentLayer, 2, effectIndex));
             Intermediate* mixed = coverage ? maskApply(kMaskMix, out->texture.get(), in->texture.get(), coverage, placement) : nullptr;
             release(out);
@@ -2898,8 +3108,18 @@ std::expected<CompositeStats, Error> Compositor::renderImpl(QRhiCommandBuffer* c
         u.uvXform[3] = yUp ? 1.0f : 0.0f;
         u.mode[0] = outputCode(outputTransformFor(colorPipeline, output.role));
         u.mode[1] = output.alpha == OutputAlpha::Opaque ? 0 : output.alpha == OutputAlpha::Straight ? 1 : 2;
-        if (colorPipeline.managed()) { // I.9: the output plan of the project's colour management
-            const auto plan = color::planOutput(colorPipeline.management, outputTargetFor(colorPipeline, output.role));
+        // 0.6 (#72): the output's target (the Rec.2020 / P3-D65 SDR exports plan a Direct Rec.709 project's output too),
+        // and SDR Conform: an export of a setup that conforms SDR, or the monitor's before / after preview.
+        const ColorManagement& management = colorPipeline.management;
+        const color::OutputTarget target = outputTargetFor(colorPipeline, output.role);
+        const bool conformable = management.isHdr() || management.isWideGamutDirect();
+        const double conformSplit = output.role == OutputRole::Display && conformable ? composite.colorView.conformSplit : -1.0;
+        const bool conform = output.role == OutputRole::Export ? management.conformsSdr() : conformSplit >= 0.0;
+        const bool planned = colorPipeline.managed() || (management.mode == ColorManagementMode::DisplayRec709 &&
+                                                         color::isSdrTarget(target) && target != color::OutputTarget::Sdr);
+        if (planned) { // I.9: the output plan of the project's colour management
+            const auto plan = color::planOutput(management, target, conform);
+            const std::int32_t curve = plan && plan->curve == color::OutputPlan::Curve::Gamma26 ? 1 : 0;
             if (!plan) {
                 ++stats.colorPlanErrors; // stays Rec.709
             } else if (plan->kind == color::OutputPlan::Kind::Lut) {
@@ -2919,9 +3139,36 @@ std::expected<CompositeStats, Error> Compositor::renderImpl(QRhiCommandBuffer* c
                 }
             } else if (plan->kind == color::OutputPlan::Kind::ToneMapSdr) {
                 u.mode[0] = kOutToneMap;
-                storeColorMatrix(u.toOutput, plan->matrix, 1.0); // Rec.2020 -> Rec.709
+                u.mode[2] = curve; // 0.6: 1 = a 2.6 power (P3-D65)
+                storeColorMatrix(u.toOutput, plan->matrix, 1.0); // Rec.2020 -> Rec.709 (0.6: or Rec.2020, P3-D65)
                 u.cm[0] = static_cast<float>(plan->referenceWhiteNits);
                 u.cm[1] = static_cast<float>(plan->peakNits);
+            } else if (plan->kind == color::OutputPlan::Kind::Conform) {
+                // 0.6 (#72): SDR Conform (output.frag conform(), color::sdrConformPixel). A split preview shows the
+                // setup's own SDR output left of the split: the same pass, through Rec.2020 and the same toOutput.
+                const SdrConform& cf = plan->conform;
+                const double gain = cf.paperWhiteNits / cf.targetPeakNits;
+                u.mode[0] = kOutConform;
+                u.mode[2] = curve;
+                u.mode[3] = output.role == OutputRole::Export && output.alpha == OutputAlpha::Opaque && colorPipeline.conformStats
+                                ? 1
+                                : 0;
+                storeColorMatrix(u.toOutput, plan->matrix, 1.0);
+                storeColorMatrix(u.conformIn, plan->conformIn, 1.0);
+                u.cm[0] = static_cast<float>(plan->referenceWhiteNits);
+                u.cm[1] = static_cast<float>(plan->peakNits);
+                u.conform0[0] = static_cast<float>(gain);
+                u.conform0[1] = static_cast<float>(plan->peakNits / plan->referenceWhiteNits * gain);
+                u.conform0[2] = static_cast<float>(static_cast<int>(cf.toneMap));
+                u.conform0[3] = static_cast<float>(static_cast<int>(cf.gamut));
+                u.conform1[0] = cf.legalRange ? 1.0f : 0.0f;
+                u.conform1[1] = static_cast<float>(cf.targetPeakNits);
+                u.conform1[2] = -1.0f;
+                u.conform1[3] = 0.0f;
+                if (conformSplit > 0.0) {
+                    u.conform1[2] = static_cast<float>(management.isHdr() ? kOutToneMap : kOutRec709Matrix);
+                    u.conform1[3] = static_cast<float>(conformSplit);
+                }
             } else if (plan->kind == color::OutputPlan::Kind::Pq || plan->kind == color::OutputPlan::Kind::Hlg) {
                 u.mode[0] = plan->kind == color::OutputPlan::Kind::Pq ? kOutPq : kOutHlg;
                 storeColorMatrix(u.toOutput, plan->matrix, 1.0);
@@ -2932,6 +3179,7 @@ std::expected<CompositeStats, Error> Compositor::renderImpl(QRhiCommandBuffer* c
                 u.mode[0] = 1;
             } else if (plan->matrix != color::Matrix3{1, 0, 0, 0, 1, 0, 0, 0, 1}) {
                 u.mode[0] = kOutRec709Matrix; // Wide Gamut (No Tone Mapping): ACEScg -> Rec.709, BT.709, clipped
+                u.mode[2] = curve;            // 0.6: the Rec.2020 / P3-D65 SDR outputs: their primaries and curve
                 storeColorMatrix(u.toOutput, plan->matrix, 1.0);
             } else {
                 u.mode[0] = 0;

@@ -89,6 +89,18 @@ class ColorBridge : public QObject {
     /// What the program monitor shows when it is not the plain picture: "HDR · tone-mapped SDR preview",
     /// "ACES 1.0 SDR Video", "Wide Gamut · no tone mapping", "Color management off"; empty for Direct Rec.709.
     Q_PROPERTY(QString monitorLabel READ monitorLabel NOTIFY stateChanged FINAL)
+    // 0.6 (#72): HDR finishing - colorManagement also has gamutCompression, gamutCompressionStrength, gamutCompressed
+    // (in effect: on, or Minimal Tone Mapping), outputSpace (an id of outputColorSpaces), sdrConform { enabled,
+    // targetPeakNits, paperWhiteNits, toneMap, gamut, legalRange }, conformable (an HDR or Wide Gamut No / Minimal
+    // setup: SDR Conform applies to its SDR exports) and outputChain (what an SDR export does, in words).
+    /// [{ id, name }] of the output colour spaces, the tone-mapping operators and the gamut mappings (menu order).
+    Q_PROPERTY(QVariantList outputColorSpaces READ outputColorSpaces CONSTANT FINAL)
+    Q_PROPERTY(QVariantList toneMapOperators READ toneMapOperators CONSTANT FINAL)
+    Q_PROPERTY(QVariantList gamutMappings READ gamutMappings CONSTANT FINAL)
+    /// The program monitor's SDR Conform preview of a conformable setup (with its saved settings): 0 off, 1 before /
+    /// after (the setup's own SDR preview left of the middle, SDR Conform right of it), 2 SDR Conform on the whole
+    /// picture. A view: not saved, not an undo step.
+    Q_PROPERTY(int conformPreview READ conformPreview WRITE setConformPreview NOTIFY viewChanged FINAL)
 
 public:
     explicit ColorBridge(QObject* parent = nullptr);
@@ -123,6 +135,11 @@ public:
     QVariantList inputColorSpaces() const;
     QVariantMap inputColorSpace() const { return m_inputColorSpace; }
     QString monitorLabel() const { return m_monitorLabel; }
+    QVariantList outputColorSpaces() const;
+    QVariantList toneMapOperators() const;
+    QVariantList gamutMappings() const;
+    int conformPreview() const { return m_conformPreview; }
+    void setConformPreview(int mode);
 
     /// A parameter's registry facts: { name, from, to, default, unit } (the panel builds its sliders from them).
     Q_INVOKABLE QVariantMap paramInfo(const QString& key) const;
@@ -165,7 +182,8 @@ public:
     Q_INVOKABLE bool pickColor(double nx, double ny);
 
     /// I.9: sets the project's colour management (keys of colorManagement: mode, peakNits, referenceWhiteNits,
-    /// autoDetectLog; only those given change). One undo step (color.management.set).
+    /// autoDetectLog; 0.6: gamutCompression, gamutCompressionStrength, outputSpace, sdrConform (a map of its keys);
+    /// only those given change). One undo step (color.management.set).
     Q_INVOKABLE bool setColorManagement(const QVariantMap& values);
     /// I.9: the targeted clip's input colour space by id, or "auto". One undo step (color.inputSpace.set).
     Q_INVOKABLE bool setInputColorSpace(const QString& space);
@@ -231,6 +249,7 @@ private:
     ColorManagement m_management; ///< what m_colorManagement and m_monitorLabel describe
     QVariantMap m_inputColorSpace;
     QString m_monitorLabel;
+    int m_conformPreview = 0; ///< 0.6 (#72)
     int m_gesture = 0;
     bool m_inGesture = false;
     bool m_refreshing = false;

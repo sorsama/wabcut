@@ -7,6 +7,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <QScreen>
 #include <QAccessible>
 #include <QMetaObject>
 #include <QQuickItem>
@@ -62,7 +63,12 @@ TEST_CASE("Main.qml loads offscreen without QML warnings or errors", "[app][qml]
     REQUIRE(shell.preferences != nullptr);
     CHECK_FALSE(shell.window->isVisible());
     CHECK((shell.window->flags() & Qt::FramelessWindowHint));
-    CHECK(shell.window->minimumSize() == QSize(1100, 700));
+    // 0.6 (#47): the minimum is 1100 x 700, cut to the screen's work area when the screen is smaller (CI's virtual
+    // display is), so the window always fits.
+    const QScreen* screen = shell.window->screen();
+    const QSize room = screen ? screen->availableGeometry().size() : QSize();
+    const QSize expectedMinimum = room.isValid() && !room.isEmpty() ? QSize(1100, 700).boundedTo(room) : QSize(1100, 700);
+    CHECK(shell.window->minimumSize() == expectedMinimum);
 
     // Render one frame so delegates, images and effects are fully realised before checking the log.
     const QImage frame = shell.grab();

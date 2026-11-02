@@ -460,12 +460,13 @@ double libraryHash01(std::uint32_t a, std::uint32_t b, std::uint32_t c) {
     return static_cast<double>(h >> 8) * (1.0 / 16777216.0);
 }
 
-Image libraryEffect(const Image& in, LibraryEffect effect, const LibraryParams& params, const Image* second) {
+Image libraryEffect(const Image& in, LibraryEffect effect, const LibraryParams& params, const Image* second,
+                    std::span<const LibraryPath> paths) {
     if (detail::isStylize(effect)) {
         return detail::stylize(in, effect, params);
     }
     if (detail::isGenerate(effect)) {
-        return detail::generate(in, effect, params, second);
+        return detail::generate(in, effect, params, second, paths);
     }
     Image out(in.width, in.height);
     const bool distort = detail::isDistort(effect);

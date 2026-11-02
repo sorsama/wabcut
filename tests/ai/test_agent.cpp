@@ -930,3 +930,94 @@ TEST_CASE("The assistant lists audio plugins and adds plugin effects, but never 
     CHECK(tools.contains("audio_addEffect"));
     CHECK_FALSE(tools.contains("plugins_scan"));
 }
+
+// 0.6 fix round 2 (D6: 15 of 39 local-eval misses were one refused call repeated to the step limit).
+TEST_CASE("Agent: a refused call is fed back and repeating it ends the run honestly before the step limit",
+          "[ai][agent][refusal]") {
+    Live live;
+    ScriptedModel model;
+    // A model that keeps proposing the same call the app refuses (no time: the schema refuses it).
+    for (int i = 0; i < 8; ++i) {
+        model.tool("marker_add", Json{{"name", "Intro"}});
+    }
+    model.text("never reached");
+    EditAgent agent(live.options());
+    const AgentOutcome out = agent.run(model, live.request("Add a marker called Intro"), {}, {});
+
+    CHECK(out.status == AgentStatus::Stuck);
+    CHECK(std::string(toString(out.status)) == "Stuck");
+    CHECK(out.modelCalls == 3); // refused, refused again (not run), then stopped: not the 16-step limit
+    CHECK(out.error.find("Stopped: the assistant kept repeating") != std::string::npos);
+    CHECK(out.error.find("schema") != std::string::npos); // says what was refused
+    const auto requests = model.requests();
+    REQUIRE(requests.size() == 3);
+    const auto first = toolResultsOf(requests[1]);
+    REQUIRE(first.size() == 1);
+    CHECK(first[0].isError);
+    const Json firstJson = Json::parse(first[0].content);
+    CHECK(firstJson["error"]["code"] == "InvalidParams");
+    CHECK(firstJson["next"].get<std::string>().find("Do not send the same call again") != std::string::npos);
+    const auto second = toolResultsOf(requests[2]);
+    REQUIRE(second.size() == 1);
+    CHECK(Json::parse(second[0].content)["next"].get<std::string>().starts_with("Refused again"));
+    REQUIRE(out.steps.size() >= 3);
+    CHECK(out.steps[1].detail.starts_with("Refused again (not run)"));
+    CHECK(out.steps[2].detail.find("the request was stopped") != std::string::npos);
+    CHECK_FALSE(out.hasChanges());
+    CHECK(out.staged->findSequence(live.tl.seq)->markers.empty());
+}
+
+TEST_CASE("Agent: a tool the assistant may not use is refused whatever its arguments and not retried forever",
+          "[ai][agent][refusal]") {
+    Live live;
+    ScriptedModel model;
+    // bin.remove is EditProject and not one of the additive library commands: refused for any arguments.
+    model.tool("bin_remove", Json{{"bins", Json::array({1})}})
+        .tool("bin_remove", Json{{"bins", Json::array({2})}})
+        .tool("bin_remove", Json{{"bins", Json::array({3})}})
+        .tool("bin_remove", Json{{"bins", Json::array({4})}})
+        .text("never reached");
+    EditAgent agent(live.options());
+    const AgentOutcome out = agent.run(model, live.request("Delete the bins"), {}, {});
+
+    CHECK(out.status == AgentStatus::Stuck);
+    CHECK(out.modelCalls == 3);
+    CHECK(out.error.find("may not use bin.remove") != std::string::npos);
+}
+
+TEST_CASE("Agent: a command error is not re-run at the same state and the refusal count resets after an edit",
+          "[ai][agent][refusal]") {
+    Live live;
+    ScriptedModel model;
+    // marker.remove at an index that does not exist: the schema accepts it, the command refuses it.
+    model.tool("marker_remove", Json{{"index", 7}})
+        .tool("marker_remove", Json{{"index", 7}})
+        .tool("marker_add", Json{{"time", tc(5)}, {"name", "Intro"}}) // the staged project changes
+        .tool("marker_remove", Json{{"index", 7}})                     // a fresh refusal, not the third repeat
+        .text("Added the marker; there was no marker 8 to remove.");
+    EditAgent agent(live.options());
+    const AgentOutcome out = agent.run(model, live.request("Add a marker called Intro at frame 5"), {}, {});
+
+    CHECK(out.status == AgentStatus::Staged);
+    CHECK(out.modelCalls == 5);
+    REQUIRE(out.steps.size() >= 4);
+    CHECK_FALSE(out.steps[0].ok);
+    CHECK(out.steps[1].detail.starts_with("Refused again (not run)"));
+    CHECK(out.steps[2].ok);
+    CHECK_FALSE(out.steps[3].ok);
+    CHECK_FALSE(out.steps[3].detail.starts_with("Refused again"));
+    CHECK(out.staged->findSequence(live.tl.seq)->markers.size() == 1);
+}
+
+TEST_CASE("Agent: a model that changes course after a refusal finishes normally", "[ai][agent][refusal]") {
+    Live live;
+    ScriptedModel model;
+    model.tool("marker_add", Json{{"name", "Intro"}})
+        .tool("marker_add", Json{{"time", tc(5)}, {"name", "Intro"}})
+        .text("Added the marker.");
+    EditAgent agent(live.options());
+    const AgentOutcome out = agent.run(model, live.request("Add a marker called Intro at frame 5"), {}, {});
+    CHECK(out.status == AgentStatus::Staged);
+    CHECK(out.error.empty());
+    CHECK(out.staged->findSequence(live.tl.seq)->markers.size() == 1);
+}

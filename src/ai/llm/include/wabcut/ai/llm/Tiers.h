@@ -9,7 +9,9 @@
 //
 // Admission: the weights, the KV cache of the tier's context (layers x 2 x KV heads x head size x 2 bytes x tokens) and
 // llama.cpp's compute buffers, on the GPU (the weights and cache in its free memory; a little RAM for the process) or
-// on the CPU (all of it in free RAM), plus a reserve for the editor. Unknown memory fails closed. The recommendation is
+// on the CPU (all of it in free RAM), plus a reserve for the editor. The GPU is the adapter the editor uses
+// (SystemProbe::bestGpu(): Settings > Graphics card, else the high-performance one), so a hybrid laptop or desktop
+// offloads to its discrete card, never to the integrated one next to it, and llama-server is pinned to that card. Unknown memory fails closed. The recommendation is
 // the largest tier that fits on the GPU; without a usable GPU, the largest that fits in RAM and still answers at a
 // usable speed on the CPU threads there are (the large tier never runs on the CPU by default).
 
@@ -59,6 +61,8 @@ struct Admission {
     bool fits = false;
     bool gpu = false;
     std::string runtimeId;        ///< llama-server build (ModelStore id)
+    std::string gpuName;          ///< the adapter it runs on (SystemProbe::bestGpu()); empty on the CPU
+    std::uint64_t gpuFreeBytes = 0; ///< that adapter's free memory when admitted (tells identical cards apart)
     std::uint64_t weightsBytes = 0;
     std::uint64_t kvBytes = 0;
     std::uint64_t ramNeeded = 0;  ///< free RAM it takes

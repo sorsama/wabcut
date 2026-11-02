@@ -119,6 +119,7 @@ WabcutDialog {
             Label { text: qsTr("Takes from") }
             PillTabs {
                 id: scopeTabs
+                Accessible.name: qsTr("Takes from") // P1 #61
                 objectName: "roughCutScope"
                 Layout.fillWidth: true
                 compact: true
@@ -127,6 +128,7 @@ WabcutDialog {
             Label { text: qsTr("Pick") }
             PillTabs {
                 id: preferTabs
+                Accessible.name: qsTr("Pick") // P1 #61
                 objectName: "roughCutPrefer"
                 Layout.fillWidth: true
                 compact: true

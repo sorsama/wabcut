@@ -26,6 +26,7 @@ wabcut_add_test_suite(render
         test_captions.cpp
         test_titles.cpp
         test_graphics.cpp # C.13 motion graphics rasterised (I.9 Part 0.5)
+        test_graphics_text.cpp # 0.6: text strokes, faux styles, capitals, vertical alignment, shadow size
         test_hdr_capture.cpp # I.9 (gaming): HDR game captures tone-mapped into SDR projects
     LIBS wabcut_render wabcut_render_reference wabcut_media wabcut_interchange Qt6::Gui
     PROPERTIES FIXTURES_REQUIRED wabcut_test_media LABELS render)

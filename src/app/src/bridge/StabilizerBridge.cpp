@@ -11,6 +11,7 @@
 #include <wabcut/editor/Tracking.h>
 #include <wabcut/model/EditSession.h>
 #include <wabcut/model/FinishingOps.h>
+#include <wabcut/model/MasterClipEffects.h>
 #include <wabcut/model/MotionOps.h>
 
 #include <QCoreApplication>
@@ -68,6 +69,7 @@ struct StabilizerBridge::Found {
     SequenceId sequence;
     ClipId clip;
     EffectInstance effect;
+    MediaId master; ///< fix F3 (NEW-01): the media item whose Master Clip Effects hold the effect (else invalid)
 };
 
 StabilizerBridge::StabilizerBridge(QObject* parent) : QObject(parent) {}
@@ -90,19 +92,34 @@ std::optional<StabilizerBridge::Found> StabilizerBridge::find(const QString& sec
     const auto id = parseEffectKey(section);
     ProjectController* c = controller();
     const SequencePtr seq = c ? c->currentSequence() : nullptr;
-    if (!id || !seq) {
+    const ProjectSnapshot snap = c ? c->snapshot() : nullptr;
+    if (!id || !seq || !snap) {
         return std::nullopt;
     }
+    // Fix F3 (NEW-01): an effect of a media item's Master Clip Effects, which Effect Controls shows with a clip of that
+    // media (the selected one first). Analyze keys it on the media item, for every clip of it.
+    std::optional<Found> master;
+    const ClipId selected = c->primaryClip();
     for (const TrackPtr& track : seq->videoTracks) {
         for (const Clip& clip : track->clips) {
             for (const EffectInstance& e : clip.effects()) {
                 if (e.id == *id) {
-                    return Found{seq->id, clip.id, e};
+                    return Found{seq->id, clip.id, e, {}};
+                }
+            }
+            if ((master && master->clip == selected) || clip.isNested() || !clip.media.isValid()) {
+                continue;
+            }
+            if (const MediaItem* holder = masterEffectHolder(*snap, clip.media, *id)) {
+                for (const EffectInstance& e : holder->masterEffects) {
+                    if (e.id == *id && (!master || clip.id == selected)) {
+                        master = Found{seq->id, clip.id, e, holder->id};
+                    }
                 }
             }
         }
     }
-    return std::nullopt;
+    return master;
 }
 
 QVariantMap StabilizerBridge::effectInfo(const QString& section) const {
@@ -230,9 +247,16 @@ void StabilizerBridge::finish(bool ok, const QString& message, ClipId clip, Effe
         const Sequence* analysed = result->findSequence(seq);
         const auto loc = analysed ? analysed->findClip(clip) : std::nullopt;
         const EffectInstance* e = nullptr;
+        const MediaItem* holder = nullptr; // fix F3 (NEW-01): a master clip effect is keyed on its media item
         if (loc) {
             for (const EffectInstance& candidate : loc->clip().effects()) {
                 e = candidate.id == effect ? &candidate : e;
+            }
+            holder = !e && loc->clip().media.isValid() ? masterEffectHolder(*result, loc->clip().media, effect) : nullptr;
+            if (holder) {
+                for (const EffectInstance& candidate : holder->masterEffects) {
+                    e = candidate.id == effect ? &candidate : e;
+                }
             }
         }
         if (e) {
@@ -240,8 +264,11 @@ void StabilizerBridge::finish(bool ok, const QString& message, ClipId clip, Effe
             change.params = e->params;
             change.data = e->data;
             const QString label = e->effect == kWarpStabilizerEffect ? tr("Analyze Stabilization") : tr("Analyze Rolling Shutter");
-            auto r = c->session().apply(label.toStdString(),
-                                        [&](const ProjectState& s) { return edit::setEffect(s, seq, clip, effect, change); });
+            const std::optional<MediaId> master = holder ? std::optional<MediaId>(holder->id) : std::nullopt;
+            auto r = c->session().apply(label.toStdString(), [&](const ProjectState& s) {
+                return master ? edit::setEffect(s, seq, edit::EffectTarget::ofMedia(*master), effect, change)
+                              : edit::setEffect(s, seq, clip, effect, change);
+            });
             if (!r) {
                 m_message = tr("Could not apply the analysis: %1").arg(QString::fromStdString(r.error().message));
             }

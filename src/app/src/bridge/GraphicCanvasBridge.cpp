@@ -3,6 +3,7 @@
 #include "BridgeIds.h"
 #include "GlobalBridge.h"
 #include "GraphicText.h"
+#include "PlaybackBridge.h"
 #include "ProjectController.h"
 
 #include <wabcut/model/EditOps.h>
@@ -10,6 +11,7 @@
 #include <wabcut/model/TitleOps.h>
 #include <wabcut/playback/video/Evaluate.h>
 #include <wabcut/render/PreparedComposite.h>
+#include <wabcut/render/Caption.h>
 #include <wabcut/render/Title.h>
 
 #include <QColor>
@@ -243,7 +245,12 @@ QString pickKeyOf(ClipId clip, std::uint32_t layer) {
     return key;
 }
 
-QString pickKeyOf(const GraphicCanvasBridge::PickObject& object) { return pickKeyOf(object.clip, object.layer); }
+QString pickKeyOf(const GraphicCanvasBridge::PickObject& object) {
+    // P1 (#18): a caption cue ("caption:k3/12"); it has no clip.
+    if (!object.captionTrack.isEmpty())
+        return QStringLiteral("caption:") + object.captionTrack + QLatin1Char('/') + QString::number(object.cue);
+    return pickKeyOf(object.clip, object.layer);
+}
 
 /// The corners of the box (x0, y0)-(x1, y1) through `m`, as fractions of a w x h canvas.
 std::array<double, 8> quadThrough(const render::Affine2D& m, double x0, double y0, double x1, double y1, double w, double h) {
@@ -310,12 +317,15 @@ QVariantMap titleEditor(const render::TitleStyle& title, const render::LayerTran
 /// TitleRenderer, which is thread-safe).
 std::shared_ptr<const GraphicCanvasBridge::PickStack> computePickStack(const ProjectSnapshot& snap, SequenceId seqId, Ticks playhead,
                                                                        int revision, const TextMeasurer* measurer,
-                                                                       const LineBreaker* breaker) {
+                                                                       const LineBreaker* breaker,
+                                                                       const std::optional<playback::CaptionSettings>& captions,
+                                                                       std::uint64_t captionsKey) {
     using Bridge = GraphicCanvasBridge;
     auto out = std::make_shared<Bridge::PickStack>();
     out->sequence = seqId;
     out->playhead = playhead;
     out->revision = revision;
+    out->captions = captionsKey;
     const Sequence* seq = snap ? snap->findSequence(seqId) : nullptr;
     if (!seq || seq->width <= 0 || seq->height <= 0)
         return out;
@@ -325,7 +335,9 @@ std::shared_ptr<const GraphicCanvasBridge::PickStack> computePickStack(const Pro
     playback::PreviewSettings preview;
     preview.useProxies = true; // what the monitor can show: an offline original's proxy too
     std::vector<playback::LayerSpec> specs;
-    playback::evaluateVideoLayers(*snap, *seq, playhead, specs, /*cullOccluded*/ false, &preview, nullptr);
+    // P1 (#18): with the monitor's caption settings, the burned-in caption comes last (on top).
+    playback::evaluateVideoLayers(*snap, *seq, playhead, specs, /*cullOccluded*/ false, &preview,
+                                  captions ? &*captions : nullptr);
 
     const auto clipName = [&](ClipId id) {
         const auto located = seq->findClip(id);
@@ -356,6 +368,36 @@ std::shared_ptr<const GraphicCanvasBridge::PickStack> computePickStack(const Pro
                 continue;
             }
             ++j;
+            if (s.caption && captions) {
+                // P1 (#18): the caption's text block (the renderer's bounds), and the cue under the playhead on the
+                // track it draws (the first one, as Captions.activeCue counts).
+                const CaptionTrack* track = playback::captionTrackFor(*seq, *captions);
+                const std::shared_ptr<const render::TitleRaster> raster = render::CaptionRenderer::shared().render(*s.caption);
+                if (!track || !raster)
+                    continue;
+                int cue = -1;
+                for (std::size_t i = 0; i < track->cues.size(); ++i) {
+                    if (playhead >= track->cues[i].start && playhead < track->cues[i].end()) {
+                        cue = static_cast<int>(i);
+                        break;
+                    }
+                }
+                const auto& b = raster->info().bounds;
+                if (cue < 0 || b[2] <= 0 || b[3] <= 0)
+                    continue;
+                const double fw = std::max(1, s.caption->frameWidth);
+                const double fh = std::max(1, s.caption->frameHeight);
+                Bridge::PickObject o;
+                o.kind = QStringLiteral("caption");
+                o.name = QString::fromStdString(track->cues[static_cast<std::size_t>(cue)].text).section(QLatin1Char('\n'), 0, 0);
+                o.text = true;
+                o.captionTrack = captionTrackKey(track->id);
+                o.cue = cue;
+                o.quad = quadThrough(render::layerToCanvas(s.transform, fw, fh, 1.0, canvas), b[0], b[1], b[0] + b[2],
+                                     b[1] + b[3], w, h);
+                bottomUp.push_back(std::move(o));
+                continue;
+            }
             if (s.caption || !s.clip.isValid() || !s.item)
                 continue;
             if (s.graphic) {
@@ -441,9 +483,34 @@ GraphicCanvasBridge::~GraphicCanvasBridge() {
 GraphicCanvasBridge* GraphicCanvasBridge::create(QQmlEngine* qmlEngine, QJSEngine*) {
     auto* bridge = new GraphicCanvasBridge;
     bridge->setMeasurer(qtTextMeasurer()); // the same text layout as Essential Graphics and its thumbnails
-    if (qmlEngine)
+    if (qmlEngine) {
         bridge->setController(qmlEngine->singletonInstance<ProjectController*>("Wabcut", "ProjectController"));
+        bridge->setPlayback(qmlEngine->singletonInstance<PlaybackBridge*>("Wabcut", "Playback")); // P1 (#18)
+    }
     return bridge;
+}
+
+void GraphicCanvasBridge::setPlayback(PlaybackBridge* playback) {
+    if (m_playback == playback)
+        return;
+    if (m_playback)
+        disconnect(m_playback, nullptr, this, nullptr);
+    m_playback = playback;
+    if (playback)
+        connect(playback, &PlaybackBridge::captionsChanged, this, &GraphicCanvasBridge::schedulePickStack);
+    schedulePickStack();
+}
+
+std::uint64_t GraphicCanvasBridge::captionsKey() const {
+    if (!m_playback || !m_playback->captionSettings())
+        return 0;
+    const playback::CaptionSettings& captions = *m_playback->captionSettings();
+    return (captions.track ? captions.track->value : 0) + 1;
+}
+
+bool GraphicCanvasBridge::stackCurrent(const PickStack& stack) const {
+    return m_controller && stack.sequence == m_controller->currentSequenceId() && stack.playhead == m_controller->playhead()
+           && stack.revision == m_controller->revision() && stack.captions == captionsKey();
 }
 
 void GraphicCanvasBridge::setController(ProjectController* controller) {
@@ -1173,15 +1240,19 @@ QString GraphicCanvasBridge::setLayerText(int layerId, const QString& text) {
             const GraphicLayer* current = graphic ? graphic->findLayer(id) : nullptr;
             if (!current || current->kind != LayerKind::Text)
                 return std::unexpected(Error{ErrorCode::NotFound, "the text layer is gone"});
-            if (current->text.text() == value)
+            if (textAt(current->text, r->graphicTime).text() == value)
                 return std::unexpected(Error{ErrorCode::InvalidArgument, "the text is unchanged"});
             GraphicLayer changed = *current;
-            // One run in the style of the first (as a template's text field does).
-            TextRun run;
-            if (!changed.text.runs.empty())
-                run.style = changed.text.runs.front().style;
-            run.text = value;
-            changed.text.runs = {std::move(run)};
+            // One run in the style of the first (as a template's text field does); 0.6: with Source Text keys, the text
+            // shown at the playhead (a key there).
+            edit::editSourceRunsAt(changed.text, r->graphicTime, [&](std::vector<TextRun>& runs) {
+                TextRun run;
+                if (!runs.empty())
+                    run.style = runs.front().style;
+                run.text = value;
+                runs = {std::move(run)};
+                return true;
+            });
             return edit::updateGraphicLayer(state, r->sequence, r->clip, id, std::move(changed));
         });
     if (!ok) {
@@ -1228,7 +1299,7 @@ QString GraphicCanvasBridge::pickKey() const {
         return {};
     const ClipId primary = m_controller->primaryClip();
     if (!primary.isValid())
-        return {};
+        return m_pickedCaption; // P1 (#18): a caption picked in the monitor (no clip selected since)
     const auto graphic = effectiveClip(m_controller, m_explicitClip);
     return pickKeyOf(primary, graphic && *graphic == primary ? m_selectedLayer : 0);
 }
@@ -1239,10 +1310,13 @@ std::shared_ptr<const GraphicCanvasBridge::PickStack> GraphicCanvasBridge::stack
     const SequenceId sequence = m_controller->currentSequenceId();
     const Ticks playhead = m_controller->playhead();
     const int revision = m_controller->revision();
-    if (m_stack && m_stack->sequence == sequence && m_stack->playhead == playhead && m_stack->revision == revision)
+    if (m_stack && stackCurrent(*m_stack))
         return m_stack;
     const std::shared_ptr<const LineBreaker> breaker = qtLineBreaker();
-    m_stack = computePickStack(m_controller->snapshot(), sequence, playhead, revision, m_measurer.get(), breaker.get());
+    const std::optional<playback::CaptionSettings> captions =
+        m_playback ? m_playback->captionSettings() : std::optional<playback::CaptionSettings>{};
+    m_stack = computePickStack(m_controller->snapshot(), sequence, playhead, revision, m_measurer.get(), breaker.get(),
+                               captions, captionsKey());
     return m_stack;
 }
 
@@ -1266,15 +1340,18 @@ void GraphicCanvasBridge::startPickStack() {
     const SequenceId sequence = m_controller->currentSequenceId();
     const Ticks playhead = m_controller->playhead();
     const int revision = m_controller->revision();
-    if (m_stack && m_stack->sequence == sequence && m_stack->playhead == playhead && m_stack->revision == revision) {
+    if (m_stack && stackCurrent(*m_stack)) {
         refreshPick();
         return;
     }
     std::shared_ptr<const TextMeasurer> measurer = m_measurer;
     std::shared_ptr<const LineBreaker> breaker = qtLineBreaker();
     const quint64 generation = ++m_stackGeneration;
-    auto work = [snap, sequence, playhead, revision, measurer, breaker] {
-        return computePickStack(snap, sequence, playhead, revision, measurer.get(), breaker.get());
+    std::optional<playback::CaptionSettings> captions =
+        m_playback ? m_playback->captionSettings() : std::optional<playback::CaptionSettings>{};
+    const std::uint64_t captionsAt = captionsKey();
+    auto work = [snap, sequence, playhead, revision, measurer, breaker, captions = std::move(captions), captionsAt] {
+        return computePickStack(snap, sequence, playhead, revision, measurer.get(), breaker.get(), captions, captionsAt);
     };
     if (m_synchronous) {
         finishPickStack(work(), generation);
@@ -1299,8 +1376,7 @@ void GraphicCanvasBridge::startPickStack() {
 void GraphicCanvasBridge::finishPickStack(std::shared_ptr<const PickStack> stack, quint64 generation) {
     m_stackRunning = false;
     // Kept when it is still the frame shown (a click may have read a newer one meanwhile).
-    if (stack && generation == m_stackGeneration && m_controller && stack->sequence == m_controller->currentSequenceId()
-        && stack->playhead == m_controller->playhead() && stack->revision == m_controller->revision())
+    if (stack && generation == m_stackGeneration && stackCurrent(*stack))
         m_stack = std::move(stack);
     if (m_stackPending) {
         m_stackPending = false;
@@ -1333,6 +1409,22 @@ const GraphicCanvasBridge::PickObject* GraphicCanvasBridge::clickTarget(const st
 void GraphicCanvasBridge::pickObject(const PickObject& object) {
     if (!m_controller)
         return;
+    if (!object.captionTrack.isEmpty()) {
+        // P1 (#18): a caption cue: a cue and clips are selected one or the other (as on the timeline's caption lanes).
+        m_picking = true;
+        m_controller->clearSelection();
+        setSelectedLayer(0);
+        m_picking = false;
+        m_pickedCaption = pickKeyOf(object);
+        m_pickedKey = m_pickedCaption;
+        const QVariantList outline = quadList(object.quad);
+        if (outline != m_pickOutlineJs) {
+            m_pickOutlineJs = outline;
+            emit pickChanged();
+        }
+        return;
+    }
+    m_pickedCaption.clear();
     m_picking = true;
     if (m_controller->primaryClip() != object.clip)
         m_controller->selectClipById(object.clip, ProjectController::Replace);
@@ -1350,6 +1442,7 @@ void GraphicCanvasBridge::refreshPick() {
     if (m_picking)
         return;
     if (!m_pickedKey.isEmpty() && pickKey() != m_pickedKey) { // picked elsewhere since: a new cycle
+        m_pickedCaption.clear();
         m_pickedKey.clear();
         m_editedKey.clear();
         m_gesturePrev.clear();
@@ -1358,8 +1451,7 @@ void GraphicCanvasBridge::refreshPick() {
     QVariantList outline = m_pickOutlineJs;
     if (m_pickedKey.isEmpty()) {
         outline.clear();
-    } else if (m_stack && m_controller && m_stack->sequence == m_controller->currentSequenceId()
-               && m_stack->playhead == m_controller->playhead() && m_stack->revision == m_controller->revision()) {
+    } else if (m_stack && stackCurrent(*m_stack)) {
         outline.clear(); // the frame read now: the picked clip's box there, if it shows
         for (const PickObject& o : m_stack->objects) {
             if (o.layer == 0 && pickKeyOf(o) == m_pickedKey)
@@ -1382,6 +1474,10 @@ QVariantMap GraphicCanvasBridge::objectJs(const PickObject& object) const {
                     {QStringLiteral("quad"), quadList(object.quad)}};
     if (!object.editor.isEmpty())
         out.insert(QStringLiteral("editor"), object.editor);
+    if (!object.captionTrack.isEmpty()) { // P1 (#18)
+        out.insert(QStringLiteral("captionTrack"), object.captionTrack);
+        out.insert(QStringLiteral("cue"), object.cue);
+    }
     return out;
 }
 
@@ -1418,6 +1514,7 @@ QVariantMap GraphicCanvasBridge::pickPress(double fx, double fy) {
     const auto stack = stackNow();
     const PickObject* target = clickTarget(objectsAt(*stack, fx, fy));
     if (!target) { // nothing there: no layer handles, no picked outline; the timeline keeps its selection
+        m_pickedCaption.clear();
         m_pickedKey.clear();
         m_editedKey.clear();
         setSelectedLayer(0);
@@ -1463,8 +1560,7 @@ QVariantMap GraphicCanvasBridge::pickDoubleClick(double fx, double fy) {
 }
 
 QVariantList GraphicCanvasBridge::hoverAt(double fx, double fy) const {
-    if (!m_stack || !m_controller || m_stack->sequence != m_controller->currentSequenceId()
-        || m_stack->playhead != m_controller->playhead() || m_stack->revision != m_controller->revision())
+    if (!m_stack || !stackCurrent(*m_stack))
         return {};
     const PickObject* target = clickTarget(objectsAt(*m_stack, fx, fy));
     return target ? quadList(target->quad) : QVariantList();

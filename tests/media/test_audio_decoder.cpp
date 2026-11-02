@@ -3,8 +3,12 @@
 #include <wabcut/media/AudioDecoder.h>
 
 #include <catch2/catch_test_macros.hpp>
+#include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <filesystem>
 #include <numbers>
+#include <string_view>
 #include <vector>
 
 using namespace wabcut;
@@ -299,5 +303,87 @@ TEST_CASE("Audio: channel layouts and explicit read results", "[media][audio]") 
         REQUIRE(inside.has_value());
         CHECK_FALSE(inside->endOfStream);
         CHECK(inside->framesFromStream == 1000);
+    }
+}
+
+TEST_CASE("Audio: a jump into a long MKV reads its index and not the file up to the jump", "[media][audio]") {
+    // F2P (0.6): Matroska's Cues index the video track only. An audio stream's own seek there made FFmpeg read the
+    // file from its start up to the target (its generic search), so a 2-hour OBS recording's first jump took minutes
+    // per track and playback seemed to hang. A jump now reads the index and a cluster or two around the target.
+    constexpr std::string_view kClip = "obs_long_recording.mkv"; // 5 min, GOP 2 s, Game 220 Hz + Mic 440 Hz
+    if (!haveMedia(kClip)) {
+        SKIP("test clip " << kClip << " was not generated");
+    }
+    const auto fileBytes = std::filesystem::file_size(std::filesystem::path(WABCUT_TEST_MEDIA_DIR) / kClip);
+    constexpr std::int64_t kWindow = 4800; // 0.1 s
+    constexpr std::int64_t kRate = 48000;
+    // The middle, back, near the end, the last GOP (after the last Cue), and the start again.
+    const std::vector<std::int64_t> jumps{150, 61, 271, 299, 3};
+    const auto zeroCrossings = [](const std::vector<float>& stereo) {
+        int crossings = 0;
+        for (std::size_t i = 2; i < stereo.size(); i += 2) {
+            crossings += (stereo[i - 2] < 0.0f) != (stereo[i] < 0.0f) ? 1 : 0;
+        }
+        return crossings;
+    };
+    struct Track {
+        int stream;
+        int crossings; ///< in 0.1 s: two per period
+    };
+    for (const Track track : {Track{1, 44}, Track{2, 88}}) {
+        INFO("stream " << track.stream);
+        // The truth: one decode from the start, keeping 0.3 s around every jump target.
+        std::vector<std::vector<float>> truth(jumps.size(), std::vector<float>(static_cast<std::size_t>(kWindow * 6)));
+        {
+            auto sequential = AudioDecoder::open(mediaPath(kClip), track.stream, kRate48kHz, 2);
+            REQUIRE(sequential.has_value());
+            std::vector<float> chunk(static_cast<std::size_t>(kWindow * 2));
+            for (std::int64_t at = 0; at < 300 * kRate; at += kWindow) {
+                REQUIRE((*sequential)->read(samplesToTicks(at, kRate48kHz), chunk).has_value());
+                for (std::size_t j = 0; j < jumps.size(); ++j) {
+                    const std::int64_t k = (at - (jumps[j] * kRate - kWindow)) / kWindow; // chunk 0..2 of window j
+                    if (at >= jumps[j] * kRate - kWindow && k < 3) {
+                        std::ranges::copy(chunk, truth[j].begin() + k * kWindow * 2);
+                    }
+                }
+            }
+        }
+
+        auto opened = AudioDecoder::open(mediaPath(kClip), track.stream, kRate48kHz, 2);
+        INFO((opened ? "" : opened.error().message));
+        REQUIRE(opened.has_value());
+        AudioDecoder& decoder = **opened;
+        for (std::size_t j = 0; j < jumps.size(); ++j) {
+            const std::uint64_t before = decoder.stats().bytesRead;
+            std::vector<float> buf(static_cast<std::size_t>(kWindow * 2));
+            const auto got = decoder.read(Ticks::fromSeconds(jumps[j]), buf);
+            INFO("jump to " << jumps[j] << " s");
+            REQUIRE(got.has_value());
+            CHECK(got->framesFromStream == static_cast<std::size_t>(kWindow));
+            const std::uint64_t bytes = decoder.stats().bytesRead - before;
+            INFO("read " << bytes << " of " << fileBytes << " bytes");
+            CHECK(bytes < fileBytes / 20);
+            CHECK(std::abs(zeroCrossings(buf) - track.crossings) <= 2); // this track's sine, not silence
+
+            // The decode from the start's samples, as exactly as Matroska's millisecond timestamps place a frame
+            // after a seek (within 1 ms: 48 samples; AAC's noise substitution aside).
+            int bestShift = 0;
+            float bestDiff = 1e9f;
+            for (int shift = -96; shift <= 96; ++shift) {
+                float diff = 0.0f;
+                for (std::size_t i = 0; i < buf.size(); ++i) {
+                    const auto at = static_cast<std::ptrdiff_t>(kWindow * 2) + static_cast<std::ptrdiff_t>(i) + 2 * shift;
+                    diff = std::max(diff, std::abs(buf[i] - truth[j][static_cast<std::size_t>(at)]));
+                }
+                if (diff < bestDiff) {
+                    bestDiff = diff;
+                    bestShift = shift;
+                }
+            }
+            INFO("best match " << bestShift << " samples off, max difference " << bestDiff);
+            CHECK(std::abs(bestShift) <= 48);
+            CHECK(bestDiff <= 1e-3f);
+        }
+        CHECK(decoder.stats().indexedSeeks >= 1);
     }
 }

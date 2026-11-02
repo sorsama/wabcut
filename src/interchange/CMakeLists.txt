@@ -1,4 +1,4 @@
-# wabcut_interchange — pure C++: one-click import (FCP7 XML, FCPXML, OTIO JSON, EDL, .prproj), ImportReport, media relink,
+# wabcut_interchange — pure C++: one-click import (FCP7 XML, FCPXML, OTIO JSON, EDL, .prproj, AAF, OMF), ImportReport, media relink,
 # Lottie (Bodymovin JSON) as motion graphics (C.13), timeline export to FCP7 XML, FCPXML, OTIO and EDL (X.1), and the
 # hand-off to audio post: AAF (MS-CFB structured storage) and OMF 2.0 export with the audio rendered by the host (P.2).
 # Owner: Interchange. Public headers under include/wabcut/interchange/, private sources under src/.
@@ -10,12 +10,15 @@ add_library(wabcut_interchange STATIC
     src/AafExporter.cpp
     src/AafFile.cpp
     src/AafFile.h
+    src/AafImporter.cpp
     src/AafModel.cpp
     src/AafModel.h
     src/AafReader.cpp
     src/AafReader.h
     src/AudioPost.cpp
     src/AudioPost.h
+    src/AudioPostImport.cpp
+    src/AudioPostImport.h
     src/Bento.cpp
     src/Bento.h
     src/CaptionBroadcast.cpp
@@ -39,17 +42,22 @@ add_library(wabcut_interchange STATIC
     src/FcpXmlExporter.cpp
     src/FcpXmlImporter.cpp
     src/FileUrl.cpp
+    src/FilterMap.cpp
+    src/FilterMap.h
     src/Gzip.cpp
     src/Import.cpp
     src/ImportReport.cpp
     src/ImportSummary.cpp
     src/ImporterCommon.h
+    src/InterchangeEffects.cpp
+    src/InterchangeEffects.h
     src/LottieImporter.cpp
     src/MogrtImporter.cpp
     src/Importers.h
     src/Ir.h
     src/MediaRelinker.cpp
     src/OmfExporter.cpp
+    src/OmfImporter.cpp
     src/OtioExporter.cpp
     src/OtioImporter.cpp
     src/PremiereProject.cpp
@@ -74,3 +82,5 @@ wabcut_target_defaults(wabcut_interchange)
 # AAF / OMF files name the product version that wrote them (Identification). Only the exporter sees it, so a version
 # bump rebuilds one file.
 set_property(SOURCE src/AafExporter.cpp APPEND PROPERTY COMPILE_DEFINITIONS "WABCUT_VERSION=\"${PROJECT_VERSION}\"")
+# 0.6 (#57): caption tracks in the export report of timeline and audio-post hand-offs (CaptionTrackReport.h).
+target_sources(wabcut_interchange PRIVATE src/CaptionTrackReport.cpp)

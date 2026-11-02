@@ -2,6 +2,8 @@
 
 #include "InterchangeTestSupport.h"
 
+#include <wabcut/model/Auditions.h>
+
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
@@ -109,7 +111,15 @@ TEST_CASE("interchange: FCPXML 1.11 bundle: clip containers, storylines, compoun
     CHECK(hasEntry(rep, A, ReportCategory::Clip, "'Compound 1' on V1 is longer than its sequence (60 frames)"));
     CHECK(hasEntry(rep, O, ReportCategory::Clip, "multicam clip 'Multicam 1' on V1"));
     CHECK(hasEntry(rep, O, ReportCategory::SequenceSetting, "multicam source with 1 angles"));
-    CHECK(hasEntry(rep, A, ReportCategory::Clip, "audition: only the active pick 'Take 1'"));
+    // 0.6 (card #74): the audition's picks are its takes, the first one active (picture and sound).
+    CHECK(hasEntry(rep, O, ReportCategory::Clip, "audition 'Take 1' with 2 takes (the first pick is the active take)"));
+    for (const char* label : {"V1", "A1"}) {
+        const Clip& audition = track(seq, label).clips.back();
+        REQUIRE(takeCount(audition) == 2);
+        CHECK(audition.audition()->active == 0);
+        CHECK(takeName(audition, 1) == "Take 2");
+        CHECK(auditionTakeClip(audition, 1).sourceIn - audition.sourceIn == frames(300, kRate29_97)); // start 10;00
+    }
     CHECK(
         hasEntry(rep, O, ReportCategory::Transition, "(30 frames, centred on the cut at 00:00:03;00) on V2"));
     // The relative media URL is offline until the bundle has its Media folder; the locator keeps where it
@@ -201,7 +211,10 @@ TEST_CASE("interchange: FCPXML: 1.8 asset src, missing start, effects and unknow
     CHECK(p.value(ParamId::Scale) == Approx(1.5));
     CHECK(p.value(ParamId::Rotation) == Approx(-90.0));
     CHECK(p.value(ParamId::Opacity) == Approx(0.5));
-    CHECK(hasEntry(r.report, D, ReportCategory::Effect, "effect 'Gaussian Blur' on 'A'"));
+    // 0.6 (card #67): a well-known filter becomes Wabcut's effect.
+    CHECK(hasEntry(r.report, A, ReportCategory::Effect, "effect 'Gaussian Blur' on 'A' as Wabcut's 'Gaussian Blur'"));
+    REQUIRE(track(seq, "V1").clips[1].effects().size() == 1);
+    CHECK(track(seq, "V1").clips[1].effects()[0].effect == "wabcut.blur.gaussian");
     CHECK(hasEntry(r.report, D, ReportCategory::Clip, "generator 'Solid'"));
     CHECK(hasEntry(r.report, D, ReportCategory::Clip, "'Ghost' refers to a missing asset"));
 }

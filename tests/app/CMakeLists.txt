@@ -29,7 +29,9 @@ wabcut_add_test_suite(app
         test_gaming_callouts.cpp
         test_extensions_ui.cpp
         test_finishing_ui.cpp
+        test_effect_controls_text.cpp # 0.6: Text sections, keyframe copy and paste, several clips at once
         test_effect_presets_ui.cpp
+        test_master_clip_effects_ui.cpp # 0.6 (#71): Master Clip Effects in Effect Controls and the Effects panel
         test_spelling_ui.cpp
         test_graphics_tools_ui.cpp
         test_frame_inspector.cpp
@@ -39,6 +41,7 @@ wabcut_add_test_suite(app
         test_icons.cpp # 0.1.3: the Boxicons icon set
         test_layout.cpp
         test_library.cpp
+        test_library_p1.cpp # 0.6 (1D): Move to Bin, Cut / Paste, bin drags, Link Media, proxies, sizes, Properties
         test_project_panel.cpp # 0.2 P.3: metadata, Search Bins, Freeform view, XMP, Productions
         test_masks_ui.cpp
         test_media_bridge.cpp
@@ -196,6 +199,11 @@ target_sources(wabcut_app_tests PRIVATE test_audio_meters.cpp)
 # updates (the signed manifest, the verified download and the install after closing, against a loopback fake server;
 # no installer ever runs: the launcher is injected).
 target_sources(wabcut_app_tests PRIVATE test_gpu_choice_ui.cpp test_updates.cpp)
+# 0.6 (P1 round, stream 1A): timeline editing - Square corners, edit points, markers, non-ripple Q / W, track header
+# Shift-clicks and Sync Lock, the Clip Mismatch Warning and the out-of-sync tags.
+target_sources(wabcut_app_tests PRIVATE test_p1_timeline.cpp)
+# 0.6 (card #74): auditions - the Take Selector, Clip > Auditions, the timeline badge and the Program Monitor's take strip.
+target_sources(wabcut_app_tests PRIVATE test_auditions_ui.cpp)
 find_package(Qt6 REQUIRED COMPONENTS Network)
 target_link_libraries(wabcut_app_tests PRIVATE Qt6::Network) # the fake update server (QTcpServer)
 if(WIN32)
@@ -212,3 +220,47 @@ if(WIN32 AND TARGET wabcut)
         COMMAND wabcut_pe_exports_check $<TARGET_FILE:wabcut> NvOptimusEnablement=1 AmdPowerXpressRequestHighPerformance=1)
     set_tests_properties("${wabcut_pe_exports_test}" PROPERTIES LABELS app TIMEOUT 60)
 endif()
+# 0.6 (P1 round, stream 1E): the shell - menu rows that grey out with their reasons, tooltips, Find in the active
+# panel and the panel group keys, saved workspace layouts and the lock, the History panel, update notices and What's New.
+target_sources(wabcut_app_tests PRIVATE test_shell_p1.cpp)
+# P1 round, stream 3E: interface size and window fit (#47), cache and proxy folders (#48), screen-reader audit (#61).
+target_sources(wabcut_app_tests PRIVATE test_settings_3e.cpp test_screen_reader_p1.cpp)
+# 0.6 (P1 round, stream 1C): export - estimates for every format, vertical presets, size limits, offline media before
+# an export and Retry, low disk space, YouTube chapters to the clipboard, Export Frame sizes and frames at markers.
+target_sources(wabcut_app_tests PRIVATE test_export_p1.cpp)
+# 0.6 (P1 round, stream 2D): the Library's usage (Find in Timeline), deleting media in use with its clips, twirl-down
+# bins; Home's Rename / Duplicate / Versions / Move to Recycle Bin, recovery of a project that fails to open, and Home's
+# Import folder with bins.
+target_sources(wabcut_app_tests PRIVATE test_library_usage.cpp test_home_files.cpp)
+# 0.6 (P1 round, stream 2E): the Transcript tab's speakers (#36), the voice-over script prompter (#53) and the loudness
+# QC: where the loudest moments and the true-peak overs are (#54).
+target_sources(wabcut_app_tests PRIVATE test_audio_text_p1.cpp)
+# 0.6 (P1 round, #37): Correct the transcript from your script - the sheet, Apply as one undo step, Update captions.
+target_sources(wabcut_app_tests PRIVATE test_script_correction_ui.cpp)
+# 0.6 (P1 round, task D1): #19 - Toggle Proxies and Playback Resolution as commands, View menu rows and the Source
+# Monitor's settings (no separate transport button: the quality pill shows the state); #50 - Install Motion Graphics
+# Template... and Export template... from the Graphics menu, Callouts > Browse and a template's menu, and template
+# files dropped or imported rather than taken as media.
+target_sources(wabcut_app_tests PRIVATE test_monitor_proxies_p1.cpp test_template_files_p1.cpp)
+# 0.6 (P1 round, stream 3B): Paused Resolution, the Program Monitor edit overlay, captions picked in the monitor.
+target_sources(wabcut_app_tests PRIVATE test_monitors_3b.cpp)
+# 0.6 (P1 round, stream 2C): the queue across restarts, batch exports, the media usage report.
+target_sources(wabcut_app_tests PRIVATE test_export_2c.cpp)
+# 0.6 (P1 round, task D5): #35 - the four caption keys (Ctrl+Alt+A / C, Ctrl+Alt+Up / Down), their reasons in the palette,
+# the Sequence > Captions menu and a new caption's text selected in the Captions tab.
+target_sources(wabcut_app_tests PRIVATE test_captions_keys_p1.cpp)
+# 0.6 (P1 round, stream 3A): Make Shorts / square version as a job with progress and Cancel (#55), with the facecam
+# region and split the layout picker remembers (#51).
+target_sources(wabcut_app_tests PRIVATE test_gaming_versions.cpp)
+# 0.6 (P1 round, stream 3A, #62): the creator autopilot - autopilot.broll / publishKit / pacing through the catalog on
+# fixtures, and the Creator Autopilot sheet (screenshots, dark and light).
+target_sources(wabcut_app_tests PRIVATE AutopilotTestUtil.h test_autopilot.cpp test_autopilot_ui.cpp)
+# 0.6 (P1 round, stream 3C): dialogue / music / effects stems with the master (#52); caption tracks with timeline
+# hand-offs and Export all tracks (#57); the Audio stems row and Export Timeline's Captions row (screenshots).
+target_sources(wabcut_app_tests PRIVATE test_delivery_p1.cpp)
+# 0.6 (P1 round, stream 2A): Render Selection, Delete Render Files (In to Out), render files as a cache and the cache
+# limits kept automatically (#7, #58; screenshots, dark and light).
+target_sources(wabcut_app_tests PRIVATE test_render_files.cpp)
+# 0.6 (P1 round, task D9, #8): the beat tools - Sequence > Beat Grid and Clip > Detect Beats..., the Timeline Display
+# beat grid with its ruler ticks, the palette rows' reasons, and Detect / Snap / Cut / Clear each one undo step.
+target_sources(wabcut_app_tests PRIVATE test_beats_ui.cpp)

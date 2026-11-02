@@ -223,6 +223,7 @@ WabcutDialog {
                 visible: dialog.path.length > 0
                 ValueSlider {
                     objectName: "autoZoomTimeSlider"
+                    Accessible.name: qsTr("Preview position") // P1 #61
                     Layout.fillWidth: true
                     from: 0
                     to: Math.max(0, dialog.path.length - 1)
@@ -260,6 +261,7 @@ WabcutDialog {
             Value { Layout.alignment: Qt.AlignRight; text: "×" + zoomSlider.value.toFixed(1) }
             ValueSlider {
                 id: zoomSlider
+                Accessible.name: qsTr("Most zoom") // P1 #61
                 objectName: "autoZoomMaxZoom"
                 Layout.columnSpan: 2
                 Layout.fillWidth: true
@@ -273,6 +275,7 @@ WabcutDialog {
             Value { Layout.alignment: Qt.AlignRight; text: holdSlider.value.toFixed(1) + " s" }
             ValueSlider {
                 id: holdSlider
+                Accessible.name: qsTr("Hold") // P1 #61
                 objectName: "autoZoomHold"
                 Layout.columnSpan: 2
                 Layout.fillWidth: true
@@ -285,6 +288,7 @@ WabcutDialog {
             Label { Layout.columnSpan: 2; text: qsTr("Motion") }
             PillTabs {
                 id: easingTabs
+                Accessible.name: qsTr("Motion") // P1 #61
                 objectName: "autoZoomEasing"
                 Layout.columnSpan: 2
                 Layout.fillWidth: true

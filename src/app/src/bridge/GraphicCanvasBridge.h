@@ -33,6 +33,11 @@
 //     - pickOutline: the box of the clip or title picked in the monitor while it stays the selection (a graphic
 //       layer has its own handles).
 //     - setTitleText() writes a title's text (every clip of the title shows it), the title's inline editor.
+//     - P1 (#18): the burned-in caption (the program monitor's caption track, Playback's caption settings) is an object
+//       too, on top: kind "caption", its text block's box, `captionTrack` and `cue` (the cue under the playhead). A
+//       click on it picks the cue instead of a clip (the clip selection is cleared, as a cue click on the timeline
+//       does; QML selects the cue in Captions) and outlines it; a double-click answers "edit" (QML opens the cue's text
+//       in the Captions panel).
 
 #include <wabcut/model/GraphicResolve.h>
 #include <wabcut/model/Graphics.h>
@@ -58,6 +63,7 @@ class QTimer;
 
 namespace wabcut::app {
 
+class PlaybackBridge;
 class ProjectController;
 
 class GraphicCanvasBridge : public QObject {
@@ -98,6 +104,8 @@ public:
     static GraphicCanvasBridge* create(QQmlEngine* qmlEngine, QJSEngine* jsEngine);
 
     void setController(ProjectController* controller);
+    /// P1 (#18): the burned-in caption joins the pick stack with Playback's caption settings.
+    void setPlayback(PlaybackBridge* playback);
     /// The text measurer resolves use (null = the model's approximation). Must outlive the resolves.
     void setMeasurer(std::shared_ptr<const TextMeasurer> measurer);
 
@@ -204,17 +212,20 @@ public:
     struct PickObject {
         ClipId clip;
         std::uint32_t layer = 0; ///< a graphic clip's layer; 0 = the clip itself
-        QString kind;            ///< "text" | "shape" | "image" (graphic layers), "title", "clip"
+        QString kind;            ///< "text" | "shape" | "image" (graphic layers), "title", "clip", "caption" (P1 #18)
         QString name;
         bool text = false;           ///< editable text in place
         std::array<double, 8> quad{}; ///< fractions of the sequence canvas, clockwise from the top-left corner
         QVariantMap editor;          ///< titles: the inline editor's box and look (as selection.editor)
+        QString captionTrack;        ///< P1 (#18), captions: the caption track ("k3")
+        int cue = -1;                ///< P1 (#18), captions: the index of the cue under the playhead on it
     };
     /// The objects of one frame, top first.
     struct PickStack {
         SequenceId sequence;
         Ticks playhead{};
         int revision = -1;
+        std::uint64_t captions = 0; ///< P1 (#18): captionsKey() it was read with
         std::vector<PickObject> objects;
     };
 
@@ -270,7 +281,13 @@ private:
     /// The outline follows the picked clip; a selection made elsewhere ends the picking cycle.
     void refreshPick();
 
+    /// P1 (#18): which caption track the monitor draws (0: none), so a stack read before a change is stale.
+    std::uint64_t captionsKey() const;
+    /// The stack still shows the monitor's frame (sequence, playhead, revision, caption track).
+    bool stackCurrent(const PickStack& stack) const;
+
     std::shared_ptr<const PickStack> m_stack;
+    QString m_pickedCaption; ///< P1 (#18): the caption cue picked in the monitor (its key), while no clip is selected
     QString m_pickedKey;   ///< what the monitor picked last ("" none, or the selection changed since)
     QString m_gesturePrev; ///< the picked object when the click (or double-click) began
     QString m_editedKey;   ///< the text object this cycle edited
@@ -285,6 +302,7 @@ private:
     QVariantList m_pickOutlineJs;
 
     QPointer<ProjectController> m_controller;
+    QPointer<PlaybackBridge> m_playback; ///< P1 (#18): the caption settings the monitor draws with
     std::shared_ptr<Gate> m_gate;
     std::shared_ptr<const TextMeasurer> m_measurer;
     std::shared_ptr<const Resolved> m_resolved;

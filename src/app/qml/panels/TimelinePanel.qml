@@ -39,6 +39,9 @@ import QtQuick.Controls.Basic
 //   on a second press (toggleZoomToSequence); playback follows the playhead by Preferences.timelinePlaybackScroll
 //   (followPlayhead, from Main). Stream B's keys: Page Up / Page Down page the view (Show Previous / Next Screen) and
 //   the numpad's digits, +, - and . type a timecode into the corner (TimecodeEntry.openFromKeypad).
+// - 0.6 (P1 round, stream 1A): Edit Marker… / M on a marker (editMarker), Toggle All Source Video / Audio, and the Clip
+//   Mismatch Warning around Main's drops (dropChecked, ClipMismatchDialog); Settings > Appearance > Timeline corners
+//   squares the lanes, clips and boxes here (Theme.radiusTimeline).
 Panel {
     id: root
 
@@ -258,6 +261,9 @@ Panel {
         // 0.4 (stream B): Premiere's Show Next / Previous Screen (Page Down / Page Up): the view pages, the playhead stays.
         case "timeline.showNextScreen": lanes.view.scrollBy(lanes.view.width, 0); return true
         case "timeline.showPreviousScreen": lanes.view.scrollBy(-lanes.view.width, 0); return true
+        // 0.6 (stream 1A): Premiere's Toggle All Source Video / Audio (Ctrl+Alt+0 / Ctrl+Alt+9).
+        case "timeline.toggleAllVideoSources": root.toggleAllSources("video"); return true
+        case "timeline.toggleAllAudioSources": root.toggleAllSources("audio"); return true
         // UX rework (stream T): Delete, Backspace and Ripple Delete close a selected gap when no clip is selected; when
         // the model refuses (another sync-locked track has clips in that time, a locked track) the panel says why.
         // A gap is selected by any plain click in empty lane space, so Delete and Shift+Delete (application keys) close
@@ -315,6 +321,47 @@ Panel {
     function revealPlayhead() {
         lanes.view.revealPlayhead()
     }
+
+    // ---- 0.6 (P1 round, stream 1A) ----
+    /// Edit Marker… / M on a marker: the marker editor for sequence marker `index` (ruler), or `clip` scope's marker
+    /// `index` (the selected clip's, under the playhead).
+    function editMarker(index: int, scope: string) {
+        lanes.view.revealPlayhead()
+        if (scope === "clip")
+            ruler.editClipMarker(index)
+        else
+            ruler.editMarker(index)
+    }
+    /// Toggle All Source Video / Audio: every patched source indicator of `kind` on (when one is off) or off.
+    function toggleAllSources(kind: string) {
+        const list = SourceMonitor.indicators.filter(i => i.kind === kind && (i.track ?? "") !== "")
+        if (list.length === 0)
+            return
+        const on = list.some(i => !i.enabled)
+        for (const i of list) {
+            if (i.enabled !== on)
+                SourceMonitor.togglePatch(i.source)
+        }
+    }
+    /// Premiere's Clip Mismatch Warning around a drop into the timeline (Main's drops and Source Monitor edits): `drop`
+    /// places the clips and returns whether it did. When the sequence was empty and the first video clip it placed has
+    /// another frame size or rate, Preferences.clipMismatch decides: "change" matches the sequence to it (in the drop's
+    /// undo step), "keep" leaves it, "ask" opens the warning. `newProject`: the drop starts a new (empty) project first
+    /// (files over the sample project). Returns what `drop` returned.
+    function dropChecked(drop: var, newProject: bool): bool {
+        const wasEmpty = newProject || lanes.view.sequenceEmpty()
+        const placed = drop()
+        if (!placed || !wasEmpty || Preferences.clipMismatch === "keep")
+            return placed
+        const mismatch = lanes.view.clipMismatch()
+        if ((mismatch.media ?? "") === "")
+            return placed
+        if (Preferences.clipMismatch === "change")
+            lanes.view.matchSequenceToClip(true, ProjectController.revision)
+        else
+            mismatchDialog.ask(mismatch, ProjectController.revision)
+        return placed
+    }
     /// 0.4: during playback (Main): "page" turns a screen when the playhead runs off it, "smooth" keeps the playhead in
     /// the middle, "none" leaves the view alone (Premiere's Timeline Playback Auto-Scrolling); `reverse` while it plays
     /// backwards (J), which mirrors page and smooth.
@@ -344,6 +391,8 @@ Panel {
     }
 
     title: qsTr("Tracks")
+    // P1 #61: a screen reader names the pane as its tab does (the title is the track header's).
+    Accessible.name: qsTr("Timeline")
 
     // 0.1.3 toolbar, in three places so tools, modes and actions never mix (one mixed row of icons confused users):
     //   * the header: the edit tools as Premiere's palette, one button per group with the rest in its flyout;
@@ -752,7 +801,7 @@ Panel {
                 visible: lanes.view.newTrackLabel !== ""
                 width: headers.width
                 height: Theme.trackHeightAudio
-                radius: Theme.radiusClip
+                radius: Theme.radiusTimeline
                 color: Theme.accentWash
                 border.width: Theme.hairline
                 border.color: Theme.accentStroke
@@ -917,7 +966,7 @@ Panel {
                 y: effectDrop.area.y
                 width: effectDrop.area.width
                 height: effectDrop.area.height
-                radius: Theme.radiusClip
+                radius: Theme.radiusTimeline
                 color: !(effectDrop.target.ok ?? false) ? Qt.alpha(Theme.danger, 0.16)
                      : (effectDrop.target.warning ?? false) ? Qt.alpha(Theme.warning, 0.18) : Theme.accentWash
                 border.width: Theme.selectionWidth
@@ -931,7 +980,7 @@ Panel {
                 y: Math.round(Math.max(0, effectDrop.pointer.y - height - Theme.space(2)))
                 width: dropTipText.implicitWidth + Theme.space(4)
                 height: dropTipText.implicitHeight + Theme.space(2)
-                radius: Theme.radiusClip
+                radius: Theme.radiusTimeline
                 color: Theme.scrim
 
                 Text {
@@ -952,7 +1001,7 @@ Panel {
                 y: Math.round(Math.max(0, lanes.view.gesturePoint.y - height - Theme.space(2)))
                 width: readoutText.implicitWidth + Theme.space(3)
                 height: readoutText.implicitHeight + Theme.space(1.5)
-                radius: Theme.radiusClip
+                radius: Theme.radiusTimeline
                 color: Theme.scrim
 
                 Text {
@@ -1087,7 +1136,7 @@ Panel {
 
             FocusRing {
                 anchors.margins: 0            // drawn on the lane edge: the tracks area clips anything outside
-                targetRadius: Theme.radiusClip
+                targetRadius: Theme.radiusTimeline
                 visible: lanesArea.activeFocus && !lanesArea.pointerFocus
             }
         }
@@ -1110,7 +1159,7 @@ Panel {
 
             FocusRing {
                 anchors.margins: 0
-                targetRadius: Theme.radiusClip
+                targetRadius: Theme.radiusTimeline
                 visible: clipAccess.activeFocus
             }
 
@@ -1239,7 +1288,7 @@ Panel {
                  : ruler.y
         width: lanesArea.width
         height: audio ? bandHeight : tracksArea.y - ruler.y
-        radius: Theme.radiusClip
+        radius: Theme.radiusTimeline
         color: Theme.accentWash
         border.width: Theme.hairline
         border.color: Theme.accentStroke
@@ -1297,6 +1346,16 @@ Panel {
     }
     TransitionDurationDialog {
         id: transitionDurationDialog
+    }
+    // 0.6 (stream 1A): the Clip Mismatch Warning (dropChecked).
+    ClipMismatchDialog {
+        id: mismatchDialog
+        onAnswered: (change, remember) => {
+            if (remember)
+                Preferences.clipMismatch = change ? "change" : "keep"
+            if (change && !lanes.view.matchSequenceToClip(true, mismatchDialog.revision) && ProjectController.lastError !== "")
+                root.messageRequested(ProjectController.lastError)
+        }
     }
 
     // ---- Footer: zoom + minimap ----

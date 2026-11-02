@@ -104,6 +104,7 @@
     "step-back": "bx-skip-previous",
     "step-forward": "bx-skip-next",
     "sun": "bx-sun",
+    "sync-lock": "bx-swap-horizontal",
     "tag": "bx-tag",
     "timer": "bx-stopwatch",
     "trash-2": "bx-trash",

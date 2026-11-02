@@ -268,7 +268,10 @@ Wabcut can tell when a newer release is out and, on Windows, install it. It is *
 internet until the user turns on *Check for updates automatically* (Settings > General > Updates, off by default) or
 chooses **Help > Check for Updates...** (also in Settings and the command palette). An automatic check runs once a day
 at most, shortly after start; a newer version shows a toast with *Details*, and *Skip This Version* keeps automatic
-checks quiet about it.
+checks quiet about it. Since 0.6, while a newer version is known and not skipped, the **Help** menu's title shows a dot
+and its row reads *Wabcut x.y.z Is Available...* (`Updates.updateNotice`); after an update, *What's New* opens once
+(the version that last started is kept in `onboarding/lastSeenVersion`; a first run only records it). Versions compare
+as SemVer: a leading `v` is allowed and a pre-release (`0.6.0-beta.2`) is older than its release.
 
 **The check.** A plain GET of `https://github.com/sorsama/wabcut/releases/latest/download/wabcut-update.json` with the
 user agent `Wabcut/<version>`; nothing about the user or the projects is sent. The manifest is

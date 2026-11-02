@@ -9,12 +9,34 @@ WabcutDialog {
     id: dialog
     objectName: "whatsNewDialog"
 
-    // Keep in step with docs/roadmap.md when a milestone lands. This build: 0.5's caption lanes and nested waveforms,
-    // Audio Meters and scrubbing, Scene Edit Detection and the dead-time review, chapter markers and the source
-    // transcript, the hybrid-laptop GPU and opt-in updates first, then 0.4's timeline copy and clip facts, Premiere
+    // Keep in step with docs/roadmap.md when a milestone lands. This build: 0.6's text in Effect Controls, auditions,
+    // HDR finishing, Master Clip Effects, the export queue kept across restarts, MXF and broadcast captions, Creator
+    // Autopilot, Premiere's caption keys, script correction and workspaces with History first, then 0.5's caption lanes
+    // and nested waveforms, Audio Meters and scrubbing, Scene Edit Detection and the dead-time review, chapter markers
+    // and the source transcript, the hybrid-laptop GPU and opt-in updates, 0.4's timeline copy and clip facts, Premiere
     // keys, Effect Controls and transcript tools, gaming Shorts and safe quitting, 0.3's Home, menu bar, Effects panel
     // and everyday editing, 0.2's Premiere parity, the gaming wave (M5o), M5k-M5n, C.7-C.12, A.3-A.9, AI-9-AI-13.
     readonly property var highlights: [
+        { key: "textEffectControls", icon: "type", title: qsTr("Text in Effect Controls"),
+          text: qsTr("Select a graphic and Effect Controls has a Text section for each layer: text, font, size, alignment, tracking, capitals, strokes, the background box and the shadow. Sizes, spacing and Source Text keyframe like any other row.") },
+        { key: "auditions", icon: "clapperboard", title: qsTr("Auditions: several takes at one cut"),
+          text: qsTr("Select clips and choose Clip > Auditions > New Audition: they become one clip that keeps every take, and the Take Selector or the Program Monitor's take strip switches which one plays. Every take keeps its own effects, auditions trim and cut like clips, and export uses the active take.") },
+        { key: "hdrFinishing", icon: "contrast", title: qsTr("HDR finishing and SDR Conform"),
+          text: qsTr("Wide Gamut (Minimal Tone Mapping), gamut compression and an output colour space for each sequence and export. SDR Conform makes an SDR file from an HDR sequence, shows a before and after split and says what it mapped.") },
+        { key: "masterClipEffects", icon: "layers", title: qsTr("Master Clip Effects"),
+          text: qsTr("Right-click an effect > Apply to Master Clip and every clip of that recording plays it, including ones you add later. Change it once in Effect Controls and every instance follows; one switch turns it off for a single clip.") },
+        { key: "exportQueueKept", icon: "upload", title: qsTr("An export queue that keeps going"),
+          text: qsTr("Exports waiting in the queue come back after a restart, and one stopped by a quit or a crash comes back with Retry. Export several sequences or every marker as its own file, fit any export into a size you choose, and write dialogue, music and effects stems beside it.") },
+        { key: "mxfCaptions", icon: "film", title: qsTr("MXF and broadcast captions"),
+          text: qsTr("Export MXF OP1a (XDCAM HD422, DNxHD / DNxHR or AVC-Intra 100) or OP-Atom for Avid, with mono PCM tracks, a timecode track and a reel name. CEA-608 and CEA-708 captions go into MXF, H.264, HEVC and XDCAM files, and a format that cannot carry them says why.") },
+        { key: "creatorAutopilot", icon: "sparkles", title: qsTr("Creator Autopilot"),
+          text: qsTr("B-roll from your own library on the lines that need it, a publishing kit (title, description with chapters, tags, thumbnails) written as files, and cuts matched to a reference video's pace. Everything previews first and applies as one undo step; nothing is uploaded.") },
+        { key: "captionKeys", icon: "captions", title: qsTr("Premiere's caption keys"),
+          text: qsTr("Ctrl+Alt+A makes a caption track, Ctrl+Alt+C adds a caption at the playhead ready to type over, and Ctrl+Alt+Up and Down move between captions. Captions in the Program Monitor are clickable: select one, edit its text or drag it.") },
+        { key: "scriptTranscript", icon: "spell-check", title: qsTr("Correct the transcript from your script"),
+          text: qsTr("Paste the script you read and Wabcut fixes the transcript's misheard names and jargon to match it, capitals and numbers too. See every change first, apply them in one undo step, then update the captions.") },
+        { key: "workspacesHistory", icon: "columns-3", title: qsTr("Workspaces, History and a smaller interface"),
+          text: qsTr("Save a workspace's changes, save a new one, reset to a preset or lock it. History is a panel you can dock, and Ctrl+F searches the panel you are in. Interface size has a 90 % step, and the window always fits the screen.") },
         { key: "captionLanes", icon: "captions", title: qsTr("Captions on the timeline"),
           text: qsTr("Caption tracks are rows above the video tracks: trim, move, split and delete captions there like clips, and Ctrl+K cuts the targeted caption rows with the clips. Nested and multicam clips show the waveform of their mix.") },
         { key: "audioMeters", icon: "audio-lines", title: qsTr("Audio Meters and audio scrubbing"),

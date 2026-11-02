@@ -11,10 +11,13 @@
 #include <QColor>
 #include <QCoreApplication>
 #include <QJsonDocument>
+#include <QJsonObject>
 #include <QQmlEngine>
+#include <QSettings>
 
 #include <algorithm>
 #include <cmath>
+#include <map>
 #include <string>
 
 namespace wabcut::app {
@@ -22,6 +25,32 @@ namespace wabcut::app {
 namespace {
 
 using Json = command::Json;
+
+// 0.6 (P1 #51): the facecam regions, per gameplay file.
+const QString kRegionsKey = QStringLiteral("layout/facecamRegions");
+const QString kLastOptionsKey = QStringLiteral("layout/lastOptions");
+constexpr qsizetype kMaxStoredRegions = 200;
+
+/// A region clamped into the frame ({ x, y, width, height }), or {} when it is empty or too small (2 % a side).
+QVariantMap normalizedRegion(const QVariantMap& region) {
+    if (region.isEmpty())
+        return {};
+    const auto clamp01 = [](double v, double hi) { return std::isfinite(v) ? std::clamp(v, 0.0, std::max(0.0, hi)) : 0.0; };
+    const double x = clamp01(region.value(QStringLiteral("x")).toDouble(), 1);
+    const double y = clamp01(region.value(QStringLiteral("y")).toDouble(), 1);
+    const double w = clamp01(region.value(QStringLiteral("width")).toDouble(), 1 - x);
+    const double h = clamp01(region.value(QStringLiteral("height")).toDouble(), 1 - y);
+    if (w < 0.02 || h < 0.02)
+        return {};
+    return {{QStringLiteral("x"), x}, {QStringLiteral("y"), y}, {QStringLiteral("width"), w}, {QStringLiteral("height"), h}};
+}
+
+/// The stored regions: { key: { x, y, width, height, used } } ("used" orders them, newest highest).
+QJsonObject storedRegions() {
+    const QByteArray text = QSettings().value(kRegionsKey).toString().toUtf8();
+    const QJsonDocument doc = QJsonDocument::fromJson(text);
+    return doc.isObject() ? doc.object() : QJsonObject{};
+}
 
 QVariant toVariant(const Json& value) {
     return QJsonDocument::fromJson(QByteArray::fromStdString(Json{{"v", value}}.dump())).toVariant().toMap().value(
@@ -357,6 +386,25 @@ void LayoutBridge::refreshTargets() {
                 m_facecam = found.front().target;
         }
     }
+    // 0.6 (P1 #51): the facecam region belongs to the gameplay's file: another file brings back its own (or none), so a
+    // region never carries over to another recording or project.
+    QString regionMedia;
+    if (m_gameplay && snap && seq) {
+        if (const auto loc = seq->findClip(m_gameplay->clip)) {
+            if (const MediaItem* media = snap->findMedia(loc->clip().media))
+                regionMedia = regionKey(*media);
+        }
+    }
+    if (regionMedia != m_regionMedia) {
+        m_regionMedia = regionMedia;
+        QVariantMap stored;
+        if (!regionMedia.isEmpty()) {
+            const QJsonObject all = storedRegions();
+            if (const auto it = all.find(regionMedia); it != all.end() && it->isObject())
+                stored = normalizedRegion(it->toObject().toVariantMap());
+        }
+        m_region = stored;
+    }
     emit targetsChanged();
 }
 
@@ -371,19 +419,107 @@ bool LayoutBridge::sequenceIsVertical() const {
 }
 
 void LayoutBridge::setFacecamRegion(const QVariantMap& region) {
-    QVariantMap next;
-    if (!region.isEmpty()) {
-        const double x = clampTo(region.value(QStringLiteral("x")).toDouble(), 0, 1);
-        const double y = clampTo(region.value(QStringLiteral("y")).toDouble(), 0, 1);
-        const double w = clampTo(region.value(QStringLiteral("width")).toDouble(), 0, 1 - x);
-        const double h = clampTo(region.value(QStringLiteral("height")).toDouble(), 0, 1 - y);
-        if (w >= 0.02 && h >= 0.02)
-            next = {{QStringLiteral("x"), x}, {QStringLiteral("y"), y}, {QStringLiteral("width"), w}, {QStringLiteral("height"), h}};
+    applyRegion(region, true);
+}
+
+void LayoutBridge::applyRegion(const QVariantMap& region, bool store) {
+    const QVariantMap next = normalizedRegion(region);
+    // 0.6 (P1 #51): the user's region is remembered for the gameplay's file (drawing it again replaces it, clearing it
+    // forgets it).
+    if (store && !m_regionMedia.isEmpty() && m_controller) {
+        const ProjectSnapshot snap = m_controller->snapshot();
+        const SequencePtr seq = m_controller->currentSequence();
+        const auto loc = m_gameplay && seq ? seq->findClip(m_gameplay->clip) : std::nullopt;
+        const MediaItem* media = loc && snap ? snap->findMedia(loc->clip().media) : nullptr;
+        if (media && regionKey(*media) == m_regionMedia)
+            storeRegionFor(*media, next);
     }
     if (next == m_region)
         return;
     m_region = next;
     emit targetsChanged();
+}
+
+QString LayoutBridge::regionKey(const MediaItem& media) {
+    if (media.isGenerator())
+        return {};
+    const SourceFingerprint& fp = media.locator.fingerprint;
+    if (fp.isKnown())
+        return QStringLiteral("fp:%1:%2").arg(fp.size).arg(QString::fromStdString(fp.sampleHash));
+    if (!media.locator.path.empty())
+        return QStringLiteral("path:") + QString::fromStdString(media.locator.path);
+    return {};
+}
+
+QVariantMap LayoutBridge::storedRegionFor(const MediaItem& media) {
+    const QString key = regionKey(media);
+    if (key.isEmpty())
+        return {};
+    const QJsonObject all = storedRegions();
+    const auto it = all.find(key);
+    if (it == all.end() || !it->isObject())
+        return {};
+    return normalizedRegion(it->toObject().toVariantMap());
+}
+
+void LayoutBridge::storeRegionFor(const MediaItem& media, const QVariantMap& region) {
+    const QString key = regionKey(media);
+    if (key.isEmpty())
+        return;
+    QJsonObject all = storedRegions();
+    const QVariantMap clean = normalizedRegion(region);
+    if (clean.isEmpty()) {
+        if (!all.contains(key))
+            return;
+        all.remove(key);
+    } else {
+        double newest = 0;
+        for (auto it = all.begin(); it != all.end(); ++it)
+            newest = std::max(newest, it->toObject().value(QStringLiteral("used")).toDouble());
+        QJsonObject entry = QJsonObject::fromVariantMap(clean);
+        entry.insert(QStringLiteral("used"), newest + 1);
+        all.insert(key, entry);
+        // The most recent files only: the oldest go first.
+        while (all.size() > kMaxStoredRegions) {
+            auto oldest = all.begin();
+            for (auto it = all.begin(); it != all.end(); ++it) {
+                if (it->toObject().value(QStringLiteral("used")).toDouble() <
+                    oldest->toObject().value(QStringLiteral("used")).toDouble())
+                    oldest = it;
+            }
+            all.erase(oldest);
+        }
+    }
+    QSettings().setValue(kRegionsKey, QString::fromUtf8(QJsonDocument(all).toJson(QJsonDocument::Compact)));
+}
+
+QVariantMap LayoutBridge::lastOptions() {
+    const QJsonDocument doc = QJsonDocument::fromJson(QSettings().value(kLastOptionsKey).toString().toUtf8());
+    return doc.isObject() ? doc.object().toVariantMap() : QVariantMap{};
+}
+
+const MediaItem* LayoutBridge::gameplayMediaOf(const ProjectState& state, const Sequence& sequence) {
+    for (const TrackPtr& track : sequence.videoTracks) {
+        std::map<std::uint64_t, std::int64_t> played;
+        for (const Clip& c : track->clips) {
+            const MediaItem* media = state.findMedia(c.media);
+            if (media && !media->isGenerator() && !media->info.video.empty())
+                played[c.media.value] += c.duration().value;
+        }
+        if (played.empty())
+            continue;
+        const auto best = std::max_element(played.begin(), played.end(),
+                                           [](const auto& a, const auto& b) { return a.second < b.second; });
+        return state.findMedia(MediaId{best->first});
+    }
+    return nullptr;
+}
+
+QVariantMap LayoutBridge::regionForMedia(const QString& media) const {
+    const auto id = detail::parseId<MediaId>(QLatin1Char('m'), media);
+    const ProjectSnapshot snap = m_controller ? m_controller->snapshot() : nullptr;
+    const MediaItem* item = id && snap ? snap->findMedia(*id) : nullptr;
+    return item ? storedRegionFor(*item) : QVariantMap{};
 }
 
 QVariantMap LayoutBridge::setRegionFromFrame(double x0, double y0, double x1, double y1) {
@@ -406,7 +542,7 @@ QVariantMap LayoutBridge::setRegionFromFrame(double x0, double y0, double x1, do
 }
 
 void LayoutBridge::clearRegion() {
-    setFacecamRegion({});
+    applyRegion({}, true);
 }
 
 QVariantMap LayoutBridge::facecamRegionInFrame() const {

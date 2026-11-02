@@ -12,6 +12,10 @@ import QtQuick.Shapes
 // and, on Bezier keys, in/out handles (InspectorPanel's lane area drags them: Alt breaks the pair).
 // 0.4: a click on a section header selects it (Ctrl toggles, Shift extends; Premiere's Effect Controls) for Backspace,
 // Cut / Copy / Paste and the header's right-click menu (EffectSectionMenu); a selected header has the accent outline.
+// 0.6, a graphic's or title's Text section: a group caption ("group", with an add button for strokes), the Source
+// Text box ("textarea": applied when it loses focus or on Ctrl+Enter; its stopwatch keys the text as hold keys), the
+// Font button ("font": the panel's font picker) and colour rows ("color": a swatch for the panel's colour picker and
+// the hex value; strokes have a remove button). Multi mode (several clips) shows a value the clips do not share as "—".
 Item {
     id: row
 
@@ -52,6 +56,12 @@ Item {
     required property var graph
     /// 0.4: the header is selected (Backspace removes it, Ctrl+C copies it; EffectControls.selectedSections).
     required property bool sectionSelected
+    /// 0.6, multi mode: the selected clips do not share this value.
+    required property bool mixed
+
+    /// 0.6: the panel opens its colour picker / font picker for this row, under `anchor`.
+    signal colorRequested(Item anchor)
+    signal fontRequested(Item anchor)
 
     // ---- From the panel ----
     /// Width of the keyframe lane on the right (0: no lane; the slider gets the room).
@@ -66,6 +76,33 @@ Item {
     }
     readonly property var controls: ProjectController.effectControls
     readonly property bool header: kind === "header"
+    readonly property bool group: kind === "group"
+    readonly property bool textArea: kind === "textarea"
+    /// A row with a stopwatch and keyframe navigation (a number, or 0.6's Source Text).
+    readonly property bool keyed: kind === "param" || kind === "textarea"
+    /// 0.6: sections that are not effects of the clip (a text layer's, multi mode's) are not selected.
+    readonly property bool selectableSection: header && sectionKind !== "transition" && sectionKind !== "text"
+                                              && sectionKind !== "multi"
+    /// Choices with at most this many options are pills, more a menu (0.6: a Text section's are long words: three).
+    readonly property int pillLimit: sectionKind === "text" ? 3 : 4
+    /// 0.6 (2B): pills only when they fit on one line of the row; otherwise (a narrow panel, long names such as Glow's
+    /// "Color Channels") the menu, so wrapped pills never spill over the next row.
+    readonly property real pillsWidth: {
+        if (kind !== "choice" || !options)
+            return 0
+        let total = 0
+        for (let i = 0; i < options.length; ++i)
+            total += Math.ceil(pillFont.advanceWidth(String(options[i].label))) + Theme.space(7)
+        return total
+    }
+    readonly property real pillRoom: Math.min(Theme.space(70), paramRow.width - Theme.space(7) - Theme.propLabelWidth
+                                                               - Theme.space(12))
+    readonly property bool pillChoice: kind === "choice" && !!options && options.length <= pillLimit && pillsWidth <= pillRoom
+    FontMetrics { // PillButton's text (the selected pill's weight, the widest)
+        id: pillFont
+        font.pixelSize: Theme.textMd
+        font.weight: Theme.weightTitle
+    }
     /// M5m (A.6): an audio plugin's header shows its badge and "Edit plugin…" (Plugins.effectInfo; `revision` re-reads it).
     readonly property var pluginInfo: header && sectionKind === "effect" && Plugins.revision >= 0 ? Plugins.effectInfo(section) : ({})
     readonly property bool isPlugin: pluginInfo.plugin === true
@@ -138,7 +175,11 @@ Item {
     }
 
     width: ListView.view ? ListView.view.width : 0
-    height: header ? Theme.controlHeight + Theme.space(1) : showGraph ? Theme.controlHeight + Theme.space(24) : Theme.controlHeight
+    height: header ? Theme.controlHeight + Theme.space(1)
+          : showGraph ? Theme.controlHeight + Theme.space(24)
+          : textArea ? Theme.controlHeight + Theme.space(18)
+          : group ? Theme.controlHeight - Theme.space(1)
+          : Theme.controlHeight
     z: dragging ? 10 : 0
 
     Item {
@@ -166,7 +207,7 @@ Item {
             opacity: row.effectEnabled ? 1 : Theme.disabledOpacity
 
             Rectangle {
-                visible: !row.header && !row.showGraph
+                visible: !row.header && !row.showGraph && !row.group
                 anchors.left: parent.left
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
@@ -292,10 +333,10 @@ Item {
             border.color: row.dragging || row.sectionSelected ? Theme.accentStroke : Theme.border
             Accessible.role: Accessible.ListItem
             Accessible.name: row.title
-            Accessible.selectable: row.sectionKind !== "transition"
+            Accessible.selectable: row.selectableSection
             Accessible.selected: row.sectionSelected
             Accessible.onPressAction: {
-                if (row.sectionKind !== "transition")
+                if (row.selectableSection)
                     row.controls.selectSection(row.section, 0)
             }
 
@@ -304,7 +345,7 @@ Item {
             TapHandler {
                 id: sectionSelect
                 acceptedButtons: Qt.LeftButton
-                enabled: row.header && row.sectionKind !== "transition"
+                enabled: row.selectableSection
                 onTapped: {
                     row.ListView.view?.forceActiveFocus(Qt.MouseFocusReason)
                     row.controls.selectSection(row.section, sectionSelect.point.modifiers)
@@ -316,7 +357,7 @@ Item {
             TapHandler {
                 id: sectionTap
                 acceptedButtons: Qt.RightButton
-                enabled: row.header && row.sectionKind !== "transition"
+                enabled: row.selectableSection
                 onTapped: point => {
                     row.ListView.view?.forceActiveFocus(Qt.MouseFocusReason)
                     if (!row.sectionSelected)
@@ -513,9 +554,101 @@ Item {
             }
         }
 
+        // ---- 0.6: a group caption in a Text section (Source Text, Appearance, Strokes, Transform) ----
+        RowLayout {
+            visible: row.group
+            anchors.left: parent.left
+            anchors.right: row.hasLane ? lane.left : parent.right
+            anchors.rightMargin: row.hasLane ? Theme.space(2) : 0
+            anchors.leftMargin: Theme.space(2)
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: Theme.space(1)
+
+            Text {
+                objectName: "effectGroupLabel"
+                Layout.fillWidth: true
+                text: row.title
+                elide: Text.ElideRight
+                color: Theme.textTertiary
+                font.family: Theme.fontSans
+                font.pixelSize: Theme.textSm
+                font.weight: Font.DemiBold
+            }
+            IconButton {
+                objectName: "groupAction_" + row.text
+                visible: row.group && row.text !== ""
+                compact: true
+                // 0.6 (card #71): the Master Clip caption turns the master clip effects off (or on) for this clip.
+                readonly property bool masterSwitch: row.text === "masterOff" || row.text === "masterOn"
+                checkable: masterSwitch
+                checked: row.text === "masterOff"
+                iconName: masterSwitch ? "power" : "plus"
+                iconSize: Theme.iconSm
+                tooltip: row.text === "addStroke" ? qsTr("Add a stroke")
+                         : row.text === "masterOff" ? qsTr("Turn the master clip effects off for this clip")
+                         : row.text === "masterOn" ? qsTr("Turn the master clip effects on for this clip")
+                         : row.title
+                onClicked: row.controls.rowAction(row.rowKey, row.text)
+            }
+        }
+
+        // ---- 0.6: Source Text (a text layer's or a title's): several lines, applied when it loses focus ----
+        TextArea {
+            id: sourceText
+            objectName: "sourceTextField"
+            visible: row.textArea
+            anchors.left: parent.left
+            anchors.leftMargin: Theme.space(9)
+            anchors.right: row.hasLane ? lane.left : parent.right
+            anchors.rightMargin: Theme.space(2)
+            anchors.top: parent.top
+            anchors.topMargin: Theme.controlHeight
+            height: Theme.space(16)
+            text: row.text
+            wrapMode: TextEdit.Wrap
+            leftPadding: Theme.space(2)
+            rightPadding: Theme.space(2)
+            topPadding: Theme.space(1)
+            bottomPadding: Theme.space(1)
+            selectByMouse: true
+            font.family: Theme.fontSans
+            font.pixelSize: Theme.textMd
+            color: Theme.textPrimary
+            selectionColor: Theme.accentFill
+            selectedTextColor: Theme.accentOnFill
+            opacity: row.effectEnabled ? 1 : Theme.disabledOpacity
+            Accessible.name: row.title
+
+            function apply() {
+                if (text !== row.text)
+                    row.controls.setEffectText(row.rowKey, text)
+                text = Qt.binding(() => row.text)
+            }
+            onActiveFocusChanged: {
+                if (!activeFocus && row.textArea)
+                    apply()
+            }
+            Keys.onPressed: event => {
+                if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter) && (event.modifiers & Qt.ControlModifier)) {
+                    apply()
+                    event.accepted = true
+                } else if (event.key === Qt.Key_Escape) {
+                    text = Qt.binding(() => row.text)
+                    event.accepted = true
+                }
+            }
+            background: Rectangle {
+                radius: Theme.radiusField
+                color: sourceText.activeFocus ? Theme.raised : Theme.sunken
+                border.width: sourceText.activeFocus ? Theme.focusRingWidth : Theme.hairline
+                border.color: sourceText.activeFocus ? Theme.accentStroke : Theme.border
+            }
+        }
+
         // ---- Parameter / switch / timecode / choice ----
         RowLayout {
-            visible: !row.header
+            id: paramRow
+            visible: !row.header && !row.group
             anchors.left: parent.left
             anchors.right: row.hasLane ? lane.left : parent.right
             anchors.rightMargin: row.hasLane ? Theme.space(2) : 0
@@ -529,7 +662,7 @@ Item {
             IconButton {
                 objectName: "stopwatch"
                 Layout.preferredWidth: implicitWidth
-                visible: row.kind === "param" && row.animatable
+                visible: row.keyed && row.animatable
                 compact: true
                 checkable: true
                 checked: row.animated
@@ -540,7 +673,7 @@ Item {
                 onClicked: row.controls.setAnimated(row.rowKey, !row.animated)
             }
             Item {
-                visible: !(row.kind === "param" && row.animatable)
+                visible: !(row.keyed && row.animatable)
                 Layout.preferredWidth: Theme.space(7)
                 Layout.preferredHeight: 1
             }
@@ -577,6 +710,7 @@ Item {
             }
 
             NumberField {
+                id: numberField
                 visible: row.kind === "param"
                 Layout.preferredWidth: Theme.numberFieldWidth
                 from: Math.min(row.from, row.to)
@@ -589,7 +723,75 @@ Item {
                 onValueModified: v => row.setFromUser(v)
                 onEditingFinished: row.controls.endEdit()
                 onScrubFinished: row.controls.endEdit()
-                Accessible.name: row.title
+                Accessible.name: row.mixed ? qsTr("%1 (mixed)").arg(row.title) : row.title
+
+                // 0.6, multi mode: the clips differ ("—" until a value is typed or dragged).
+                Rectangle {
+                    objectName: "mixedValue"
+                    visible: row.mixed && !numberField.activeFocus
+                    anchors.fill: parent
+                    anchors.margins: Theme.hairline
+                    radius: height / 2
+                    color: Theme.raised
+                    Text {
+                        anchors.centerIn: parent
+                        text: qsTr("\u2014")
+                        color: Theme.textSecondary
+                        font.family: Theme.fontMono
+                        font.pixelSize: Theme.textMd
+                    }
+                }
+            }
+
+            // 0.6: the Font row: the family; the panel's picker lists the installed fonts.
+            PillButton {
+                id: fontButton
+                objectName: "fontButton"
+                visible: row.kind === "font"
+                Layout.maximumWidth: Theme.space(60)
+                compact: true
+                text: row.text + "  \u25BE"
+                Accessible.name: qsTr("%1: %2").arg(row.title).arg(row.text)
+                onClicked: row.fontRequested(fontButton)
+            }
+
+            // 0.6: a colour row: the swatch opens the panel's picker, the hex value can be typed.
+            Swatch {
+                id: colorSwatch
+                objectName: "colorSwatch"
+                visible: row.kind === "color"
+                swatchColor: row.kind === "color" ? row.text : Theme.contentWhite
+                checkable: false
+                tooltip: row.description !== "" ? row.description : qsTr("Pick the %1 colour").arg(row.title)
+                Accessible.name: qsTr("%1 colour").arg(row.title)
+                onClicked: row.colorRequested(colorSwatch)
+            }
+            FieldInput {
+                id: hexField
+                objectName: "colorHexField"
+                visible: row.kind === "color"
+                Layout.preferredWidth: Theme.space(22)
+                text: row.text
+                font.family: Theme.fontMono
+                Accessible.name: qsTr("%1, hex colour").arg(row.title)
+                onEditingFinished: {
+                    const t = text.trim()
+                    const hex = t.startsWith("#") ? t : "#" + t
+                    if (/^#[0-9a-fA-F]{6}$/.test(hex) && hex.toUpperCase() !== row.text) {
+                        row.controls.setColor(row.rowKey, hex.toUpperCase())
+                        row.controls.endEdit()
+                    }
+                    text = Qt.binding(() => row.text)
+                }
+            }
+            IconButton {
+                objectName: "rowRemove"
+                visible: row.kind === "color" && row.removable
+                compact: true
+                iconName: "trash-2"
+                iconSize: Theme.iconSm
+                tooltip: qsTr("Remove %1").arg(row.title)
+                onClicked: row.controls.rowAction(row.rowKey, "remove")
             }
 
             Toggle {
@@ -667,14 +869,14 @@ Item {
 
             // A few options: pills; more (a transition's effect, eight directions): a menu.
             Flow {
-                visible: row.kind === "choice" && row.options.length <= 4
+                visible: row.pillChoice
                 Layout.fillWidth: true
                 Layout.maximumWidth: Theme.space(70)
                 spacing: Theme.space(1)
                 layoutDirection: Qt.RightToLeft
 
                 Repeater {
-                    model: row.kind === "choice" && row.options.length <= 4 ? row.options : []
+                    model: row.pillChoice ? row.options : []
                     delegate: PillButton {
                         required property var modelData
                         compact: true
@@ -690,7 +892,7 @@ Item {
             PillButton {
                 id: choiceButton
                 objectName: "choiceMenuButton"
-                visible: row.kind === "choice" && row.options.length > 4
+                visible: row.kind === "choice" && !row.pillChoice
                 compact: true
                 text: row.optionLabel + "  ▾"
                 Accessible.name: row.title
@@ -698,7 +900,7 @@ Item {
 
                 ChoiceMenu {
                     id: choiceMenu
-                    options: row.kind === "choice" && row.options.length > 4 ? row.options : []
+                    options: row.kind === "choice" && !row.pillChoice ? row.options : []
                     current: row.text
                     onChosen: value => row.chooseOption(value)
                 }
@@ -719,7 +921,7 @@ Item {
 
             // Keyframe navigation: previous key, add/remove the key at the playhead, next key.
             Row {
-                visible: row.kind === "param" && row.animated
+                visible: row.keyed && row.animated
                 spacing: 0
 
                 IconButton {
@@ -753,7 +955,7 @@ Item {
                 }
                 IconButton {
                     objectName: "graphToggle"
-                    visible: row.hasLane
+                    visible: row.hasLane && row.kind === "param"
                     compact: true
                     checkable: true
                     checked: row.graphOpen

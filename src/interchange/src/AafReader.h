@@ -1,9 +1,10 @@
 #pragma once
 
-// Reading AAF files back (the writer's tests and round trips): the compound file's object tree with every property's
-// stored bytes, strong references resolved into child objects. Names come from the baseline model (AafModel.h);
-// properties it does not know keep their pid. The input is untrusted: nesting, object counts and sizes are bounded and
-// every index stream is checked against what it lists.
+// Reading AAF files back (the writer's tests and round trips, and AAF import): the compound file's object tree with
+// every property's stored bytes, strong references resolved into child objects. Names come from the baseline model
+// (AafModel.h); properties it does not know keep their pid. Objects of extension classes (Avid's, Pro Tools') take the
+// nearest baseline class their file's MetaDictionary derives them from, so they read as that class. The input is
+// untrusted: nesting, object counts and sizes are bounded and every index stream is checked against what it lists.
 
 #include "AafModel.h"
 #include "Cfb.h"
@@ -12,6 +13,8 @@
 
 #include <cstdint>
 #include <expected>
+#include <filesystem>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -31,11 +34,17 @@ struct ReadObject {
         std::vector<std::string> keys;       ///< set keys / weak reference keys
         std::uint16_t weakIndex = 0;         ///< weak references: index into ReadFile::weakPaths
         std::uint16_t keyPid = 0;
-        std::string stream;                  ///< stream properties: the stream's bytes
+        std::string stream;                  ///< stream properties: the stream's bytes (ReadOptions::loadStreams)
+        /// Stream properties: the stream's entry in ReadFile::container and its size (always set).
+        std::size_t streamEntry = static_cast<std::size_t>(-1);
+        std::uint64_t streamSize = 0;
     };
 
     Auid classId;
-    int classIndex = -1; ///< in the model; -1 when the class is not a baseline one
+    /// In the model: the object's class, or for an extension class the nearest baseline class it derives from; -1
+    /// when there is none.
+    int classIndex = -1;
+    bool extensionClass = false; ///< classId is not a baseline class (classIndex is its baseline ancestor)
     std::string storageName;
     std::vector<Property> properties;
 
@@ -61,10 +70,19 @@ struct ReadFile {
     ReadObject root;
     std::vector<std::vector<std::uint16_t>> weakPaths; ///< "referenced properties"
     std::size_t objectCount = 0;
+    /// The compound file (for stream properties not loaded: Reader::copy of Property::streamEntry).
+    std::shared_ptr<const cfb::Reader> container;
+};
+
+struct ReadOptions {
+    /// Load stream properties' bytes (embedded essence) into Property::stream; off: only streamEntry / streamSize.
+    bool loadStreams = true;
 };
 
 /// Parses `bytes`. Errors: ParseError.
-std::expected<ReadFile, Error> readAaf(std::string bytes);
+std::expected<ReadFile, Error> readAaf(std::string bytes, const ReadOptions& options = {});
+/// 0.6: parses the file at `file`, reading it on demand (files of any size). Errors: IoError, ParseError.
+std::expected<ReadFile, Error> readAafFile(const std::filesystem::path& file, const ReadOptions& options = {});
 
 /// UTF-16LE (with or without a terminating NUL) -> UTF-8.
 std::string utf8FromUtf16le(std::string_view bytes);

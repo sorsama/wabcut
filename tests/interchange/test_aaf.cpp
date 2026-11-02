@@ -722,3 +722,36 @@ TEST_CASE("AAF: audio file headers are laid out as WAV and AIFF readers expect (
     audiopost::encodeSamples(std::vector<float>{1.0f, -1.0f, 0.0f, 2.0f}, 16, true, samples);
     CHECK(samples == std::string("\x7F\xFF\x80\x01\x00\x00\x7F\xFF", 8));
 }
+
+TEST_CASE("AAF: a Master Clip Effect counts as the clip's effect for rendering reports and clean copies (fix F1A)",
+          "[interchange][aaf][master]") {
+    // ARGON-06: the planner looked at the clip's own stack only, so a Reverb on the master clip (card #71) was neither
+    // reported as left out nor rendered when asked, and no clean copy was made.
+    auto tl = audioPostTimeline();
+    const ClipId c = wabcut::test::clipAt(tl.state, tl.seq, "A2@4");
+    const MediaId media = tl.state.findSequence(tl.seq)->findClip(c)->clip().media;
+    tl.state = ok(edit::addEffect(tl.state, tl.seq, edit::EffectTarget::ofMedia(media), "wabcut.audio.reverb")).state;
+    const auto dir = it::scratchDir("aaf-master-effects");
+    {
+        TestRenderer renderer;
+        AudioPostHost host;
+        host.audio = &renderer;
+        const auto result = exportAafToFile(tl.state, tl.seq, dir / "plain.aaf", fixedOptions(), host);
+        REQUIRE(result.has_value());
+        CHECK(it::hasEntry(result->report, ReportOutcome::Dropped, ReportCategory::Effect, "Reverb"));
+        CHECK(std::none_of(renderer.requests.begin(), renderer.requests.end(),
+                           [](const AudioPostRenderRequest& r) { return r.clipEffects; }));
+    }
+    TestRenderer renderer;
+    AudioPostHost host;
+    host.audio = &renderer;
+    AafExportOptions options = fixedOptions();
+    options.renderAudioClipEffects = true;
+    options.includeClipCopiesWithoutEffects = true;
+    const auto result = exportAafToFile(tl.state, tl.seq, dir / "fx.aaf", options, host);
+    REQUIRE(result.has_value());
+    CHECK(result->tracks == 6); // A1 Left/Right, A2 Left/Right FX, A2 Left/Right No FX
+    const auto withFx = std::count_if(renderer.requests.begin(), renderer.requests.end(),
+                                      [](const AudioPostRenderRequest& r) { return r.clipEffects; });
+    CHECK(withFx >= 1);
+}

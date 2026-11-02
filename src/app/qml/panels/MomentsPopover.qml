@@ -10,6 +10,8 @@ import QtQuick
 // clip longer than 20 s, else the whole clip; its options under the button (25 / 50 % speed, Sound, Stinger) are
 // remembered (Moments.replaySpeed / replaySound / replayLabel) and used by the clip menu's Instant Replay too. The fast
 // forward speeds have their own full-width row.
+// 0.6 (P1 #55): Make Shorts / square version runs as a job (Moments.version): its progress and Cancel show under the
+// buttons, which wait while it runs.
 Popover {
     id: root
     objectName: "momentsPopover"
@@ -255,7 +257,9 @@ Popover {
                 compact: true
                 iconName: "crop"
                 text: qsTr("Make Shorts version")
-                tooltip: qsTr("A 1080 x 1920 copy of this sequence with the facecam split or a blurred fill")
+                tooltip: Moments.version.busy === true ? qsTr("A version is already being made")
+                                                       : qsTr("A 1080 x 1920 copy of this sequence with the facecam split or a blurred fill")
+                enabled: Moments.version.busy !== true
                 onClicked: root.run("shortsVersion")
             }
             PillButton {
@@ -264,8 +268,71 @@ Popover {
                 compact: true
                 iconName: "square"
                 text: qsTr("Make square version")
-                tooltip: qsTr("A 1080 x 1080 copy of this sequence")
+                tooltip: Moments.version.busy === true ? qsTr("A version is already being made")
+                                                       : qsTr("A 1080 x 1080 copy of this sequence")
+                enabled: Moments.version.busy !== true
                 onClicked: root.run("squareVersion")
+            }
+        }
+        // 0.6 (P1 #55): the version being made (finding the subjects for Auto Reframe, then the copy), with Cancel.
+        Column {
+            objectName: "momentsVersionBusy"
+            width: parent.width
+            spacing: Theme.space(1)
+            visible: Moments.version.busy === true
+            Row {
+                width: parent.width
+                spacing: Theme.space(2)
+                Text {
+                    objectName: "momentsVersionText"
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: parent.width - versionCancel.width - parent.spacing
+                    text: Moments.version.text ?? ""
+                    elide: Text.ElideRight
+                    color: Theme.textSecondary
+                    font.family: Theme.fontSans
+                    font.pixelSize: Theme.textSm
+                }
+                PillButton {
+                    id: versionCancel
+                    objectName: "momentsVersionCancel"
+                    anchors.verticalCenter: parent.verticalCenter
+                    compact: true
+                    variant: "ghost"
+                    text: qsTr("Cancel")
+                    tooltip: qsTr("Stop making the version: nothing is changed")
+                    onClicked: Moments.cancelVersion()
+                }
+            }
+            BeamProgress {
+                objectName: "momentsVersionProgress"
+                width: parent.width
+                value: (Moments.version.progress ?? -1) >= 0 ? Moments.version.progress : 1
+                indeterminate: (Moments.version.progress ?? -1) < 0
+                active: Moments.version.busy === true
+                label: Moments.version.text ?? ""
+                loader: "" // the text above names the step
+            }
+        }
+        // 0.6 (P1 round, D2 #9): the In to Out marks as a 1080x1920 Short with the Highlights Short options (its
+        // lead-in, tail, minimum length, caption style and facecam layout), without running the highlight find.
+        Flow {            width: parent.width
+            spacing: Theme.space(2)
+            visible: Highlights.shortAvailable
+            PillButton {
+                objectName: "momentsShortFromInOutButton"
+                readonly property var canShort: Highlights.commandAvailability("sequence.makeShortFromInOut")
+                compact: true
+                iconName: "crop"
+                text: qsTr("Short from In/Out")
+                tooltip: canShort.enabled === true
+                         ? qsTr("A 1080 x 1920 Short of the In to Out range, with the Short options (no highlight find)")
+                         : (canShort.reason ?? "")
+                enabled: canShort.enabled === true
+                onClicked: {
+                    root.close()
+                    Highlights.makeShortFromInOut()
+                }
             }
         }
 

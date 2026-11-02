@@ -9,6 +9,8 @@ ScrollBar {
     policy: ScrollBar.AsNeeded
     padding: Theme.hairline
     minimumSize: 0.1
+    // P1 #61: screen readers list it (UI Automation); give it a name.
+    Accessible.name: orientation === Qt.Horizontal ? qsTr("Horizontal scroll bar") : qsTr("Vertical scroll bar")
 
     contentItem: Rectangle {
         implicitWidth: Theme.space(1)

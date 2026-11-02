@@ -412,3 +412,42 @@ TEST_CASE("Add Tracks with a placement inserts the track where asked and renumbe
 
     CHECK_FALSE(edit::insertTrack(tl.state, SequenceId{9999}, TrackKind::Video, 0));
 }
+
+TEST_CASE("Clip Mismatch: the settings that match a sequence to a clip", "[model][newSequenceFromClip][mismatch]") {
+    Sequence seq;
+    seq.width = 1920;
+    seq.height = 1080;
+    seq.frameRate = kRate30;
+    // An OBS recording at 1440p60.
+    MediaItem obs;
+    obs.name = "2026-10-31 20-00-00.mp4";
+    VideoStreamInfo v;
+    v.width = 2560;
+    v.height = 1440;
+    v.frameRate = Rate{60, 1};
+    v.duration = Ticks::fromSeconds(10);
+    obs.info.video.push_back(v);
+    AudioStreamInfo a;
+    a.sampleRate = Rate{48000, 1};
+    a.channels = 2;
+    obs.info.audio.push_back(a);
+    const auto change = edit::settingsToMatchMedia(seq, obs);
+    REQUIRE(change);
+    CHECK(change->width == 2560);
+    CHECK(change->height == 1440);
+    CHECK(change->frameRate == Rate{60, 1});
+    CHECK(change->audioRate == Rate{48000, 1});
+
+    // Already matching, a still image and audio alone: nothing to change.
+    seq.width = 2560;
+    seq.height = 1440;
+    seq.frameRate = Rate{60, 1};
+    CHECK_FALSE(edit::settingsToMatchMedia(seq, obs));
+    MediaItem still = obs;
+    still.info.isStillImage = true;
+    seq.width = 1920;
+    CHECK_FALSE(edit::settingsToMatchMedia(seq, still));
+    MediaItem sound = obs;
+    sound.info.video.clear();
+    CHECK_FALSE(edit::settingsToMatchMedia(seq, sound));
+}

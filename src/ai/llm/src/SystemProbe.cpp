@@ -1,6 +1,7 @@
 #include <wabcut/ai/llm/SystemProbe.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cstdio>
 #include <thread>
 
@@ -9,7 +10,7 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
-#include <dxgi1_4.h>
+#include <dxgi1_6.h>
 #elif defined(__APPLE__)
 #include <sys/sysctl.h>
 #include <sys/types.h>
@@ -41,6 +42,8 @@ namespace {
 
 [[maybe_unused]] constexpr std::uint64_t kGiB = std::uint64_t{1} << 30;
 
+std::atomic<std::uint64_t> g_preferredGpuLuid{0};
+
 #ifdef _WIN32
 using CuDriverGetVersion = int(__stdcall*)(int*);
 
@@ -52,6 +55,65 @@ std::string narrow(const wchar_t* text) {
     }
     if (!out.empty()) out.pop_back();
     return out;
+}
+
+// 0.6: DXGI's budget is what Windows would let this process have, not what other processes left: with a game holding
+// 8 GB of a 12 GB card it still says about 11 GB. NVIDIA's driver library (NVML, in System32 with every NVIDIA driver,
+// about 13 ms to load) reports the card's real free memory, as on Linux; the smaller of the two is used. Only for an
+// NVIDIA adapter whose name matches exactly one NVML device (two identical cards keep the DXGI figure).
+struct NvmlMemoryInfo {
+    unsigned long long total;
+    unsigned long long free;
+    unsigned long long used;
+};
+
+void refineFreeMemoryWithNvml(SystemProbe& probe) {
+    if (std::none_of(probe.gpus.begin(), probe.gpus.end(), [](const GpuInfo& g) { return g.vendor == GpuVendor::Nvidia; })) {
+        return;
+    }
+    HMODULE nvml = LoadLibraryExW(L"nvml.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    if (!nvml) {
+        return;
+    }
+    using Init = int (*)();
+    using Count = int (*)(unsigned*);
+    using Handle = int (*)(unsigned, void**);
+    using Memory = int (*)(void*, NvmlMemoryInfo*);
+    using Name = int (*)(void*, char*, unsigned);
+    auto init = reinterpret_cast<Init>(GetProcAddress(nvml, "nvmlInit_v2"));
+    auto shutdown = reinterpret_cast<Init>(GetProcAddress(nvml, "nvmlShutdown"));
+    auto count = reinterpret_cast<Count>(GetProcAddress(nvml, "nvmlDeviceGetCount_v2"));
+    auto handle = reinterpret_cast<Handle>(GetProcAddress(nvml, "nvmlDeviceGetHandleByIndex_v2"));
+    auto memory = reinterpret_cast<Memory>(GetProcAddress(nvml, "nvmlDeviceGetMemoryInfo"));
+    auto name = reinterpret_cast<Name>(GetProcAddress(nvml, "nvmlDeviceGetName"));
+    if (init && shutdown && count && handle && memory && name && init() == 0) {
+        std::vector<std::pair<std::string, std::uint64_t>> devices; // name, free bytes
+        unsigned n = 0;
+        if (count(&n) == 0) {
+            for (unsigned i = 0; i < n; ++i) {
+                void* device = nullptr;
+                NvmlMemoryInfo info{};
+                char text[96] = {};
+                if (handle(i, &device) == 0 && memory(device, &info) == 0 && name(device, text, sizeof text) == 0) {
+                    devices.emplace_back(text, info.free);
+                }
+            }
+        }
+        shutdown();
+        for (GpuInfo& gpu : probe.gpus) {
+            if (gpu.vendor != GpuVendor::Nvidia) {
+                continue;
+            }
+            // One NVML device of that name is one physical card: every DXGI adapter of that name is it (a virtual or
+            // remote display driver lists a proxy of the real GPU as a second adapter with its own LUID).
+            const auto sameName = [&](const auto& d) { return d.first == gpu.name; };
+            const auto found = std::find_if(devices.begin(), devices.end(), sameName);
+            if (found != devices.end() && std::count_if(devices.begin(), devices.end(), sameName) == 1) {
+                gpu.freeBytes = gpu.freeBytes == 0 ? found->second : std::min(gpu.freeBytes, found->second);
+            }
+        }
+    }
+    FreeLibrary(nvml);
 }
 
 void probeGpus(SystemProbe& probe) {
@@ -68,6 +130,8 @@ void probeGpus(SystemProbe& probe) {
             gpu.vendor = vendorFromPci(desc.VendorId);
             gpu.dedicatedBytes = desc.DedicatedVideoMemory;
             gpu.integrated = desc.DedicatedVideoMemory < kGiB; // integrated GPUs carve out a small aperture only
+            gpu.luid = (static_cast<std::uint64_t>(static_cast<std::uint32_t>(desc.AdapterLuid.HighPart)) << 32) |
+                       desc.AdapterLuid.LowPart;
             IDXGIAdapter3* adapter3 = nullptr;
             if (SUCCEEDED(adapter->QueryInterface(__uuidof(IDXGIAdapter3), reinterpret_cast<void**>(&adapter3)))) {
                 DXGI_QUERY_VIDEO_MEMORY_INFO info{};
@@ -80,7 +144,32 @@ void probeGpus(SystemProbe& probe) {
         }
         adapter->Release();
     }
+    // Windows' high-performance order (10 1803+): on a hybrid machine the discrete GPU comes first, as for the editor's
+    // own choice (media::rankGpuAdapters).
+    IDXGIFactory6* factory6 = nullptr;
+    if (SUCCEEDED(factory->QueryInterface(__uuidof(IDXGIFactory6), reinterpret_cast<void**>(&factory6)))) {
+        int position = 0;
+        for (UINT i = 0; SUCCEEDED(factory6->EnumAdapterByGpuPreference(i, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE,
+                                                                         __uuidof(IDXGIAdapter1),
+                                                                         reinterpret_cast<void**>(&adapter)));
+             ++i) {
+            DXGI_ADAPTER_DESC1 desc{};
+            if (SUCCEEDED(adapter->GetDesc1(&desc))) {
+                const std::uint64_t luid =
+                    (static_cast<std::uint64_t>(static_cast<std::uint32_t>(desc.AdapterLuid.HighPart)) << 32) |
+                    desc.AdapterLuid.LowPart;
+                for (GpuInfo& gpu : probe.gpus) {
+                    if (gpu.luid == luid && gpu.highPerformanceIndex < 0) {
+                        gpu.highPerformanceIndex = position++;
+                    }
+                }
+            }
+            adapter->Release();
+        }
+        factory6->Release();
+    }
     factory->Release();
+    refineFreeMemoryWithNvml(probe);
 }
 
 void probeDrivers(SystemProbe& probe) {
@@ -229,17 +318,35 @@ std::string_view toString(GpuVendor vendor) {
 }
 
 const GpuInfo* SystemProbe::bestGpu() const {
+    if (preferredGpuLuid != 0) {
+        for (const GpuInfo& g : gpus) {
+            if (g.luid == preferredGpuLuid) {
+                return &g;
+            }
+        }
+    }
+    // a before b: discrete first, then the high-performance order (where both positions are known), then free memory.
+    const auto better = [](const GpuInfo& a, const GpuInfo& b) {
+        if (a.integrated != b.integrated) {
+            return !a.integrated;
+        }
+        if (a.highPerformanceIndex >= 0 && b.highPerformanceIndex >= 0 && a.highPerformanceIndex != b.highPerformanceIndex) {
+            return a.highPerformanceIndex < b.highPerformanceIndex;
+        }
+        return a.freeBytes > b.freeBytes;
+    };
     const GpuInfo* best = nullptr;
     for (const GpuInfo& g : gpus) {
-        const auto score = [](const GpuInfo& x) {
-            return std::make_pair(!x.integrated, x.freeBytes);
-        };
-        if (!best || score(g) > score(*best)) {
+        if (!best || better(g, *best)) {
             best = &g;
         }
     }
     return best;
 }
+
+void setPreferredGpuLuid(std::uint64_t luid) { g_preferredGpuLuid.store(luid, std::memory_order_relaxed); }
+
+std::uint64_t preferredGpuLuid() { return g_preferredGpuLuid.load(std::memory_order_relaxed); }
 
 std::uint64_t SystemProbe::gpuFreeBytes() const {
     const GpuInfo* gpu = bestGpu();
@@ -267,6 +374,7 @@ SystemProbe probeSystem() {
     probeMemory(probe);
     probeDrivers(probe);
     probeGpus(probe);
+    probe.preferredGpuLuid = preferredGpuLuid();
     return probe;
 }
 

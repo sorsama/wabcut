@@ -204,12 +204,19 @@ TEST_CASE("Palette: the window and workspace commands Main.qml routes are ready"
           // 0.4: Effect Controls' Remove Selected Effect (stream C), Import Folder and Import from Media Browser
           // (stream D) and Background Tasks (stream E), all routed by Main.qml.
           "effectControls.removeSelectedEffect", "file.importFolder", "file.importFromMediaBrowser",
-          "window.backgroundTasks"}) {
+          "window.backgroundTasks",
+          // 0.6 (P1 round, 1E): the History panel's Delete and Clear History (the Editing bridge).
+          "history.delete", "history.clear",
+          // 0.6 (P1 round, D2 #34, #9): the gaming Moments presets and the Short from In to Out, routed by Main.qml
+          // (the moments.* prefix to Moments) and answered by their bridges for the menu bar and the palette.
+          "moments.punchIn", "moments.rampIn", "moments.freezeReplay", "moments.fastForward", "moments.punchInHold",
+          "moments.shake", "moments.instantReplay", "moments.shortsVersion", "moments.squareVersion",
+          "moments.findDeadTime", "moments.findHighlights", "sequence.makeShortFromInOut", "sequence.autoReframe"}) {
         INFO(id);
         CHECK(KeymapCommandProvider::viewHandles(QString::fromLatin1(id)));
     }
     // Typed edits keep their prompts (Add Marker asks for a name and a colour); nothing routes these yet.
-    for (const char* id : {"marker.add", "effects.newCustomBin", "history.delete", "metadata.loop"}) {
+    for (const char* id : {"marker.add", "effects.newCustomBin", "metadata.loop"}) {
         INFO(id);
         CHECK_FALSE(KeymapCommandProvider::viewHandles(QString::fromLatin1(id)));
     }

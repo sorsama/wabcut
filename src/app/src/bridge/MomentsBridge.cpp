@@ -2,6 +2,7 @@
 
 #include "BridgeIds.h"
 #include "GraphicsBridge.h"
+#include "LayoutBridge.h" // P1 #51: the facecam region stored per gameplay file, the picker's last options
 #include "ProjectController.h"
 #include "ProjectLifecycle.h"
 #include "ShortsBridge.h" // appGamingServices, BridgeJob
@@ -14,6 +15,7 @@
 #include <wabcut/model/EditSession.h>
 #include <wabcut/model/Error.h>
 #include <wabcut/model/FinishingOps.h>
+#include <wabcut/model/GamingOps.h>
 #include <wabcut/model/TimeRemap.h>
 
 #include <wabcut/command/ExecutionContext.h>
@@ -21,6 +23,7 @@
 #include <QCoreApplication>
 #include <QLocale>
 #include <QQmlEngine>
+#include <QSet>
 #include <QSettings>
 
 #include <algorithm>
@@ -316,7 +319,11 @@ private:
 
 } // namespace
 
-MomentsBridge::MomentsBridge(QObject* parent) : QObject(parent), m_deadTimeJob(std::make_unique<BridgeJob>()) {
+MomentsBridge::MomentsBridge(QObject* parent)
+    : QObject(parent), m_deadTimeJob(std::make_unique<BridgeJob>()), m_versionJob(std::make_unique<BridgeJob>()) {
+    m_version = {{QStringLiteral("busy"), false},   {QStringLiteral("format"), QString()},
+                 {QStringLiteral("text"), QString()}, {QStringLiteral("progress"), -1.0},
+                 {QStringLiteral("error"), QString()}, {QStringLiteral("done"), QString()}};
     // 0.4: instant replay's remembered options.
     const QSettings settings;
     m_replaySpeed = settings.value(QStringLiteral("moments/replaySpeed"), 0.5).toDouble() < 0.375 ? 0.25 : 0.5;
@@ -871,6 +878,7 @@ std::shared_ptr<command::CommandServices> MomentsBridge::services() const {
             parts.push_back(graphics->graphicsServices());
     }
     parts.push_back(appGamingServices(projectFile));
+    parts.push_back(appReframeServices(projectFile)); // 0.6 (P1 #55): analysis.subjects before a reframed version
     return std::make_shared<command::ServiceBundle>(std::move(parts));
 }
 
@@ -953,30 +961,196 @@ QString MomentsBridge::instantReplay(const QString& clipKeyText, const QVariantM
     return finish(true, {});
 }
 
+void MomentsBridge::setVersionState(bool busy, const QString& text, double progress, const QString& error,
+                                    const QString& done) {
+    const QVariantMap next{{QStringLiteral("busy"), busy},   {QStringLiteral("format"), m_versionFormat},
+                           {QStringLiteral("text"), text},   {QStringLiteral("progress"), progress},
+                           {QStringLiteral("error"), error}, {QStringLiteral("done"), done}};
+    if (next == m_version)
+        return;
+    m_version = next;
+    emit versionChanged();
+}
+
+void MomentsBridge::cancelVersion() {
+    if (!m_versionJob->running() || m_version.value(QStringLiteral("busy")).toBool() != true)
+        return;
+    m_versionJob->cancel();
+    ++m_versionRun; // later progress reports of this run are dropped; its end still lands
+    setVersionState(true, tr("Cancelling…"), -1.0);
+}
+
 QString MomentsBridge::makeVersion(const QString& format) {
     if (!registry().knows("sequence.makeVersion"))
         return finish(false, tr("Shorts versions arrive with the next engine update"));
     if (!m_controller)
         return finish(false, tr("No project is open"));
-    const command::CommandResult result =
-        runLive(m_controller, registry(), "sequence.makeVersion",
-                command::Json{{"sequence", m_controller->currentSequenceId().value},
-                              {"format", format == QLatin1String("square") ? "square" : "shorts"},
-                              {"captions", true}},
-                services());
-    if (!result.ok())
-        return finish(false, QString::fromStdString(result.error->message));
-    // Open the new sequence.
-    const std::uint64_t created = result.data.is_object() ? result.data.value("sequence", std::uint64_t{0}) : 0;
-    const SequenceId id{created ? created : (result.createdIds.empty() ? 0 : result.createdIds.front())};
-    const ProjectSnapshot snapshot = m_controller->snapshot();
-    for (std::size_t i = 0; i < snapshot->sequences.size(); ++i) {
-        if (snapshot->sequences[i]->id == id) {
-            m_controller->setCurrentSequenceIndex(static_cast<int>(i));
-            break;
+    const SequencePtr current = m_controller->currentSequence();
+    if (!current)
+        return finish(false, tr("Open a sequence first"));
+    if (m_versionJob->running())
+        return finish(false, tr("A version is already being made"));
+    const bool square = format == QLatin1String("square");
+    const ProjectSnapshot base = m_controller->snapshot();
+    command::Json params{{"sequence", m_controller->currentSequenceId().value},
+                         {"format", square ? "square" : "shorts"},
+                         {"captions", true}};
+    // 0.6 (P1 #51): the split and the facecam's side the layout picker last applied (Shorts), and the facecam region
+    // drawn for the gameplay's file when no facecam track is detected (a track wins over a region, as in the command).
+    const bool facecamTrack = detectFacecamTrack(*current).has_value();
+    bool region = false;
+    if (!square) {
+        const QVariantMap last = LayoutBridge::lastOptions();
+        bool splitOk = false;
+        const double split = last.value(QStringLiteral("split")).toDouble(&splitOk);
+        if (splitOk && std::isfinite(split))
+            params["split"] = std::clamp(split, 0.2, 0.8);
+        if (last.contains(QStringLiteral("facecamOnTop")))
+            params["facecamOnTop"] = last.value(QStringLiteral("facecamOnTop")).toBool();
+    }
+    if (!facecamTrack) {
+        if (const MediaItem* game = LayoutBridge::gameplayMediaOf(*base, *current)) {
+            const QVariantMap stored = LayoutBridge::storedRegionFor(*game);
+            if (!stored.isEmpty()) {
+                params["facecamRegion"] = command::Json{{"x", stored.value(QStringLiteral("x")).toDouble()},
+                                                        {"y", stored.value(QStringLiteral("y")).toDouble()},
+                                                        {"width", stored.value(QStringLiteral("width")).toDouble()},
+                                                        {"height", stored.value(QStringLiteral("height")).toDouble()}};
+                region = true;
+            }
         }
     }
-    return finish(true, {});
+    // 0.6 (P1 #55): without a facecam the version is Auto Reframed: the subjects of each video media first, with their
+    // progress and Cancel (cached per file, so the reframe inside sequence.makeVersion reads them back).
+    std::vector<std::uint64_t> media;
+    if (!facecamTrack && !region && registry().knows("analysis.subjects")) {
+        for (const TrackPtr& track : current->videoTracks) {
+            for (const Clip& c : track->clips) {
+                const MediaItem* m = base->findMedia(c.media);
+                if (m && !m->isGenerator() && !m->info.video.empty() &&
+                    std::find(media.begin(), media.end(), c.media.value) == media.end())
+                    media.push_back(c.media.value);
+            }
+        }
+    }
+    const command::CommandRegistry* catalog = &registry();
+    const std::shared_ptr<command::CommandServices> hostServices = services();
+    const std::string label = square ? LABEL("Make Square Version") : LABEL("Make Shorts Version");
+    const QString making = square ? tr("Making the square version…") : tr("Making the Shorts version…");
+    //: Make Shorts version's progress: "Finding the subject 1 of 2" (each video file of the sequence)
+    const QString finding = tr("Finding the subject %1 of %2");
+    //: A step and its percentage: "Finding the subject 1 of 2 · 40 %"
+    const QString withPercent = tr("%1 · %2 %");
+    const QString changed = tr("The project changed while this ran. Run it again.");
+    const QString closed = tr("No project is open");
+    m_versionFormat = square ? QStringLiteral("square") : QStringLiteral("shorts");
+    const std::uint64_t run = ++m_versionRun;
+    setMessage({});
+    setVersionState(true, media.empty() ? making : finding.arg(1).arg(media.size()), -1.0);
+    QPointer<MomentsBridge> self(this);
+    QPointer<ProjectController> live(m_controller);
+    const bool synchronous = m_synchronous;
+    // Progress from the worker reaches the GUI thread queued (directly when synchronous); a cancelled run's is dropped.
+    auto report = [self, run, synchronous](QString text, double progress) {
+        auto show = [self, run, text = std::move(text), progress] {
+            if (!self || self->m_versionRun != run || self->m_version.value(QStringLiteral("busy")).toBool() != true)
+                return;
+            self->setVersionState(true, text, progress);
+        };
+        if (synchronous)
+            show();
+        else
+            QMetaObject::invokeMethod(QCoreApplication::instance(), std::move(show), Qt::QueuedConnection);
+    };
+    const bool started = m_versionJob->start(
+        this, synchronous,
+        [base, params, media, catalog, hostServices, report, label, making, finding, withPercent, changed, closed, self,
+         live](const std::atomic<bool>& cancelled) -> BridgeJob::Finish {
+            // On the worker: a copy of the project (it decodes and analyses; the live project is not touched).
+            EditSession scratch(*base);
+            command::EnginePolicy policy;
+            policy.services = hostServices;
+            command::CommandEngine engine(scratch, *catalog, policy);
+            const std::size_t count = media.size();
+            const double share = count > 0 ? 0.9 : 0.0; // the subjects' part of the bar
+            bool stopped = false;
+            for (std::size_t i = 0; i < count && !stopped; ++i) {
+                const QString step = finding.arg(i + 1).arg(count);
+                const double from = share * static_cast<double>(i) / static_cast<double>(count);
+                report(step, from);
+                DeadTimeControl control(cancelled, [report, step, withPercent, from, share, count](double f) {
+                    report(withPercent.arg(step).arg(std::lround(f * 100.0)),
+                           from + share * f / static_cast<double>(count));
+                });
+                command::CommandRequest analyse;
+                analyse.command = "analysis.subjects";
+                analyse.params = command::Json{{"media", media[i]}};
+                const command::CommandResult r = engine.execute(analyse, &control);
+                // Another failure (an offline file, no detector yet) is left to the reframe, which says why.
+                stopped = (!r.ok() && r.error->code == command::ErrorCode::Cancelled) || cancelled.load();
+            }
+            command::CommandResult result;
+            if (!stopped) {
+                report(making, count > 0 ? share : -1.0);
+                DeadTimeControl control(cancelled, nullptr);
+                command::CommandRequest request;
+                request.command = "sequence.makeVersion";
+                request.params = params;
+                result = engine.execute(request, &control);
+                stopped = !result.ok() && result.error->code == command::ErrorCode::Cancelled;
+            }
+            const ProjectSnapshot after = scratch.snapshot();
+            return [self, live, base, after, label, changed, closed, stopped, result = std::move(result)] {
+                if (!self)
+                    return;
+                if (stopped) { // Cancel: nothing changed, nothing to say
+                    self->setVersionState(false, {}, -1.0);
+                    return;
+                }
+                const auto fail = [&self](const QString& why) {
+                    self->setVersionState(false, {}, -1.0, why);
+                    self->setMessage(why);
+                };
+                if (!result.ok())
+                    return fail(QString::fromStdString(result.error->message));
+                if (!live)
+                    return fail(closed);
+                // Never edited behind the user's back: a project that changed meanwhile is left as it is.
+                if (live->snapshot().get() != base.get())
+                    return fail(changed);
+                if (auto committed = live->session().commit(label, *after); !committed)
+                    return fail(QString::fromStdString(committed.error().message));
+                // Open the new sequence.
+                const std::uint64_t created =
+                    result.data.is_object() ? result.data.value("sequence", std::uint64_t{0}) : 0;
+                const SequenceId id{created ? created : (result.createdIds.empty() ? 0 : result.createdIds.front())};
+                const ProjectSnapshot now = live->snapshot();
+                QString name;
+                for (std::size_t i = 0; i < now->sequences.size(); ++i) {
+                    if (now->sequences[i]->id == id) {
+                        name = QString::fromStdString(now->sequences[i]->name);
+                        live->setCurrentSequenceIndex(static_cast<int>(i));
+                        break;
+                    }
+                }
+                self->setMessage({});
+                self->setVersionState(false, {}, -1.0, {}, name);
+            };
+        },
+        // The command threw: the job ends with its message (nothing is committed).
+        [self](const QString& message) -> BridgeJob::Finish {
+            return [self, message] {
+                if (!self)
+                    return;
+                const QString why = message.isEmpty() ? tr("Something went wrong. Nothing was changed.") : message;
+                self->setVersionState(false, {}, -1.0, why);
+                self->setMessage(why);
+            };
+        });
+    if (!started)
+        return finish(false, tr("A version is already being made"));
+    // Synchronous (tests): the job has ended; its error, if any.
+    return synchronous ? m_version.value(QStringLiteral("error")).toString() : QString();
 }
 
 void MomentsBridge::findDeadTime(const QVariantMap& options) {
@@ -1408,16 +1582,93 @@ void MomentsBridge::openDeadTimeReview() {
     emit deadTimeReviewRequested();
 }
 
+bool MomentsBridge::handlesCommand(const QString& commandId) {
+    static const QSet<QString> kIds{
+        QStringLiteral("moments.slowMo"),         QStringLiteral("moments.punchIn"),
+        QStringLiteral("moments.rampIn"),         QStringLiteral("moments.freezeReplay"),
+        QStringLiteral("moments.fastForward"),    QStringLiteral("moments.punchInHold"),
+        QStringLiteral("moments.shake"),          QStringLiteral("moments.instantReplay"),
+        QStringLiteral("moments.shortsVersion"),  QStringLiteral("moments.squareVersion"),
+        QStringLiteral("moments.findDeadTime"),   QStringLiteral("moments.findHighlights"),
+    };
+    return kIds.contains(commandId);
+}
+
+QVariantMap MomentsBridge::commandAvailability(const QString& commandId) const {
+    const auto state = [](bool handled, bool enabled, const QString& reason = {}) {
+        return QVariantMap{{QStringLiteral("handled"), handled},
+                           {QStringLiteral("enabled"), enabled},
+                           {QStringLiteral("reason"), reason}};
+    };
+    if (!handlesCommand(commandId))
+        return state(false, false);
+    if (!m_controller || !m_controller->currentSequence())
+        return state(true, false, tr("Open a sequence first"));
+    if (commandId == QLatin1String("moments.shortsVersion") || commandId == QLatin1String("moments.squareVersion")) {
+        if (!registry().knows("sequence.makeVersion"))
+            return state(true, false, tr("Shorts versions arrive with the next engine update"));
+        if (m_versionJob->running()) // 0.6 (P1 #55): the version job
+            return state(true, false, tr("A version is already being made"));
+        return state(true, true);
+    }
+    if (commandId == QLatin1String("moments.findDeadTime")) {
+        if (!registry().knows("sequence.removeDeadTime"))
+            return state(true, false, tr("Remove dead time arrives with the next engine update"));
+        if (m_deadTimeBusy)
+            return state(true, false, tr("A dead time find is already measuring"));
+        return state(true, true);
+    }
+    if (commandId == QLatin1String("moments.findHighlights")) {
+        if (!registry().knows("highlights.find"))
+            return state(true, false, tr("Highlights arrive with the next engine update"));
+        return state(true, true);
+    }
+    // The presets' rule (the menus' own): speed presets retime footage, zoom presets need a picture.
+    const QVariantMap info = targetFor({});
+    if (info.value(QStringLiteral("available")).toBool() != true)
+        return state(true, false, info.value(QStringLiteral("reason")).toString());
+    const bool speed = commandId == QLatin1String("moments.slowMo") || commandId == QLatin1String("moments.rampIn") ||
+                       commandId == QLatin1String("moments.freezeReplay") ||
+                       commandId == QLatin1String("moments.fastForward") ||
+                       commandId == QLatin1String("moments.instantReplay");
+    if (speed && info.value(QStringLiteral("speed")).toBool() != true)
+        return state(true, false, info.value(QStringLiteral("speedReason")).toString());
+    return state(true, true);
+}
+
 bool MomentsBridge::runCommand(const QString& commandId) {
-    if (commandId == QLatin1String("moments.slowMo")) {
-        slowMo();
-        return true;
+    // 0.4's two, then 0.6 (D2 #34): every preset and the sequence actions by name.
+    if (commandId == QLatin1String("moments.slowMo"))
+        apply(QStringLiteral("slowMo25"));
+    else if (commandId == QLatin1String("moments.punchIn"))
+        apply(QStringLiteral("punchIn"));
+    else if (commandId == QLatin1String("moments.rampIn"))
+        apply(QStringLiteral("rampIn"));
+    else if (commandId == QLatin1String("moments.freezeReplay"))
+        apply(QStringLiteral("freezeReplay"));
+    else if (commandId == QLatin1String("moments.fastForward"))
+        apply(QStringLiteral("fastForward300"));
+    else if (commandId == QLatin1String("moments.punchInHold"))
+        apply(QStringLiteral("punchInHold"));
+    else if (commandId == QLatin1String("moments.shake"))
+        apply(QStringLiteral("shake"));
+    else if (commandId == QLatin1String("moments.instantReplay"))
+        apply(QStringLiteral("instantReplay"));
+    else if (commandId == QLatin1String("moments.shortsVersion"))
+        apply(QStringLiteral("shortsVersion"));
+    else if (commandId == QLatin1String("moments.squareVersion"))
+        apply(QStringLiteral("squareVersion"));
+    else if (commandId == QLatin1String("moments.findDeadTime")) {
+        // The review first, as the Moments popover does: the stretches are listed where they are removed from.
+        openDeadTimeReview();
+        findDeadTime({});
+    } else if (commandId == QLatin1String("moments.findHighlights")) {
+        // Main.qml brings the Highlights panel forward and it finds with its saved options (they live in its popover).
+        emit findHighlightsRequested();
+    } else {
+        return false;
     }
-    if (commandId == QLatin1String("moments.punchIn")) {
-        punchIn();
-        return true;
-    }
-    return false;
+    return true;
 }
 
 } // namespace wabcut::app

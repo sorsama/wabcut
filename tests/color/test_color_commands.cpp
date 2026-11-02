@@ -421,7 +421,7 @@ TEST_CASE("color.management.* and color.inputSpace.*: the project's colour manag
     CHECK(get.data["hdr"] == false);
     CHECK(get.data["managed"] == false);
     CHECK(get.data["autoDetectLog"] == true);
-    CHECK(get.data["modes"].size() == 6); // Premiere's Color Setup presets
+    CHECK(get.data["modes"].size() == 7); // Premiere's Color Setup presets (0.6: with Minimal Tone Mapping)
     CHECK(get.data["modes"][0]["name"] == "Direct Rec.709 (SDR)");
     CHECK_FALSE(get.data["modes"][0]["description"].get<std::string>().empty());
     CHECK(get.data["inputSpaces"].size() == allInputColorSpaces().size());
@@ -768,4 +768,50 @@ TEST_CASE("color.grade.copy refuses a source without a grade and keeps the targe
     const auto stacked = c.h.ok("color.grade.copy", Json{{"from", a1.value}, {"clips", Json::array({b1.value})}, {"replace", false}});
     CHECK(stacked.data["clips"][0]["result"] == "added");
     CHECK(gradesOf(clipIn(c, b1)).size() == 2);
+}
+
+TEST_CASE("color.management.set sets gamut compression the output colour space and SDR Conform (0.6)",
+          "[color][commands][colormanagement]") {
+    ColorHarness c(R"(
+        V1 tgt |Aaaaaaaa|
+    )");
+    const auto get = c.h.ok("color.management.get");
+    CHECK(get.data["gamutCompression"] == false);
+    CHECK(get.data["outputSpace"] == "auto");
+    CHECK(get.data["sdrConform"]["enabled"] == false);
+    CHECK(get.data["outputSpaces"].size() == 6);
+    CHECK(get.data["toneMapOperators"].size() == 3);
+    CHECK(get.data["gamutMappings"].size() == 3);
+
+    // Minimal Tone Mapping compresses gamut by itself; one undo step for all of it.
+    const auto set = c.h.ok("color.management.set",
+                            Json{{"mode", "wide-gamut-minimal"},
+                                 {"gamutCompressionStrength", 0.7},
+                                 {"outputSpace", "p3-d65"},
+                                 {"sdrConform", Json{{"enabled", true}, {"toneMap", "reinhard"}, {"gamut", "saturation"},
+                                                     {"targetPeakNits", 203}, {"legalRange", true}}}});
+    CHECK(set.data["gamutCompressed"] == true);
+    CHECK(set.data["conformsSdr"] == true);
+    const ColorManagement& m = c.h.state()->colorManagement;
+    CHECK(m.mode == ColorManagementMode::WideGamutMinimal);
+    CHECK(m.gamutCompressionStrength == 0.7);
+    CHECK(m.outputSpace == OutputColorSpace::P3D65);
+    CHECK(m.sdrConform.enabled);
+    CHECK(m.sdrConform.toneMap == ToneMapOperator::Reinhard);
+    CHECK(m.sdrConform.gamut == GamutMapping::Saturation);
+    CHECK(m.sdrConform.targetPeakNits == 203.0);
+    CHECK(m.sdrConform.paperWhiteNits == 100.0); // not given: unchanged
+    CHECK(m.sdrConform.legalRange);
+    CHECK(c.h.session.undoCount() == 1);
+    // Only the given fields change; bad names and values are refused.
+    c.h.ok("color.management.set", Json{{"sdrConform", Json{{"paperWhiteNits", 150}}}});
+    CHECK(c.h.state()->colorManagement.sdrConform.toneMap == ToneMapOperator::Reinhard);
+    CHECK(c.h.state()->colorManagement.sdrConform.paperWhiteNits == 150.0);
+    CHECK(c.h.errorOf("color.management.set", Json{{"outputSpace", "rec601"}}) == "InvalidParams");
+    CHECK(c.h.errorOf("color.management.set", Json{{"gamutCompressionStrength", 2}}) == "InvalidParams");
+    CHECK(c.h.errorOf("color.management.set", Json{{"sdrConform", Json{{"toneMap", "hable"}}}}) == "InvalidParams");
+    // Undo restores the setup before.
+    c.h.session.undo();
+    c.h.session.undo();
+    CHECK(c.h.state()->colorManagement.isDefault());
 }

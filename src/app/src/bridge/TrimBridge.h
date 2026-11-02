@@ -19,6 +19,10 @@
 //   * The Trim view (Program Monitor): the outgoing and incoming frames (each rendered with only its track visible),
 //     their source timecodes and the offsets trimmed since entering trim mode.
 //
+//   * 0.6: the edit points also take Extend Selected Edit to Playhead (E), Apply Video / Audio Transition (Ctrl+D /
+//     Ctrl+Shift+D) and an Effects-panel transition: ProjectController keeps them (setTrimEditPoints) with the
+//     alignment the trim type gives (roll: the default, centred; one side: ending or starting at the cut).
+//
 // Principle 9: QML sees clip keys ("c…"), text and frame counts.
 
 #include <wabcut/model/EditOps.h>
@@ -135,6 +139,9 @@ public:
 
     /// C++ / tests: the first edit point's cut, if any.
     std::optional<Ticks> editTime() const;
+    /// 0.6: Extend Selected Edit to Playhead (E) with edit points selected: the trim (of the current type) that puts the
+    /// first edit point on the playhead, the others by the same delta; one undo step "Extend Edit".
+    bool extendToPlayhead();
 
 signals:
     void pointsChanged();
@@ -164,6 +171,10 @@ private:
     void onSelectionChanged();
     void loopTick();
     void finishDynamic();
+    /// 0.6: hands the edit points to ProjectController (transitions on them, command availability).
+    void syncControllerPoints();
+    /// Adds a trim's applied delta to the trim offsets and renders the Trim view again.
+    void addOffsets(Ticks applied);
 
     QPointer<ProjectController> m_controller;
     SequenceId m_sequence; ///< the sequence the edit points are in (switching sequences leaves trim mode)

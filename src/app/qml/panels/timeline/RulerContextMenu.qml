@@ -6,8 +6,9 @@ import QtQuick
 // focus: Mark In / Out / Clip, Go to In / Out, Clear In / Out / In and Out, Add Marker, Go to Next / Previous Marker,
 // Clear All Markers, Ripple Sequence Markers (ProjectController.rippleSequenceMarkers, marker.toggleRipple) and Show
 // Audio Time Units (Monitors.audioTimeUnits). Opened on a marker's flag, it starts with Edit Marker… (the marker editor
-// opens once the menu has closed: editMarkerRequested) and Clear Marker. Rows that cannot run are greyed out (no In,
-// no Out, no markers); each row is the existing undo step and shows its keymap shortcut.
+// opens once the menu has closed: editMarkerRequested) and Clear Marker; 0.6 adds its Marker Colour and Marker Type
+// submenus (inserted only for a flag) and Go to Marker, and a flag's menu shows only those marker rows. Rows that cannot run are greyed out (no In, no Out, no
+// markers); each row is the existing undo step and shows its keymap shortcut.
 // Its own file, importing only QtQuick, so QtQuick.Controls' ContextMenu does not shadow ours.
 ContextMenu {
     id: menu
@@ -22,6 +23,9 @@ ContextMenu {
     readonly property bool hasIn: !isNaN(menu.view.markInX)
     readonly property bool hasOut: !isNaN(menu.view.markOutX)
     readonly property bool hasMarkers: menu.view.markerItems.length > 0
+    /// 0.6: opened on a marker's flag: the marker's own rows only (Edit, Colour, Type, Go to, Clear), like the marker
+    /// menu of the Program time bar and the Markers panel; the ruler's rows (marks, markers, units) show elsewhere.
+    readonly property bool onFlag: menu.markerIndex >= 0
 
     /// Edit Marker… on the marker `index` (TimelineRuler opens the marker editor there).
     signal editMarkerRequested(int index)
@@ -29,6 +33,7 @@ ContextMenu {
     function openAt(target: Item, point: point, marker: int) {
         menu.markerIndex = marker
         menu.pendingEdit = -1
+        menu.showMarkerSubmenus(marker)
         // Anchored at the click (Premiere and native menus): it opens down from the click, or, where the window has no
         // room below for the whole menu, up from it (its bottom edge at the click). Qt's own fit would push it up over
         // the panel header (the sequence tabs) with the click somewhere in its middle. The flag rows just came or went:
@@ -43,6 +48,34 @@ ContextMenu {
         const up = menuHeight > below && above > below
         menu.transformOrigin = up ? Item.Bottom : Item.Top
         menu.popup(target, point.x, up ? point.y - menuHeight : point.y)
+    }
+    // 0.6: the flag's Colour and Type submenus, after Edit Marker… (takeMenu keeps them while the ruler's own menu shows).
+    readonly property MarkerColorSubmenu colorMenu: MarkerColorSubmenu {}
+    readonly property MarkerTypeSubmenu typeMenu: MarkerTypeSubmenu {}
+    function submenuIndex(submenu: var): int {
+        for (let i = 0; i < menu.count; ++i) {
+            const item = menu.itemAt(i) as ContextMenuItem
+            if (item && item.subMenu === submenu)
+                return i
+        }
+        return -1
+    }
+    function showMarkerSubmenus(marker: int) {
+        for (const sub of [menu.typeMenu, menu.colorMenu]) {
+            const at = menu.submenuIndex(sub)
+            if (at >= 0)
+                menu.takeMenu(at)
+        }
+        if (marker < 0)
+            return
+        Markers.scope = "sequence"
+        const m = Markers.marker(marker)
+        menu.colorMenu.markerIndex = marker
+        menu.colorMenu.current = m.colorIndex ?? -1
+        menu.typeMenu.markerIndex = marker
+        menu.typeMenu.current = m.type ?? ""
+        menu.insertMenu(1, menu.colorMenu)
+        menu.insertMenu(2, menu.typeMenu)
     }
     /// A sequence command through ProjectController (the sequence's marks, never the Source Monitor's).
     function run(command: string, reveal: bool) {
@@ -70,6 +103,18 @@ ContextMenu {
         onTriggered: menu.pendingEdit = menu.markerIndex
     }
     ContextMenuItem {
+        objectName: "rulerMenuGoToMarker"
+        visible: menu.markerIndex >= 0
+        height: menu.markerIndex >= 0 ? implicitHeight : 0
+        text: qsTr("Go to Marker")
+        iconName: "crosshair"
+        onTriggered: {
+            Markers.scope = "sequence"
+            if (Markers.seek(menu.markerIndex))
+                menu.view.revealPlayhead()
+        }
+    }
+    ContextMenuItem {
         objectName: "rulerMenuClearMarker"
         visible: menu.markerIndex >= 0
         height: menu.markerIndex >= 0 ? implicitHeight : 0
@@ -81,12 +126,14 @@ ContextMenu {
         }
     }
     ContextMenuSeparator {
-        visible: menu.markerIndex >= 0
-        height: menu.markerIndex >= 0 ? implicitHeight : 0
+        visible: false // 0.6: a flag's menu has the marker rows only
+        height: 0
     }
 
     // ---- In and Out ----
     ContextMenuItem {
+        visible: !menu.onFlag
+        height: menu.onFlag ? 0 : implicitHeight
         objectName: "rulerMenuMarkIn"
         text: qsTr("Mark In")
         iconName: "mark-in"
@@ -94,6 +141,8 @@ ContextMenu {
         onTriggered: menu.run("marker.markIn", false)
     }
     ContextMenuItem {
+        visible: !menu.onFlag
+        height: menu.onFlag ? 0 : implicitHeight
         objectName: "rulerMenuMarkOut"
         text: qsTr("Mark Out")
         iconName: "mark-out"
@@ -101,14 +150,21 @@ ContextMenu {
         onTriggered: menu.run("marker.markOut", false)
     }
     ContextMenuItem {
+        visible: !menu.onFlag
+        height: menu.onFlag ? 0 : implicitHeight
         objectName: "rulerMenuMarkClip"
         text: qsTr("Mark Clip")
         iconName: "film"
         command: "marker.markClip"
         onTriggered: menu.run("marker.markClip", false)
     }
-    ContextMenuSeparator {}
+    ContextMenuSeparator {
+        visible: !menu.onFlag
+        height: menu.onFlag ? 0 : implicitHeight
+    }
     ContextMenuItem {
+        visible: !menu.onFlag
+        height: menu.onFlag ? 0 : implicitHeight
         objectName: "rulerMenuGoToIn"
         text: qsTr("Go to In")
         iconName: "go-to-in"
@@ -117,6 +173,8 @@ ContextMenu {
         onTriggered: menu.run("marker.goToIn", true)
     }
     ContextMenuItem {
+        visible: !menu.onFlag
+        height: menu.onFlag ? 0 : implicitHeight
         objectName: "rulerMenuGoToOut"
         text: qsTr("Go to Out")
         iconName: "go-to-out"
@@ -124,8 +182,13 @@ ContextMenu {
         enabled: menu.hasOut
         onTriggered: menu.run("marker.goToOut", true)
     }
-    ContextMenuSeparator {}
+    ContextMenuSeparator {
+        visible: !menu.onFlag
+        height: menu.onFlag ? 0 : implicitHeight
+    }
     ContextMenuItem {
+        visible: !menu.onFlag
+        height: menu.onFlag ? 0 : implicitHeight
         objectName: "rulerMenuClearIn"
         text: qsTr("Clear In")
         iconName: "x"
@@ -134,6 +197,8 @@ ContextMenu {
         onTriggered: menu.run("marker.clearIn", false)
     }
     ContextMenuItem {
+        visible: !menu.onFlag
+        height: menu.onFlag ? 0 : implicitHeight
         objectName: "rulerMenuClearOut"
         text: qsTr("Clear Out")
         iconName: "x"
@@ -142,6 +207,8 @@ ContextMenu {
         onTriggered: menu.run("marker.clearOut", false)
     }
     ContextMenuItem {
+        visible: !menu.onFlag
+        height: menu.onFlag ? 0 : implicitHeight
         objectName: "rulerMenuClearInOut"
         text: qsTr("Clear In and Out")
         iconName: "x"
@@ -149,10 +216,15 @@ ContextMenu {
         enabled: menu.hasIn || menu.hasOut
         onTriggered: menu.run("marker.clearInAndOut", false)
     }
-    ContextMenuSeparator {}
+    ContextMenuSeparator {
+        visible: !menu.onFlag
+        height: menu.onFlag ? 0 : implicitHeight
+    }
 
     // ---- Sequence markers ----
     ContextMenuItem {
+        visible: !menu.onFlag
+        height: menu.onFlag ? 0 : implicitHeight
         objectName: "rulerMenuAddMarker"
         text: qsTr("Add Marker")
         iconName: "bookmark"
@@ -163,6 +235,8 @@ ContextMenu {
         }
     }
     ContextMenuItem {
+        visible: !menu.onFlag
+        height: menu.onFlag ? 0 : implicitHeight
         objectName: "rulerMenuNextMarker"
         text: qsTr("Go to Next Marker")
         iconName: "skip-forward"
@@ -175,6 +249,8 @@ ContextMenu {
         }
     }
     ContextMenuItem {
+        visible: !menu.onFlag
+        height: menu.onFlag ? 0 : implicitHeight
         objectName: "rulerMenuPreviousMarker"
         text: qsTr("Go to Previous Marker")
         iconName: "skip-back"
@@ -187,6 +263,8 @@ ContextMenu {
         }
     }
     ContextMenuItem {
+        visible: !menu.onFlag
+        height: menu.onFlag ? 0 : implicitHeight
         objectName: "rulerMenuClearAllMarkers"
         text: qsTr("Clear All Markers")
         iconName: "trash-2"
@@ -199,6 +277,8 @@ ContextMenu {
     }
     // Stream B's per-sequence setting: markers follow insert, extract, ripple delete and ripple trims.
     ContextMenuItem {
+        visible: !menu.onFlag
+        height: menu.onFlag ? 0 : implicitHeight
         id: rippleItem
         objectName: "rulerMenuRippleMarkers"
         text: qsTr("Ripple Sequence Markers")
@@ -211,9 +291,14 @@ ContextMenu {
             rippleItem.checked = Qt.binding(() => ProjectController.rippleSequenceMarkers)
         }
     }
-    ContextMenuSeparator {}
+    ContextMenuSeparator {
+        visible: !menu.onFlag
+        height: menu.onFlag ? 0 : implicitHeight
+    }
     // Premiere's Show Audio Time Units (one setting with the Program Monitor's): the ruler counts audio samples.
     ContextMenuItem {
+        visible: !menu.onFlag
+        height: menu.onFlag ? 0 : implicitHeight
         id: audioUnitsItem
         objectName: "rulerMenuAudioTimeUnits"
         text: qsTr("Show Audio Time Units")

@@ -75,6 +75,9 @@ public:
     std::expected<Json, command::CommandError> addWatchFolder(const std::string& folder, const std::string& preset,
                                                               const std::string& output, bool moveSources, bool dryRun) override;
     std::expected<void, command::CommandError> removeWatchFolder(std::string_view id, bool dryRun) override;
+    /// 0.6 (#52): Stems.h's roles of the sequence.
+    std::vector<Output> stemExports(const ProjectState& state, SequenceId sequence, const Output& master,
+                                    const std::string& masterOutput, bool masterEffects) const override;
 
     /// A preset as presets() lists it.
     static Json presetJson(const Preset& preset, bool builtIn);

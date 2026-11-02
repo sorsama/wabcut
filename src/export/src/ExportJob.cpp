@@ -1,15 +1,19 @@
+#include "Delivery.h"
 #include "Encode.h"
 #include "ExportLoudness.h"
 #include "FrameEffects.h"
 #include "MetadataWriter.h"
 #include "Mixdown.h"
+#include "MxfDelivery.h"
 #include "SmartRender.h"
 #include "SubtitleStream.h"
 
 #include <wabcut/export/CaptionSidecar.h>
+#include <wabcut/export/ClosedCaptions.h>
 #include <wabcut/export/ExportJob.h>
 #include <wabcut/interchange/CaptionFiles.h>
 #include <wabcut/export/RenderedVideoSource.h>
+#include <wabcut/model/MasterClipEffects.h>
 #include <wabcut/model/Resolve.h>
 
 #include <wabcut/audio/effects/EffectChain.h>
@@ -393,7 +397,7 @@ void collectPluginProblems(const ProjectState& project, const Sequence& seq, Tim
             if (!clip.enabled || !clip.timelineRange.overlaps(range)) {
                 continue;
             }
-            check(clip.effects());
+            check(playedEffects(project, clip, EffectKind::Audio)); // fix F1A (card #71): its media's master effects too
             if (const Sequence* nested = clip.isNested() ? project.findSequence(clip.sequence) : nullptr) {
                 const TimeRange inside = clip.isRemapped() ? TimeRange{Ticks{}, std::max(nested->duration, nested->contentEnd())}
                                                            : TimeRange::fromStartEnd(clip.sourceIn, clip.sourceOut());
@@ -420,6 +424,9 @@ std::expected<void, Error> addMetadata(detail::Muxer& muxer, const ExportSetting
     }
     if (!s.metadata.description.empty()) {
         muxer.setMetadata(c == Container::Wav ? "comment" : "description", s.metadata.description);
+    }
+    if (isMxf(c)) {
+        return {}; // 0.6 (#73): an MXF file's timecode track and names are set with its muxer (MxfDelivery)
     }
     if (!s.metadata.timecode) {
         return {};
@@ -491,6 +498,26 @@ std::expected<Originals, Error> resolveOriginals(const ProjectState& snapshot, c
 }
 
 } // namespace
+
+std::vector<MissingOriginal> missingOriginals(const ProjectState& snapshot, const Sequence& sequence,
+                                              const ExportSettings& settings, const std::filesystem::path& projectFile) {
+    std::vector<MissingOriginal> out;
+    const auto r = resolve(settings, sequence, snapshot.colorManagement);
+    if (!r) {
+        return out;
+    }
+    const std::set<MediaId> used = usedMedia(snapshot, sequence, r->range, settings.video.enabled, settings.audio.enabled);
+    for (const MediaPtr& item : snapshot.media) {
+        if (!item || !used.contains(item->id) || item->isGenerator()) {
+            continue;
+        }
+        // resolveOriginals()'s own test: offline, or no file at the path (absolute, else next to the project).
+        if (item->locator.offline || !resolveMediaPath(item->locator, projectFile)) {
+            out.push_back({item->id, item->name, item->locator.path});
+        }
+    }
+    return out;
+}
 
 std::string_view exportPhaseName(ExportPhase phase) {
     switch (phase) {
@@ -720,6 +747,72 @@ std::expected<ExportResult, Error> ExportJob::Impl::runImpl(const std::stop_toke
 
     ExportResult result;
     result.output = output;
+    // 0.6 (#73): MXF - every file's timecode track (the export's start timecode, always), clip and reel names and
+    // signal standard; OP-Atom's audio files must not overwrite source media either.
+    const bool mxf = isMxf(settings.container);
+    MxfFileInfo mxfInfo;
+    if (mxf) {
+        mxfInfo.timecode = timecodeText(exportStartTimecode(settings, *sequence, r.range), r.frameRate, sequence->dropFrame);
+        mxfInfo.clipName = settings.metadata.title.empty() ? sequence->name : settings.metadata.title;
+        mxfInfo.reelName = settings.mxf.reelName;
+        mxfInfo.frameRate = r.frameRate;
+        mxfInfo.height = r.height;
+        configureMxfMuxer(muxer, mxfInfo);
+        result.operationalPattern = settings.container == Container::Mxf ? "OP1a" : "OP-Atom";
+        result.startTimecode = mxfInfo.timecode;
+        if (settings.container == Container::MxfOpAtom && hasAudio) {
+            const int tracks = exportAudioChannels(settings.audio, sequence->masterFormat);
+            for (int t = 1; t <= tracks; ++t) {
+                const std::filesystem::path file = opAtomAudioPath(output, t);
+                for (const std::filesystem::path& sourceFile : originals->files) {
+                    if (std::filesystem::exists(file, ec) && std::filesystem::equivalent(file, sourceFile, ec)) {
+                        return std::unexpected(Error{ErrorCode::InvalidArgument,
+                                                     std::format("The output would overwrite source media {}", pathToUtf8(sourceFile))});
+                    }
+                }
+            }
+        }
+    }
+    // 0.6 (#73): embedded captions - 608 / 708 cc_data for every frame, in the picture stream and / or a caption track
+    // (decided before the encoder: only encoders that write caption data are picked for the picture stream).
+    std::optional<EmbeddedCaptionPlan> captionPlan;
+    std::optional<ClosedCaptionData> closedCaptions;
+    if (hasVideo && settings.captions.mode == CaptionExport::Embed) {
+        auto plan = embeddedCaptionPlan(settings);
+        if (!plan) {
+            return std::unexpected(plan.error());
+        }
+        ClosedCaptionOptions o;
+        o.cea608 = plan->cea608;
+        o.cea708 = plan->cea708;
+        o.channel608 = settings.captions.channel608;
+        o.service708 = settings.captions.service708;
+        o.display = std::min<std::uint8_t>(settings.captions.display608, 4);
+        if (const CaptionTrack* track = captionTrackToExport(*sequence, settings.captions)) {
+            const CaptionTrack exported = captionTrackForFile(*request.snapshot, *sequence, *track, settings.captions.redactedWord,
+                                                              settings.captions.words.get());
+            o.language = track->language;
+            o.placement = track->style.placement == CaptionPlacement::Top ? CaptionPlacement::Top : CaptionPlacement::Bottom;
+            o.alignment = track->style.alignment;
+            o.style = track->style;
+            closedCaptions = buildClosedCaptions(exported.cues, r.range, r.frameRate, r.frameCount, o);
+            if (closedCaptions->cues == 0) {
+                result.warnings.push_back(std::format("Embedded captions: the caption track \"{}\" has no captions in the "
+                                                      "export range, so the file carries none",
+                                                      track->name));
+                closedCaptions.reset();
+            } else {
+                for (const std::string& note : closedCaptions->notes) {
+                    result.warnings.push_back("Embedded captions: " + note);
+                }
+                captionPlan = *plan;
+                result.embeddedCaptions = describeEmbeddedCaptions(settings, *plan);
+                result.embeddedCaptionCues = closedCaptions->cues;
+            }
+        } else {
+            result.warnings.push_back("Embedded captions: the sequence has no caption track, so the file carries none");
+        }
+    }
     std::unique_ptr<IVideoFrameSource> source;
     SourceStopper stopper;
     std::optional<std::stop_callback<StopSourceOnCancel>> stopSourceOnCancel; // destroyed before the source
@@ -730,7 +823,8 @@ std::expected<ExportResult, Error> ExportJob::Impl::runImpl(const std::stop_toke
     std::optional<SmartRenderPlan> smart;                        // 0.2: frames copied, not rendered
     if (hasVideo) {
         // I.9: the colour description, and an HDR10 mastering display for PQ (0.2: RGB and JPEG outputs too).
-        const ColorTags tags = colorTagsFor(r.dynamicRange, settings.video.codec, settings.video.pixelFormat);
+        ColorTags tags = colorTagsFor(r.dynamicRange, settings.video.codec, settings.video.pixelFormat);
+        applyOutputSpace(tags, r.outputSpace); // 0.6 (#72): Rec.2020 SDR and P3-D65 tags
         // A target size is a bitrate with its peaks capped at it (the cap keeps the size; I.9).
         VideoSettings encode = settings.video;
         if (encode.rateControl == RateControl::TargetSize) {
@@ -751,7 +845,7 @@ std::expected<ExportResult, Error> ExportJob::Impl::runImpl(const std::stop_toke
             params.masteringDisplay = masteringDisplayFor(request.snapshot->colorManagement.peakNits);
         }
         masteringDisplay = params.masteringDisplay;
-        params.a53Captions = settings.captions.mode == CaptionExport::Embed;
+        params.a53Captions = closedCaptions && captionPlan->inVideo; // 0.6 (#73): 608 / 708 in the picture stream
         auto choice = chooseVideoEncoder(params);
         if (!choice) {
             return std::unexpected(choice.error());
@@ -806,6 +900,8 @@ std::expected<ExportResult, Error> ExportJob::Impl::runImpl(const std::stop_toke
             format.burnInCaptions = request.settings.captions;
         }
         format.dynamicRange = r.dynamicRange;
+        format.outputSpace = r.outputSpace; // 0.6 (#72)
+        format.sdrConform = r.sdrConform;
         format.tenBit = r.tenBitRender;
         format.alpha = r.alpha;
         auto src = factory(originals->project, *sequence, format);
@@ -854,38 +950,54 @@ std::expected<ExportResult, Error> ExportJob::Impl::runImpl(const std::stop_toke
     const int channels = exportAudioChannels(settings.audio, sequence->masterFormat);
     AudioSettings audioSettings = settings.audio;
     audioSettings.channels = channels;
+    // 0.6 (#73): MXF spreads the mix (stereo, or 5.1 into 6+ tracks) over its tracks or OP-Atom files.
+    std::unique_ptr<MxfAudioOut> mxfAudio;
+    const int mixChannels = mxf ? mxfMixChannels(channels, sequence->masterFormat) : channels;
     if (hasAudio) {
         collectPluginProblems(*request.snapshot, *sequence, r.range, 0, result.warnings);
-        auto enc = AudioEncoder::open(audioSettings, muxer.wantsGlobalHeader(), settings.container == Container::Aiff);
-        if (!enc) {
-            return std::unexpected(enc.error());
+        if (mxf) {
+            auto out = MxfAudioOut::create(settings.container, settings.mxf.audioLayout, audioSettings, mixChannels, muxer,
+                                           output, mxfInfo);
+            if (!out) {
+                return std::unexpected(out.error());
+            }
+            mxfAudio = std::move(*out);
+            result.audioEncoder = mxfAudio->encoderName();
+            result.audioLayout = mxfAudio->describe();
+        } else {
+            auto enc = AudioEncoder::open(audioSettings, muxer.wantsGlobalHeader(), settings.container == Container::Aiff);
+            if (!enc) {
+                return std::unexpected(enc.error());
+            }
+            audio = std::move(*enc);
+            result.audioEncoder = audio->name();
         }
-        audio = std::move(*enc);
-        result.audioEncoder = audio->name();
-        publish([&](ExportProgress& p) { p.audioEncoder = audio->name(); }, true);
+        publish([&](ExportProgress& p) { p.audioEncoder = result.audioEncoder; }, true);
         const wabcut::audio::ScopedOfflineRender offline(pluginIncidents); // the master's plugins are created here
-        mix = std::make_unique<OfflineMix>(originals->project, sequence, channels, settings.audio.sampleRate,
+        mix = std::make_unique<OfflineMix>(originals->project, sequence, mixChannels, settings.audio.sampleRate,
                                            r.range.start);
         // 0.2, Loudness Normalization: the mix measured first (its own render), then rendered through the gain and
         // the true-peak limiter.
         if (settings.effects.loudness.applied) {
-            OfflineMix measured(originals->project, sequence, channels, settings.audio.sampleRate, r.range.start);
-            auto m = measureLoudness(measured, channels, settings.audio.sampleRate, r.audioSamples, settings.effects.loudness,
+            OfflineMix measured(originals->project, sequence, mixChannels, settings.audio.sampleRate, r.range.start);
+            auto m = measureLoudness(measured, mixChannels, settings.audio.sampleRate, r.audioSamples, settings.effects.loudness,
                                      stop);
             if (!m) {
                 return std::unexpected(m.error());
             }
             loudness = *m;
-            normalized = std::make_unique<NormalizedMix>(*mix, channels, settings.audio.sampleRate, m->gainDb,
+            normalized = std::make_unique<NormalizedMix>(*mix, mixChannels, settings.audio.sampleRate, m->gainDb,
                                                          settings.effects.loudness.effectiveTruePeak());
             result.loudnessLufs = std::isfinite(m->integratedLufs) ? std::optional<double>(m->integratedLufs) : std::nullopt;
             result.loudnessGainDb = m->gainDb;
         }
-        auto st = muxer.addStream(audio->context());
-        if (!st) {
-            return std::unexpected(st.error());
+        if (audio) {
+            auto st = muxer.addStream(audio->context());
+            if (!st) {
+                return std::unexpected(st.error());
+            }
+            audioStream = *st;
         }
-        audioStream = *st;
     }
     // 0.2: Metadata - chapters, the start timecode, title and description - and a soft subtitle track.
     if (auto ok = addMetadata(muxer, settings, *sequence, r, result); !ok) {
@@ -905,8 +1017,23 @@ std::expected<ExportResult, Error> ExportJob::Impl::runImpl(const std::stop_toke
             subtitles = std::move(*s);
         }
     }
+    // 0.6 (#73): the caption track (MXF: SMPTE 436M ANC, last; QuickTime: c608).
+    AVStream* captionStream = nullptr;
+    const AVRational frameTimeBase{r.frameRate.den, r.frameRate.num};
+    if (closedCaptions && captionPlan->track) {
+        auto st = muxer.addCaptionStream(frameTimeBase);
+        if (!st) {
+            return std::unexpected(st.error());
+        }
+        captionStream = *st;
+    }
     if (auto ok = muxer.open(); !ok) {
         return std::unexpected(ok.error());
+    }
+    if (mxfAudio) {
+        if (auto ok = mxfAudio->open(); !ok) {
+            return std::unexpected(ok.error());
+        }
     }
 
     // ---- Render -------------------------------------------------------------------------------------------
@@ -927,13 +1054,13 @@ std::expected<ExportResult, Error> ExportJob::Impl::runImpl(const std::stop_toke
         upTo = std::min(upTo, r.audioSamples);
         while (samplesDone < upTo) {
             const std::int64_t n = std::min<std::int64_t>(upTo - samplesDone, 4096);
-            audioBuffer.resize(static_cast<std::size_t>(n * channels));
+            audioBuffer.resize(static_cast<std::size_t>(n * mixChannels));
             if (normalized) {
                 normalized->render(audioBuffer);
             } else {
                 mix->render(audioBuffer);
             }
-            if (auto ok = audio->encode(audioBuffer, muxer, audioStream); !ok) {
+            if (auto ok = mxfAudio ? mxfAudio->encode(audioBuffer) : audio->encode(audioBuffer, muxer, audioStream); !ok) {
                 return ok;
             }
             samplesDone += n;
@@ -946,7 +1073,7 @@ std::expected<ExportResult, Error> ExportJob::Impl::runImpl(const std::stop_toke
         std::optional<AudioStage> audioStage;
         if (hasAudio) {
             audioStage.emplace(
-                pumpAudio, [&] { return audio->flush(muxer, audioStream); }, r.audioSamples,
+                pumpAudio, [&] { return mxfAudio ? mxfAudio->flush() : audio->flush(muxer, audioStream); }, r.audioSamples,
                 std::int64_t{2} * settings.audio.sampleRate);
         }
         // 0.2, smart rendering: copied frames are not rendered; their packets come from the preview or source files.
@@ -957,22 +1084,10 @@ std::expected<ExportResult, Error> ExportJob::Impl::runImpl(const std::stop_toke
         }
         ConvertStage stage(*source, *converter, r.frameCount,
                            smart ? std::optional<std::vector<std::int64_t>>(smart->renderedFrames()) : std::nullopt);
-        // P.2 Embed In Output File: each frame's CEA-608 byte pairs as A/53 cc_data (CC1, field 1); frames without
-        // captions carry a null pair so the caption channel stays continuous.
-        std::map<std::int64_t, std::vector<std::array<std::uint8_t, 2>>> cc;
-        const bool embedCaptions = settings.captions.mode == CaptionExport::Embed;
-        if (embedCaptions) {
-            if (const CaptionTrack* track = captionTrackToExport(*sequence, settings.captions)) {
-                const CaptionTrack exported = captionTrackForFile(*request.snapshot, *sequence, *track,
-                                                                  settings.captions.redactedWord, settings.captions.words.get());
-                interchange::CaptionWriteOptions o;
-                o.language = track->language;
-                o.placement = track->style.placement == CaptionPlacement::Top ? CaptionPlacement::Top : CaptionPlacement::Bottom;
-                o.alignment = track->style.alignment;
-                o.display = static_cast<interchange::Cea608Display>(std::min<int>(settings.captions.display608, 4));
-                cc = interchange::cea608ForVideo(exported.cues, r.range, r.frameRate, o);
-            }
-        }
+        // P.2 / 0.6 (#73) Embed In Output File: each frame's cc_data (608 on its channel, 708 in its service, padding)
+        // as ATSC A/53 caption data on the frame, and / or as a packet of the caption track.
+        const bool embedInVideo = closedCaptions && captionPlan->inVideo;
+        CaptionTrackWriter captionWriter(muxer, captionStream, frameTimeBase, settings.container == Container::Mov);
         // Samples that end with video frame k: k frame periods at the audio rate (exact rational, nearest).
         const std::int64_t sampleNum = std::int64_t{settings.audio.sampleRate} * r.frameRate.den;
         for (std::int64_t k = 0; k < r.frameCount; ++k) {
@@ -998,23 +1113,23 @@ std::expected<ExportResult, Error> ExportJob::Impl::runImpl(const std::stop_toke
                 if (!ready) {
                     return std::unexpected(ready.error());
                 }
-                if (embedCaptions) {
-                    const auto it = cc.find(k);
-                    const std::size_t pairs = it != cc.end() ? std::min<std::size_t>(it->second.size(), 31) : 1;
-                    AVFrameSideData* sd = av_frame_new_side_data(ready->get(), AV_FRAME_DATA_A53_CC, 3 * pairs);
+                if (embedInVideo) {
+                    const std::span<const std::uint8_t> cc = closedCaptions->frame(k);
+                    AVFrameSideData* sd = av_frame_new_side_data(ready->get(), AV_FRAME_DATA_A53_CC, cc.size());
                     if (!sd) {
                         return std::unexpected(Error{ErrorCode::EncoderError, "Cannot attach the closed captions"});
                     }
-                    for (std::size_t i = 0; i < pairs; ++i) {
-                        sd->data[3 * i] = 0xFC; // cc_valid, NTSC line 21 field 1
-                        sd->data[3 * i + 1] = it != cc.end() ? it->second[i][0] : 0x80;
-                        sd->data[3 * i + 2] = it != cc.end() ? it->second[i][1] : 0x80;
-                    }
+                    std::copy(cc.begin(), cc.end(), sd->data);
                 }
                 if (const int rc = avcodec_send_frame(video.ctx.get(), ready->get()); rc < 0) {
                     return std::unexpected(ffmpegError(ErrorCode::EncoderError, "Video encoding failed", rc));
                 }
                 if (auto ok = drainEncoder(video.ctx.get(), packet.get(), muxer, videoStream, false); !ok) {
+                    return std::unexpected(ok.error());
+                }
+            }
+            if (captionStream) { // 0.6 (#73): the caption track's packet of frame k
+                if (auto ok = captionWriter.frame(k, closedCaptions->frame(k)); !ok) {
                     return std::unexpected(ok.error());
                 }
             }
@@ -1025,6 +1140,11 @@ std::expected<ExportResult, Error> ExportJob::Impl::runImpl(const std::stop_toke
                 }
             }
             publish([&](ExportProgress& p) { p.framesDone = k + 1; }, false);
+        }
+        if (captionStream) {
+            if (auto ok = captionWriter.finish(r.frameCount); !ok) {
+                return std::unexpected(ok.error());
+            }
         }
         if (const int rc = avcodec_send_frame(video.ctx.get(), nullptr); rc < 0) {
             return std::unexpected(
@@ -1052,7 +1172,7 @@ std::expected<ExportResult, Error> ExportJob::Impl::runImpl(const std::stop_toke
         if (auto ok = pumpAudio(r.audioSamples); !ok) {
             return std::unexpected(ok.error());
         }
-        if (auto ok = audio->flush(muxer, audioStream); !ok) {
+        if (auto ok = mxfAudio ? mxfAudio->flush() : audio->flush(muxer, audioStream); !ok) {
             return std::unexpected(ok.error());
         }
     }
@@ -1075,6 +1195,10 @@ std::expected<ExportResult, Error> ExportJob::Impl::runImpl(const std::stop_toke
 
     // ---- Finish: trailer, then the atomic rename into place -----------------------------------------------
     setPhase(ExportPhase::Finalizing);
+    result.outputSpace = r.outputSpace; // 0.6 (#72): and what SDR Conform mapped
+    if (source && r.sdrConform) {
+        result.sdrConform = source->conformReport();
+    }
     if (masteringDisplay && source) {
         // I.9: MaxCLL / MaxFALL as measured over every frame, into the movie header the trailer writes ('clli').
         if (const auto light = source->lightLevels(); light && light->frames > 0) {
@@ -1088,6 +1212,11 @@ std::expected<ExportResult, Error> ExportJob::Impl::runImpl(const std::stop_toke
     }
     if (auto ok = muxer.finish(); !ok) {
         return std::unexpected(ok.error());
+    }
+    if (mxfAudio) { // 0.6 (#73): OP-Atom's audio files finished; they go into place after the picture file
+        if (auto ok = mxfAudio->finishFiles(); !ok) {
+            return std::unexpected(ok.error());
+        }
     }
     // 0.2: XMP, embedded (MP4 / MOV / M4A, before Content Credentials sign the file) or as a sidecar.
     std::string xmpSidecar;
@@ -1145,6 +1274,16 @@ std::expected<ExportResult, Error> ExportJob::Impl::runImpl(const std::stop_toke
                                                       pathToUtf8(output), ec.message())});
         }
         temp.keep = true;
+        if (mxfAudio) { // 0.6 (#73): OP-Atom's audio files into place, now that their picture file is
+            auto files = mxfAudio->commitFiles();
+            if (!files) {
+                return std::unexpected(files.error());
+            }
+            result.extraFiles = std::move(*files);
+        }
+        if (mxf) {
+            result.materialUmid = mxfMaterialUmid(output); // 0.6 (#73): for the export details
+        }
     }
     if (!xmpSidecar.empty()) {
         const std::filesystem::path file = xmpSidecarPath(output);

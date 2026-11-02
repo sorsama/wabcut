@@ -3,6 +3,7 @@
 #include <wabcut/ai/Text.h>
 #include <wabcut/ai/edit/TranscriptCommands.h>
 #include <wabcut/ai/roughcut/Outline.h>
+#include <wabcut/ai/roughcut/ScriptCorrections.h>
 #include <wabcut/ai/search/SearchCommands.h>
 #include <wabcut/command/Engine.h>
 #include <wabcut/command/Schema.h>
@@ -831,6 +832,8 @@ void registerRoughCutCommands(command::CommandRegistry& registry) {
          "one heard. Pass the same options as takes.find (and its expectedRevision). One undo step; returns the review list.",
          Capability::EditSequence, Json{{"type", "object"}, {"properties", std::move(use)}, {"additionalProperties", false}},
          Json{{"best", true}}, {}, useTakeCommand}));
+
+    registerScriptCorrectionCommands(registry); // 0.6 (P1 round, #37): transcript.correctFromScript
 }
 
 } // namespace wabcut::ai::roughcut

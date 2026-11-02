@@ -13,6 +13,8 @@ AbstractButton {
     property bool open: false
     /// An icon after the label (the collapsed bar's Menu button).
     property string iconName: ""
+    /// P1 round (#5): an accent dot after the label (Help while a newer Wabcut is out).
+    property bool badge: false
     /// Space / Enter / Down (keyboard) want the menu.
     signal keyboardOpenRequested()
     /// Left (-1) / Right (+1): the focus to the neighbouring title.
@@ -33,6 +35,7 @@ AbstractButton {
 
     Accessible.role: Accessible.ButtonMenu
     Accessible.name: control.text
+    Accessible.description: control.badge ? qsTr("Something new here") : ""
 
     // Space comes as a click (AbstractButton); Enter, Return and Down open the menu too. Left / Right are claimed before
     // the keymap (they step the playhead otherwise).
@@ -73,6 +76,15 @@ AbstractButton {
                 name: control.iconName
                 size: Theme.iconSm
                 color: control.open || control.hovered ? Theme.textPrimary : Theme.textSecondary
+            }
+            Rectangle {
+                objectName: "menuBarBadge"
+                anchors.verticalCenter: parent.verticalCenter
+                visible: control.badge
+                width: Theme.dotSize
+                height: Theme.dotSize
+                radius: Theme.dotSize / 2
+                color: Theme.accentStroke
             }
         }
     }

@@ -44,6 +44,7 @@ const int OP_RADIAL_SHADOW = 78;
 const int OP_ROUGHEN_EDGES = 79;
 const int OP_COLOR_KEY = 80;
 const int OP_CONVOLUTION_KERNEL = 81;
+const int OP_GLOW = 82;
 
 float q[32];
 
@@ -311,6 +312,38 @@ void main()
         vec3 color = q[8] > 0.5 ? mix(end, start, g) : start;
         float a = k * clamp(q[1] / 255.0, 0.0, 1.0);
         fragColor = in0 + vec4(color * a, a) * (1.0 - in0.a);
+    } else if (op == OP_GLOW && pass == 0) {
+        // 0.6 Glow, pass 1: the bright pass (luma of the encoded colour, or alpha) above Glow Threshold, ramped to 1.
+        float m = q[0] > 0.5 ? clamp(in0.a, 0.0, 1.0) : luma(encoded(in0));
+        float threshold = clamp(q[1], 0.0, 1.0);
+        fragColor = in0 * clamp((m - threshold) / max(1.0 - threshold, 1e-3), 0.0, 1.0);
+    } else if (op == OP_GLOW) {
+        // Pass 2: tex1 = the bright pass blurred by Glow Radius: its colours (or A & B by its strength) composited.
+        vec4 g = textureLod(tex1, v_uv, 0.0);
+        float s = clamp(g.a, 0.0, 1.0);
+        float intensity = max(q[3], 0.0);
+        vec4 glow = vec4(g.rgb * intensity, clamp(s * intensity, 0.0, 1.0));
+        if (q[6] > 0.5) {
+            float mid = clamp(q[7], 0.0, 1.0);
+            float u = s < mid ? 0.5 * s / max(mid, 1e-3) : 0.5 + 0.5 * (s - mid) / max(1.0 - mid, 1e-3);
+            vec3 col = mix(srgbToLinear3(vec3(q[11], q[12], q[13])), srgbToLinear3(vec3(q[8], q[9], q[10])), clamp(u, 0.0, 1.0));
+            glow.rgb = col * s * intensity;
+        }
+        int composite = int(floor(q[4] + 0.5));
+        int operation = int(floor(q[5] + 0.5));
+        vec4 result;
+        if (composite == 0) {
+            result = in0 + glow * (1.0 - in0.a);
+        } else if (composite == 2) {
+            result = glow;
+        } else {
+            vec3 rgb = operation == 0 ? in0.rgb + glow.rgb
+                     : operation == 1 ? in0.rgb + glow.rgb - in0.rgb * glow.rgb
+                     : operation == 2 ? max(in0.rgb, glow.rgb)
+                                      : glow.rgb + in0.rgb * (1.0 - glow.a);
+            result = vec4(rgb, in0.a + glow.a * (1.0 - in0.a));
+        }
+        fragColor = mix(result, in0, clamp(q[15], 0.0, 1.0));
     } else if (op == OP_BEVEL_ALPHA) {
         // tex1 = the layer blurred by Edge Thickness: the slope of its alpha lights and shades the edges.
         float t = div;

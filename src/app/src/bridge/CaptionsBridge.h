@@ -12,10 +12,12 @@
 //                          merge with the next, add at the playhead, delete, the speaker (name and colour)
 //   generate() / update    captions.generateFromTranscript; captions.updateFromTranscript after transcript corrections
 //                          (`updateSuggested` after a fix on the Transcript tab)
-//   exportFile()           SRT / WebVTT through wabcut_ai_edit's writers
+//   exportFile()           a caption file through captions.export (0.6: bleeped words replaced); exportAllTracks()
 //   activeCue              the cue under the playhead (the list highlights it)
 //   selectedCue            0.5: the cue selected on the timeline's caption lanes (TimelineView; selectCue), editCue()
 //                          asks the page to open its text, setTrackEnabledFor() is the lanes' eye toggle
+//   caption keys           0.6 (P1 round, #35): Add New Caption Track, Add Caption at Playhead, Go to Next / Previous
+//                          Caption Segment (runCommand, commandAvailability; Sequence > Captions)
 //
 // The compositor draws the shown track in the picture (I.4: the program monitor and burned-in exports alike) with
 // `style` (CaptionStyleMapping.h maps it to the renderer's style), so every edit previews live.
@@ -38,6 +40,9 @@ class QQmlEngine;
 
 namespace wabcut {
 struct CaptionTrack;
+namespace command {
+struct CommandResult;
+}
 }
 
 namespace wabcut::app {
@@ -220,6 +225,23 @@ public:
     /// "" or why not.
     Q_INVOKABLE QString setTrackEnabledFor(const QString& track, bool enabled);
 
+    // ---- P1 round (#35, stream 2E): Premiere's caption keys ----
+    /// sequence.addCaptionTrack (Ctrl+Alt+A), sequence.addCaptionAtPlayhead (Ctrl+Alt+C), sequence.nextCaptionSegment
+    /// (Ctrl+Alt+Down) and sequence.previousCaptionSegment (Ctrl+Alt+Up): Main.qml routes them here. #37's
+    /// transcript.correctFromScript (Main opens the sheet) only asks commandAvailability (the transcript has words).
+    static bool handlesCommand(const QString& commandId);
+    /// {handled, enabled, reason} of those ids for the menu bar and the palette ("Open a sequence first", "Add a caption
+    /// track first", "No caption after the playhead", ...); {handled: false} for any other id. They act on the shown
+    /// track (the one the Captions page edits and the monitor draws).
+    Q_INVOKABLE QVariantMap commandAvailability(const QString& commandId) const;
+    /// Runs one of them: a new caption track named "Captions" ("Captions 2", ...) that becomes the shown one, a caption
+    /// at the playhead (cueAdded), or the playhead to the next / previous caption (goToCue). False when it did not run
+    /// (the reason in `message`) or for another id.
+    Q_INVOKABLE bool runCommand(const QString& commandId);
+    /// The playhead to the nearest caption of the shown track that starts after (`direction` 1) or before (-1) it (on a
+    /// frame inside the caption: seekPointIn), and that caption is selected. False when there is none.
+    Q_INVOKABLE bool goToCue(int direction);
+
     // ---- C++ ----
     /// The track the Captions page shows (invalid when there is none): the command palette's captionTrack.
     CaptionTrackId shownTrackId() const { return m_track; }
@@ -227,8 +249,13 @@ public:
     // ---- Export ----
     /// "srt" or "vtt" text of the shown track.
     Q_INVOKABLE QString exportText(const QString& format) const;
-    /// Writes the shown track to `file` (UTF-8). "" or the error.
+    /// Writes the shown track to `file` (UTF-8). "" or the error. 0.6 (#57): through captions.export, so the words the
+    /// soundtrack bleeps are replaced as in exports; `format` may be any caption file format ("srt", "vtt", "scc", ...).
     Q_INVOKABLE QString exportFile(const QUrl& file, const QString& format);
+    /// 0.6 (#57): Export all tracks: every caption track of the current sequence that has captions, written into
+    /// `folder` in `format` as "<sequence> - <track name>[.<language>].<ext>" (" (2)" for a second track of a name)
+    /// through captions.export (bleeped words replaced). "" or the error; message says "Saved 3 caption files".
+    Q_INVOKABLE QString exportAllTracks(const QUrl& folder, const QString& format);
 
 signals:
     void tracksChanged();
@@ -244,15 +271,22 @@ signals:
     void editCueRequested(int index);
     /// 0.5: showCue(): the Captions page shows the cue.
     void showCueRequested(int index);
+    /// P1 round (#35): addCueAtPlayhead() added cue `index` of the shown track: the Captions page shows it with its text
+    /// selected for typing (Main shows the page first).
+    void cueAdded(int index);
 
 private:
     const CaptionTrack* shownTrack() const;
+    /// 0.6 (#57): captions.export of `track` (current sequence) to `path`, with the redaction services.
+    command::CommandResult exportCaptionTrack(CaptionTrackId track, const QString& path, const QString& format);
     void refresh();
     void updateActive();
     void setMessage(const QString& message);
     void setUpdateSuggested(bool suggested);
     /// Runs a caption command on the shown track's sequence (one undo step). "" or the reason.
     QString runCommand(const std::string& name, const QVariantMap& params);
+    /// P1 round (#35): the cue goToCue(direction) moves to (an index of the shown track), or -1.
+    int cueToGo(int direction) const;
     /// Applies a model edit to the shown track (one undo step, merged by `mergeKey`). "" or the reason.
     template <class Fn>
     QString editTrack(const char* label, Fn&& fn, const std::string& mergeKey = {});

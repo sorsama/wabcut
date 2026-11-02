@@ -39,6 +39,15 @@ public:
     void setBroadcastWave(bool on) { m_bext = on; }
     /// 0.2: a stream's language tag (ISO 639-2).
     static void setLanguage(AVStream* stream, const std::string& language);
+    /// 0.6 (#73): a muxer option given to avformat_write_header (MXF: "signal_standard", "mxf_audio_edit_rate"). Before
+    /// open().
+    void setFormatOption(const char* key, const std::string& value);
+    /// 0.6 (#73): a closed caption stream (AV_CODEC_ID_EIA_608) fed with each frame's cc_data triplets, one packet per
+    /// video frame in `frameTimeBase`: MXF writes it as an SMPTE 436M ANC track (FFmpeg's eia608_to_smpte436m wraps the
+    /// triplets in CDPs; the stream must come last), QuickTime as a c608 track (field 1 pairs). Before open().
+    std::expected<AVStream*, Error> addCaptionStream(AVRational frameTimeBase);
+    /// 0.6 (#73): the file this muxer writes (UTF-8).
+    const std::string& path() const { return m_path; }
 
     Muxer() = default;
     Muxer(Muxer&& other) noexcept;
@@ -65,6 +74,7 @@ private:
     bool m_open = false;
     bool m_bext = false;
     std::unique_ptr<std::mutex> m_writeMutex = std::make_unique<std::mutex>();
+    std::vector<std::pair<std::string, std::string>> m_formatOptions; ///< 0.6 (#73)
 };
 
 // ---- Colour (I.9) -----------------------------------------------------------------------------------------
@@ -81,6 +91,9 @@ ColorTags colorTagsOf(DynamicRange range);
 /// 0.2: the tags of an output pixel format: colorTagsOf(range), made RGB / full range for RGB formats and BT.601 full
 /// range for JPEG.
 ColorTags colorTagsFor(DynamicRange range, VideoCodec codec, OutputPixelFormat format);
+/// 0.6 (#72): the tags of an SDR output colour space: Rec.2020 (BT.2020 primaries and NCL matrix, the BT.709 curve)
+/// or P3-D65 (SMPTE EG 432-1 primaries; its 2.6 power has no H.273 code: unspecified). RGB outputs keep their matrix.
+void applyOutputSpace(ColorTags& tags, OutputColorSpace space);
 
 /// The HDR10 mastering display of a PQ export: Display P3 primaries, D65 white, `peakNits` down to 0.0001 nits (the
 /// display most HDR10 masters are graded on; the project's HDR peak).
@@ -117,7 +130,8 @@ struct VideoEncodeParams {
 };
 
 /// Whether FFmpeg's encoder `name` writes AV_FRAME_DATA_A53_CC side data into the stream (libx264, libx265 with its
-/// a53cc option, NVENC, Quick Sync H.264, VA-API, VideoToolbox; not AMF or Media Foundation).
+/// a53cc option, NVENC, Quick Sync H.264, VA-API, VideoToolbox, 0.6: mpeg2video's user data; not AMF or Media
+/// Foundation).
 bool supportsA53Captions(std::string_view name);
 
 /// An opened video encoder.

@@ -75,6 +75,8 @@
 
 #include <array>
 #include <cstdint>
+#include <span>
+#include <vector>
 
 namespace wabcut::render::reference {
 
@@ -134,6 +136,7 @@ enum class LibraryEffect : int {
     RoughenEdges = 79,
     ColorKey = 80,
     ConvolutionKernel = 81,
+    Glow = 82,
     // Generate (LibraryGenerate.cpp).
     FourColorGradient = 100,
     Ramp = 101,
@@ -150,9 +153,20 @@ enum class LibraryEffect : int {
     TextOverlay = 112,
     DifferenceMatte = 113,
     ImageMatteKey = 114,
+    // 0.6 (LibraryGenerate.cpp; Lightning and Scribble draw LibraryGeometry.h's strokes).
+    Colorama = 115,
+    FractalNoise = 116,
+    CellPattern = 117,
+    Lightning = 118,
+    Scribble = 119,
+    PaintBucket = 120,
 };
 
 using LibraryParams = std::array<double, 32>;
+/// params[31]: the curve time in seconds of the effects that animate by themselves (render::kLibraryTimeParam).
+inline constexpr std::size_t kLibraryTimeParamIndex = 31;
+/// A closed path in frame pixels (Scribble's masks).
+using LibraryPath = std::vector<std::array<double, 2>>;
 
 /// The hash of the library's random effects (Noise): transitionHash (Transitions.h) chained over three words,
 /// h(a + h(b + h(c))) >> 8, times 2^-24: a value in [0, 1).
@@ -160,6 +174,8 @@ double libraryHash01(std::uint32_t a, std::uint32_t b, std::uint32_t c);
 
 /// One library effect on `in`; `second` is its second picture (LayerEffect::matte composited on the canvas: echoes, text,
 /// a gradient or difference layer, a matte image), null when it has none.
-Image libraryEffect(const Image& in, LibraryEffect effect, const LibraryParams& params, const Image* second = nullptr);
+/// `paths`: the effect's masks in frame pixels (Scribble draws in or along them; the other effects ignore them).
+Image libraryEffect(const Image& in, LibraryEffect effect, const LibraryParams& params, const Image* second = nullptr,
+                    std::span<const LibraryPath> paths = {});
 
 } // namespace wabcut::render::reference

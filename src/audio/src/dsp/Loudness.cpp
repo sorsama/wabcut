@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <optional>
 
 namespace wabcut::audio::dsp {
 
@@ -26,6 +27,36 @@ struct LoudnessMeter::Impl {
     double maxMomentary = kNegInf;
     double maxShortTerm = kNegInf;
     std::int64_t frames = 0;
+    // 0.6 (#54): where the maxima are, and the true peak of each 100 ms block.
+    std::int64_t maxMomentaryFrame = -1;
+    std::int64_t maxShortTermFrame = -1;
+    std::int64_t truePeakFrame = -1;
+    double maxBlockPeak = 0.0;     ///< linear
+    double blockPeak = 0.0;        ///< linear, of the block being filled
+    std::int64_t blockStart = 0;
+    std::vector<PeakBlock> peakBlocks;
+    int channels = 2;
+
+    /// The true peak (linear, over every channel) of the frames the last ebur128_add_frames_* call added.
+    double lastTruePeak() const {
+        double peak = 0.0;
+        double v = 0.0;
+        for (int c = 0; c < channels; ++c) {
+            if (ebur128_prev_true_peak(state, static_cast<unsigned>(c), &v) == EBUR128_SUCCESS) {
+                peak = std::max(peak, v);
+            }
+        }
+        return peak;
+    }
+
+    /// The block [blockStart, frames) as kept: its true peak when it reaches the floor.
+    std::optional<PeakBlock> blockOf(double peak) const {
+        const double db = toDb(peak);
+        if (frames <= blockStart || db < kPeakBlockFloorDbtp) {
+            return std::nullopt;
+        }
+        return PeakBlock{blockStart, frames - blockStart, db};
+    }
 
     ~Impl() {
         if (state != nullptr) {
@@ -35,14 +66,27 @@ struct LoudnessMeter::Impl {
 
     void readWindows() {
         double v = 0.0;
-        if (ebur128_loudness_momentary(state, &v) == EBUR128_SUCCESS && std::isfinite(v)) {
-            maxMomentary = std::max(maxMomentary, v);
+        const auto w = static_cast<std::int64_t>(window);
+        if (ebur128_loudness_momentary(state, &v) == EBUR128_SUCCESS && std::isfinite(v) && v > maxMomentary) {
+            maxMomentary = v;
+            maxMomentaryFrame = std::max<std::int64_t>(0, frames - 4 * w); // the 400 ms window ending here
         }
         // Short-term needs 3 s of audio; before that libebur128 reports the loudness of what it has.
-        if (frames >= static_cast<std::int64_t>(window) * 30 &&
-            ebur128_loudness_shortterm(state, &v) == EBUR128_SUCCESS && std::isfinite(v)) {
-            maxShortTerm = std::max(maxShortTerm, v);
+        if (frames >= w * 30 && ebur128_loudness_shortterm(state, &v) == EBUR128_SUCCESS && std::isfinite(v) &&
+            v > maxShortTerm) {
+            maxShortTerm = v;
+            maxShortTermFrame = std::max<std::int64_t>(0, frames - 30 * w); // the 3 s window ending here
         }
+        // 0.6 (#54): the block's true peak.
+        if (blockPeak > maxBlockPeak) {
+            maxBlockPeak = blockPeak;
+            truePeakFrame = blockStart;
+        }
+        if (const auto block = blockOf(blockPeak); block && peakBlocks.size() < kMaxPeakBlocks) {
+            peakBlocks.push_back(*block);
+        }
+        blockPeak = 0.0;
+        blockStart = frames;
         sinceWindow = 0;
     }
 };
@@ -78,6 +122,14 @@ void LoudnessMeter::reset() {
     d.maxMomentary = kNegInf;
     d.maxShortTerm = kNegInf;
     d.frames = 0;
+    d.maxMomentaryFrame = -1;
+    d.maxShortTermFrame = -1;
+    d.truePeakFrame = -1;
+    d.maxBlockPeak = 0.0;
+    d.blockPeak = 0.0;
+    d.blockStart = 0;
+    d.peakBlocks.clear();
+    d.channels = m_channels;
 }
 
 void LoudnessMeter::add(const float* interleaved, std::size_t frames) {
@@ -89,6 +141,7 @@ void LoudnessMeter::add(const float* interleaved, std::size_t frames) {
     while (frames > 0) {
         const std::size_t n = std::min(frames, d.window - d.sinceWindow);
         ebur128_add_frames_float(d.state, interleaved, n);
+        d.blockPeak = std::max(d.blockPeak, d.lastTruePeak()); // 0.6 (#54)
         interleaved += n * ch;
         frames -= n;
         d.frames += static_cast<std::int64_t>(n);
@@ -127,6 +180,20 @@ LoudnessResult LoudnessMeter::result() const {
     r.samplePeakDbfs = toDb(samplePeak);
     r.maxMomentaryLufs = d.maxMomentary;
     r.maxShortTermLufs = d.maxShortTerm;
+    // 0.6 (#54): where, and the blocks at or above the floor (the block still filling counts as it is).
+    r.maxMomentaryFrame = d.maxMomentaryFrame;
+    r.maxShortTermFrame = d.maxShortTermFrame;
+    r.truePeakFrame = d.truePeakFrame;
+    r.peakBlocks = d.peakBlocks;
+    if (d.blockPeak > d.maxBlockPeak) {
+        r.truePeakFrame = d.blockStart;
+    }
+    if (const auto block = d.blockOf(d.blockPeak); block && r.peakBlocks.size() < kMaxPeakBlocks) {
+        r.peakBlocks.push_back(*block);
+    }
+    if (truePeak <= 0.0) {
+        r.truePeakFrame = -1;
+    }
     return r;
 }
 

@@ -14,8 +14,10 @@ Rgba distortPixel(const Image& in, LibraryEffect op, const LibraryParams& q, int
 bool isStylize(LibraryEffect effect);
 Image stylize(const Image& in, LibraryEffect op, const LibraryParams& q);
 
-/// The Generate family (100..): the whole picture; `second` is the effect's second picture (null: none).
+/// The Generate family (100..): the whole picture; `second` is the effect's second picture (null: none), `paths` its
+/// masks in frame pixels (Scribble).
 bool isGenerate(LibraryEffect effect);
-Image generate(const Image& in, LibraryEffect op, const LibraryParams& q, const Image* second);
+Image generate(const Image& in, LibraryEffect op, const LibraryParams& q, const Image* second,
+               std::span<const LibraryPath> paths = {});
 
 } // namespace wabcut::render::reference::detail

@@ -521,6 +521,9 @@ void Runtime::finishCall(std::uint64_t call, Json error, Json result) {
     if (m_open.erase(call) == 0) {
         return; // finished already (cancelled, timed out) or unknown
     }
+    // P1 round (#65): the storage changes the call made go out before its answer, so the editor has them by the time
+    // the call has finished (a stop right after it saves them).
+    flushStorage();
     if (!error.is_null()) {
         if (!error.is_object() || !error.contains("kind") || !error.contains("message")) {
             error = Json{{"kind", "exception"}, {"message", "the call failed"}};

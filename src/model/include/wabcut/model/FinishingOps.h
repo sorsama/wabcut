@@ -24,14 +24,18 @@ namespace wabcut::edit {
 // ---------------------------------------------------------------------------------------------------
 // Parameters and keyframes
 
-/// A parameter of a clip: an intrinsic one (ClipProperties) or a parameter of an effect in its stack.
+/// A parameter of a clip: an intrinsic one (ClipProperties) or a parameter of an effect in its stack. 0.6: or a
+/// keyframable number of a graphic clip's layer (`layer` its id, `key` the path: GraphicOps.h layerParam), whose keys
+/// are in graphic time (GraphicResolve.h graphicTimeAt; the clip's curve time unless the graphic has responsive time).
 struct ParamRef {
     std::optional<ParamId> intrinsic;
     EffectInstanceId effect;
     std::string key;
+    std::uint32_t layer = 0;
 
-    static ParamRef of(ParamId id) { return {id, {}, {}}; }
-    static ParamRef ofEffect(EffectInstanceId effect, std::string key) { return {std::nullopt, effect, std::move(key)}; }
+    static ParamRef of(ParamId id) { return {id, {}, {}, 0}; }
+    static ParamRef ofEffect(EffectInstanceId effect, std::string key) { return {std::nullopt, effect, std::move(key), 0}; }
+    static ParamRef ofLayer(std::uint32_t layer, std::string path) { return {std::nullopt, {}, std::move(path), layer}; }
 };
 
 /// Replaces a parameter's value (a constant or a curve). Values must lie in the parameter's range; video
@@ -107,15 +111,19 @@ EditOutcome setEffect(const ProjectState& state, SequenceId sequence, ClipId cli
 /// the master stacks to the sequence's composited video (Sequence::effects) and its mix (Sequence::audioEffects).
 /// Keyframe times on track and master effects are timeline times (clip effects use curve time, Parameters.h).
 struct EffectTarget {
-    enum class Kind : std::uint8_t { Clip, Track, MasterVideo, MasterAudio };
+    /// 0.6: Media = a media item's Master Clip Effects (MediaItem::masterEffects; the sequence is not used): video and
+    /// audio effects (the kinds the item has streams of), keyframe times in media time.
+    enum class Kind : std::uint8_t { Clip, Track, MasterVideo, MasterAudio, Media };
     Kind kind = Kind::Clip;
     ClipId clip;   ///< Kind::Clip
     TrackId track; ///< Kind::Track
+    MediaId media; ///< Kind::Media
 
-    static EffectTarget ofClip(ClipId clip) { return {Kind::Clip, clip, {}}; }
-    static EffectTarget ofTrack(TrackId track) { return {Kind::Track, {}, track}; }
-    static EffectTarget masterVideo() { return {Kind::MasterVideo, {}, {}}; }
-    static EffectTarget masterAudio() { return {Kind::MasterAudio, {}, {}}; }
+    static EffectTarget ofClip(ClipId clip) { return {Kind::Clip, clip, {}, {}}; }
+    static EffectTarget ofTrack(TrackId track) { return {Kind::Track, {}, track, {}}; }
+    static EffectTarget masterVideo() { return {Kind::MasterVideo, {}, {}, {}}; }
+    static EffectTarget masterAudio() { return {Kind::MasterAudio, {}, {}, {}}; }
+    static EffectTarget ofMedia(MediaId media) { return {Kind::Media, {}, {}, media}; }
     bool operator==(const EffectTarget&) const = default;
 };
 
@@ -149,6 +157,21 @@ EditOutcome setAnimated(const ProjectState& state, SequenceId sequence, const Ef
 
 /// The effect stack of a target in a sequence (null when the clip or track does not exist).
 const EffectStack* effectStackOf(const Sequence& sequence, const EffectTarget& target);
+
+// Master Clip Effects (0.6, card #71; MasterClipEffects.h). The target operations above work on
+// EffectTarget::ofMedia (one undo step on the media item). The clip operations above that name an effect of the clip's
+// media's master stack (and not of the clip's own) act on that master stack, so Effect Controls edits a master effect
+// through the clip it shows it with.
+
+/// The stack of any target in a project: a media item's master stack, else effectStackOf(sequence).
+const EffectStack* effectStackOf(const ProjectState& state, SequenceId sequence, const EffectTarget& target);
+/// Moves a clip's effect onto its media's Master Clip Effects (last; its keys and masks are media time, the same for
+/// every instance), and back: a master effect becomes the first of the clip's own effects (it still plays before
+/// them). One step each. Nested and multicam clips have no master clip effects.
+EditOutcome moveEffectToMaster(const ProjectState& state, SequenceId sequence, ClipId clip, EffectInstanceId effect);
+EditOutcome moveEffectToClip(const ProjectState& state, SequenceId sequence, ClipId clip, EffectInstanceId effect);
+/// Turns the master clip effects off for these clips (they play their own effects only), or on again.
+EditOutcome setMasterEffectsOff(const ProjectState& state, SequenceId sequence, std::span<const ClipId> clips, bool off);
 
 // ---------------------------------------------------------------------------------------------------
 // Transitions
@@ -232,6 +255,23 @@ EditOutcome applyDefaultTransition(const ProjectState& state, SequenceId sequenc
 /// video default on video clips, the audio default on audio clips), shortened to the available handles.
 EditOutcome applyDefaultTransitions(const ProjectState& state, SequenceId sequence, std::span<const ClipId> clips,
                                    const DefaultTransitions& defaults = {});
+
+/// 0.6: a selected edit point (Premiere's trim selection, TrimBridge) as a place for a transition.
+struct EdgePoint {
+    ClipId clip;
+    Edge edge = Edge::Tail;
+    /// nullopt: the defaults' alignment (a roll point holds both sides of the cut). A point on one side only takes
+    /// EndAtCut at a tail and StartAtCut at a head.
+    std::optional<TransitionAlignment> alignment;
+};
+/// Apply Video / Audio Transition (Ctrl/Cmd+D, Ctrl/Cmd+Shift+D) and an Effects-panel transition with edit points
+/// selected: a transition on each point whose track is of `kind`, shortened to the available handles, two-sided when
+/// another clip meets the edge (transitionAtEdge). `effect` ("" = the default of that kind) replaces the default. A cut
+/// shared by two points gets one transition; points on locked tracks or that already have one are left alone. One
+/// result; fails when none could take one.
+EditOutcome applyTransitionsAtEdges(const ProjectState& state, SequenceId sequence, std::span<const EdgePoint> points,
+                                    TrackKind kind, const DefaultTransitions& defaults = {},
+                                    const std::string& effect = {});
 
 // ---------------------------------------------------------------------------------------------------
 // Beat grid (Sequence::beatGrid): what beat-snapping, edit.snapToBeats and edit.cutToBeats use

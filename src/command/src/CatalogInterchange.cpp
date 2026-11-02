@@ -9,6 +9,7 @@
 #include <wabcut/command/CaptionFileServices.h>
 #include <wabcut/interchange/AudioPostExport.h>
 #include <wabcut/interchange/CaptionFiles.h>
+#include <wabcut/interchange/CaptionTrackReport.h>
 #include <wabcut/interchange/Export.h>
 #include <wabcut/model/CaptionOps.h>
 #include <wabcut/model/FinishingOps.h>
@@ -20,6 +21,7 @@
 #include <array>
 #include <cctype>
 #include <chrono>
+#include <set>
 #include <string>
 #include <string_view>
 
@@ -27,11 +29,13 @@ namespace wabcut::command::detail {
 
 namespace {
 
-Json reportOf(const interchange::ImportReport& report) {
+/// `carriedCaptions` (0.6, #57): also list the Carried caption entries (the caption files written next to a timeline).
+Json reportOf(const interchange::ImportReport& report, bool carriedCaptions = false) {
     using interchange::ReportOutcome;
     Json entries = Json::array();
     for (const interchange::ReportEntry& e : report.entries()) {
-        if (e.outcome == ReportOutcome::Carried) {
+        if (e.outcome == ReportOutcome::Carried &&
+            !(carriedCaptions && e.category == interchange::ReportCategory::Caption)) {
             continue; // counted; the approximated and dropped ones are what a person needs to read
         }
         entries.push_back(Json{{"outcome", std::string(interchange::toString(e.outcome))},
@@ -119,9 +123,161 @@ Json rateSchema() {
                           "\"59.94\", \"60\" or \"num/den\". Default: the sequence's (SCC and MCC: 29.97).");
 }
 
+/// 0.6 (#57): how a caption track is written to a file (captions.export's options; unset = the sequence's).
+struct CaptionFileOptions {
+    std::optional<Rate> frameRate;
+    std::optional<bool> dropFrame;
+    interchange::Cea608Display display = interchange::Cea608Display::PopOn;
+    std::optional<TimeRange> range; ///< default: the whole sequence and every cue of the track
+};
+
+struct CaptionFileWritten {
+    std::size_t cues = 0;
+    std::size_t bytes = 0;
+    interchange::ImportReport report;
+};
+
+/// 0.6 (#57): `track` of `seq` written to `file` in `format` as captions.export writes it - the words the soundtrack
+/// bleeps replaced (CaptionFileServices::redact), timecode-based formats from the sequence's start timecode. A dry run
+/// writes nothing. Errors: InvalidParams (the format cannot hold the cues), EditRejected (the file cannot be written).
+std::expected<CaptionFileWritten, CommandError> writeCaptionTrackFile(ExecutionContext& c, const Sequence& seq,
+                                                                      const CaptionTrack& track,
+                                                                      interchange::CaptionFileFormat format,
+                                                                      const std::filesystem::path& file,
+                                                                      const CaptionFileOptions& o) {
+    CaptionTrack exported = track;
+    if (auto* services = findService<CaptionFileServices>(c.services()); services && services->redact) {
+        exported = services->redact(c.state(), seq, track);
+    }
+    interchange::CaptionWriteOptions options;
+    options.frameRate = o.frameRate.value_or(seq.frameRate);
+    options.dropFrame = o.dropFrame.value_or(seq.dropFrame || !supportsDropFrame(options.frameRate));
+    options.language = track.language;
+    options.title = seq.name;
+    options.placement = track.style.placement == CaptionPlacement::Top ? CaptionPlacement::Top : CaptionPlacement::Bottom;
+    options.alignment = track.style.alignment;
+    options.display = o.display;
+    TimeRange range;
+    if (o.range) {
+        range = *o.range;
+    } else {
+        // The whole sequence, and every cue of the track (captions may run past the last clip).
+        Ticks end = std::max(seq.duration, seq.contentEnd());
+        if (!track.cues.empty()) {
+            end = std::max(end, track.cues.back().end());
+        }
+        range = TimeRange{Ticks{}, end};
+    }
+    options.startTimecode = seq.startTimecode + range.start;
+    const auto now = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
+    options.creationDate = std::format("{:%Y-%m-%d}", now);
+    options.creationTime = std::format("{:%H:%M:%S}", now);
+    auto written = interchange::writeCaptionData(exported.cues, range, format, options, pathToUtf8(file.filename()));
+    if (!written) {
+        return std::unexpected(CommandError{ErrorCode::InvalidParams, written.error().message, nullptr});
+    }
+    if (!c.dryRun()) {
+        if (auto saved = io::writeFileAtomically(file, written->data); !saved) {
+            return std::unexpected(CommandError{ErrorCode::EditRejected, saved.error().message, nullptr});
+        }
+    }
+    return CaptionFileWritten{written->cues, written->data.size(), std::move(written->report)};
+}
+
+/// 0.6 (#57): a caption file name part: characters file systems refuse replaced, no leading or trailing spaces or dots.
+std::string captionNamePart(std::string text) {
+    for (char& ch : text) {
+        if (static_cast<unsigned char>(ch) < 32 || std::string_view("<>:\"/\\|?*").find(ch) != std::string_view::npos) {
+            ch = '_';
+        }
+    }
+    while (!text.empty() && (text.back() == '.' || text.back() == ' ')) {
+        text.pop_back();
+    }
+    while (!text.empty() && (text.front() == '.' || text.front() == ' ')) {
+        text.erase(text.begin());
+    }
+    return text;
+}
+
+/// 0.6 (#57), interchange.export "captionSidecars": every caption track of the sequence that has cues, written next to
+/// `file` as "<stem> - <track name>[.<language>]<ext>" (" (2)" when two tracks would share a name; an existing file
+/// is replaced, as the timeline file is). The report's Dropped entry of each written track becomes a Carried entry
+/// naming the file; a track that could not be written keeps its entry with the reason. Returns the files (a dry run
+/// lists them and writes nothing).
+Json writeCaptionSidecars(ExecutionContext& c, const std::filesystem::path& file, interchange::CaptionFileFormat format,
+                          interchange::ImportReport& report) {
+    const Sequence& seq = c.sequence();
+    Json files = Json::array();
+    std::set<std::string> taken;
+    // The entry each track turns into, by its location.
+    std::vector<std::pair<std::string, interchange::ReportEntry>> outcomes;
+    const std::string stem = pathToUtf8(file.stem());
+    const std::string ext(interchange::extension(format));
+    for (const CaptionTrack& track : seq.captionTracks) {
+        if (track.cues.empty()) {
+            continue;
+        }
+        std::string name = captionNamePart(track.name);
+        if (name.empty()) {
+            name = "Captions";
+        }
+        const std::string language = captionNamePart(track.language);
+        const std::string base = stem + " - " + name + (language.empty() ? std::string() : "." + language);
+        std::string fileName = base + ext;
+        for (int n = 2; n < 1000; ++n) {
+            std::string folded = fileName;
+            std::transform(folded.begin(), folded.end(), folded.begin(),
+                           [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+            if (taken.insert(folded).second) {
+                break;
+            }
+            fileName = base + " (" + std::to_string(n) + ")" + ext;
+        }
+        const std::filesystem::path path = file.parent_path() / pathFromUtf8(fileName);
+        const interchange::SourceLocation where = interchange::captionTrackLocation(seq, track, pathToUtf8(file.filename()));
+        interchange::ReportEntry entry;
+        entry.category = interchange::ReportCategory::Caption;
+        entry.location = where;
+        entry.sequence = seq.name;
+        const auto written = writeCaptionTrackFile(c, seq, track, format, path, CaptionFileOptions{});
+        if (written) {
+            entry.outcome = interchange::ReportOutcome::Carried;
+            entry.reason = interchange::captionTrackLabel(track) + (c.dryRun() ? " would be written to '" : " written to '") +
+                           fileName + "'";
+            files.push_back(pathToUtf8(path));
+        } else {
+            entry.outcome = interchange::ReportOutcome::Dropped;
+            entry.reason = interchange::captionTrackLabel(track) + " could not be written as " +
+                           std::string(interchange::toString(format)) + ": " + written.error().message;
+        }
+        outcomes.emplace_back(where.element, std::move(entry));
+    }
+    interchange::ImportReport rebuilt;
+    for (const interchange::ReportEntry& e : report.entries()) {
+        const auto it = e.category != interchange::ReportCategory::Caption || e.outcome != interchange::ReportOutcome::Dropped
+                            ? outcomes.end()
+                            : std::find_if(outcomes.begin(), outcomes.end(),
+                                           [&](const auto& o) { return o.first == e.location.element; });
+        rebuilt.add(it == outcomes.end() ? e : it->second);
+        if (it != outcomes.end()) {
+            outcomes.erase(it);
+        }
+    }
+    for (auto& outcome : outcomes) { // a writer that reported no entry for the track
+        rebuilt.add(std::move(outcome.second));
+    }
+    report = std::move(rebuilt);
+    return files;
+}
+
 } // namespace
 
 void registerInterchangeCommands(CommandRegistry& registry) {
+    std::vector<std::string> formatNames;
+    for (const interchange::CaptionFileFormat f : interchange::captionFileFormats()) {
+        formatNames.emplace_back(interchange::toString(f));
+    }
     addBuiltin(
         registry,
         command::touchesFiles(
@@ -133,18 +289,33 @@ void registerInterchangeCommands(CommandRegistry& registry) {
              "an OMF 2.0 file (\"omf\") with its audio rendered to new files (\"audioPost\": Premiere's AAF and OMF "
              "settings). Returns the export report: how many elements were carried exactly, and every one approximated "
              "(rounded to frames, a transition the format has no name for, ...) or dropped (graphics and effects the "
-             "format cannot describe). The project does not change; a dry run writes nothing.",
+             "format cannot describe). None of these formats carries caption tracks: each caption track with cues is reported "
+             "as dropped, unless \"captionSidecars\" names a caption file format - then each is written next to the file "
+             "as \"<name> - <track name>[.<language>].<ext>\" (words the soundtrack bleeps replaced, as captions.export "
+             "does), reported as carried, and listed in \"captionFiles\". The project does not change; a dry run writes "
+             "nothing.",
              Capability::Read,
              withSequence({{"format", schema::enumeration({"fcp7-xml", "fcpxml", "otio", "edl", "aaf", "omf"}, "The file format.")},
                            {"path", pathParam("The file to write (UTF-8 path); an existing one is replaced.")},
                            {"fcpxmlVersion", schema::enumeration({"1.10", "1.11"}, "FCPXML only (default 1.10).")},
-                           {"audioPost", audioPostSchema()}},
+                           {"audioPost", audioPostSchema()},
+                           {"captionSidecars",
+                            schema::enumeration(formatNames, "0.6: also write every caption track with cues next to the "
+                                                             "file in this caption format (default: none).")}},
                           {"format", "path"}),
              Json{{"format", "aaf"}, {"path", "C:/Projects/Film (for the mix).aaf"}, {"audioPost", Json{{"files", "separate"}}}},
              {},
              [](ExecutionContext& c) {
                  const std::string formatName = c.string("format");
                  const std::filesystem::path file = pathFromUtf8(c.string("path"));
+                 // 0.6 (#57): the caption tracks as files next to the timeline.
+                 std::optional<interchange::CaptionFileFormat> sidecars;
+                 if (c.has("captionSidecars")) {
+                     sidecars = interchange::captionFormatFromName(c.string("captionSidecars"));
+                     if (!sidecars) {
+                         fail(ErrorCode::InvalidParams, "unknown caption format", Json{{"path", "/captionSidecars"}});
+                     }
+                 }
                  if (formatName == "aaf" || formatName == "omf") {
                      const Json o = c.params().value("audioPost", Json::object());
                      interchange::AudioPostHost host;
@@ -191,6 +362,8 @@ void registerInterchangeCommands(CommandRegistry& registry) {
                      for (const auto& f : result->audioFiles) {
                          files.push_back(pathToUtf8(f));
                      }
+                     const Json captionFiles =
+                         sidecars ? writeCaptionSidecars(c, file, *sidecars, result->report) : Json::array();
                      CommandOutput out;
                      out.state = c.state();
                      out.data = Json{{"path", c.string("path")},
@@ -201,7 +374,8 @@ void registerInterchangeCommands(CommandRegistry& registry) {
                                      {"clips", result->clips},
                                      {"audioFiles", std::move(files)},
                                      {"referenceVideo", result->referenceVideo ? Json(pathToUtf8(*result->referenceVideo)) : Json()},
-                                     {"report", reportOf(result->report)}};
+                                     {"captionFiles", captionFiles},
+                                     {"report", reportOf(result->report, true)}};
                      return out;
                  }
                  const auto format = interchange::exportFormatFromName(formatName);
@@ -222,6 +396,7 @@ void registerInterchangeCommands(CommandRegistry& registry) {
                  for (const SequenceId id : result->sequences) {
                      sequences.push_back(id.value);
                  }
+                 const Json captionFiles = sidecars ? writeCaptionSidecars(c, file, *sidecars, result->report) : Json::array();
                  CommandOutput out;
                  out.state = c.state();
                  out.data = Json{{"path", c.string("path")},
@@ -229,15 +404,12 @@ void registerInterchangeCommands(CommandRegistry& registry) {
                                  {"bytes", result->data.size()},
                                  {"written", !c.dryRun()},
                                  {"sequences", std::move(sequences)},
-                                 {"report", reportOf(result->report)}};
+                                 {"captionFiles", captionFiles},
+                                 {"report", reportOf(result->report, true)}};
                  return out;
              }},
             {"path"}));
 
-    std::vector<std::string> formatNames;
-    for (const interchange::CaptionFileFormat f : interchange::captionFileFormats()) {
-        formatNames.emplace_back(interchange::toString(f));
-    }
     addBuiltin(
         registry,
         command::touchesFiles(
@@ -368,55 +540,33 @@ void registerInterchangeCommands(CommandRegistry& registry) {
                  if (!track) {
                      fail(ErrorCode::NotFound, "the sequence has no such caption track");
                  }
-                 CaptionTrack exported = *track;
-                 if (auto* services = findService<CaptionFileServices>(c.services()); services && services->redact) {
-                     exported = services->redact(c.state(), seq, *track);
-                 }
-                 interchange::CaptionWriteOptions options;
-                 options.frameRate = rateParam(c.string("frameRate")).value_or(seq.frameRate);
-                 if (c.has("frameRate") && !rateParam(c.string("frameRate"))) {
+                 CaptionFileOptions options;
+                 options.frameRate = rateParam(c.string("frameRate"));
+                 if (c.has("frameRate") && !options.frameRate) {
                      fail(ErrorCode::InvalidParams, "unknown frame rate", Json{{"path", "/frameRate"}});
                  }
-                 options.dropFrame = c.boolean("dropFrame", seq.dropFrame || !supportsDropFrame(options.frameRate));
-                 options.language = track->language;
-                 options.title = seq.name;
-                 options.placement = track->style.placement == CaptionPlacement::Top ? CaptionPlacement::Top
-                                                                                     : CaptionPlacement::Bottom;
-                 options.alignment = track->style.alignment;
+                 if (c.has("dropFrame")) {
+                     options.dropFrame = c.boolean("dropFrame", false);
+                 }
                  options.display = interchange::cea608DisplayFromString(c.string("display", "pop-on"))
                                        .value_or(interchange::Cea608Display::PopOn);
-                 // The whole sequence, and every cue of the track (captions may run past the last clip).
-                 Ticks end = std::max(seq.duration, seq.contentEnd());
-                 if (!track->cues.empty()) {
-                     end = std::max(end, track->cues.back().end());
-                 }
-                 TimeRange range{Ticks{}, end};
                  if (c.string("range", "sequence") == "inOut") {
                      const auto marked = seq.markedRange();
                      if (!marked) {
                          fail(ErrorCode::InvalidParams, "the sequence has no In and Out marks", Json{{"path", "/range"}});
                      }
-                     range = *marked;
+                     options.range = *marked;
                  }
-                 options.startTimecode = seq.startTimecode + range.start;
-                 const auto now = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
-                 options.creationDate = std::format("{:%Y-%m-%d}", now);
-                 options.creationTime = std::format("{:%H:%M:%S}", now);
-                 auto written = interchange::writeCaptionData(exported.cues, range, *format, options, pathToUtf8(file.filename()));
+                 auto written = writeCaptionTrackFile(c, seq, *track, *format, file, options);
                  if (!written) {
-                     fail(ErrorCode::InvalidParams, written.error().message);
-                 }
-                 if (!c.dryRun()) {
-                     if (auto saved = io::writeFileAtomically(file, written->data); !saved) {
-                         fail(ErrorCode::EditRejected, saved.error().message);
-                     }
+                     throw CommandFailure{std::move(written.error())};
                  }
                  CommandOutput out;
                  out.state = c.state();
                  out.data = Json{{"path", c.string("path")},
                                  {"format", std::string(interchange::toString(*format))},
                                  {"cues", written->cues},
-                                 {"bytes", written->data.size()},
+                                 {"bytes", written->bytes},
                                  {"written", !c.dryRun()},
                                  {"report", reportOf(written->report)}};
                  return out;

@@ -86,6 +86,11 @@ Panel {
     function focusContent() {
         search.forceActiveFocus(Qt.TabFocusReason)
     }
+    /// P1 round (#30): Edit > Find (Ctrl+F) while this panel is active: the search, its text selected.
+    function focusFind() {
+        search.forceActiveFocus(Qt.ShortcutFocusReason)
+        search.selectAll()
+    }
 
     function showStatus(message: string) {
         root.status = message

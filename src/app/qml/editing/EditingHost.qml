@@ -4,8 +4,8 @@ import QtQuick.Dialogs
 
 // The dialogs and panels of Premiere's editing and sequence commands (P.2, E5), loaded on first use and opened by the
 // Editing bridge's requests: Preferences (Media, Timeline), Sequence Settings, Frame Hold Options, Replace Footage,
-// Merge Clips, Interpret Footage, Modify > Timecode and the History panel. One element in Main.qml, so the shell
-// carries no more than that hook.
+// Merge Clips, Interpret Footage, Modify > Timecode. One element in Main.qml, so the shell carries no more than that
+// hook. P1 round (#4): the History panel is a docked panel now (Main.qml); its Delete and Clear History ask here first.
 Item {
     id: host
     objectName: "editingHost"
@@ -61,11 +61,10 @@ Item {
         active: false
         sourceComponent: TimecodeDialog {}
     }
-    Loader {
-        id: history
-        objectName: "historyPanelLoader"
-        active: false
-        sourceComponent: HistoryPanel {}
+    // P1 round (#4): History > Delete / Clear History cannot be undone: asked first.
+    MenuConfirmDialog {
+        id: historyConfirm
+        objectName: "historyConfirmDialog"
     }
     // Replace Footage: the new file; the clip takes its name (Premiere's "Rename Clip to File Name").
     FileDialog {
@@ -128,13 +127,20 @@ Item {
             replaceFootageDialog.mediaKey = key
             replaceFootageDialog.open()
         }
-        function onHistoryRequested() {
-            history.active = true
-            const panel = history.item as HistoryPanel
-            if (panel.opened)
-                panel.close()
-            else
-                panel.open()
+        function onHistoryEditRequested(action: string, index: int) {
+            if (action === "clear") {
+                historyConfirm.ask(qsTr("Clear the history?"),
+                                   qsTr("Every undo step goes; the project stays as it is now. This cannot be undone."),
+                                   qsTr("Clear History"), () => Editing.clearHistory())
+                return
+            }
+            const steps = Editing.historySteps
+            const label = index >= 0 && index < steps.length ? (steps[index].label ?? "") : ""
+            const later = Math.max(0, steps.length - index - 1)
+            historyConfirm.ask(qsTr("Delete “%1”?").arg(label),
+                               later > 0 ? qsTr("This step and the %n step(s) after it are undone and go from the history. This cannot be undone.", "", later)
+                                         : qsTr("This step is undone and goes from the history. This cannot be undone."),
+                               qsTr("Delete"), () => Editing.deleteHistoryStep(index))
         }
         function onMessageChanged() {
             if (Editing.message !== "")

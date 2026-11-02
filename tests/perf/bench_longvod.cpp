@@ -36,6 +36,7 @@
 #include <wabcut/model/EditSession.h>
 #include <wabcut/model/MediaLocator.h>
 #include <wabcut/model/ProjectOps.h>
+#include <wabcut/model/SnapshotReleaser.h>
 #include <wabcut/playback/video/PlaybackController.h>
 #include <wabcut/playback/video/TransportClock.h>
 #include <wabcut/render/CompositeMailbox.h>
@@ -1535,14 +1536,62 @@ struct MemoryPoint {
     double workingSet = 0.0;
     double privateBytes = 0.0;
     double gpu = -1.0;
+    perf::HeapUsage heaps; ///< diagnostic: held vs kept by the heaps (PerfHarness.h)
 };
 
 MemoryPoint memoryPoint() {
-    return MemoryPoint{perf::workingSetMb(), perf::privateMb(), perf::gpuMemoryMb()};
+    return MemoryPoint{perf::workingSetMb(), perf::privateMb(), perf::gpuMemoryMb(), perf::heapUsage()};
 }
 
 perf::Json pointJson(const MemoryPoint& m) {
-    return perf::Json{{"workingSetMb", m.workingSet}, {"privateMb", m.privateBytes}, {"gpuMb", m.gpu}};
+    return perf::Json{{"workingSetMb", m.workingSet},
+                      {"privateMb", m.privateBytes},
+                      {"gpuMb", m.gpu},
+                      {"heaps", perf::toJson(m.heaps)}};
+}
+
+/// The memory case's warm-up (F2P, 0.6): a throwaway pipeline that shows the first picture, jumps to the middle and
+/// plays 2 s, so what the GPU decode path sets up once per process and codec (the hardware device contexts media's
+/// registry keeps for the whole process, the driver's own decoder allocations) is in `before` and not counted as what
+/// closing a recording leaves behind (it was: D6 measured 230 MB "retained" after a first-picture-only warm-up).
+void warmUpPlaying(const Project& project, const Vod& vod, render::OffscreenRenderer& renderer) {
+    Drawn drawn;
+    Pipeline p(project, renderer, drawn);
+    CHECK(openSequence(p, project.sequence).has_value());
+    CHECK(parkAt(p, middleOf(project, vod.rate), 200ms));
+    p.player.play();
+    p.monitor->run(2000ms);
+    p.player.pause();
+    p.monitor->run(200ms);
+}
+
+/// What the program monitor does once a recording closed (ProgramMonitor, F2P 0.6): it shows the black canvas and draws
+/// a few more frames while the compositor still holds media frames or views of decoder surfaces, so they go (a view
+/// keeps its decoder's whole surface array alive).
+void showBlackUntilReleased(render::OffscreenRenderer& renderer, const Vod& vod) {
+    auto black = std::make_shared<render::PreparedComposite>();
+    black->canvas = {vod.width, vod.height};
+    const std::shared_ptr<const render::PreparedComposite> picture = black;
+    for (int i = 0; i < 8; ++i) {
+        (void)renderer.renderTimed(picture, kMonitorSize);
+        if (!renderer.compositor().importer().holdsFrames()) {
+            break;
+        }
+    }
+}
+
+/// What the monitor's importer keeps between recordings (diagnostic): its texture sets (a bounded pool, kept for the
+/// next frames of that size), their GPU bytes, and views of decoder surfaces.
+perf::Json importerJson(render::OffscreenRenderer& renderer) {
+    const render::FrameImporterStats s = renderer.compositor().importer().stats();
+    return perf::Json{{"liveSets", s.liveSets},
+                      {"liveTextureMb", mbOf(s.liveTextureBytes)},
+                      {"retainedFrames", s.retainedFrames},
+                      {"nativeViews", s.nativeViews},
+                      {"setsCreated", s.setsCreated},
+                      {"setsDestroyed", s.setsDestroyed},
+                      {"uploads", s.uploads},
+                      {"nativeImports", s.nativeImports}};
 }
 
 perf::PerfResult measureMemory(const std::vector<const Vod*>& vods) {
@@ -1552,22 +1601,34 @@ perf::PerfResult measureMemory(const std::vector<const Vod*>& vods) {
     r.details["definition"] = {
         {"pipeline", pipelineDefinition()},
         {"points",
-         "private bytes (commit charge), working set and this process's GPU memory. before: after a warm-up pipeline "
-         "on the recording was opened and closed (codec libraries, the driver's decoder, compositor pipelines) and the "
-         "freed heap released. opened: the recording imported and dropped into its sequence, a pipeline showing its "
+         "private bytes (commit charge), working set and this process's GPU memory, with the process heaps' allocated "
+         "and committed bytes. unwarmed: before anything of this recording ran. before: after a warm-up pipeline on the "
+         "recording showed its first picture, jumped to the middle and played 2 s, then closed (codec libraries, the "
+         "hardware device contexts kept for the process, the driver's decoder allocations, compositor pipelines; "
+         "warm_up_cost_mb) and the freed heap released. opened: the recording imported and dropped into its sequence, a pipeline showing its "
          "first picture, 500 ms later. played: after 20 s of play from the middle and 500 ms paused. peaks: with every "
          "audio stream's peaks held (as MediaPeakSource holds them; a persistent cache directory, so only the first "
-         "run decodes). closed: the peaks, their service, the pipeline and the project gone, 500 ms later."},
+         "run decodes). closed: the peaks, their service, the pipeline and the project gone, then what the app does once "
+         "a project closed - the monitor shows black until its compositor holds no media frames or decoder-surface "
+         "views, the freed heap pages go back (SnapshotReleaser::trimFreedMemory) - and 500 ms later."},
         {"retained_after_close", "closed - before: what opening, playing and drawing a long recording leaves behind"},
+        {"retained_vs_unwarmed",
+         "closed - unwarmed: the same plus what the GPU decode path keeps for the process once this codec and size "
+         "were used (driver and device-context allocations; the monitor's importer holds nothing then, see "
+         "monitorAfterClose)"},
     };
     const fs::path peaksCache = fs::path(perf::outputDir()) / "longvod" / "peaks-memory";
     for (const Vod* vod : vods) {
         const std::string suffix = std::string("_") + vod->name;
         const std::string path = pathToUtf8(vodFile(*vod));
+        releaseFreedHeap();
+        const MemoryPoint unwarmed = memoryPoint();
         {
             const Project warm = makeProject(*vod);
             warmUp(warm, *renderer);
+            warmUpPlaying(warm, *vod, *renderer);
         }
+        showBlackUntilReleased(*renderer, *vod);
         releaseFreedHeap();
         std::this_thread::sleep_for(500ms);
         const MemoryPoint before = memoryPoint();
@@ -1619,10 +1680,23 @@ perf::PerfResult measureMemory(const std::vector<const Vod*>& vods) {
         service.reset();
         p.reset();
         project.reset();
+        // What the app does once a project closed: the monitor shows black and lets go of the last frames, and the
+        // freed heap pages go back to the system (ProjectController -> SnapshotReleaser::releaseAndTrim).
+        showBlackUntilReleased(*renderer, *vod);
+        CHECK_FALSE(renderer->compositor().importer().holdsFrames());
+        SnapshotReleaser::trimFreedMemory();
         std::this_thread::sleep_for(500ms);
         const MemoryPoint closed = memoryPoint();
+        // Diagnostic, after the gated value: the heaps' freed memory given back, as before `before`.
+        releaseFreedHeap();
+        const MemoryPoint compacted = memoryPoint();
 
         r.note("before_private_mb" + suffix, "MB", before.privateBytes);
+        r.note("warm_up_cost_mb" + suffix, "MB", before.privateBytes - unwarmed.privateBytes);
+        // Against the state before this recording's codec and size ever ran: what the GPU decode path keeps once it
+        // was used (the driver's and the device contexts' allocations, reused by the next pipeline) plus anything
+        // closing left behind. Negative retained_after_close_mb = the warm-up's own allocations went only later.
+        r.note("retained_vs_unwarmed_mb" + suffix, "MB", closed.privateBytes - unwarmed.privateBytes);
         r.add("open_cost_mb" + suffix, "MB", opened.privateBytes - before.privateBytes);
         r.add("play_growth_mb" + suffix, "MB", played.privateBytes - opened.privateBytes);
         r.add("peaks_cost_mb" + suffix, "MB", peaks.privateBytes - played.privateBytes);
@@ -1636,11 +1710,14 @@ perf::PerfResult measureMemory(const std::vector<const Vod*>& vods) {
         r.note("peak_ws_mb" + suffix, "MB", peakWorkingSet);
         r.details["recordings"][vod->name] = {{"file", vod->file},
                                               {"what", vod->what},
+                                              {"unwarmed", pointJson(unwarmed)},
                                               {"before", pointJson(before)},
                                               {"opened", pointJson(opened)},
                                               {"played", pointJson(played)},
                                               {"peaks", pointJson(peaks)},
                                               {"closed", pointJson(closed)},
+                                              {"compacted", pointJson(compacted)},
+                                              {"monitorAfterClose", importerJson(*renderer)},
                                               {"playSeconds", run.seconds},
                                               {"peaksFromCache", peaksFromCache},
                                               {"peaksResultMb", mbOf(peakBytes)},

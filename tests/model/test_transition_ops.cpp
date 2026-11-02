@@ -393,3 +393,51 @@ TEST_CASE("Animations: Premiere 25.5's animations are video transitions; Surpris
     CHECK(now.effect != kSurpriseAnimation);
     CHECK(isAnimationTransition(now.effect));
 }
+
+TEST_CASE("Selected edit points take the default transition with their trim alignment", "[model][transitions][editpoints]") {
+    Timeline tl(R"(
+        V1 tgt |AaaaaaB9bbbbbC9cccc|
+        A1 tgt |AaaaaaB9bbbbbC9cccc|
+    )");
+    edit::DefaultTransitions defaults;
+    defaults.videoDuration = f(4);
+    defaults.audioDuration = f(4);
+    const ClipId a = tl.clip("V1@0");
+    const ClipId b = tl.clip("V1@6");
+    const ClipId audioB = tl.clip("A1@6");
+
+    SECTION("a roll point is centred on the cut; video only with Ctrl+D") {
+        const std::vector<edit::EdgePoint> points{{a, edit::Edge::Tail, std::nullopt},
+                                                  {tl.clip("A1@0"), edit::Edge::Tail, std::nullopt}};
+        const auto r = ok(edit::applyTransitionsAtEdges(tl.state, tl.seq, points, TrackKind::Video, defaults));
+        REQUIRE(r.createdTransitions.size() == 1);
+        const Transition& t = trackOf(r.state, tl.seq).transitions[0];
+        CHECK(t.outgoing == a);
+        CHECK(t.incoming == b);
+        CHECK(t.before == f(2));
+        CHECK(t.after == f(2));
+        CHECK(r.state.findSequence(tl.seq)->audioTracks[0]->transitions.empty());
+    }
+    SECTION("a head point starts at the cut, a tail point ends at it; Ctrl+Shift+D on audio") {
+        const std::vector<edit::EdgePoint> points{{audioB, edit::Edge::Head, TransitionAlignment::StartAtCut}};
+        const auto r = ok(edit::applyTransitionsAtEdges(tl.state, tl.seq, points, TrackKind::Audio, defaults));
+        const Transition& t = r.state.findSequence(tl.seq)->audioTracks[0]->transitions[0];
+        CHECK(t.effect == "constantPower");
+        CHECK(t.before == f(0));
+        CHECK(t.after == f(4));
+        const std::vector<edit::EdgePoint> tail{{b, edit::Edge::Tail, TransitionAlignment::EndAtCut}};
+        const auto v = ok(edit::applyTransitionsAtEdges(tl.state, tl.seq, tail, TrackKind::Video, defaults, "dipToBlack"));
+        const Transition& vt = trackOf(v.state, tl.seq).transitions[0];
+        CHECK(vt.effect == "dipToBlack");
+        CHECK(vt.before == f(4));
+        CHECK(vt.after == f(0));
+    }
+    SECTION("both sides of one cut selected: one transition; no point of that kind fails") {
+        const std::vector<edit::EdgePoint> points{{a, edit::Edge::Tail, std::nullopt}, {b, edit::Edge::Head, std::nullopt}};
+        const auto r = ok(edit::applyTransitionsAtEdges(tl.state, tl.seq, points, TrackKind::Video, defaults));
+        CHECK(r.createdTransitions.size() == 1);
+        CHECK_FALSE(edit::applyTransitionsAtEdges(tl.state, tl.seq, points, TrackKind::Audio, defaults));
+        // Again on the same cut: nothing left to add.
+        CHECK_FALSE(edit::applyTransitionsAtEdges(r.state, tl.seq, points, TrackKind::Video, defaults));
+    }
+}

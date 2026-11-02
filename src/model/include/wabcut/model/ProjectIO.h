@@ -93,7 +93,7 @@
 
 namespace wabcut::io {
 
-inline constexpr int kSchemaVersion = 18;
+inline constexpr int kSchemaVersion = 19;
 inline constexpr int kOldestSchemaVersion = 1;
 inline constexpr std::string_view kFormatName = "wabcut-project";
 inline constexpr std::string_view kProjectExtension = ".wabcut";

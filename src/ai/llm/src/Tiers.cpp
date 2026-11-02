@@ -63,22 +63,25 @@ Admission admit(const TierSpec& tier, const ModelInfo& model, const SystemProbe&
     }
     const std::uint64_t onDevice = a.weightsBytes + a.kvBytes + kComputeBytes;
 
-    // The GPU: the weights, cache and buffers in its free memory, the program in RAM. Multi-GPU selection is ambiguous:
-    // do not assume llama's device zero is the adapter we measured.
+    // The GPU: the weights, cache and buffers in the free memory of the adapter the editor uses (bestGpu(): the
+    // Settings choice, else the high-performance one - on a hybrid machine the discrete GPU, never the integrated one
+    // next to it), the program in RAM. The launch pins llama-server to that adapter (LaunchPlan::gpuName), so the
+    // memory measured here is the memory the model gets.
     const auto* gpu = probe.bestGpu();
     const std::uint64_t gpuRam = kProcessBytes + options.reserveBytes;
-    if (probe.gpus.size() == 1 && gpu && !gpu->integrated && probe.gpuFreeBytes() >= onDevice + kVramMargin &&
-        probe.ramAvailable >= gpuRam) {
+    if (gpu && !gpu->integrated && gpu->freeBytes >= onDevice + kVramMargin && probe.ramAvailable >= gpuRam) {
         if (gpu->vendor == GpuVendor::Nvidia && probe.cudaDriverVersion >= 12040 && options.cudaAccepted)
             a.runtimeId = "llama-server-win-cuda-12.4-x64";
         else if (probe.vulkanLoader)
             a.runtimeId = "llama-server-win-vulkan-x64";
         if (!a.runtimeId.empty()) {
             a.fits = a.gpu = true;
+            a.gpuName = gpu->name;
+            a.gpuFreeBytes = gpu->freeBytes;
             a.vramNeeded = onDevice + kVramMargin;
             a.ramNeeded = gpuRam;
             a.threads = std::clamp(probe.cpuThreads / 4, 1, 4);
-            a.reason = "on the GPU (" + gb(a.vramNeeded) + " of " + gb(probe.gpuFreeBytes()) + " free)";
+            a.reason = "on the GPU, " + gpu->name + " (" + gb(a.vramNeeded) + " of " + gb(gpu->freeBytes) + " free)";
             return a;
         }
     }
@@ -87,9 +90,22 @@ Admission admit(const TierSpec& tier, const ModelInfo& model, const SystemProbe&
     a.ramNeeded = onDevice + kProcessBytes + options.reserveBytes;
     a.vramNeeded = 0;
     a.threads = std::clamp(probe.cpuThreads / 2, 1, 8);
-    const std::string gpuNote = gpu && probe.gpus.size() == 1 && !gpu->integrated
-        ? "the GPU has " + gb(probe.gpuFreeBytes()) + " free, " + gb(onDevice + kVramMargin) + " needed"
-        : "no single discrete GPU with a known free memory";
+    std::string gpuNote;
+    if (!gpu) {
+        gpuNote = "no GPU";
+    } else if (gpu->integrated) {
+        gpuNote = probe.preferredGpuLuid != 0 && gpu->luid == probe.preferredGpuLuid && probe.gpus.size() > 1
+            ? "the GPU chosen for Wabcut, " + gpu->name + ", is integrated"
+            : "only an integrated GPU (" + gpu->name + ")";
+    } else if (gpu->freeBytes == 0) {
+        gpuNote = "the free memory of " + gpu->name + " is unknown";
+    } else if (gpu->freeBytes < onDevice + kVramMargin) {
+        gpuNote = gpu->name + " has " + gb(gpu->freeBytes) + " free, " + gb(onDevice + kVramMargin) + " needed";
+    } else if (probe.ramAvailable < gpuRam) {
+        gpuNote = "not enough free RAM next to the GPU (" + gb(gpuRam) + " needed)";
+    } else {
+        gpuNote = "no GPU runtime for " + gpu->name + " (no Vulkan loader)";
+    }
     if (!options.cpuFallback) {
         a.reason = "insufficient verified GPU memory (" + gpuNote + "); CPU fallback disabled";
         return a;

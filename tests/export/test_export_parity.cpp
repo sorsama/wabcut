@@ -840,6 +840,9 @@ TEST_CASE("Watch folder: a dropped file is exported with the preset and moved in
     CHECK(std::filesystem::is_directory(dir / "Drop" / "Output"));
     CHECK_FALSE(watch.add(folder).has_value()); // watched already
 
+    // A file of the export's name is in Output already: the export is numbered "tone (2).m4a" like every other export's
+    // file (fix round 1, ARGON-25), and that file stays as it was.
+    { std::ofstream(dir / "Drop" / "Output" / "tone.m4a", std::ios::binary) << "taken"; }
     std::filesystem::copy_file(mediaDir() / "sine_48k.wav", dir / "Drop" / "tone.wav");
     std::ofstream(dir / "Drop" / "notes.txt") << "not media";
     CHECK(watch.scanNow().empty()); // seen once: maybe still being copied
@@ -848,7 +851,8 @@ TEST_CASE("Watch folder: a dropped file is exported with the preset and moved in
     const auto status = queue.wait(jobs.front());
     REQUIRE(status.has_value());
     CHECK(status->progress.phase == ExportPhase::Done);
-    CHECK(std::filesystem::is_regular_file(dir / "Drop" / "Output" / "tone.m4a"));
+    CHECK(std::filesystem::is_regular_file(dir / "Drop" / "Output" / "tone (2).m4a"));
+    CHECK(std::filesystem::file_size(dir / "Drop" / "Output" / "tone.m4a") == 5);
     // The source moves once encoded (the job's completion runs on the queue's thread).
     for (int i = 0; i < 100 && !std::filesystem::exists(dir / "Drop" / "Source" / "tone.wav"); ++i) {
         std::this_thread::sleep_for(std::chrono::milliseconds(20));

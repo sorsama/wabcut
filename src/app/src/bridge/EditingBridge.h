@@ -110,6 +110,9 @@ public:
 
     /// Runs one of the keymap commands above; false for any other id.
     Q_INVOKABLE bool runCommand(const QString& commandId);
+    /// P1 round (#33): whether runCommand(`commandId`) can act now, for the menu bar and the palette (keys are not
+    /// gated): { handled (one of this bridge's ids), enabled, reason (why not, as the run path would say it) }.
+    Q_INVOKABLE QVariantMap commandAvailability(const QString& commandId) const;
     /// Runs a typed command on the project (the current sequence filled in); "" or why not. One undo step.
     command::CommandResult run(const std::string& name, command::Json params);
 
@@ -205,6 +208,13 @@ public:
     // ---- History ----
     /// Goes back (or forward) to the step `index` of historySteps.
     Q_INVOKABLE bool goToHistoryStep(int index);
+    /// P1 round (#4), Premiere's History panel Delete: the step `index` of historySteps and every step after it are
+    /// gone (goToHistoryStep(index - 1), then the redo steps are dropped). Not undoable. False for "Open" (0), an index
+    /// out of range or during a gesture.
+    Q_INVOKABLE bool deleteHistoryStep(int index);
+    /// P1 round (#4), the History panel menu's Clear History: every undo and redo step is dropped; the project stays as
+    /// it is now. Not undoable. False when there is nothing to clear or during a gesture.
+    Q_INVOKABLE bool clearHistory();
 
     // ---- Default transitions (0.2 UX, stream T) ----
     /// Set as Default Transition (the Effects panel's item menu, the timeline transition menu): `effectId` becomes the
@@ -246,6 +256,9 @@ signals:
     void rawSourceSettingsRequested(const QStringList& mediaKeys);
     void timecodeRequested(const QStringList& mediaKeys);
     void historyRequested();
+    /// P1 round (#4): history.delete / history.clear asked (key, palette, the History panel's menu): QML confirms, then
+    /// calls deleteHistoryStep(`index`) or clearHistory(). `action` is "delete" or "clear".
+    void historyEditRequested(const QString& action, int index);
     /// The Library should come forward (a new sequence or item to show).
     void libraryRequested();
 

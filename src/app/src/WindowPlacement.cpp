@@ -48,8 +48,9 @@ std::optional<QRect> placeOnScreens(const QRect& saved, const QList<QRect>& scre
         }
     }
     const QRect& screen = screens[best >= 0 ? best : 0];
+    // P1 #47: the minimum never makes the window larger than its screen's work area (a 1080p laptop at 150 %).
     const QSize size = QSize(std::min(saved.width(), screen.width()), std::min(saved.height(), screen.height()))
-                           .expandedTo(minimum);
+                           .expandedTo(minimum.boundedTo(screen.size()));
     if (best < 0) // on no screen now (a monitor unplugged, another layout): centred on the primary one
         return QRect(QPoint(screen.x() + (screen.width() - size.width()) / 2,
                             screen.y() + (screen.height() - size.height()) / 2),
@@ -112,6 +113,35 @@ QVariantMap restoredWindowProperties(const QString& group, const QSize& minimum)
     if (saved->maximized)
         properties.insert(QStringLiteral("visibility"), QVariant::fromValue(QWindow::Maximized));
     return properties;
+}
+
+FirstRunPlacement firstRunPlacement(const QRect& available, const QSize& defaultSize) {
+    if (available.isEmpty() || defaultSize.isEmpty())
+        return {};
+    const QSize size = defaultSize.boundedTo(available.size());
+    const QRect normal(QPoint(available.x() + (available.width() - size.width()) / 2,
+                              available.y() + (available.height() - size.height()) / 2),
+                       size);
+    return {normal, size != defaultSize};
+}
+
+QVariantMap startWindowProperties(const QString& group, const QSize& minimum, const QSize& defaultSize) {
+    QScreen* primary = QGuiApplication::primaryScreen();
+    const QSize bounded = primary ? minimum.boundedTo(primary->availableGeometry().size()) : minimum;
+    QVariantMap properties = restoredWindowProperties(group, bounded);
+    if (!properties.isEmpty() || !primary || loadWindowPlacement(group))
+        return properties;
+    // The first run: the default size when it fits the work area; else cut to it, and maximized.
+    const FirstRunPlacement first = firstRunPlacement(primary->availableGeometry(), defaultSize);
+    if (first.normal.isEmpty() || !first.maximized)
+        return {};
+    return {
+        {QStringLiteral("x"), first.normal.x()},
+        {QStringLiteral("y"), first.normal.y()},
+        {QStringLiteral("width"), first.normal.width()},
+        {QStringLiteral("height"), first.normal.height()},
+        {QStringLiteral("visibility"), QVariant::fromValue(QWindow::Maximized)},
+    };
 }
 
 WindowPlacementKeeper::WindowPlacementKeeper(QWindow* window, QString group)

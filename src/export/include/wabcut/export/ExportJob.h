@@ -113,6 +113,10 @@ struct ExportResult {
     DynamicRange dynamicRange = DynamicRange::Sdr;
     int maxCll = 0;
     int maxFall = 0;
+    /// 0.6 (#72): the colour space written, and what SDR Conform mapped (an SDR export of an HDR or Wide Gamut setup
+    /// with SDR Conform on; nullopt otherwise).
+    OutputColorSpace outputSpace = OutputColorSpace::Rec709;
+    std::optional<SdrConformReport> sdrConform;
     /// I.9: the output file's size in bytes, and how many encodes it took (2: a target-size export that ended over
     /// its size the first time and was encoded again at the rate that fits).
     std::int64_t bytes = 0;
@@ -129,6 +133,13 @@ struct ExportResult {
     double loudnessGainDb = 0.0;        ///< and the gain applied
     std::filesystem::path loudnessLog;  ///< "<output>.loudness.txt" when asked for
     std::int64_t copiedFrames = 0;      ///< smart rendering: frames whose packets were copied, not encoded
+    // 0.6 (#73): broadcast delivery - what the export details name.
+    std::string operationalPattern;              ///< MXF: "OP1a" or "OP-Atom" ("" otherwise)
+    std::string materialUmid;                    ///< MXF: the (video) file's material package UMID
+    std::vector<std::filesystem::path> extraFiles; ///< OP-Atom: the audio files ("<name>_A1.mxf", ...)
+    std::string audioLayout;                     ///< MXF: "8 mono tracks · PCM 24-bit 48 kHz · 1-2 stereo mix, 3-8 silent"
+    std::string embeddedCaptions;                ///< Embed: "CEA-608 CC1 + CEA-708 service 1 in an SMPTE 436M track"
+    int embeddedCaptionCues = 0;                 ///< Embed: the captions carried (0 with a warning: none in the range)
 };
 
 /// One export, run synchronously by run() on the calling thread (a job-queue worker, never the GUI thread).
@@ -161,6 +172,21 @@ private:
     struct Impl;
     std::unique_ptr<Impl> m_impl;
 };
+
+/// P1 (#27): an original media file an export would read but cannot find.
+struct MissingOriginal {
+    MediaId media;
+    std::string name;
+    std::string path; ///< as the project has it ("" when it has none)
+};
+
+/// P1 (#27): before an export starts, the original media it would read that is offline or missing - exactly what
+/// ExportJob::run() stops on (the range resolve() picks, the tracks that play, nested and multicam clips' media; never
+/// proxies, generated media skipped). Paths resolve against `projectFile` like the export's. In project order; empty
+/// when every file is found or the settings do not resolve.
+std::vector<MissingOriginal> missingOriginals(const ProjectState& snapshot, const Sequence& sequence,
+                                              const ExportSettings& settings,
+                                              const std::filesystem::path& projectFile = {});
 
 using ExportJobId = std::uint64_t;
 

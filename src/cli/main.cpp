@@ -88,7 +88,7 @@ int printUsage() {
     std::printf("usage: wabcut-cli --version\n");
     std::printf("       wabcut-cli import <file> [--search <dir>]... [--json] [--carried] [--edl-rate "
                 "<num>[/<den>]]\n");
-    std::printf("                             [--experimental-prproj]\n");
+    std::printf("                             [--experimental-prproj] [--media-folder <dir>]\n");
     std::printf("       wabcut-cli export-timeline <project.wabcut> <out> [--format fcp7-xml|fcpxml|otio|edl|aaf|omf] "
                 "[--sequence <name|id>]\n");
     std::printf("                             [--fcpxml-version 1.10|1.11] [--json] [--carried] [AAF / OMF options]\n");
@@ -103,6 +103,11 @@ int printUsage() {
                 "--c2pa-key <key.pem>]\n");
     std::printf("                             [--c2pa-producer <name>] [--c2pa-no-thumbnail] [--c2pa-do-not-train]\n");
     std::printf("                             [--preset-file <preset.json>] [--set '<overrides json>']\n");
+    std::printf("                             [--output-space auto|rec709|rec2020|p3-d65|rec2100-pq|rec2100-hlg]\n");
+    std::printf("                             [--sdr-conform [--sdr-conform-operator bt2390|aces|reinhard] "
+                "[--sdr-conform-gamut aces-rgc|saturation|clip]\n");
+    std::printf("                              [--sdr-conform-peak <nits>] [--sdr-conform-paper-white <nits>] "
+                "[--sdr-conform-legal]] [--no-sdr-conform]\n");
     std::printf("       wabcut-cli watch <folder> --preset <id> [--output <folder>] [--keep-sources] [--once] "
                 "[--test-pattern]\n");
     std::printf("       wabcut-cli credentials verify <file.mp4|.mov> [--trust <root.pem>] [--json]\n");
@@ -125,8 +130,9 @@ int printUsage() {
     std::printf("                             [--args '<json>'] [--answers '<json array>'] [--save] [--timeout <s>]\n");
     std::printf("       wabcut-cli ext validate <folder> | ext list [<project.wabcut>]   (docs/extensions.md)\n");
     std::printf("\n");
-    std::printf("import: reads a Final Cut Pro 7 XML, FCPXML (.fcpxml/.fcpxmld), OpenTimelineIO (.otio) or "
-                "CMX3600 EDL\n");
+    std::printf("import: reads a Final Cut Pro 7 XML, FCPXML (.fcpxml/.fcpxmld), OpenTimelineIO (.otio), "
+                "CMX3600 EDL, AAF or OMF\n");
+    std::printf("        (AAF / OMF embedded audio stays offline unless --media-folder <dir> says where to write it)\n");
     std::printf("        and prints the imported timeline and the import report (carried / approximated / "
                 "dropped).\n");
     std::printf(
@@ -169,6 +175,11 @@ int printUsage() {
     std::printf("  --no-audio               video only\n");
     std::printf("  --dynamic-range <r>      auto (default: the sequence's colour setup), sdr, pq or hlg (HDR: an HDR or "
                 "Wide Gamut colour setup, 10-bit HEVC, AV1 or ProRes)\n");
+    std::printf("  --output-space <s>       0.6: what the export writes (auto: the sequence's; rec2020 and p3-d65 are SDR "
+                "spaces; rec2100-pq / -hlg as --dynamic-range)\n");
+    std::printf("  --sdr-conform            0.6: SDR Conform of an HDR or Wide Gamut sequence's SDR export (the sequence's "
+                "settings; the options below change them)\n");
+    std::printf("  --no-sdr-conform         0.6: no SDR Conform even when the sequence has it on\n");
     std::printf("  --preset <id>            also a user preset (\"user-...\", the app's Save Preset; folder: "
                 "WABCUT_EXPORT_PRESETS)\n");
     std::printf("  --preset-file <file>     a preset file (.json, Import Preset's format)\n");
@@ -216,6 +227,8 @@ int runImport(int argc, char** argv) {
             summary.listCarried = true;
         } else if (arg == "--experimental-prproj") {
             options.experimentalPremiereProject = true;
+        } else if (arg == "--media-folder" && i + 1 < argc) { // 0.6: AAF / OMF embedded audio
+            options.embeddedMediaFolder = std::filesystem::path(argv[++i]);
         } else if (arg == "--edl-rate" && i + 1 < argc) {
             const auto rate = parseRate(argv[++i]);
             if (!rate) {
@@ -232,6 +245,7 @@ int runImport(int argc, char** argv) {
     if (file.empty()) {
         return printUsage();
     }
+    options.extractEmbeddedMedia = !options.embeddedMediaFolder.empty(); // printing never writes files unasked
     auto result = ic::ImportRouter::importFile(file, options);
     if (!result) {
         const ic::Detection detection = ic::ImportRouter::detect(file);
@@ -743,6 +757,9 @@ int runRender(int argc, char** argv) {
     bool testPattern = false;
     bool noAudio = false;
     std::string dynamicRange;
+    std::string outputSpace;                         // 0.6 (#72)
+    std::optional<bool> sdrConformOn;                // 0.6 (#72): --sdr-conform / --no-sdr-conform
+    std::optional<wabcut::SdrConform> sdrConformSet; // the options given
     std::string credentials = "ai"; // AI-15: sign exports with AI-generated material by default, like the app
     std::filesystem::path c2paCert;
     std::filesystem::path c2paKey;
@@ -755,6 +772,43 @@ int runRender(int argc, char** argv) {
         const std::string_view arg = argv[i];
         if (arg == "--dynamic-range" && i + 1 < argc) {
             dynamicRange = argv[++i];
+        } else if (arg == "--output-space" && i + 1 < argc) { // 0.6 (#72)
+            outputSpace = argv[++i];
+        } else if (arg == "--sdr-conform") {
+            sdrConformOn = true;
+        } else if (arg == "--no-sdr-conform") {
+            sdrConformOn = false;
+        } else if (arg == "--sdr-conform-legal") {
+            sdrConformSet = sdrConformSet.value_or(wabcut::SdrConform{});
+            sdrConformSet->legalRange = true;
+        } else if ((arg == "--sdr-conform-operator" || arg == "--sdr-conform-gamut" || arg == "--sdr-conform-peak" ||
+                    arg == "--sdr-conform-paper-white") &&
+                   i + 1 < argc) {
+            const std::string value = argv[++i];
+            sdrConformSet = sdrConformSet.value_or(wabcut::SdrConform{});
+            bool valid = true;
+            if (arg == "--sdr-conform-operator") {
+                const auto op = wabcut::toneMapOperatorFromString(value);
+                valid = op.has_value();
+                if (op) {
+                    sdrConformSet->toneMap = *op;
+                }
+            } else if (arg == "--sdr-conform-gamut") {
+                const auto mapping = wabcut::gamutMappingFromString(value);
+                valid = mapping.has_value();
+                if (mapping) {
+                    sdrConformSet->gamut = *mapping;
+                }
+            } else {
+                char* end = nullptr;
+                const double nits = std::strtod(value.c_str(), &end);
+                valid = end && *end == '\0' && nits >= wabcut::SdrConform::kMinNits && nits <= wabcut::SdrConform::kMaxNits;
+                (arg == "--sdr-conform-peak" ? sdrConformSet->targetPeakNits : sdrConformSet->paperWhiteNits) = nits;
+            }
+            if (!valid) {
+                std::fprintf(stderr, "invalid %.*s '%s'\n", static_cast<int>(arg.size()), arg.data(), value.c_str());
+                return 2;
+            }
         } else if (arg == "--content-credentials") {
             credentials = "always";
         } else if (arg.starts_with("--content-credentials=")) {
@@ -857,6 +911,20 @@ int runRender(int argc, char** argv) {
             return 2;
         }
     }
+    if (!outputSpace.empty()) { // 0.6 (#72): the output colour space
+        const auto space = wabcut::outputColorSpaceFromString(outputSpace);
+        if (!space) {
+            std::fprintf(stderr, "invalid --output-space '%s' (auto, rec709, rec2020, p3-d65, rec2100-pq or rec2100-hlg)\n",
+                         outputSpace.c_str());
+            return 2;
+        }
+        settings.video.outputSpace = *space;
+        if ((*space == wabcut::OutputColorSpace::Rec2100Pq || *space == wabcut::OutputColorSpace::Rec2100Hlg) &&
+            settings.video.pixelFormat == ex::OutputPixelFormat::Yuv420p &&
+            (settings.video.codec == ex::VideoCodec::Hevc || settings.video.codec == ex::VideoCodec::Av1)) {
+            settings.video.pixelFormat = ex::OutputPixelFormat::Yuv420p10; // PQ and HLG are 10-bit
+        }
+    }
     if (output.extension().empty()) {
         output += std::string(ex::outputExtension(settings));
     } else if (settings.container == ex::Container::Image) {
@@ -905,6 +973,23 @@ int runRender(int argc, char** argv) {
         }
     }
 
+    if (sdrConformOn || sdrConformSet) { // 0.6 (#72): SDR Conform, from the sequence's settings
+        wabcut::SdrConform conform = settings.video.sdrConform.value_or(project->colorManagement.sdrConform);
+        if (sdrConformSet) {
+            const wabcut::SdrConform given = *sdrConformSet;
+            const wabcut::SdrConform defaults;
+            conform.toneMap = given.toneMap != defaults.toneMap ? given.toneMap : conform.toneMap;
+            conform.gamut = given.gamut != defaults.gamut ? given.gamut : conform.gamut;
+            conform.targetPeakNits = given.targetPeakNits != defaults.targetPeakNits ? given.targetPeakNits : conform.targetPeakNits;
+            conform.paperWhiteNits = given.paperWhiteNits != defaults.paperWhiteNits ? given.paperWhiteNits : conform.paperWhiteNits;
+            conform.legalRange = conform.legalRange || given.legalRange;
+            conform.enabled = true;
+        }
+        if (sdrConformOn) {
+            conform.enabled = *sdrConformOn;
+        }
+        settings.video.sdrConform = conform;
+    }
     ex::ExportRequest request;
     request.sequence = sequence->id;
     request.snapshot = std::make_shared<const wabcut::ProjectState>(std::move(*project));
@@ -1046,6 +1131,17 @@ int runRender(int argc, char** argv) {
     }
     std::printf("duration %.3f s, took %.2f s (%.2fx realtime)\n", result->duration.toSeconds(),
                 result->seconds, result->realtimeFactor);
+    // 0.6 (#72): the colour space written, and what SDR Conform mapped.
+    if (result->outputSpace != wabcut::OutputColorSpace::Rec709) {
+        std::printf("colour: %s\n", std::string(wabcut::displayName(result->outputSpace)).c_str());
+    }
+    if (result->sdrConform) {
+        const ex::SdrConformReport& c = *result->sdrConform;
+        std::printf("sdr conform: %lld frames, %.2f %% of pixels tone-mapped (worst frame %.1f %%), %.2f %% gamut-mapped "
+                    "(worst frame %.1f %%)\n",
+                    static_cast<long long>(c.frames), c.toneMappedShare() * 100.0, c.worstToneMappedFrame * 100.0,
+                    c.gamutMappedShare() * 100.0, c.worstGamutMappedFrame * 100.0);
+    }
     // 0.2: what else the export wrote.
     if (result->imageFiles > 0) {
         std::printf("stills: %lld files from %s\n", static_cast<long long>(result->imageFiles),

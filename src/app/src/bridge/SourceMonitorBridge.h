@@ -258,6 +258,10 @@ public:
     /// Shift+R: moves the program playhead to where the source frame shown is used.
     Q_INVOKABLE bool reverseMatchFrame();
 
+    /// Fix F1A (card #71): the Master Clip Effects the loaded source plays (its private copy's, a subclip's master item's
+    /// first), for tests.
+    EffectStack shownMasterEffects() const;
+
 signals:
     void sourceChanged();
     void positionChanged();
@@ -303,6 +307,9 @@ private:
     void onProjectChanged();
     /// The project's redactions of the loaded media, re-pointed at the private copy (I.6: the source shows them).
     void syncRedactions();
+    /// Fix F1A (card #71): the media's Master Clip Effects (a subclip's master item's, then its own) on the private copy,
+    /// so the source shows them and follows their edits.
+    void syncMasterEffects();
     /// The stored patching of the current sequence, completed for the loaded source.
     std::vector<command::SourcePatchSetting> currentPatching() const;
     void storePatching(std::vector<command::SourcePatchSetting> patches);
@@ -329,6 +336,8 @@ private:
     /// keeping the project's would collide with its media, sequence, tracks or clips; Codex wave-4 P2-38). Stable while
     /// the source stays loaded, so an unchanged set of redactions makes no new commit.
     std::map<std::uint64_t, RedactionId> m_redactionIds;
+    /// Fix F1A: the same for the Master Clip Effects' instance ids.
+    std::map<std::uint64_t, EffectInstanceId> m_masterEffectIds;
     QString m_name;
     QString m_kind;
     bool m_hasVideo = false;

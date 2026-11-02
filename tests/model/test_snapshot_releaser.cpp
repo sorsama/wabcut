@@ -132,3 +132,41 @@ TEST_CASE("A releaser destroyed before its session frees what is still queued an
     REQUIRE(session.apply("Mark In", [&](const ProjectState& s) { return edit::markIn(s, tl.seq, f(3)); }));
     CHECK(session.pendingReleases() >= 1);
 }
+
+TEST_CASE("After a project closes the releaser frees it first and then gives the freed memory back once per request",
+          "[model][session][release]") {
+    // F2P (0.6): ProjectController asks for this after every reset (a project closed or replaced).
+    Timeline tl(R"(
+        V1 |AaaaBbbbCccc|
+    )");
+    Timeline other(R"(
+        V1 |Dddd|
+    )");
+    EditSession session(tl.state, limited(500));
+    SnapshotReleaser releaser(session);
+    std::vector<std::weak_ptr<const ProjectState>> before;
+    before.push_back(session.snapshot());
+    for (int i = 1; i <= 4; ++i) {
+        REQUIRE(session.apply("Mark In", [&](const ProjectState& s) { return edit::markIn(s, tl.seq, f(i)); }));
+        before.push_back(session.snapshot());
+    }
+    CHECK(releaser.trims() == 0); // edits never trim
+    session.reset(other.state);
+    releaser.releaseAndTrim();
+    releaser.flush(); // waits for the pass that frees the old project and trims after it
+    CHECK(releaser.trims() == 1);
+    CHECK(session.pendingReleases() == 0);
+    for (std::size_t i = 0; i < before.size(); ++i) {
+        INFO("state " << i);
+        CHECK(before[i].expired()); // freed before the trim ran: the trim saw their pages free
+    }
+    // Another request trims again; plain edits and pokes do not.
+    REQUIRE(session.apply("Mark In", [&](const ProjectState& s) { return edit::markIn(s, other.seq, f(1)); }));
+    releaser.poke();
+    releaser.flush();
+    CHECK(releaser.trims() == 1);
+    releaser.releaseAndTrim();
+    releaser.flush();
+    CHECK(releaser.trims() == 2);
+    SnapshotReleaser::trimFreedMemory(); // callable from any thread, any time
+}

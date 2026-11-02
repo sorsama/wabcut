@@ -32,6 +32,11 @@ FocusScope {
         return ""
     }
 
+    /// P1 round (#30): Edit > Find (Ctrl+F) - the Find field, its text selected.
+    function focusFind() {
+        search.forceActiveFocus(Qt.ShortcutFocusReason)
+        search.selectAll()
+    }
     function start() {
         const prompt = SourceTranscript.consentFor()
         if (prompt.needed)

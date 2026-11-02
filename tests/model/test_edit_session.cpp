@@ -9,6 +9,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <atomic>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -279,4 +280,92 @@ TEST_CASE("Engine threads read consistent snapshots while the GUI thread edits",
     }
     CHECK(inconsistent.load() == 0);
     CHECK(session.snapshot()->findSequence(tl.seq)->videoTracks[0]->clips.size() == static_cast<std::size_t>(kFrames));
+}
+
+TEST_CASE("A preview shows a state without touching the undo and redo history or the state to save",
+          "[model][session][preview]") {
+    Timeline tl(R"(
+        V1 |Aaaaaaaa|
+    )");
+    EditSession session(tl.state, validating());
+    REQUIRE(session.apply("Mark In", [&](const ProjectState& s) { return edit::markIn(s, tl.seq, f(2)); }));
+    REQUIRE(session.apply("Mark Out", [&](const ProjectState& s) { return edit::markOut(s, tl.seq, f(6)); }));
+    const std::optional<Ticks> outAt6 = session.snapshot()->findSequence(tl.seq)->markOut;
+    REQUIRE(outAt6);
+    REQUIRE(session.undo());
+    const ProjectSnapshot committed = session.snapshot();
+    REQUIRE(session.redoLabel() == "Mark Out");
+    const auto in = [](const ProjectState& s, SequenceId seq) { return s.findSequence(seq)->markIn; };
+    const auto out = [](const ProjectState& s, SequenceId seq) { return s.findSequence(seq)->markOut; };
+
+    std::vector<ChangeKind> kinds;
+    session.addListener([&](const ChangeEvent& e) { kinds.push_back(e.kind); });
+    const auto at = [&](int frame) {
+        auto moved = edit::markIn(*committed, tl.seq, f(frame));
+        REQUIRE(moved);
+        return moved->state;
+    };
+
+    const std::uint64_t revision = session.revision();
+    CHECK(session.shown() == committed);
+    REQUIRE(session.showPreview("Preview", at(5)));
+    CHECK(session.inPreview());
+    CHECK(in(*session.shown(), tl.seq) == f(5)); // what plays
+    // F3 (NEW-02): everything else - exports, commands, saves, the next edit - reads snapshot(), the committed state.
+    CHECK(session.snapshot() == committed);
+    CHECK(session.committed() == committed);           // what the history holds
+    CHECK(in(session.stateForSave(), tl.seq) == f(2)); // what a save or an autosave writes
+    CHECK(session.revision() == revision);              // nothing was committed: no staged result goes stale
+    CHECK(session.undoCount() == 1);
+    CHECK(session.redoLabel() == "Mark Out");
+    // A second preview replaces the first, over the same committed state.
+    REQUIRE(session.showPreview("Preview", at(3)));
+    CHECK(in(*session.shown(), tl.seq) == f(3));
+    CHECK(session.snapshot() == committed);
+    CHECK(session.committed() == committed);
+    REQUIRE(session.endPreview());
+    CHECK_FALSE(session.inPreview());
+    CHECK(session.snapshot() == committed);
+    CHECK(session.shown() == committed);
+    CHECK(session.revision() == revision);
+    CHECK(session.redoLabel() == "Mark Out"); // the redo history survived
+    CHECK_FALSE(session.endPreview());
+    CHECK(kinds == std::vector<ChangeKind>{ChangeKind::Preview, ChangeKind::Preview, ChangeKind::Preview});
+
+    // Redo while a preview shows: the preview goes first.
+    REQUIRE(session.showPreview("Preview", at(5)));
+    REQUIRE(session.redo());
+    CHECK_FALSE(session.inPreview());
+    CHECK(in(*session.snapshot(), tl.seq) == f(2));
+    CHECK(out(*session.snapshot(), tl.seq) == outAt6);
+
+    // An edit while a preview shows starts from the committed state, not the preview.
+    const ProjectSnapshot beforeEdit = session.snapshot();
+    auto preview = edit::markIn(*beforeEdit, tl.seq, f(5));
+    REQUIRE(preview);
+    const auto markedAt7 = edit::markOut(*beforeEdit, tl.seq, f(7));
+    REQUIRE(markedAt7);
+    const std::optional<Ticks> outAt7 = markedAt7->state.findSequence(tl.seq)->markOut;
+    REQUIRE(session.showPreview("Preview", preview->state));
+    REQUIRE(session.apply("Mark Out", [&](const ProjectState& s) { return edit::markOut(s, tl.seq, f(7)); }));
+    CHECK_FALSE(session.inPreview());
+    CHECK(in(*session.snapshot(), tl.seq) == f(2));
+    CHECK(out(*session.snapshot(), tl.seq) == outAt7);
+    CHECK(session.shown() == session.snapshot());
+    CHECK(session.undoCount() == 3);
+    REQUIRE(session.undo());
+    CHECK(session.snapshot() == beforeEdit);
+
+    // F3 (NEW-02): a state computed from snapshot() while a preview plays, then committed, carries no trace of it.
+    REQUIRE(session.showPreview("Preview", preview->state));
+    const auto derived = edit::markOut(*session.snapshot(), tl.seq, f(7));
+    REQUIRE(derived);
+    REQUIRE(session.commit("Mark Out", derived->state));
+    CHECK(in(*session.snapshot(), tl.seq) == f(2));
+    REQUIRE(session.undo());
+
+    // No preview during a gesture.
+    session.beginGesture("Drag");
+    CHECK_FALSE(session.showPreview("Preview", preview->state));
+    session.endGesture();
 }

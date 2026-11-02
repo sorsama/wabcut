@@ -80,6 +80,7 @@ enum class LibraryOp : std::uint16_t {
     RoughenEdges = 79,
     ColorKey = 80,
     ConvolutionKernel = 81,
+    Glow = 82, ///< 0.6: a bright pass (or the alpha), blurred, composited by the operation
     // Generate: pictures drawn over or instead of the layer, the transition effects, and second pictures.
     FourColorGradient = 100,
     Ramp = 101,
@@ -96,6 +97,13 @@ enum class LibraryOp : std::uint16_t {
     TextOverlay = 112, ///< Timecode, Clip Name, Simple Text: LayerEffect::matte is the text drawn on the canvas
     DifferenceMatte = 113,
     ImageMatteKey = 114,
+    // 0.6: the missing Premiere / After Effects generators (fx_generate.frag, LibraryGenerate.cpp).
+    Colorama = 115,     ///< a phase from the picture through a palette
+    FractalNoise = 116, ///< value-noise octaves (deterministic for a seed and Evolution)
+    CellPattern = 117,  ///< cells around scattered points (Worley distances)
+    Lightning = 118,    ///< strokes from render/reference/LibraryGeometry.h in a data texture (tex1)
+    Scribble = 119,     ///< strokes inside or along the effect's masks (LibraryGeometry.h), its masks not mixed
+    PaintBucket = 120,  ///< a flood fill in passes (run lengths, propagation), then the fill composited
 };
 
 constexpr FxFamily familyOf(LibraryOp op) {

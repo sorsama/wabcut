@@ -13,6 +13,9 @@ layout(std140, binding = 0) uniform OutputParams {
     ivec4 mode;    // x = output transform, y = output alpha
     mat4 toOutput; // fragment stage only (output.frag)
     vec4 cm;
+    mat4 conformIn; // fragment stage only (0.6: SDR Conform)
+    vec4 conform0;
+    vec4 conform1;
 } p;
 
 out gl_PerVertex { vec4 gl_Position; };

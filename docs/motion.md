@@ -165,7 +165,10 @@ Warp (a per-pixel flow would be the next step).
 **UI.** Effect Controls' header of either effect shows its state (Not analyzed, Analyzing N %, Analysis complete) and
 **Analyze** / **Reanalyze** / **Cancel**: the `Stabilizer` singleton runs the command on a worker with the media
 decoders' pictures and the analysis cache and applies the keyed instance as one undo step ("Analyzing in background",
-as Premiere's banner).
+as Premiere's banner). A Warp Stabilizer or Rolling Shutter Repair in the **Master Clip Effects** (shown in Effect
+Controls under the clip's "Master Clip" group) is analysed on the media: over the frames every clip of that media shows
+(one contiguous stretch of the file), keyed on the media item, so every instance plays stabilized. A clip added later
+outside that stretch needs Reanalyze.
 
 **Measured cost** (same box, loaded by parallel builds): tracking at the analysis width (640 x 360 for 16:9) takes
 about 15 ms a frame for Position, Scale, Rotation or Perspective (65 frames/s, so a minute of 30 fps footage analyses in

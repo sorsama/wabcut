@@ -12,6 +12,8 @@
 #include <wabcut/ai/edit/TranscriptCommands.h>
 #include <wabcut/ai/stabilize/StabilizeCommands.h>
 #include <wabcut/masks/MaskCommands.h>
+#include <wabcut/model/FinishingOps.h>
+#include <wabcut/model/MasterClipEffects.h>
 #include <wabcut/model/MotionOps.h>
 
 #include <catch2/catch_approx.hpp>
@@ -274,6 +276,70 @@ TEST_CASE("Analyze Stabilization refuses what it cannot analyse", "[ai][stabiliz
                                   {"dryRun", true}});
     REQUIRE(dry.ok());
     CHECK(s.clip("V1@0").effects().empty());
+}
+
+// Fix round 3 (NEW-01): a Warp Stabilizer in the media's Master Clip Effects is analysed on the media, over the frames
+// every clip of it shows, and keyed on the media item (one undo step), so each instance plays stabilized.
+TEST_CASE("Analyze Stabilization keys a Master Clip Effect for every clip of the media", "[ai][stabilize][commands]") {
+    // Two clips of A: source frames 0-9 and 40-51 (a source In's digits take frames of the picture too).
+    StabilizeHarness s("V1 |Aaaaaaaaaa..........A40aaaaaaaaa|");
+    const MediaId media = s.h.tl.media('A');
+    const ClipId first = s.h.clip("V1@0");
+    const ClipId second = s.h.clip("V1@20");
+    const SequenceId seq = s.h.tl.seq;
+    const auto added = s.h.session.apply("Add Master Clip Effect", [&](const ProjectState& state) {
+        return edit::addEffect(state, seq, edit::EffectTarget::ofMedia(media), std::string(kWarpStabilizerEffect),
+                               {EffectParam{"framing", ParamValue(0.0)}, EffectParam{"method", ParamValue(1.0)}});
+    });
+    REQUIRE(added);
+    REQUIRE(added->createdEffects.size() == 1);
+    const EffectInstanceId id = added->createdEffects.front();
+    const auto master = [&]() -> const EffectInstance* {
+        for (const EffectInstance& e : s.h.state()->findMedia(media)->masterEffects) {
+            if (e.id == id) {
+                return &e;
+            }
+        }
+        return nullptr;
+    };
+
+    const auto result = s.h.ok("effect.analyzeStabilization", {{"clip", first.value}, {"effect", id.value}});
+    CHECK(result.data["frames"] == 52); // frames 0 to 51: both clips' frames, in one contiguous analysis
+    CHECK(result.createdIds == std::vector<std::uint64_t>{id.value});
+    // Keyed on the media item; neither clip got an effect of its own.
+    const EffectInstance* warp = master();
+    REQUIRE(warp);
+    REQUIRE(warp->findData("status"));
+    CHECK(*warp->findData("status")->text() == "analyzed");
+    REQUIRE(warp->find("transform.x"));
+    CHECK(warp->find("transform.x")->isCurve());
+    CHECK(s.clip("V1@0").effects().empty());
+    CHECK(s.clip("V1@20").effects().empty());
+    // The second clip (source frames 40-51) plays it stabilized too.
+    std::vector<double> shot, steady;
+    for (std::int64_t k = 40; k < 52; ++k) {
+        shot.push_back(jitterX(k) * kToSource);
+        steady.push_back(jitterX(k) * kToSource + at(*warp, "transform.x", k));
+    }
+    INFO("x spread " << spread(shot) << " -> " << spread(steady));
+    CHECK(spread(steady) < 0.25 * spread(shot));
+    const EffectStack played = playedEffects(*s.h.state(), s.clip("V1@20"), EffectKind::Video);
+    REQUIRE(played.size() == 1);
+    CHECK(played.front().id == id);
+    // A Rolling Shutter Repair of the second clip's own: its own frames only.
+    const std::size_t analysed = s.h.session.undoCount();
+    CHECK(s.h.ok("effect.analyzeRollingShutter", {{"clip", second.value}}).data["frames"] == 12);
+    s.h.session.undo();
+    // Through the second clip: the same frames, the same keys (nothing changes, so no undo step).
+    const ProjectSnapshot before = s.h.state();
+    CHECK(s.h.ok("effect.analyzeStabilization", {{"clip", second.value}, {"effect", id.value}}).data["frames"] == 52);
+    CHECK(*s.h.state()->findMedia(media) == *before->findMedia(media));
+    CHECK(s.h.session.undoCount() == analysed);
+    // One undo step takes the keys back; the instance stays on the media item.
+    s.h.session.undo();
+    warp = master();
+    REQUIRE(warp);
+    CHECK(warp->find("transform.x") == nullptr);
 }
 
 TEST_CASE("Analyze Rolling Shutter keys the picture's motion per frame", "[ai][stabilize][commands]") {

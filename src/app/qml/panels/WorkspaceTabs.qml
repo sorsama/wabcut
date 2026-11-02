@@ -11,12 +11,16 @@ import QtQuick.Layouts
 // renames it in place; dragging a tab reorders the tabs. The "+" makes a new workspace from a preset (Edit, Color,
 // Audio, Captions, Export) or as a copy of the current one. Tabs that no longer fit scroll (the wheel) and the chevron
 // lists them all.
+// P1 round (#32): a locked workspace's tab shows a lock before its name; the tab menu's window actions (Save Changes,
+// Save as New, Reset to Preset, Lock) come out as actionRequested (TopBar: Main.menuAction).
 Item {
     id: root
     objectName: "workspaceTabs"
 
     property int current: 0
     signal activated(int workspace)
+    /// P1 round (#32): a tab menu's action only the window can do (Main.menuAction).
+    signal actionRequested(string action, int workspace)
 
     // The tabs: the workspaces, in their order. `command`: the key that opens it (Premiere's workspace keys, Export
     // Media, for the first workspace of each preset), shown in its tooltip. Rebuilt only when what they show changes (a
@@ -24,7 +28,7 @@ Item {
     property var tabs: []
     function refreshTabs() {
         const next = Workspaces.all
-            .map(w => ({ id: w.id, key: Workspaces.keyOf(w.id), label: w.name, hidden: false,
+            .map(w => ({ id: w.id, key: Workspaces.keyOf(w.id), label: w.name, hidden: false, locked: w.locked === true,
                          command: Workspaces.commandOf(w.id), hint: qsTr("%1 workspace").arg(w.name) }))
         if (JSON.stringify(next) !== JSON.stringify(root.tabs))
             root.tabs = next
@@ -193,7 +197,9 @@ Item {
                     height: row.height
                     leftPadding: Theme.space(3.5)
                     rightPadding: Theme.space(3.5)
-                    implicitWidth: (renaming ? Math.max(Theme.space(28), label.implicitWidth + Theme.space(6)) : label.implicitWidth)
+                    readonly property bool locked: modelData.locked === true
+                    implicitWidth: (renaming ? Math.max(Theme.space(28), label.implicitWidth + Theme.space(6))
+                                             : label.implicitWidth + (locked ? Theme.iconXs + Theme.space(1) : 0))
                                    + leftPadding + rightPadding
                     focusPolicy: Qt.StrongFocus
                     hoverEnabled: true
@@ -203,6 +209,7 @@ Item {
 
                     Accessible.role: Accessible.PageTab
                     Accessible.name: modelData.label
+                    Accessible.description: locked ? qsTr("Locked") : ""
                     Accessible.selected: active
 
                     Keys.onPressed: event => {
@@ -216,12 +223,24 @@ Item {
                     }
 
                     contentItem: Item {
-                        implicitWidth: label.implicitWidth
+                        implicitWidth: label.implicitWidth + (lockGlyph.visible ? lockGlyph.width + Theme.space(1) : 0)
                         implicitHeight: label.implicitHeight
 
+                        // P1 round (#32): Lock Workspace.
+                        Icon {
+                            id: lockGlyph
+                            objectName: "workspaceLock_" + tab.modelData.key
+                            anchors.left: parent.left
+                            anchors.verticalCenter: parent.verticalCenter
+                            visible: tab.locked && !tab.renaming
+                            name: "lock"
+                            size: Theme.iconXs
+                            color: label.color
+                        }
                         Text {
                             id: label
                             anchors.fill: parent
+                            anchors.leftMargin: lockGlyph.visible ? lockGlyph.width + Theme.space(1) : 0
                             visible: !tab.renaming
                             text: tab.modelData.label
                             horizontalAlignment: Text.AlignHCenter
@@ -392,6 +411,7 @@ Item {
         id: tabMenu
         onRenameRequested: id => root.startRename(id)
         onCreated: id => root.adopt(id)
+        onActionRequested: (action, id) => root.actionRequested(action, id)
     }
     WorkspaceAddMenu {
         id: addMenu

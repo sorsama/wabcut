@@ -1,6 +1,7 @@
 #include "TranscriptBridge.h"
 
 #include "AiController.h"
+#include "BridgeIds.h"
 #include "ProjectController.h"
 
 #include <wabcut/ai/AnalysisCache.h>
@@ -14,10 +15,12 @@
 #include <wabcut/ai/edit/TranscriptCommands.h>
 #include <wabcut/ai/edit/TranscriptSources.h>
 #include <wabcut/command/Engine.h>
+#include <wabcut/model/CaptionOps.h>
 #include <wabcut/model/ChangeSet.h>
 #include <wabcut/model/MediaLocator.h>
 
 #include <QClipboard>
+#include <QColor>
 #include <QCoreApplication>
 #include <QDir>
 #include <QGuiApplication>
@@ -119,7 +122,8 @@ int TranscriptParagraphModel::rowCount(const QModelIndex& parent) const {
 
 QHash<int, QByteArray> TranscriptParagraphModel::roleNames() const {
     return {{SpeakerRole, "speaker"}, {TimeRole, "timeText"}, {FirstRole, "first"},
-            {LastRole, "last"},       {WordsRole, "words"},   {SpeakerIndexRole, "speakerIndex"}};
+            {LastRole, "last"},       {WordsRole, "words"},   {SpeakerIndexRole, "speakerIndex"},
+            {SpeakerKeyRole, "speakerKey"}, {SpeakerColorRole, "speakerColor"}};
 }
 
 QVariant TranscriptParagraphModel::data(const QModelIndex& index, int role) const {
@@ -133,6 +137,8 @@ QVariant TranscriptParagraphModel::data(const QModelIndex& index, int role) cons
     case LastRole: return p.last;
     case WordsRole: return p.words;
     case SpeakerIndexRole: return p.speakerIndex;
+    case SpeakerKeyRole: return p.speakerKey;
+    case SpeakerColorRole: return p.speakerColor;
     default: return {};
     }
 }
@@ -143,7 +149,8 @@ QVariantMap TranscriptParagraphModel::get(int row) const {
     const Paragraph& p = m_rows[static_cast<std::size_t>(row)];
     return {{QStringLiteral("speaker"), p.speaker}, {QStringLiteral("timeText"), p.timeText},
             {QStringLiteral("first"), p.first},     {QStringLiteral("last"), p.last},
-            {QStringLiteral("words"), p.words}};
+            {QStringLiteral("words"), p.words},     {QStringLiteral("speakerIndex"), p.speakerIndex},
+            {QStringLiteral("speakerKey"), p.speakerKey}, {QStringLiteral("speakerColor"), p.speakerColor}};
 }
 
 void TranscriptParagraphModel::reset(std::vector<Paragraph> paragraphs) {
@@ -309,7 +316,10 @@ void TranscriptBridge::onModelChanged() {
     }
     m_mapped = next;
     const SequenceChange* sequenceChange = changes->sequence(m_transcript.sequence());
-    if (sequenceChange == nullptr && changes->addedMedia.empty() && changes->removedMedia.empty())
+    // 0.6 (#36): a speaker renamed, assigned or merged changes only the project's speakers and transcript edits (no
+    // sequence): the words' speakers are mapped again all the same.
+    if (sequenceChange == nullptr && changes->addedMedia.empty() && changes->removedMedia.empty()
+        && !changes->speakersChanged && !changes->transcriptEditsChanged)
         return;
     // 0.4: only In/Out, markers or captions changed (Mark In and Out, Add Marker from the words, their undo): the words
     // are the same, so the selection stays.
@@ -339,16 +349,31 @@ void TranscriptBridge::onModelChanged() {
 void TranscriptBridge::rebuildParagraphs() {
     std::vector<TranscriptParagraphModel::Paragraph> rows;
     const std::size_t n = m_transcript.size();
+    // 0.6 (#36): who speaks a word - its project speaker (a name given, an assignment, a merge), else its diarization
+    // label; a paragraph starts where that changes.
+    const auto speakerOfWord = [](const ai::edit::TimelineWord& w) -> std::pair<int, std::uint64_t> {
+        if (w.speakerId.isValid())
+            return {1, w.speakerId.value};
+        return w.speaker ? std::pair<int, std::uint64_t>{2, static_cast<std::uint64_t>(*w.speaker)} : std::pair<int, std::uint64_t>{0, 0};
+    };
     for (std::size_t i = 0; i < n; ++i) {
         const ai::edit::TimelineWord& w = m_transcript[i];
-        const bool start = rows.empty() || w.speaker != m_transcript[static_cast<std::size_t>(rows.back().last)].speaker
-                        || w.timeline.start - m_transcript[static_cast<std::size_t>(rows.back().last)].timeline.end() >= kParagraphPause
+        const ai::edit::TimelineWord* previous = rows.empty() ? nullptr : &m_transcript[static_cast<std::size_t>(rows.back().last)];
+        const bool start = !previous || speakerOfWord(w) != speakerOfWord(*previous)
+                        || w.timeline.start - previous->timeline.end() >= kParagraphPause
                         || static_cast<std::size_t>(rows.back().last - rows.back().first + 1) >= kParagraphWords;
         if (start) {
             TranscriptParagraphModel::Paragraph p;
             p.first = static_cast<int>(i);
             p.speakerIndex = w.speaker.value_or(-1);
-            p.speaker = w.speaker ? tr("Speaker %1").arg(*w.speaker + 1) : QString();
+            const Speaker* named = w.speakerId.isValid() && m_mapped ? m_mapped->findSpeaker(w.speakerId) : nullptr;
+            if (named) {
+                p.speaker = fromStd(named->name);
+                p.speakerKey = speakerKey(named->id);
+                p.speakerColor = QColor::fromRgb(QRgb(named->color)).name(QColor::HexRgb).toUpper();
+            } else {
+                p.speaker = w.speaker ? tr("Speaker %1").arg(*w.speaker + 1) : QString();
+            }
             p.timeText = m_controller ? m_controller->formatTimecode(w.timeline.start) : QString();
             rows.push_back(std::move(p));
         }
@@ -1401,6 +1426,168 @@ void TranscriptBridge::setTrackChosen(int index, bool chosen) {
     QSettings().setValue(QLatin1String(kTrackChoicesKey),
                          QString::fromUtf8(QJsonDocument(stored).toJson(QJsonDocument::Compact)));
     rebuildAudioTracks();
+}
+
+// ---- 0.6 (P1 round, #36): speakers on the Transcript tab ---------------------------------------------------------
+
+QString TranscriptBridge::assignWords(std::size_t first, std::size_t last, const QString& speaker, const QString& newName) {
+    if (!m_controller || first > last || last >= m_transcript.size()) {
+        setMessage(tr("Select words first"));
+        return m_message;
+    }
+    Json params{{"start", m_transcript[first].timeline.start.value},
+                {"end", std::max(m_transcript[last].timeline.end(), m_transcript[first].timeline.start + Ticks{1}).value}};
+    if (!speaker.isEmpty()) {
+        const auto id = parseSpeakerKey(speaker);
+        if (!id) {
+            setMessage(tr("No such speaker"));
+            return m_message;
+        }
+        params["speaker"] = id->value;
+    } else if (!newName.trimmed().isEmpty()) {
+        params["name"] = newName.trimmed().toStdString();
+    } else {
+        setMessage(tr("Name the speaker"));
+        return m_message;
+    }
+    // Words of one audio track (a mic each): only that track's words change, not a voice heard over them elsewhere.
+    const TrackId track = m_transcript[first].track;
+    bool oneTrack = track.isValid();
+    for (std::size_t i = first; i <= last && oneTrack; ++i)
+        oneTrack = m_transcript[i].track == track;
+    if (oneTrack)
+        params["track"] = track.value;
+    cancelPreview();
+    const command::CommandResult result = run("transcript.assignSpeaker", std::move(params));
+    if (!result.ok()) {
+        setMessage(fromStd(result.error->message));
+        return m_message;
+    }
+    setMessage({});
+    return {};
+}
+
+QString TranscriptBridge::assignParagraph(int paragraph, const QString& speaker, const QString& newName) {
+    const auto& rows = m_paragraphs->paragraphs();
+    if (paragraph < 0 || paragraph >= static_cast<int>(rows.size()) || rows[static_cast<std::size_t>(paragraph)].last < 0) {
+        setMessage(tr("No such paragraph"));
+        return m_message;
+    }
+    const auto& p = rows[static_cast<std::size_t>(paragraph)];
+    if (!speaker.isEmpty() && speaker == p.speakerKey)
+        return {}; // already theirs
+    return assignWords(static_cast<std::size_t>(p.first), static_cast<std::size_t>(p.last), speaker, newName);
+}
+
+QString TranscriptBridge::assignSelection(const QString& speaker, const QString& newName) {
+    if (m_selection.empty()) {
+        setMessage(tr("Select words first"));
+        return m_message;
+    }
+    return assignWords(*m_selection.begin(), *m_selection.rbegin(), speaker, newName);
+}
+
+QString TranscriptBridge::renameParagraphSpeaker(int paragraph, const QString& name, const QString& color) {
+    const auto& rows = m_paragraphs->paragraphs();
+    if (!m_controller || paragraph < 0 || paragraph >= static_cast<int>(rows.size())) {
+        setMessage(tr("No such paragraph"));
+        return m_message;
+    }
+    const auto& p = rows[static_cast<std::size_t>(paragraph)];
+    if (name.trimmed().isEmpty() && color.isEmpty()) {
+        setMessage(tr("Name the speaker"));
+        return m_message;
+    }
+    Json params = Json::object();
+    if (!name.trimmed().isEmpty())
+        params["name"] = name.trimmed().toStdString();
+    if (!color.isEmpty())
+        params["color"] = color.toStdString();
+    if (const auto id = parseSpeakerKey(p.speakerKey)) {
+        params["speaker"] = id->value;
+    } else {
+        // A diarization label nobody named yet: a speaker for that label of the paragraph's media, so every paragraph
+        // the label speaks follows.
+        const SequencePtr seq = m_controller->currentSequence();
+        const ai::edit::TimelineWord& w = m_transcript[static_cast<std::size_t>(std::max(p.first, 0))];
+        const auto loc = seq ? seq->findClip(w.clip) : std::nullopt;
+        if (!w.speaker || !loc || loc->clip().isNested() || !loc->clip().media.isValid()) {
+            setMessage(tr("This paragraph has no speaker to rename: choose who it is instead"));
+            return m_message;
+        }
+        params["media"] = loc->clip().media.value;
+        params["audioStream"] = loc->clip().stream.index;
+        params["label"] = *w.speaker;
+    }
+    cancelPreview();
+    const command::CommandResult result = run("transcript.renameSpeaker", std::move(params));
+    if (!result.ok()) {
+        setMessage(fromStd(result.error->message));
+        return m_message;
+    }
+    setMessage({});
+    return {};
+}
+
+QString TranscriptBridge::mergeParagraphSpeaker(int paragraph, const QString& into) {
+    const auto& rows = m_paragraphs->paragraphs();
+    const auto target = parseSpeakerKey(into);
+    if (!m_controller || paragraph < 0 || paragraph >= static_cast<int>(rows.size()) || !target) {
+        setMessage(tr("No such speaker"));
+        return m_message;
+    }
+    const auto& p = rows[static_cast<std::size_t>(paragraph)];
+    if (p.speakerKey == into)
+        return {};
+    cancelPreview();
+    if (const auto from = parseSpeakerKey(p.speakerKey)) {
+        const command::CommandResult result =
+            run("transcript.mergeSpeakers", Json{{"from", from->value}, {"into", target->value}});
+        if (!result.ok()) {
+            setMessage(fromStd(result.error->message));
+            return m_message;
+        }
+        setMessage({});
+        return {};
+    }
+    // A label with no speaker yet: it gets one and that one merges into `into`, in one undo step.
+    const SequencePtr seq = m_controller->currentSequence();
+    const ai::edit::TimelineWord& w = m_transcript[static_cast<std::size_t>(std::max(p.first, 0))];
+    const auto loc = seq ? seq->findClip(w.clip) : std::nullopt;
+    if (!w.speaker || !loc || loc->clip().isNested() || !loc->clip().media.isValid()) {
+        setMessage(tr("This paragraph has no speaker to merge: choose who it is instead"));
+        return m_message;
+    }
+    const MediaId media = loc->clip().media;
+    const std::int32_t stream = loc->clip().stream.index;
+    const std::int32_t label = *w.speaker;
+    const SpeakerId intoId = *target;
+    const bool ok = m_controller->applyEditFn(
+        QT_TRANSLATE_NOOP("wabcut::app::ProjectController", "Merge Speakers"), [&](const ProjectState& state) -> edit::EditOutcome {
+            const std::int32_t labels[] = {label};
+            auto registered = edit::registerSpeakerLabels(state, media, stream, labels);
+            if (!registered)
+                return std::unexpected(registered.error());
+            ProjectState next = std::move(*registered);
+            const TranscriptEdits* edits = next.findTranscriptEdits(media, stream);
+            const SpeakerId from = edits ? edits->speakerOfLabel(label) : SpeakerId{};
+            if (from.isValid() && from != intoId) {
+                auto merged = edit::mergeSpeakers(next, from, intoId);
+                if (!merged)
+                    return std::unexpected(merged.error());
+                next = std::move(*merged);
+            }
+            edit::EditResult result;
+            result.changes = diff(state, next);
+            result.state = std::move(next);
+            return result;
+        });
+    if (!ok) {
+        setMessage(m_controller->lastError());
+        return m_message;
+    }
+    setMessage({});
+    return {};
 }
 
 } // namespace wabcut::app

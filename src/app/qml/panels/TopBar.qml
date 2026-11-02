@@ -79,6 +79,14 @@ Item {
         else
             activityPopover.open()
     }
+    /// 0.6 (D2 #34): Sequence > Auto Reframe Sequence… (and its key): the pill menu's Reframe row's dialog (AI-9). It is
+    /// made on first use, as the menu's row does.
+    function openReframe() {
+        reframeDialog.active = true
+        const dialog = reframeDialog.item as ReframeDialog
+        if (dialog !== null)
+            dialog.open()
+    }
 
     /// 0.4: what runs in the background, in the order the activity pill names it: { icon, text, percent (0..1, -1
     /// none), warn (paused or held: the warning hue), count (how many things it stands for) }.
@@ -303,6 +311,16 @@ Item {
                     iconName: "book-open"
                     onTriggered: RoughCut.open()
                 }
+                // 0.6 (P1 round, 3A #62): auto B-roll, the publishing kit and pacing match.
+                ContextMenuItem {
+                    objectName: "creatorAutopilotMenuItem"
+                    visible: Preferences.aiEnabled
+                    height: visible ? implicitHeight : 0
+                    text: qsTr("Creator Autopilot…")
+                    iconName: "sparkles"
+                    command: "sequence.creatorAutopilot"
+                    onTriggered: Autopilot.open()
+                }
                 ContextMenuItem {
                     objectName: "narrationMenuItem"
                     visible: Preferences.aiEnabled
@@ -429,6 +447,7 @@ Item {
             current: root.workspace
 
             onActivated: workspace => root.workspaceRequested(workspace)
+            onActionRequested: (action, workspace) => root.menuActionRequested(action, workspace) // P1 round (#32)
         }
 
         Item { Layout.fillWidth: true }
