@@ -5,7 +5,8 @@
 //
 //   * Browse: `templates` (the built-in ones, the project's library and the user's folder), with live thumbnails at
 //     "image://graphicthumb/<library>/<id>/<version>" - the template's graphic resolved and painted off the GUI thread
-//     (GraphicPainter, a QQuickAsyncImageProvider on a QThreadPool of its own), cached. instantiate() /
+//     (GraphicPainter, a QQuickAsyncImageProvider on a QThreadPool of its own, which the bridge stops and waits for
+//     when it goes with its engine), cached. instantiate() /
 //     instantiateAtPlayhead() run template.instantiate (a drop on the timeline, double-click / Enter) and select the new
 //     graphic's first text layer, ready to type; saveTemplate() runs template.save with the fields exposeCandidates()
 //     offers.
@@ -273,6 +274,9 @@ public:
         std::atomic<QThread*> lastThread{nullptr};
     };
 
+    /// The thumbnail provider's pool (GraphicsBridge.cpp): stopped, and waited for, when the bridge goes with its engine.
+    struct ThumbnailJobs;
+
 private:
     struct Target;
     std::optional<Target> target() const;
@@ -298,6 +302,7 @@ private:
     std::filesystem::path m_userLibrary;
     const command::CommandRegistry* m_registry = nullptr;
     std::shared_ptr<Shared> m_shared;
+    std::shared_ptr<ThumbnailJobs> m_thumbnailJobs;
     QVariantList m_templates;
     QVariantList m_libraryErrors;
     ClipId m_clip;

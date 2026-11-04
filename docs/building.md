@@ -579,8 +579,8 @@ Both run as part of `ctest --preset win-msvc` and in CI.
 3. It installs Qt 6.11.3 with `jurplel/install-qt-action` (aqtinstall from the pinned master commit, as above),
    plus `qtshadertools`.
 4. It builds with `dev-env.ps1` and the `win-msvc` preset, through ccache and without debug information
-   (`-DWABCUT_DEBUG_INFO=OFF`). It then saves the compiler cache (every branch and pull request), and on `main` the
-   vcpkg packages.
+   (`-DWABCUT_DEBUG_INFO=OFF`). It then saves the compiler cache, and the vcpkg packages when it built any (every
+   branch and pull request).
 5. It installs WiX 5.0.2 for the runner's user (`Install-WixToolset.ps1`).
 6. It runs `ctest --preset win-msvc-ci` through `tools/ci-test.py`, which skips the `gpu` and `audio-device` tests
    but includes the install tests (the MSI is installed and uninstalled for the runner's user).
@@ -612,8 +612,10 @@ handled by `tools/ci-cache.py`:
 
 GitHub gives a repository 10 GB of caches, and a cache saved by a pull request or a tag can only be restored by that
 pull request or tag (and a pull request also restores main's). The vcpkg packages are saved from `main` (`windows-full`
-and `unix-full` on every push) and restored by pull requests and by the release. The compiler caches of `windows-full`
-and `core` are saved by every branch and pull request as well: a pull request's first push restores main's, every later
+and `unix-full` on every push) and restored by pull requests and by the release; `windows-full` on a pull request also
+saves them when it had to build packages, as after a runner image update, which changes every package's ABI (otherwise
+each push rebuilt all 50, about 50 minutes, until main's next run). The compiler caches of `windows-full` and `core`
+are saved by every branch and pull request as well: a pull request's first push restores main's, every later
 push its own, so it compiles only what changed since (0.6.0's pull request compiled the same 1,255 files on each push).
 Each save deletes that branch's or pull request's older cache of the same kind, and GitHub evicts the least recently
 used caches first when the 10 GB are full, which are those of closed pull requests. A run started by hand on another

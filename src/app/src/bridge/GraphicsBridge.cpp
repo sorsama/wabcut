@@ -32,8 +32,11 @@
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <list>
+#include <mutex>
 #include <set>
+#include <stop_token>
 
 namespace wabcut::app {
 
@@ -545,50 +548,109 @@ private:
     std::list<QString> m_order;
 };
 
-/// One thumbnail: painted on the provider's pool, handed back on the response's thread. The engine keeps a response
-/// (cancelled or not) until it has said finished(), so the job's pointer stays good.
+} // namespace
+
+/// The thumbnail jobs' pool, shared by the provider and the bridge. Qt keeps an async image provider alive as long as
+/// any of its responses, and a response the engine had not collected when it was destroyed is never deleted
+/// (QQuickPixmapReader marks it cancelled and quits). So the provider, with a pool of its own, could outlive the engine
+/// and the application, and a job still painting then used the fonts of a destroyed QGuiApplication: heap corruption,
+/// fail-fast aborts and hangs when a test ended right after a thumbnail was asked for. The bridge, which the engine
+/// destroys with itself, stops the pool and waits for it.
+struct GraphicsBridge::ThumbnailJobs {
+    ThumbnailJobs() { pool.setMaxThreadCount(2); } // low memory: a couple of thumbnails at a time
+    ~ThumbnailJobs() { stop(); }
+
+    /// Runs `job` on the pool; once stopped, here and now (it sees stopToken() stopped and only answers).
+    void start(std::function<void()> job) {
+        {
+            std::lock_guard lock(mutex);
+            if (!stopSource.stop_requested()) {
+                pool.start(QRunnable::create(std::move(job)));
+                return;
+            }
+        }
+        job();
+    }
+    std::stop_token stopToken() const { return stopSource.get_token(); }
+    /// No job paints after this returns: later ones only answer, and the running ones are waited for.
+    void stop() {
+        {
+            std::lock_guard lock(mutex);
+            stopSource.request_stop();
+        }
+        pool.waitForDone();
+    }
+
+    std::mutex mutex;
+    std::stop_source stopSource;
+    QThreadPool pool;
+};
+
+namespace {
+
+/// One thumbnail: painted on the bridge's thumbnail pool, handed back on the response's thread. The job reaches the
+/// response through a link the response clears when it goes, and still answers (transparent) when the request was
+/// cancelled or the pool stopped, so the engine can let go of the response.
 class ThumbnailResponse final : public QQuickImageResponse {
 public:
-    ThumbnailResponse(const std::shared_ptr<ThumbnailRenderer>& renderer, const QString& id, QSize size, QThreadPool* pool) {
-        pool->start(QRunnable::create([this, renderer, id, size] {
-            QImage image = renderer->render(id, size);
+    ThumbnailResponse(const std::shared_ptr<ThumbnailRenderer>& renderer, const QString& id, QSize size,
+                      GraphicsBridge::ThumbnailJobs& jobs)
+        : m_link(std::make_shared<Link>()) {
+        m_link->target = this;
+        jobs.start([link = m_link, stopped = jobs.stopToken(), renderer, id, size] {
+            QImage image;
+            if (!stopped.stop_requested() && !link->cancel.stop_requested())
+                image = renderer->render(id, size);
             if (image.isNull()) {
                 image = QImage(size, QImage::Format_ARGB32_Premultiplied);
                 image.fill(Qt::transparent);
             }
-            QMetaObject::invokeMethod(
-                this,
-                [this, image] {
-                    m_image = image;
-                    emit finished();
-                },
-                Qt::QueuedConnection);
-        }));
+            std::lock_guard lock(link->mutex);
+            if (ThumbnailResponse* target = link->target) {
+                QMetaObject::invokeMethod(
+                    target,
+                    [target, image = std::move(image)] {
+                        target->m_image = image;
+                        emit target->finished();
+                    },
+                    Qt::QueuedConnection);
+            }
+        });
+    }
+
+    ~ThumbnailResponse() override {
+        std::lock_guard lock(m_link->mutex);
+        m_link->target = nullptr;
     }
 
     QQuickTextureFactory* textureFactory() const override { return QQuickTextureFactory::textureFactoryForImage(m_image); }
+    void cancel() override { m_link->cancel.request_stop(); }
 
 private:
+    struct Link {
+        std::mutex mutex;
+        ThumbnailResponse* target = nullptr;
+        std::stop_source cancel;
+    };
+    std::shared_ptr<Link> m_link;
     QImage m_image;
 };
 
-/// image://graphicthumb/<library>/<id>/<version>/<kit revision>[/<milliseconds>]: a template's thumbnail, painted on a
-/// small thread pool of its own (never the GUI thread), cached.
+/// image://graphicthumb/<library>/<id>/<version>/<kit revision>[/<milliseconds>]: a template's thumbnail, painted on the
+/// bridge's small thread pool (never the GUI thread), cached.
 class GraphicThumbnailProvider final : public QQuickAsyncImageProvider {
 public:
-    explicit GraphicThumbnailProvider(std::weak_ptr<GraphicsBridge::Shared> shared)
-        : m_renderer(std::make_shared<ThumbnailRenderer>(std::move(shared))) {
-        m_pool.setMaxThreadCount(2); // low memory: a couple of thumbnails at a time
-    }
+    GraphicThumbnailProvider(std::weak_ptr<GraphicsBridge::Shared> shared, std::shared_ptr<GraphicsBridge::ThumbnailJobs> jobs)
+        : m_renderer(std::make_shared<ThumbnailRenderer>(std::move(shared))), m_jobs(std::move(jobs)) {}
 
     QQuickImageResponse* requestImageResponse(const QString& id, const QSize& requestedSize) override {
         const QSize target = requestedSize.isValid() && !requestedSize.isEmpty() ? requestedSize : QSize(320, 180);
-        return new ThumbnailResponse(m_renderer, id, target, &m_pool);
+        return new ThumbnailResponse(m_renderer, id, target, *m_jobs);
     }
 
 private:
     std::shared_ptr<ThumbnailRenderer> m_renderer;
-    QThreadPool m_pool; ///< last: waits for its jobs first
+    std::shared_ptr<GraphicsBridge::ThumbnailJobs> m_jobs;
 };
 
 /// The top text layer of `layers` (top first, a group's children right after the group), 0 for none.
@@ -611,7 +673,8 @@ struct GraphicsBridge::Target {
     Graphic graphic;
 };
 
-GraphicsBridge::GraphicsBridge(QObject* parent) : QObject(parent), m_shared(std::make_shared<Shared>()) {
+GraphicsBridge::GraphicsBridge(QObject* parent)
+    : QObject(parent), m_shared(std::make_shared<Shared>()), m_thumbnailJobs(std::make_shared<ThumbnailJobs>()) {
     const QString env = qEnvironmentVariable("WABCUT_TEMPLATE_LIBRARY");
     const QString folder = !env.isEmpty() ? env
                                           : QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation))
@@ -619,14 +682,18 @@ GraphicsBridge::GraphicsBridge(QObject* parent) : QObject(parent), m_shared(std:
     m_userLibrary = std::filesystem::path(folder.toStdU16String());
 }
 
-GraphicsBridge::~GraphicsBridge() = default;
+// The provider may outlive the engine (see ThumbnailJobs): no thumbnail is painted once its bridge is gone.
+GraphicsBridge::~GraphicsBridge() {
+    m_thumbnailJobs->stop();
+}
 
 GraphicsBridge* GraphicsBridge::create(QQmlEngine* qmlEngine, QJSEngine*) {
     auto* bridge = new GraphicsBridge;
     if (qmlEngine) {
         bridge->setController(qmlEngine->singletonInstance<ProjectController*>("Wabcut", "ProjectController"));
         if (!qmlEngine->imageProvider(QString::fromLatin1(kProviderId)))
-            qmlEngine->addImageProvider(QString::fromLatin1(kProviderId), new GraphicThumbnailProvider(bridge->m_shared));
+            qmlEngine->addImageProvider(QString::fromLatin1(kProviderId),
+                                        new GraphicThumbnailProvider(bridge->m_shared, bridge->m_thumbnailJobs));
     }
     return bridge;
 }
