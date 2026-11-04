@@ -83,6 +83,33 @@ option(WABCUT_BUILD_TESTS "Build unit and integration tests" ON)
 # turns it ON, and CI builds with it.
 option(WABCUT_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
 option(WABCUT_FETCH_DEPENDENCIES "Download missing pure-C++ dependencies (nlohmann_json, pugixml, zlib, Catch2) with FetchContent" OFF)
+# OFF in CI, which only builds and tests (docs/building.md, "Build options"). The machine code is the same; objects are
+# 3-5x smaller, so the compiler cache holds more, and a large test program links in half the memory. The packages never
+# carry debug information anyway: CPack strips it on Linux and macOS, and the Windows packages leave the PDBs out.
+option(WABCUT_DEBUG_INFO "Emit debug information in RelWithDebInfo and Debug builds (OFF: CI builds)" ON)
+# A large test program needs 6-12 GB to link with debug information, so several links at once page a 16-32 GB machine:
+# four together took about 5 minutes each where one alone takes 10-25 s. Static libraries are not limited.
+set(WABCUT_LINK_JOBS 1 CACHE STRING "Most executables and DLLs Ninja links at once (0: no limit)")
+
+if(NOT WABCUT_DEBUG_INFO)
+    if(MSVC)
+        # An empty format: CMake adds no /Z7 or /Zi. /DEBUG:NONE links without a PDB, and /OPT:NOREF,NOICF keep the
+        # linker defaults of a /DEBUG link, so the programs are the ones a build with debug information makes.
+        set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "")
+        add_link_options(/DEBUG:NONE /OPT:NOREF /OPT:NOICF)
+    else()
+        add_compile_options(-g0)
+    endif()
+endif()
+if(MSVC)
+    # Incremental links pad every program and keep an .ilk beside it (12 GB in a full build tree), their PDBs grow until
+    # link fails with LNK1140, and a fresh link is no faster without them (measured on wabcut_app_tests).
+    add_link_options(/INCREMENTAL:NO)
+endif()
+if(WABCUT_LINK_JOBS GREATER 0 AND CMAKE_GENERATOR MATCHES "Ninja")
+    set_property(GLOBAL APPEND PROPERTY JOB_POOLS wabcut_link=${WABCUT_LINK_JOBS})
+    set(WABCUT_LINK_POOL wabcut_link) # wabcut_target_defaults() puts executables and DLLs in it
+endif()
 
 # The Qt version Wabcut is developed and tested against (see docs/building.md).
 set(WABCUT_TESTED_QT_VERSION 6.11.3)

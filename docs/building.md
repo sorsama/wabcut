@@ -73,7 +73,12 @@ Credentials (Windows x64; [below](#content-credentials-c2pa-rs)), pinned by URL 
 > `CMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded`) instead of a shared PDB server. Several worktrees build at once on
 > the shared machine, and `mspdbsrv` grew to 7-8.5 GB serving them; with `/Z7` there is no PDB server, per-compiler
 > memory is unchanged (measured), objects are about 31 % larger. Reconfigure once (`cmake --preset win-msvc`); the
-> next build is a full rebuild.
+> next build is a full rebuild. The `core` preset does the same for MSVC since 2026-11-04.
+>
+> **No incremental linking (2026-11-04):** MSVC links with `/INCREMENTAL:NO`. Incremental links padded every program,
+> kept a 12 GB set of `.ilk` files in a full build tree and grew the PDBs until the link failed (`LNK1140`), and a fresh
+> link is no faster without them (`wabcut_app_tests`: 9-15 s either way on an idle machine, PDB 1.07 GB instead of
+> 1.48 GB). `/DEBUG:FASTLINK` is no option: MSVC 14.51 ignores it (`LNK4315`) and links `/DEBUG:FULL`.
 
 ## Prerequisites (Windows)
 
@@ -235,6 +240,8 @@ not been tried with clang-cl: its vcpkg dependencies are built with MSVC.
 | `WABCUT_BUILD_APP` | `ON` | Build the Qt Quick application |
 | `WABCUT_BUILD_TESTS` | `ON` | Build the test suites (needs Catch2) |
 | `WABCUT_WARNINGS_AS_ERRORS` | `OFF`; **ON in every preset and in CI** | `/WX` or `-Werror` |
+| `WABCUT_DEBUG_INFO` | `ON`; **OFF in CI** | Debug information in RelWithDebInfo and Debug builds. OFF: no `/Z7` or `-g` (`-g0`), MSVC links with `/DEBUG:NONE /OPT:NOREF,NOICF` (the same programs, no PDBs). Objects are 3-5x smaller, so the compiler cache holds more, and the large test programs link in about half the memory (`wabcut_app_tests`: 5.9 GB instead of 11.5 GB). The packages never carry debug information either way |
+| `WABCUT_LINK_JOBS` | `1` | Most executables and DLLs Ninja links at once (`0`: no limit; static libraries are never limited). With debug information a large test program needs 6-12 GB to link: four at once took about 5 minutes each on a 32 GB machine, one alone 10-25 s. Raise it on a machine with plenty of free memory |
 | `WABCUT_FETCH_DEPENDENCIES` | `OFF`; ON in `core` | Download missing nlohmann_json, pugixml, zlib and Catch2 |
 | `WABCUT_WITH_LOCAL_AI` | `ON` in full Windows builds; `OFF` elsewhere and with `WABCUT_CORE_ONLY` | Local transcription: whisper.cpp in the `wabcut-infer` helper (vcpkg feature `ai-local`: ggml with run-time CPU variants and the Vulkan backend, from the overlay ports in `cmake/ports`). See [Local AI](#local-ai) |
 | `WABCUT_SANITIZE` | empty; `address` in `win-msvc-asan` | Build every target, the fetched dependencies included, with AddressSanitizer (MSVC `/fsanitize=address`; GCC/Clang also UBSan). See [Sanitizers and fuzzing](#sanitizers-and-fuzzing) |
@@ -453,7 +460,7 @@ discovery, and every CTest test carries labels:
 | `<suite>`: `model`, `keymap`, `media`, `audio`, `render`, `playback`, `export`, `interchange`, `command`, `ai`, `app` | every test not claimed by a hardware label below; additional labels a suite passes through `PROPERTIES LABELS` are added |
 | `gpu` | Catch2 tags `[gpu]`, `[hw]` (hardware video decode), `[screenshot]` (offscreen grabs on the real RHI backend), or `[qml]` together with `[rhi]` (the GPU status pill reads the live adapter) |
 | `audio-device` | Catch2 tags `[audio-device]`, `[device]` (real output devices) |
-| `perf` | Catch2 tag `[perf]` (unless a hardware label above applies): strict timing thresholds that need a quiet machine. Run them with `-L perf` when nothing else is building; exclude them with `-LE perf` on a loaded machine. Functional tests assert what must happen and only record timings |
+| `perf` | Catch2 tag `[perf]` (unless a hardware label above applies): strict timing thresholds that need a quiet machine. Run them with `-L perf` when nothing else is building; exclude them with `-LE perf` on a loaded machine. Every `[perf]` test (also `gpu-perf`, `audio-device-perf`) is `RUN_SERIAL`, so a parallel `ctest -j` runs nothing beside it. Functional tests assert what must happen and only record timings |
 | `install` | `install.smoke` and `install.package`, see [Install tree, installer and portable ZIP](#install-tree-installer-and-portable-zip) |
 | `fuzz` | the parser fuzz harnesses' regression runs and the seed generator `fuzz.seeds` ([Sanitizers and fuzzing](#sanitizers-and-fuzzing)) |
 
@@ -560,25 +567,34 @@ Both run as part of `ctest --preset win-msvc` and in CI.
 
 | Workflow | Runs on | What it does |
 |---|---|---|
-| `.github/workflows/core.yml` | push to `main`, every PR | The `core` preset on `windows-2025` with MSVC and with clang-cl, `ubuntu-24.04` (GCC 14) and `macos-15` (Homebrew LLVM). The Windows jobs use `dev-env.ps1 -Core`. |
+| `.github/workflows/core.yml` | push to `main`, every PR | The `core` preset on `windows-2025` with MSVC and with clang-cl, `ubuntu-24.04` (GCC 14) and `macos-15` (Homebrew LLVM), without debug information, through ccache, tests through `tools/ci-test.py` (below). The Windows jobs use `dev-env.ps1 -Core`. |
 | `.github/workflows/windows-full.yml` | push to `main`, every PR | See below. |
 | `.github/workflows/unix-full.yml` | push to `main`, weekly and on demand; **experimental** | `linux-gcc` (GCC 14) and `macos-clang` (Homebrew LLVM, `arm64-osx-llvm` triplet) with the same vcpkg manifest and Qt, local AI off, smart search on the prebuilt ONNX Runtime of each platform, no secrets; tests without `gpu` / `audio-device`, then the install tree and a TGZ as an "unverified" artifact. Marked `continue-on-error`, so it never blocks. |
 
 `windows-full.yml` does the following:
 
 1. It clones vcpkg at the `vcpkg.json` baseline and bootstraps it.
-2. It restores main's vcpkg binary cache and compiler cache ([CI caches](#ci-caches)).
+2. It restores main's vcpkg binary cache and the compiler cache: a pull request's own newest one, else main's
+   ([CI caches](#ci-caches)).
 3. It installs Qt 6.11.3 with `jurplel/install-qt-action` (aqtinstall from the pinned master commit, as above),
    plus `qtshadertools`.
-4. It builds with `dev-env.ps1` and the `win-msvc` preset, through ccache. On `main` it then saves both caches.
+4. It builds with `dev-env.ps1` and the `win-msvc` preset, through ccache and without debug information
+   (`-DWABCUT_DEBUG_INFO=OFF`). It then saves the compiler cache (every branch and pull request), and on `main` the
+   vcpkg packages.
 5. It installs WiX 5.0.2 for the runner's user (`Install-WixToolset.ps1`).
-6. It runs `ctest --preset win-msvc-ci`, which skips the `gpu` and `audio-device` tests but includes the
-   install tests (the MSI is installed and uninstalled for the runner's user).
+6. It runs `ctest --preset win-msvc-ci` through `tools/ci-test.py`, which skips the `gpu` and `audio-device` tests
+   but includes the install tests (the MSI is installed and uninstalled for the runner's user).
 7. It builds the packages with cpack and uploads the MSI and the portable ZIP as artifacts (`-DWABCUT_BUILD_NUMBER` =
    the run number).
 
 Action versions are pinned to release tags. The first full run builds FFmpeg from source, which can take
 1–2 hours; later runs restore it from the cache.
+
+`tools/ci-test.py` runs ctest with one job per processor (a `[perf]` test still runs alone), then the failed tests
+once more, one at a time (`--rerun-failed -j 1`). Only a test that fails both times fails the job. A test that passed
+alone is listed as a "Flaky test" warning on the run and in the job summary: it still needs a fix, but it no longer
+costs a full rerun of a three-hour workflow. When more than 25 tests fail, nothing is rerun. Until 0.6.0 CI ran the
+3,756 tests of `win-msvc-ci` one at a time (51-55 minutes).
 
 ### CI caches
 
@@ -588,15 +604,21 @@ handled by `tools/ci-cache.py`:
 - **vcpkg packages** (vcpkg's binary cache, one zip per package ABI). The cache is named by the packages it holds, so a
   run saves a new one only when it built a package, and before saving it drops the packages the build no longer
   installs. Package ABIs include the compiler: after a runner image update vcpkg rebuilds what changed.
-- **Compiler cache** (ccache 4.14.2, pinned by SHA-256): Wabcut's own objects, about 2 GB per platform. ccache leaves
-  `/WX` and `-Werror` out of its hash, so the release build, which does not make warnings errors, reuses the objects CI
-  compiled with them. Before saving, the cache is trimmed to what that build used.
+- **Compiler cache** (ccache 4.14.2, pinned by SHA-256): Wabcut's own objects, built without debug information in
+  every CI and release job (`WABCUT_DEBUG_INFO=OFF`), so they are small and the same objects serve all of them. ccache
+  leaves `/WX` and `-Werror` out of its hash, so the release build, which does not make warnings errors, reuses the
+  objects CI compiled with them. After a successful build, the cache is trimmed to what that build used. ccache does
+  not cache MSVC compiles that use a precompiled header (`could_not_use_precompiled_header`).
 
 GitHub gives a repository 10 GB of caches, and a cache saved by a pull request or a tag can only be restored by that
-pull request or tag. So the caches are saved from `main` (`windows-full` and `unix-full` on every push), restored by
-pull requests and by the release, and each save deletes main's older cache of the same kind. A run started by hand on
-another branch also saves its vcpkg packages for that branch, for a branch that changes the dependencies. Each build
-writes its hit rate to the job summary ("Compiler cache: ... hits").
+pull request or tag (and a pull request also restores main's). The vcpkg packages are saved from `main` (`windows-full`
+and `unix-full` on every push) and restored by pull requests and by the release. The compiler caches of `windows-full`
+and `core` are saved by every branch and pull request as well: a pull request's first push restores main's, every later
+push its own, so it compiles only what changed since (0.6.0's pull request compiled the same 1,255 files on each push).
+Each save deletes that branch's or pull request's older cache of the same kind, and GitHub evicts the least recently
+used caches first when the 10 GB are full, which are those of closed pull requests. A run started by hand on another
+branch also saves its vcpkg packages for that branch, for a branch that changes the dependencies. Each build writes its
+hit rate to the job summary ("Compiler cache: ... hits").
 
 ## Updating the pins
 

@@ -29,6 +29,7 @@
       "inherits": "common",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_MSVC_DEBUG_INFORMATION_FORMAT": "Embedded",
         "WABCUT_CORE_ONLY": "ON",
         "WABCUT_FETCH_DEPENDENCIES": "ON"
       }
