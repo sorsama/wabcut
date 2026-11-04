@@ -1,5 +1,6 @@
 # Shared compiler settings and toolchain checks.
-#   wabcut_target_defaults(<target>)              every Wabcut target: warnings, conformance, UTF-8, src/platform/include
+#   wabcut_target_defaults(<target>)              every Wabcut target: warnings, conformance, UTF-8, src/platform/include,
+#                                                 the link pool (WABCUT_LINK_JOBS)
 #   wabcut_windows_executable(<target>)           a Windows executable: UTF-8 code page, DLL search order
 #   wabcut_allow_qt_generated_code(<targets...>)  targets that compile Qt-generated code (qmlcachegen, ...)
 #   wabcut_check_toolchain()                      C++23 library features, Debug vs release-only triplet
@@ -33,6 +34,13 @@ endfunction()
 
 function(wabcut_target_defaults target)
     wabcut_windows_executable(${target})
+    # The link pool of WABCUT_LINK_JOBS (CMakeLists.txt): executables and DLLs only, static libraries are not limited.
+    if(WABCUT_LINK_POOL)
+        get_target_property(type ${target} TYPE)
+        if(type MATCHES "^(EXECUTABLE|SHARED_LIBRARY|MODULE_LIBRARY)$")
+            set_property(TARGET ${target} PROPERTY JOB_POOL_LINK ${WABCUT_LINK_POOL})
+        endif()
+    endif()
     # Header-only platform helpers (DLL search order, helper processes): visible to every target, also those that link
     # nothing of Wabcut's (wabcut_plughost_common, the fake helpers).
     target_include_directories(${target} PRIVATE "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../src/platform/include")

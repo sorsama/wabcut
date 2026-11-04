@@ -151,7 +151,8 @@ jobs:
 
       # The test suites run in windows-full for every commit on main, and the CI jobs hold the code to zero warnings;
       # the release builds the shipped programs only, and a new compiler warning does not stop it (ccache leaves /WX out
-      # of its hash, so the objects windows-full compiled with it still match).
+      # of its hash, so the objects windows-full compiled with it still match). No debug information, like windows-full
+      # (same objects, so its compiler cache matches): the packages leave the PDBs out anyway.
       - name: Configure and build
         shell: pwsh
         run: |
@@ -159,7 +160,7 @@ jobs:
           . ./tools/dev-env.ps1
           $launcher = @()
           if ($env:CCACHE_EXE) { $launcher = "-DCMAKE_C_COMPILER_LAUNCHER=$env:CCACHE_EXE", "-DCMAKE_CXX_COMPILER_LAUNCHER=$env:CCACHE_EXE" }
-          cmake --preset win-msvc -DWABCUT_BUILD_TESTS=OFF -DWABCUT_WARNINGS_AS_ERRORS=OFF `
+          cmake --preset win-msvc -DWABCUT_BUILD_TESTS=OFF -DWABCUT_WARNINGS_AS_ERRORS=OFF -DWABCUT_DEBUG_INFO=OFF `
             -DWABCUT_BUILD_NUMBER=${{ github.run_number }} @launcher
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           cmake --build --preset win-msvc
@@ -364,13 +365,15 @@ jobs:
           cache: true
           aqtsource: ${{ env.AQT_SOURCE }}
 
-      # The unix-full configuration (local AI off: whisper.cpp is not measured on Linux yet), without the tests.
+      # The unix-full configuration (local AI off: whisper.cpp is not measured on Linux yet, no debug information: CPack
+      # strips it anyway), without the tests.
       - name: Configure and build
         run: |
           export WABCUT_QT_DIR="$QT_ROOT_DIR"
           export VCPKG_KEEP_ENV_VARS="WABCUT_QT_DIR"
           cmake --preset $PRESET -DCMAKE_C_COMPILER=gcc-14 -DCMAKE_CXX_COMPILER=g++-14 \
             -DWABCUT_WITH_LOCAL_AI=OFF -DWABCUT_WITH_ONNX=ON -DWABCUT_BUILD_TESTS=OFF -DWABCUT_WARNINGS_AS_ERRORS=OFF \
+            -DWABCUT_DEBUG_INFO=OFF \
             -DCMAKE_OPTIMIZE_DEPENDENCIES=ON \
             ${CCACHE_EXE:+-DCMAKE_C_COMPILER_LAUNCHER=$CCACHE_EXE -DCMAKE_CXX_COMPILER_LAUNCHER=$CCACHE_EXE} \
             -DWABCUT_BUILD_NUMBER=${{ github.run_number }}
@@ -515,7 +518,8 @@ jobs:
           cache: true
           aqtsource: ${{ env.AQT_SOURCE }}
 
-      # The unix-full configuration (Homebrew's LLVM for Wabcut and every port; local AI off), without the tests.
+      # The unix-full configuration (Homebrew's LLVM for Wabcut and every port; local AI off; no debug information: the
+      # install strips it anyway), without the tests.
       - name: Configure and build
         run: |
           export WABCUT_QT_DIR="$QT_ROOT_DIR"
@@ -523,6 +527,7 @@ jobs:
           cmake --preset $PRESET -DVCPKG_TARGET_TRIPLET=arm64-osx-llvm \
             -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE="$GITHUB_WORKSPACE/cmake/toolchains/macos-llvm.cmake" \
             -DWABCUT_WITH_LOCAL_AI=OFF -DWABCUT_WITH_ONNX=ON -DWABCUT_BUILD_TESTS=OFF -DWABCUT_WARNINGS_AS_ERRORS=OFF \
+            -DWABCUT_DEBUG_INFO=OFF \
             -DCMAKE_OPTIMIZE_DEPENDENCIES=ON \
             ${CCACHE_EXE:+-DCMAKE_C_COMPILER_LAUNCHER=$CCACHE_EXE -DCMAKE_CXX_COMPILER_LAUNCHER=$CCACHE_EXE} \
             -DWABCUT_BUILD_NUMBER=${{ github.run_number }}

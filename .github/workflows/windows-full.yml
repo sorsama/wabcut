@@ -2,7 +2,9 @@
 # device (ctest preset win-msvc-ci), including the install tests (install.smoke; install.package builds the MSI and the
 # portable ZIP and installs, runs and uninstalls the MSI for the runner's user). The MSI and the ZIP are the artifacts.
 # The vcpkg packages and the compiler cache it saves on main are what pull requests and the release workflow's Windows
-# job restore (tools/ci-cache.py). See docs/building.md and docs/release.md.
+# job restore; a pull request also saves its own compiler cache (and the vcpkg packages when it had to build any), so
+# its next push compiles only what changed (tools/ci-cache.py). Built without debug information (WABCUT_DEBUG_INFO=OFF), tests in parallel with one rerun of a
+# failed test (tools/ci-test.py). See docs/building.md and docs/release.md.
 name: windows-full
 
 on:
@@ -77,7 +79,7 @@ jobs:
             ${{ steps.vcpkg.outputs.prefix }}
             ${{ steps.vcpkg.outputs.legacy }}
 
-      # Wabcut's own objects: saved from main after a successful build, restored by everything else (tools/ci-cache.py).
+      # Wabcut's own objects (tools/ci-cache.py): a pull request restores its own newest cache, else main's.
       - name: Restore the compiler cache
         uses: actions/cache/restore@v6
         with:
@@ -90,7 +92,7 @@ jobs:
         id: ccache
         continue-on-error: true
         shell: pwsh
-        run: python tools/ci-cache.py ccache-setup --max-size 2G ${{ github.ref != 'refs/heads/main' && '--read-only' || '' }}
+        run: python tools/ci-cache.py ccache-setup --max-size 2G
 
       - name: Qt ${{ env.QT_VERSION }}
         uses: jurplel/install-qt-action@v4.4.1
@@ -116,19 +118,22 @@ jobs:
           . ./tools/dev-env.ps1
           $launcher = @()
           if ($env:CCACHE_EXE) { $launcher = "-DCMAKE_C_COMPILER_LAUNCHER=$env:CCACHE_EXE", "-DCMAKE_CXX_COMPILER_LAUNCHER=$env:CCACHE_EXE" }
-          cmake --preset win-msvc -DWABCUT_BUILD_NUMBER=${{ github.run_number }} @launcher
+          cmake --preset win-msvc -DWABCUT_BUILD_NUMBER=${{ github.run_number }} -DWABCUT_DEBUG_INFO=OFF @launcher
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           cmake --build --preset win-msvc
           exit $LASTEXITCODE
 
       - name: Compiler cache statistics
+        id: ccache-stats
         if: ${{ !cancelled() && steps.ccache.outcome == 'success' }}
         shell: pwsh
-        run: python tools/ci-cache.py ccache-finish ${{ github.ref == 'refs/heads/main' && steps.build.outcome == 'success' && '--trim' || '' }}
+        run: python tools/ci-cache.py ccache-finish ${{ steps.build.outcome == 'success' && '--trim' || '' }}
 
-      # Saved straight after the build, not after the tests, so a release started meanwhile already finds it.
+      # Saved straight after the build, not after the tests, so a release started meanwhile already finds it. Every
+      # branch and pull request saves its own (a pull request's next push restores it), also after a failed build, which
+      # still compiled what came before the error; one that compiled nothing is not saved.
       - name: Save the compiler cache
-        if: ${{ !cancelled() && github.ref == 'refs/heads/main' && steps.ccache.outcome == 'success' && steps.build.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.ccache-stats.outputs.compiled != '' && steps.ccache-stats.outputs.compiled != '0' }}
         uses: actions/cache/save@v6
         with:
           path: ${{ runner.temp }}/ccache
@@ -136,22 +141,23 @@ jobs:
 
       - name: vcpkg cache key
         id: vcpkg-key
-        if: always() && steps.vcpkg.outcome == 'success' && (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch')
+        if: always() && steps.vcpkg.outcome == 'success'
         shell: pwsh
         run: python tools/ci-cache.py vcpkg-key --build-dir build/win-msvc --cache "${{ steps.vcpkg.outputs.cache }}" --prefix "${{ steps.vcpkg.outputs.prefix }}"
 
-      # Saved even when a later step fails, so the next run does not rebuild FFmpeg; not when nothing new was built. A run
-      # started by hand on another branch saves it for that branch (a branch that changes the dependencies).
+      # Saved even when a later step fails, so the next run does not rebuild FFmpeg; not when nothing new was built. Every
+      # branch and pull request saves its own: after a runner image update every package's ABI changes, and until main's
+      # next run has rebuilt them a pull request would otherwise rebuild all 50 (about 50 minutes) on each push.
       - name: Save the vcpkg binary cache
-        if: always() && (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch') && steps.vcpkg-key.outputs.key != '' && steps.vcpkg-key.outputs.key != steps.vcpkg-cache.outputs.cache-matched-key
+        if: always() && steps.vcpkg-key.outputs.key != '' && steps.vcpkg-key.outputs.key != steps.vcpkg-cache.outputs.cache-matched-key
         uses: actions/cache/save@v6
         with:
           path: ${{ steps.vcpkg.outputs.cache }}
           key: ${{ steps.vcpkg-key.outputs.key }}
 
-      # One cache of each kind per branch: older ones only take room from the repository's 10 GB.
+      # One cache of each kind per branch or pull request: older ones only take room from the repository's 10 GB.
       - name: Delete older caches
-        if: ${{ !cancelled() && (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch') }}
+        if: ${{ !cancelled() }}
         continue-on-error: true
         shell: pwsh
         env:
@@ -163,12 +169,14 @@ jobs:
             python tools/ci-cache.py delete-older --ref $env:GITHUB_REF --prefix "${{ steps.vcpkg.outputs.prefix }}" --keep $env:VCPKG_KEY
           }
 
+      # One job per processor; a test that fails runs again alone, and only a second failure fails the job (a flaky
+      # test is listed as a warning instead). [perf] tests are not in win-msvc-ci.
       - name: Test (without gpu and audio-device tests)
         shell: pwsh
         run: |
           $env:WABCUT_QT_DIR = $env:QT_ROOT_DIR
           . ./tools/dev-env.ps1
-          ctest --preset win-msvc-ci
+          python tools/ci-test.py --build-dir build/win-msvc -- --preset win-msvc-ci
           exit $LASTEXITCODE
 
       - name: Package

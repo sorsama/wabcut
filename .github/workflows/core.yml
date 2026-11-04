@@ -1,7 +1,9 @@
 # Core gate: model, command, keymap, interchange and ai (no Qt, FFmpeg or vcpkg) on Windows (MSVC and clang-cl), Linux
 # (GCC 14) and macOS (Homebrew LLVM: Apple Clang's libc++ lacks std::jthread and floating-point from_chars). Same commands
 # as a local core build (docs/building.md): cmake --preset core, build, ctest. clang-cl catches what MSVC accepts and other
-# compilers do not.
+# compilers do not. CI builds without debug information (WABCUT_DEBUG_INFO=OFF) through ccache (tools/ci-cache.py: every
+# branch and pull request saves its own cache) and runs the tests in parallel with one rerun of a failed test
+# (tools/ci-test.py).
 name: core
 
 on:
@@ -52,8 +54,16 @@ jobs:
             ctest_exclude: "Managed local helper lifecycle|HNSW graph agrees|llama-server starts with the tier context|llama-server on a hybrid-graphics machine is pinned"
     name: core (${{ matrix.os }}, ${{ matrix.name }})
     runs-on: ${{ matrix.os }}
-    # No compiler cache: MSVC builds the core cold in about 43 minutes, then the tests take 4.
+    # A cold MSVC build of the core took about 43 minutes with debug information; the compiler cache makes later runs
+    # compile only what changed.
     timeout-minutes: 60
+    permissions:
+      contents: read
+      # A run that saves its compiler cache deletes the branch's older ones (tools/ci-cache.py delete-older).
+      actions: write
+    env:
+      CCACHE_KEY: ccache-core-${{ matrix.name }}-${{ github.run_id }}-${{ github.run_attempt }}
+      PYTHON: ${{ startsWith(matrix.os, 'windows') && 'python' || 'python3' }}
     steps:
       - uses: actions/checkout@v7
 
@@ -67,7 +77,23 @@ jobs:
           brew install llvm
           echo "LLVM_ROOT=$(brew --prefix llvm)" >> "$GITHUB_ENV"
 
-      - name: Configure, build, test (Windows)
+      # Wabcut's own objects (tools/ci-cache.py): a pull request restores its own newest cache, else main's.
+      - name: Restore the compiler cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: ${{ env.CCACHE_KEY }}
+          restore-keys: ccache-core-${{ matrix.name }}-
+
+      # Without ccache (a failed download) the build runs as before, only slower.
+      - name: ccache
+        id: ccache
+        continue-on-error: true
+        shell: bash
+        run: $PYTHON tools/ci-cache.py ccache-setup --max-size 1G
+
+      - name: Configure and build (Windows)
+        id: build-windows
         if: runner.os == 'Windows'
         shell: pwsh
         env:
@@ -76,25 +102,69 @@ jobs:
           CXX: ${{ matrix.cxx || 'cl' }}
         run: |
           . ./tools/dev-env.ps1 -Core
-          cmake --preset core
+          $launcher = @()
+          if ($env:CCACHE_EXE) { $launcher = "-DCMAKE_C_COMPILER_LAUNCHER=$env:CCACHE_EXE", "-DCMAKE_CXX_COMPILER_LAUNCHER=$env:CCACHE_EXE" }
+          cmake --preset core -DWABCUT_DEBUG_INFO=OFF @launcher
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           # -k 0: a failed build still compiles everything else, so one run shows every error.
           cmake --build --preset core -- -k 0
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          ctest --preset core
           exit $LASTEXITCODE
 
-      - name: Configure, build, test (Linux, macOS)
+      - name: Configure and build (Linux, macOS)
+        id: build-unix
         if: runner.os != 'Windows'
         shell: bash
         run: |
           if [ -n "${{ matrix.cc }}" ]; then export CC=${{ matrix.cc }} CXX=${{ matrix.cxx }}; fi
-          cmake --preset core ${{ matrix.configure }}
+          cmake --preset core ${{ matrix.configure }} -DWABCUT_DEBUG_INFO=OFF \
+            ${CCACHE_EXE:+-DCMAKE_C_COMPILER_LAUNCHER=$CCACHE_EXE -DCMAKE_CXX_COMPILER_LAUNCHER=$CCACHE_EXE}
           cmake --build --preset core -- -k 0
+
+      # A build with errors still compiled everything it could (-k 0), so its cache is worth keeping too; one that
+      # compiled nothing (a failed configure) is not saved.
+      - name: Compiler cache statistics
+        id: ccache-stats
+        if: ${{ !cancelled() && steps.ccache.outcome == 'success' }}
+        shell: bash
+        run: $PYTHON tools/ci-cache.py ccache-finish ${{ (steps.build-windows.outcome == 'success' || steps.build-unix.outcome == 'success') && '--trim' || '' }}
+
+      - name: Save the compiler cache
+        if: ${{ !cancelled() && steps.ccache-stats.outputs.compiled != '' && steps.ccache-stats.outputs.compiled != '0' }}
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: ${{ env.CCACHE_KEY }}
+
+      # One compiler cache per configuration and branch or pull request: older ones only take room from the 10 GB.
+      - name: Delete older caches
+        if: ${{ !cancelled() && steps.ccache-stats.outputs.compiled != '' && steps.ccache-stats.outputs.compiled != '0' }}
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: $PYTHON tools/ci-cache.py delete-older --ref "$GITHUB_REF" --prefix "ccache-core-${{ matrix.name }}-" --keep "$CCACHE_KEY"
+
+      # One job per processor; a test that fails runs again alone, and only a second failure fails the job (a flaky
+      # test is listed as a warning instead). [perf] tests run alone (RUN_SERIAL).
+      - name: Test (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          CC: ${{ matrix.cc || 'cl' }}
+          CXX: ${{ matrix.cxx || 'cl' }}
+        run: |
+          . ./tools/dev-env.ps1 -Core
+          python tools/ci-test.py --build-dir build/core -- --preset core
+          exit $LASTEXITCODE
+
+      - name: Test (Linux, macOS)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
           if [ -n "${{ matrix.ctest_exclude }}" ]; then
-            ctest --preset core -E "${{ matrix.ctest_exclude }}"
+            python3 tools/ci-test.py --build-dir build/core -- --preset core -E "${{ matrix.ctest_exclude }}"
           else
-            ctest --preset core
+            python3 tools/ci-test.py --build-dir build/core -- --preset core
           fi
 
       # A failed toolchain check says only that it failed: the configure log has the compiler's own error.

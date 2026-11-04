@@ -92,9 +92,10 @@ function(wabcut_add_test_suite name)
             endforeach()
             list(JOIN combined "," test_spec)
         endif()
+        # [perf] tests measure wall-clock budgets: RUN_SERIAL keeps a parallel ctest (-j) from running anything beside them.
         if(label STREQUAL "perf")
             catch_discover_tests(${target} ${discover_args} TEST_SPEC "${test_spec}"
-                PROPERTIES ${common_props} ${ARG_PROPERTIES} LABELS ${label})
+                PROPERTIES ${common_props} ${ARG_PROPERTIES} LABELS ${label} RUN_SERIAL TRUE)
         else()
             # Catch's discovery property list cannot represent multiple LABELS values reliably. Split each
             # hardware group on [perf], retaining both classifications in a regex-matchable single label.
@@ -102,13 +103,15 @@ function(wabcut_add_test_suite name)
                 if(timing STREQUAL "perf")
                     set(timing_tag "[perf]")
                     set(timing_label "${label}-perf")
+                    set(timing_props RUN_SERIAL TRUE)
                 else()
                     set(timing_tag "~[perf]")
                     set(timing_label "${label}")
+                    set(timing_props "")
                 endif()
                 string(REPLACE "," ",${timing_tag}" timing_spec "${test_spec}")
                 catch_discover_tests(${target} ${discover_args} TEST_SPEC "${timing_tag}${timing_spec}"
-                    PROPERTIES ${common_props} ${ARG_PROPERTIES} LABELS ${timing_label})
+                    PROPERTIES ${common_props} ${ARG_PROPERTIES} LABELS ${timing_label} ${timing_props})
             endforeach()
         endif()
         list(APPEND labelled_specs "${spec}")
